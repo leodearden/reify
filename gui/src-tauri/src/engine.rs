@@ -6773,9 +6773,27 @@ pub(crate) const UNIT_TABLE: &[(&str, f64, DimensionVector)] = &[
 /// - Plain numbers: "5.0" → Real, "5" → Int
 /// - Booleans: "true", "false"
 pub fn parse_value_string(s: &str) -> Result<Value, String> {
+    parse_value_string_with_unit_hint(s, None)
+}
+
+/// [`parse_value_string`], with an optional declared dimension used to steer
+/// unit resolution (task #5757).
+///
+/// The hint reaches [`resolve_unit_label`] only — it never narrows what this
+/// function will ACCEPT. See that function's arm 2 for why: the frontend's
+/// per-cell alphabet always carries the `BASE_UNIT_LABELS` floor alongside the
+/// cell's own ladder, so a Length literal typed into a Volume cell is admitted
+/// by the panel; refusing it here with `Cannot parse value` would re-open the
+/// frontend/backend disagreement this task closes, in the opposite direction.
+/// Such a literal instead resolves to its own dimension and is refused one
+/// layer down by reify-eval's `DimensionMismatch`, which names both dimensions.
+fn parse_value_string_with_unit_hint(
+    s: &str,
+    dimension_hint: Option<&DimensionVector>,
+) -> Result<Value, String> {
     let s = s.trim();
 
-    // Booleans
+    // Booleans, ahead of the suffix scan.
     if s == "true" {
         return Ok(Value::Bool(true));
     }
@@ -6783,24 +6801,38 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
         return Ok(Value::Bool(false));
     }
 
-    // Try quantity literals (number + unit suffix)
-    // Units ordered by descending suffix length — longest match first.
-    // debug_assert! enforces this invariant; #[test] unit_table_ordering_invariant_holds
-    // covers release builds via UNIT_TABLE.
+    // Quantity literals (number + unit suffix), scanned longest-suffix-first
+    // over the composed index so `m` cannot shadow `cm` nor `m^3` shadow
+    // `kg/m^3`. The debug_assert! enforces that ordering at call-time in debug
+    // builds; #[test] unit_table_ordering_invariant_holds covers release builds.
+    let index = composed_unit_index();
     debug_assert!(
-        UNIT_TABLE.windows(2).all(|w| w[0].0.len() >= w[1].0.len()),
-        "UNIT_TABLE must be sorted by descending suffix length"
+        index
+            .windows(2)
+            .all(|w| w[0].label.len() >= w[1].label.len()),
+        "composed unit index must be sorted by descending suffix byte length"
     );
-    for &(unit, scale, dimension) in UNIT_TABLE {
-        if let Some(num_str) = s.strip_suffix(unit) {
-            let num_str = num_str.trim();
-            if let Ok(v) = num_str.parse::<f64>() {
-                return Ok(Value::Scalar {
-                    si_value: v * scale,
-                    dimension,
-                });
-            }
-        }
+    for entry in index {
+        let Some(num_str) = s.strip_suffix(entry.label.as_str()) else {
+            continue;
+        };
+        // A candidate only wins if the REMAINDER is a number. This is the
+        // second, order-independent defence against suffix shadowing: `m^3` is
+        // a suffix of `5kg/m^3`, but stripping it leaves `"5kg/"`, so the scan
+        // continues to `kg/m^3`.
+        let Ok(v) = num_str.trim().parse::<f64>() else {
+            continue;
+        };
+        // Re-resolve the matched LABEL through the single resolution entry
+        // point so a dimension hint can prefer a different ladder's rung
+        // carrying the same spelling. It cannot miss — `entry.label` came from
+        // this very index — so `entry` itself is the total fallback.
+        let (si_scale, dimension) = resolve_unit_label(&entry.label, dimension_hint)
+            .unwrap_or((entry.si_scale, entry.dimension));
+        return Ok(Value::Scalar {
+            si_value: v * si_scale,
+            dimension,
+        });
     }
 
     // Plain integer
