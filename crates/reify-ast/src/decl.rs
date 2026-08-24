@@ -2204,3 +2204,306 @@ mod member_recursion_set_tests {
         );
     }
 }
+
+/// RED until step-3 lands `MemberRecursionSet`/`walk_members` — this module
+/// must fail to COMPILE (`cannot find type`/`cannot find function`), not fail
+/// an assertion, until then.
+#[cfg(test)]
+mod member_walker_contract_tests {
+    use super::member_test_fixtures::*;
+    use super::{MemberDecl, MemberRecursionSet, walk_members};
+    use std::ops::ControlFlow;
+
+    // ── (a) declarative recursion-set pin ─────────────────────────────────
+
+    #[test]
+    fn recursion_set_consts_match_the_drift_table() {
+        assert_eq!(
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            MemberRecursionSet {
+                sub_body: true,
+                port_body: false
+            },
+            "walk_specialization_scope_members recurses SubDecl.body, not PortDecl.members"
+        );
+        assert_eq!(
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            MemberRecursionSet {
+                sub_body: false,
+                port_body: true
+            },
+            "find_named_member_span recurses PortDecl.members, not SubDecl.body"
+        );
+        assert_eq!(
+            MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+            MemberRecursionSet {
+                sub_body: false,
+                port_body: false
+            },
+            "find_param_default_span recurses neither SubDecl.body nor PortDecl.members"
+        );
+        assert_ne!(
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP
+        );
+        assert_ne!(
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            MemberRecursionSet::PARAM_DEFAULT_LOOKUP
+        );
+        assert_ne!(
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            MemberRecursionSet::PARAM_DEFAULT_LOOKUP
+        );
+    }
+
+    // ── (b) variant-coverage pin ───────────────────────────────────────────
+
+    /// Mirrors what `walk_members`'s match arms decide for each `MemberDecl`
+    /// variant. EXHAUSTIVE with NO `_` arm: adding a new `MemberDecl` variant
+    /// must break this test's compile, forcing a deliberate classification
+    /// decision here (and, separately, in `walk_members`'s own match).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum DescendKind {
+        Always,
+        IfSubBody,
+        IfPortBody,
+        Never,
+    }
+
+    fn descends_into(member: &MemberDecl) -> DescendKind {
+        match member {
+            MemberDecl::Param(_) => DescendKind::Never,
+            MemberDecl::Let(_) => DescendKind::Never,
+            MemberDecl::Constraint(_) => DescendKind::Never,
+            MemberDecl::ConstraintInst(_) => DescendKind::Never,
+            MemberDecl::Sub(_) => DescendKind::IfSubBody,
+            MemberDecl::Minimize(_) => DescendKind::Never,
+            MemberDecl::Maximize(_) => DescendKind::Never,
+            MemberDecl::GuardedGroup(_) => DescendKind::Always,
+            MemberDecl::AssociatedType(_) => DescendKind::Never,
+            MemberDecl::Fn(_) => DescendKind::Never,
+            MemberDecl::Port(_) => DescendKind::IfPortBody,
+            MemberDecl::Connect(_) => DescendKind::Never,
+            MemberDecl::Chain(_) => DescendKind::Never,
+            MemberDecl::MetaBlock(_) => DescendKind::Never,
+            MemberDecl::ForallConnect(_) => DescendKind::Never,
+            MemberDecl::ForallConstraint(_) => DescendKind::Never,
+            MemberDecl::MatchArmDeclGroup(_) => DescendKind::Always,
+            MemberDecl::Relate(_) => DescendKind::Never,
+        }
+    }
+
+    /// Drives `walk_members` to completion (never breaks) and reports whether
+    /// a `Param` named `"marker"` was reached anywhere in the tree.
+    fn reaches_marker(member: MemberDecl, set: MemberRecursionSet) -> bool {
+        let members = vec![member];
+        let mut reached = false;
+        let _: ControlFlow<()> = walk_members(&members, set, 0, &mut |m| {
+            if let MemberDecl::Param(p) = m {
+                if p.name == "marker" {
+                    reached = true;
+                }
+            }
+            ControlFlow::Continue(())
+        });
+        reached
+    }
+
+    #[test]
+    fn walk_members_recursion_matches_declared_classification() {
+        let nesting_variants: [(&str, fn() -> MemberDecl, DescendKind); 4] = [
+            (
+                "Sub",
+                || MemberDecl::Sub(sub_with_body("s", Some(vec![param("marker", (0, 40), None)]))),
+                DescendKind::IfSubBody,
+            ),
+            (
+                "Port",
+                || port("p", vec![param("marker", (0, 40), None)]),
+                DescendKind::IfPortBody,
+            ),
+            (
+                "GuardedGroup",
+                || guarded(vec![param("marker", (0, 40), None)], vec![]),
+                DescendKind::Always,
+            ),
+            (
+                "MatchArmDeclGroup",
+                || match_arm_group(vec![("A", param("marker", (0, 40), None))]),
+                DescendKind::Always,
+            ),
+        ];
+        let recursion_sets: [(&str, MemberRecursionSet); 3] = [
+            (
+                "SPECIALIZATION_SCOPE",
+                MemberRecursionSet::SPECIALIZATION_SCOPE,
+            ),
+            (
+                "NAMED_MEMBER_LOOKUP",
+                MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            ),
+            (
+                "PARAM_DEFAULT_LOOKUP",
+                MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+            ),
+        ];
+
+        for (variant_name, build, expected_kind) in nesting_variants {
+            let actual_kind = descends_into(&build());
+            assert_eq!(
+                actual_kind, expected_kind,
+                "{variant_name}'s declared classification is wrong"
+            );
+
+            for (set_name, set) in recursion_sets {
+                let expected_reach = match expected_kind {
+                    DescendKind::Always => true,
+                    DescendKind::IfSubBody => set.sub_body,
+                    DescendKind::IfPortBody => set.port_body,
+                    DescendKind::Never => false,
+                };
+                let actual_reach = reaches_marker(build(), set);
+                assert_eq!(
+                    actual_reach, expected_reach,
+                    "{variant_name} under {set_name}: expected reach={expected_reach}, got {actual_reach}"
+                );
+            }
+        }
+    }
+
+    // ── (c) early-exit short-circuit ───────────────────────────────────────
+
+    #[test]
+    fn walk_members_break_stops_before_else_branch() {
+        let members = vec![guarded(
+            vec![param("then_marker", (0, 40), None)],
+            vec![param("else_marker", (50, 90), None)],
+        )];
+        let mut visited = Vec::new();
+        let result = walk_members(
+            &members,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            0,
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    visited.push(p.name.clone());
+                    if p.name == "then_marker" {
+                        return ControlFlow::Break("stopped");
+                    }
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(result, ControlFlow::Break("stopped"));
+        assert_eq!(
+            visited,
+            vec!["then_marker".to_string()],
+            "must stop before the else-branch member is visited"
+        );
+    }
+
+    #[test]
+    fn walk_members_break_stops_before_second_match_arm() {
+        let members = vec![match_arm_group(vec![
+            ("A", param("arm0_marker", (0, 40), None)),
+            ("B", param("arm1_marker", (50, 90), None)),
+        ])];
+        let mut visited = Vec::new();
+        let result = walk_members(
+            &members,
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            0,
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    visited.push(p.name.clone());
+                    if p.name == "arm0_marker" {
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        assert_eq!(
+            visited,
+            vec!["arm0_marker".to_string()],
+            "must stop before arm 1's member is visited"
+        );
+    }
+
+    #[test]
+    fn walk_members_break_inside_nested_sub_body_stops_before_next_sibling() {
+        let members = vec![
+            MemberDecl::Sub(sub_with_body(
+                "s",
+                Some(vec![param("nested_marker", (0, 40), None)]),
+            )),
+            param("sibling_marker", (100, 140), None),
+        ];
+        let mut visited = Vec::new();
+        let result = walk_members(
+            &members,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            0,
+            &mut |m| {
+                match m {
+                    MemberDecl::Sub(s) => visited.push(format!("sub:{}", s.name)),
+                    MemberDecl::Param(p) => {
+                        visited.push(format!("param:{}", p.name));
+                        if p.name == "nested_marker" {
+                            return ControlFlow::Break(());
+                        }
+                    }
+                    _ => {}
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(result, ControlFlow::Break(()));
+        assert_eq!(
+            visited,
+            vec!["sub:s".to_string(), "param:nested_marker".to_string()],
+            "must unwind out of the nested Sub body without visiting the next top-level sibling"
+        );
+    }
+
+    #[test]
+    fn walk_members_continue_visits_every_member_exactly_once() {
+        let members = vec![
+            param("a", (0, 40), None),
+            guarded(
+                vec![param("b", (0, 40), None)],
+                vec![param("c", (0, 40), None)],
+            ),
+            match_arm_group(vec![("A", param("d", (0, 40), None))]),
+        ];
+        let mut visit_count = 0usize;
+        let mut param_order = Vec::new();
+        let result: ControlFlow<()> = walk_members(
+            &members,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            0,
+            &mut |m| {
+                visit_count += 1;
+                if let MemberDecl::Param(p) = m {
+                    param_order.push(p.name.clone());
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(result, ControlFlow::Continue(()));
+        // 6 distinct nodes: a, guarded(container), b, c, match_arm_group(container), d.
+        assert_eq!(
+            visit_count, 6,
+            "every member node, including containers, must be visited exactly once"
+        );
+        assert_eq!(
+            param_order,
+            vec!["a", "b", "c", "d"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>(),
+            "left-to-right, parent-before-children order"
+        );
+    }
+}
