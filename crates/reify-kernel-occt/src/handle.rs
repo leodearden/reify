@@ -2261,9 +2261,40 @@ mod tests {
         );
 
         // (2) PAYLOAD half — every CARTESIAN_POINT coordinate triple, folded
-        // into a per-axis AABB. Entity body shape: CARTESIAN_POINT('',(x,y,z))
-        // once whitespace is stripped, so the coordinate list is the first
-        // parenthesised group after the entity's opening paren.
+        // into a per-axis AABB by the shared `cartesian_point_aabb` helper.
+        let (min, max, n_points) = cartesian_point_aabb(&stripped);
+        assert!(
+            n_points > 0,
+            "expected at least one 3D CARTESIAN_POINT in the STEP export, found none"
+        );
+
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 30.0).abs() < 1e-6,
+                "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
+                 millimetre-declared STEP file, but the CARTESIAN_POINT AABB extent is {extent} \
+                 (min {}, max {}) — declaration and payload disagree",
+                min[axis],
+                max[axis]
+            );
+        }
+    }
+
+    /// Fold every 3D `CARTESIAN_POINT` in a whitespace-stripped STEP file
+    /// into a per-axis AABB, returning `(min, max, n_points)`.
+    ///
+    /// Entity body shape: `CARTESIAN_POINT('',(x,y,z))` once whitespace is
+    /// stripped, so the coordinate list is the first parenthesised group after
+    /// the entity's opening paren. Non-3D bodies (and unparsable ones) are
+    /// skipped rather than failing, so a file mixing 2D and 3D points still
+    /// yields a usable 3D box.
+    ///
+    /// Asserting on this box rather than on formatted coordinate strings keeps
+    /// the callers invariant under everything that legitimately varies: OCCT's
+    /// float formatting, entity ordering, shape centring, and the
+    /// AP203/AP214/AP242 schema selection the sibling tests flip.
+    fn cartesian_point_aabb(stripped: &str) -> ([f64; 3], [f64; 3], usize) {
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
         let mut n_points = 0usize;
@@ -2286,22 +2317,7 @@ mod tests {
                 max[axis] = max[axis].max(coords[axis]);
             }
         }
-        assert!(
-            n_points > 0,
-            "expected at least one 3D CARTESIAN_POINT in the STEP export, found none"
-        );
-
-        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
-            let extent = max[axis] - min[axis];
-            assert!(
-                (extent - 30.0).abs() < 1e-6,
-                "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
-                 millimetre-declared STEP file, but the CARTESIAN_POINT AABB extent is {extent} \
-                 (min {}, max {}) — declaration and payload disagree",
-                min[axis],
-                max[axis]
-            );
-        }
+        (min, max, n_points)
     }
 
     /// Audit a STEP file's PLANE-ANGLE unit declarations.
@@ -2466,6 +2482,183 @@ mod tests {
             "expected the cone fixture to emit a CONICAL_SURFACE (whose semi-angle is the BRep \
              angular payload this pin covers); without it the file carries no angle at all and \
              the assertions above are vacuous"
+        );
+    }
+
+    /// The WIREFRAME half of the STEP angular boundary — a cone-only fixture
+    /// covers one of the two angle-bearing write paths, and this is the other
+    /// (task #6184; `docs/prds/v0_6/angle-dimension-completion.md`, INV-AD-4).
+    ///
+    /// REGRESSION PIN, GREEN ON ARRIVAL, same posture as the BRep pin above
+    /// and as 6186's `export_unit_regime_e2e.rs`: the declaration is correct by
+    /// construction (`STEPConstruct_UnitContext::Init` emits
+    /// `SI_UNIT($,.RADIAN.)` unconditionally). **If it ever fails, the defect
+    /// is real: debug it, do not relax it.**
+    ///
+    /// Why this pin lives in the kernel crate rather than beside 6186's
+    /// reify-eval `.ri` e2e: `STEPOutput.subject : Solid`
+    /// (`crates/reify-compiler/stdlib/io.ri`) cannot carry a free curve, so the
+    /// DSL route physically cannot reach the wireframe branch. The kernel API
+    /// can — `OcctKernel::export`'s STEP arm hands `get_shape(handle)` straight
+    /// to `ffi::export_step` with no solid restriction, so an `Arc` wire handle
+    /// exports as a `GEOMETRIC_CURVE_SET`.
+    ///
+    /// The DECLARATION-vs-PAYLOAD half is what proves the trim parameter space
+    /// really is radians. Measured on this branch against the linked system
+    /// OCCT 7.8, the fixture emits
+    /// `TRIMMED_CURVE('',#17,(#22,PARAMETER_VALUE(0.)),(#23,PARAMETER_VALUE(1.)),.T.,.PARAMETER.)`
+    /// — the trim bounds are the arc's `start_angle`/`end_angle` verbatim, and
+    /// `.PARAMETER.` says the parameter (not the redundant cartesian point) is
+    /// the master representation. The arc's `CARTESIAN_POINT` AABB then has
+    /// y-extent `20·sin(1)` = 16.829419696157930 mm.
+    ///
+    /// BOUND DERIVATION (do not retune) — the same basis 6186 documented: one
+    /// exactly-representable ×1000 f64 multiply (≤1 ulp ≈ 3.6e-15 mm at 20)
+    /// plus OCCT's ≥12-significant-digit decimal round-trip (≤2e-11 mm at 20),
+    /// roughly five orders of margin inside the 1e-6 mm bound. And the bound is
+    /// ~7 orders TIGHTER than the defect it guards: reading the same trim
+    /// parameter as degrees puts the endpoint at `20·sin(1°)` = 0.349 mm, a
+    /// 16.48 mm gap.
+    ///
+    /// The x-extent is deliberately NOT asserted: it is 20.0 under BOTH
+    /// interpretations (the θ=0 endpoint and the circle centre both sit on it),
+    /// so it cannot discriminate. Do not "strengthen" this test by adding it.
+    ///
+    /// Independently cross-checked at chartering against the redundant
+    /// cartesian trim point (r·cos 1, r·sin 1) to 12 digits.
+    #[test]
+    fn export_step_declares_si_radians_for_wireframe_curve_parameters() {
+        // A free 20 mm-radius arc swept through 1 RADIAN, expressed in reify's
+        // SI-metre / SI-radian model space.
+        let handle = super::OcctKernelHandle::spawn();
+        let arc = handle
+            .execute(&GeometryOp::Arc {
+                center: [0.0, 0.0, 0.0],
+                radius: 0.020,
+                start_angle: 0.0,
+                end_angle: 1.0,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .unwrap();
+
+        let mut buf = Vec::new();
+        handle
+            .export(arc.id, reify_ir::ExportFormat::Step, &mut buf)
+            .unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        let stripped: String = content
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+
+        let (n_plane_angle_unit, n_global_unit_assigned_context, n_conversion_based_unit, records) =
+            plane_angle_unit_audit(&content);
+
+        // (a) EVERY plane-angle declaration is the SI radian. Same universal
+        // quantifier the BRep pin applies, so neither write path can drift.
+        assert!(
+            n_plane_angle_unit > 0,
+            "wireframe STEP export declared no PLANE_ANGLE_UNIT at all — the angular boundary \
+             convention INV-AD-4 requires is missing from the file entirely"
+        );
+        for rec in &records {
+            assert!(
+                rec.contains("SI_UNIT($,.RADIAN.)"),
+                "every PLANE_ANGLE_UNIT record must declare SI radians as `SI_UNIT($,.RADIAN.)` \
+                 (`$` is the null SI prefix; the `*` in the sibling `NAMED_UNIT(*)` is the \
+                 redeclared marker, NOT a prefix), but this record does not: {rec}"
+            );
+        }
+
+        // (b) No degree/grad CONVERSION_BASED_UNIT chain.
+        assert_eq!(
+            n_conversion_based_unit, 0,
+            "wireframe STEP export must not wrap any unit in a CONVERSION_BASED_UNIT chain (that \
+             is how a degree or grad plane-angle unit would be spelled), but found \
+             {n_conversion_based_unit}"
+        );
+
+        // (c) Count equality — a context that declares NO plane-angle unit
+        // fails here. A single-context wireframe file legitimately has 1, so
+        // unlike the BRep pin this asserts `>= 1`, not `>= 2`.
+        assert!(
+            n_global_unit_assigned_context >= 1,
+            "expected at least one GLOBAL_UNIT_ASSIGNED_CONTEXT in the wireframe export, found \
+             none — the file carries no unit context to declare anything in"
+        );
+        assert_eq!(
+            n_plane_angle_unit, n_global_unit_assigned_context,
+            "every unit context must assign a plane-angle unit, but the wireframe file has \
+             {n_plane_angle_unit} PLANE_ANGLE_UNIT declaration(s) across \
+             {n_global_unit_assigned_context} GLOBAL_UNIT_ASSIGNED_CONTEXT entities — some \
+             context crosses the boundary with no declared angular convention"
+        );
+
+        // (d) DECLARATION-vs-PAYLOAD agreement. Locate the TRIMMED_CURVE
+        // instance; a missing one would make everything below vacuous, so this
+        // panics with the whole file rather than passing silently.
+        let trimmed = stripped
+            .split(';')
+            .find(|rec| rec.contains("TRIMMED_CURVE("))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected the arc fixture to emit a TRIMMED_CURVE (the wireframe angular \
+                     payload this pin covers); without it the assertions above are vacuous. \
+                     Stripped file:\n{stripped}"
+                )
+            });
+        assert!(
+            trimmed.contains(".PARAMETER."),
+            "the trimmed curve's master representation must be `.PARAMETER.` (the trim bounds ARE \
+             the angular parameters, not merely redundant cartesian points), but the record is: \
+             {trimmed}"
+        );
+
+        // The record carries both trim bounds — PARAMETER_VALUE(0.) and
+        // PARAMETER_VALUE(1.) — i.e. the arc's start_angle/end_angle verbatim,
+        // in radians.
+        let mut params: Vec<f64> = Vec::new();
+        for tail in trimmed.split("PARAMETER_VALUE(").skip(1) {
+            let Some(close) = tail.find(')') else {
+                continue;
+            };
+            if let Ok(v) = tail[..close].parse::<f64>() {
+                params.push(v);
+            }
+        }
+        assert_eq!(
+            params.len(),
+            2,
+            "expected two PARAMETER_VALUE trim bounds on the trimmed curve, parsed {params:?} \
+             from: {trimmed}"
+        );
+        let hi = params.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let lo = params.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!(
+            (lo - 0.0).abs() < 1e-12 && (hi - 1.0).abs() < 1e-12,
+            "the arc was built with start_angle 0.0 rad and end_angle 1.0 rad, so its STEP trim \
+             bounds must be 0.0 and 1.0 (parameter space is radians, unscaled); parsed \
+             {params:?} instead — a degree rescale would put the upper bound at 57.29578"
+        );
+
+        // The payload half: 20·sin(1) mm on y. Under a degree misreading the
+        // same arc would span 20·sin(1°) = 0.349 mm.
+        let (min, max, n_points) = cartesian_point_aabb(&stripped);
+        assert!(
+            n_points > 0,
+            "expected at least one 3D CARTESIAN_POINT in the wireframe STEP export, found none"
+        );
+        let expected_y = 20.0 * (1.0_f64).sin();
+        let y_extent = max[1] - min[1];
+        assert!(
+            (y_extent - expected_y).abs() < 1e-6,
+            "a 20 mm-radius arc swept through 1 RADIAN should span 20·sin(1) = {expected_y} mm on \
+             y, but the CARTESIAN_POINT AABB y-extent is {y_extent} (min {}, max {}) — \
+             declaration and payload disagree. 20·sin(1°) = {} is what a degree misreading of the \
+             trim parameter would give.",
+            min[1],
+            max[1],
+            20.0 * (1.0_f64).to_radians().sin()
         );
     }
 
