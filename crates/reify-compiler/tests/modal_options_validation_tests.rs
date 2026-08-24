@@ -453,15 +453,17 @@ structure CtorMisspelledLabelProbe {
 "#,
     );
 
-    // (a) no Error-severity diagnostic — the typo is accepted.
-    let errors = errors_only(&module);
+    // (a) no diagnostic at ANY severity — the typo is accepted outright.
+    // Asserted across all severities, not just `errors_only`, because the
+    // ctor field-conformance pass emits at Warning today: a misspelled label
+    // never reaches a declared param, so nothing judges it at all.
     assert!(
-        errors.is_empty(),
+        module.diagnostics.is_empty(),
         "a MISSPELLED ctor label is silently accepted today (only DUPLICATE \
-         labels are diagnosed); if this now errors, the three example-file \
+         labels are diagnosed); if this now diagnoses, the three example-file \
          comments warning about the silent path are stale. Got {}: {:#?}",
-        errors.len(),
-        errors
+        module.diagnostics.len(),
+        module.diagnostics
     );
 
     let template = module
@@ -610,9 +612,10 @@ fn corpus_rayleigh_ctor_args_lower_to_dimensioned_literals() {
 /// Asserted on diagnostic substance, "dimension mismatch in addition", not
 /// exact prose.
 ///
-/// A bare-`Real` CTOR ARG stays silent by design; that negative pin is owned by
-/// docs/prds/v0_6/dimensioned-construction-strictness.md §7.1 (task #5627) and
-/// the eval-side reader by docs/prds/v0_6/dimension-checked-readers.md.
+/// The CTOR-ARG half is pinned separately by
+/// [`bare_real_rayleigh_ctor_arg_emits_arg_type_mismatch`]; the eval-side
+/// reader is a third seam again, owned by
+/// docs/prds/v0_6/dimension-checked-readers.md and deliberately left tolerant.
 #[test]
 fn rayleigh_damping_fields_propagate_declared_dimensions() {
     // (i) Dimensioned reads must type-check: alpha is a Frequency, beta a Time.
@@ -655,6 +658,73 @@ structure DampingFieldBareProbe {
          is `Real`, where this snippet compiles clean. Got {}: {:#?}",
         bare_errors.len(),
         bare_errors
+    );
+}
+
+// ─── task-6093 amendment: the ctor-arg half of the retype ────────────────────
+
+/// A bare-`Real` ctor arg at the now-dimensioned `alpha` / `beta` slots is
+/// REJECTED with `ArgTypeMismatch`, and the migrated corpus form is silent.
+///
+/// This is task #6093's originally-stated acceptance signal, and it IS
+/// deliverable — the retype is what makes these slots dimensioned, and the
+/// struct-ctor field-conformance pass judges dimensioned slots under strict
+/// `DimensionVector` equality since docs/prds/v0_6/dimensioned-construction-
+/// strictness.md §7.1 (task #5627) landed. Measured on this branch: the same
+/// snippet against the pre-retype `Real` params was silent.
+///
+/// Filters on `DiagnosticCode` IDENTITY across ALL severities, not on
+/// `errors_only`/`warnings_only`: `CTOR_FIELD_CONFORMANCE_SEVERITY` is
+/// `Warning` pre-δ and the Warning→Error flip must not break this pin.
+#[test]
+fn bare_real_rayleigh_ctor_arg_emits_arg_type_mismatch() {
+    let bare = compile_source_with_stdlib(
+        r#"
+structure BareCtorArgProbe {
+    let damping = RayleighDamping(alpha: 0.0, beta: 0.0003)
+}
+"#,
+    );
+    let mismatches: Vec<&str> = bare
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        mismatches.len(),
+        2,
+        "a bare dimensionless literal at each of the two dimensioned slots must \
+         raise ArgTypeMismatch; got: {:#?}",
+        bare.diagnostics
+    );
+    for param in ["alpha", "beta"] {
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| m.contains(&format!("argument '{param}'"))),
+            "one ArgTypeMismatch must name `{param}`; got: {:?}",
+            mismatches
+        );
+    }
+
+    // The migrated corpus form is the silent one — otherwise
+    // `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`
+    // (which gates at ANY severity) would be red on the whole modal corpus.
+    let migrated = compile_source_with_stdlib(
+        r#"
+structure MigratedCtorArgProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, beta: 0.0003s)
+}
+"#,
+    );
+    assert!(
+        migrated
+            .diagnostics
+            .iter()
+            .all(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch)),
+        "the migrated unit-literal form must be accepted; got: {:#?}",
+        migrated.diagnostics
     );
 }
 

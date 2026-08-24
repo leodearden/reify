@@ -393,11 +393,9 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
     //     solver-derived. The σ_measured check just above is the end-to-end
     //     half of the same claim.
     //
-    //     Compile-cleanliness alone would prove nothing: the ctor
-    //     field-conformance pass judges a bare dimensionless literal
-    //     COMPATIBLE with a dimensioned slot, and tightening that verdict is
-    //     owned by docs/prds/v0_6/dimensioned-construction-strictness.md §7.1
-    //     (task #5627), not by this task.
+    //     Not redundant with the compile-side gates: those judge the ctor ARG
+    //     against the declared slot, whereas this reads what the evaluated
+    //     cell actually carries after the trampoline has been fed.
     //
     //     PROFILE REACH: this assertion rides the test's
     //     `#[cfg_attr(debug_assertions, ignore)]` heavy-solve gate, so it runs
