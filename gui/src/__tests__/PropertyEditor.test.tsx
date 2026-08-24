@@ -1724,11 +1724,13 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     expect(screen.getByTestId('prop-row-c1').textContent).toContain('mm');
   });
 
-  it('(g) starting to edit while a non-default unit is picked seeds the edit buffer with the canonical value', () => {
+  it('(g) starting to edit while a non-default unit is picked seeds the edit buffer with the canonical value AND unit', () => {
     // Guards the fix that came with driving the primary field from the
     // picker: editing must stay anchored to the canonical backend magnitude
     // so an unmodified commit does not silently rewrite the parameter by the
-    // picked unit's conversion factor (task #5199 amend).
+    // picked unit's conversion factor (task #5199 amend) — and, since the
+    // #5757 amendment, must seed the canonical UNIT alongside it so that
+    // unmodified commit is still ACCEPTED (see `editSeed` in PropertyEditor).
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor
@@ -1744,28 +1746,90 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     expect(input.value).toBe('7.04500224');
 
-    // Focus (no edit) then commit. Since task #5757 a BARE magnitude is no
-    // longer a valid literal for a dimensioned cell — the PRD's ratified
-    // decision (1), "hard-REJECT bare numbers at dimensioned positions"
-    // (docs/prds/v0_6/units-length-gate-completion.md §6 row 16). So the
-    // unmodified commit is refused inline instead of submitting.
-    //
-    // That STRENGTHENS what this test guards rather than weakening it: the
-    // hazard was an unmodified commit silently rewriting the parameter, and it
-    // now cannot rewrite it at all. Before the gate this submitted the bare
-    // `7045002.24`, which the engine read as 7045002.24 CUBIC METRES — a 1e9
-    // error on a cell whose si_value is 0.00704500224.
+    // Focus reseeds to the CANONICAL magnitude — and, since task #5757, carries
+    // the canonical UNIT with it. Both halves matter: the magnitude is what
+    // stops the picked 'L' rescaling the value, and the unit is what keeps the
+    // seed a literal this panel will actually accept, now that a bare number is
+    // refused at a dimensioned position (PRD ratified decision (1), §6 row 16).
     fireEvent.focus(input);
+    expect(input.value).toBe('7045002.24mm^3');
+
+    // So an unmodified commit is a TRUE NO-OP again: it submits verbatim, and
+    // the value it submits is the canonical one. Before the #5199 fix this
+    // submitted the picker-converted `7.04500224` as if it were mm³ — a 1000×
+    // error; before the #5757 amendment it submitted nothing at all, because
+    // the panel was seeding text its own validator refused.
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '7045002.24mm^3');
+  });
+
+  it('(g2) editing only the DIGITS of a dimensioned cell keeps the seeded unit', () => {
+    // The most common edit in the panel by far, and the one the #5757
+    // bare-number gate would have broken without the unit-bearing seed: click
+    // in, change the number, commit. The user never retypes the unit, so it has
+    // to already be there — and the committed literal has to carry it, or the
+    // engine refuses the very edit the panel just accepted.
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+
+    fireEvent.focus(input);
+    expect(input.value).toBe('7045002.24mm^3');
+
+    // Simulate editing just the digits: the unit the seed supplied is still
+    // there, and only the magnitude changed.
+    fireEvent.input(input, { target: { value: '90mm^3' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '90mm^3');
+  });
+
+  it('(g3) a cell whose dimension has no curated ladder still seeds the bare magnitude', () => {
+    // The deliberate degradation. `editSeedUnitLabel` has no parseable label to
+    // offer for an uncovered dimension — `val.unit` there is a composed base-SI
+    // spelling (`kg·m^-3` and friends) that neither this gate nor
+    // `parse_value_string` reads — so the seed falls back to the magnitude
+    // alone rather than pre-filling the input with a unit the panel would
+    // reject. Committing unmodified is still refused, which is the PRD-ratified
+    // outcome for a dimensioned cell with no unit; what this pins is that the
+    // fallback is the OLD behaviour, not a new failure mode.
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={{
+          c9: makeValue({
+            cell_id: 'c9',
+            name: 'preload',
+            entity_path: 'Tank.preload',
+            value: '12',
+            unit: 'kg·m^2·s^-2',
+            dimension: 'Torque',
+            si_value: 12,
+          }),
+        }}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c9');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+
+    fireEvent.focus(input);
+    expect(input.value).toBe('12');
+
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSetParam).not.toHaveBeenCalled();
     expect(input.hasAttribute('data-invalid')).toBe(true);
-
-    // Re-committing the same canonical magnitude WITH its unit is accepted, and
-    // is still submitted verbatim — the picked 'L' does not rescale it. That is
-    // the original subject of this test, restated in the post-gate grammar.
-    fireEvent.input(input, { target: { value: '7045002.24mm^3' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).toHaveBeenCalledWith('c1', '7045002.24mm^3');
   });
 
   it('(h) focusing a cell while a non-default unit is picked shows an explicit "editing in <default>" hint', () => {

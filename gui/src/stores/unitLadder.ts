@@ -225,6 +225,12 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  * predicate exists to make the refusal INLINE, keeping the typed text on screen
  * for correction instead of discarding it behind an async error toast.
  *
+ * IT DOES NOT COST THE ORDINARY EDIT A UNIT KEYSTROKE. `PropertyEditor`'s
+ * `editSeed` seeds a dimensioned cell's input with a unit-bearing literal
+ * (magnitude + the cell's default ladder rung), so committing an untouched row
+ * is still a no-op and changing only the digits still submits a united literal.
+ * A predicate like this one is only safe to add alongside a seed like that.
+ *
  * KNOWN ASYMMETRY, deliberate: the backend serialises a COMPOSED dimension (one
  * with no `NAMED_DIMENSIONS` entry) as the empty string, indistinguishable here
  * from a dimensionless or non-scalar cell. Such a cell is therefore allowed

@@ -80,6 +80,12 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
 // refuses a bare number for a dimensioned cell too, so gating here only decides
 // whether the user finds out inline, with the typed text kept for correction,
 // or asynchronously via a toast that discards it.
+//
+// The rule and the edit buffer have to be designed together: `editSeed` below
+// seeds a dimensioned cell with a unit-BEARING literal, so an unmodified commit
+// stays a no-op and a digits-only edit keeps its unit. Seeding the bare
+// magnitude would have pre-filled every dimensioned row with text this very
+// grammar refuses.
 
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
@@ -370,6 +376,64 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     return props.selectedEntity !== null && entityMatchesGroup(props.selectedEntity, name);
   }
 
+  /**
+   * The unit label to append when seeding a DIMENSIONED cell's edit buffer
+   * (task #5757 amend), in the ASCII normal form the typed-input gate admits.
+   *
+   * The ladder's default rung, NOT `val.unit`. The two usually agree, but where
+   * they differ `val.unit` is the wrong one: it comes from
+   * `DimensionVector::to_display_units`, whose fallback arm composes base-SI
+   * labels — a Density cell arrives here carrying `kg·m^-3`, which neither this
+   * panel's gate nor the engine's `parse_value_string` can read, while the
+   * ladder rung for the same cell is `kg/m³` and both can. `val.unit` is kept
+   * only as a last resort for a dimension with no curated ladder, where an
+   * informative-but-unparseable label still beats no label at all — the seed is
+   * validity-checked below either way.
+   *
+   * The magnitude it pairs with is `displayValue`, i.e. the canonical/default
+   * unit — never the picked one. `reify_core::display_units` pins the default
+   * rung as numerically identical to what `to_display_units` returns, which is
+   * the same invariant `displayForPicker` already relies on.
+   */
+  function editSeedUnitLabel(val: ValueData): string | undefined {
+    const ladder = ladderForDimension(props.unitLadders ?? {}, val.dimension ?? '');
+    const candidate = ladder?.find((u) => u.is_default)?.label ?? ladder?.[0]?.label ?? val.unit;
+    // Same IPC-payload caution as `quantityUnitAlphabet`: these labels cross a
+    // Tauri boundary, so their string-ness is a claim about serde, not a
+    // runtime guarantee, and `normalizeUnitLabel` would throw on a non-string.
+    return typeof candidate === 'string' && candidate !== ''
+      ? normalizeUnitLabel(candidate)
+      : undefined;
+  }
+
+  /**
+   * The text to put in the input when editing starts.
+   *
+   * NEVER SEED AN INPUT WITH TEXT THIS COMPONENT WOULD REFUSE. Since task #5757
+   * a bare magnitude is not a valid literal for a dimensioned cell, and
+   * `displayValue` is exactly a bare magnitude — so seeding it verbatim made
+   * focus+Enter on an unmodified row set `data-invalid` and submit nothing, and
+   * made the ordinary "edit just the number" flow (`80mm` → `90`) fail unless
+   * the user retyped the unit every time. Appending the cell's own unit makes an
+   * unmodified commit a true no-op again and keeps the unit through a
+   * digits-only edit.
+   *
+   * The composed seed is checked against `isValidValue` rather than assumed
+   * good: a dimension with no curated ladder (Torque) has no label this gate
+   * accepts, and neither does the ladders-not-fetched path. Those cells fall
+   * back to the bare magnitude — still refused on commit, but no worse than
+   * before, and the user sees the number they were looking at rather than a
+   * unit spelling the panel would reject.
+   */
+  function editSeed(val: ValueData): string {
+    const magnitude = displayValue(val);
+    if (acceptsBareNumber(val.dimension)) return magnitude;
+    const unit = editSeedUnitLabel(val);
+    if (!unit) return magnitude;
+    const seeded = `${magnitude}${unit}`;
+    return isValidValue(seeded, val.cell_id) ? seeded : magnitude;
+  }
+
   function handleFocus(cellId: string, e: FocusEvent) {
     setEditingCellId(cellId);
     // Seed the edit buffer from the canonical backend value, not whatever is
@@ -378,9 +442,10 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     // `onSetParameter` expects on submit. Editing always operates in
     // canonical units so an unmodified commit is a true no-op instead of
     // silently rewriting the value by the picked unit's conversion factor
-    // (task #5199 amend).
+    // (task #5199 amend) — with the canonical UNIT carried along too, so that
+    // no-op survives the #5757 bare-number gate (see `editSeed`).
     const val = props.values[cellId];
-    setEditValue(val ? displayValue(val) : (e.target as HTMLInputElement).value);
+    setEditValue(val ? editSeed(val) : (e.target as HTMLInputElement).value);
   }
 
   function handleInput(cellId: string, e: InputEvent) {
