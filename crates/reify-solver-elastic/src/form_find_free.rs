@@ -2701,4 +2701,109 @@ mod tests {
             "all-zero D must report INFINITY (vacuous, not converged), got {resid}",
         );
     }
+
+    // ── gauge lock (task 6413), continued — defect D2: the eigenvalue-gap
+    // DESCENT STEP. Step-2 (above) fixes only the outer stop test; it does
+    // NOT touch `combined_eig_gap_objective` / `combined_geometry_descent_step`,
+    // which is why this task is not a straight port of task 6119's diff. Unit
+    // altitude only: MEASURED, there is no e2e fixture that both converges
+    // AND exercises the descent step under a gauge change (the
+    // `ForceDensitySpec::Explicit` combined mode never converges from any
+    // meaningful geometry perturbation), so claiming an e2e RED here would be
+    // a doomed test — see `tensegrity_free_surface_gauge_covariance.rs` for
+    // the e2e coverage this task DOES carry (the stop test only).
+
+    #[test]
+    fn combined_eig_gap_objective_is_gauge_invariant_under_uniform_scaling() {
+        // The objective is a pure scalar SCORE (sum of squares of the 4
+        // smallest-|λ| eigenvalues of D_combined), so its gauge factor must
+        // cancel — this is the right contract for a score, distinct from the
+        // descent step below (which maps geometry to geometry, and geometry
+        // carries no gauge weight, so ITS contract is bit-identical output,
+        // not a cancelled scale factor). D_combined scales bit-exactly by λ
+        // under q → λ·q, σ → λ·σ (established by the D1 tests above), so
+        // every eigenvalue of D scales by λ and the sum-of-4-smallest-squares
+        // scales by λ². The pristine (un-normalised) objective is therefore
+        // NOT gauge-invariant — checked with assert_eq! (bit-exact, λ a power
+        // of two) rather than a tolerance.
+        //
+        // MEASURED RED after step-2, this exact fixture (step-2 does not
+        // touch this function): 6.000000000000011e-2 vs 6.597069766656012e10
+        // — ratio ≈ 1.0995e12 ≈ 2^40 = λ², not the expected 1.
+        const LAMBDA_UP: f64 = 1_048_576.0; // 2^20
+        const LAMBDA_DOWN: f64 = 1.0 / 1_048_576.0; // 2^-20
+        let (members, _kinds) = triplex_topology();
+        let surfaces = prism_surfaces();
+        let x = canonical_prism();
+        let q = closed_form_q();
+        const SIGMA: f64 = 0.2;
+
+        let obj_at = |lambda: f64| -> f64 {
+            let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
+            let sigmas_scaled = vec![SIGMA * lambda; surfaces.len()];
+            combined_eig_gap_objective(6, &members, &q_scaled, &surfaces, &sigmas_scaled, &x)
+        };
+
+        let o1 = obj_at(1.0);
+        let o_up = obj_at(LAMBDA_UP);
+        let o_down = obj_at(LAMBDA_DOWN);
+
+        assert_eq!(
+            o1, o_up,
+            "objective must be exactly gauge-invariant: base={o1:e} λ=2^20-scaled={o_up:e}",
+        );
+        assert_eq!(
+            o1, o_down,
+            "objective must be exactly gauge-invariant: base={o1:e} λ=2^-20-scaled={o_down:e}",
+        );
+    }
+
+    #[test]
+    fn combined_geometry_descent_step_output_is_gauge_invariant_under_uniform_scaling() {
+        // The descent step maps GEOMETRY to GEOMETRY (plus a next step
+        // size), and geometry carries no gauge weight (only q/σ do) — so,
+        // unlike the scalar objective above, the right contract here is that
+        // the OUTPUT is bit-identical across a gauge change, not scaled by
+        // any power of λ. This currently fails because the finite-difference
+        // gradient is taken of the un-normalised (gauge-covariant, scaling as
+        // λ²) objective, so a fixed backtracking `step` accepts/rejects
+        // different trial geometries depending on λ.
+        //
+        // MEASURED RED after step-2 (step-2 does not touch this function):
+        // both the returned geometry and the returned next step size differ
+        // across λ.
+        const LAMBDA_UP: f64 = 1_048_576.0; // 2^20
+        let (members, _kinds) = triplex_topology();
+        let surfaces = prism_surfaces();
+        let x = canonical_prism();
+        let q = closed_form_q();
+        const SIGMA: f64 = 0.2;
+        const STEP_IN: f64 = 1e-2; // matches the outer loop's initial geo_step
+
+        let step_at = |lambda: f64| -> (Vec<[f64; 3]>, f64) {
+            let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
+            let sigmas_scaled = vec![SIGMA * lambda; surfaces.len()];
+            combined_geometry_descent_step(
+                6,
+                &members,
+                &q_scaled,
+                &surfaces,
+                &sigmas_scaled,
+                &x,
+                STEP_IN,
+            )
+        };
+
+        let (next1, nstep1) = step_at(1.0);
+        let (next_up, nstep_up) = step_at(LAMBDA_UP);
+
+        assert_eq!(
+            next1, next_up,
+            "descent-step geometry must be exactly gauge-invariant (no gauge weight on geometry)",
+        );
+        assert_eq!(
+            nstep1, nstep_up,
+            "descent-step next step size must be exactly gauge-invariant: step(1)={nstep1:e} step(λ)={nstep_up:e}",
+        );
+    }
 }
