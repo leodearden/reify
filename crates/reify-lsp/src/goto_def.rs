@@ -9,9 +9,10 @@ use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
 ///
-/// Returns the `Location` of the symbol's declaration, or `None` if
-/// the position is not on a navigable identifier (keywords, structure
-/// names, and unknown words return `None`).
+/// Returns the `Location` of the symbol's declaration, or `None` if the
+/// position is not on a navigable identifier. A top-level declaration NAME
+/// resolves to its own name token (task 6388); keywords, and words matching
+/// neither a member nor a top-level declaration, return `None`.
 // G-allow: LSP public API entry point; production caller uses the _in_context/_with_parsed/_from_parsed variant
 pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> Option<Location> {
     // Only needs ParsedModule for declaration spans (compiler discards them).
@@ -36,6 +37,25 @@ pub fn compute_goto_definition_with_parsed(
 ) -> Option<Location> {
     let offset = position_to_offset(source, position);
     let (_word_start, word) = find_word_at_offset(source, offset)?;
+
+    // Phase A (task 6388): the cursor is ON a top-level declaration's OWN name
+    // token. Resolved FIRST because a declaration's own name token can never be
+    // a reference to a member, so answering it here removes any chance that a
+    // pathologically same-named member shadows the definition — and returning
+    // the definition when the cursor is already on it is standard LSP
+    // behaviour.
+    for decl in &parsed.declarations {
+        if let Some((name, tok)) = decl_name_token(decl, source)
+            && name == word
+            && offset >= tok.start as usize
+            && offset < tok.end as usize
+        {
+            return Some(Location {
+                uri: uri.clone(),
+                range: span_to_range(source, tok),
+            });
+        }
+    }
 
     // Try to find the enclosing declaration by checking if the cursor offset
     // falls within a declaration's span. If found, search only that declaration
@@ -77,6 +97,43 @@ pub fn compute_goto_definition_with_parsed(
     }
 
     None
+}
+
+/// The name a top-level declaration declares, paired with the byte span of its
+/// own NAME TOKEN — or `None` when the declaration declares no name of its own,
+/// or when that token cannot be located inside the declaration's span.
+///
+/// Kinds come from [`crate::analysis::decl_name_and_span`], whose wildcard-free
+/// exhaustive match is what makes same-file go-to-definition uniform across
+/// declaration kinds instead of a per-kind allowlist. The statement span it
+/// returns is then narrowed to the name token with
+/// [`crate::analysis::name_token_span`] — whole-word, bounded to the
+/// declaration's own span, UTF-8-boundary-snapping. Deliberately NOT
+/// [`find_name_offset_in_decl`], which is a bare substring search and would
+/// match the `n` of `fn` for a declaration named `n`.
+///
+/// `name_token_span` falls back to a ZERO-WIDTH span at `span.start` when the
+/// name is absent within the declaration span (e.g. a malformed/recovered AST
+/// node). A zero-width `Location` is never a useful jump target, so that case
+/// is mapped back to `None` here.
+///
+/// SEPARATE BY DESIGN from [`find_declaration_name_span`]. That helper is the
+/// CROSS-FILE goto-def target *and* the rename/references oracle; widening it
+/// changes rename behaviour, which task 6388 must not do. Two documented
+/// non-goals follow from keeping them apart:
+/// - a `structure def` nested inside a `purpose` body lives in
+///   `PurposeDef.structures`, is not a top-level declaration, and is not
+///   resolved (see `goto_def_purpose_nested_structure_is_not_top_level`);
+/// - CROSS-file goto-def still covers only the narrower
+///   [`find_declaration_name_span`] kind list, so Purpose/Constraint/Unit/
+///   TypeAlias/Joint remain same-file only.
+fn decl_name_token<'a>(
+    decl: &'a reify_ast::Declaration,
+    source: &str,
+) -> Option<(&'a str, SourceSpan)> {
+    let (name, span) = crate::analysis::decl_name_and_span(decl)?;
+    let tok = crate::analysis::name_token_span(source, span, name);
+    (tok.start != tok.end).then_some((name, tok))
 }
 
 /// Compute go-to-definition with cross-file import resolution.
@@ -802,8 +859,12 @@ mod tests {
             let name_offset = source
                 .find(name)
                 .unwrap_or_else(|| panic!("snippet must contain {name:?}: {source}"));
-            // One byte INSIDE the name token, so `find_word_at_offset` yields it.
-            let position = crate::convert::offset_to_position(source, name_offset as u32 + 1);
+            // A byte INSIDE the name token, so `find_word_at_offset` yields it.
+            // The midpoint rather than `name_offset + 1`: the latter overshoots
+            // a ONE-character name (e.g. `structure S`, where the token is
+            // `[10, 11)` and offset 11 is already the following space).
+            let position =
+                crate::convert::offset_to_position(source, (name_offset + name.len() / 2) as u32);
 
             let loc = compute_goto_definition(source, &test_uri(), position)
                 .unwrap_or_else(|| panic!("goto-def on {name:?} returned None for: {source}"));
