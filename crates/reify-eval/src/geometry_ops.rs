@@ -457,7 +457,7 @@ pub(crate) fn required_length_arg(
 /// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`). The stored
 /// representation is deliberately unchanged by the check — the kernel still
 /// reads a dimensioned `Value` — so gating a slot is a one-line swap of its
-/// `eval_arg` closure for a `length_arg` one, and inherits C1's three-state
+/// `eval_arg` read for one of these two, and inherits C1's three-state
 /// mapping, its wording, and its `Undef` handling for free.
 ///
 /// Reach for [`required_length_values`] whenever a builtin has MORE THAN ONE
