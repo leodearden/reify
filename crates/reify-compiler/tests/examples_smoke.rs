@@ -16,7 +16,7 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// bug, a bad path resolution, or a refactor that stops [`discover_ri_files`]
 /// from recursing. Derived from [`MIN_EXERCISED_RI_FILES`] plus
 /// [`SKIP_SET`]'s size so the two floors cannot drift apart from each other;
-/// [`discovery_floors_track_the_live_corpus`] is what keeps
+/// [`discovery_floor_tracks_the_live_corpus`] is what keeps
 /// `MIN_EXERCISED_RI_FILES` itself fresh against the live corpus. Lower
 /// `MIN_EXERCISED_RI_FILES` if the corpus is ever intentionally trimmed
 /// below this floor.
@@ -27,9 +27,8 @@ const MIN_DISCOVERED_RI_FILES: usize = MIN_EXERCISED_RI_FILES + SKIP_SET.len();
 /// [`no_example_emits_ctor_field_conformance_diagnostics`]. Deliberately
 /// absolute rather than derived from the live count, which would shrink in
 /// lockstep with a discovery regression and never fire.
-/// [`discovery_floors_track_the_live_corpus`] is the freshness ratchet that
-/// keeps this constant from drifting stale the way the old hard-coded `40`
-/// did.
+/// [`discovery_floor_tracks_the_live_corpus`] is the freshness ratchet that
+/// keeps this constant from going stale.
 const MIN_EXERCISED_RI_FILES: usize = 200;
 
 /// Files to skip in the bulk smoke test.  Each entry is `(relative_path, reason)`
@@ -45,7 +44,7 @@ const MIN_EXERCISED_RI_FILES: usize = 200;
 /// run, or are covered instead by a dedicated gated test elsewhere; every
 /// other file discovered under `examples/` is expected to compile clean.
 /// Deliberately does not pin a corpus count or set size here: the live
-/// corpus size is enforced by [`discovery_floors_track_the_live_corpus`],
+/// corpus size is enforced by [`discovery_floor_tracks_the_live_corpus`],
 /// whose failure message reports the current count.
 const SKIP_SET: &[(&str, &str)] = &[
     (
@@ -339,10 +338,10 @@ fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
 /// [`relative_to_examples_dir`]), each paired with its precomputed relative
 /// key. The single source of the SKIP_SET-filtered "exercised" quantity —
 /// every consumer (both corpus-walking `#[test]`s and
-/// [`discovery_floors_track_the_live_corpus`]) calls this instead of
+/// [`discovery_floor_tracks_the_live_corpus`]) calls this instead of
 /// re-deriving the filter, so they can never disagree about what "exercised"
 /// means.
-fn exercised_paths(paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
+fn exercised_paths<'a>(paths: &'a [PathBuf]) -> Vec<(&'a PathBuf, String)> {
     use std::collections::HashSet;
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
@@ -353,7 +352,7 @@ fn exercised_paths(paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
             if skip.contains(rel.as_str()) {
                 None
             } else {
-                Some((p.clone(), rel))
+                Some((p, rel))
             }
         })
         .collect()
@@ -404,46 +403,41 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
 }
 
 /// Freshness ratchet for [`MIN_EXERCISED_RI_FILES`]: this floor is a
-/// discovery-regression TRIPWIRE, not a corpus-size target, so it is only
-/// useful while it stays reasonably close to the live corpus size — the old
-/// hard-coded `40` still passed while ~85% of a 258-file corpus went
-/// undiscovered, unnoticed for three months. Checking this constant alone is
-/// enough: [`MIN_DISCOVERED_RI_FILES`] is derived from it, so it cannot go
-/// stale independently.
+/// discovery-regression TRIPWIRE, not a corpus-size target, so it only
+/// stays useful while it tracks the live corpus size. Checking this
+/// constant alone is enough: [`MIN_DISCOVERED_RI_FILES`] is derived from
+/// it, so it cannot go stale independently.
 ///
-/// One-directional by construction: a real discovery regression only
-/// SHRINKS `exercised`, which makes `floor * 2 >= exercised` easier to
-/// satisfy, while the absolute gate in
+/// One-directional by construction: a discovery regression only SHRINKS
+/// `exercised`, which makes the assertion below easier to satisfy, while
+/// the absolute gate in
 /// [`no_example_emits_ctor_field_conformance_diagnostics`] is what actually
-/// fires. So this ratchet can never mask that regression — it only fires
-/// when the corpus grows past 2x the floor, which is exactly the
-/// maintenance signal that the floor needs raising.
+/// fires on that regression. So this ratchet can never mask it — it only
+/// fires once the corpus has grown enough that the floor has lost its
+/// tripwire sensitivity; see the assertion message for the current bound.
 ///
-/// Measures `exercised` via the same [`exercised_paths`] helper that gate
-/// calls, rather than a hand-rederived filter (e.g. `total -
-/// SKIP_SET.len()`, which would silently disagree if `SKIP_SET` ever grew a
-/// duplicate entry and would underflow-panic under a severe discovery
-/// regression), so this test can never disagree with the gate it ratchets.
+/// Measures `exercised` via the same [`exercised_paths`] helper the gate
+/// calls, so this test can never disagree with the gate it ratchets.
 /// Directory walk only — no compile, no check — so it stays as cheap as the
 /// other sanity guards here.
 #[test]
-fn discovery_floors_track_the_live_corpus() {
+fn discovery_floor_tracks_the_live_corpus() {
     let paths = discover_ri_files();
     let total = paths.len();
     let exercised = exercised_paths(&paths).len();
 
     assert!(
-        MIN_EXERCISED_RI_FILES * 2 >= exercised,
+        MIN_EXERCISED_RI_FILES * 3 >= exercised * 2,
         "MIN_EXERCISED_RI_FILES ({}) has drifted stale: the live examples/ \
          corpus now exercises {} .ri files ({} discovered, {} in SKIP_SET), \
-         more than 2x the floor. Raise MIN_EXERCISED_RI_FILES to ~{} (its \
+         more than 1.5x the floor. Raise MIN_EXERCISED_RI_FILES to ~{} (its \
          derived sibling MIN_DISCOVERED_RI_FILES will follow automatically) \
          and re-review both constants' tripwire doc comments.",
         MIN_EXERCISED_RI_FILES,
         exercised,
         total,
         SKIP_SET.len(),
-        exercised * 4 / 5
+        exercised * 3 / 4
     );
 }
 
