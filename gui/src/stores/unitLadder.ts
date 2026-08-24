@@ -184,6 +184,47 @@ const QUANTITY_NUMBER = '-?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?';
 export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
 
 /**
+ * Whether a cell with this dimension accepts a BARE number as typed input
+ * (task #5757).
+ *
+ * THE RULE: a cell that carries a dimension needs a unit. `20` in a `Volume`
+ * cell is ambiguous — 20 what? — and the engine used to resolve that ambiguity
+ * by silently reading it as 20 CUBIC METRES, the same 1000× hazard the .ri
+ * geometry-argument gate rejects with "pass a dimensioned length such as
+ * `5mm`". This is the panel's inline mirror of that rule.
+ *
+ * A pure, total function of the dimension string. It enumerates no unit
+ * strings, consults no ladder data and takes no ladder map, so it cannot drift
+ * from the Rust-authored curated table and does not weaken the standing #5788
+ * D6 prohibition documented on {@link quantityUnitAlphabet}. It also cannot
+ * narrow when the `get_unit_ladders` fetch fails, unlike everything else in
+ * this validation vocabulary.
+ *
+ * DIMENSIONEDNESS IS A PROPERTY OF THE CELL, NOT OF LADDER COVERAGE. A `Torque`
+ * cell has no curated ladder — the unit picker has nothing to offer it — and a
+ * bare number is refused there all the same. Keying on coverage instead would
+ * silently re-admit the hazard for every uncovered dimension.
+ *
+ * THE BACKEND IS THE AUTHORITATIVE GATE: `parse_value_string_for_cell` in
+ * `gui/src-tauri/src/engine.rs` refuses a `Value::Int`/`Value::Real` for a
+ * non-dimensionless `Type::Scalar`, and does so for every caller of
+ * `set_parameter` — including `MechanismPanel`, which reaches
+ * `handleSetParameter` without passing through `PropertyEditor`'s gate. This
+ * predicate exists to make the refusal INLINE, keeping the typed text on screen
+ * for correction instead of discarding it behind an async error toast.
+ *
+ * KNOWN ASYMMETRY, deliberate: the backend serialises a COMPOSED dimension (one
+ * with no `NAMED_DIMENSIONS` entry) as the empty string, indistinguishable here
+ * from a dimensionless or non-scalar cell. Such a cell is therefore allowed
+ * through by this predicate and caught only by the backend, which sees the real
+ * `DimensionVector`. Erring toward admitting is the safe direction: over-
+ * rejecting here would discard input the engine would have accepted.
+ */
+export function acceptsBareNumber(dimension: string | undefined): boolean {
+  return !dimension;
+}
+
+/**
  * Build the typed-quantity regex for a unit alphabet (task #6028) — the ONE
  * definition of the quantity grammar in the frontend. Before this, the
  * five-unit alternation was written four times across
