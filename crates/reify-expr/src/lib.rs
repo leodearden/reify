@@ -339,7 +339,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // Extracted into `eval_fn_field` (`#[inline(never)]`) to keep this
                 // recursive frame small in debug builds — the two `Type` locals
                 // (`domain_type`, `codomain_type`) would otherwise sit on every
-                // `eval_expr` frame and risk overflowing the 2 MiB test-thread
+                // `eval_expr` frame and risk overflowing the 3 MiB test-thread
                 // stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
                 // evaluation (same rationale as `eval_structure_instance_ctor`,
                 // `eval_quantifier`, etc.; pinned by
@@ -562,7 +562,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // this recursive frame small in debug builds — the
                 // per-iteration `String` and `Option<(String, f64)>` locals
                 // would otherwise sit on every `eval_expr` frame and risk
-                // overflowing the 2 MiB test-thread stack at
+                // overflowing the 3 MiB test-thread stack at
                 // `MAX_RECURSION_DEPTH` (cf. the existing
                 // `eval_user_fn_recursion_depth_exceeded` test and the
                 // matching extraction of `eval_quantifier`). See
@@ -608,7 +608,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
-                    // frame — keeping the 2 MiB test-thread stack under
+                    // frame — keeping the 3 MiB test-thread stack under
                     // `MAX_RECURSION_DEPTH` (pinned by
                     // `eval_user_fn_recursion_depth_exceeded`), the same stack-
                     // shrinking rationale as `emit_flexure_diagnostics`.
@@ -669,7 +669,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 // Body extracted into `eval_variant_bind_arm` (`#[inline(never)]`)
                                 // to keep this recursive frame small — the `ValueMap` child
                                 // clone and loop locals would otherwise sit on every
-                                // `eval_expr` frame and overflow the 2 MiB test-thread stack
+                                // `eval_expr` frame and overflow the 3 MiB test-thread stack
                                 // at MAX_RECURSION_DEPTH (pinned by
                                 // `eval_user_fn_recursion_depth_exceeded`).
                                 CompiledPattern::VariantBind { binders, .. } => {
@@ -1009,7 +1009,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // Body extracted into `eval_ad_hoc_selector` to keep this recursive
         // frame small in debug builds — the [f64; 3] coord buffer and Value
         // locals would otherwise sit on every `eval_expr` frame and risk
-        // overflowing the 2 MiB test-thread stack at MAX_RECURSION_DEPTH
+        // overflowing the 3 MiB test-thread stack at MAX_RECURSION_DEPTH
         // levels of recursive user-fn evaluation (cf. `eval_quantifier`).
         CompiledExprKind::AdHocSelector {
             selector_kind,
@@ -1248,7 +1248,7 @@ fn eval_index_access(object: &CompiledExpr, index: &CompiledExpr, ctx: &EvalCont
 ///
 /// Extracted from `eval_expr` to keep that recursive function's stack frame
 /// small (the coord buffer and Value locals below would otherwise sit on every
-/// `eval_expr` frame and risk overflowing the 2 MiB test-thread stack at
+/// `eval_expr` frame and risk overflowing the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation — see the
 /// `eval_user_fn_recursion_depth_exceeded` test and the matching extraction of
 /// `eval_quantifier`).
@@ -1982,7 +1982,7 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// Extracted to its own `#[inline(never)]` function, rather than inlined `if let`
 /// chains in `eval_user_function_call`, so its locals do not enlarge that function's
 /// own stack frame. `eval_user_function_call` sits on the hot recursive user-function
-/// call chain, whose per-frame size is budgeted against the 2 MiB test-thread stack at
+/// call chain, whose per-frame size is budgeted against the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` (256) levels — same rationale as `eval_variant_bind_arm` /
 /// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
 /// `eval_user_fn_recursion_depth_exceeded`.
@@ -1996,7 +1996,7 @@ fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalConte
 ///
 /// Extracted from `eval_expr`'s `Match` arm and marked `#[inline(never)]` to keep that
 /// recursive function's stack frame small — the `ValueMap` child clone and loop-local `val`
-/// would otherwise sit on every `eval_expr` frame and overflow the 2 MiB test-thread stack
+/// would otherwise sit on every `eval_expr` frame and overflow the 3 MiB test-thread stack
 /// at `MAX_RECURSION_DEPTH` (256) levels of user-fn recursion (same rationale as
 /// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
@@ -2039,7 +2039,7 @@ fn eval_variant_bind_arm(
 /// Extracted from `eval_expr` to keep that recursive function's stack frame
 /// small (the cell-iteration mode below needs to clone a `CompiledExpr` and a
 /// `ValueMap` per iteration; in debug builds those locals would otherwise sit
-/// on every `eval_expr` frame and blow the 2 MiB test-thread stack at
+/// on every `eval_expr` frame and blow the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation — see the
 /// `eval_user_fn_recursion_depth_exceeded` test).
 ///
@@ -2316,7 +2316,7 @@ fn interp_render(value: &Value) -> String {
 /// `emit_flexure_diagnostics` / `eval_worst_case_dispatch`: each `let Some(diag)`
 /// binds an owned `Diagnostic`, and in unoptimized builds those by-value locals
 /// would otherwise sit on every recursive `eval_expr` frame (regardless of which
-/// match arm runs) and blow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH`
+/// match arm runs) and blow the 3 MiB test-thread stack at `MAX_RECURSION_DEPTH`
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
@@ -2365,7 +2365,7 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
 /// `#[inline(never)]` — to keep that recursive function's stack frame small:
 /// the `for diag in …` loop binds an owned `Diagnostic` per iteration, and in
 /// unoptimized builds that by-value local would sit on every `eval_expr` frame
-/// (regardless of which match arm runs) and blow the 2 MiB test-thread stack at
+/// (regardless of which match arm runs) and blow the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation. Same rationale
 /// and pinning test (`eval_user_fn_recursion_depth_exceeded`) as the
 /// `eval_worst_case_dispatch` / `eval_quantifier` extractions.
@@ -2469,7 +2469,7 @@ fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &E
 ///
 /// Extracted from `eval_expr` to keep that recursive function's stack frame
 /// small (the per-iteration `String` and running-best `Option<(String, f64)>`
-/// locals would otherwise sit on every `eval_expr` frame and blow the 2 MiB
+/// locals would otherwise sit on every `eval_expr` frame and blow the 3 MiB
 /// test-thread stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
 /// evaluation — see the `eval_user_fn_recursion_depth_exceeded` test).
 /// Mirrors the same extraction of `eval_quantifier`.
@@ -2877,7 +2877,7 @@ fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
 /// (`reify_stdlib::eval_builtin` has no ctx).  Marked `#[inline(never)]` for the
 /// same stack-frame-shrinking reason as `eval_worst_case_dispatch`: the
 /// per-index `Value` locals would otherwise sit on every recursive `eval_expr`
-/// frame and risk overflowing the 2 MiB test-thread stack at
+/// frame and risk overflowing the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH`.
 ///
 /// Shapes (the strict undef-arg short-circuit in `eval_expr` already returns
@@ -2934,7 +2934,7 @@ fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
 /// Marked `#[inline(never)]` to keep `eval_expr`'s stack frame small in
 /// debug builds — the `domain_type` and `codomain_type` locals (each a
 /// `Type`) would otherwise sit on every recursive `eval_expr` frame and
-/// overflow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256)
+/// overflow the 3 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256)
 /// levels of user-fn recursion (same rationale as
 /// `eval_structure_instance_ctor`; pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
@@ -2972,7 +2972,7 @@ fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
 /// Marked `#[inline(never)]` for the same stack-frame-shrinking rationale as
 /// `eval_fn_field` (task 4220 β): the two `Type` locals on this frame would
 /// otherwise sit on every recursive `eval_expr` frame and risk overflowing
-/// the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256) levels of
+/// the 3 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256) levels of
 /// user-fn recursion.
 #[inline(never)]
 fn eval_restrict(inner_field: &Value, region: &Value, result_type: &Type) -> Value {
@@ -7606,13 +7606,33 @@ mod tests {
     fn eval_user_fn_recursion_depth_exceeded() {
         // infinite(1) should return Undef (hit depth limit), not stack-overflow.
         //
-        // Recursing to MAX_RECURSION_DEPTH (256) needs more headroom than the default
-        // 2 MiB test-thread stack affords now that `EvalContext` carries the
-        // `compute_dispatch` hook (task #4880, mirroring the pre-existing `containment`
-        // field's size). Run on a thread with an explicit, generous stack so this test
-        // measures the depth guard itself, not the platform's default thread-stack size.
+        // THE STACK SIZE IS PINNED, NOT "GENEROUS". This test is the pin for the
+        // per-`eval_expr`-frame stack budget that the 15 doc comments in this file
+        // quoting a "MiB test-thread stack" cite as the reason for their
+        // `#[inline(never)]` / hoisted-locals discipline (`eval_variant_bind_arm`,
+        // `eval_structure_instance_ctor`, `eval_fn_field`, `try_compute_dispatch`, …).
+        // It can only serve as that pin while the stack it runs on is small enough that
+        // a frame-size regression actually overflows it — so the size is an explicit,
+        // MEASURED ratchet, and raising it to buy headroom silently retires every one of
+        // those comments.
+        //
+        // MEASURED on this tree at MAX_RECURSION_DEPTH (256), debug profile (release
+        // needs strictly less), by bisecting this constant:
+        //   * before task #4880:  overflows at 1792 KiB, passes at 2048 KiB
+        //   * after  task #4880:  overflows at 2048 KiB, passes at 2304 KiB
+        // i.e. adding `EvalContext::compute_dispatch` cost ~256 KiB across the chain
+        // (< 1 KiB per level) and pushed the requirement just past the 2 MiB that Rust's
+        // test harness gives a SPAWNED test thread — which is why this wrapper exists at
+        // all, and why the figure quoted in those doc comments is now 3 MiB rather than
+        // the platform default it used to name.
+        //
+        // 3 MiB = ~33% over the measured 2.25 MiB requirement: enough that ordinary
+        // codegen drift does not redden the gate, tight enough that a further ~750 KiB
+        // (~3 KiB/level) regression does. If a toolchain bump reddens this, RE-MEASURE by
+        // bisecting the constant and move the figure here and in those comments
+        // deliberately — do not just raise it.
         let handle = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
+            .stack_size(3 * 1024 * 1024)
             .spawn(|| {
                 let infinite_fn = make_infinite_fn();
                 let call_expr = CompiledExpr {

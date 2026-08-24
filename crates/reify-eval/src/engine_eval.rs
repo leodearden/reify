@@ -1987,12 +1987,31 @@ fn build_single_instance_alias_paths(
 /// which the per-member `evaluate_let_bindings` loop (`detect_let_cycle`,
 /// single-template) cannot honour when it visits the reader's scope first.
 ///
-/// Membership already excludes auto params and `@optimized` cells
-/// (`build_dependent_cells`), so this never overwrites a solver-resolved auto
-/// nor re-folds a compute-dispatched cell through plain `eval_expr`. An empty
-/// `dependent_cells` makes this a no-op ⇒ byte-identical to the pre-joint-drive
-/// write-back. Mirrors `reeval_cone_cell`'s eval-context shape
-/// (`eval_ctx_with_meta` + `with_determinacy` + `with_runtime_diagnostics`).
+/// Membership already excludes auto params and BARE `@optimized` cells
+/// (`build_dependent_cells` via `is_optimized_userfn_cell`), so this never
+/// overwrites a solver-resolved auto. An empty `dependent_cells` makes this a
+/// no-op ⇒ byte-identical to the pre-joint-drive write-back. Mirrors
+/// `reeval_cone_cell`'s eval-context shape (`eval_ctx_with_meta` +
+/// `with_determinacy` + `with_runtime_diagnostics`), PLUS the compute-dispatch
+/// hook.
+///
+/// # Why `dispatch` is a parameter and not `None` (task #4880)
+///
+/// The solver folds these very cells WITH the hook
+/// (`reify_constraints::solver::fold_dependent_cells`), so if this write-back
+/// folded them without one, the optimiser and the write-back would measure the
+/// same cell on two different value maps — the exact class
+/// `build_scoring_values`' crate-scoped INVARIANT exists to prevent, and the
+/// one esc-5189-7 already burned.
+///
+/// The `is_optimized_userfn_cell` exclusion does NOT close this on its own: it
+/// is SHAPE-EXACT, matching only a bare top-level `UserFunctionCall`. A cell
+/// that WRAPS the call — `let margin = yield_limit - solve_elastic_static(..).max_von_mises`,
+/// the very shape this task's own fixture puts inside a constraint — is not
+/// excluded, stays in `dependent_cells`, and would converge against a real FEA
+/// number in the cost loop and then be clobbered with `Undef` here. Before this
+/// task both sides agreed (both `Undef`); wiring the hook on one side only is
+/// what would create the divergence, so it is wired on both.
 fn materialize_dependent_cells(
     dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &mut ValueMap,
@@ -2000,6 +2019,7 @@ fn materialize_dependent_cells(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     runtime_sink: &RefCell<Vec<Diagnostic>>,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
     for (id, expr) in dependent_cells {
         // The context is rebuilt per cell so each fold step reads the values
@@ -2007,12 +2027,16 @@ fn materialize_dependent_cells(
         // makes producer-before-reader ordering meaningful. The immutable
         // borrows of `values`/`snapshot_values` end at the `;` (the temporary
         // ctx is dropped), so the inserts below are unconflicted.
-        let value = reify_expr::eval_expr(
-            expr,
-            &eval_ctx_with_meta(values, functions, meta_map)
-                .with_determinacy(snapshot_values)
-                .with_runtime_diagnostics(runtime_sink),
-        );
+        let ctx = eval_ctx_with_meta(values, functions, meta_map)
+            .with_determinacy(snapshot_values)
+            .with_runtime_diagnostics(runtime_sink);
+        // `dispatch = None` leaves `ctx` exactly as it was built above, so the
+        // no-hook path is byte-identical to pre-#4880.
+        let ctx = match dispatch {
+            Some(d) => ctx.with_compute_dispatch(d),
+            None => ctx,
+        };
+        let value = reify_expr::eval_expr(expr, &ctx);
         values.insert(id.clone(), value.clone());
         snapshot_values.insert(id.clone(), (value, DeterminacyState::Determined));
     }
@@ -5248,6 +5272,7 @@ impl Engine {
                             &problem.functions,
                             &meta_map,
                             &runtime_sink,
+                            Some(&dispatcher),
                         );
                     }
                     SolveResult::Infeasible {
@@ -6686,6 +6711,7 @@ impl Engine {
                     &problem.functions,
                     &meta_map,
                     runtime_sink,
+                    Some(&dispatcher),
                 );
             }
             SolveResult::Infeasible {

@@ -536,7 +536,14 @@ impl ConstraintSolver for SolverRegistry {
         // I1: delegate to the shared core with optimality recovery OFF and NO
         // compute-dispatch hook, which reproduces the historical dispatch path
         // byte-for-byte.
-        self.solve_with_dispatch(problem, None)
+        //
+        // Straight to `solve_inner`, NOT via `self.solve_with_dispatch(problem, None)`
+        // (task #4880): the trait's DEFAULT `solve_with_dispatch` calls `self.solve`,
+        // so routing through it would make `solve` -> `solve_with_dispatch` -> `solve`
+        // an infinite mutual recursion the moment the override below is deleted — a
+        // silent stack overflow at runtime rather than a compile error. Calling the
+        // shared core directly makes the two entry points independent.
+        self.solve_inner(problem, false, None).0
     }
 
     /// `solve`, forwarding a compute-dispatch hook to the inner solver of EVERY
@@ -583,6 +590,14 @@ impl ConstraintSolver for SolverRegistry {
     /// themselves.
     fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
         // I1: no hook => byte-for-byte the historical ranked path.
+        //
+        // This half DOES still delegate to its `*_with_dispatch` sibling, unlike `solve`
+        // above, so it keeps the latent mutual-recursion shape that comment describes:
+        // deleting `solve_ranked_with_dispatch` below would fall back to the trait
+        // default, which re-enters here. Left as-is deliberately (task #4880) — breaking
+        // it needs the ~40-line Solved-arm lift in that method extracted into a shared
+        // helper, which is a refactor of ranked-lift behaviour, not part of wiring a
+        // compute-dispatch hook.
         self.solve_ranked_with_dispatch(problem, None)
     }
 
@@ -792,14 +807,23 @@ fn solve_lexicographic(
                 // Computed here, before `values` is moved into `last_result`, and only
                 // on the non-final path — the final stage builds no band.
                 if !is_final {
+                    // The ε-band anchor is one side of the SAME constraint the next
+                    // stage's cost surface evaluates, so it must be measured with the
+                    // same compute-dispatch hook (task #4880). Passing `None` here
+                    // while every stage solve above gets `dispatch` would make an
+                    // `@optimized` rank term evaluate to `Undef` -> `obj*` = `None` ->
+                    // band skipped, silently dropping the lexicographic ordering the
+                    // user asked for on a model where the hook works everywhere else.
+                    // Same two-sides-of-one-constraint-on-two-value-maps class as the
+                    // stale-`current_values` defect this block already documents.
                     let scored = crate::solver::build_scoring_values(
                         &current_values,
                         &values,
                         &base.dependent_cells,
                         &base.functions,
-                        None,
+                        dispatch,
                     );
-                    match eval_rank_cost(&rank_terms, &scored, &base.functions) {
+                    match eval_rank_cost(&rank_terms, &scored, &base.functions, dispatch) {
                         Some(obj_star) => {
                             accumulated_constraints.extend(build_band_constraints(
                                 &rank_terms,
@@ -850,6 +874,7 @@ fn eval_rank_cost(
     rank_terms: &[ObjectiveTerm],
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> Option<f64> {
     // I-UNITS backstop (PRD D2/I-UNITS, task α #5018): this does NOT re-diagnose —
     // the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, `check_objective_dimension_coherence`
@@ -866,7 +891,14 @@ fn eval_rank_cost(
     );
     let mut acc = 0.0_f64;
     for term in rank_terms {
-        let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
+        // `dispatch = None` reconstructs `EvalContext::new(values, functions)`
+        // exactly, so the no-hook path is byte-identical to pre-#4880.
+        let ctx = reify_expr::EvalContext::new(values, functions);
+        let ctx = match dispatch {
+            Some(d) => ctx.with_compute_dispatch(d),
+            None => ctx,
+        };
+        let v = reify_expr::eval_expr(&term.expr, &ctx)
             .as_f64()
             .filter(|v| v.is_finite())?;
         match term.sense {
