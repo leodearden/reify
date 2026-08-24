@@ -1,9 +1,85 @@
-//! Shared overload-resolution vocabulary.
+//! The three-tier overload-resolution ladder — one definition, two consumers.
 //!
-//! This module holds the single definition of the per-slot overload match
-//! predicates and their supporting type-shape helpers, shared by the
-//! compile-time resolver (`reify-compiler`) and the eval-time selector
-//! (`reify-expr`).
+//! This module is the NORMATIVE home of the per-slot predicates that decide
+//! whether a candidate function's declared parameter type accepts a given
+//! argument type. It exists so that compile-time and eval-time overload
+//! selection cannot disagree about the same call: a divergence between them is
+//! the esc-4231-120/126 / esc-4093-152 class, where a call typechecks against
+//! one overload and then evaluates against another (or, worse, against none —
+//! silently yielding `Value::Undef`). Before #5689 the predicates below lived
+//! as a hand-synced mirror pair, and had in fact drifted.
+//!
+//! # The ladder
+//!
+//! Three tiers, applied in order from narrowest to broadest:
+//!
+//! | Tier | Name     | Predicate                                       |
+//! |------|----------|-------------------------------------------------|
+//! | 1    | EXACT    | `param_ty == arg_ty`                            |
+//! | 2    | HEAD     | [`slot_matches_head_tier`]                      |
+//! | 3    | WILDCARD | [`slot_matches_wildcard_tier`]                  |
+//!
+//! Resolution order is **exact → head → wildcard**, and an EMPTY tier falls
+//! through to the next-broader one. That fall-through is load-bearing: it
+//! preserves the deliberate select-then-conflict behaviour where a
+//! constructor-headed generic param over-selects a mismatched-head arg so the
+//! call site can emit `E_FN_TYPE_ARG_CONFLICT` rather than an opaque no-match.
+//!
+//! Tier 1 deliberately has NO helper here. It is one operator, it cannot
+//! drift, and a wrapper would be pure indirection.
+//!
+//! # Caller contract: tier 2 is a FILTER, not a pass
+//!
+//! Tier 2 MUST be applied as a filter over the set surviving tier 3, never
+//! standalone. It is narrower than tier 3 on the type-param-param disjunct,
+//! but it is **not a subset** of it: [`heads_unifiable`]'s erased-subject arm
+//! (`Applied{name, ..}` vs `Enum(name)`) accepts a pair tier 3 rejects
+//! outright, because tier 3 only ever compares an `Applied` param to an `Enum`
+//! arg by plain equality. Concretely, for param `Applied{"Result",[Int,
+//! String]}` and arg `Enum("Result")` with `is_generic == true`,
+//! [`slot_matches_head_tier`] is `true` while [`slot_matches_wildcard_tier`]
+//! is `false`. The relation is confined to GENERIC candidates: with
+//! `is_generic == false` the head tier's [`heads_unifiable`] arm is gated off
+//! and head genuinely IS a subset — so screening is load-bearing exactly for
+//! the generic overloads tier 2 exists to disambiguate.
+//!
+//! A standalone head pass would therefore WIDEN resolution rather than narrow
+//! it, admitting candidates the wildcard tier had already excluded. Screened
+//! through tier 3 it can only ever NARROW a would-be ambiguity. The
+//! counterexample is pinned by
+//! `slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier` in this
+//! module's tests.
+//!
+//! # What stays caller-side policy
+//!
+//! This module answers exactly one question — "does THIS param slot accept
+//! THIS arg?". Everything above the slot stays with the caller:
+//!
+//! - the arity check (`f.params.len() == arg_types.len()`);
+//! - computing `is_generic = !f.type_params.is_empty()` for the candidate;
+//! - the per-candidate `.all()` over slots;
+//! - the final classification over the surviving set — `reify-compiler`
+//!   reports `Resolved` / `Ambiguous` / `NoMatch` by set size, while
+//!   `reify-expr` takes first-match-wins.
+//!
+//! Those differ legitimately between the two consumers. The DISJUNCT LISTS —
+//! the thing that actually drifted — do not, and live here.
+//!
+//! # Why the API is per-SLOT and not per-candidate
+//!
+//! A per-candidate API would have to name `CompiledFunction`, which lives in
+//! `reify-ir` — and `reify-ir` depends on `reify-core`, so naming it here
+//! would break the B1 zero-`reify-*`-deps invariant locked by
+//! `crates/reify-core/tests/dag_invariant.rs`. The two callers also hold
+//! different argument shapes (`&[Type]` compile-side vs `&[CompiledExpr]`
+//! eval-side, needing `arg.result_type`). Per-slot over `&Type` is the widest
+//! contract both can share.
+//!
+//! # Consumers
+//!
+//! `reify_compiler::type_compat::resolve_function_overload` (compile time) and
+//! `reify_expr::find_matching_compiled_function` (eval time). Any new consumer
+//! must honour the tier-2-is-a-filter contract above.
 
 use crate::ty::Type;
 
@@ -368,6 +444,84 @@ pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
         // `Ok(())` fallthrough, a head mismatch here is `false`.
         _ => param == arg,
     }
+}
+
+/// Tier 3 of the ladder — the broadest per-slot gate (WILDCARD).
+///
+/// `is_generic` is the CANDIDATE's genericity (`!f.type_params.is_empty()`),
+/// computed caller-side.
+///
+/// For a GENERIC candidate, a type-param-carrying param is a resolution
+/// wildcard (matches any arg) — mirroring the trait-object wildcard. Gated on
+/// `is_generic` so non-generic fns (empty `type_params`) are bit-for-bit
+/// unchanged (INV-6). A full wildcard (not structural unify) is deliberate: a
+/// conflicting generic call (e.g. `pair(1, 1.5)`) still SELECTS the candidate
+/// so the call site can emit `E_FN_TYPE_ARG_CONFLICT` rather than a generic
+/// no-match.
+///
+/// D4 (task-4232 γ): A type-param-carrying ARG also acts as a resolution
+/// wildcard (matches any param). This lets a generic fn body pass a
+/// `TypeParam`-typed value to a concrete-param function without a spurious
+/// NoMatch. It is self-scoping: `TypeParam` args only arise inside generic fn
+/// bodies, so concrete-arg calls (non-generic callers) are bit-for-bit
+/// unchanged — `type_carries_type_param(concrete) == false`. Note it is NOT
+/// gated on `is_generic`: the genericity in question belongs to the CALLER
+/// whose body produced the `T`-typed value, not to the candidate being
+/// matched.
+pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bool) -> bool {
+    type_carries_trait_object(param_ty)
+        || (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
+        || type_carries_type_param(arg_ty)
+        || param_ty == arg_ty
+}
+
+/// Tier 2 of the ladder — the middle tie-break gate (HEAD).
+///
+/// Narrower than [`slot_matches_wildcard_tier`] on the type-param-param
+/// disjunct: structural [`heads_unifiable`] instead of a full wildcard. This
+/// disambiguates two GENERIC overloads with different container heads — e.g. a
+/// user `unwrap_or<T,E>(r: Result<T,E>, ..)` vs the stdlib
+/// `unwrap_or<T>(o: Option<T>, ..)` — which would otherwise both
+/// wildcard-match any subject via `type_carries_type_param` and force a
+/// spurious `Ambiguous`.
+///
+/// Only the `type_carries_type_param(param_ty)` disjunct is replaced by
+/// `heads_unifiable`; [`type_carries_dim_param`] stays a FULL wildcard here —
+/// dimension-param overload resolution is orthogonal to enum-head
+/// disambiguation.
+///
+/// D4 (task-4232 γ) in this tier: a type-param ARG is a wildcard ONLY when it
+/// is a BARE `Type::TypeParam` (a generic fn body passing a `T`-typed value) —
+/// that slot carries no constructor head to disagree on, so `heads_unifiable`
+/// cannot discriminate it. A HEADED arg carrying a NESTED type-param (e.g. an
+/// `Applied{"Result", [T, E]}` produced by composing two generic stdlib fns
+/// over a headless-`Enum` builtin — task #4038 δ) must NOT wildcard-match every
+/// candidate: it has a real head, so `heads_unifiable` discriminates it
+/// (`Result` matches the `Result<T,E>` overload, not the `Option<T>` one),
+/// turning a spurious `Ambiguous` into a clean `Resolved`.
+///
+/// NOTE (reviewer_comprehensive #2 on the compile-side original): this
+/// narrowing also means a NON-generic candidate (`is_generic == false`) is
+/// never eligible at this tier against a headed nested-type-param arg — it
+/// fails `is_generic`, the bare-`TypeParam` wildcard, and plain equality. The
+/// head tier therefore deliberately assumes headed nested-type-param args only
+/// ever need to disambiguate GENERIC container overloads (e.g. `Option<T>` vs
+/// `Result<T,E>`); a same-name non-generic candidate in the same overload set
+/// is excluded from the head tier rather than causing a spurious `Ambiguous`.
+/// See `overload_leaky_headed_arg_excludes_non_generic_candidate` in
+/// `reify-compiler` for the precedent lock.
+///
+/// # Caller contract
+///
+/// This tier MUST be applied as a FILTER over the surviving set of
+/// [`slot_matches_wildcard_tier`], never standalone — it is NOT a subset of
+/// tier 3. See this module's `//!` doc and the executable counterexample
+/// `slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier`.
+pub fn slot_matches_head_tier(param_ty: &Type, arg_ty: &Type, is_generic: bool) -> bool {
+    type_carries_trait_object(param_ty)
+        || (is_generic && (heads_unifiable(param_ty, arg_ty) || type_carries_dim_param(param_ty)))
+        || matches!(arg_ty, Type::TypeParam(_))
+        || param_ty == arg_ty
 }
 
 #[cfg(test)]
@@ -1315,16 +1469,28 @@ mod tests {
         let arg = Type::Enum("Result".to_string());
 
         assert!(
-            super::slot_matches_head_tier(&param, &arg, false),
+            super::slot_matches_head_tier(&param, &arg, true),
             "heads_unifiable's erased-subject arm accepts Applied{{Result}} vs \
              Enum(Result)"
         );
         assert!(
-            !super::slot_matches_wildcard_tier(&param, &arg, false),
-            "...but the wildcard tier does NOT: no disjunct fires, and \
+            !super::slot_matches_wildcard_tier(&param, &arg, true),
+            "...but the wildcard tier does NOT: no disjunct fires (the param's \
+             args are concrete, so neither type_carries_* is true), and \
              Applied != Enum. Head is NOT a subset of wildcard, so a \
              standalone head pass would WIDEN resolution — every caller must \
              screen tier 2 through tier 3."
         );
+
+        // The non-subset relation is CONFINED to generic candidates, and that
+        // is worth pinning too: with `is_generic == false` the head tier
+        // collapses to `tcto(param) || matches!(arg, TypeParam(_)) || param ==
+        // arg`, and since a bare `TypeParam` arg also satisfies the wildcard
+        // tier's `type_carries_type_param(arg)` disjunct, head genuinely IS a
+        // subset there. So the screening requirement is not merely defensive
+        // hygiene — it is load-bearing exactly for the generic overloads the
+        // head tier was introduced to disambiguate.
+        assert!(!super::slot_matches_head_tier(&param, &arg, false));
+        assert!(!super::slot_matches_wildcard_tier(&param, &arg, false));
     }
 }
