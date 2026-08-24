@@ -170,3 +170,139 @@ pub(crate) fn crack_index_triples(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_core::DimensionVector;
+
+    // The two REAL caller (code, hint) pairs, transcribed verbatim from the
+    // trampolines that own them — `tensegrity_load.rs` and `membrane_load.rs`.
+    // Pinning the production wording (rather than a synthetic stand-in) is what
+    // makes the full-string assertions below evidence that the hoist preserved
+    // both diagnostics byte-for-byte.
+    const TL_CODE: &str = "E_TensegrityLoadInfeasible";
+    const TL_HINT: &str =
+        "youngs_modulus is a Pressure, area is an Area, and prestress / loads are Forces";
+    const ML_CODE: &str = "E_MembraneLoadInfeasible";
+    const ML_HINT: &str = "youngs_modulus / membrane_youngs are Pressures, area is an Area, \
+                           membrane_thickness is a Length, and prestress / loads are Forces";
+
+    /// A bare `Real` is accepted whatever the expected dimension — the
+    /// dimensionless ergonomic escape hatch (`[1.0, …]`-style literals keep
+    /// working) that both trampolines rely on and that [`scalar_f64`] already
+    /// allowed. Deliberately NOT pinned: which dimension was expected, because a
+    /// `Real` carries none.
+    #[test]
+    fn crack_dimensioned_scalar_accepts_bare_real() {
+        let got = crack_dimensioned_scalar(
+            &Value::Real(2.5),
+            "prestress[0]",
+            DimensionVector::FORCE,
+            "Force",
+            TL_CODE,
+            TL_HINT,
+        );
+        assert_eq!(got, Ok(2.5));
+    }
+
+    /// A `Scalar` whose dimension equals `expected` yields its SI value.
+    #[test]
+    fn crack_dimensioned_scalar_accepts_matching_dimension() {
+        let got = crack_dimensioned_scalar(
+            &Value::Scalar {
+                si_value: 5000.0,
+                dimension: DimensionVector::FORCE,
+            },
+            "prestress[0]",
+            DimensionVector::FORCE,
+            "Force",
+            TL_CODE,
+            TL_HINT,
+        );
+        assert_eq!(got, Ok(5000.0));
+    }
+
+    /// The load-bearing assertion of the hoist: a *dimensioned* `Scalar` whose
+    /// unit disagrees is rejected with a message assembled from the shared
+    /// template `"{code}: {what} has the wrong unit — expected a {label}; check
+    /// the call argument order ({hint})"`, where BOTH the mnemonic and the
+    /// argument-order advice are caller-owned. Asserted by full string equality
+    /// against each of the two real caller pairs, so neither can be baked into
+    /// the shared helper; the final negative assertion catches the specific
+    /// regression of hardcoding membrane_load's hint, which a `contains`-style
+    /// check on the tensegrity_load message would otherwise let through.
+    #[test]
+    fn crack_dimensioned_scalar_rejects_wrong_dimension_with_caller_owned_code_and_hint() {
+        let an_area = Value::Scalar {
+            si_value: 1.0e-4,
+            dimension: DimensionVector::AREA,
+        };
+
+        let tl = crack_dimensioned_scalar(
+            &an_area,
+            "youngs_modulus",
+            DimensionVector::PRESSURE,
+            "Pressure",
+            TL_CODE,
+            TL_HINT,
+        );
+        assert_eq!(
+            tl,
+            Err(
+                "E_TensegrityLoadInfeasible: youngs_modulus has the wrong unit — expected a \
+                 Pressure; check the call argument order (youngs_modulus is a Pressure, area \
+                 is an Area, and prestress / loads are Forces)"
+                    .to_string()
+            )
+        );
+
+        let ml = crack_dimensioned_scalar(
+            &an_area,
+            "membrane_youngs",
+            DimensionVector::PRESSURE,
+            "Pressure",
+            ML_CODE,
+            ML_HINT,
+        );
+        assert_eq!(
+            ml,
+            Err(
+                "E_MembraneLoadInfeasible: membrane_youngs has the wrong unit — expected a \
+                 Pressure; check the call argument order (youngs_modulus / membrane_youngs are \
+                 Pressures, area is an Area, membrane_thickness is a Length, and prestress / \
+                 loads are Forces)"
+                    .to_string()
+            )
+        );
+
+        // A helper that hardcoded membrane_load's hint would still satisfy the
+        // tensegrity_load `{code}` prefix; it must not name an argument that
+        // trampoline does not have.
+        assert!(
+            !tl.unwrap_err().contains("membrane_thickness"),
+            "the tensegrity_load diagnostic must not advise about membrane_thickness"
+        );
+    }
+
+    /// A non-scalar `Value` takes the shape arm, which carries the mnemonic but
+    /// NOT the unit hint (the argument order is not the problem). The `{other:?}`
+    /// Debug tail is deliberately left unpinned — only the located prefix is a
+    /// contract.
+    #[test]
+    fn crack_dimensioned_scalar_rejects_non_scalar() {
+        let err = crack_dimensioned_scalar(
+            &Value::Undef,
+            "area",
+            DimensionVector::AREA,
+            "Area",
+            TL_CODE,
+            TL_HINT,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("E_TensegrityLoadInfeasible: area must be a scalar, got "),
+            "unexpected shape-arm message: {err}"
+        );
+    }
+}
