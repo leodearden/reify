@@ -9,6 +9,7 @@ import {
   BASE_UNIT_LABELS,
   buildQuantityRe,
   NUMBER_RE,
+  acceptsBareNumber,
 } from '../stores/unitLadder';
 
 describe('formatDisplayNumber', () => {
@@ -458,5 +459,71 @@ describe('buildQuantityRe', () => {
     const m = buildQuantityRe(BASE_UNIT_LABELS).exec(input);
     expect(m).not.toBeNull();
     expect(Number.isFinite(Number(m![1]))).toBe(false);
+  });
+});
+
+describe('acceptsBareNumber (task #5757)', () => {
+  // THE RULE, not an enumeration: a cell that carries a dimension needs a unit.
+  // The predicate takes a DIMENSION and never a list of unit strings, so it
+  // cannot drift from the Rust-authored curated table — the standing #5788 D6
+  // prohibition documented on `quantityUnitAlphabet` above.
+  //
+  // The backend is the authoritative gate (`parse_value_string_for_cell` in
+  // `gui/src-tauri/src/engine.rs`, which refuses a Value::Int/Value::Real for a
+  // non-dimensionless Type::Scalar). This is its inline-feedback mirror: it is
+  // what keeps the typed text on screen for correction instead of discarding it
+  // and replacing it with an async error toast.
+
+  it.each([
+    ['Length'],
+    ['Volume'],
+    ['Density'],
+    ['Area'],
+    ['Angle'],
+    ['Mass'],
+    ['Pressure'],
+    ['Force'],
+    ['Energy'],
+    ['Power'],
+  ])('disallows a bare number for the %s cell, which a curated ladder covers', (dimension) => {
+    expect(acceptsBareNumber(dimension)).toBe(false);
+  });
+
+  it.each([
+    ['Torque'],
+    ['Frequency'],
+    ['MomentOfInertia'],
+  ])(
+    'disallows a bare number for the %s cell, which NO curated ladder covers',
+    (dimension) => {
+      // Dimensionedness is a property of the CELL, not of ladder coverage. A
+      // Torque cell still means N·m, so `20` is still ambiguous — even though
+      // the unit picker has nothing to offer it. Keying on ladder coverage
+      // instead would silently re-admit the 1000x hazard for every uncovered
+      // dimension.
+      expect(acceptsBareNumber(dimension)).toBe(false);
+    },
+  );
+
+  it.each([
+    [undefined],
+    [''],
+  ])('allows a bare number when the dimension is %p', (dimension) => {
+    // The backend emits an empty `dimension` string for non-scalar,
+    // dimensionless AND composed-dimension cells. The first two are genuinely
+    // unit-less and must keep taking bare numbers — every dimensionless slider
+    // in the panel depends on it. The third is the KNOWN ASYMMETRY: a composed
+    // dimension is indistinguishable from dimensionless at this layer, so it is
+    // caught only by the backend gate, which sees the real DimensionVector.
+    expect(acceptsBareNumber(dimension)).toBe(true);
+  });
+
+  it('is a total function of the dimension string — no ladder data is consulted', () => {
+    // Called with no ladder map, no IPC, nothing fetched. If this ever needs a
+    // second argument, the rule has stopped being a rule.
+    expect(acceptsBareNumber('Length')).toBe(false);
+    expect(acceptsBareNumber(undefined)).toBe(true);
+    // An unrecognised dimension name is still a dimension.
+    expect(acceptsBareNumber('NotADimension')).toBe(false);
   });
 });
