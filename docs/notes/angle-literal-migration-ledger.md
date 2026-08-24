@@ -488,8 +488,13 @@ PRD does not name:
   `concat!(env!("CARGO_MANIFEST_DIR"), …)` path
 - `crates/reify-eval/tests/feature_datum_tests.rs` — same, for the OCCT-backed B8
   end-to-end witness
-- `crates/reify-compiler/tests/examples_smoke.rs` — auto-discovers it by recursive
-  walk, with an empty SKIP_SET entry
+- `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` —
+  auto-discovers it by recursive walk, with **no** `SKIP_SET` entry. `examples_smoke`
+  is a MODULE inside the `harness_compilation_surface` test binary, not a test target
+  of its own, so the invocation is
+  `cargo test -p reify-compiler --test harness_compilation_surface -- examples_smoke`.
+  A `SKIP_SET` entry would be the opposite of coverage — it drops the file from the
+  walk entirely — so do not add one.
 
 It is correctly **not** a `_RUST_COUPLED_RI_FIXTURES` member in `scripts/verify.sh`
 — that list is scoped to `tests/prd-gate/fixtures/` — but the coupling is real.
