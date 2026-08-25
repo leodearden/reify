@@ -286,8 +286,16 @@ pub structure Capstan {
 /// IdlerPulley axle bolts); the light guide rail that takes the ΔT-scale
 /// dynamic residuals is not modelled yet.
 pub structure FairleadFrame {
-    param half_x  : Length = 80mm   // collar half-width across X
-    param half_z  : Length = 72mm   // collar half-height (covers the pulley extremes)
+    param half_x  : Length = 84mm   // collar half-width across X (80 → 84 with
+                                    // pulley_x 45 → 50: CapstanUnit's web-vs-
+                                    // vertical-run constraint sets the floor)
+    param half_z  : Length = 72mm   // PLATE half-height (covers the pulley extremes)
+    /// WEB half-height — deliberately SHORTER than the plates: the DriveTendons
+    /// low-run turn discs pass just outside the collar at |x| ≈ half_x ± r_pitch
+    /// and their tops reach ~64mm below the collar centre, so full-height webs
+    /// slice through them (2026-08-25 sweep finding). 56mm leaves 8mm clearance;
+    /// DriveTendons pins the rule against its low_hi level.
+    param web_half_z : Length = 56mm
     param side_y  : Length = 40mm   // side-plate mid-plane |y|
     param plate_t : Length = 8mm
     param web_t   : Length = 8mm
@@ -300,13 +308,15 @@ pub structure FairleadFrame {
             translate(box(half_x * 2, plate_t, half_z * 2), 0mm, neg_side, 0mm)
         ),
         union(
-            translate(box(web_t, side_y * 2, half_z * 2), half_x - web_t / 2,       0mm, 0mm),
-            translate(box(web_t, side_y * 2, half_z * 2), 0mm - half_x + web_t / 2, 0mm, 0mm)
+            translate(box(web_t, side_y * 2, web_half_z * 2), half_x - web_t / 2,       0mm, 0mm),
+            translate(box(web_t, side_y * 2, web_half_z * 2), 0mm - half_x + web_t / 2, 0mm, 0mm)
         )
     )
 
     constraint half_x > 0mm
     constraint half_z > 0mm
+    constraint half_z > web_half_z          // webs are the trimmed member
+    constraint web_half_z > 0mm
     constraint side_y > plate_t / 2
 }
 
@@ -341,8 +351,13 @@ pub structure CapstanUnit {
     /// sheave_od = 2*this, so it is the single source (not hand-matched).
     param r_pitch  : Length = 18mm
     /// Pulley lateral stand-off from the drum axis (groove-plane distance
-    /// from drum centre to pulley centre, along X).
-    param pulley_x : Length = 45mm
+    /// from drum centre to pulley centre, along X). 45 → 50 with the
+    /// 2026-08-23 pitch-radius re-sync: at cap_pitch_r 24 the old stand-off
+    /// left the pulley rims 0.06mm off the drum flanges (analytic sweep
+    /// 2026-08-25); +5mm restores a ~5mm rim-to-rim margin.
+    /// TODO(#6583): replace the L376-style 2D bound with a real posed
+    /// distance() constraint once cross-sub geometry reads carry placement.
+    param pulley_x : Length = 50mm
 
     sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
@@ -402,6 +417,11 @@ pub structure CapstanUnit {
 
     // Carrier collar, centred on the drum (translates with the band).
     sub frame = FairleadFrame() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    /// Relays for composing levels (#5360 landed 2026-07-31: one-level reads of
+    /// derived lets chain across sub levels, so parents read these instead of
+    /// hand-keeping mirrors).
+    let frame_web_half = self.frame.web_half_z
+    let frame_half_x   = self.frame.half_x
 
     // ── Lead segments (drum-side only) ──────────────────────────────────────
     // Drum-side horizontals are EXACT: pulley tangent → drum tangent line
@@ -446,6 +466,17 @@ pub structure RearDrive {
 
     sub unit_a = CapstanUnit() at transform3(orient_identity(), vec3(cap_x,     0mm, 0mm))  // belt A (outer ±z_a)
     sub unit_b = CapstanUnit() at transform3(orient_identity(), vec3(neg_cap_x, 0mm, 0mm))  // belt B (inner ±z_b)
+
+    // ── Relays for the composing level (#5360, landed 2026-07-31) ───────────
+    // A parent reads a sub's derived let ONE level down; a let that is itself
+    // such a read relays the value up another level (probe-verified 2026-08-25:
+    // Top reads Mid.relay where relay = self.leaf.half — the exact #5360 repro
+    // shape, now correct). So DriveTendons no longer hand-keeps these mirrors.
+    let unit_pitch_r  = self.unit_a.cap_pitch_r     // == Capstan pitch_r (24mm)
+    let unit_pulley_x = self.unit_a.pulley_x        // fairlead lateral stand-off
+    let unit_r_pitch  = self.unit_a.r_pitch         // fairlead pulley pitch radius
+    let unit_web_half = self.unit_a.frame_web_half  // collar web half-height
+    let unit_frame_x  = self.unit_a.frame_half_x    // collar half-width
 
     constraint cap_x > 0mm
 }
@@ -680,15 +711,14 @@ pub structure DriveTendons {
     // plane. The rear-routing section below connects the drive-plane rail/
     // return ends to the fairlead pulleys — the back-crosses are RETIRED
     // (the capstans close the loops now).
-    let cap_pitch_r = 24mm   // == Capstan pitch_r (drum_d/2): the half-round seat
-                             // carries the rope centreline AT the land (was 27 =
-                             // drum_r + rope_r under the smooth-core model,
-                             // re-synced 2026-08-23). Hand-kept: the derived form
-                             // `self.rear_drive.unit_a.cap_pitch_r` silently
-                             // undefs today — instance reads chained through
-                             // TWO sub levels are broken (#5360; one-level reads and
-                             // even self-referential placement DO work, probe-verified
-                             // 2026-07-23). Derive this once #5360 lands.
+    // DERIVED, not hand-kept (#5360 landed 2026-07-31): RearDrive relays each
+    // CapstanUnit cell up one level, so the whole rear web now tracks a Capstan
+    // resize automatically. cap_pitch_r == Capstan pitch_r (24mm) — the
+    // half-round seat carries the rope centreline AT the land.
+    let cap_pitch_r = self.rear_drive.unit_pitch_r
+    let fl_pulley_x = self.rear_drive.unit_pulley_x
+    let fl_web_half = self.rear_drive.unit_web_half
+    let fl_frame_x  = self.rear_drive.unit_frame_x
     let plane_in    = neg_corn - r_pitch           // machine-side tangent plane (−400)
     let plane_out   = plane_in - cap_pitch_r * 2   // outboard tangent plane (−448)
     let moved_y     = plane_out + r_pitch          // moved rear-pulley line (−430, Leo's no-jog move)
