@@ -1,10 +1,25 @@
 //! End-to-end regression lock for task 5744 (units-length γ) — the headline
 //! behaviour for the MODIFY and SWEEP families: a BARE (dimensionless)
-//! magnitude on `fillet`/`chamfer`/`shell`/`thicken`/`offset_*`/`extrude`/
-//! `pipe`/`zone_slab` must be REJECTED at eval/build, producing a
-//! `Severity::Error` diagnostic carrying `DiagnosticCode::DimensionedArgRejected`
-//! and DROPPING the op, rather than silently reading the bare number as SI
-//! **metres**.
+//! magnitude must be REJECTED at eval/build, producing a `Severity::Error`
+//! diagnostic carrying `DiagnosticCode::DimensionedArgRejected` and DROPPING
+//! the op, rather than silently reading the bare number as SI **metres**.
+//!
+//! COVERAGE — READ THIS BEFORE AUDITING e2e BREADTH. γ gates TWELVE magnitude
+//! slots; this file carries `.ri`-source → build → kernel rows for FOUR
+//! REPRESENTATIVE builtins only: `fillet` (the PRD's headline, §6 boundary
+//! row 4), `chamfer`, `chamfer_asymmetric` (the all-at-once group read) and
+//! `extrude` (the sweep family's representative). It does NOT exercise
+//! `shell`, `thicken`, `zone_slab`, `offset_solid`, `offset_curve`,
+//! `extrude_symmetric` or `pipe` — those are pinned at the UNIT level by
+//! `GAMMA_MODIFY_SLOTS` / `GAMMA_SWEEP_SLOTS` in
+//! `crates/reify-eval/src/geometry_ops/tests.rs`, whose three-state tables
+//! cover every slot's accepted / rejected / undefined behaviour. That split is
+//! deliberate and safe because all twelve slots share ONE chokepoint —
+//! `required_length_value` over `accept_length_value` — so the per-slot risk is
+//! "was this slot wired to the chokepoint at all", which the unit table answers
+//! directly, while what an e2e row uniquely adds (the source→kernel path, and
+//! that the op really does not reach the kernel) is a property of the path, not
+//! of the individual builtin.
 //!
 //! Before the gate, `fillet(solid, 1)` asked for a 1-METRE fillet radius —
 //! 1000× a plausible 1 mm blend — because `Value::as_f64` reads a bare `Real`

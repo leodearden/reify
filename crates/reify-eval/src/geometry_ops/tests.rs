@@ -4073,7 +4073,7 @@
         );
     }
 
-    // ---- units-length γ (task 5744 step-4): the 7 modify magnitude slots ----
+    // ---- units-length γ (task 5744 step-4): the modify magnitude slots ----
 
     /// γ's modify slice, each as `(kind, &[(arg name, is_length_semantic)])` in
     /// the op's own arg order.
@@ -4086,16 +4086,28 @@
     /// in this table rather than in prose so an over-broad edit fails
     /// `compile_geometry_op_draft_angle_stays_on_the_bare_path` below.
     ///
-    /// `Fillet` is deliberately ABSENT: step-2 already gated its `radius`, and
-    /// its three-state behaviour is pinned end to end by
-    /// `tests/harness_geometry/modify_sweep_length_units_e2e.rs`. This table is
-    /// the SEVEN slots step-5 adds.
+    /// `Fillet` is here even though step-2 gated its `radius` ahead of the
+    /// other seven: the e2e file
+    /// (`tests/harness_geometry/modify_sweep_length_units_e2e.rs`) pins only its
+    /// bare-`Real` rejection and its dimensioned control, so without this row
+    /// the PRD's own headline slot (§6 boundary row 4) would be the ONE gated
+    /// modify magnitude with no bare-`Int`, no bare-ZERO and no
+    /// wrong-dimension coverage — an asymmetry with no reason but landing
+    /// order.
     ///
     /// Arg names are the compiler's, read from the lowering arms in
     /// `reify-compiler/src/geometry_modify.rs` — `zone_slab` takes `width` (not
     /// `thickness`), `thicken` takes `offset` (not `distance`), and
     /// `chamfer_asymmetric` takes `d1`/`d2` (not `distance1`/`distance2`).
     const GAMMA_MODIFY_SLOTS: &[(reify_compiler::ModifyKind, &[(&str, bool)])] = &[
+        (
+            // Gated by step-2, tabled here for the full three-state sweep.
+            // `gamma_modify_with` emits only the names in this row, so the
+            // optional `edges` arg is simply absent and `modify_fillet` takes
+            // its `edges: vec![]` branch.
+            reify_compiler::ModifyKind::Fillet,
+            &[("radius", true)],
+        ),
         (
             reify_compiler::ModifyKind::Chamfer,
             &[("distance", true)],
@@ -4176,6 +4188,7 @@
     fn gamma_modify_stored_slot(op: &reify_ir::GeometryOp, slot: &str) -> reify_ir::Value {
         use reify_ir::GeometryOp as G;
         let found = match (op, slot) {
+            (G::Fillet { radius, .. }, "radius") => Some(radius),
             (G::Chamfer { distance, .. }, "distance") => Some(distance),
             (G::ChamferAsymmetric { d1, .. }, "d1") => Some(d1),
             (G::ChamferAsymmetric { d2, .. }, "d2") => Some(d2),
@@ -4192,21 +4205,21 @@
             .clone()
     }
 
-    /// Contract C1's THREE-STATE mapping at the SEVEN modify LENGTH slots —
-    /// `chamfer` distance, `chamfer_asymmetric` d1/d2, `shell` thickness,
-    /// `thicken` offset, `zone_slab` width, `offset_solid` distance and
-    /// `offset_curve` distance — asserted through `compile_geometry_op`, the
-    /// sole IR-build funnel (contract C2).
+    /// Contract C1's THREE-STATE mapping at the EIGHT modify LENGTH slots —
+    /// `fillet` radius, `chamfer` distance, `chamfer_asymmetric` d1/d2,
+    /// `shell` thickness, `thicken` offset, `zone_slab` width, `offset_solid`
+    /// distance and `offset_curve` distance — asserted through
+    /// `compile_geometry_op`, the sole IR-build funnel (contract C2).
     ///
     /// This is β's primitive/profile table driven over γ's slot table rather
     /// than re-spelled per kind. Every slot is exercised INDEPENDENTLY (the
     /// other args stay valid), so a gate applied to only some slots of a kind —
     /// say `chamfer_asymmetric`'s `d1` but not its `d2` — cannot pass.
     ///
-    /// RED until step-5 routes the seven `modify_*` fns through
-    /// `required_length_value`: today each bare value is stored in the
-    /// `GeometryOp` field unchallenged and read as SI METRES downstream, so
-    /// `shell(solid, 2)` is a 2-METRE wall.
+    /// RED until step-5 routes the seven `modify_*` fns other than
+    /// `modify_fillet` (step-2's) through `required_length_value`: before that
+    /// each bare value is stored in the `GeometryOp` field unchallenged and
+    /// read as SI METRES downstream, so `shell(solid, 2)` is a 2-METRE wall.
     #[test]
     fn compile_geometry_op_modify_magnitude_slots_follow_the_three_state_contract() {
         let values = ValueMap::new();
@@ -5798,10 +5811,16 @@
     }
 
     /// Count the wrong-type rejection diagnostics in `diagnostics`.
+    ///
+    /// The needle is `"argument expects Length"`, matching the anchored shape
+    /// the β/γ slot tables use: `ArgRejection::message` renders
+    /// `"{builtin}: {arg} argument expects {expected}, got {got}"`, so the
+    /// two-word anchor is free and keeps this helper from counting any future
+    /// prose that merely says "expects Length".
     fn gamma_expects_length_count(diagnostics: &[Diagnostic]) -> usize {
         diagnostics
             .iter()
-            .filter(|d| d.message.contains("expects Length"))
+            .filter(|d| d.message.contains("argument expects Length"))
             .count()
     }
 
@@ -5855,11 +5874,16 @@
             "a fully bare arbitrary_pattern offset triple must drop the op; got: {result:?}"
         );
 
+        // ANCHORED on `"{name} argument expects"`, not a bare
+        // `contains(name)` — β's `wedge` width/top_width lesson, where a
+        // substring arg name matched its own superstring's diagnostic. The
+        // `t0_d{x,y,z}` names are not prefixes of one another TODAY, but the
+        // anchor is free and does not depend on that staying true.
         for name in ["t0_dx", "t0_dy", "t0_dz"] {
             assert!(
                 diagnostics
                     .iter()
-                    .any(|d| d.message.contains(name) && d.message.contains("expects Length")),
+                    .any(|d| d.message.contains(&format!("{name} argument expects Length"))),
                 "the all-at-once report must name `{name}`; got: {diagnostics:?}"
             );
         }
@@ -5918,11 +5942,15 @@
              `required_length_args`' documented first-error-wins ordering; got: {err:?}"
         );
 
+        // Positive side ANCHORED (see the sibling row above); the NEGATIVE side
+        // deliberately is NOT — a bare `contains(name)` is the STRICTER form
+        // there, failing on any mention of `t1_*` at all rather than only on a
+        // fully rendered rejection, and anchoring it would weaken (b).
         for name in ["t0_dx", "t0_dy", "t0_dz"] {
             assert!(
                 diagnostics
                     .iter()
-                    .any(|d| d.message.contains(name) && d.message.contains("expects Length")),
+                    .any(|d| d.message.contains(&format!("{name} argument expects Length"))),
                 "(a) the FIRST transform's whole group must be reported — missing \
                  `{name}`; got: {diagnostics:?}"
             );
