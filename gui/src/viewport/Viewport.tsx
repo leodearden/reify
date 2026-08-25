@@ -122,7 +122,7 @@ export function Viewport(props: ViewportProps) {
     const width = rect.width || 800;
     const height = rect.height || 600;
 
-    const { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels, disposeAxisLabels } = createScene(canvasRef, width, height);
+    const { scene, camera, renderer, resize, adjustClipping, fitHelpers, grid, axes, axisLabels, disposeAxisLabels } = createScene(canvasRef, width, height);
     const controls = createControls(camera, renderer.domElement);
     const meshManager = createMeshManager(scene);
     const wireManager = createWireManager(scene);
@@ -377,6 +377,16 @@ export function Viewport(props: ViewportProps) {
         bounds.expandByObject(mesh);
       }
       adjustClipping(bounds);
+
+      // Size the grid/axes/label helpers to the SAME bounds (#6588). The helpers are
+      // built at absolute sizes tuned for the ~10 m CAD default scene noted below;
+      // without this call a sub-metre .ri model sits inside a 20 m grid whose far
+      // lines converge into a dark horizon band, and a 2 m axes triad that draws a
+      // hard diagonal across every part in frame. Sharing one Box3 with
+      // adjustClipping is deliberate: helper sizing and camera framing must agree on
+      // one measurement, including the ghost meshes folded in above. The effect
+      // already ends with requestRender(), so no extra invalidation is needed.
+      fitHelpers(bounds);
 
       if (!hasAutoFit && meshManager.getSceneMeshes().size > 0) {
         selection.fitToView();
