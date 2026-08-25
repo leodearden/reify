@@ -1256,6 +1256,120 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
   });
 });
 
+/**
+ * Task #5757 amendment: the bare-number gate on the LADDER-LESS path.
+ *
+ * `get_unit_ladders` is a one-shot best-effort fetch — `App.tsx` logs on
+ * rejection, toasts "Unit ladders unavailable", and leaves `unitLadders()` as
+ * `{}` — and there is a window between mount and resolution where it is
+ * `undefined` too. The ENGINE has no such window: its `LADDER_COVERAGE` is built
+ * in-process from the Rust-authored curated table and is always populated, so
+ * `set_parameter` keeps refusing a bare number in a Length cell regardless.
+ *
+ * So a rule that read only the fetched map disagreed with the engine on exactly
+ * this path, in the direction that hurts: the panel accepted `80`, `editSeed`
+ * seeded it, and the engine answered "expects Length, got the bare number '80'"
+ * behind an async toast that discards what the user typed. That is the failure
+ * #5757 exists to remove, re-entered through the degraded path — and a
+ * REGRESSION on it, since before the task the bare number committed fine.
+ *
+ * `acceptsBareNumber` therefore keeps gating the `BASE_UNIT_DIMENSIONS` floor
+ * here, and this block pins the consequence that matters: a Length row is still
+ * EDITABLE with the fetch failed. That is what makes the floor safe to gate —
+ * `quantityUnitAlphabet` unions `BASE_UNIT_LABELS` in on every path, so the unit
+ * the seed supplies is one this panel still accepts, and the Rust-side
+ * `every_dimension_the_frontend_floor_gates_is_gated_here_too` pins that the
+ * engine accepts it too.
+ */
+describe('PropertyEditor with the unit-ladder fetch failed (task #5757 amendment)', () => {
+  const LADDER_LESS: Record<string, ValueData> = {
+    len: makeValue({
+      cell_id: 'len',
+      name: 'width',
+      entity_path: 'Bracket.width',
+      value: '80',
+      unit: 'mm',
+      dimension: 'Length',
+      si_value: 0.08,
+    }),
+    // Below the floor: the panel cannot describe Torque with no ladder data, so
+    // the gate must stay open for it exactly as it does with ladders present.
+    tor: makeValue({
+      cell_id: 'tor',
+      name: 'preload',
+      entity_path: 'Bracket.preload',
+      value: '12',
+      unit: 'N·m',
+      dimension: 'Torque',
+      si_value: 12,
+    }),
+  };
+
+  function inputFor(cellId: string) {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={LADDER_LESS}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={undefined}
+      />
+    ));
+    const row = screen.getByTestId(`prop-row-${cellId}`);
+    return { input: row.querySelector('input[type="text"]') as HTMLInputElement, onSetParam };
+  }
+
+  it('seeds the Length row WITH ITS UNIT, so an untouched commit is still a no-op', () => {
+    // There is no ladder to read a default rung from, so this is the one place
+    // `editSeedUnitLabel`'s `?? val.unit` fallback is load-bearing. Without it
+    // the seed would be the bare `80` — text this very gate now refuses — and
+    // focus+Enter on an untouched row would set data-invalid and submit nothing.
+    const { input, onSetParam } = inputFor('len');
+    fireEvent.focus(input);
+    expect(input.value).toBe('80mm');
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).toHaveBeenCalledWith('len', '80mm');
+  });
+
+  it('keeps the commonest edit working: change the digits, keep the unit', () => {
+    const { input, onSetParam } = inputFor('len');
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '90mm' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).toHaveBeenCalledWith('len', '90mm');
+  });
+
+  it('refuses a bare number on the Length row INLINE, matching the engine', () => {
+    const { input, onSetParam } = inputFor('len');
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '90' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+    expect(onSetParam).not.toHaveBeenCalled();
+    // The whole point of mirroring the backend inline: the typed text is still
+    // on screen to correct, rather than discarded behind an async toast.
+    expect(input.value).toBe('90');
+  });
+
+  it('still accepts a bare number on a BELOW-FLOOR dimensioned row', () => {
+    // Torque is not on the floor and has no ladder here, so nothing can express
+    // a unit for it — refusing the bare number would remove the row's last
+    // accepted input, and the engine would have taken it.
+    const { input, onSetParam } = inputFor('tor');
+    fireEvent.focus(input);
+    expect(input.value).toBe('12');
+
+    fireEvent.input(input, { target: { value: '15' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).toHaveBeenCalledWith('tor', '15');
+  });
+});
+
 describe('PropertyEditor data-invalid recovery', () => {
   const values = EDITABLE_C1;
   let input: HTMLInputElement;

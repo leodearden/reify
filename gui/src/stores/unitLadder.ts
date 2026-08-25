@@ -76,6 +76,41 @@ export function normalizeUnitLabel(label: string): string {
 export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad'];
 
 /**
+ * The DIMENSIONS {@link BASE_UNIT_LABELS} can express — its other half, and the
+ * floor {@link acceptsBareNumber} gates on (task #5757 amendment).
+ *
+ * `mm`/`cm`/`m` are Length, `deg`/`rad` are Angle; that is the whole content of
+ * this constant, and it must be re-derived by hand if the label floor above ever
+ * changes. It cannot be computed from the labels, because mapping a label to a
+ * dimension is exactly what needs the ladder data the ladder-less path does not
+ * have.
+ *
+ * WHY A FLOOR IS NEEDED HERE AT ALL. The two ends of this seam degrade
+ * differently when `get_unit_ladders` has not resolved (or has failed — see
+ * `App.tsx`'s one-shot fetch, which logs, toasts, and leaves the map `{}`). This
+ * side loses the ladder map entirely; the ENGINE does not, because its
+ * `LADDER_COVERAGE` is built from the Rust-authored curated table in-process and
+ * is always populated. So a rule that reads only the fetched map disagrees with
+ * the engine on that path — and for the dimensions this floor names, in the
+ * harmful direction: the panel would accept `80` in a Length cell, the engine
+ * would refuse it, and the typed text would be discarded behind exactly the
+ * async toast {@link acceptsBareNumber} exists to avoid.
+ *
+ * It is a floor in the same sense as the labels: `Length`/`Angle` are the
+ * dimensions the panel can still describe with no ladder data, so gating them is
+ * gating precisely what it can still tell the user how to fix. The backend's
+ * coverage is a strict superset of it, pinned by
+ * `every_dimension_the_frontend_floor_gates_is_gated_here_too` in
+ * `gui/src-tauri/src/tests/engine_tests.rs`.
+ *
+ * Naming DIMENSIONS is not the #5788 D6 hazard that naming curated unit labels
+ * would be: these are two canonical dimension names, not a mirror of the curated
+ * rung table, and they follow the hand-written floor above rather than the
+ * ladders.
+ */
+export const BASE_UNIT_DIMENSIONS: readonly string[] = ['Length', 'Angle'];
+
+/**
  * The unit alphabet the typed-quantity gate accepts, derived from the LIVE
  * ladders unioned with {@link BASE_UNIT_LABELS} (task #6028).
  *
@@ -208,10 +243,11 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  *
  * EXPRESSIBILITY IS THE KEY, NOT DIMENSIONEDNESS. That ambiguity presupposes a
  * unit COULD have been typed: `20` is ambiguous in a Volume cell precisely
- * because `20mm^3` and `20L` were both on offer. For a dimension no curated
- * ladder covers, the picker offers nothing and {@link quantityUnitAlphabet}
- * admits nothing, so refusing the bare number disambiguates nothing — it
- * removes the cell's LAST accepted input and bricks the row.
+ * because `20mm^3` and `20L` were both on offer. For a dimension off the
+ * {@link BASE_UNIT_DIMENSIONS} floor that no curated ladder covers, the picker
+ * offers nothing and {@link quantityUnitAlphabet} admits nothing, so refusing the
+ * bare number disambiguates nothing — it removes the cell's LAST accepted input
+ * and bricks the row.
  *
  * The concrete case this was breaking is `Money`, whose cells accepted neither
  * `6` nor `6USD` and so could not be edited at all. WHY `USD` is out of reach
@@ -220,11 +256,16 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  * there rather than keeping a second copy of that argument in sync.
  *
  * Not a weakening, and the guarantee that replaces the old one is stronger for
- * being checkable: GATED ⟺ a rung exists in this cell's own ladder ⟺ the
- * picker and the alphabet can express it. It reuses {@link ladderForDimension}
- * rather than indexing the map, so "what counts as covered" has ONE definition,
- * shared with `pickerLadder`, `editSeedUnitLabel` and `quantityReFor`. It still
- * enumerates no unit strings — only map membership — so the standing #5788 D6
+ * being checkable: GATED ⟺ the dimension is on the {@link BASE_UNIT_DIMENSIONS}
+ * floor OR a rung exists in this cell's own ladder ⟺ {@link quantityUnitAlphabet}
+ * can express it. Those two disjuncts are exactly the two the alphabet unions, so
+ * the gate and the alphabet beside it stay ONE rule read twice: a cell is told to
+ * supply a unit precisely when the alphabet can accept one for it.
+ *
+ * The ladder half reuses {@link ladderForDimension} rather than indexing the map,
+ * so "what counts as covered" has ONE definition, shared with `pickerLadder`,
+ * `editSeedUnitLabel` and `quantityReFor`. It still enumerates no unit STRINGS —
+ * map membership plus two canonical dimension names — so the standing #5788 D6
  * prohibition documented on {@link quantityUnitAlphabet} is untouched.
  *
  * THE BACKEND IS THE AUTHORITATIVE GATE: `parse_value_string_for_cell` in
@@ -255,17 +296,36 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  * DECLARED dimension on `ValueData` as a field of its own, so both ends read
  * one fact; until then it is recorded here rather than claimed away.
  *
- * IT FAILS OPEN. With `ladders` undefined or empty — the `get_unit_ladders`
- * fetch not resolved, or failed — nothing is expressible, so nothing is gated.
- * That is the safe direction: the backend stays authoritative, and
- * over-rejecting here would discard input the engine would have accepted. It
- * adds no new degradation either, since {@link quantityUnitAlphabet} already
- * collapses to {@link BASE_UNIT_LABELS} on that same path.
+ * IT FAILS OPEN ONLY BELOW THE FLOOR. With `ladders` undefined or empty — the
+ * `get_unit_ladders` fetch not resolved, or failed — nothing beyond
+ * {@link BASE_UNIT_DIMENSIONS} is expressible, so nothing beyond it is gated.
+ * That is the safe direction for the dimensions this side genuinely cannot
+ * describe: the backend stays authoritative, and over-rejecting there would
+ * discard input the engine would have accepted.
+ *
+ * It is the WRONG direction for the floor, which is why the floor is not part of
+ * it. The engine's `LADDER_COVERAGE` is built in-process from the Rust-authored
+ * curated table and is ALWAYS populated, so it keeps gating Length and Angle
+ * whatever happens to the fetch. Failing open on them made the two ends disagree
+ * exactly on that path — the panel accepting `80` in a Length cell, `editSeed`
+ * seeding the bare magnitude, and the engine then refusing with "expects Length,
+ * got the bare number '80'" behind the async toast this predicate exists to
+ * avoid. Keeping the floor gated instead means `editSeed` still seeds `80mm`
+ * (via `editSeedUnitLabel`'s `?? val.unit` fallback, since there is no ladder to
+ * read a default rung from) and the inline gate still matches the engine.
+ *
+ * The floor is applied unconditionally rather than only when the map is missing,
+ * which is the same shape {@link quantityUnitAlphabet} already has: it unions
+ * {@link BASE_UNIT_LABELS} in on EVERY path, not just the ladder-less one. A
+ * populated map covers Length and Angle anyway, so the two forms differ only for
+ * a present-but-partial payload — where matching the alphabet's own floor is
+ * what keeps the gate and the alphabet beside it reading one rule.
  *
  * IT DOES NOT COST THE ORDINARY EDIT A UNIT KEYSTROKE. `PropertyEditor`'s
- * `editSeed` seeds a COVERED cell's input with a unit-bearing literal
- * (magnitude + the cell's default ladder rung), so committing an untouched row
- * is still a no-op and changing only the digits still submits a united literal.
+ * `editSeed` seeds a COVERED cell's input with a unit-bearing literal —
+ * magnitude + the cell's default ladder rung, or its unit badge on the
+ * ladder-less floor path — so committing an untouched row is still a no-op and
+ * changing only the digits still submits a united literal.
  * A predicate like this one is only safe to add alongside a seed like that. An
  * UNCOVERED cell seeds the bare magnitude, which is now consistent rather than
  * a degradation: that seed is a literal both ends accept.
@@ -282,7 +342,9 @@ export function acceptsBareNumber(
   dimension: string | undefined,
   ladders: UnitLadderMap | undefined,
 ): boolean {
-  return !dimension || ladderForDimension(ladders ?? {}, dimension) === undefined;
+  if (!dimension) return true;
+  if (BASE_UNIT_DIMENSIONS.includes(dimension)) return false;
+  return ladderForDimension(ladders ?? {}, dimension) === undefined;
 }
 
 /**

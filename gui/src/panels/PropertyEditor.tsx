@@ -422,12 +422,24 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    * unmodified commit a true no-op again and keeps the unit through a
    * digits-only edit.
    *
-   * An UNCOVERED cell (Torque, Money, or any cell on the ladders-not-fetched
-   * path) takes the first branch and seeds the bare magnitude — which the
-   * coverage-conditional rule then ACCEPTS, so its untouched commit is a no-op
-   * too. `editSeedUnitLabel`'s `?? val.unit` fallback is therefore not reached
-   * for those cells, which is what stops a `USD`/`kg·m^-3` badge pre-filling
-   * the input with a spelling neither end can parse.
+   * An UNCOVERED cell (Torque, Money) takes the first branch and seeds the bare
+   * magnitude — which the coverage-conditional rule then ACCEPTS, so its
+   * untouched commit is a no-op too. `editSeedUnitLabel`'s `?? val.unit`
+   * fallback is therefore not reached for those cells, which is what stops a
+   * `USD`/`kg·m^-3` badge pre-filling the input with a spelling neither end can
+   * parse.
+   *
+   * ON THE LADDERS-NOT-FETCHED PATH the two branches split by dimension rather
+   * than collapsing onto the first. `acceptsBareNumber` keeps gating the
+   * `BASE_UNIT_DIMENSIONS` floor there, because the ENGINE's coverage table is
+   * built in-process and never goes missing (task #5757 amendment) — so a
+   * Length or Angle row reaches the second branch with no ladder to read a
+   * default rung from, and `editSeedUnitLabel`'s `?? val.unit` fallback IS what
+   * supplies the unit. That is the one place the fallback is load-bearing:
+   * without it the seed would be a bare magnitude the panel itself refuses.
+   * Its output is still `isValidValue`-checked below, so a badge the floor
+   * alphabet cannot parse degrades to the bare magnitude rather than
+   * pre-filling refused text.
    *
    * The composed seed is still checked against `isValidValue` rather than
    * assumed good: a malformed ladder payload can be present-but-rungless, which

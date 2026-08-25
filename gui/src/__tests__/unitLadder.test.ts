@@ -7,6 +7,7 @@ import {
   normalizeUnitLabel,
   quantityUnitAlphabet,
   BASE_UNIT_LABELS,
+  BASE_UNIT_DIMENSIONS,
   buildQuantityRe,
   NUMBER_RE,
   acceptsBareNumber,
@@ -540,25 +541,71 @@ describe('acceptsBareNumber (task #5757)', () => {
   it.each([
     [undefined],
     [{}],
-  ])('FAILS OPEN with ladders %p — the get_unit_ladders fetch having failed', (ladders) => {
-    // Pinned as a direction, not an accident. With no ladder map nothing is
-    // expressible, so nothing is gated. That is the SAFE side: the backend stays
-    // authoritative, and over-rejecting here would discard input the engine
-    // would have accepted.
-    //
-    // It adds no new degradation either. On that same path `quantityUnitAlphabet`
-    // already collapses to `BASE_UNIT_LABELS`, so `20mm^3` is refused inline
-    // regardless — this just stops the panel ALSO bricking every dimensioned row
-    // it can no longer describe.
-    for (const dimension of [...COVERED, 'Torque', 'NotADimension']) {
+  ])(
+    'keeps GATING the static floor with ladders %p — the get_unit_ladders fetch having failed',
+    (ladders) => {
+      // The ENGINE does not degrade on this path. Its `LADDER_COVERAGE` is built
+      // in-process from the Rust-authored curated table and is always populated,
+      // so `set_parameter` keeps refusing `80` in a Length cell whatever became
+      // of `get_unit_ladders` (`App.tsx`'s one-shot fetch logs, toasts, and
+      // leaves the map `{}`). Failing open here made the two ends disagree
+      // exactly where the panel could not see the ladders, and in the harmful
+      // direction: the panel accepted the bare number, `editSeed` seeded it, and
+      // the engine then refused it behind the async toast that discards the
+      // typed text — the failure task #5757 exists to remove, re-entered through
+      // the degraded path.
+      //
+      // The floor is what the panel can still DESCRIBE with no ladder data:
+      // `quantityUnitAlphabet` unions `BASE_UNIT_LABELS` in on every path, so a
+      // Length cell gated here can still be satisfied inline with `80mm`, and
+      // `editSeed` still seeds one via `editSeedUnitLabel`'s `?? val.unit`
+      // fallback. Gating without that would be the brick this predicate avoids.
+      for (const dimension of BASE_UNIT_DIMENSIONS) {
+        expect(acceptsBareNumber(dimension, ladders)).toBe(false);
+      }
+    },
+  );
+
+  it.each([
+    [undefined],
+    [{}],
+  ])('FAILS OPEN BELOW THE FLOOR with ladders %p', (ladders) => {
+    // Below the floor the safe direction is the other one, and pinned as a
+    // direction rather than an accident: with no ladder data the panel can
+    // neither offer a unit for these dimensions nor accept one, so refusing the
+    // bare number would remove the row's LAST accepted input while refusing
+    // input the engine takes outright for the genuinely uncovered ones.
+    const belowFloor = [...COVERED, 'Torque', 'NotADimension'].filter(
+      (d) => !BASE_UNIT_DIMENSIONS.includes(d),
+    );
+    expect(belowFloor.length).toBeGreaterThan(0);
+    for (const dimension of belowFloor) {
       expect(acceptsBareNumber(dimension, ladders)).toBe(true);
     }
   });
 
-  it('keys on map MEMBERSHIP alone — an unrecognised name is simply uncovered', () => {
-    // The predicate reads whether the dimension has a ladder, never what is in
-    // it, so it stays immune to the rung labels themselves (#5788 D6). A name
-    // the curated table does not carry is uncovered by definition.
+  it('gates the floor even when a PRESENT map omits it', () => {
+    // The floor applies unconditionally — the same shape `quantityUnitAlphabet`
+    // already has, since it unions `BASE_UNIT_LABELS` in on every path and not
+    // just the ladder-less one. A complete map covers the floor anyway, so the
+    // two forms differ only for a present-but-partial payload; matching the
+    // alphabet there is what keeps the gate and the alphabet beside it reading
+    // ONE rule.
+    const partial: UnitLadderMap = {
+      Volume: [{ label: 'L', si_scale: 1e-3, is_default: true }],
+    };
+    for (const dimension of BASE_UNIT_DIMENSIONS) {
+      expect(acceptsBareNumber(dimension, partial)).toBe(false);
+    }
+    expect(acceptsBareNumber('Volume', partial)).toBe(false);
+    expect(acceptsBareNumber('Torque', partial)).toBe(true);
+  });
+
+  it('keys on the floor plus map MEMBERSHIP — an unrecognised name is simply uncovered', () => {
+    // Off the floor, the predicate reads whether the dimension has a ladder and
+    // never what is in it, so it stays immune to the rung labels themselves
+    // (#5788 D6). A name the curated table does not carry is uncovered by
+    // definition.
     expect(acceptsBareNumber('Length', LADDERS)).toBe(false);
     expect(acceptsBareNumber('NotADimension', LADDERS)).toBe(true);
     expect(acceptsBareNumber(undefined, LADDERS)).toBe(true);
