@@ -7,8 +7,9 @@
 //! fields routes through a dimension-BLIND helper (`force_val` / `coord`) taking
 //! `Value::Scalar{..}` or `Value::Real(..)` interchangeably, so the trampoline
 //! could silently retag either way with no Rust test failing. The extractors
-//! below match variants EXPLICITLY and panic on the wrong one, across all three
-//! emission sites: anchored line-only, anchored surfaces, free-standing.
+//! below inspect the DIMENSION explicitly and panic on the wrong one — FORCE
+//! required on `member_forces`, none tolerated on the qᵢ/σ echoes — across all
+//! three emission sites: anchored line-only, anchored surfaces, free-standing.
 //!
 //! SCOPE — gauge COVARIANCE is asserted at BOTH emitters (the last two tests: anchored
 //! via `solve_at`, free-standing via `solve_free_at`), because they reach the property by
@@ -27,10 +28,10 @@ use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// A 3-component `Value::Point` of SI-metre coordinates — how `point3` lowers.
-/// Local by construction: each `#[path]` sibling in this module directory carries its
-/// own (`node` in `tensegrity_t1b_form_find_e2e.rs`, `tensegrity_t3b_load.rs`, …) because
-/// a `#[path]` module cannot reach a sibling's private helpers. Hoisting the whole family
-/// into `reify-test-support` is tracked with the fixture duplication below (#6152).
+/// Every `#[path]` sibling in this module directory carries its own copy (`node` in
+/// `tensegrity_t1b_form_find_e2e.rs`, `tensegrity_t3b_load.rs`, …) because each was
+/// written standalone and the helpers stayed private. Collapsing the family is tracked
+/// with the fixture duplication below (#6152) — see that note for what still blocks it.
 fn node(x: f64, y: f64, z: f64) -> Value {
     let m = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
     Value::Point(vec![m(x), m(y), m(z)])
@@ -41,12 +42,18 @@ fn node(x: f64, y: f64, z: f64) -> Value {
 // `triplex_tensegrity()` in `harness_fea_solver_e2e/tensegrity_t1b_form_find_e2e.rs`
 // and the combined fixture in `…/tensegrity_delta_combined_form_find_e2e.rs`), and
 // `membrane_tensegrity()` re-derives the kernel's `tent_membrane()` golden. A topology
-// or node-order change must be mirrored by hand across all three, so hoisting the
-// shared fixture into `reify-test-support` (already a dev-dep of every call site) is
-// tracked by task **#6152**. It could not be done in #6095: neither
-// `crates/reify-test-support/` nor the two `harness_fea_solver_e2e/` modules are in
-// that task's locked module set, and widening it is exactly the scope breach the lock
-// exists to prevent.
+// or node-order change must be mirrored by hand across all three, so collapsing them
+// onto one shared fixture is tracked by task **#6152**.
+//
+// WHAT BLOCKS IT HERE — narrower than it once was. This module now sits as a `#[path]`
+// sibling of the other two INSIDE the same `harness_fea_solver_e2e` compile unit, so
+// the dedup no longer needs `reify-test-support` at all: one shared fixture module in
+// `harness_fea_solver_e2e/`, or `pub(crate)` on the helpers that already exist, reaches
+// every call site. What it does need is DELETING the two existing copies from
+// `tensegrity_t1b_form_find_e2e.rs` and `tensegrity_delta_combined_form_find_e2e.rs`,
+// and neither file is in #6095's locked module set. Adding a fourth copy in a new
+// shared file without removing those two would raise the drift surface, not lower it —
+// so #6152 owns the collapse, with both siblings in ITS scope.
 
 /// Struts-then-cables member order — the one index space `force_densities` and
 /// `member_forces` share: 3 struts, then top / bottom / vertical cable triples.
@@ -220,7 +227,10 @@ fn list_field<'a>(fields: &'a PersistentMap<String, Value>, name: &str) -> &'a V
     }
 }
 
-// STRICT extractors — deliberately NOT the dimension-blind `force_val`/`coord`.
+// DIMENSION-STRICT extractors — deliberately NOT the dimension-blind `force_val`/`coord`.
+// Each pins the declared DIMENSION of its field and panics on anything else; only
+// `member_forces` additionally requires the `Value::Scalar` representation, because a
+// dimension tag can only be carried by that variant in the first place.
 
 /// SI value of a **FORCE-dimensioned** Scalar; anything else is a violation.
 fn force_si(v: &Value) -> f64 {
@@ -233,26 +243,23 @@ fn force_si(v: &Value) -> f64 {
     }
 }
 
-/// Value of a **bare** `Value::Real`. This pins TWO separable things and the arms below
-/// keep them apart, because conflating them sends the next author after a phantom
-/// dimensional regression. (1) The Leg B DIMENSIONAL claim: a qᵢ/σ echo carrying a
-/// *dimensioned* tag is the genuine violation. (2) The bare-Real REPRESENTATION, which is
-/// merely what both trampolines emit today — a `Value::Scalar { dimension: DIMENSIONLESS }`
-/// would still satisfy the `List<Real>` declaration AND Leg B, and the value model treats
-/// it as interchangeable with `Value::Real` elsewhere (`compute_targets::tensegrity_crack::
-/// scalar_f64` accepts both; geometry_ops / modal_ops explicitly accept DIMENSIONLESS
-/// scalars). The strict match is kept — a representation flip should be a deliberate
-/// re-pin, not a silent drift — but it is REPORTED as representation drift, not as Leg B.
-fn bare_real(field: &str, v: &Value) -> f64 {
+/// Value of a qᵢ / σ echo, pinning the Leg B DIMENSIONAL claim and nothing more: a
+/// dimensioned tag is the violation, and it is the only thing rejected here.
+///
+/// `Value::Real(r)` and `Value::Scalar { dimension: DIMENSIONLESS }` are BOTH accepted
+/// on purpose. Both satisfy the `List<Real>` declaration and both satisfy Leg B, and the
+/// value model already treats them as interchangeable (`compute_targets::
+/// tensegrity_crack::scalar_f64` accepts either; geometry_ops / modal_ops explicitly
+/// accept DIMENSIONLESS scalars). Pinning the bare-Real REPRESENTATION on top of the
+/// dimensional claim would fail a contract-preserving normalisation of the echo emitters
+/// — e.g. routing them through a `scalar_list` with a dimensionless vector — which is a
+/// false regression signal on a change that violates nothing #6095 adjudicated, and it
+/// buys nothing the `List<Real>` declaration lock in
+/// `crates/reify-compiler/tests/tensegrity_stdlib_tests.rs` does not already cover.
+fn dimensionless_echo(field: &str, v: &Value) -> f64 {
     match v {
         Value::Real(r) => *r,
-        Value::Scalar { si_value, dimension } if dimension.is_dimensionless() => panic!(
-            "{field} entries are a DIMENSIONLESS Value::Scalar ({si_value}), not a bare \
-             Value::Real. This is REPRESENTATION drift, NOT a Leg B violation: the \
-             `List<Real>` declaration and the dimensionless ruling both still hold, and \
-             the two forms are interchangeable elsewhere in the value model. If the echo \
-             representation moved on purpose, re-pin this extractor deliberately (#6095)"
-        ),
+        Value::Scalar { si_value, dimension } if dimension.is_dimensionless() => *si_value,
         Value::Scalar { dimension, .. } => panic!(
             "{field} entries carry a DIMENSIONED tag ({dimension:?}) where the \
              `List<Real>` declaration requires none — THIS is the Leg B violation: the \
@@ -260,9 +267,9 @@ fn bare_real(field: &str, v: &Value) -> f64 {
              dimension-checked-readers ruling upheld by #6095"
         ),
         other => panic!(
-            "{field} entries must be a bare Value::Real per the `List<Real>` \
-             declaration; got a variant that is neither Real nor Scalar, so neither the \
-             Leg B dimensional claim nor the bare-Real representation can be judged \
+            "{field} entries must be a dimensionless number — a bare Value::Real, or a \
+             DIMENSIONLESS Value::Scalar — per the `List<Real>` declaration; got a \
+             variant that is neither, so the Leg B dimensional claim cannot be judged \
              (#6095): {other:?}"
         ),
     }
@@ -287,7 +294,7 @@ fn member_length(nodes: &[Value], (j, k): (usize, usize)) -> f64 {
 }
 
 /// THE BRIDGE, asserted end to end on one emission site's result: `member_forces` are
-/// strictly FORCE-dimensioned Scalars, `force_densities` strictly bare Reals, and the
+/// strictly FORCE-dimensioned Scalars, `force_densities` strictly dimensionless, and the
 /// two pair up as `Nᵢ = qᵢ·Lᵢ·q_ref` on the geometry that same solve returned. EXACT —
 /// the kernel evaluates `qi * len` from the very `out_nodes` it emits — so the only
 /// error is f64 round-trip + sqrt (~1e-16 relative). One helper, both sites: the
@@ -301,7 +308,7 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
 
     for (i, &m) in MEMBERS.iter().enumerate() {
         // Both extractors panic on the wrong variant / dimension.
-        let q = bare_real("force_densities", &force_densities[i]);
+        let q = dimensionless_echo("force_densities", &force_densities[i]);
         let n = force_si(&member_forces[i]);
         let (l, expected) = { let l = member_length(nodes, m); (l, q * l) };
         // NON-DEGENERACY, via the sign contract rather than mere finiteness: without a
@@ -360,16 +367,17 @@ fn member_force_is_q_times_solved_length_in_the_unit_gauge() {
     assert_bridge_holds(&combined, "anchored surfaces");
 }
 
-/// Both echoes are strictly bare `Value::Real`s — a dimensioned Scalar is the
-/// Leg B violation. σ is asserted on a fixture that actually CARRIES surfaces, so
-/// `bare_real` genuinely runs on it instead of skipping the line-only empty list.
+/// Both echoes carry NO dimension — a dimensioned Scalar is the Leg B violation, and
+/// the bare-Real / dimensionless-Scalar representations are equally acceptable (see
+/// `dimensionless_echo`). σ is asserted on a fixture that actually CARRIES surfaces, so
+/// the extractor genuinely runs on it instead of skipping the line-only empty list.
 #[test]
-fn force_density_and_surface_stress_echoes_are_strictly_bare_reals() {
+fn force_density_and_surface_stress_echoes_carry_no_dimension() {
     let line_only = solve_at(&BASE_Q);
     let force_densities = list_field(&line_only, "force_densities");
     assert_eq!(force_densities.len(), BASE_Q.len(), "one echoed density per member");
     for (i, (fd, &expected)) in force_densities.iter().zip(BASE_Q.iter()).enumerate() {
-        let q = bare_real("force_densities", fd);
+        let q = dimensionless_echo("force_densities", fd);
         assert_eq!(q, expected, "force_densities[{i}] must echo the input q exactly");
     }
     let none = list_field(&line_only, "surface_stresses");
@@ -380,7 +388,7 @@ fn force_density_and_surface_stress_echoes_are_strictly_bare_reals() {
     let surface_stresses = list_field(&membrane, "surface_stresses");
     assert_eq!(surface_stresses.len(), 4, "one echoed σ per triangle — a NON-empty list");
     for (t, ss) in surface_stresses.iter().enumerate() {
-        let s = bare_real("surface_stresses", ss);
+        let s = dimensionless_echo("surface_stresses", ss);
         assert_eq!(s, SIGMA, "surface_stresses[{t}] must echo the prescribed σ exactly");
     }
 }
@@ -514,7 +522,7 @@ fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
     let scaled_q = list_field(&scaled, "force_densities");
     assert_eq!(base_q.len(), scaled_q.len(), "same member count from both free solves");
     for (i, (b, s)) in base_q.iter().zip(scaled_q.iter()).enumerate() {
-        let (bq, sq) = (bare_real("force_densities", b), bare_real("force_densities", s));
+        let (bq, sq) = (dimensionless_echo("force_densities", b), dimensionless_echo("force_densities", s));
         let expected = bq * GAUGE_LAMBDA;
         // The same non-vacuity floor as `assert_gauge_covariance`, on the quantity the free
         // path actually SEARCHES: at bq = 0 the ×λ claim is trivially true.
