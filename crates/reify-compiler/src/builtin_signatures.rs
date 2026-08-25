@@ -71,6 +71,7 @@
 //! skipped here and still relies on the eval-layer gate.  Both layers are load-
 //! bearing; removing either leaves a hole.
 
+use reify_core::units::{DENSITY_MIGRATION_HINT, LENGTH_MIGRATION_HINT};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::CompiledExpr;
 
@@ -97,6 +98,32 @@ pub(crate) enum ExpectedArg {
         /// Human-readable type name for diagnostic messages
         /// (e.g., `"Density"`, `"Angle"`, `"Length"`).
         type_name: &'static str,
+        /// Optional migration hint appended to the rejection message.
+        ///
+        /// Mirrors `ArgSpec::migration_hint` in
+        /// `crates/reify-eval/src/arg_acceptance.rs`, and carries the SAME
+        /// `&'static str` — both sides read
+        /// [`reify_core::units::LENGTH_MIGRATION_HINT`] /
+        /// [`reify_core::units::DENSITY_MIGRATION_HINT`] rather than repeating
+        /// the literal, so the compile-time and runtime diagnostics for one
+        /// authoring mistake cannot drift apart (PRD
+        /// `docs/prds/v0_6/units-length-gate-completion.md` decision D9).
+        ///
+        /// `None` where the eval layer likewise offers no hint — see the ANGLE
+        /// slots below.
+        ///
+        /// NOT [`crate::conformance::dimensioned_scalar_migration_hint`], and
+        /// deliberately so. That generator serves the DIMENSIONED struct-ctor /
+        /// fn-param slots (task 5627, decisions D4-6) and is COMPUTED from the
+        /// dimension: for LENGTH it renders "pass a dimensioned Length literal
+        /// such as `1m`" — capital L, the word "literal", and `1m` not `5mm`.
+        /// This path must instead reproduce the eval-layer C1 text VERBATIM,
+        /// and rewording the ctor path to match would silently change
+        /// already-shipped diagnostics that
+        /// `tests/struct_ctor_field_conformance_tests.rs` guards. The
+        /// divergence is pinned by
+        /// `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`.
+        migration_hint: Option<&'static str>,
     },
     /// The integer type `Type::Int` (e.g. `generate`'s count argument, task 3994).
     ///
@@ -106,6 +133,14 @@ pub(crate) enum ExpectedArg {
     Int {
         /// Human-readable type name for diagnostic messages (always `"Int"`).
         type_name: &'static str,
+        /// Optional migration hint appended to the rejection message; see the
+        /// `Scalar` variant's field of the same name.
+        ///
+        /// Expected to stay `None` for counts: a wrong count is an arity /
+        /// semantic error, not a dimension migration, so there is nothing to
+        /// migrate TO. The field exists on this variant only so the two arms
+        /// share one message shape.
+        migration_hint: Option<&'static str>,
     },
 }
 
@@ -153,6 +188,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::MASS_DENSITY,
                 type_name: "Density",
+                migration_hint: Some(DENSITY_MIGRATION_HINT),
             },
         }],
 
@@ -171,6 +207,16 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
+                // No migration hint, deliberately: the eval layer has no
+                // `angle_spec` hint either, and this check exists to MIRROR
+                // that layer's wording (PRD decision D9), not to get ahead of
+                // it. Closing the ANGLE gap is PRD 3's by binding seam decree,
+                // and it owns BOTH halves together — adding one here alone
+                // would make the layers disagree in the other direction.
+                // Pinned by `angle_slot_rejection_carries_no_migration_hint`.
+                // Prose rather than a TODO on purpose: a TODO must cite a live
+                // task under the PTODO grammar, and PRD 3 has no task id yet.
+                migration_hint: None,
             },
         }],
 
@@ -185,6 +231,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                 expected: ExpectedArg::Scalar {
                     dimension: DimensionVector::LENGTH,
                     type_name: "Length",
+                    migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
             CheckableArg {
@@ -193,6 +240,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                 expected: ExpectedArg::Scalar {
                     dimension: DimensionVector::LENGTH,
                     type_name: "Length",
+                    migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
         ],
@@ -210,6 +258,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::LENGTH,
                 type_name: "Length",
+                migration_hint: Some(LENGTH_MIGRATION_HINT),
             },
         }],
 
@@ -224,7 +273,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         "generate" => vec![CheckableArg {
             index: 0,
             name: "n",
-            expected: ExpectedArg::Int { type_name: "Int" },
+            expected: ExpectedArg::Int {
+                type_name: "Int",
+                // A count is not a dimension migration — there is no
+                // dimensioned form to point the author at.
+                migration_hint: None,
+            },
         }],
 
         // ── Pattern CSG producers: spacing is a Length (task 5652) ───────────
@@ -253,6 +307,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::LENGTH,
                 type_name: "Length",
+                migration_hint: Some(LENGTH_MIGRATION_HINT),
             },
         }],
 
@@ -279,6 +334,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                 expected: ExpectedArg::Scalar {
                     dimension: DimensionVector::LENGTH,
                     type_name: "Length",
+                    migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
             CheckableArg {
@@ -287,6 +343,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                 expected: ExpectedArg::Scalar {
                     dimension: DimensionVector::LENGTH,
                     type_name: "Length",
+                    migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
         ],
@@ -322,6 +379,17 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
 /// Mirrors γ's runtime `ArgRejection::message` wording so compile-time (ζ) and
 /// runtime (γ) diagnostics read consistently per PRD §7.3:
 /// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}"`
+///
+/// A slot carrying an [`ExpectedArg::Scalar::migration_hint`] appends the hint
+/// with `"; "`, matching `ArgRejection::message`'s own shape (task 5750, PRD
+/// `docs/prds/v0_6/units-length-gate-completion.md` decision D9):
+/// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}; {hint}"`
+///
+/// Concretely, for a LENGTH slot:
+/// `"box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
+///
+/// The ANGLE slots render the un-hinted form, because the eval layer has no
+/// angle hint to mirror; PRD 3 owns closing both halves together.
 pub(crate) fn check_builtin_arg_types(
     name: &str,
     compiled_args: &[CompiledExpr],
@@ -343,6 +411,7 @@ pub(crate) fn check_builtin_arg_types(
             ExpectedArg::Scalar {
                 dimension: expected_dim,
                 type_name,
+                migration_hint,
             } => match &arg.result_type {
                 // Gradualism: poison + unresolved pass silently.
                 Type::Error | Type::TypeParam(_) => continue,
@@ -353,17 +422,36 @@ pub(crate) fn check_builtin_arg_types(
                         continue; // correct — no diagnostic
                     }
                     let actual = &arg.result_type;
-                    emit_mismatch(name, slot.name, type_name, actual, call_span, diagnostics);
+                    emit_mismatch(
+                        name,
+                        slot.name,
+                        type_name,
+                        actual,
+                        *migration_hint,
+                        call_span,
+                        diagnostics,
+                    );
                 }
 
                 // Any other concrete type (Bool, Geometry, Vector, …): definite
                 // kind mismatch where a dimensioned scalar is required.
                 other => {
-                    emit_mismatch(name, slot.name, type_name, other, call_span, diagnostics);
+                    emit_mismatch(
+                        name,
+                        slot.name,
+                        type_name,
+                        other,
+                        *migration_hint,
+                        call_span,
+                        diagnostics,
+                    );
                 }
             },
 
-            ExpectedArg::Int { type_name } => match &arg.result_type {
+            ExpectedArg::Int {
+                type_name,
+                migration_hint,
+            } => match &arg.result_type {
                 // Gradualism: poison + unresolved pass silently.
                 Type::Error | Type::TypeParam(_) => continue,
 
@@ -374,7 +462,15 @@ pub(crate) fn check_builtin_arg_types(
                 // (`Type::Scalar { DIMENSIONLESS }`, e.g. `2.5`) or a dimensioned
                 // scalar (`3mm`) — is a definite mismatch where an `Int` is required.
                 other => {
-                    emit_mismatch(name, slot.name, type_name, other, call_span, diagnostics);
+                    emit_mismatch(
+                        name,
+                        slot.name,
+                        type_name,
+                        other,
+                        *migration_hint,
+                        call_span,
+                        diagnostics,
+                    );
                 }
             },
         }
@@ -382,15 +478,27 @@ pub(crate) fn check_builtin_arg_types(
 }
 
 /// Emit a single `ArgTypeMismatch` error diagnostic.
+///
+/// `migration_hint`, when `Some`, is appended as `"; {hint}"` — matching
+/// `ArgRejection::message`'s shape in `crates/reify-eval/src/arg_acceptance.rs`
+/// exactly, so the compile-time and runtime renderings of one authoring mistake
+/// are byte-identical (PRD decision D9). The LABEL is deliberately left
+/// un-hinted: it is the short inline caret annotation, and the hint belongs on
+/// the message where the eval layer puts it.
 fn emit_mismatch(
     builtin: &str,
     arg_name: &str,
     type_name: &str,
     actual: &Type,
+    migration_hint: Option<&'static str>,
     call_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let msg = format!("{builtin}: {arg_name} argument expects {type_name}, got {actual}");
+    let base = format!("{builtin}: {arg_name} argument expects {type_name}, got {actual}");
+    let msg = match migration_hint {
+        Some(hint) => format!("{base}; {hint}"),
+        None => base,
+    };
     let label_msg = format!("expected {type_name}, got {actual}");
     diagnostics.push(
         Diagnostic::error(msg)
@@ -483,6 +591,7 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::MASS_DENSITY,
                 type_name: "Density",
+                migration_hint: Some(DENSITY_MIGRATION_HINT),
             },
         }
     }
@@ -494,6 +603,8 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
+                // Mirrors the table: eval has no angle hint, so neither has this.
+                migration_hint: None,
             },
         }
     }
@@ -505,6 +616,7 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::LENGTH,
                 type_name: "Length",
+                migration_hint: Some(LENGTH_MIGRATION_HINT),
             },
         }
     }
@@ -1150,7 +1262,12 @@ mod tests {
         CheckableArg {
             index,
             name,
-            expected: ExpectedArg::Int { type_name: "Int" },
+            expected: ExpectedArg::Int {
+                type_name: "Int",
+                // A count is not a dimension migration — there is no
+                // dimensioned form to point the author at.
+                migration_hint: None,
+            },
         }
     }
 

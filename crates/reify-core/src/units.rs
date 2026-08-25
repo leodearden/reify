@@ -8,8 +8,62 @@
 //! coupling — so this stays a leaf module that both compiler and stdlib can
 //! depend on without inverting the crate DAG (see the B1 invariant note in
 //! `lib.rs`).
+//!
+//! # The units-gate MIGRATION HINTS live here for the same reason (task 5750)
+//!
+//! [`LENGTH_MIGRATION_HINT`] and [`DENSITY_MIGRATION_HINT`] are the exact
+//! clauses appended to a rejection at a LENGTH / Density argument slot. Both
+//! the EVAL layer (`reify-eval::arg_acceptance`) and the COMPILE layer
+//! (`reify-compiler::builtin_signatures`) must render the same wording for the
+//! same authoring mistake — PRD `docs/prds/v0_6/units-length-gate-completion.md`
+//! decision D9 — so they live here, as one table with one edit site, exactly as
+//! [`unit_symbol_to_si`] does rather than as two independently-diverging copies.
+//!
+//! ## Why a HOIST and not a copy
+//!
+//! The neighbouring precedent says the opposite, and a reviewer will ask.
+//! `reify-compiler::conformance`'s `dimensioned_scalar_migration_hint` records
+//! that its own clause is "Copied and never imported: `reify-eval` depends on
+//! `reify-compiler`, so the reverse edge would be a dependency cycle (D9)."
+//! That constraint is about the reify-eval → reify-compiler EDGE. `reify-core`
+//! sits BELOW both, so hoisting here never creates that cycle.
+//!
+//! The copy route was reconsidered and rejected on a measurement:
+//! `reify-eval/src/lib.rs` declares `pub(crate) mod arg_acceptance;`, so even
+//! though `reify-compiler` dev-depends on `reify-eval`, a drift-pin test cannot
+//! import `length_spec()` to compare against. Short of widening reify-eval's
+//! public API, sharing one const is the only structural pin available.
+//!
+//! And unlike the conformance hint — COMPUTED from the `NAMED_DIMENSIONS`
+//! registry, and so drift-proof by construction — these two are IRREGULAR
+//! hard-coded literals that do not follow that template. They genuinely can
+//! drift, which is what earns them the shared const.
+//!
+//! These two are NOT interchangeable with the conformance hint and must not be
+//! unified with it: for LENGTH that one renders "pass a dimensioned Length
+//! literal such as `1m`". Pinned by
+//! `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`
+//! in `reify-compiler/tests/builtin_arg_signature_tests.rs`.
 
 use crate::DimensionVector;
+
+/// The migration hint appended to a rejection at a LENGTH argument slot.
+///
+/// Read by BOTH layers — `reify-eval::arg_acceptance::length_spec` and the
+/// LENGTH slots of `reify-compiler::builtin_signatures::builtin_arg_slots` — so
+/// the compile-time and runtime diagnostics for one authoring mistake read
+/// identically (PRD decision D9). See the module doc for why this is a hoist
+/// rather than a copy, and why it must not be unified with
+/// `reify-compiler::conformance`'s computed ctor-slot hint.
+pub const LENGTH_MIGRATION_HINT: &str = "pass a dimensioned length such as `5mm`";
+
+/// The migration hint appended to a rejection at a Density argument slot.
+///
+/// Mirrors [`LENGTH_MIGRATION_HINT`]; read by
+/// `reify-eval::arg_acceptance::density_spec` and by the `center_of_mass` /
+/// `moment_of_inertia` density slots in `reify-compiler::builtin_signatures`.
+pub const DENSITY_MIGRATION_HINT: &str =
+    "pass a dimensioned Density literal such as `7850kg/m^3`";
 
 /// The built-in unit symbols, as DATA rather than control flow — one physical
 /// table, one edit site.
