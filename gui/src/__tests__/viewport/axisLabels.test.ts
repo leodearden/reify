@@ -167,6 +167,85 @@ describe('createAxisLabels', () => {
   });
 });
 
+// ── Screen-footprint tests (#6588) ───────────────────────────────────────────
+
+describe('axis label screen footprint (#6588)', () => {
+  // The app's PerspectiveCamera is constructed with fov = 60 (scene.ts).
+  const FOV_DEG = 60;
+
+  /**
+   * On-screen height of a sprite as a FRACTION of the viewport height, under the
+   * three r183 sprite vertex shader (sprite.glsl.js), for a material with
+   * `sizeAttenuation: false`:
+   *
+   *     vec4 mvPosition = modelViewMatrix[3];
+   *     vec2 scale = vec2(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz));
+   *     #ifndef USE_SIZEATTENUATION
+   *       if (isPerspective) scale *= -mvPosition.z;
+   *     #endif
+   *     vec2 alignedPosition = (position.xy - (center - vec2(0.5))) * scale;
+   *
+   * `position.xy` spans [-0.5, 0.5], and that `scale *= -mvPosition.z` CANCELS the
+   * perspective divide that follows. So the fraction reduces to
+   *
+   *     f = s * cot(fov/2) / 2
+   *
+   * with NO camera-distance term `d` — which is the whole point of the fix.
+   */
+  function screenHeightFraction(s: number): number {
+    return (s * (1 / Math.tan((FOV_DEG * Math.PI) / 180 / 2))) / 2;
+  }
+
+  // REGRESSION REPRO (#6588, dogfood session). With three.js's DEFAULT
+  // `sizeAttenuation: true`, the `-mvPosition.z` factor is absent, the perspective
+  // divide survives, and the fraction becomes distance-dependent:
+  //     f = worldScale * cot(fov/2) / (2 * d)
+  // Reported camera (0.2923, -0.2809, 1.8260); the Z label sits at (0, 0, 2.3), so
+  //     d = sqrt(0.2923^2 + 0.2809^2 + 0.4740^2) = 0.6237
+  //     f = 0.5 * 1.7320508 / (2 * 0.6237) = 0.694
+  // i.e. the "Z" glyph covered 69% of the frame height, sourced from a 64-texel
+  // texture — ~9x bilinear magnification at DPR 1. That is the reported blocky,
+  // stair-stepped cyan/azure band terminating in a wedge. `sizeAttenuation: false`
+  // removes the `d` term entirely, so NO camera position can reproduce it.
+
+  it('sprites use sizeAttenuation: false, making their screen size camera-independent', () => {
+    const { group } = createAxisLabels();
+    expect(group.children).toHaveLength(3);
+    for (const child of group.children as any[]) {
+      // Assert on ctorOpts (the value handed to the constructor), matching how the
+      // colour/depth tests above assert. MockSpriteMaterial leaves the field
+      // undefined when the option is absent, so this cannot pass vacuously.
+      expect(child.material.ctorOpts.sizeAttenuation).toBe(false);
+    }
+  });
+
+  it('sprite scale keeps each label under 10% of the viewport height at every camera distance', () => {
+    const { group } = createAxisLabels();
+    for (const child of group.children as any[]) {
+      expect(child.scale.set).toHaveBeenCalled();
+      const [sx, sy] = (child.scale.set as any).mock.calls[0];
+      expect(sx).toBeGreaterThan(0);
+      // Square quad: the glyph texture is square, so a non-square scale would
+      // stretch the letter.
+      expect(sy).toBe(sx);
+
+      const frac = screenHeightFraction(sx);
+      expect(frac).toBeGreaterThan(0);
+      expect(frac).toBeLessThanOrEqual(0.1);
+    }
+  });
+
+  it('leaves the sprite quad\'s unused third scale component at 1', () => {
+    const { group } = createAxisLabels();
+    for (const child of group.children as any[]) {
+      const [, , sz] = (child.scale.set as any).mock.calls[0];
+      expect(sz).toBe(1);
+      // The mock writes back, so the resulting scale.z is observable too.
+      expect(child.scale.z).toBe(1);
+    }
+  });
+});
+
 // ── Glyph drawing tests ──────────────────────────────────────────────────────
 // jsdom returns null for getContext('2d') by default, which causes makeTextSprite
 // to skip the drawing path. These tests stub getContext to verify that fillText
