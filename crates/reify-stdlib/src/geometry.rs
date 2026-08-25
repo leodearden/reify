@@ -5611,6 +5611,159 @@ mod tests {
         );
     }
 
+    // ── units-length ζ (task 5747): the R12 affine_map TRANSLATION ────────────
+
+    #[test]
+    fn affine_map_mass_translation_returns_undef() {
+        let m = matrix3x3(IDENTITY_3X3);
+        let mass = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::MASS,
+        };
+        let t = Value::Vector(vec![mass(5.0), mass(0.0), mass(0.0)]);
+        assert!(
+            eval_builtin("affine_map", &[m, t]).is_undef(),
+            "a MASS translation Vector must be Undef (ζ/R12)"
+        );
+    }
+
+    #[test]
+    fn affine_map_bare_real_translation_returns_undef() {
+        let m = matrix3x3(IDENTITY_3X3);
+        let t = Value::Vector(vec![
+            Value::Real(5.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m, t]).is_undef(),
+            "a bare Real translation Vector must be Undef (ζ/R12)"
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_map_mass_translation_is_a_coded_error() {
+        let m = matrix3x3(IDENTITY_3X3);
+        let mass = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::MASS,
+        };
+        let t = Value::Vector(vec![mass(5.0), mass(0.0), mass(0.0)]);
+        let diag = super::diagnose("affine_map", &[m, t])
+            .expect("a MASS translation must be diagnosed");
+        assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{diag:?}"
+        );
+        // FULL EQUALITY — the message IS the user-facing contract. `translation`
+        // is the builtin's own parameter name, unlike `affine_translate`'s three
+        // positional scalars.
+        assert_eq!(
+            diag.message,
+            "affine_map: translation argument expects Length, got Mass Scalar; \
+             pass a dimensioned length such as `5mm`"
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_map_bare_real_translation_is_a_coded_error() {
+        let m = matrix3x3(IDENTITY_3X3);
+        let t = Value::Vector(vec![
+            Value::Real(5.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let diag = super::diagnose("affine_map", &[m, t])
+            .expect("a bare Real translation must be diagnosed");
+        assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{diag:?}"
+        );
+        assert_eq!(
+            diag.message,
+            "affine_map: translation argument expects Length, got Real; \
+             pass a dimensioned length such as `5mm`"
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_map_silent_cases_return_none() {
+        let m = matrix3x3(IDENTITY_3X3);
+        let length_t = Value::Vector(vec![
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(
+            super::diagnose("affine_map", &[m.clone(), length_t.clone()]).is_none(),
+            "an accepted LENGTH translation must not be diagnosed"
+        );
+        // Non-3 Vector, non-Vector, and wrong arity are SHAPE failures, not units
+        // ones — silent, matching the `transform3` convention.
+        assert!(
+            super::diagnose(
+                "affine_map",
+                &[
+                    m.clone(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)])
+                ]
+            )
+            .is_none(),
+            "a non-3 Vector translation must stay silent"
+        );
+        assert!(
+            super::diagnose("affine_map", &[m.clone(), Value::Real(0.0)]).is_none(),
+            "a non-Vector translation must stay silent"
+        );
+        assert!(
+            super::diagnose("affine_map", &[]).is_none(),
+            "0 args must stay silent"
+        );
+        assert!(
+            super::diagnose("affine_map", std::slice::from_ref(&m)).is_none(),
+            "1 arg must stay silent"
+        );
+        assert!(
+            super::diagnose("affine_map", &[m, length_t, Value::Real(0.0)]).is_none(),
+            "3 args must stay silent"
+        );
+    }
+
+    /// LINEAR-PART SCOPE LOCK — the row that stops ζ drifting into D11's other
+    /// half.
+    ///
+    /// `affine_map` with a LENGTH-dimensioned 3×3 LINEAR part and a LENGTH
+    /// translation must STILL return `Undef` via the pre-existing dimensionless
+    /// check, and `diagnose` must return `None` for it: the linear part's
+    /// rejection is NOT a ζ units diagnostic and must not acquire one, or the
+    /// message would misname the offending argument as `translation`.
+    #[test]
+    fn diagnose_affine_map_dimensioned_linear_stays_silent() {
+        let m = Value::Matrix(vec![
+            vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)],
+            vec![Value::length(0.0), Value::length(1.0), Value::length(0.0)],
+            vec![Value::length(0.0), Value::length(0.0), Value::length(1.0)],
+        ]);
+        let length_t = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(
+            eval_builtin("affine_map", &[m.clone(), length_t.clone()]).is_undef(),
+            "a dimensioned linear part must stay Undef (D11, pre-existing)"
+        );
+        assert!(
+            super::diagnose("affine_map", &[m, length_t]).is_none(),
+            "the linear part's rejection must NOT acquire a ζ units diagnostic — it \
+             would misname the offending argument"
+        );
+    }
+
     // ── affine_from_transform tests (step-9) ──────────────────────────────────
 
     /// Assert two 3×3 matrices are elementwise equal within `tol`.
