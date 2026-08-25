@@ -25,10 +25,15 @@
 // string selectors — accepted as selector-target placeholders per
 // `validate_selector_target`; the runtime FEA solver maps them to the actual
 // geometry once topology-kind validation lands (PRD task 16).  The full
-// `param thickness=auto` + `minimize mass(bracket) where peak_stress < yield`
-// auto-resolve design loop and the body.face()-load bracket-geometry variant
-// are deferred to task 2930 (FEA-in-the-loop optimization + P1=4091/P2=4092
-// arbitrary-geometry producers not yet wired).
+// `param thickness=auto` auto-resolve design loop -- `let mass = volume(bracket)
+// * material.density`, then `constraint peak_stress < yield` and a bare
+// `minimize mass` -- and the body.face()-load bracket-geometry variant are
+// deferred to task 2930 (FEA-in-the-loop optimization + P1=4091/P2=4092
+// arbitrary-geometry producers not yet wired).  Two spellings to avoid when
+// that lands, both of which earlier drafts of this comment used: `minimize
+// <expr> where <cond>` parses but the compiler DISCARDS the guard silently, so
+// the objective runs unopposed (task 6575, ruled reject 2026-08-25 -- objectives
+// take no guard, in either form); and `mass(body)` is not a callable at all.
 //
 // After SIR-α (task 3540) stdlib struct constructors evaluate to
 // `Value::StructureInstance`.  The `let operating = LoadCase(...)`,
@@ -121,11 +126,16 @@ structure MultiLoadBracket {
     // has no precedent in the stdlib .ri files, so keeping the literal avoids
     // a zero-Error-diagnostics risk.
     //
-    // The full `param thickness=auto` + `minimize mass(bracket) where
-    // max(envelope_von_mises(results)) < material.yield_stress` auto-resolve
-    // design loop is deferred to task 2930 (FEA-in-the-loop optimization is
-    // not wired: the dimensional solver evaluates @optimized ComputeNodes as
-    // Value::Undef inside the constraint-cost loop — see PRD §6 decision #5).
+    // The full `param thickness=auto` auto-resolve design loop --
+    // `let mass = volume(bracket) * material.density`, then
+    // `constraint max(envelope_von_mises(results)) < material.yield_stress`
+    // and a bare `minimize mass` -- is deferred to task 2930 (FEA-in-the-loop
+    // optimization is not wired: the dimensional solver evaluates @optimized
+    // ComputeNodes as Value::Undef inside the constraint-cost loop — see PRD
+    // §6 decision #5, whose 2026-08-25 correction also covers the two fictions
+    // this comment used to carry).  Do NOT collapse the predicate back into
+    // `minimize ... where ...`: that guard parses and is then silently
+    // discarded (task 6575).
     let peak_stress  = max(envelope)
     let yield_limit  = 310MPa
     let within_yield = peak_stress < yield_limit
