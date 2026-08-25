@@ -52,7 +52,7 @@ pub(crate) mod trampoline;
 /// TOTS-family shaper (λ arm) — `TOTSShaper` (prismatic/linear) and
 /// `RevoluteTOTSShaper` (revolute), one per joint kind, with membership decided
 /// by [`tots::is_tots_shaper_type_name`], the single source of truth — and runs
-/// the real SQP loop ([`input_shape::run_tots`] → [`tots::solve_tots`]); only
+/// the real SQP loop (`input_shape::run_tots` → [`tots::solve_tots`]); only
 /// then falls through to the impulse-train arms (ZV/ZVD/EI/Cascaded, ζ). Returns
 /// the shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad
 /// args / infeasible TOTS / unrecognised shaper). See
@@ -61,7 +61,7 @@ pub(crate) mod trampoline;
 /// `evaluate_profile` / `evaluate_profile_dot` / `evaluate_profile_ddot` /
 /// `profile_duration` (task 4539, β residue) are fully wired to the spline
 /// evaluator via [`trampoline::value_to_multijoint_spline`] +
-/// [`super::spline::MultiJointSpline`]. Each uses the same delegate-to-undeclared
+/// [`spline::MultiJointSpline`]. Each uses the same delegate-to-undeclared
 /// `*_at` name pattern as `gcode_import` / `input_shape`: the `.ri` declaration
 /// delegates to `evaluate_profile_at` / `_dot_at` / `_ddot_at` /
 /// `profile_duration_at`, all of which route here and to the thin composers in
