@@ -404,7 +404,7 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// [`discovery_floor_tracks_the_live_corpus`] call this instead of
 /// re-deriving the filter, so they can never disagree about what
 /// "exercised" means.
-fn exercised_paths<'a>(paths: &'a [PathBuf]) -> Vec<(&'a PathBuf, String)> {
+fn exercised_paths(paths: &[PathBuf]) -> Vec<(&PathBuf, String)> {
     use std::collections::HashSet;
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
