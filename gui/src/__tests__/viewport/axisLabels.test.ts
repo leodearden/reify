@@ -27,6 +27,9 @@ vi.mock('three', async () => {
 });
 
 import { createAxisLabels } from '../../viewport/axisLabels';
+// The same sentinel object the vi.mock('three') factory above hands to
+// axisLabels.ts, so `map.minFilter === LinearFilter` is a real identity check.
+import { LinearFilter } from './threeAxisMocks';
 import { AXES_RENDER_ORDER, AXIS_LABEL_RENDER_ORDER } from '../../viewport/renderOrder';
 
 beforeEach(() => {
@@ -257,17 +260,23 @@ describe('axis label screen footprint (#6588)', () => {
 
 describe('createAxisLabels — glyph drawing (getContext truthy)', () => {
   let mockFillText: ReturnType<typeof vi.fn>;
+  /** ctx.font as it stood at each fillText call — pins the font that was actually
+   *  IN FORCE when the glyph was drawn, not merely the last one ever assigned. */
+  let fontsAtDraw: string[];
 
   beforeEach(() => {
-    mockFillText = vi.fn();
+    fontsAtDraw = [];
     const mockCtx = {
       clearRect: vi.fn(),
-      fillText: mockFillText,
+      fillText: vi.fn(() => {
+        fontsAtDraw.push(mockCtx.font);
+      }),
       fillStyle: '',
       font: '',
       textAlign: '',
       textBaseline: '',
     };
+    mockFillText = mockCtx.fillText;
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
       (contextId: string) => (contextId === '2d' ? (mockCtx as any) : null),
     );
@@ -283,5 +292,47 @@ describe('createAxisLabels — glyph drawing (getContext truthy)', () => {
     expect(lettersDrawn).toContain('X');
     expect(lettersDrawn).toContain('Y');
     expect(lettersDrawn).toContain('Z');
+  });
+
+  // ── Texel budget and filtering (#6588) ─────────────────────────────────────
+  // Halving the label's screen size (step-2) is only half the cure for the
+  // reported staircase: the glyph also needs enough texels to survive, and must
+  // not be resolved through a blurred mip once it is usually MINIFIED.
+
+  it('draws each glyph into a square canvas of at least 128 px so it has texels to spare', () => {
+    const { group } = createAxisLabels();
+    expect(group.children).toHaveLength(3);
+    for (const child of group.children as any[]) {
+      const canvas = child.material.map.canvas;
+      expect(canvas.width).toBe(canvas.height);
+      // 4.8% of a 1600-device-px-tall HiDPI viewport is ~77 px, so 128 leaves
+      // headroom and the glyph is never magnified. 64 (the #6588 value) does not.
+      expect(canvas.width).toBeGreaterThanOrEqual(128);
+    }
+  });
+
+  it('scales the font with the canvas so more texels mean a bigger letter, not a smaller one', () => {
+    const { group } = createAxisLabels();
+    const edge = (group.children[0] as any).material.map.canvas.width;
+    expect(fontsAtDraw).toHaveLength(3);
+    for (const font of fontsAtDraw) {
+      const px = /(\d+(?:\.\d+)?)px/.exec(font);
+      expect(px).not.toBeNull();
+      // A fixed 48px font in a 128px canvas would shrink the letter to 37% of the
+      // texture and waste the extra resolution on empty margin.
+      expect(Number(px![1])).toBeGreaterThanOrEqual(0.6 * edge);
+    }
+  });
+
+  it('pins the label texture to linear minification with no mipmaps', () => {
+    const { group } = createAxisLabels();
+    for (const child of group.children as any[]) {
+      // CanvasTexture inherits minFilter = LinearMipmapLinearFilter. Now that the
+      // label is a fixed ~4.8% of the frame it is usually MINIFIED, so that default
+      // would sample a blurred mip of a 128-px letter instead of the letter.
+      // MockCanvasTexture starts both fields undefined, so this cannot pass vacuously.
+      expect(child.material.map.minFilter).toBe(LinearFilter);
+      expect(child.material.map.generateMipmaps).toBe(false);
+    }
   });
 });
