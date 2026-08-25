@@ -73,7 +73,7 @@ enum GeometricPattern {
     /// `angle_deg` is POST-CONVERSION DEGREES, not radians. The pattern
     /// deliberately stores the SolveSpace-side unit so the value that reaches
     /// `add_constraint_wrkpl` needs no further thought — see the marshalling
-    /// boundary in `extract_angle_pattern` for the crossing itself (#6184).
+    /// boundary in [`try_angle_eq`] for the crossing itself (#6184).
     Angle {
         line_a: LineRef,
         line_b: LineRef,
@@ -1806,7 +1806,7 @@ fn add_pattern_to_builder(
             // Angle constraints require a workplane in SolveSpace.
             // Degrees, not radians: `SLVS_C_ANGLE` reads `valA` in degrees, and
             // `angle_deg` was already converted at the marshalling boundary in
-            // `extract_angle_pattern` — no conversion is owed here (#6184).
+            // `try_angle_eq` — no conversion is owed here (#6184).
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
                 SLVS_C_ANGLE,
