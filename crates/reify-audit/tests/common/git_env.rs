@@ -191,9 +191,14 @@ pub fn poison_with_hook_git_env<'a>(cmd: &'a mut Command, decoy: &DecoyRepo) -> 
 }
 
 /// stdout, exit status, and stderr from one
-/// [`audit_script_stdout_poisoned_and_sanitized`] invocation — enough for a
-/// caller's assertion message to name the actual cause of an unexpected
-/// result instead of sending a reader to reproduce the run by hand.
+/// [`audit_script_stdout_poisoned_and_sanitized`] invocation.
+///
+/// All three are load-bearing, not just diagnostics: the audit script emits
+/// empty stdout BOTH when the hook environment redirects its scan into an
+/// empty tree (exit 0, stderr `no source files matched`) and when it aborts
+/// before scanning at all (non-zero, git's own `fatal:` line). A caller that
+/// reads only `stdout` cannot tell a demonstrated hazard from a broken
+/// fixture.
 #[allow(dead_code)]
 pub struct AuditRun {
     pub stdout: String,
@@ -222,53 +227,53 @@ pub struct AuditRun {
 /// # Graceful-skip protocol — delegated, not re-implemented
 ///
 /// Returns `None`, with an explanatory `stderr` note, exactly when
-/// `reify_test_support::run_orphan_audit` itself declines to hand back an
-/// envelope for `scope`. That one call IS the protocol. It owns the `python3`
-/// and `git` presence probes, the script-on-disk check, the
-/// `repo_root`-is-a-git-work-tree probe — including the literal
-/// "(or any of the parent directories)" stderr phrase that probe keys on —
-/// and the `EXCLUDE_CRATES` membership test. This helper used to re-implement
-/// all of them; that made it a second copy of a protocol whose most fragile
-/// element is a git diagnostic string, free to drift the moment either git's
-/// wording or production's probe changed.
+/// `reify_test_support::run_orphan_audit` declines to hand back an envelope
+/// for `scope`. That one call IS the protocol — the `python3`/`git` presence
+/// probes, the script-on-disk check, the `repo_root`-is-a-git-work-tree probe
+/// and the `EXCLUDE_CRATES` membership test. Do not re-implement any of it
+/// here: its most fragile element is a git diagnostic string that probe keys
+/// on, so a second copy drifts the moment either git's wording or production's
+/// probe changes.
 ///
-/// Two distinct outcomes collapse into that `None`, and both are legitimate
-/// skips here for the same reason — they make BOTH halves empty, so comparing
-/// them would prove nothing:
+/// Every cause of that `None` empties BOTH halves below — without `python3`
+/// the script exits 3 with no stdout either way; an `EXCLUDE_CRATES` scope
+/// legitimately emits nothing, reachable by any future caller since this
+/// helper is generic over `scope`. So a caller comparing the two halves would
+/// fail its "sanitized is non-empty" assertion while passing its "poisoned is
+/// empty" one: a spurious RED that says nothing about the hazard. Skipping is
+/// the only honest answer.
 ///
-/// - The environment cannot satisfy the script's prerequisites. Load-bearing
-///   rather than conventional: without `python3` the script exits 3 with empty
-///   stdout on both halves, so a caller's "poisoned output is empty" assertion
-///   would pass while its "sanitized output is non-empty" assertion failed — a
-///   spurious RED that says nothing about the hazard.
-/// - `scope`'s crate segment is in `EXCLUDE_CRATES`, for which the script
-///   legitimately emits nothing. Same spurious RED, different cause. This
-///   helper is generic over `scope`, so that is reachable by any future caller
-///   passing e.g. `crates/reify-test-support/src`, not just a hypothetical.
+/// Delegating also inherits the protocol's LOUD half. A `git rev-parse
+/// --show-toplevel` that fails for a reason OTHER than "no repository here" —
+/// a corrupt `.git`, dubious ownership under this project's shared
+/// warm-lane/worktree topology — is a condition where a repository IS expected
+/// to exist. Production panics on it, naming the probe's status and stderr;
+/// the re-implementation here swallowed both and fell through, so the caller
+/// blamed a broken `--scope` instead: the wrong diagnosis, with the right one
+/// already measured and discarded.
 ///
-/// The LOUD half of the protocol is single-sourced too, which is the other
-/// half of why this delegates. A `git rev-parse --show-toplevel` that fails
-/// for a reason OTHER than "no repository here" — dubious ownership under this
-/// project's shared warm-lane/worktree topology, a corrupt `.git` file — is a
-/// condition where a real repository IS expected to exist. Production panics
-/// on it, naming the probe's exit status and stderr. The re-implementation
-/// here instead discarded that stderr and fell through, so the run continued,
-/// the sanitized half came back empty, and the caller's assertion blamed a
-/// broken `--scope` or a missed tool probe: the wrong diagnosis, with the real
-/// one already measured and thrown away.
+/// Must NOT be called from inside a poisoned replay child: the gate call
+/// would hit `run_orphan_audit`'s repo-root mismatch panic rather than
+/// skipping. Asserted below rather than left to this comment plus the replay
+/// filter's substring choice, so widening that filter — or adding a test here
+/// whose name happens to match it — fails on the precondition instead of
+/// three frames down inside `reify-test-support`.
 ///
-/// Do NOT call this from inside a poisoned replay child: the gate call would
-/// hit `run_orphan_audit`'s repo-root mismatch panic rather than skipping. No
-/// caller does — see `orphan_audit_survives_ambient_hook_git_env`'s filter.
-///
-/// Spawn failures are hard failures, matching `run_orphan_audit`. Exit status
-/// is not asserted by this helper's own logic — both runs exit 0 (measured),
-/// so the signal is entirely in stdout — but it is carried on [`AuditRun`]
-/// regardless, so a caller whose stdout-based assertion fails can report the
-/// actual status and stderr instead of sending a reader to reproduce the run
-/// by hand.
+/// Spawn failures are hard failures, matching `run_orphan_audit`. This helper
+/// asserts nothing about either run itself; it reports stdout, status and
+/// stderr on [`AuditRun`] and leaves every judgement to the caller, which
+/// needs all three to tell "redirected into the empty decoy and ran to
+/// completion" (exit 0) from "aborted before scanning" (non-zero).
 #[allow(dead_code)]
 pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, AuditRun)> {
+    assert!(
+        !in_replay_child(),
+        "audit_script_stdout_poisoned_and_sanitized must not run inside the poisoned \
+         replay child — its `run_orphan_audit` gate would hit the repo-root mismatch \
+         panic instead of skipping. Narrow the replay filter so it does not select \
+         this helper's caller."
+    );
+
     // The ENTIRE graceful-skip protocol, in one delegated call — see this
     // function's doc for why it is delegated rather than re-implemented. A
     // `None` means "either the environment cannot run the script, or this
