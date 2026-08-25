@@ -477,6 +477,15 @@ pub structure RearDrive {
     let unit_r_pitch  = self.unit_a.r_pitch         // fairlead pulley pitch radius
     let unit_web_half = self.unit_a.frame_web_half  // collar web half-height
     let unit_frame_x  = self.unit_a.frame_half_x    // collar half-width
+    // Fairlead band heights (unit-local z of each pulley centre) — these are
+    // what the drive-plane routing must descend to / rise from, and were the
+    // last hand-kept literals in DriveTendons (flz_in1 = −168.9 etc.).
+    let unit_w1_in    = self.unit_a.w1_in
+    let unit_w1_out   = self.unit_a.w1_out
+    let unit_w2_in    = self.unit_a.w2_in
+    let unit_w2_out   = self.unit_a.w2_out
+    /// Rope vertical stand-off from the drum axis (== CapstanUnit vert_x).
+    let unit_vert_x   = self.unit_a.vert_x
 
     constraint cap_x > 0mm
 }
@@ -757,15 +766,35 @@ pub structure DriveTendons {
     // belt B w2) so runs, discs, and rises clear each other (min surface
     // clearance ≈ 6mm, verified pairwise during placement).
     //
-    // Hand-kept fairlead mirrors (#5360 — derive once chained sub reads land):
-    let cap_x_m   = 100mm    // == RearDrive.cap_x
-    let fl_vert   = 63mm     // == CapstanUnit pulley_x + r_pitch (vertical stand-off)
-    let flz_in1   = neg_drop + 51.1mm   // w1_in  pulley centre (world z)
-    let flz_out1  = neg_drop - 7mm      // w1_out
-    let flz_in2   = neg_drop + 7mm      // w2_in
-    let flz_out2  = neg_drop - 51.1mm   // w2_out
+    // Fairlead mirrors — DERIVED through RearDrive's relays (#5360 landed
+    // 2026-07-31); every one of these was a hand-kept literal until 2026-08-25.
+    let cap_x_m   = self.rear_drive.cap_x        // drive-unit lateral offset
+    let fl_vert   = self.rear_drive.unit_vert_x  // rope vertical stand-off from the drum axis
+    let flz_in1   = neg_drop + self.rear_drive.unit_w1_in    // w1_in  pulley centre (world z)
+    let flz_out1  = neg_drop + self.rear_drive.unit_w1_out   // w1_out
+    let flz_in2   = neg_drop + self.rear_drive.unit_w2_in    // w2_in
+    let flz_out2  = neg_drop + self.rear_drive.unit_w2_out   // w2_out
     let low_hi    = 0mm - 320mm
     let low_lo    = 0mm - 365mm
+
+    // ── Free vertical corridors (the rule the v1 hand-solve violated) ───────
+    // A rope descending in a tangent plane past a drive unit must miss THREE
+    // things, all derived here so a cap_x / pulley_x edit re-solves them:
+    //  • the drum flange, which crosses each tangent plane over a strip of
+    //    half-width sqrt(flange_r² − cap_pitch_r²) about the drum axis;
+    //  • the two fairlead pulley DISCS in that plane (they lie in XZ, radius
+    //    r_pitch, centred cap_x ∓ pulley_x) — the v1 solve checked the runs
+    //    but never the discs;
+    //  • the unit's own rope verticals at cap_x ± fl_vert.
+    // Everything inboard of a unit's inner disc edge is the MID corridor.
+    let flange_r_m   = self.rear_drive.unit_pitch_r + 9mm   // == Capstan flange_r (pitch_r + rope_dia*1.5)
+    let drum_band    = sqrt(flange_r_m * flange_r_m - cap_pitch_r * cap_pitch_r)
+    let rope_r       = 3mm                                   // == LinearTendon diameter / 2
+    let clear_min    = 6mm                                   // the drive's surface-clearance floor
+    /// Inner edge of a unit's inboard fairlead disc — the mid corridor runs
+    /// from −mid_corr_x to +mid_corr_x and is the only place a rope may pass
+    /// between the two units.
+    let mid_corr_x   = cap_x_m - fl_pulley_x - r_pitch - rope_r - clear_min
 
     // Rear pulleys (BL/FR = belt A, BR/FL = belt B; _u/_l = its ±z levels).
     sub corner_bl_u   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, moved_y,  z_a))        // A w1-IN (moved)
