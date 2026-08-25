@@ -436,6 +436,17 @@ fn assert_gauge_covariance(
     for (i, (b, s)) in base_forces.iter().zip(scaled_forces.iter()).enumerate() {
         let (bn, sn) = (force_si(b), force_si(s));
         let expected = bn * GAUGE_LAMBDA;
+        // NON-VACUITY — the same hole `assert_bridge_holds` closes with its sign contract:
+        // `|sn − bn·λ| ≤ tol·|bn·λ|` collapses to `0 ≤ 0` at bn = 0 and then holds for EVERY
+        // member at EVERY λ. The `!is_empty()` guard above does not exclude an all-zero list.
+        // Live hazard, not hypothetical: on the free path q is solver-DERIVED, so a
+        // GroupRatios regression collapsing every derived density to zero would land here
+        // green, and the geometry half is equally satisfied by an unchanged node set.
+        assert!(
+            bn.abs() > 1e-9,
+            "{site}: member_forces[{i}] = {bn} at the base gauge makes the ×{GAUGE_LAMBDA} \
+             covariance check vacuous — 0 == 0·λ holds for any λ (task #6095)"
+        );
         assert!(
             (sn - expected).abs() <= force_rel_tol * expected.abs(),
             "{site}: member_forces[{i}] must scale by exactly {GAUGE_LAMBDA} under the gauge \
@@ -458,6 +469,10 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
     let base = solve_at(&BASE_Q);
     let scaled_q: Vec<f64> = BASE_Q.iter().map(|&q| q * GAUGE_LAMBDA).collect();
     let scaled = solve_at(&scaled_q);
+    // The rescaled solve must independently satisfy the bridge — strict FORCE / bare-Real
+    // tags, the Nᵢ = qᵢ·Lᵢ·q_ref identity, and the sign contract — so covariance is asserted
+    // BETWEEN two solves each known good, not merely between two ratios.
+    assert_bridge_holds(&scaled, "anchored line-only (scaled gauge)");
     assert_gauge_covariance(&base, &scaled, 1e-9, 1e-12, "anchored line-only");
 }
 
@@ -488,6 +503,10 @@ fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
     let base = solve_free_at(&BASE_SEED);
     let scaled_seed: Vec<f64> = BASE_SEED.iter().map(|&r| r * GAUGE_LAMBDA).collect();
     let scaled = solve_free_at(&scaled_seed);
+    // The scaled FREE solve is the one result nothing else pins: the base free gauge is
+    // covered by `free_standing_member_forces_are_strictly_force_dimensioned`, but a
+    // GroupRatios regression that only bites at λ = 7 would otherwise land here unchecked.
+    assert_bridge_holds(&scaled, "free-standing (scaled gauge)");
 
     // The echoed densities must scale too — that is what makes this a GAUGE rescale and
     // not merely a different search that happened to land on the same shape.
@@ -497,6 +516,14 @@ fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
     for (i, (b, s)) in base_q.iter().zip(scaled_q.iter()).enumerate() {
         let (bq, sq) = (bare_real("force_densities", b), bare_real("force_densities", s));
         let expected = bq * GAUGE_LAMBDA;
+        // The same non-vacuity floor as `assert_gauge_covariance`, on the quantity the free
+        // path actually SEARCHES: at bq = 0 the ×λ claim is trivially true.
+        assert!(
+            bq.abs() > 1e-9,
+            "free-standing: force_densities[{i}] = {bq} at the base gauge makes the \
+             ×{GAUGE_LAMBDA} scale check vacuous; the GroupRatios search must not collapse \
+             a derived density to zero (task #6095)"
+        );
         assert!(
             (sq - expected).abs() <= 1e-8 * expected.abs(),
             "free-standing: force_densities[{i}] must scale by {GAUGE_LAMBDA} under a \
