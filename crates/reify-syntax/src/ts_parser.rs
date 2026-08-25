@@ -4094,28 +4094,7 @@ impl<'a> Lowering<'a> {
                 op_residue = strip_unit_op_comments(op_text, op_start, &comment_spans);
                 classify_unit_op(&op_residue)
             };
-            return match op {
-                UnitOp::Mul => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
-                UnitOp::Div => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
-                // Silent BY DESIGN, and not the INV-SF-7 shape: error recovery
-                // spliced the operands together, so the tree already carries the
-                // ERROR/MISSING node `check_and_lower!` reports. The drop is loud
-                // where the user observes it — just not reported twice.  A slice
-                // that held ONLY comments reduces to this same case, and for the
-                // same reason: the operator token is genuinely absent from the
-                // source, so the tree is already in error.
-                UnitOp::Missing => None,
-                // Names the comment-free RESIDUE, which is the operator the user
-                // actually wrote; a comment they deliberately put there is not
-                // part of the complaint.
-                UnitOp::Unrecognized(other) => {
-                    self.push_error(
-                        format!("unrecognized unit operator `{other}` in unit expression"),
-                        self.span(node),
-                    );
-                    None
-                }
-            };
+            return self.unit_expr_from_classified_op(op, left, right, node);
         }
 
         // 3. Paren or bare unit: walk named children. A `unit_name` child is a
@@ -4132,6 +4111,50 @@ impl<'a> Lowering<'a> {
             }
         }
         None
+    }
+
+    /// Build the [`UnitExpr`] a classified operator calls for, or drop the
+    /// member — loudly for [`UnitOp::Unrecognized`], silently for
+    /// [`UnitOp::Missing`].  `node` is the whole `unit_expr` being lowered, and
+    /// is what any diagnostic is spanned to.
+    ///
+    /// Split out of [`Self::lower_unit_expr`] purely as a TEST SEAM, following
+    /// the same shape as [`Self::qualified_type_recovery_base`]: no source
+    /// reaches the two dropping arms today (see [`UnitOp`]), so a synthetic
+    /// classification handed to a real CST node is the only way to observe the
+    /// diagnostic's WORDING and its SPAN.  Without that, the `push_error` call
+    /// below is defensive code whose first execution would be in production —
+    /// the shape INV-SF-7 warns about.  `unit_op_seam_*` in this file's `mod
+    /// tests` drives all four arms.
+    fn unit_expr_from_classified_op(
+        &self,
+        op: UnitOp<'_>,
+        left: UnitExpr,
+        right: UnitExpr,
+        node: tree_sitter::Node,
+    ) -> Option<UnitExpr> {
+        match op {
+            UnitOp::Mul => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
+            UnitOp::Div => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
+            // Silent BY DESIGN, and not the INV-SF-7 shape: error recovery
+            // spliced the operands together, so the tree already carries the
+            // ERROR/MISSING node `check_and_lower!` reports. The drop is loud
+            // where the user observes it — just not reported twice.  A slice
+            // that held ONLY comments reduces to this same case, and for the
+            // same reason: the operator token is genuinely absent from the
+            // source, so the tree is already in error.
+            UnitOp::Missing => None,
+            // Names the comment-free RESIDUE, which is the operator the user
+            // actually wrote; a comment they deliberately put there is not
+            // part of the complaint.
+            UnitOp::Unrecognized(other) => {
+                self.push_error(
+                    format!("unrecognized unit operator `{other}` in unit expression"),
+                    self.span(node),
+                );
+                None
+            }
+        }
     }
 
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -4686,9 +4709,17 @@ impl<'a> Lowering<'a> {
 /// scanner never emits.  So `Unrecognized` now guards against a FUTURE operator
 /// token reaching this function unhandled: without the diagnostic, a bare `None`
 /// out of `lower_unit_expr` propagates through `lower_quantity_literal` and
-/// `lower_let` as a DROPPED member with no error at all.  The
-/// `classify_unit_op_*` and `strip_unit_op_comments_*` tests below are the only
-/// observation of both arms; do not delete them as "dead".
+/// `lower_let` as a DROPPED member with no error at all.
+///
+/// Both arms are therefore observed ONLY by tests, in two layers — do not delete
+/// either as "dead":
+///   - `classify_unit_op_*` and `strip_unit_op_comments_*` pin the
+///     CLASSIFICATION, i.e. which arm a given slice lands in;
+///   - `unit_op_seam_*` pin what the CALL SITE then does with it — that
+///     `Unrecognized` emits exactly one error naming the operator verbatim and
+///     spanned to the whole `unit_expr`, and that `Missing` emits none.  They
+///     drive [`Lowering::unit_expr_from_classified_op`] directly, which exists
+///     as that seam.
 #[derive(Debug, PartialEq, Eq)]
 enum UnitOp<'a> {
     /// `*` or `·` (U+00B7 MIDDLE DOT) — two spellings of ONE operator, both
@@ -7204,8 +7235,11 @@ mod tests {
     // Both leftover arms are DEFENSIVE — no probed source reaches `Unrecognized`
     // or `Missing` now that `strip_unit_op_comments` runs first (see the
     // [`UnitOp`] doc for why they still must diagnose rather than return a bare
-    // `None`).  These tests are therefore their ONLY observation; deleting them
-    // as "dead code" restores the silent-member-drop hazard unobserved.
+    // `None`).  Tests are therefore their only observation, and these cover just
+    // one half of it: WHICH ARM a slice lands in.  What the call site does with
+    // that arm — the diagnostic's wording, its span, and the silence of
+    // `Missing` — is pinned by `unit_op_seam_*` below.  Deleting either group as
+    // "dead code" restores the silent-member-drop hazard unobserved.
 
     #[test]
     fn classify_unit_op_maps_both_mul_spellings_to_one_operator() {
@@ -7315,5 +7349,143 @@ mod tests {
         let residue = strip_unit_op_comments("/*c*/", 24, &[(24, 29)]);
         assert_eq!(residue.as_ref(), "");
         assert_eq!(classify_unit_op(&residue), UnitOp::Missing);
+    }
+    // ── The CALL SITE: `Lowering::unit_expr_from_classified_op` ───────────────
+    //
+    // #5784 amendment pass.  The `classify_unit_op_*` tests above stop at the
+    // classification; nothing observed what the caller then DOES with a dropping
+    // arm — not the diagnostic's wording, not the span it attaches, not the
+    // SILENCE of `Missing`.  Both arms are unreachable from source (the scanner
+    // emits only `*`, `·` and `/`, and comments are excised before classifying),
+    // so the classification is the synthetic half here while the NODE stays real:
+    // the span assertion is then a genuine claim about which construct an editor
+    // underlines.  Same shape as `qualified_type_recovery_base_is_bounded_named`
+    // above — a real CST node, a helper called directly.
+
+    /// The source every seam test below drives, and the `unit_expr` it targets.
+    const UNIT_OP_SEAM_SOURCE: &str = "structure def S { let x = 5N*m }";
+    const UNIT_OP_SEAM_UNIT: &str = "N*m";
+
+    /// Parse `source` with the raw tree-sitter API so the CST is reachable.
+    fn unit_op_seam_tree(source: &str) -> tree_sitter::Tree {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("set_language failed");
+        ts_parser.parse(source, None).expect("parse returned None")
+    }
+
+    /// The two operands every seam test passes in — named so an assertion that
+    /// they came back in ORDER is readable.
+    fn unit_op_seam_operands() -> (UnitExpr, UnitExpr) {
+        (
+            UnitExpr::Unit("N".to_string()),
+            UnitExpr::Unit("m".to_string()),
+        )
+    }
+
+    #[test]
+    fn unit_op_seam_unrecognized_names_the_operator_and_spans_the_expression() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        assert_eq!(
+            &UNIT_OP_SEAM_SOURCE[unit_expr.start_byte()..unit_expr.end_byte()],
+            UNIT_OP_SEAM_UNIT,
+            "fixture drift: this test means to span the WHOLE compound unit, so \
+             the node it found must be the outer `unit_expr`, not an operand"
+        );
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+
+        // `/*c*/*` is the residue shape κ used to reject before comment excision
+        // landed — kept as the probe because it is the one operator text this
+        // arm has ever really been handed.
+        let lowered = lowering.unit_expr_from_classified_op(
+            UnitOp::Unrecognized("/*c*/*"),
+            left,
+            right,
+            unit_expr,
+        );
+
+        assert_eq!(
+            lowered, None,
+            "an unrecognized operator must drop the member — but see the \
+             diagnostic below: dropping it SILENTLY is the INV-SF-7 shape"
+        );
+        let errors = lowering.errors.borrow();
+        let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec!["unrecognized unit operator `/*c*/*` in unit expression"],
+            "the diagnostic must quote the operator VERBATIM and be the ONLY one \
+             emitted — a second message here means the caller is also reporting \
+             the same node through `check_and_lower!`"
+        );
+        let span = errors[0].span;
+        assert_eq!(
+            (span.start, span.end),
+            (unit_expr.start_byte() as u32, unit_expr.end_byte() as u32),
+            "the diagnostic must underline the whole `{UNIT_OP_SEAM_UNIT}` it \
+             rejected, not the operator alone and not the file"
+        );
+    }
+
+    #[test]
+    fn unit_op_seam_missing_drops_the_member_without_a_second_diagnostic() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+
+        let lowered =
+            lowering.unit_expr_from_classified_op(UnitOp::Missing, left, right, unit_expr);
+
+        assert_eq!(lowered, None, "a missing operator cannot build a UnitExpr");
+        assert!(
+            lowering.errors.borrow().is_empty(),
+            "`Missing` must stay SILENT: error recovery spliced the operands \
+             together, so `check_and_lower!` already reported the ERROR/MISSING \
+             node — a diagnostic here would be the second one for one mistake, \
+             got {:?}",
+            lowering.errors.borrow()
+        );
+    }
+
+    #[test]
+    fn unit_op_seam_builds_mul_and_div_in_operand_order() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+        let expected_left = Box::new(UnitExpr::Unit("N".to_string()));
+        let expected_right = Box::new(UnitExpr::Unit("m".to_string()));
+
+        assert_eq!(
+            lowering.unit_expr_from_classified_op(
+                UnitOp::Mul,
+                left.clone(),
+                right.clone(),
+                unit_expr
+            ),
+            Some(UnitExpr::Mul(
+                expected_left.clone(),
+                expected_right.clone()
+            )),
+            "`Mul` must keep the operands in source order — swapping them is \
+             invisible to every commutative-looking end-to-end assertion"
+        );
+        assert_eq!(
+            lowering.unit_expr_from_classified_op(UnitOp::Div, left, right, unit_expr),
+            Some(UnitExpr::Div(expected_left, expected_right)),
+            "`Div` is NOT commutative: numerator left, denominator right"
+        );
+        assert!(
+            lowering.errors.borrow().is_empty(),
+            "a recognised operator must not diagnose, got {:?}",
+            lowering.errors.borrow()
+        );
     }
 }
