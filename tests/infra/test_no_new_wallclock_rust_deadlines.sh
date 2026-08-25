@@ -39,15 +39,33 @@
 # ---------------------------------------------------------------------------
 #
 # THE TWO RULES (both single-physical-line; see the detector for rationale):
-#   Rule A -- `Instant::now()` immediately followed by `+` or by
-#             `.checked_add`: a real-clock deadline built by hand instead of
-#             taken through the WaitClock seam that watcher_tests.rs provides.
-#   Rule B -- an UPPER bound compared against a `Duration`, in any of its
-#             three natural spellings: `x < Duration::..`, `x <= Duration::..`,
-#             and the reversed `Duration::.. > x` / `>= x`. An upper bound on
-#             elapsed time inverts under descheduling. LOWER bounds
-#             (`x >= Duration::..`, `x > Duration::..`) are deliberately NOT
-#             matched -- they are monotone-safe.
+#   Rule A -- the raw clock used as a deadline, in either half of that:
+#             `Instant::now()` immediately followed by `+` or by
+#             `.checked_add` (the deadline BUILT by hand instead of taken
+#             through the WaitClock seam that watcher_tests.rs provides), or
+#             `Instant::now()` on either side of a comparison operator (that
+#             deadline CHECKED -- `while Instant::now() < deadline`). The
+#             comparison half is not decoration: the build half alone is
+#             evaded by nothing more devious than a line break, since
+#             `let start = Instant::now();` followed later by
+#             `let deadline = start + Duration::from_secs(5);` puts
+#             `Instant::now()` adjacent to nothing at all -- and that is the
+#             exact construct #6438 deleted. A hand-rolled deadline is inert
+#             unless it is compared against the clock, so the comparison is
+#             where an otherwise invisible one resurfaces.
+#   Rule B -- an UPPER bound on elapsed time, in either of its two families.
+#             Against a `Duration`, in three spellings: `x < Duration::..`,
+#             `x <= Duration::..`, and the reversed `Duration::.. > x` /
+#             `>= x`. Or against a plain number after a scalar accessor, in
+#             two: `x.as_millis() < 500` / `x.as_secs_f64() <= 2.0`, and the
+#             reversed `500 > x.as_millis()`. The scalar family carries no
+#             `Duration::` token anywhere on the line, so the Duration family
+#             alone left `assert!(start.elapsed().as_millis() < 500)` -- the
+#             same upper bound with the type erased -- completely invisible.
+#             An upper bound on elapsed time inverts under descheduling.
+#             LOWER bounds (`x >= Duration::..`, `x > Duration::..`,
+#             `x.as_millis() >= 150`, `150 < x.as_millis()`) are deliberately
+#             NOT matched -- they are monotone-safe.
 #
 # Escape: a same-line comment carrying the token `wallclock` immediately
 # followed by `:allow`. It is written apart HERE on purpose -- see SELF-MATCH
@@ -70,13 +88,37 @@
 # a review, not added quietly.
 #
 # KNOWN LIMITS, stated rather than hidden -- this is a lexical guard, not a
-# type-aware one, so two shapes get past it by construction:
-#   * A named constant: `assert!(elapsed < TIMEOUT_BUDGET)` has no `Duration::`
-#     token on the line, so Rule B cannot see it. Chasing it would need type
-#     resolution (or a const-name index), which is out of proportion to a grep.
+# type-aware one.
+#
+# FALSE NEGATIVES, i.e. shapes that get past it by construction:
+#   * A named constant: `assert!(elapsed < TIMEOUT_BUDGET)` carries neither a
+#     `Duration::` token nor a scalar accessor on the line, so Rule B cannot
+#     see it. Chasing it would need type resolution (or a const-name index),
+#     which is out of proportion to a grep.
+#   * The raw clock bound to a variable BEFORE the comparison:
+#     `let now = Instant::now();` ... `if now >= deadline`. Rule A's
+#     comparison half sees `Instant::now()` next to an operator, not a
+#     variable that once held it -- one hop of dataflow, the same blind spot
+#     as the named constant above. Note the hop has to be taken deliberately:
+#     the natural spellings of both halves ARE matched, so this is a shape you
+#     write around the guard, not one you fall into.
 #   * A construct split across physical lines, since neither rule joins lines
-#     (see the detector for why that is deliberate). rustfmt keeps both shapes
-#     on one line at any realistic width, so this bites a hand-wrapped site.
+#     (see the detector for why that is deliberate). rustfmt keeps every shape
+#     above on one line at any realistic width, so this bites a hand-wrapped
+#     site.
+#
+# FALSE POSITIVE -- exactly one, and it is deliberate:
+#   * PROSE IS NOT EXEMPT. Both rules scan every physical line, comments
+#     included, so a doc comment that QUOTES a forbidden shape (e.g.
+#     `/// e.g. assert!(elapsed < Duration::from_secs(2))`) is reported as a
+#     violation. Fixture 2z pins that, rather than leaving it as folklore for
+#     the next author to discover from a red run. Exempting `//` lines was
+#     considered and rejected: it is the first step toward the Rust-grammar
+#     joiner this guard deliberately does not have (`/* */`, raw strings, a
+#     `//` inside a string literal), and the remedy is already cheap --
+#     annotate that one line with the escape, or describe the shape without
+#     writing it out, as this header's own rule descriptions do.
+#
 # Neither gap is silent: the REAL-CLOCK LEDGER in watcher_tests.rs is the prose
 # half that covers what a grep cannot, and review is the backstop for both.
 #
@@ -145,10 +187,27 @@ _fixture() {
 # elapsed-time upper bounds. A PHYSICAL line is a violation iff it matches
 # Rule A or Rule B and does NOT carry the escape comment.
 #
-#   Rule A  Instant::now\(\)[[:space:]]*(\+|\.checked_add)
+#   Rule A  (Instant::now\(\)[[:space:]]*(\+|\.checked_add|[<>]=?))
+#           |([<>]=?[[:space:]]*Instant::now\(\))
 #           A real-clock deadline built by hand: reading the raw clock and
-#           offsetting from it, instead of going through the WaitClock seam.
-#           BOTH spellings are matched. `checked_add` was originally left out
+#           offsetting from it, instead of going through the WaitClock seam --
+#           or, in the trailing alternatives, CHECKING such a deadline by
+#           comparing the raw clock against it. Those comparison alternatives
+#           were added in the #6438 review pass, and they close the one gap
+#           that mattered: the offset half is defeated by a line break alone.
+#           `let start = Instant::now();` on one line and
+#           `let deadline = start + Duration::from_secs(5);` on the next puts
+#           `Instant::now()` adjacent to nothing, and no Rule B token appears
+#           anywhere either -- so the entire construct #6438 deleted could
+#           have been rewritten straight past the guard without one
+#           deliberate evasion. A deadline is inert until it is compared
+#           against the clock, so the comparison line is where an otherwise
+#           invisible one resurfaces. BOTH operand orders are matched
+#           (`Instant::now() < deadline` and `deadline > Instant::now()`), and
+#           BOTH directions: unlike Rule B, direction carries no safety
+#           meaning here -- comparing the raw clock against a deadline is the
+#           hand-rolled poll loop whichever way round it is written.
+#           BOTH offset spellings are matched too. `checked_add` was originally left out
 #           on the theory that it signals deliberate intent -- but intent is
 #           not the property being guarded, and leaving it out meant
 #           `Instant::now().checked_add(Duration::from_secs(5)).unwrap()` was
@@ -164,6 +223,8 @@ _fixture() {
 #             * `t0 + Duration::from_millis(150)`   -- synthetic arithmetic
 #
 #   Rule B  (<=?[[:space:]]*Duration::)|(Duration::[a-z_]*\([^)]*\)[[:space:]]*>)
+#           |(\.as_<scalar>\(\)[[:space:]]*<=?)
+#           |(>=?[[:space:]]*<expr>\.as_<scalar>\(\))
 #           An UPPER bound against a Duration -- what a Rust upper bound on
 #           elapsed time looks like, whether the left operand is `x.elapsed()`
 #           or a bound variable holding it. That is exactly why the rule does
@@ -181,6 +242,20 @@ _fixture() {
 #           rule are mirror images on purpose -- the operand order decides which
 #           direction a comparison bounds, so `Duration::` on the left with `>`
 #           means the same thing as `Duration::` on the right with `<`.
+#           THE SCALAR FAMILY (the two trailing alternatives, added in the
+#           #6438 review pass) is that same bound with the TYPE ERASED:
+#           `assert!(start.elapsed().as_millis() < 500)` and
+#           `assert!(elapsed.as_secs_f64() <= 2.0)` state exactly the
+#           starvation-invertible claim the Duration alternatives exist to
+#           catch, while carrying no `Duration::` token anywhere on the line
+#           -- so those alternatives could not see them at all. The accessor
+#           list is explicit (as_millis, as_micros, as_nanos, as_secs_f32,
+#           as_secs_f64, as_secs) rather than a blanket `as_[a-z_]*`, which
+#           would flag ordinary comparisons like `a.as_str() < b`. Direction
+#           is preserved exactly as above: the forward alternative takes only
+#           `<` / `<=` AFTER the accessor and the reversed one only `>` / `>=`
+#           BEFORE it, so `elapsed.as_millis() >= 150` and
+#           `150 < elapsed.as_millis()` -- both LOWER bounds -- stay clean.
 #
 # NO LINE JOINER, deliberately -- and this is the sharpest difference from the
 # sibling guard, which needs a bash quote-state machine. Both rules here are
@@ -205,8 +280,21 @@ _detect_rust_wallclock_deadline() {
     # this source file holds no contiguous copy of it (see SELF-MATCH SAFETY
     # in the header).
     local _esc_re; _esc_re='wallcl''ock:allow'
-    local _rule_a; _rule_a='Instant::now\(\)[[:space:]]*(\+|\.checked_add)'
-    local _rule_b; _rule_b='(<=?[[:space:]]*Duration::)|(Duration::[a-z_]*\([^)]*\)[[:space:]]*>)'
+    local _rule_a
+    _rule_a='(Instant::now\(\)[[:space:]]*(\+|\.checked_add|[<>]=?))'
+    _rule_a="${_rule_a}"'|([<>]=?[[:space:]]*Instant::now\(\))'
+    local _rule_b
+    _rule_b='(<=?[[:space:]]*Duration::)|(Duration::[a-z_]*\([^)]*\)[[:space:]]*>)'
+    # Scalar-accessor family, composed in rather than spelled inline so the
+    # accessor list appears once instead of twice (the same composition idiom
+    # the sibling guard uses for its `_wc_var_sfx`). The `<expr>` before the
+    # accessor in the reversed alternative is deliberately narrow -- an
+    # identifier with dots -- because a blanket `.*` there would let any `>`
+    # earlier on the line (a `->` return arrow, a generic close) drag an
+    # innocent line in.
+    local _scal; _scal='(millis|micros|nanos|secs_f32|secs_f64|secs)'
+    _rule_b="${_rule_b}"'|(\.as_'"${_scal}"'\(\)[[:space:]]*<=?)'
+    _rule_b="${_rule_b}"'|(>=?[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.as_'"${_scal}"'\(\))'
 
     local _found=0
     local f
@@ -552,6 +640,146 @@ _s2r_rc=0
 _detect_rust_wallclock_deadline "$_s2r_tmpdir" 2>/dev/null || _s2r_rc=$?
 assert "2r: lower bound with Duration on the right, and a -> return type, stay clean (returns 0)" \
     test "$_s2r_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2s: Rule A positive, SPLIT-DEADLINE form -- the construct #6438 deleted,
+#     minimally rewritten so no line carries `Instant::now()` next to `+`.
+#     The guard shipped by #6438 returned rc 0 for this whole fixture: the
+#     seed line is a sanctioned synthetic-clock binding (2a), the offset line
+#     never mentions `Instant::now()`, and neither line compares against a
+#     `Duration`. The comparison line is the one that must fire -- a deadline
+#     nobody checks does nothing, so checking it is where it resurfaces.
+# ---------------------------------------------------------------------------
+_s2s_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2s_tmpdir")
+_fixture "$_s2s_tmpdir" "fixture.rs" \
+    '    let start = Instant::now();' \
+    '    let deadline = start + Duration::from_secs(5);' \
+    '    while Instant::now() < deadline {' \
+    '        std::thread::sleep(Duration::from_millis(2));' \
+    '    }'
+
+_s2s_rc=0
+_detect_rust_wallclock_deadline "$_s2s_tmpdir" 2>/dev/null || _s2s_rc=$?
+assert "2s: split-deadline poll loop is flagged at its comparison (returns 1)" \
+    test "$_s2s_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2t: Rule A positive, REVERSED-OPERAND comparison -- `deadline <= Instant::
+#     now()` is the same expiry check with the operands swapped, and operand
+#     order is a style choice. Pairs with 2s exactly as 2q pairs with 2e.
+# ---------------------------------------------------------------------------
+_s2t_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2t_tmpdir")
+_fixture "$_s2t_tmpdir" "fixture.rs" \
+    '        if deadline <= Instant::now() {'
+
+_s2t_rc=0
+_detect_rust_wallclock_deadline "$_s2t_tmpdir" 2>/dev/null || _s2t_rc=$?
+assert "2t: reversed-operand expiry check (deadline <= Instant::now()) is flagged (returns 1)" \
+    test "$_s2t_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2u: Rule A negative, the MIRROR of 2s/2t -- the SAME poll loop taken through
+#     the `WaitClock` seam stays clean. This is the remedy the detector's own
+#     hint names first, so flagging it would leave an author with no legal
+#     way to wait at all. Only the RAW clock is a violation.
+# ---------------------------------------------------------------------------
+_s2u_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2u_tmpdir")
+_fixture "$_s2u_tmpdir" "fixture.rs" \
+    '    let deadline = clock.now() + timeout;' \
+    '    while clock.now() < deadline {' \
+    '        clock.sleep(Duration::from_millis(20));' \
+    '    }'
+
+_s2u_rc=0
+_detect_rust_wallclock_deadline "$_s2u_tmpdir" 2>/dev/null || _s2u_rc=$?
+assert "2u: the same poll loop on the WaitClock seam stays clean (returns 0)" \
+    test "$_s2u_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2v: Rule B positive, SCALAR-ACCESSOR form -- 2e's bound with the type
+#     erased. No `Duration::` token appears on the line, so the Duration
+#     alternatives cannot see it; it is nonetheless the identical
+#     starvation-invertible claim, and the most natural way to write it once
+#     someone reaches for a millisecond count.
+# ---------------------------------------------------------------------------
+_s2v_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2v_tmpdir")
+_fixture "$_s2v_tmpdir" "fixture.rs" \
+    '    assert!(start.elapsed().as_millis() < 500, "should return promptly");'
+
+_s2v_rc=0
+_detect_rust_wallclock_deadline "$_s2v_tmpdir" 2>/dev/null || _s2v_rc=$?
+assert "2v: scalar upper bound (as_millis() < N) is flagged (returns 1)" \
+    test "$_s2v_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2w: Rule B positive, FLOAT-SECONDS scalar with `<=` -- asserted separately
+#     from 2v because the accessor list and the operator are independent
+#     halves of the alternative, and an implementation that hard-coded
+#     `as_millis` or a bare `<` would pass 2v and fail here.
+# ---------------------------------------------------------------------------
+_s2w_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2w_tmpdir")
+_fixture "$_s2w_tmpdir" "fixture.rs" \
+    '    assert!(elapsed.as_secs_f64() <= 2.0, "Drop should join promptly");'
+
+_s2w_rc=0
+_detect_rust_wallclock_deadline "$_s2w_tmpdir" 2>/dev/null || _s2w_rc=$?
+assert "2w: scalar upper bound (as_secs_f64() <= 2.0) is flagged (returns 1)" \
+    test "$_s2w_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2x: Rule B positive, REVERSED scalar form -- `500 > elapsed.as_millis()`
+#     bounds elapsed from above just as `elapsed.as_millis() < 500` does.
+#     Same symmetry argument as 2q, applied to the scalar family.
+# ---------------------------------------------------------------------------
+_s2x_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2x_tmpdir")
+_fixture "$_s2x_tmpdir" "fixture.rs" \
+    '    assert!(500 > elapsed.as_millis(), "should return promptly");'
+
+_s2x_rc=0
+_detect_rust_wallclock_deadline "$_s2x_tmpdir" 2>/dev/null || _s2x_rc=$?
+assert "2x: reversed scalar upper bound (N > as_millis()) is flagged (returns 1)" \
+    test "$_s2x_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2y: Rule B negative, the MIRROR of 2v/2x and the false positive the scalar
+#     family could most easily introduce. LOWER bounds in BOTH operand orders
+#     must stay clean -- they are the monotone-safe form this file relies on
+#     to prove `WallClock::sleep` really blocks -- and so must an unrelated
+#     `<` comparison on a non-time accessor, which is why the accessor list is
+#     explicit rather than a blanket `as_*()`. The `-> Duration` line pins
+#     that a return arrow cannot stand in for the reversed alternative's `>`.
+# ---------------------------------------------------------------------------
+_s2y_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2y_tmpdir")
+_fixture "$_s2y_tmpdir" "fixture.rs" \
+    '    assert!(start.elapsed().as_millis() >= 150, "should block");' \
+    '    assert!(150 < elapsed.as_millis(), "should block");' \
+    '    assert!(a.as_str() < b.as_str(), "ordering is unrelated to time");' \
+    '    fn budget(&self) -> Duration { self.remaining }'
+
+_s2y_rc=0
+_detect_rust_wallclock_deadline "$_s2y_tmpdir" 2>/dev/null || _s2y_rc=$?
+assert "2y: scalar LOWER bounds in both orders, and non-time accessors, stay clean (returns 0)" \
+    test "$_s2y_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2z: THE ONE DELIBERATE FALSE POSITIVE, pinned rather than left as folklore.
+#     Both rules scan every physical line, comments included, so a doc comment
+#     that QUOTES a forbidden shape is reported like the real thing. See KNOWN
+#     LIMITS in the header for why exempting `//` lines was rejected: this
+#     assertion is the checked half of that argument, and it also means a
+#     future decision to exempt them turns THIS fixture red -- a deliberate
+#     choice -- instead of silently widening the guard's blind spot.
+#     The remedy for a legitimate case is the same same-line escape as
+#     anywhere else, which 2i/2j/2o already pin.
+# ---------------------------------------------------------------------------
+_s2z_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2z_tmpdir")
+_fixture "$_s2z_tmpdir" "fixture.rs" \
+    '/// Never write this: assert!(elapsed < Duration::from_secs(2))'
+
+_s2z_rc=0
+_detect_rust_wallclock_deadline "$_s2z_tmpdir" 2>/dev/null || _s2z_rc=$?
+assert "2z: a comment QUOTING a forbidden shape is flagged too (documented, returns 1)" \
+    test "$_s2z_rc" -eq 1
 
 # ===========================================================================
 # Section 3: LIVE guard -- scan the real gui/src-tauri/src/tests for
