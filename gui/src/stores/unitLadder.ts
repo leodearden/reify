@@ -101,26 +101,26 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
  * `mm³` stays rejected, in both the pre- and post-#5788 eras.
  *
  * WHAT "ADVERTISED" NOW MEANS — the gap this used to document is CLOSED
- * (task #5757). The ladders are the curated DISPLAY table
- * (`reify_core::display_units::unit_ladders`), and until #5757 the commit path
- * — `handleSetParameter` (App.tsx) -> `bridge.setParameter` ->
- * `EngineSession::set_parameter` -> `parse_value_string` (both in
- * gui/src-tauri/src/engine.rs) — matched a hard-coded five-entry suffix table
- * whose entries were exactly {@link BASE_UNIT_LABELS}. Every curated label
- * outside that floor was admitted here and then refused on commit with
- * `Cannot parse value '<input>'`, discarding the typed text behind an async
- * toast.
+ * (task #5757). Until then the commit path — `handleSetParameter` (App.tsx) ->
+ * `bridge.setParameter` -> `EngineSession::set_parameter` ->
+ * `parse_value_string` (both in gui/src-tauri/src/engine.rs) — matched a
+ * hard-coded five-entry suffix table whose entries were exactly
+ * {@link BASE_UNIT_LABELS}, so every curated label outside that floor was
+ * admitted here and then refused on commit with `Cannot parse value '<input>'`,
+ * discarding the typed text behind an async toast.
  *
  * `parse_value_string` now scans an index composed from THIS SAME
  * `unit_ladders()` table unioned with `reify_core::BUILTIN_UNITS`, so the two
  * ends are two readers of one table rather than two tables kept in lockstep.
- * The backend registers each rung under BOTH its raw superscript spelling and
- * its {@link normalizeUnitLabel} form, while this gate admits only the ASCII
- * one — so the backend is a strict SUPERSET of what this alphabet can produce,
- * and no label admitted here can be refused on commit. Compound labels
- * (`mm^3`, `kg/m^3`, `g/cm^3`) are included: the backend matches them as whole
- * suffixes off the composed index, so it never has to compose a `UnitExpr` the
- * way the .ri grammar does.
+ * The consequence that matters HERE: that index registers every rung under both
+ * its raw superscript spelling and its {@link normalizeUnitLabel} form, while
+ * this gate admits only the ASCII one — so it is a strict SUPERSET of what this
+ * alphabet can produce and no label admitted here can be refused on commit,
+ * compound labels (`mm^3`, `kg/m^3`, `g/cm^3`) included. HOW that index is
+ * composed and what it deliberately excludes is argued once, on
+ * `COMPOSED_UNIT_INDEX` in gui/src-tauri/src/engine.rs; restating it here would
+ * be a second hand-maintained copy of one argument, which is the prose form of
+ * the drift defect this function exists to avoid in data.
  *
  * THE ONE ASYMMETRY THAT REMAINS runs the other way and is deliberate: the
  * backend also accepts spellings this gate refuses — raw superscripts, the SI
@@ -132,13 +132,11 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
  * inline and the backend path is only reached by callers that bypass this gate
  * (`MechanismPanel`, via `handleSetParameter`).
  *
- * Separately, {@link acceptsBareNumber} refuses a bare number for a cell whose
- * dimension THIS alphabet can express — i.e. one with a curated ladder —
- * mirroring the backend's `parse_value_string_for_cell`. The two are the same
- * question asked twice, which is why they read the same map: a cell may only be
- * told to supply a unit when a unit is on offer for it. The `App.test.tsx`
- * block that used to pin the degradation above now pins this reconciled
- * contract in both directions.
+ * Separately, {@link acceptsBareNumber} decides whether a cell may be given a
+ * bare number at all — the same coverage question this alphabet asks, asked of
+ * one cell; its own doc carries that rule. The `App.test.tsx` block that used
+ * to pin the degradation above now pins the reconciled contract in both
+ * directions.
  *
  * Still deferred, and NOT this: compound unit EXPRESSIONS in .ri source at the
  * `bind(joint, <quantity>)` site (`UnitExpr::Mul`/`Div`/`Pow`), which are task
@@ -215,11 +213,11 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  * admits nothing, so refusing the bare number disambiguates nothing — it
  * removes the cell's LAST accepted input and bricks the row.
  *
- * The concrete case this was breaking: `Money`. Sixteen `param … : Money`
- * declarations across `examples/*.ri` spell their literals `NUSD`, and `USD` is
- * reachable only through the compiler's per-module `UnitRegistry`, which the
- * engine's `COMPOSED_UNIT_INDEX` deliberately excludes — so neither `6` nor
- * `6USD` was accepted and the cell could not be edited at all.
+ * The concrete case this was breaking is `Money`, whose cells accepted neither
+ * `6` nor `6USD` and so could not be edited at all. WHY `USD` is out of reach
+ * is the engine's to say: `COMPOSED_UNIT_INDEX` in gui/src-tauri/src/engine.rs
+ * states which tables it composes and which it excludes, and this doc points
+ * there rather than keeping a second copy of that argument in sync.
  *
  * Not a weakening, and the guarantee that replaces the old one is stronger for
  * being checkable: GATED ⟺ a rung exists in this cell's own ladder ⟺ the
@@ -229,14 +227,33 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  * enumerates no unit strings — only map membership — so the standing #5788 D6
  * prohibition documented on {@link quantityUnitAlphabet} is untouched.
  *
- * THE BACKEND IS THE AUTHORITATIVE GATE and agrees exactly:
- * `parse_value_string_for_cell` in `gui/src-tauri/src/engine.rs` refuses a
- * `Value::Int`/`Value::Real` only for a dimension its `LADDER_COVERAGE` table
- * records, and does so for every caller of `set_parameter` — including
- * `MechanismPanel`, which reaches `handleSetParameter` without passing through
- * `PropertyEditor`'s gate. This predicate exists to make the refusal INLINE,
- * keeping the typed text on screen for correction instead of discarding it
- * behind an async error toast.
+ * THE BACKEND IS THE AUTHORITATIVE GATE: `parse_value_string_for_cell` in
+ * `gui/src-tauri/src/engine.rs` refuses a `Value::Int`/`Value::Real` only for a
+ * dimension its `LADDER_COVERAGE` table records, and does so for every caller
+ * of `set_parameter` — including `MechanismPanel`, which reaches
+ * `handleSetParameter` without passing through `PropertyEditor`'s gate. This
+ * predicate exists to make the refusal INLINE, keeping the typed text on screen
+ * for correction instead of discarding it behind an async error toast.
+ *
+ * THE TWO ENDS KEY ON DIFFERENT FACTS, and the gap is bounded rather than
+ * absent. The backend reads the cell's DECLARED type (`Type::Scalar {
+ * dimension }`); this reads `ValueData.dimension`, which `format_determined_cell`
+ * derives from the cell's CURRENT VALUE via `display_scalar` — the empty string
+ * for `Undef`, `Option(None)`, or any non-Scalar. For a Scalar-valued
+ * `Type::Scalar` cell the two facts coincide, which is every cell reachable
+ * through this panel's editor today: the `<input>` renders only for
+ * `determinacy === 'determined'`, and a covered cell never accepts a bare
+ * number, so its committed value stays a Scalar. Where they can diverge they
+ * diverge BOTH ways — a `Type::Option<Length>` cell surfaces
+ * `dimension: 'Length'` (`display_scalar` recurses through `Option(Some(..))`),
+ * so this gate refuses a bare number the backend would take; a `Type::Scalar`
+ * cell whose current value is not a Scalar surfaces `''`, so this gate admits
+ * one the backend then refuses behind the very toast this predicate exists to
+ * avoid. Both are reachable only by callers that bypass this gate
+ * (`bridge.setParameter` directly, the GUI MCP surface), so it is a latent
+ * drift surface, not a live defect. Closing it properly means surfacing the
+ * DECLARED dimension on `ValueData` as a field of its own, so both ends read
+ * one fact; until then it is recorded here rather than claimed away.
  *
  * IT FAILS OPEN. With `ladders` undefined or empty — the `get_unit_ladders`
  * fetch not resolved, or failed — nothing is expressible, so nothing is gated.

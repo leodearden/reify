@@ -1993,16 +1993,13 @@ fn composed_unit_index_holds_at_most_one_entry_per_spelling() {
 // --- Composed unit accept-set: curated display ladders ∪ DSL builtin symbols ---
 //
 // Task #5757 replaces the hand-maintained five-entry `UNIT_TABLE` with an index
-// composed from two Rust-authored tables the GUI already depends on:
-//
-//   * `reify_core::display_units::unit_ladders()` — the curated per-dimension
-//     DISPLAY ladders. This is the SAME table the frontend derives its typed
-//     input alphabet from over the `get_unit_ladders` IPC command
-//     (`gui/src/stores/unitLadder.ts`), which is exactly why the two ends
-//     disagreed before: the frontend admitted every ladder rung and the
-//     backend parsed only five of them.
-//   * `reify_core::BUILTIN_UNITS` — the DSL's bare built-in unit symbols,
-//     contributing the SI bases no ladder carries (s, K, A, mol, cd).
+// composed from `reify_core::display_units::unit_ladders()` (the curated
+// per-dimension DISPLAY ladders, the SAME table the frontend derives its typed
+// input alphabet from) and `reify_core::BUILTIN_UNITS` (the DSL's bare built-in
+// symbols). WHY it is composed rather than hand-maintained, and what each
+// source contributes, is argued ONCE on `COMPOSED_UNIT_INDEX` in
+// `gui/src-tauri/src/engine.rs`; this block asserts the resulting behaviour and
+// deliberately does not carry a second copy of that argument.
 //
 // EVERY assertion below is driven off those two tables rather than off a
 // hand-mirrored list of unit strings, so a future ladder edit is covered

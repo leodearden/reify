@@ -2125,7 +2125,11 @@ impl EngineSession {
     /// Set a parameter value by cell ID string and value string.
     ///
     /// `cell_id_str` is "Entity.member" (e.g., "Bracket.width").
-    /// `value_str` is a quantity literal (e.g., "120mm"), plain number, or boolean.
+    /// `value_str` is a quantity literal (e.g., "120mm"), a boolean, or — for an
+    /// UNDIMENSIONED cell, or one whose dimension no curated ladder covers — a
+    /// plain number. A plain number for a covered dimension is refused with a
+    /// message naming a rung of that cell's own ladder; `parse_value_string_for_cell`
+    /// owns that rule and states why it is keyed on expressibility (task #5757).
     pub fn set_parameter(
         &mut self,
         cell_id_str: &str,
@@ -6944,11 +6948,10 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
 /// Where none can be, refusing the bare number disambiguates nothing and simply
 /// removes the cell's last accepted input — it becomes permanently uneditable
 /// through `set_parameter`, in the property editor AND on the GUI MCP surface.
-/// The in-tree case is `Money`: 16 `param … : Money` declarations across
-/// `examples/*.ri`, whose `USD` literals are reachable only through the
-/// compiler's per-module `UnitRegistry`, which `COMPOSED_UNIT_INDEX`
-/// deliberately excludes. Such cells keep the SI-number behaviour they had
-/// before this gate existed.
+/// Such cells keep the SI-number behaviour they had before this gate existed.
+/// WHICH dimensions those are, and why the in-tree `Money` case is one of them,
+/// belongs to `COMPOSED_UNIT_INDEX` — read it there rather than here; this doc
+/// deliberately does not carry a second copy of that argument.
 ///
 /// The gate is scoped as narrowly as it can be:
 ///
@@ -6977,7 +6980,11 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
 ///
 /// THE MESSAGE IS BUILT FROM THE LADDER DATA THE GATE JUST CONSULTED, so it is
 /// total by construction rather than by a fallback nobody can exercise, and it
-/// can only ever name a rung this index can actually parse. It does NOT point
+/// can only ever name a rung this index can actually parse (pinned across every
+/// curated ladder by
+/// `every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses`). The
+/// input is quoted in its TRIMMED form, so the literal it suggests is one the
+/// frontend's whitespace-free quantity grammar also accepts. It does NOT point
 /// at a unit picker: `pickerLadder` in `gui/src/panels/PropertyEditor.tsx`
 /// renders no `<select>` for a ladder of fewer than two rungs, and the
 /// `Force`/`Energy`/`Power` ladders carry exactly one each.
