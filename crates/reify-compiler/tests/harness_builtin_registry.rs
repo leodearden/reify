@@ -15,9 +15,17 @@
 //! `registry_seed_result_types::<test>` and the binary id is
 //! `reify-compiler::harness_builtin_registry`.
 //!
-//! This is the pre-registered home for the registry's later compiler-seam leaves
-//! (β's `BuiltinId`-carrying `CompiledExpr`, ω's workspace-wide grep gate) — add
-//! a module here rather than a second registry-subsystem harness.
+//! WHY A NEW ROOT rather than folding into an existing one (the cheaper remedy,
+//! since it adds no link unit): none of this crate's existing harness roots is
+//! this subsystem. They group by stem family — harness_langcore is
+//! `type_`/`let_`/`priv_`/`parametric_`/`specialization_`/`spec_`,
+//! harness_result_annotation is `result_`/`annotation_`/`objective_`/
+//! `expected_type_` — and a builtin-signature-registry seam test is neither.
+//! Net link units are unchanged versus the standalone form this replaces.
+//! Precedent for the shape: harness_units.rs (task #5786), also born
+//! single-module for a genuinely new subsystem. Any LATER registry compiler-seam
+//! test in this crate belongs here as an additional `#[path]` module rather than
+//! as a second registry-subsystem harness.
 //!
 //! Layout contract C1 (naming, the mandatory `#[path]`, kLOC cap, baseline
 //! ratchet): see `tests/infra/test_harness_kloc_cap.sh` C1 header and
