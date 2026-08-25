@@ -547,4 +547,103 @@ describe('fitHelpers (#6588)', () => {
     result.fitHelpers(boundsWithSize(v, v, v) as any);
     expectNoOp(result, before);
   });
+
+  // ── Scene-relative sizing ──────────────────────────────────────────────────
+  // Three scene scales, each a CUBE of edge L, so radius = L * sqrt(3) / 2:
+  //   L = 0.6   — the #6588 dogfood case, a sub-metre printer;
+  //   L = 5.77  — radius ~= 5, the "~10 m CAD default" scene Viewport.tsx describes;
+  //   L = 231   — radius ~= 200, a large scene.
+
+  const CUBE_CASES: Array<[string, number]> = [
+    ['sub-metre printer (L = 0.6)', 0.6],
+    ['CAD default (L = 5.77)', 5.77],
+    ['large scene (L = 231)', 231],
+  ];
+
+  function radiusOfCube(L: number): number {
+    return (L * Math.sqrt(3)) / 2;
+  }
+
+  it.each(CUBE_CASES)('%s: scales grid and axes uniformly', (_label, L) => {
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(L, L, L) as any);
+
+    // A NON-uniform scale would skew the grid's cell spacing per-axis, turning
+    // square cells into rectangles and the triad into a skewed basis.
+    expect(result.grid.scale.x).toBe(result.grid.scale.y);
+    expect(result.grid.scale.y).toBe(result.grid.scale.z);
+    expect(result.axes.scale.x).toBe(result.axes.scale.y);
+    expect(result.axes.scale.y).toBe(result.axes.scale.z);
+  });
+
+  it.each(CUBE_CASES)('%s: grid world size tracks the scene radius', (_label, L) => {
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(L, L, L) as any);
+
+    const radius = radiusOfCube(L);
+    const gridWorldSize = 20 * result.grid.scale.x;
+
+    // BASIS (not a guess): spacing = niceSpacing(radius / 5) snaps UP to the next
+    // 1|2|5 x 10^k, whose worst-case ratio is 2.5x (a value just above 2 snaps to
+    // 5). So spacing lies in [0.2r, 0.5r] and gridWorldSize = 20 * spacing lies in
+    // [4r, 10r] — inside this asserted band with margin on both sides.
+    expect(gridWorldSize).toBeGreaterThanOrEqual(2 * radius);
+    expect(gridWorldSize).toBeLessThanOrEqual(12 * radius);
+  });
+
+  it.each(CUBE_CASES)('%s: axes length tracks the scene radius', (_label, L) => {
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(L, L, L) as any);
+
+    const radius = radiusOfCube(L);
+    const axesWorldLength = 2 * result.axes.scale.x;
+
+    // axesWorldLength = 3 * spacing, so it lies in [0.6r, 1.5r] by the same basis.
+    expect(axesWorldLength).toBeGreaterThanOrEqual(0.4 * radius);
+    expect(axesWorldLength).toBeLessThanOrEqual(2 * radius);
+  });
+
+  it.each(CUBE_CASES)('%s: grid cell is a round 1|2|5 x 10^k size', (_label, L) => {
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(L, L, L) as any);
+
+    // A grid whose cells read 0.10392... m is unreadable as a ruler; snapping to a
+    // round decade step is what makes the grid a measuring aid rather than noise.
+    const cell = (20 * result.grid.scale.x) / 20;
+    const mantissa = cell / Math.pow(10, Math.floor(Math.log10(cell)));
+    const nearest = [1, 2, 5].reduce((best, c) =>
+      Math.abs(c - mantissa) < Math.abs(best - mantissa) ? c : best,
+    );
+    expect(mantissa).toBeCloseTo(nearest, 6);
+  });
+
+  it('shrinks the helpers for a sub-metre scene — the #6588 defect, in one assertion', () => {
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(0.6, 0.6, 0.6) as any);
+
+    // Before this fix a 0.6 m model sat inside a 20 m grid (whose far lines converge
+    // into the reported dark horizon band) and a 2 m triad (the hard diagonal across
+    // every part). Both must now be SMALLER than their defaults.
+    expect(result.grid.scale.x).toBeLessThan(1);
+    expect(result.axes.scale.x).toBeLessThan(1);
+  });
+
+  it('grows the helpers for a large scene', () => {
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(231, 231, 231) as any);
+    expect(result.grid.scale.x).toBeGreaterThan(1);
+    expect(result.axes.scale.x).toBeGreaterThan(1);
+  });
+
+  it('leaves the ~10 m CAD default scene looking exactly as it does today', () => {
+    const result = setup() as any;
+    // (6, 8, 0) has length exactly 10, so radius is exactly 5 with no float slack.
+    result.fitHelpers(boundsWithSize(6, 8, 0) as any);
+
+    // radius / 5 = 1, which is already a round 1 x 10^0, so spacing = 1 m and the
+    // grid stays 20 m at scale 1 — byte-identical to the pre-#6588 default. This
+    // fix must not disturb the scene size the helpers were originally tuned for.
+    expect(20 * result.grid.scale.x).toBe(20);
+    expect(result.grid.scale.x).toBe(1);
+  });
 });
