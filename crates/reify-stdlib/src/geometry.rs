@@ -179,8 +179,8 @@ fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)>
 ///
 /// This const is the SINGLE source of truth for the admitted DIMENSION, consulted by
 /// the `transform_log` eval arm, the `transform_exp` eval arm, and both of
-/// [`diagnose`]'s arms — so the eval gates and the post-`Undef` classifier cannot drift
-/// apart (the same hazard the `stackup::parse_chain` / `parse_chain_checked` split
+/// [`diagnose`]'s RULING #6126 arms — so the eval gates and the post-`Undef` classifier
+/// cannot drift apart (the same hazard the `stackup::parse_chain` / `parse_chain_checked` split
 /// answers). [`decompose_twist_component`] plays the identical role for the twist SHAPE
 /// the gates are applied to.
 ///
@@ -535,11 +535,24 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         // `affine_translate(dx, dy, dz)`: identity linear part with the three
         // components stored as the translation in SI units (meters for Length).
         // Requires exactly three numeric, finite components sharing one dimension
-        // (decompose_xyz3 contract); otherwise `Value::Undef`.
+        // (decompose_xyz3 contract) AND that shared dimension to be LENGTH
+        // (task 5747, units-length ζ / R12); otherwise `Value::Undef`.
+        //
+        // A translation is a DISPLACEMENT, so a bare or wrong-dimension triple
+        // was previously read straight into the map's SI-metre translation with
+        // the dimension silently discarded — `affine_translate(5kg, 0kg, 0kg)`
+        // built a 5-METRE translation at exit 0 (measured pre-ζ).
+        //
+        // `decompose_xyz3` itself is deliberately NOT tightened: it backs
+        // `decompose_vec3` / `decompose_point3`, whose ~15 other callers include
+        // `transform_exp`'s ANGULAR twist field and the point/plane/axis
+        // constructors, several legitimately non-LENGTH. The gate goes at the
+        // CALL SITE. The user-facing rejection is minted by `diagnose` below,
+        // which is what turns this `Undef` into a nonzero `reify eval` exit.
         "affine_translate" => {
-            let (t, _dim) = match decompose_xyz3(args) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
+            let t = match decompose_xyz3(args) {
+                Some((t, dim)) if dim == DimensionVector::LENGTH => t,
+                _ => return Some(Value::Undef),
             };
             Value::AffineMap {
                 linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -1570,6 +1583,82 @@ fn dimension_label(dim: DimensionVector) -> String {
         .unwrap_or_else(|| dim.to_string())
 }
 
+/// The Contract C1 LENGTH-rejection template, MIRRORED from
+/// `reify_eval::arg_acceptance::ArgRejection::message` + `length_spec()`.
+///
+/// WHY A LOCAL COPY, and not a shared source of truth: C1(i) makes
+/// `ArgRejection::message` the sole owner of this wording, but the workspace
+/// dependency arrow runs reify-eval → reify-stdlib and `arg_acceptance` is
+/// `pub(crate)` to reify-eval, so this crate physically cannot call it.
+/// Relocating that module down into reify-ir was considered and rejected: it
+/// would unfreeze a file the PRD marks FROZEN, widen a deliberately crate-private
+/// API to the whole workspace, and collide with task 5752's chartered shrink of
+/// that very module doc.
+///
+/// This is the established in-repo answer to exactly this constraint, across
+/// exactly this boundary: `reify_eval::geometry_ops::affine_apply_linear_det`
+/// already mirrors `crate::matrix::mat3_det` with the recorded rationale "since
+/// they cannot share a single source of truth across the crate boundary",
+/// guarded by an equality test rather than by shared code.
+///
+/// The guard here is
+/// `affine_translate_and_affine_map_rejection_wording_matches_the_shared_arg_rejection_template`
+/// in `crates/reify-eval/src/geometry_ops/tests.rs` — the only place that can see
+/// BOTH sides. It builds its reference string from the OWNER and `assert_eq!`s it
+/// against what this function renders, so a reword of `length_spec` fails there
+/// instead of silently forking the two crates.
+fn length_rejection_message(builtin: &str, arg_name: &str, got: &str) -> String {
+    let base = format!("{builtin}: {arg_name} argument expects Length, got {got}");
+    format!("{base}; pass a dimensioned length such as `5mm`")
+}
+
+/// Mirror of `reify_eval::arg_acceptance::value_short_label`, narrowed to exactly
+/// the shapes `decompose_xyz3` admits (it requires `Value::as_f64` to succeed, so
+/// only `Real`, `Int` and `Scalar` can ever reach a rejection here).
+///
+/// Same crate-boundary rationale as [`length_rejection_message`]; same guard.
+///
+/// NOT interchangeable with this file's [`dimension_label`], and the two must not be
+/// unified locally: that one labels a DIMENSION for the RULING #6126 arms, in a
+/// sentence that has already named the value, so it drops the `" Scalar"` suffix and
+/// falls back through `Display`. This one labels a VALUE and must render `Real` /
+/// `Int` — shapes a `DimensionVector` cannot express at all — because it is pinned
+/// byte-for-byte to `arg_acceptance::value_short_label` by the cross-crate guard
+/// named above. `dimension_label`'s own doc already files the shared
+/// `DimensionVector::diagnostic_label()` carrying BOTH renderings as the follow-up
+/// that would retire both copies.
+fn length_rejection_got_label(value: &Value) -> String {
+    match value {
+        Value::Real(_) => "Real".to_string(),
+        Value::Int(_) => "Int".to_string(),
+        Value::Scalar { dimension, .. } => {
+            if dimension.is_dimensionless() {
+                "dimensionless Scalar".to_string()
+            } else if let Some(name) = dimension.canonical_name() {
+                format!("{name} Scalar")
+            } else {
+                "dimensioned Scalar".to_string()
+            }
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Classify a 3-component group that must share ONE LENGTH dimension.
+///
+/// Returns `Some(got_label)` when the group is well-formed enough to be a UNITS
+/// rejection (three numeric, finite components sharing one non-LENGTH dimension),
+/// and `None` when there is nothing for ζ to say — wrong arity, a non-numeric or
+/// non-finite component, MIXED dimensions (a `decompose_xyz3` CONSISTENCY
+/// failure, not a LENGTH one), or an accepted LENGTH group.
+fn length_group_rejection(items: &[Value]) -> Option<String> {
+    let ([_, _, _], dim) = decompose_xyz3(items)?;
+    if dim == DimensionVector::LENGTH {
+        return None;
+    }
+    Some(length_rejection_got_label(&items[0]))
+}
+
 /// Pure classifier (post-`Value::Undef` hook) for geometry builtin calls,
 /// mirroring `stackup::diagnose` / `fea::diagnose`. `reify-expr`'s `FunctionCall`
 /// arm calls this (re-exported as `geometry_diagnose`) when a stdlib builtin
@@ -1589,12 +1678,24 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   gate. A twist wrong in both halves is rejected by eval's angular gate before the
 ///   linear one is reached, so this arm stays silent there and leaves the explaining
 ///   to #6080, which owns that gate.
+/// - **`affine_translate`** (exactly 3 args) and **`affine_map`** (exactly 2 args) —
+///   a TRANSLATION that is not `Vector3<Length>` (task 5747, units-length ζ / R12).
+///   `affine_map`'s LINEAR half is checked FIRST and bails, so a dimensioned-linear
+///   call — which fails the pre-existing D11 dimensionless check, not ζ's — is never
+///   mislabelled as a translation rejection.
 ///
-/// Invariant: the dimension arms consult [`TWIST_LINEAR_DIM`] — the SAME const the
-/// eval gates use — and read the twist shape through
+/// Invariant: the RULING #6126 dimension arms consult [`TWIST_LINEAR_DIM`] — the SAME
+/// const the eval gates use — and read the twist shape through
 /// [`decompose_twist_component`] — the SAME helper the eval arm uses — so the
 /// classifier cannot drift away from what eval actually rejects, in either the
 /// dimension or the shape dimension of that drift.
+///
+/// The units-length ζ arms are bound the same way, one level down: they route through
+/// [`length_group_rejection`], which applies `DimensionVector::LENGTH` to the output of
+/// [`decompose_xyz3`] — the SAME helper the `affine_translate` / `affine_map` eval arms
+/// decode through, and the same dimension. (Same VALUE as `TWIST_LINEAR_DIM`, read
+/// separately on purpose: that const is scoped to the log↔exp seam by its own doc, and
+/// an affine translation is not a twist.)
 ///
 /// Invariant: this hook fires on EVERY `Value::Undef` from these builtins, not just
 /// dimension rejections, so each arm stays SILENT (`None`) on every non-dimension
@@ -1614,12 +1715,25 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   `diagnostics.iter().any(|d| d.severity == Severity::Error)`, so the severity IS
 ///   the exit code here. #6080 plans the same Error/exit-1 for the sibling angular
 ///   half, so one fault class does not report two ways across one builtin family.
+/// - The units-length ζ arms (`affine_translate`, `affine_map`) are `Severity::Error`
+///   too, reached independently: PRD `docs/prds/v0_6/units-length-gate-completion.md`
+///   decision D11 / task 5747. The two rulings AGREE — LENGTH is the one admitted
+///   spatial dimension and every dimension fault on this hook exits 1 — so no caller
+///   sees one fault class reported two ways.
 ///
-/// Every arm stays code-less (no `DiagnosticCode`): minting
+/// The `affine_scale` and RULING #6126 arms stay code-less (no `DiagnosticCode`): minting
 /// `DiagnosticCode::ArgDimensionMismatch` is owned by
 /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 (whose own direction is
 /// Error, not Warning), and `tolerancing.rs`'s code-less `Diagnostic::error` through
 /// this same hook is the standing in-crate precedent.
+///
+/// The ζ arms are the ONE exception, and they are not a counter-example to that: they
+/// carry `DiagnosticCode::DimensionedArgRejected` — a DIFFERENT, already-minted code
+/// that `units-length-gate-completion.md` owns and that task 5743 (β) minted for
+/// exactly this chokepoint, whose own doc in `reify-core::diagnostics` records it as
+/// deliberately distinct from the compile-layer `ArgTypeMismatch` and mandates ONE
+/// shared runtime code rather than per-dimension siblings. `ArgDimensionMismatch` is
+/// still unminted and still the readers PRD's to mint.
 /// Returns `None` for any other name, wrong arity, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
     match name {
@@ -1642,6 +1756,31 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
                 ));
             }
             None
+        }
+        // `affine_translate`'s diagnostic names the whole gesture `dx/dy/dz` in
+        // ONE message rather than one position per rebuild. The two reconcile
+        // exactly here: `decompose_xyz3` has ALREADY required all three
+        // components to share one dimension, so when this gate fires all three
+        // positions offend identically and naming them together is complete
+        // information, not a shortcut (β's all-failures-at-once amendment,
+        // esc-5743-4, expressed inside a hook whose signature is
+        // `Option<Diagnostic>`).
+        //
+        // `length_group_rejection` returning None is this arm's no-mis-attribution
+        // guard — the same discipline the RULING #6126 arms below apply. Wrong
+        // arity, a non-numeric or non-finite component, and a MIXED-dimension
+        // triple are all `decompose_xyz3` failures, not LENGTH ones, and stay
+        // silent.
+        "affine_translate" => {
+            let got = length_group_rejection(args)?;
+            Some(
+                reify_core::Diagnostic::error(length_rejection_message(
+                    "affine_translate",
+                    "dx/dy/dz",
+                    &got,
+                ))
+                .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            )
         }
         "transform_log" => {
             if args.len() != 1 {
