@@ -6671,6 +6671,12 @@ static LADDER_COVERAGE: std::sync::LazyLock<Vec<(DimensionVector, String, String
 /// [`parse_value_string_for_cell`], and it doubles as the message's vocabulary —
 /// the same lookup yields both the gate and the words, so the refusal cannot
 /// name a unit the index could not have parsed.
+///
+/// That totality is executable, not merely argued:
+/// `every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses` walks
+/// `unit_ladders()` and, for EVERY curated ladder, asserts this returns `Some`,
+/// that the name it reports is the ladder's own, and that the rung it names
+/// parses back through `parse_value_string` to that same dimension.
 pub(crate) fn dimension_requires_unit(
     dimension: &DimensionVector,
 ) -> Option<(&'static str, &'static str)> {
@@ -6725,11 +6731,17 @@ pub(crate) fn dimension_requires_unit(
 ///
 /// ONE LABEL, ONE ANSWER. Ordering settles which label a string ends with;
 /// nothing has to settle what a label MEANS, because the index holds at most
-/// one entry per spelling. Three pinned invariants make that true:
-/// `curated_ladder_labels_are_unique_across_every_dimension`, reify-core's own
-/// uniqueness guard over `BUILTIN_UNITS`, and
-/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap` for
-/// the eight labels both tables carry.
+/// one entry per spelling. That is asserted of the COMPOSED INDEX ITSELF by
+/// `composed_unit_index_holds_at_most_one_entry_per_spelling` — note the
+/// builder's dedup key is `(label, dimension)`, so the same label under two
+/// dimensions would be registered twice and silently resolved by first-match.
+/// Three further guards constrain the SOURCE tables upstream of that
+/// (`curated_ladder_labels_are_unique_across_every_dimension`, reify-core's
+/// `builtin_unit_symbols_are_unique`, and
+/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap`),
+/// but each is one-sided — none of them compares a NORMALIZED curated label
+/// against a builtin symbol, which is why the direct guard is the load-bearing
+/// one.
 ///
 /// That is why the lookup is flat, with NO narrowing by the declared dimension
 /// of the cell being edited. Task #5757 originally resolved dimension-first and

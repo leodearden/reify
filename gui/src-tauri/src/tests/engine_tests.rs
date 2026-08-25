@@ -1943,6 +1943,53 @@ fn unit_table_ordering_invariant_holds() {
     );
 }
 
+/// ONE LABEL, ONE ANSWER — asserted of the INDEX ITSELF, not of its sources.
+///
+/// `COMPOSED_UNIT_INDEX`'s doc licenses the flat, non-dimension-narrowed lookup
+/// on this property, and `parse_value_string` returns the first suffix match
+/// with no second lookup to disambiguate it. The builder's dedup key is
+/// `(label, dimension)`, so two entries sharing a LABEL under different
+/// dimensions would both be registered and first-match would silently pick a
+/// dimension for the user.
+///
+/// The three guards that carried this claim are each indirect and each has a
+/// hole: `curated_ladder_labels_are_unique_across_every_dimension` is
+/// curated-vs-curated only; reify-core's `builtin_unit_symbols_are_unique` is
+/// builtin-vs-builtin only; and
+/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap`
+/// looks each ladder rung up by `opt.label`, the RAW spelling, so a NORMALIZED
+/// curated label colliding with a builtin symbol goes unchecked — safe today
+/// only because no builtin symbol contains `^`. Asserting the property of the
+/// composed index is strictly stronger than all three and closes that case
+/// without depending on that accident.
+#[test]
+fn composed_unit_index_holds_at_most_one_entry_per_spelling() {
+    use crate::engine::composed_unit_index;
+    use std::collections::BTreeMap;
+
+    let mut seen: BTreeMap<&str, (f64, reify_core::DimensionVector)> = BTreeMap::new();
+    for entry in composed_unit_index() {
+        if let Some((prev_scale, prev_dim)) =
+            seen.insert(entry.label.as_str(), (entry.si_scale, entry.dimension))
+        {
+            panic!(
+                "unit label {:?} is registered twice in the composed index \
+                 ({prev_dim} @ {prev_scale} vs {} @ {}) — `parse_value_string` \
+                 takes the first suffix match, so one of the two is unreachable and \
+                 the user's `5{}` silently lands in whichever sorted first",
+                entry.label, entry.dimension, entry.si_scale, entry.label
+            );
+        }
+    }
+    assert!(
+        seen.len() >= 25,
+        "expected at least 25 distinct spellings in the composed index (both curated \
+         spellings plus the builtin symbols), got {} — the index shrank unexpectedly \
+         and uniqueness over a near-empty table proves nothing",
+        seen.len()
+    );
+}
+
 // --- Composed unit accept-set: curated display ladders ∪ DSL builtin symbols ---
 //
 // Task #5757 replaces the hand-maintained five-entry `UNIT_TABLE` with an index
@@ -2744,6 +2791,98 @@ fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness(
                 panic!("a united literal must still parse for {dimension}; got {e:?}")
             });
     }
+}
+
+/// EVERY curated ladder's dimension is gated, and the rung its refusal names
+/// parses back to that same dimension.
+///
+/// `LADDER_COVERAGE` is the table that decides which cells get their bare
+/// number refused, and `dimension_requires_unit`'s doc claims the refusal
+/// "cannot name a unit the index could not have parsed" — total by
+/// construction. That claim was argued for ten dimensions and executed for one
+/// (`Length`, by the two tests either side of this one). Here it is made
+/// checkable for all of them, in both directions: coverage implies the gate
+/// fires, and the words the gate produces resolve through the very index its
+/// coverage was derived from.
+///
+/// Driven off `unit_ladders()` rather than a hand-written list of dimension
+/// names, so a new curated ladder is covered automatically — the same
+/// table-derived convention as the accept-set block above, and for the same
+/// reason: a mirrored list here would be one more copy of the curated table to
+/// keep in sync.
+#[test]
+fn every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses() {
+    use crate::engine::{dimension_requires_unit, normalize_unit_label};
+    use reify_core::Type;
+
+    // Non-unit, so a stray `* 1.0` cannot pass; integral, so `format!` renders
+    // no decimal point or exponent to perturb the remainder parse.
+    const MAGNITUDE: f64 = 3.0;
+
+    let ladders = crate::display_units::unit_ladders();
+    let mut gated = 0usize;
+    for ladder in &ladders {
+        let dimension = dimension_for_ladder_name(&ladder.dimension);
+        let (name, rung) = dimension_requires_unit(&dimension).unwrap_or_else(|| {
+            panic!(
+                "ladder {:?} registers rungs in the composed index, so a bare number in \
+                 one of its cells IS ambiguous and must be gated — an unrecorded ladder \
+                 means coverage and the index disagree",
+                ladder.dimension
+            )
+        });
+        assert_eq!(
+            name, ladder.dimension,
+            "coverage must report the ladder's OWN dimension name, since that is the \
+             word the refusal puts in front of the user"
+        );
+        assert!(
+            ladder
+                .units
+                .iter()
+                .any(|u| normalize_unit_label(&u.label) == rung),
+            "the example rung {rung:?} must be one of ladder {:?}'s own rungs, not a \
+             plausible-looking string; its rungs are {:?}",
+            ladder.dimension,
+            ladder.units.iter().map(|u| &u.label).collect::<Vec<_>>()
+        );
+
+        // The named rung round-trips: it parses, and to THIS dimension. This is
+        // the totality claim — the refusal cannot name a unit the index could
+        // not have parsed.
+        let literal = format!("{MAGNITUDE}{rung}");
+        let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
+            panic!("the rung {rung:?} named for {name} must itself parse; got {e}")
+        });
+        let reify_ir::Value::Scalar {
+            dimension: got_dim, ..
+        } = parsed
+        else {
+            panic!("{literal:?} must parse to a Value::Scalar; got {parsed:?}");
+        };
+        assert_eq!(
+            got_dim, dimension,
+            "{literal:?} must resolve to the dimension whose refusal named it"
+        );
+
+        // And the gate really fires for a cell of this dimension, with the words
+        // coverage just supplied.
+        let err = crate::engine::parse_value_string_for_cell("120", &Type::Scalar { dimension })
+            .expect_err(
+                "a covered dimension must refuse a bare number — that is what coverage MEANS",
+            );
+        assert!(
+            err.contains(name) && err.contains(&format!("'120{rung}'")),
+            "the {name} refusal must name its dimension and the concrete literal \
+             '120{rung}'; got {err:?}"
+        );
+        gated += 1;
+    }
+    assert!(
+        gated >= 10,
+        "expected at least the ten curated ladders to be gated, got {gated} — the \
+         curated table shrank and this loop is no longer covering what it claims"
+    );
 }
 
 /// The refusal a COVERED cell gets names its dimension and a rung from ITS OWN
