@@ -167,8 +167,10 @@
 //! `uvx` spawn otherwise fails `E_JC_SERVE_SPAWN_FAILED`. `~/.cache/uv` is
 //! writable, so the package cache stays warm.
 //!
-//! A plain `cargo test -p reify-audit` runs the 14 hermetic tests and skips
-//! the capstone.
+//! A plain `cargo test -p reify-audit` runs the hermetic tests in this file
+//! and skips the capstone. The count is deliberately not spelled out: it went
+//! from 14 to 19 as the `live_leg_seam` tests landed, and a number in prose is
+//! exactly the kind of evidence that reads as current while silently rotting.
 
 mod common;
 
@@ -848,12 +850,25 @@ fn require_reachable_serve(url: &str) {
 /// 1. `exit == Some(0)`.
 /// 2. stderr carries no `E_JC_INDEX_` marker — the §4.3 gate ADMITTED the run
 ///    rather than refusing it.
-/// 3. stderr carries no `jcodemunch unreachable at` breadcrumb — the client
-///    completed a real session instead of degrading to `NoopJCodemunchOps`.
-///    This is the single assertion that would have caught PRD §2.3: the
-///    degraded path still exits 0 and still serializes a well-formed EMPTY
-///    array, which is what let a broken handshake survive ten weeks.
-/// 4. every element of the findings array is well-formed.
+/// 3. stderr carries no `jcodemunch unreachable at` CONSTRUCTION breadcrumb —
+///    the client completed a real session instead of degrading WHOLESALE to
+///    `NoopJCodemunchOps`. This is the single assertion that would have caught
+///    PRD §2.3: the degraded path still exits 0 and still serializes a
+///    well-formed EMPTY array, which is what let a broken handshake survive
+///    ten weeks.
+/// 4. stderr carries no `jcodemunch <tool>:` PER-CALL breadcrumb — every
+///    `tools/call` this leg reached actually ANSWERED, rather than erroring
+///    into `Vec::new()`. This is a SECOND, INDEPENDENT fail-soft layer, not a
+///    restatement of 3: a per-call failure happens AFTER a successful
+///    handshake, so 3 is silent, 2 has already admitted the run, 1 sees exit
+///    0, and 5 sees a perfectly well-formed `[]`. Nor does the
+///    `count_symbols` check below close it — that reads the index DB and says
+///    nothing about whether the serve answered the call.
+/// 5. every element of the findings array is well-formed.
+///
+/// `assert_live_leg` applies all five, in that order, and records why 3
+/// precedes 4 and why both precede 5. Keep this list in step with it: a
+/// four-item version of it is the picture PRD §2.4 shows to be insufficient.
 ///
 /// Plus, once, before either leg: β printed its own `INDEX-OK` token, and
 /// `count_symbols(index_dir, repo_id) > 0` read INDEPENDENTLY against the
@@ -1631,8 +1646,15 @@ mod finding_shape {
     }
 
     /// A finding with no `pattern` is not a finding.
+    ///
+    /// `expected` pins the phrasing of the check under test, not the bare word
+    /// `pattern`: every panic arm in `assert_well_formed_findings` echoes
+    /// `render()` — the pretty-printed fixture — so any fragment the fixture
+    /// itself can contain would be satisfied by an unrelated arm firing. That
+    /// hazard is real here, since this fixture's `summary` is the literal
+    /// string "no pattern field".
     #[test]
-    #[should_panic(expected = "pattern")]
+    #[should_panic(expected = "has no `pattern` field")]
     fn finding_with_no_pattern_field_is_rejected() {
         let findings = vec![serde_json::json!({
             "severity": "Low",
@@ -1645,8 +1667,13 @@ mod finding_shape {
 
     /// `evidence` is the array an operator drills into; a scalar there means
     /// the wire shape drifted, which is exactly what this file exists to catch.
+    ///
+    /// Pinned to the check's own phrasing for the reason given above: this
+    /// fixture literally contains `"evidence": "oops"`, so a bare `evidence`
+    /// expectation would also be satisfied by the `pattern` check, the
+    /// `summary`-emptiness check or the object check panicking instead.
     #[test]
-    #[should_panic(expected = "evidence")]
+    #[should_panic(expected = "`evidence` is not an array")]
     fn finding_with_a_non_array_evidence_field_is_rejected() {
         let findings = vec![serde_json::json!({
             "pattern": "PDeadCode",
