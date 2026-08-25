@@ -4,7 +4,7 @@
 //! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
 //! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
 //! Contract C — the LENGTH-semantic args (task 5214, extended by 5350, 5623,
-//! 5658, 5661 and 5743): `geometry_ops`' `eval_named_arg_length`, its
+//! 5658, 5661, 5743 and 5744): `geometry_ops`' `eval_named_arg_length`, its
 //! raw-`Value` wrapper `required_length_value`, and `resolve_length_scalar_arg`
 //! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
 //! [`length_spec`] so both emit identical rejection text.
@@ -32,9 +32,11 @@
 //! | profile   | `polygon` variadic 2-D vertex pairs (EVERY position) — via the variadic route | 5661 |
 //! | primitive | `box` width/height/depth, `cylinder` radius/height, `sphere` radius, `tube` outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge` width/depth/height/top_width, `torus` major/minor_radius, `half_space` POINT `px`/`py`/`pz` (21 fields) | 5743 |
 //! | profile   | `rectangle` width/height, `circle` radius, `ellipse` semi_major/semi_minor (5 fields) | 5743 |
+//! | modify    | `fillet` radius, `chamfer` distance, `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset, `zone_slab` width, `offset_solid`/`offset_curve` distance (9 fields) | 5744 |
+//! | sweep     | `extrude`/`extrude_symmetric` distance, `pipe` radius (3 fields) | 5744 |
 //!
-//! The last two rows are the R7 **raw-`Value`** positions: unlike every row
-//! above them, these 26 are stored into their `GeometryOp` field as a `Value`
+//! The last four rows are the R7 **raw-`Value`** positions: unlike every row
+//! above them, these 38 are stored into their `GeometryOp` field as a `Value`
 //! and read by the kernel via `as_f64`, never through a named-arg `f64` helper.
 //! They reach the chokepoint through `geometry_ops`' `required_length_values`
 //! (and its `N == 1` wrapper `required_length_value`), which layers over the
@@ -44,8 +46,12 @@
 //! rejection wording is shared, rather than forked for the kernel boundary.
 //! Every builtin with MORE THAN ONE gated slot reads its whole set in one
 //! `required_length_values` call, so a bare `box(20, 20, 10)` is diagnosed at
-//! `width`, `height` AND `depth` in a single build rather than one arg name
-//! per rebuild.
+//! `width`, `height` AND `depth` — and a bare
+//! `chamfer_asymmetric(solid, 1, 2)` at BOTH `d1` and `d2` — in a single build
+//! rather than one arg name per rebuild. Task 5744 extended that same
+//! all-at-once discipline to the named-arg route's last `?`-chained group,
+//! `pattern_arbitrary`'s per-transform `t{i}_dx`/`t{i}_dy`/`t{i}_dz` offset
+//! triple (esc-5743-4), which now reads through `required_length_args`.
 //! Task 5743 also attached `reify_core::DiagnosticCode::DimensionedArgRejected`
 //! to every `ArgSpec`-backed rejection emitted in `geometry_ops`, retrofitting
 //! the previously code-less Contract C sites on BOTH routes at once.
@@ -57,20 +63,6 @@
 //! - `point3_components` (`geometry_ops.rs`) and the decoded value-form routes
 //!   — `decode_plane` / `decode_axis` origins, and NurbsSurface control points
 //!   (the SURFACE sibling of the curve poles 5658 gated) — task 5745.
-//! - The modify + sweep MAGNITUDES, on the same raw-`Value` chokepoint that
-//!   task 5743 introduced (`required_length_value`): `fillet` radius, `chamfer`
-//!   distance, `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken`
-//!   offset, `offset_solid`/`offset_curve` distance, `extrude`/
-//!   `extrude_symmetric` distance, `pipe` radius, `zone_slab` width — task
-//!   5744. These never reach a named-arg f64 helper at all: each is stored into
-//!   its `GeometryOp` field as a raw `Value` by the bare-accepting
-//!   `eval_named_arg` and coerced as SI metres at the kernel boundary, so it
-//!   leaves no `as_f64` fingerprint — which is exactly why repeated hand audits
-//!   missed them, and why they are listed here rather than left to be
-//!   re-derived. Gating each is now a one-line swap of its `eval_arg` read for
-//!   a `required_length_value` one — or, where a builtin has several
-//!   (`chamfer_asymmetric`'s `d1`/`d2`), one `required_length_values` call over
-//!   the whole set, so every bare magnitude is reported in one build.
 //! - The SEVERITY residuals — task 6157. Task 5743 promoted the shared
 //!   `accept_length_value` rejection from `Warning` to `Error` + code, but
 //!   deliberately left three classes alone: the quiet-degrade readers
@@ -197,15 +189,22 @@ pub fn density_spec() -> ArgSpec {
 ///   streams (`interp`/`bezier`/`nurbs` control points, and `polygon`'s
 ///   vertices — a point in the XY PLANE, which is a plane in space);
 /// - a standalone EXTENT — `arc`'s radius, `helix`'s radius/pitch/height,
-///   `edges_at_height`'s z/tol.
+///   `edges_at_height`'s z/tol, the primitive and profile DIMENSIONS
+///   (`box`/`cylinder`/`sphere`/`tube`/`cone`/`wedge`/`torus`,
+///   `rectangle`/`circle`/`ellipse`; task 5743), and the modify + sweep
+///   MAGNITUDES — `fillet` radius, `chamfer` distance,
+///   `chamfer_asymmetric`'s `d1`/`d2`, `shell` thickness, `thicken` offset,
+///   `zone_slab` width, `offset_solid`/`offset_curve` distance,
+///   `extrude`/`extrude_symmetric` distance and `pipe` radius (task 5744).
 ///
 /// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
 /// **metres** by `Value::as_f64` (the `10` vs `10mm` = 1000× hazard); this spec
 /// drives the eval-layer rejection that closes that hole (task 5214; the
 /// circular-pattern axis origin was added by 5350, the transform / sweep /
-/// curve families by 5623, the variadic curve coordinates by 5658 and
-/// `polygon`'s vertex pairs by 5661). See the module doc for the full position
-/// table and for what stays deliberately un-gated.
+/// curve families by 5623, the variadic curve coordinates by 5658,
+/// `polygon`'s vertex pairs by 5661, the primitive and profile dimensions by
+/// 5743 and the modify + sweep magnitudes by 5744). See the module doc for the
+/// full position table and for what stays deliberately un-gated.
 pub fn length_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Length",

@@ -451,10 +451,14 @@ pub(crate) fn required_length_arg(
 /// field goes through here or through its group sibling
 /// [`required_length_values`] (which this delegates to at `N == 1`, so
 /// `reify_ir::Value::length` is still called from exactly one site) — the IR
-/// spacing slots (`LinearPattern`/`LinearPattern2D`), and since task 5743 the
+/// spacing slots (`LinearPattern`/`LinearPattern2D`), since task 5743 the
 /// primitive and profile dimensions (`Box` width/height/depth, `Cylinder`
 /// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
-/// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`). The stored
+/// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`), and since task
+/// 5744 the modify + sweep MAGNITUDES (`Fillet` radius, `Chamfer` distance,
+/// `ChamferAsymmetric` `d1`/`d2`, `Shell` thickness, `Thicken` offset,
+/// `ZoneSlab` width, `OffsetSolid`/`OffsetCurve` distance, `Extrude`/
+/// `ExtrudeSymmetric` distance, `Pipe` radius). The stored
 /// representation is deliberately unchanged by the check — the kernel still
 /// reads a dimensioned `Value` — so gating a slot is a one-line swap of its
 /// `eval_arg` read for one of these two, and inherits C1's three-state
@@ -2199,11 +2203,19 @@ fn modify_fillet(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let radius = eval_arg("radius")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ; PRD
+    // `docs/prds/v0_6/units-length-gate-completion.md` §6 boundary row 4). A
+    // bare `fillet(solid, 1)` asked for a 1-METRE blend and surfaced only as a
+    // span-less `BRepFilletAPI_MakeFillet failed`; this rejects it by name.
+    let radius = required_length_value(
+        "radius",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
     match edges_expr {
         None => Ok(reify_ir::GeometryOp::Fillet {
@@ -2241,11 +2253,18 @@ fn modify_chamfer(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let distance = eval_arg("distance")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Gated BEFORE the
+    // `edges` handling below, so the curated-edge zero-selector guard is
+    // reached only by a call whose magnitude already type-checked.
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
     match edges_expr {
         None => Ok(reify_ir::GeometryOp::Chamfer {
@@ -2283,12 +2302,18 @@ fn modify_chamfer_asymmetric(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let d1 = eval_arg("d1")?;
-    let d2 = eval_arg("d2")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ). ONE group read, not
+    // two `?`-chained single-slot calls: a bare `d1`/`d2` pair is written as
+    // one gesture, so both must be diagnosed in the SAME build.
+    let [d1, d2] = required_length_values(
+        ["d1", "d2"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
     match edges_expr {
         None => Ok(reify_ir::GeometryOp::ChamferAsymmetric {
@@ -2328,11 +2353,17 @@ fn modify_shell(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let thickness = eval_arg("thickness")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Gated BEFORE the
+    // `open_faces` handling below.
+    let thickness = required_length_value(
+        "thickness",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let open_faces_expr =
         args.iter().find(|(n, _)| n == "open_faces").map(|(_, e)| e);
     if let Some(expr) = open_faces_expr {
@@ -2580,11 +2611,16 @@ fn modify_thicken(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let offset = eval_arg("offset")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ).
+    let offset = required_length_value(
+        "offset",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Thicken {
         target: target_id,
         offset,
@@ -2602,11 +2638,16 @@ fn modify_zone_slab(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let width = eval_arg("width")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ).
+    let width = required_length_value(
+        "width",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::ZoneSlab {
         target: target_id,
         width,
@@ -2624,11 +2665,16 @@ fn modify_offset_solid(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let distance = eval_arg("distance")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ).
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::OffsetSolid {
         target: target_id,
         distance,
@@ -2646,11 +2692,17 @@ fn modify_offset_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let distance = eval_arg("distance")?;
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Gated BEFORE the
+    // `third` handling below.
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let third_expr = args.iter().find(|(n, _)| n == "third").map(|(_, e)| e);
     let (reference, direction) = match third_expr {
         None => (None, None),
@@ -3358,12 +3410,33 @@ fn pattern_arbitrary(
         // Offsets are translations (length-semantic): require a finite LENGTH
         // Scalar per component. A bare/dimensionless offset is rejected (op
         // dropped) rather than silently read as SI metres by `Value::as_f64`.
-        let mut length_arg = |name: &str| -> Result<f64, String> {
-            required_length_arg(name, kind, args, values, functions, meta_map, diagnostics)
-        };
-        let dx = length_arg(&format!("t{}_dx", idx))?;
-        let dy = length_arg(&format!("t{}_dy", idx))?;
-        let dz = length_arg(&format!("t{}_dz", idx))?;
+        //
+        // ONE GROUP READ, not three `?`-chained single-slot calls (esc-5743-4,
+        // discharged by task 5744): an offset triple is written as one gesture,
+        // so a bare triple is usually bare in every member and the chained form
+        // named only `t{idx}_dx` per build — three edit-build cycles to fix one
+        // line. `required_length_args` evaluates every member (each pushing its
+        // own diagnostic) and returns only the FIRST error, so the caller-facing
+        // `Err` wording and its `Unresolved`-beats-a-later-`Invalid` precedence
+        // are unchanged. The all-at-once guarantee holds WITHIN one call, so the
+        // loop still stops at the first bad transform — deliberately, since
+        // widening it would turn one bad transform into a diagnostic storm.
+        //
+        // Naming the two siblings as locals (rather than passing temporaries)
+        // is what lets the array borrow them; it also drops the closure and with
+        // it the `&mut diagnostics` capture that `required_length_args`' BORROW
+        // ORDERING note warns about, satisfying that contract by construction.
+        let dy_name = format!("t{}_dy", idx);
+        let dz_name = format!("t{}_dz", idx);
+        let [dx, dy, dz] = required_length_args(
+            [&dx_name, &dy_name, &dz_name],
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )?;
         // Scalar-triple form: translation-only, so the rotation quaternion is
         // identity. Mirrors `ApplyTransform`'s scalar-first `[qw,qx,qy,qz]`.
         transforms.push(([1.0, 0.0, 0.0, 0.0], [dx, dy, dz]));
@@ -3420,7 +3493,10 @@ fn sweep_extrude(
         step_handles,
         named_steps,
     )?;
-    let distance = eval_named_arg(
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Before this gate a
+    // bare `distance` was read as SI METRES by `Value::as_f64`, and the only
+    // guard below is a degeneracy floor a 1000×-too-large value sails past.
+    let distance = required_length_value(
         "distance",
         kind,
         args,
@@ -3428,8 +3504,14 @@ fn sweep_extrude(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
+    )?;
+    // RETAINED as defence-in-depth, not dead code: the near-zero arm is still
+    // reachable (a finite 0 is ACCEPTED by the units gate — D1 does not
+    // special-case it). Post-γ the NON-FINITE sub-condition and the `None` arm
+    // are unreachable *through* `compile_geometry_op`, because
+    // `accept_length_value` rejects a non-finite Length and only a numeric
+    // Length reaches here; they are kept for C2's corollary — any future
+    // caller that bypasses the funnel still meets a guard.
     match distance.as_f64() {
         Some(v) if v.is_finite() && v.abs() >= DEGENERATE_LENGTH_M => {}
         Some(v) => {
@@ -3572,7 +3654,10 @@ fn sweep_extrude_symmetric(
         step_handles,
         named_steps,
     )?;
-    let distance = eval_named_arg(
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Before this gate a
+    // bare `distance` was read as SI METRES by `Value::as_f64`, and the only
+    // guard below is a degeneracy floor a 1000×-too-large value sails past.
+    let distance = required_length_value(
         "distance",
         kind,
         args,
@@ -3580,8 +3665,14 @@ fn sweep_extrude_symmetric(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'distance' for {}", kind))?;
+    )?;
+    // RETAINED as defence-in-depth, not dead code: the near-zero arm is still
+    // reachable (a finite 0 is ACCEPTED by the units gate — D1 does not
+    // special-case it). Post-γ the NON-FINITE sub-condition and the `None` arm
+    // are unreachable *through* `compile_geometry_op`, because
+    // `accept_length_value` rejects a non-finite Length and only a numeric
+    // Length reaches here; they are kept for C2's corollary — any future
+    // caller that bypasses the funnel still meets a guard.
     match distance.as_f64() {
         Some(v) if v.is_finite() && v.abs() >= 2.0 * DEGENERATE_LENGTH_M => {}
         Some(v) => {
@@ -3780,7 +3871,10 @@ fn sweep_pipe(
         step_handles,
         named_steps,
     )?;
-    let radius = eval_named_arg(
+    // R7 LENGTH chokepoint (task 5744, units-length γ). Before this gate a
+    // bare `radius` was read as SI METRES by `Value::as_f64`, and the only
+    // guard below is a degeneracy floor a 1000×-too-large value sails past.
+    let radius = required_length_value(
         "radius",
         kind,
         args,
@@ -3788,8 +3882,7 @@ fn sweep_pipe(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'radius' for {}", kind))?;
+    )?;
     Ok(reify_ir::GeometryOp::Pipe {
         path: path_handle,
         radius,
