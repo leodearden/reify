@@ -1568,6 +1568,7 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
         "25.7ms — dynamics::inverse_dynamics, covered by \
          flexures/printer_z_compliant_mount (17.1ms)",
     ),
+    ("fea_bracket_minimize_mass", "5.19ms — solver::elastic_static, covered by fea_shell_too_thick_annotated"),
     ("fea_cantilever_smoke", "410ms — solver::elastic_static"),
     ("fea_multi_case_smoke", "294ms — solver::elastic_static"),
     ("fea_pressure_smoke", "286ms — solver::elastic_static"),

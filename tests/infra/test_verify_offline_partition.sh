@@ -12,9 +12,10 @@
 #   (d) heavy (+) smoke partition -- no overlap, no orphan.
 #   (e) resolve-to-disk -- every atom parsed from the ACTUAL emitted offline
 #       -E expression maps to a real crates/<pkg>/tests/<bin>.rs file, and
-#       the parsed count is exactly 7 (task 6368 added the 7th, test-scoped
-#       atom), PLUS every ` & test(/^<stem>::/)` sub-clause the lib carries
-#       survives VERBATIM into that emitted expression.
+#       the parsed count is exactly 8 (task 6368 added the 7th and task 2930
+#       the 8th, both test-scoped atoms), PLUS every ` & test(/^<stem>::/)`
+#       sub-clause the lib carries survives VERBATIM into that emitted
+#       expression.
 #
 # WHAT THE DRIFT-GUARD IN THIS FILE DOES AND DOES NOT COVER. Every atom
 # parser here -- heavy_atoms(), parse_atoms_from_plan(), _resolve_atoms_ok's
@@ -225,13 +226,23 @@ offline_plan() {
     printf '%s' "$_OFFLINE_PLAN_CACHE"
 }
 
-# heavy_atoms — the 7 `package(X) & binary(Y)` atoms parsed directly out of
+# heavy_atoms — the 8 `package(X) & binary(Y)` atoms parsed directly out of
 # REIFY_HEAVY_NEXTEST_FILTER (the lib source-of-truth, A1), one per line.
 # PREFIX-ONLY by design: a test-scoped atom's trailing ` & test(...)` clause
 # is not captured here, so this (and everything built on it) is a
 # binary-membership view. See the header's coverage note; the clause itself
 # is covered by heavy_test_scope_clauses() below plus
 # tests/infra/test_heavy_filter_atoms.sh Assertions C/F.
+#
+# 8 counts FILTER ATOMS, not distinct package+binary pairs. Since task 2930
+# added the 8th atom, TWO atoms (task 6368's and task 2930's) share the same
+# `package(reify-eval) & binary(harness_fea_solver_e2e)` prefix and differ
+# only in the ` & test(...)` clause this parser deliberately does not
+# capture -- so 8 atoms resolve to 7 DISTINCT binaries. That is exactly the
+# semantics of tests/infra/test_heavy_filter_atoms.sh's parser too, so 8 is
+# the correct number for BOTH guards. Do not "fix" either parser to dedupe:
+# the two are deliberately independent drift guards, and deduping one would
+# desynchronise them.
 heavy_atoms() {
     printf '%s' "$REIFY_HEAVY_NEXTEST_FILTER" | grep -oE 'package\([a-z0-9_-]+\) & binary\([a-z0-9_-]+\)'
 }
@@ -360,7 +371,7 @@ _no_orphan_ok() {
 # emitted offline -E expression. Two distinct defects, one check:
 #   - clause DELETED from the lib -> the >=1 non-vacuity guard fires. This is
 #     the hole the header's coverage note names: every prefix-only parser in
-#     this file (count-7 / no-orphan / resolve-to-disk) stays green through
+#     this file (count-8 / no-orphan / resolve-to-disk) stays green through
 #     that deletion, because the atom keeps its package()/binary() prefix and
 #     its binary keeps resolving -- it has merely widened from one test to all
 #     247 in harness_fea_solver_e2e.
@@ -405,12 +416,12 @@ _test_scope_clauses_survive_ok() {
     return 0
 }
 
-_atom_count_is_7() {
+_atom_count_is_8() {
     local atoms n
     atoms="$(parse_atoms_from_plan)" || return 1
     n=0
     [ -n "$atoms" ] && n="$(printf '%s\n' "$atoms" | wc -l | tr -d '[:space:]')"
-    [ "$n" -eq 7 ]
+    [ "$n" -eq 8 ]
 }
 
 # _resolve_atoms_ok [atom-list] — 0 iff <atom-list> (default:
@@ -479,7 +490,7 @@ assert_guard_rejects() {
     # wire. _test_scope_clauses_survive_ok must REJECT it. This is the break
     # that motivated the check: checks (1)-(3) above, and every prefix-only
     # parser in this file, ACCEPT this same input unchanged -- the atoms still
-    # count 7, still resolve to disk, still show no orphan and no overlap.
+    # count 8, still resolve to disk, still show no orphan and no overlap.
     local stripped_expr
     stripped_expr="$(offline_plan | grep -v '^#' | sed 's/ & test(\/\^[a-z0-9_]*::\/)//g')" || return 1
     [ -n "$stripped_expr" ] || return 1
@@ -612,7 +623,8 @@ assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (r
 # ---------------------------------------------------------------------------
 # Assertion (e): resolve-to-disk -- every atom parsed from the ACTUAL
 # emitted offline -E expression maps to a real test file, and the parsed
-# count is exactly 7 (task 6368 added the 7th, test-scoped atom). Both are
+# count is exactly 8 (task 6368 added the 7th atom, task 2930 the 8th; both
+# are test-scoped, and both scope the same binary). Both are
 # BINARY-MEMBERSHIP checks (prefix-only parsers, see the header note), so a
 # third check covers the part they structurally cannot: that the lib's
 # ` & test(...)` clauses survive verbatim into the emitted expression.
@@ -623,8 +635,8 @@ echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms --
 # All three parse the ACTUAL emitted offline -E expression -- nextest-only,
 # same reasoning as assertion (d)'s orphan check above (task 5599).
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
-    assert "offline plan atoms: exactly 7 parsed (no silent membership drift)" \
-        _atom_count_is_7
+    assert "offline plan atoms: exactly 8 parsed (no silent membership drift)" \
+        _atom_count_is_8
 
     assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
         _resolve_atoms_ok
