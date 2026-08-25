@@ -363,3 +363,142 @@ fn auto_corner_r_solves_into_the_feasible_region() {
          it started outside of (initial guess 10mm), got {si_value} SI"
     );
 }
+
+// ─── the guarded half ────────────────────────────────────────────────────────
+//
+// A `where`/`else` group's two arms are mutually exclusive: at most one of them
+// is ever realized. A synthesized predicate over an arm's geometry therefore
+// has to travel with that arm, so `collect_active_constraints` drops it
+// whenever the arm is dead. These pin what the guard association DECIDES, not
+// merely where the compiler stores it.
+//
+// Bounds are exact SI literals again — the else arm's 60mm × 50mm against
+// 2*20mm = 40mm (valid: 0.04 < 0.05 < 0.06), the where arm's 40mm × 30mm
+// against the same 40mm (invalid: 0.04 is not < 0.04 and not < 0.03) — compared
+// with the same strict `<` / `>` `eval_cmp` applies.
+
+/// A `where`/`else` fixture whose `corner_r` and guard are both params, so a
+/// case can pick which arm is live without changing the geometry.
+fn guarded_rounded_source(active: &str, radius: &str) -> String {
+    format!(
+        r#"structure def S {{
+    param active: Bool = {active}
+    param corner_r: Length = {radius}
+    where active {{
+        param plate: Solid = rounded_box(40mm, 30mm, 20mm, corner_r)
+    }} else {{
+        param plate2: Solid = rounded_rect(60mm, 50mm, corner_r)
+    }}
+}}"#
+    )
+}
+
+/// The corner-radius constraint entries of a check, as
+/// `(label, satisfaction)` pairs.
+fn corner_entries(source: &str) -> Vec<(String, Satisfaction)> {
+    check_source(source)
+        .constraint_results
+        .iter()
+        .filter(|e| e.label.as_deref().is_some_and(|l| l.contains("corner")))
+        .map(|e| {
+            (
+                e.label
+                    .as_deref()
+                    .expect("filtered on the label being present")
+                    .to_string(),
+                e.satisfaction,
+            )
+        })
+        .collect()
+}
+
+/// An INACTIVE arm's geometry must not be checked at all.
+///
+/// With `active = false` only the else arm's `rounded_rect(60mm, 50mm, ·)` is
+/// realized, and 2*0.02 = 0.04 is strictly inside both 0.06 and 0.05 — this is
+/// a valid design and `reify check` must say so.
+///
+/// The dead `rounded_box` predicate must be ABSENT, not merely satisfied:
+/// `collect_active_constraints` gates on the group's `guard_value_cell`, so a
+/// correctly-filed predicate is never collected while its arm is dead. Asserting
+/// absence rather than a verdict is what distinguishes the fix from a predicate
+/// that happens to hold.
+///
+/// RED before the arm routing lands: the dead predicate sits on the flat list,
+/// is collected unconditionally, and reports `Violated` (2*0.02 = 0.04 is not
+/// < 0.03) — naming a constructor this design never lowered and flipping the
+/// CLI exit code on a valid design.
+#[test]
+fn inactive_where_arm_geometry_reports_no_violation() {
+    let entries = corner_entries(&guarded_rounded_source("false", "20mm"));
+
+    let violated: Vec<_> = entries
+        .iter()
+        .filter(|(_, s)| *s == Satisfaction::Violated)
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "the realized geometry is valid (2*0.02 = 0.04 < 0.05 < 0.06) — no \
+         corner-radius constraint may be Violated, got: {violated:?}"
+    );
+
+    assert!(
+        !entries.iter().any(|(l, _)| l.contains("rounded_box")),
+        "the dead `where` arm's predicate must not be collected at all while \
+         `active` is false, got: {entries:?}"
+    );
+
+    let live: Vec<_> = entries
+        .iter()
+        .filter(|(l, _)| l.contains("rounded_rect"))
+        .collect();
+    assert_eq!(
+        live.len(),
+        1,
+        "the live `else` arm must contribute exactly its own predicate, got: \
+         {entries:?}"
+    );
+    assert_eq!(
+        live[0].1,
+        Satisfaction::Satisfied,
+        "2*0.02 = 0.04 < 0.05 and 0.04 < 0.06 and 0.02 > 0 — the live arm's \
+         predicate must be Satisfied"
+    );
+}
+
+/// The exact mirror: the fix must not buy its silence by muting the LIVE arm.
+///
+/// With `active = true` the realized geometry is `rounded_box(40mm, 30mm, 20mm,
+/// ·)`, and 2*0.02 = 0.04 is not < 0.04 (width) and not < 0.03 (depth) — a
+/// genuinely invalid design that must still be caught. The now-dead
+/// `rounded_rect` predicate must in turn be absent.
+///
+/// Without this half, moving both predicates into arms that are never collected
+/// would pass the test above while silently restoring the skip #5665 removes.
+#[test]
+fn active_where_arm_still_violates_when_oversized() {
+    let entries = corner_entries(&guarded_rounded_source("true", "20mm"));
+
+    let live: Vec<_> = entries
+        .iter()
+        .filter(|(l, _)| l.contains("rounded_box"))
+        .collect();
+    assert_eq!(
+        live.len(),
+        1,
+        "the live `where` arm must contribute exactly its own predicate, got: \
+         {entries:?}"
+    );
+    assert_eq!(
+        live[0].1,
+        Satisfaction::Violated,
+        "2*0.02 = 0.04 is not < 0.04 (width) and not < 0.03 (depth) — the live \
+         arm's oversized radius must still be caught"
+    );
+
+    assert!(
+        !entries.iter().any(|(l, _)| l.contains("rounded_rect")),
+        "the dead `else` arm's predicate must not be collected at all while \
+         `active` is true, got: {entries:?}"
+    );
+}

@@ -1434,3 +1434,133 @@ fn guarded_geometry_constraint_lands_in_its_own_arm() {
          {else_labels:?}"
     );
 }
+
+/// A rounded-corner call inside a NESTED `where`/`else` must land in the INNER
+/// group's arm, not in the outer one's.
+///
+/// `emit_guarded_geometry_realizations` recurses into nested groups, so the arm
+/// polarity has to be re-derived at each level rather than inherited: an inner
+/// `else` member reached from an outer `where` belongs to the inner group's
+/// `else_constraints`. The guard CELL is already correct at any depth —
+/// `resolve_guard` yields the innermost group a member was registered under —
+/// so only the polarity is at stake here.
+///
+/// Groups are located by `guard_value_cell`, never by vec position: measured,
+/// `guarded_groups` is populated in POST-order, so the nested `__guard_1` group
+/// sits at index 0 and the outer `__guard_0` at index 1. An index-based
+/// assertion would silently assert the opposite of what it reads.
+///
+/// RED before the polarity threading lands: the recursive `GuardedGroup` arm
+/// forwards the caller's polarity, so `inner` and `inner2` both land on
+/// whichever arm the outer call was given.
+#[test]
+fn nested_guarded_geometry_constraint_lands_in_the_inner_arm() {
+    let source = r#"structure def S {
+    param active: Bool = true
+    param corner_r: Length = 5mm
+    where active {
+        param plate: Solid = rounded_box(40mm, 30mm, 20mm, corner_r)
+        where corner_r > 1mm {
+            param inner: Solid = rounded_rect(70mm, 55mm, corner_r)
+        } else {
+            param inner2: Solid = rounded_rect(80mm, 65mm, corner_r)
+        }
+    } else {
+        param plate2: Solid = rounded_rect(60mm, 50mm, corner_r)
+    }
+}"#;
+    let template = compile_template_no_errors(source, "S");
+
+    assert_eq!(
+        corner_labels(&template),
+        Vec::<String>::new(),
+        "no guarded call's predicate may land on the entity's unguarded list, \
+         got: {:#?}",
+        template.constraints
+    );
+    assert_eq!(
+        template.guarded_groups.len(),
+        2,
+        "fixture must compile to two guarded groups, got: {:#?}",
+        template.guarded_groups
+    );
+
+    // Locate each group by its guard cell, NOT by index — the vec is in
+    // post-order, so the nested group comes first.
+    let find = |cell: &str| {
+        template
+            .guarded_groups
+            .iter()
+            .find(|g| g.guard_value_cell.member == cell)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no guarded group for {cell}; cells were: {:?}",
+                    template
+                        .guarded_groups
+                        .iter()
+                        .map(|g| g.guard_value_cell.member.clone())
+                        .collect::<Vec<_>>()
+                )
+            })
+    };
+    let outer = find("__guard_0");
+    let inner = find("__guard_1");
+
+    // The OUTER group holds only its own directly-declared pair.
+    assert_eq!(
+        group_arm_labels(&outer.constraints),
+        vec!["rounded_box_corner_r_valid_0"],
+        "the outer `where` arm must hold only `plate`'s predicate, got: {:#?}",
+        outer.constraints
+    );
+    let outer_else = group_arm_labels(&outer.else_constraints);
+    assert_eq!(
+        outer_else.len(),
+        1,
+        "the outer `else` arm must hold only `plate2`'s predicate, got: \
+         {outer_else:?}"
+    );
+    assert!(
+        outer_else[0].starts_with("rounded_rect_corner_r_valid_"),
+        "the outer `else` arm's constraint must be `plate2`'s rounded_rect one, \
+         got: {outer_else:?}"
+    );
+
+    // The INNER group holds the nested pair, one per polarity.
+    let inner_where = group_arm_labels(&inner.constraints);
+    assert_eq!(
+        inner_where.len(),
+        1,
+        "the inner `where` arm must hold exactly `inner`'s predicate, got: \
+         {inner_where:?}"
+    );
+    assert!(
+        inner_where[0].starts_with("rounded_rect_corner_r_valid_"),
+        "the inner `where` arm's constraint must be a rounded_rect one, got: \
+         {inner_where:?}"
+    );
+    let inner_else = group_arm_labels(&inner.else_constraints);
+    assert_eq!(
+        inner_else.len(),
+        1,
+        "the inner `else` arm must hold exactly `inner2`'s predicate, got: \
+         {inner_else:?}"
+    );
+    assert!(
+        inner_else[0].starts_with("rounded_rect_corner_r_valid_"),
+        "the inner `else` arm's constraint must be a rounded_rect one, got: \
+         {inner_else:?}"
+    );
+
+    // All four predicates accounted for, each exactly once.
+    let total = outer.constraints.len()
+        + outer.else_constraints.len()
+        + inner.constraints.len()
+        + inner.else_constraints.len();
+    assert_eq!(
+        total,
+        4,
+        "each of the four rounded calls must synthesize exactly one constraint \
+         into exactly one arm, got {total}"
+    );
+}
