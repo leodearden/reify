@@ -549,12 +549,10 @@ fn debouncer_paths_are_coalesced_and_drained_independently() {
     assert_eq!(deb.next_wait(t0 + Duration::from_millis(160)), None);
 }
 
-/// PREMISE PIN for the far-future-stamp idiom used by the two `Drop` tests
-/// below (`watcher_drop_discards_a_pending_event_rather_than_delivering_it`
-/// and
-/// `watcher_drop_joins_worker_without_hanging_even_with_a_pending_event`),
-/// which inject via `FileWatcher::record_pending_for_test` at the stamp from
-/// `far_future_stamp()` below, and then assert against a debouncer entry that
+/// PREMISE PIN for the far-future-stamp idiom used by
+/// `watcher_drop_discards_a_pending_event_rather_than_delivering_it` below,
+/// which injects via `FileWatcher::record_pending_for_test` at the stamp from
+/// `far_future_stamp()` below, and then asserts against a debouncer entry that
 /// must STILL be pending.
 ///
 /// The mathematical identity those tests rest on: `Instant::duration_since`
@@ -566,14 +564,14 @@ fn debouncer_paths_are_coalesced_and_drained_independently() {
 /// window, so the worker just re-parks instead of spinning.
 ///
 /// That turns "win a 100ms real-time race against the debounce window" --
-/// which is what those tests used to do, and is how this class of flake was
+/// which is what that test used to do, and is how this class of flake was
 /// born -- into a structural invariant with zero wall-clock dependence.
 ///
 /// Keeping the identity pinned HERE means a future change to `drain_ready`
 /// that breaks it (swapping in `checked_duration_since`, reordering the
 /// comparison operands, or comparing signed deltas) turns THIS test red at
-/// the identity, rather than silently converting the two `Drop` tests back
-/// into wall-clock flakes.
+/// the identity, rather than silently converting that test back into a
+/// wall-clock flake.
 #[test]
 fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window() {
     let t0 = Instant::now();
@@ -658,10 +656,15 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //     100ms debounce window. Descheduling past that window hard-failed a
 //     watcher that had behaved perfectly. Now injects the entry via
 //     `FileWatcher::record_pending_for_test` at `far_future_stamp()`.
-//   * watcher_drop_joins_worker_without_hanging_even_with_a_pending_event
-//     -- an upper bound on real elapsed time around `drop`, plus a
-//     `sleep(10ms)` that was its only (and never-confirmed) "an entry is
-//     pending" precondition. Both replaced; see the tombstone in its body.
+//   * watcher_drop_wakes_and_joins_a_worker_parked_indefinitely (landed as
+//     `watcher_drop_joins_worker_without_hanging_even_with_a_pending_event`,
+//     renamed and rewritten in the #6438 review pass) -- an upper bound on
+//     real elapsed time around `drop`, plus a `sleep(10ms)` that was its only
+//     (and never-confirmed) "an entry is pending" precondition. The bound is
+//     gone; see the tombstone in its body. The precondition is now a
+//     confirmed delivery, which parks the worker INDEFINITELY -- the one park
+//     shape in which `Drop`'s notify is load-bearing, and the reason this
+//     test is no longer a subset of the discard test below it.
 //   * wait_for_returns_true_when_the_condition_is_already_satisfied
 //     (renamed here off `..._returns_true_promptly_...`, so the name cited
 //     resolves to a live symbol) -- an upper bound on `start.elapsed()`;
@@ -708,9 +711,13 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //     lacked. The settle sleep is not a budget and nothing is asserted
 //     about it: it only makes the worker more certainly parked, so load
 //     STRENGTHENS what that phase catches instead of inverting it. Added
-//     by the #6438 review pass to pin the notify wiring both Drop tests
-//     below silently depend on -- see its doc comment for the measurement
+//     by the #6438 review pass to pin the notify wiring the discard test
+//     below silently depends on -- see its doc comment for the measurement
 //     that showed a one-phase version could not.
+//   * The delivery budget and the settle sleep in
+//     watcher_drop_wakes_and_joins_a_worker_parked_indefinitely, which are
+//     the same two constructs in the same two safe directions, used there to
+//     establish an indefinite park rather than to observe a second delivery.
 //   * The registration-barriered condition-polls that pair a generous
 //     `wait_for` / `wait_until_with_retry` budget with a hard POSITIVE
 //     assert (the watcher_detects_*, watcher_emits_*, watcher_rereads_*,
@@ -1700,8 +1707,8 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
 
 /// An `Instant` far enough past the present that a `Debouncer` entry stamped
 /// with it can never become ready, for as long as any test could plausibly
-/// run. The single seam that takes real time out of the two `Drop` tests
-/// below.
+/// run. The single seam that takes real time out of
+/// `watcher_drop_discards_a_pending_event_rather_than_delivering_it` below.
 ///
 /// `Debouncer::drain_ready` asks `now.duration_since(last_seen) >= window`,
 /// and `Instant::duration_since` saturates to zero whenever `last_seen` lies
@@ -1720,8 +1727,8 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
 /// `WaitClock` seam. Being matched is the CORRECT outcome -- the rule keys on
 /// the shape, and this line genuinely has that shape. What makes the site
 /// legitimate is its DIRECTION, which no lexical rule can see: the offset
-/// exists to take real time OUT of the two `Drop` tests below, not to hand
-/// them a budget a loaded host can blow. Nothing here can expire; a LARGER
+/// exists to take real time OUT of the discard test below, not to hand it a
+/// budget a loaded host can blow. Nothing here can expire; a LARGER
 /// offset is strictly more un-drainable, never flakier. So the site carries
 /// the guard's same-line escape annotation, with that reason attached. (The
 /// token itself is written only on the line it annotates: a second contiguous
@@ -1778,18 +1785,19 @@ fn already_elapsed_stamp() -> Instant {
         .expect("a second before now is representable as an Instant (host uptime < 1s?)")
 }
 
-/// THE DRIVE HALF of `FileWatcher::record_pending_for_test` -- the half the
-/// two `Drop` tests below depend on and neither one exercises (#6438 review).
+/// THE DRIVE HALF of `FileWatcher::record_pending_for_test` -- the half
+/// `watcher_drop_discards_a_pending_event_rather_than_delivering_it` below
+/// depends on and cannot exercise (#6438 review).
 ///
-/// Both of those inject a future-stamped, structurally un-drainable entry and
-/// then assert NON-delivery, and `pending_paths()` only proves the entry
+/// That test injects a future-stamped, structurally un-drainable entry and
+/// then asserts NON-delivery, and `pending_paths()` only proves the entry
 /// landed in the shared map. So the hook's documented claim to record
 /// "exactly as if the notify closure had observed a change ... same lock,
 /// same `Debouncer::record` call, same `notify_one` afterwards" was untested
 /// on its second half: delete the `cvar.notify_one()`, or wire the hook to a
-/// different `Condvar`, and every test in this file still passes green --
-/// while the equivalence those two tests' vacuity argument rests on has
-/// quietly stopped holding.
+/// different `Condvar`, and every test in this file still passed green --
+/// while the equivalence that test's vacuity argument rests on had quietly
+/// stopped holding.
 ///
 /// This test closes that by injecting an ALREADY-ELAPSED stamp and asserting
 /// the callback fires with that path.
@@ -1874,69 +1882,86 @@ fn watcher_delivers_an_injected_pending_entry_whose_window_has_already_elapsed()
         "an entry injected once the worker had already parked was never \
          delivered -- the injection hook recorded into the debouncer without \
          waking the worker (or woke a different condvar), which would also let \
-         the two Drop tests below pass vacuously; got: {:?}",
+         the discard test below pass vacuously; got: {:?}",
         *received.lock().unwrap()
     );
 }
 
-/// `Drop` must cleanly shut down and join the worker thread even while a
-/// change is still pending in the `Debouncer` (i.e. its quiet window hasn't
-/// elapsed yet) -- this is the subtlest part of the trailing-edge rewrite:
-/// the shutdown flag is set and the condvar notified under the SAME mutex
-/// the worker checks it under, specifically to avoid a lost wakeup where
-/// the worker re-checks the flag, finds it unset, and goes back to sleep
-/// with no one left to wake it. If that were broken, dropping a
-/// `FileWatcher` shortly after a write would hang.
+/// `Drop` must WAKE and join a worker that is parked INDEFINITELY -- the one
+/// park shape in which `Drop`'s `notify_all` is load-bearing, and the only
+/// failure mode this test can have is a hang.
 ///
-/// RETURNING AT ALL IS THE ASSERTION. That is the honest statement of the
-/// contract -- "`Drop` must not hang" -- and it is what the deleted
-/// `elapsed < 2s` bound was really guarding (see the tombstone in the body).
+/// WHY THE PARK SHAPE IS THE WHOLE POINT (#6438 review). This test landed as
+/// `watcher_drop_joins_worker_without_hanging_even_with_a_pending_event`,
+/// which injected a future-stamped entry and dropped. That made it a strict
+/// subset of `watcher_drop_discards_a_pending_event_rather_than_delivering_it`
+/// just below -- same construction, same injection, same drop, and no
+/// assertion of its own -- so every failure it could see, that test saw first.
+/// Worse, its stated lost-wakeup rationale held in NEITHER test: with an entry
+/// pending, the worker parks in `wait_timeout` with a full debounce window as
+/// its budget, so a `Drop` that never notified would still be joined about a
+/// window later and nothing would notice.
 ///
-/// THE NAME LOST "PROMPTLY" TO MATCH (#6438 review), exactly as
-/// `wait_for_returns_true_when_the_condition_is_already_satisfied` did in the
-/// same change. A name that claims promptness over a body that has no
-/// promptness assertion is an open invitation to "fix" the discrepancy by
-/// restoring the bound -- i.e. to reintroduce the flake this test was
-/// de-flaked to remove. Promptness is not a property this test can hold
-/// honestly: the only load-independent statement available here is that
-/// `Drop` terminates, and that is what the name now says.
+/// A worker with an EMPTY debouncer parks in `Condvar::wait` with no timeout
+/// at all (`next_wait` returns `None`), so there is no timeout to paper over a
+/// missing wire: delete `notify_all` from `Drop` and this test hangs. Getting
+/// the worker there is what the first half does -- an already-elapsed entry is
+/// injected and its delivery awaited, and that delivery is the proof the
+/// worker ran, drained the map, and is on its way back to the indefinite park.
 ///
-/// THE PENDING ENTRY IS NOW GUARANTEED, NOT MERELY LIKELY (#6438). This test
-/// used to write a real file and `sleep(10ms)`, hoping to land inside the
-/// 100ms debounce window, and never confirmed that it had: on a loaded host
-/// the sleep could overrun the window entirely, leaving nothing pending, and
-/// the test would then pass without exercising the pending-drop race at all
-/// -- a vacuous pass that looked exactly like a real one. It now injects the
-/// entry through `FileWatcher::record_pending_for_test` at
-/// `far_future_stamp()`, which is structurally un-drainable, and asserts
-/// positively that it is pending before dropping. The precondition is
-/// therefore checked rather than hoped for, and no real time is consumed.
+/// WHAT THIS OWNS THAT NOTHING ELSE DOES: the attribution. The scope-exit drop
+/// ending `watcher_delivers_an_injected_pending_entry_whose_window_has_already_elapsed`
+/// leaves a worker parked the same way and so would hang too -- but
+/// incidentally, as a side effect of a test about delivery, and one edit to
+/// that test's ending would remove the coverage with nothing to say so. Here
+/// the contract is named, the precondition is established deliberately, and a
+/// hang reads as what it is.
 ///
-/// With the write gone, the `wait_for_watch_registration` barrier and its
-/// `probe_seen` plumbing went with it: they existed only to prove the watch
-/// was live enough for that write to produce an event, and nothing is written
-/// to disk here any more.
+/// RETURNING AT ALL IS THE ASSERTION -- the honest statement of "`Drop` must
+/// not hang", and what the deleted `elapsed` upper bound was really guarding
+/// (see the tombstone in the body).
+///
+/// LOAD DIRECTION, per this file's REAL-CLOCK LEDGER: the delivery budget is
+/// the blessed shape (generous budget, hard POSITIVE assert, on an
+/// already-elapsed entry that descheduling only makes readier), and the settle
+/// delay is not a budget -- a longer one only makes the worker more certainly
+/// parked, so load strengthens this test rather than inverting it.
 #[test]
-fn watcher_drop_joins_worker_without_hanging_even_with_a_pending_event() {
+fn watcher_drop_wakes_and_joins_a_worker_parked_indefinitely() {
     let dir = tempfile::tempdir().unwrap();
 
-    let Some(watcher) = try_watcher(dir.path(), None, |_event| {}) else {
+    let delivered: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let delivered_clone = delivered.clone();
+
+    let Some(watcher) = try_watcher(dir.path(), None, move |event| {
+        if let FileEvent::Changed(path) = event {
+            delivered_clone.lock().unwrap().push(path);
+        }
+    }) else {
         return;
     };
 
+    // Drive one full record -> drain -> deliver cycle. The delivery is this
+    // test's precondition: it proves the worker emptied the debouncer, which
+    // is what sends it into an indefinite park rather than a timed one.
     watcher.record_pending_for_test(
-        dir.path().join("closing.ri"),
+        dir.path().join("parked.ri"),
         ChangeKind::Changed,
-        far_future_stamp(),
+        already_elapsed_stamp(),
     );
+    let drained = wait_for(&delivered, Duration::from_secs(10), |paths| {
+        paths.iter().any(|p| p.ends_with("parked.ri"))
+    });
     assert!(
-        watcher
-            .pending_paths()
-            .iter()
-            .any(|p| p.ends_with("closing.ri")),
-        "the injected entry should be pending before Drop -- otherwise this \
-         run does not exercise the pending-drop race at all"
+        drained,
+        "the injected entry should be delivered, leaving the debouncer empty \
+         and the worker heading for an indefinite park; got: {:?}",
+        *delivered.lock().unwrap()
     );
+
+    // Settle, so the worker has reached that park before the drop below.
+    // Nothing is asserted about this delay; see the doc comment.
+    std::thread::sleep(Duration::from_millis(50));
 
     drop(watcher);
 
