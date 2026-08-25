@@ -6979,6 +6979,15 @@ pub(crate) fn parse_value_string_for_cell(
     s: &str,
     cell_type: &reify_core::Type,
 ) -> Result<Value, String> {
+    // The same trim `parse_value_string` performs internally, hoisted so the
+    // refusal below quotes the input and builds its suggested literal in the
+    // CANONICAL spelling. Without it `" 120 "` is suggested back as
+    // `' 120 mm'` — whitespace between magnitude and unit, which this backend
+    // happens to accept but which the frontend's deliberately stricter
+    // `buildQuantityRe` (no whitespace, mirroring the .ri grammar's
+    // `token.immediate`) refuses outright, so the message would be handing the
+    // user a literal the panel then rejects inline.
+    let s = s.trim();
     let value = parse_value_string(s)?;
 
     if let reify_core::Type::Scalar { dimension } = cell_type

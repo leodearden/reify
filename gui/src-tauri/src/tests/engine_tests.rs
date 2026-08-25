@@ -2791,6 +2791,57 @@ fn the_bare_number_refusal_names_a_rung_from_the_cells_own_ladder() {
     );
 }
 
+/// The literal a refusal suggests must be one the FRONTEND would also accept.
+///
+/// `parse_value_string` trims internally, so a padded input reaches the gate
+/// intact and used to be interpolated verbatim on both sides: `" 120 "` was
+/// quoted back as `' 120 '` and suggested as `' 120 mm'`. This backend accepts
+/// that spelling, but the panel's `buildQuantityRe`
+/// (`gui/src/stores/unitLadder.ts`) allows no whitespace between magnitude and
+/// unit — mirroring the .ri grammar's `token.immediate` — so the message was
+/// handing the user a literal the panel then refuses inline.
+///
+/// The suggested literal is EXTRACTED from the message and fed back through
+/// `parse_value_string`, so this pins the round-trip rather than the wording:
+/// whatever the refusal proposes must parse, and parse to the cell's own
+/// dimension.
+#[test]
+fn the_bare_number_refusal_suggests_a_literal_in_the_canonical_spelling() {
+    use reify_core::{DimensionVector, Type};
+
+    let err = crate::engine::parse_value_string_for_cell(" 120 ", &Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    })
+    .expect_err("a padded bare number is still a bare number");
+
+    assert!(
+        err.contains("'120"),
+        "the refusal must quote the input in its trimmed form; got {err:?}"
+    );
+
+    let suggested = err
+        .split("such as '")
+        .nth(1)
+        .and_then(|rest| rest.split('\'').next())
+        .unwrap_or_else(|| panic!("the refusal must suggest a concrete literal; got {err:?}"));
+    assert!(
+        !suggested.chars().any(char::is_whitespace),
+        "the suggested literal {suggested:?} must carry no whitespace, or the panel's \
+         whitespace-free quantity grammar refuses it inline"
+    );
+
+    let parsed = parse_value_string(suggested)
+        .unwrap_or_else(|e| panic!("the suggested literal {suggested:?} must parse; got {e}"));
+    let reify_ir::Value::Scalar { dimension, .. } = parsed else {
+        panic!("{suggested:?} must parse to a Value::Scalar; got {parsed:?}");
+    };
+    assert_eq!(
+        dimension,
+        DimensionVector::LENGTH,
+        "the suggested literal must resolve to the cell's OWN dimension"
+    );
+}
+
 /// A `Bool` for a `Length` cell still falls through to reify-eval.
 ///
 /// The gate is scoped to `Value::Int`/`Value::Real` precisely so every other
