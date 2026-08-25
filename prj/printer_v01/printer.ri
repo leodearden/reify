@@ -16,15 +16,19 @@ module printer
 // Rotate a leaf's local +Z onto a world axis with
 // `orient_axis_angle(vec3(1m,0,0), 90deg)` (→Y) / `(vec3(0,1m,0), 90deg)` (→X).
 //
-// PER-INSTANCE SIZING (task 4147 — landed): constructor-arg overrides at a `sub`
-// site now flow into surfaced child geometry — the child RE-REALIZES with the
-// overridden params (verified to thread through expressions and multiple nesting
-// levels). So per-instance sizes are passed directly rather than tuned into a
-// shared leaf default: the X-gantry rails are BearingRod(length: 2*y_rail_offset)
-// and the Y rails BearingRod(length: y_rail_len); the tendon z-levels (z_a/z_b),
-// the idler fore/aft split, and the bearing OD are single-sourced (in DriveTendons
-// / CoreXY) and threaded down. (Earlier revisions TUNED shared leaf defaults
-// because overrides were dropped — that workaround is now retired.)
+// PER-INSTANCE SIZING (task 4147 — landed; #6592 CAVEAT, 2026-08-25):
+// constructor-arg overrides flow into a child's OWN geometry (LEAF overrides:
+// BearingRod/LinearTendon/AirBearing lengths and diameters — these work,
+// probe-verified). But an override on a structure WITH SUBS does NOT
+// re-realize its subtree: its sub placements and descendant constructor args
+// silently keep template defaults, while its value cells DO carry the
+// override — cells and geometry disagree per instance (#6592, minimal repro
+// in the task). CONSEQUENCE: the "single-source threading" chains below
+// (tendon_outer_z → DriveTendons.z_a → TendonQuad/RailTendons/CarriageIdlers;
+// x_brg_radius → AirBearing OD at the CoreXY sites is leaf-level and fine)
+// are correct today ONLY because every threaded value equals its default —
+// editing a single source would silently not propagate past the first
+// sub-bearing level. Do not rely on deep threading until #6592 lands.
 //
 // COREXY GEOMETRY (agreed in design review):
 //  - Round rails => the X gantry is a STACKED PAIR (two rails) to constrain roll
@@ -339,9 +343,13 @@ pub structure FairleadPair {
     param pulley_x  : Length = 50mm
     param side      : Real   = 1.0
     /// Band-top exit (the IN pulley's centre height above the band centre)…
-    param w_in      : Length = 51.13mm
+    /// NOTE (#6592): these DEFAULTS are the values the geometry actually
+    /// realizes — a constructor argument never reaches this structure's sub
+    /// placements, so the composing unit PINS its derivations against these
+    /// cells instead of passing arguments.
+    param w_in      : Length = 51.129843mm
     /// …and band-bottom exit (the OUT pulley's centre height, negative).
-    param w_out     : Length = 0mm - 6.96mm
+    param w_out     : Length = 0mm - 6.956719mm
     /// This winding's tangent plane (local y; the C2 placement negates it).
     param tangent_y : Length = 0mm - 24mm
 
@@ -362,6 +370,37 @@ pub structure FairleadPair {
 
     constraint side * side > 0.999   // side is exactly ±1 —
     constraint side * side < 1.001   // any other value scrambles the balance
+    constraint w_in > w_out
+    constraint pulley_x > r_pitch
+}
+
+/// The MIRROR-TWIN pair: identical to FairleadPair except side's DEFAULT is
+/// −1. A separate structure because a constructor argument NEVER reaches a
+/// child's sub placements on this engine build — only the param DEFAULT
+/// does (#6592; FairleadPair(side: -1) realizes side +1 while its value
+/// cells claim −1). TODO(#6592): delete this and pass side: -1 instead.
+pub structure FairleadPairMirrored {
+    param r_pitch   : Length = 18mm
+    param pulley_x  : Length = 50mm
+    param side      : Real   = 0.0 - 1.0
+    param w_in      : Length = 51.129843mm
+    param w_out     : Length = 0mm - 6.956719mm
+    param tangent_y : Length = 0mm - 24mm
+
+    let rot_spin_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)
+    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)
+    let in_x   = 0mm - pulley_x * side
+    let out_x  = pulley_x * side
+    let in_hx  = 0mm - pulley_x * side / 2
+    let out_hx = pulley_x * side / 2
+
+    sub in_pulley  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(in_x,  tangent_y, w_in))
+    sub out_pulley = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(out_x, tangent_y, w_out))
+    sub lead_in_h  = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(in_hx,  tangent_y, w_in - r_pitch))
+    sub lead_out_h = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(out_hx, tangent_y, w_out + r_pitch))
+
+    constraint side * side > 0.999
+    constraint side * side < 1.001
     constraint w_in > w_out
     constraint pulley_x > r_pitch
 }
@@ -404,15 +443,15 @@ pub structure CapstanUnit {
     /// TODO(#6583): replace the L376-style 2D bound with a real posed
     /// distance() constraint once cross-sub geometry reads carry placement.
     param pulley_x : Length = 50mm
-    /// LEFT-RIGHT handedness of the balanced pulley arrangement (threaded
-    /// into both FairleadPair subs): +1 = IN pulleys on local −x (unit A);
-    /// −1 = the mirror-twin balanced config (unit B, 2026-08-25 side-swap).
-    param side     : Real   = 1.0
     /// #6586 pin: == self.capstan.groove_len (constraints below). The pair
     /// heights derive from THIS so they can feed FairleadPair constructor
     /// args — a self.<sub>.<member> read flowing into a constructor arg
     /// makes the child's geometry silently never realize.
     param band_len : Length = 88.346249mm
+    // NOTE: this unit is the side +1 (IN pulleys on local −x) balanced
+    // arrangement. The mirror twin lives in CapstanUnitMirrored below — a
+    // forced DUPLICATE, because a per-instance `side` override would not
+    // re-realize the pair subs (#6592) and a reflection is not a placement.
 
     sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
@@ -471,8 +510,12 @@ pub structure CapstanUnit {
     // by placement — it cannot be broken by editing one height. (w2_in/w2_out
     // above are kept as the same image for relays and constraints.)
     let rot_c2 = orient_axis_angle(vec3(1m, 0mm, 0mm), 180deg)
-    sub pair_w1 = FairleadPair(r_pitch: r_pitch, pulley_x: pulley_x, side: side, w_in: w1_in, w_out: w1_out, tangent_y: y_rear) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
-    sub pair_w2 = FairleadPair(r_pitch: r_pitch, pulley_x: pulley_x, side: side, w_in: w1_in, w_out: w1_out, tangent_y: y_rear) at transform3(rot_c2, vec3(0mm, 0mm, 0mm))
+    // NO constructor args (#6592): a ctor arg never reaches the pair's sub
+    // placements, so the pairs realize from their own DEFAULTS; the pins in
+    // the constraint block compare those defaults against this unit's
+    // derivations and fail loudly on any drift.
+    sub pair_w1 = FairleadPair() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub pair_w2 = FairleadPair() at transform3(rot_c2, vec3(0mm, 0mm, 0mm))
 
     // Carrier collar, centred on the drum (translates with the band).
     sub frame = FairleadFrame() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
@@ -501,17 +544,103 @@ pub structure CapstanUnit {
     constraint winding_z > lead_split
     constraint cap_pitch_r > 0mm
     constraint flange_r > cap_pitch_r
-    // #6586 pins: the mirrors feeding FairleadPair constructor args equal the
-    // capstan-derived cells they stand in for — a Capstan resize fails HERE
-    // instead of silently deleting the fairlead pair geometry.
+    // #6586 pins: the mirrors this unit derives from equal the capstan's own
+    // cells — a Capstan resize fails HERE instead of silently drifting.
     constraint band_len < self.capstan.groove_len + unit_pin_slack
     constraint band_len > self.capstan.groove_len - unit_pin_slack
     constraint cap_pitch_r_m < cap_pitch_r + unit_pin_slack
     constraint cap_pitch_r_m > cap_pitch_r - unit_pin_slack
+    // #6592 pins: the pair realizes from its own DEFAULTS (ctor args never
+    // reach sub placements), so pin those defaults — readable as the pair's
+    // value cells now that no args mask them — against this unit's
+    // derivations. Both pairs share one template; pinning pair_w1 covers it.
+    constraint self.pair_w1.w_in  < w1_in + unit_pin_slack
+    constraint self.pair_w1.w_in  > w1_in - unit_pin_slack
+    constraint self.pair_w1.w_out < w1_out + unit_pin_slack
+    constraint self.pair_w1.w_out > w1_out - unit_pin_slack
+    constraint self.pair_w1.tangent_y < y_rear + unit_pin_slack
+    constraint self.pair_w1.tangent_y > y_rear - unit_pin_slack
+    constraint self.pair_w1.r_pitch  < r_pitch + unit_pin_slack
+    constraint self.pair_w1.r_pitch  > r_pitch - unit_pin_slack
+    constraint self.pair_w1.pulley_x < pulley_x + unit_pin_slack
+    constraint self.pair_w1.pulley_x > pulley_x - unit_pin_slack
     // Collar clearances (one-level sub reads — probe-verified):
     constraint self.frame.side_y - self.frame.plate_t / 2 > flange_r          // plates clear the drum flanges
     constraint self.frame.half_x - self.frame.web_t > vert_x + 6mm            // webs clear the vertical runs (tendon Ø)
     constraint self.frame.half_z > w1_in + r_pitch                            // collar covers the top pulley rim
+}
+
+/// The MIRROR-TWIN of CapstanUnit — identical drum, collar, derivations and
+/// constraints; the ONLY meaningful difference is `side: −1` baked into the
+/// two FairleadPair instantiations, selecting the mirror-image balanced
+/// pulley arrangement (IN pulleys on local +x; one of the four balanced
+/// configs of the 2026-07-23 enumeration, like its twin).
+///
+/// THIS WHOLE STRUCTURE IS A DUPLICATION FORCED BY THE ENGINE, kept as the
+/// dogfood exhibit it is: a per-instance param override re-realizes only a
+/// structure's OWN geometry — its sub placements and descendant constructor
+/// args silently use template defaults (#6592, minimal repro in the task) —
+/// so `CapstanUnit(side: -1)` renders side +1 while its value cells claim
+/// −1. And the mirror cannot be a placement either: reflections are
+/// improper, orientations proper-only. TODO(#6592): delete this structure
+/// and instantiate CapstanUnit(side: -1) at the RearDrive site instead.
+pub structure CapstanUnitMirrored {
+    param r_pitch  : Length = 18mm
+    param pulley_x : Length = 50mm
+    param band_len : Length = 88.346249mm
+
+    sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    let cap_pitch_r = self.capstan.pitch_r
+    let flange_r    = self.capstan.flange_r
+    let cap_pitch_r_m = 24mm
+    let unit_pin_slack = 0.002mm
+    let winding_z   = band_len / 4
+    let lead_split  = band_len / 8
+    let y_rear    = 0mm - cap_pitch_r_m
+
+    let w1_in  = winding_z + lead_split + r_pitch
+    let w1_out = winding_z - lead_split - r_pitch
+    let w2_in  = 0mm - w1_out
+    let w2_out = 0mm - w1_in
+
+    let rot_c2 = orient_axis_angle(vec3(1m, 0mm, 0mm), 180deg)
+    // The mirrored PAIR variant, no ctor args (#6592: args never reach sub
+    // placements — the side −1 must live in the pair's own DEFAULT).
+    sub pair_w1 = FairleadPairMirrored() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub pair_w2 = FairleadPairMirrored() at transform3(rot_c2, vec3(0mm, 0mm, 0mm))
+
+    sub frame = FairleadFrame() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    let band_stroke    = self.capstan.lead * self.capstan.active_turns
+    let frame_web_half = self.frame.web_half_z
+    let frame_half_x   = self.frame.half_x
+    let frame_half_z   = self.frame.half_z
+
+    let vert_x     = pulley_x + r_pitch
+
+    constraint pulley_x - r_pitch > sqrt(flange_r * flange_r - cap_pitch_r * cap_pitch_r)
+    constraint winding_z > lead_split
+    constraint cap_pitch_r > 0mm
+    constraint flange_r > cap_pitch_r
+    constraint band_len < self.capstan.groove_len + unit_pin_slack
+    constraint band_len > self.capstan.groove_len - unit_pin_slack
+    constraint cap_pitch_r_m < cap_pitch_r + unit_pin_slack
+    constraint cap_pitch_r_m > cap_pitch_r - unit_pin_slack
+    constraint self.pair_w1.w_in  < w1_in + unit_pin_slack
+    constraint self.pair_w1.w_in  > w1_in - unit_pin_slack
+    constraint self.pair_w1.w_out < w1_out + unit_pin_slack
+    constraint self.pair_w1.w_out > w1_out - unit_pin_slack
+    constraint self.pair_w1.tangent_y < y_rear + unit_pin_slack
+    constraint self.pair_w1.tangent_y > y_rear - unit_pin_slack
+    constraint self.pair_w1.r_pitch  < r_pitch + unit_pin_slack
+    constraint self.pair_w1.r_pitch  > r_pitch - unit_pin_slack
+    constraint self.pair_w1.pulley_x < pulley_x + unit_pin_slack
+    constraint self.pair_w1.pulley_x > pulley_x - unit_pin_slack
+    // The swap itself, pinned: the mirrored pair's side must be −1.
+    constraint self.pair_w1.side < 0.0
+    constraint self.frame.side_y - self.frame.plate_t / 2 > flange_r
+    constraint self.frame.half_x - self.frame.web_t > vert_x + 6mm
+    constraint self.frame.half_z > w1_in + r_pitch
 }
 
 /// Rear drive block — BOTH fairlead-equipped drive units (one per belt),
@@ -526,7 +655,14 @@ pub structure RearDrive {
     let neg_cap_x = 0mm - cap_x
 
     sub unit_a = CapstanUnit() at transform3(orient_identity(), vec3(cap_x,     0mm, 0mm))  // belt A (outer ±z_a)
-    sub unit_b = CapstanUnit() at transform3(orient_identity(), vec3(neg_cap_x, 0mm, 0mm))  // belt B (inner ±z_b)
+    // Unit B is the MIRROR-TWIN balanced config (2026-08-25 v3): its
+    // w1-in/w2-out vertical sits INBOARD like unit A's, making the fairlead
+    // interface mirror-symmetric about x = 0 (before v3 the units were pure
+    // translated copies and the interface was translation-symmetric instead).
+    // A reflection cannot be a placement (orientations are proper-only) and
+    // a side param cannot reach the pair subs per-instance (#6592) — hence
+    // the duplicated mirrored structure.
+    sub unit_b = CapstanUnitMirrored() at transform3(orient_identity(), vec3(neg_cap_x, 0mm, 0mm))  // belt B (inner ±z_b)
 
     // ── Relays for the composing level (#5360, landed 2026-07-31) ───────────
     // A parent reads a sub's derived let ONE level down; a let that is itself
@@ -706,13 +842,22 @@ pub structure DriveTendons {
     // Y rails: HALF spans (RailTendons), A-front/B-back on the right; the left
     // rail is the CONVERSE via 180°-about-Z (the rail tendons lie on x = 0 in the
     // child frame, so the rotation only swaps the A/B fore/aft, not the rail X).
-    // Rear-routing span extensions (v1): the two +z back-half rail runs whose
-    // rear pulleys sit at the moved/reoriented y = −430 line extend to 430mm —
-    // belt A's back half lives on the LEFT rail (a_upper, flipped) and belt
-    // B's on the RIGHT rail (b_upper). (436 → 430 with the 2026-08-23
-    // cap_pitch_r re-sync: moved_y tracks plane_out.)
-    sub rail_r = RailTendons(z_a: z_a, z_b: z_b, span_bu: 430mm) at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
-    sub rail_l = RailTendons(z_a: z_a, z_b: z_b, span_au: 430mm) at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
+    // Rear-routing spans (#6592, found 2026-08-25): span overrides at these
+    // sites are INERT — a per-instance override never re-realizes an
+    // intermediate structure's subtree, so RailTendons always renders its
+    // 400mm defaults. Since rear routing v1 the two +z back halves therefore
+    // rendered 30mm SHORT of their rear discs at moved_y = −430 (unnoticed:
+    // the check tools model intent, not the file). The missing 30mm is
+    // modelled as leaf-level lead_bk_* continuation segments in the rear
+    // section below (leaf overrides DO work); the −z back halves' 18mm
+    // overshoot past their neg_corn wrap tangents is accepted, fictitious
+    // rope absorbed by the tangency suppressions. TODO(#6592): restore
+    // span_bu/span_au: 430mm + span_bl/span_al: 382mm here and delete the
+    // lead_bk_* segments once instance-subtree re-realization lands. The
+    // z_a/z_b args are equally inert but kept: they document the single-
+    // source intent and their values equal the defaults today.
+    sub rail_r = RailTendons(z_a: z_a, z_b: z_b) at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
+    sub rail_l = RailTendons(z_a: z_a, z_b: z_b) at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
     // Gantry crosses: FULL-length quad turned 90° about Z.
     sub cross  = TendonQuad(z_a: z_a, z_b: z_b) at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))
 
@@ -764,14 +909,15 @@ pub structure DriveTendons {
     sub corner_fl_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, z_b))
     sub corner_fl_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, neg_z_b))
 
-    // Front-to-back RETURN tendons. The two whose rear pulley MOVED rearward
-    // (rear routing v1: the reoriented down-turns at y = moved_y) extend 30mm
-    // past the nominal rail length to reach the moved tangent point (830mm,
-    // centred y = −15mm); the other two stay full-rail 800mm.
+    // Front-to-back RETURN tendons, modelled front-corner tangent (+400) to
+    // rear wrap tangent. The two +z returns reach the moved_y = −430 rear
+    // line (830mm, centred −15mm); the two −z returns end at the neg_corn =
+    // −382 line (782mm, centred +9mm — v3 trim, they used to overshoot to
+    // −400 past their rear turns).
     sub return_r_u = LinearTendon(length: 830mm) at transform3(rot_to_y, vec3(return_x_r, 0mm - 15mm, z_a))
-    sub return_r_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_r, 0mm, neg_z_a))
+    sub return_r_l = LinearTendon(length: 782mm) at transform3(rot_to_y, vec3(return_x_r, 9mm, neg_z_a))
     sub return_l_u = LinearTendon(length: 830mm) at transform3(rot_to_y, vec3(return_x_l, 0mm - 15mm, z_b))
-    sub return_l_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_l, 0mm, neg_z_b))
+    sub return_l_l = LinearTendon(length: 782mm) at transform3(rot_to_y, vec3(return_x_l, 9mm, neg_z_b))
 
     // ── Rear drive (capstans DOWN + fairlead guide pulleys) ─────────────────
     // Both belts' drive units live in ONE RearDrive block behind the rear
@@ -799,52 +945,73 @@ pub structure DriveTendons {
     let neg_drop    = 0mm - cap_drop
     sub rear_drive = RearDrive() at transform3(orient_identity(), vec3(0mm, cap_y, neg_drop))
 
-    // ── Rear routing v2 (2026-08-25): drive plane ↔ fairleads ───────────────
-    // v1 (2026-07-23) placed this web with hand-solved literal mm and a
-    // hand-verified clearance claim; an analytic pairwise sweep found NINE
-    // interfering pairs in it. v2 keeps v1's topology and DERIVES every
-    // position from the tangency rules below, so the layout re-solves when a
-    // parameter moves instead of being re-litigated by hand.
+    // ── Rear routing v3 (2026-08-25, symmetry round): drive plane ↔ fairleads
+    // v1 (2026-07-23) hand-solved this web in literal mm and shipped nine
+    // interferences. v2 (2026-08-25) DERIVED every position from tangency
+    // rules but kept v1's topology: four OUT feeds using four DIFFERENT
+    // schemes, chosen by collision-solving. v3 (same day, after the symmetry
+    // analysis) re-derives the OUT topology into TWO mirror-paired schemes —
+    // Leo's b1-out down-turn generalized as far as geometry allows:
     //
-    // Loop→winding: each belt's +z loop feeds its OUTBOARD winding (w1), the
-    // −z loop the MACHINE-side winding (w2) — the swap puts fairlead verticals
-    // through in-runs. Per loop the IN end (band-top) arrives from ABOVE and
-    // the OUT end (band-bottom) from BELOW (the static-balance requirement).
+    //   OUT, rail strands (b1 right / a2 left): turn STRAIGHT DOWN at the
+    //   rail line via one X-axis pulley (rule 5) — descents at ±rail_x,
+    //   3 discs per feed.
+    //   OUT, return strands (a1 right / b2 left): rear turn → band run →
+    //   down-idler → descent at ±(fl_out_x_a + turn_gap) = ±246 — 4 discs.
+    //   The four OUT descents {±246, ±400} are an exactly mirror-symmetric
+    //   station set. ALL-FOUR-down-turns is provably infeasible: two same-
+    //   side strand-line descents make the two feeds' horizontal spans
+    //   DOUBLE-NEST (each feed's low run must cross a vertical member of the
+    //   other — the outer run the inner descent, the inner run the outer
+    //   rise), which demands each run be below the other: a contradiction
+    //   with any two-level stagger. Caught by tools/v2_check.py, twice.
+    //   IN (uniform ×4, scheme unchanged): rear turn on the strand → X-run at
+    //   band height → down-idler → descent from above.
     //
-    // THE FOUR TANGENCY RULES (every position below is one of these):
-    //  1. A vertical-axis rear pulley at (px, py, pz) turns a rail/return
-    //     Y-run into an X-run on the line y = py − r_pitch; the Y-run is
-    //     tangent at x = px ± r_pitch and the X-run's end is at x = px. The
-    //     four +z ends therefore sit at moved_y = plane_out + r_pitch so
-    //     their X-runs land in plane_out with NO extra jog (Leo's insight);
-    //     the −z ends sit at neg_corn, already tangent to plane_in.
+    // SYMMETRY: with unit B side-swapped (RearDrive) the fairlead INTERFACE
+    // is mirror-symmetric about x = 0 and each unit is C2-symmetric about the
+    // drum line (FairleadPair). The WEB is deliberately NOT a global mirror —
+    // a full mirror is INFEASIBLE: each belt-level loop has exactly two rear
+    // strands, so a strict mirror would swap belt B's level-1 in/out strand
+    // roles, and the swapped b1-in would need a band-height run at z_b
+    // crossing the centre straight THROUGH a1-in's descent. The governing
+    // Z-NESTING LAW: a band-height run may cross a descent's station only
+    // from ABOVE its top (top = level ∓ r_pitch); z_b = 55 < z_a − r_pitch =
+    // 62, so in plane_out the z_b run must stop short of the z_a descent
+    // (constraint below), while in plane_in the z_b run (−55) legally crosses
+    // above the z_a down-idlers (tops at −z_a, = −80). The residual chirality
+    // of the web lives in the per-feed parameters; the schemes are uniform.
+    //
+    // Loop→winding: each belt's +z loop feeds its w1 winding, the −z loop its
+    // w2. Per loop the IN end (band-top) arrives from ABOVE, the OUT end
+    // (band-bottom) from BELOW (static balance). STRAND ROLES (chirally
+    // locked by the z-nesting law + loop topology — part of the design):
+    //   a1: in ← left-rail upper      out ← right-return upper
+    //   b1: in ← left-return upper    out ← right-rail upper
+    //   a2: in ← right-return lower   out ← left-rail lower
+    //   b2: in ← right-rail lower     out ← left-return lower
+    // So per tangent plane ALL in-hardware sits on one side and ALL out-
+    // hardware on the other (plane_out: in left / out right; plane_in the
+    // converse) — which is what keeps the rear lines clash-free.
+    //
+    // THE FIVE TANGENCY RULES (every position below is one of these):
+    //  1. A vertical-axis rear pulley at (px, py) turns a rail/return Y-run
+    //     into an X-run on the line y = py − r_pitch; the Y-run is tangent
+    //     at x = px ± r_pitch and the X-run's end is at x = px.
     //  2. An X-axis idler turning a horizontal X-run DOWN has centre
     //     z = run_z − r_pitch; the descent leaves at x = centre_x ± r_pitch
     //     and the run ends directly above the centre.
     //  3. A low corner / up-turn has centre z = low_z + r_pitch; the run ends
     //     at centre_x and the vertical is at centre_x ∓ r_pitch.
     //  4. A descent/rise meets its fairlead pulley at the pulley's CENTRE
-    //     height on the outboard side (quarter wrap), i.e. at x = cap_x ±
-    //     fl_vert, z = flz_*.
-    //
-    // WHAT v1 GOT WRONG, and the rules v2 adds:
-    //  • A descent past a drive unit must clear the fairlead pulley DISCS
-    //    (they lie in XZ, radius r_pitch) as well as the drum and the runs —
-    //    v1 checked runs only, and put three descents inside discs. With the
-    //    discs, drum band and verticals excluded, a tangent plane has NO free
-    //    corridor between cap_x ∓ (pulley_x + r_pitch): a rope crossing the
-    //    block passes either through the MID corridor (|x| ≤ mid_corr_x) or
-    //    outboard of the unit entirely.
-    //  • A drive-plane X-run must not cross another end's DESCENT (a descent
-    //    occupies its x from the drive plane down to its pulley, so it is
-    //    present at the crossing run's z). This is why b1-out and b2-out take
-    //    their down-turn EARLY (at the rail/return line) instead of running
-    //    inboard at band height: the inboard route would cross a1-in's and
-    //    a2-in's descents respectively.
-    //  • A descent and its own rise need centre separation ≥ 2·r_pitch + the
-    //    two turn discs' clearance, or the low corner and the up-turn
-    //    overlap — the reason a1-out descends well outboard of its rise
-    //    rather than just beside it (turn_gap below).
+    //     height on the outboard side (quarter wrap), at x = the fairlead
+    //     vertical, z = flz_*.
+    //  5. (v3) An X-axis pulley ON a Y-strand, centre (sx, py, run_z −
+    //     r_pitch), turns the strand straight down: the descent hangs at
+    //     x = sx in the plane y = py − r_pitch — so a strand whose rear line
+    //     is r_pitch machineward of a tangent plane drops its rope exactly
+    //     INTO that plane. The +z strands' rear line is moved_y (→ plane_out);
+    //     the −z strands' is neg_corn (→ plane_in).
     // Low runs stagger at low_hi / low_lo wherever their x-spans overlap;
     // every low run passes below the collar plates and the below-entry
     // pulley discs.
@@ -911,31 +1078,25 @@ pub structure DriveTendons {
     let low_in_hi  = 0mm - 364mm     // plane_in upper (rise-bound by flz_out2 AT THE BOTTOM OF TRAVEL)
     let low_in_lo  = low_in_hi - low_stagger
 
-    // ── Free vertical corridors (the rule the v1 hand-solve violated) ───────
-    // A rope descending in a tangent plane past a drive unit must miss THREE
-    // things, all derived here so a cap_x / pulley_x edit re-solves them:
-    //  • the drum flange, which crosses each tangent plane over a strip of
-    //    half-width sqrt(flange_r² − cap_pitch_r²) about the drum axis;
-    //  • the two fairlead pulley DISCS in that plane (they lie in XZ, radius
-    //    r_pitch, centred cap_x ∓ pulley_x) — the v1 solve checked the runs
-    //    but never the discs;
-    //  • the unit's own rope verticals at cap_x ± fl_vert.
-    // Everything inboard of a unit's inner disc edge is the MID corridor.
+    // ── Drum-flange strip (the one obstacle the fairlead verticals shave) ──
+    // The drum flange crosses each tangent plane over a strip of half-width
+    // sqrt(flange_r² − cap_pitch_r²) about the drum axis; every fairlead
+    // vertical sits fl_vert from its drum axis and must clear the strip
+    // (constraint below). v3 note: the OUT descents all moved to the strand
+    // lines, outboard of everything, so the v2 mid-corridor bookkeeping
+    // (mid_corr_x and its rules) is gone — no rope crosses between the units
+    // above low-run level any more.
     let flange_r_m   = self.rear_drive.unit_pitch_r + 9mm   // == Capstan flange_r (pitch_r + rope_dia*1.5)
     let drum_band    = sqrt(flange_r_m * flange_r_m - cap_pitch_r * cap_pitch_r)
-    /// Inner edge of a unit's inboard fairlead disc — the mid corridor runs
-    /// from −mid_corr_x to +mid_corr_x and is the only place a rope may pass
-    /// between the two units.
-    let mid_corr_x   = cap_x_m - fl_pulley_x - r_pitch - rope_r - clear_min
 
-    // ── Derived rope stations (rule 4: verticals at cap_x ± fl_vert) ────────
+    // ── Derived rope stations (rule 4: verticals at ±cap_x ± fl_vert) ───────
+    // Unit B is SIDE-SWAPPED (v3): its w1-in/w2-out vertical is inboard like
+    // unit A's — the station set {±32, ±168} is mirror-symmetric with
+    // mirror-symmetric ROLES.
     let fl_in_x_a  = cap_x_m - fl_vert          // unit A inboard  vertical (w1-in / w2-out)
     let fl_out_x_a = cap_x_m + fl_vert          // unit A outboard vertical (w1-out / w2-in)
-    let fl_in_x_b  = 0mm - cap_x_m - fl_vert    // unit B outboard vertical (w1-in / w2-out)
-    let fl_out_x_b = 0mm - cap_x_m + fl_vert    // unit B inboard  vertical (w1-out / w2-in)
-    /// Minimum centre separation between a descent and its own rise: the two
-    /// turn discs sit at ∓r_pitch of them and must themselves clear.
-    let turn_gap   = r_pitch * 4 + clear_min
+    let fl_in_x_b  = 0mm - cap_x_m + fl_vert    // unit B inboard  vertical (w1-in / w2-out)
+    let fl_out_x_b = 0mm - cap_x_m - fl_vert    // unit B outboard vertical (w1-out / w2-in)
 
     // ── IN feeds: rear pulley → X-run → down-idler → descent ────────────────
     // (rules 1, 2, 4; the descent runs from the down-idler's centre height to
@@ -944,7 +1105,7 @@ pub structure DriveTendons {
     let in_a1_run_c = (idler_in_l + in_a1_dn_x) / 2
     let in_a1_run_l = in_a1_dn_x - idler_in_l
     let in_a1_top   = z_a - r_pitch                  // down-idler centre height == descent top
-    let in_b1_dn_x  = fl_in_x_b - r_pitch
+    let in_b1_dn_x  = fl_in_x_b - r_pitch            // B w1: descends at fl_in_x_b (inboard, v3)
     let in_b1_run_c = (idler_out_l + in_b1_dn_x) / 2
     let in_b1_run_l = in_b1_dn_x - idler_out_l
     let in_b1_top   = z_b - r_pitch
@@ -952,57 +1113,69 @@ pub structure DriveTendons {
     let in_a2_run_c = (idler_out_r + in_a2_dn_x) / 2
     let in_a2_run_l = idler_out_r - in_a2_dn_x
     let in_a2_top   = neg_z_a - r_pitch
-    let in_b2_dn_x  = fl_out_x_b - r_pitch
-    let in_b2_run_c = (idler_out_l + in_b2_dn_x) / 2
-    let in_b2_run_l = in_b2_dn_x - idler_out_l
+    let in_b2_dn_x  = fl_out_x_b + r_pitch           // B w2 arrives from +x (right RAIL, v3), descends at fl_out_x_b
+    let in_b2_run_c = (idler_in_r + in_b2_dn_x) / 2
+    let in_b2_run_l = idler_in_r - in_b2_dn_x
     let in_b2_top   = neg_z_b - r_pitch
 
-    // ── OUT feeds: down-turn → descent → low corner → low run → rise ────────
-    // The two BELT-A ends take a short drive-plane run and descend OUTBOARD —
-    // a1 outboard of its own unit, a2 outboard of unit B — each turn_gap clear
-    // of the fairlead vertical it descends beside. The two BELT-B ends do not:
-    // b1 turns down immediately AT the rail line (an inboard run at z_b would
-    // cross a1-in's descent, whose top z_a − r_pitch sits above z_b), and b2
-    // runs inboard at −z_b (above the −z down-idler discs, whose tops sit at
-    // −z_a) and dives down the MID corridor at x = 0.
-    let out_a1_desc_x = fl_out_x_a + turn_gap        // clear of its own rise at fl_out_x_a
+    // ── OUT feeds (v3): TWO schemes, one per strand class, mirror-paired.
+    // The RAIL strands take the down-turn (rule 5): b1 at +rail_x, a2 at
+    // −rail_x. The RETURN strands take a band run to a v2-style outboard
+    // descent: a1 at +246, b2 at −246. All-four-down-turns is INFEASIBLE
+    // (see header): with two same-side strand-line descents the two feeds'
+    // spans double-nest and the two-level stagger has no solution.
+    /// Minimum centre separation between a band-run descent and the vertical
+    /// it descends beside: the two turn discs sit at ∓r_pitch and must clear.
+    let turn_gap      = r_pitch * 4 + clear_min
+    let out_a1_desc_x = fl_out_x_a + turn_gap   // a1: band run, descends outboard of unit A
     let out_a1_run_c  = (idler_out_r + out_a1_desc_x + r_pitch) / 2
     let out_a1_run_l  = idler_out_r - out_a1_desc_x - r_pitch
-    let out_b1_desc_x = rail_x                       // down-turn on the right rail line
-    let out_a2_desc_x = fl_in_x_b - turn_gap         // descends outboard (left) of unit B
-    let out_a2_run_c  = (idler_in_l + out_a2_desc_x - r_pitch) / 2
-    let out_a2_run_l  = out_a2_desc_x - r_pitch - idler_in_l
-    let out_b2_desc_x = 0mm                          // straight down the MID corridor
-    let out_b2_run_c  = (idler_in_r + out_b2_desc_x + r_pitch) / 2
-    let out_b2_run_l  = idler_in_r - out_b2_desc_x - r_pitch
+    let out_b1_desc_x = rail_x                  // b1: down-turn AT the right rail line
+    let out_a2_desc_x = neg_rail_x              // a2: down-turn AT the left rail line
+    let out_b2_desc_x = fl_out_x_b - turn_gap   // b2: band run, descends outboard of unit B
+    let out_b2_run_c  = (idler_out_l + out_b2_desc_x - r_pitch) / 2
+    let out_b2_run_l  = out_b2_desc_x - r_pitch - idler_out_l
     // Low corner + up-turn X stations, named ONCE so the placements below and
     // the wrap-sense constraints at the end read the SAME cells (a constraint
     // that re-states the offset instead of reading it cannot catch a flipped
-    // placement — it just agrees with itself).
+    // placement — it just agrees with itself). Right-side descents corner on
+    // their −x side (the low run heads inboard-left); left-side descents on
+    // their +x side.
     let corner_a1_x = out_a1_desc_x - r_pitch
     let corner_b1_x = out_b1_desc_x - r_pitch
     let corner_a2_x = out_a2_desc_x + r_pitch
-    let corner_b2_x = out_b2_desc_x - r_pitch
+    let corner_b2_x = out_b2_desc_x + r_pitch
     let up_a1_x     = fl_out_x_a + r_pitch
     let up_b1_x     = fl_out_x_b + r_pitch
     let up_a2_x     = fl_in_x_a  - r_pitch
-    let up_b2_x     = fl_in_x_b  + r_pitch
+    let up_b2_x     = fl_in_x_b  - r_pitch
     // Low-corner / up-turn centre heights (rule 3).
     let lo_hi_c = low_hi + r_pitch          // plane_out corner/up-turn centres
     let lo_lo_c = low_lo + r_pitch
     let lo_in_hi_c = low_in_hi + r_pitch    // plane_in corner/up-turn centres
     let lo_in_lo_c = low_in_lo + r_pitch
 
-    // Rear pulleys. The four +z ends sit at moved_y (rule 1); the −z ends at
-    // neg_corn. B w1-out and B w2-out turn down immediately (X-axis discs).
-    sub corner_bl_u   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, moved_y,  z_a))        // A w1-IN
-    sub corner_bl_l   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, neg_z_a))    // A w2-OUT emitter
-    sub corner_br_u   = IdlerPulley() at transform3(rot_to_x, vec3(rail_x, moved_y, z_b - r_pitch))            // B w1-OUT down-turn (X-axis)
-    sub corner_br_l   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, neg_corn, neg_z_b))    // B w2-OUT emitter
-    sub backidler_r_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, moved_y,  z_a))       // A w1-OUT emitter
-    sub backidler_r_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, neg_z_a))   // A w2-IN
-    sub backidler_l_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, moved_y,  z_b))       // B w1-IN
-    sub backidler_l_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, neg_z_b))   // B w2-IN
+    // Rear discs (v3). IN rear turns (vertical-axis, rule 1): the +z pair on
+    // the LEFT strands at moved_y, the −z pair on the RIGHT at neg_corn. OUT
+    // hardware sits on the OTHER side of each plane: the rail strands' X-axis
+    // down-turns (rule 5) and the return strands' vertical-axis rear turns
+    // (whose band runs feed the ±246 descents) — so per tangent plane every
+    // IN disc is on one side and every OUT disc on the other, and the rear
+    // lines stay clash-free by construction.
+    sub corner_bl_u   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l,  moved_y,  z_a))       // a1-IN rear turn (left rail)
+    sub backidler_l_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, moved_y,  z_b))       // b1-IN rear turn (left return)
+    sub backidler_r_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, neg_z_a))   // a2-IN rear turn (right return)
+    sub corner_br_l   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r,  neg_corn, neg_z_b))   // b2-IN rear turn (right rail; pre-v3 this disc emitted b2-OUT)
+    sub backidler_r_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, moved_y,  z_a))       // a1-OUT rear turn (right return → band run)
+    sub backidler_l_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, neg_z_b))   // b2-OUT rear turn (left return → band run)
+    // The 30mm continuations of the two +z back-half rail strands, from the
+    // rail end (y = −400, where RailTendons' inert-override default stops —
+    // #6592) to their rear-disc wrap tangents at moved_y = −430. One physical
+    // rope, modelled as two collinear segments until #6592 lands.
+    sub lead_bk_a1 = LinearTendon(length: 30mm) at transform3(rot_to_y, vec3(neg_rail_x, moved_y + 15mm, z_a))  // left rail upper → corner_bl_u
+    sub lead_bk_b1 = LinearTendon(length: 30mm) at transform3(rot_to_y, vec3(rail_x,     moved_y + 15mm, z_b))  // right rail upper → dnturn_b1
+    sub dnturn_b1 = IdlerPulley() at transform3(rot_to_x, vec3(out_b1_desc_x, moved_y,  in_b1_top))   // b1-OUT down-turn (right rail; the v2 corner_br_u, position unchanged)
+    sub dnturn_a2 = IdlerPulley() at transform3(rot_to_x, vec3(out_a2_desc_x, neg_corn, in_a2_top))   // a2-OUT down-turn (left rail)
 
     // IN X-runs + down-idlers + descents.
     sub run_in_a1  = LinearTendon(length: in_a1_run_l) at transform3(rot_to_x, vec3(in_a1_run_c, plane_out, z_a))
@@ -1018,17 +1191,22 @@ pub structure DriveTendons {
     sub vert_in_a2 = LinearTendon(length: in_a2_top - flz_in2) at transform3(orient_identity(), vec3(fl_out_x_a, plane_in,  (in_a2_top + flz_in2) / 2))
     sub vert_in_b2 = LinearTendon(length: in_b2_top - flz_in2) at transform3(orient_identity(), vec3(fl_out_x_b, plane_in,  (in_b2_top + flz_in2) / 2))
 
-    // OUT drive-plane runs (the two that travel outboard before turning down).
+    // OUT band runs (the two return-strand feeds) + their down-idlers.
     sub run_out_a1 = LinearTendon(length: out_a1_run_l) at transform3(rot_to_x, vec3(out_a1_run_c, plane_out, z_a))
-    sub run_out_a2 = LinearTendon(length: out_a2_run_l) at transform3(rot_to_x, vec3(out_a2_run_c, plane_in,  neg_z_a))
     sub run_out_b2 = LinearTendon(length: out_b2_run_l) at transform3(rot_to_x, vec3(out_b2_run_c, plane_in,  neg_z_b))
     sub idler_dn_a1 = IdlerPulley() at transform3(rot_to_y, vec3(out_a1_desc_x + r_pitch, plane_out, in_a1_top))
-    sub idler_dn_a2 = IdlerPulley() at transform3(rot_to_y, vec3(out_a2_desc_x - r_pitch, plane_in,  in_a2_top))
-    sub idler_dn_b2 = IdlerPulley() at transform3(rot_to_y, vec3(out_b2_desc_x + r_pitch, plane_in,  in_b2_top))
+    sub idler_dn_b2 = IdlerPulley() at transform3(rot_to_y, vec3(out_b2_desc_x - r_pitch, plane_in,  in_b2_top))
 
     // OUT descents → low corners → low runs → up-turns → rises (from below).
-    // Stagger: plane_out A w1 at low_hi / B w1 at low_lo; plane_in B w2 at
-    // low_hi / A w2 at low_lo — so each plane's two low runs never share a z.
+    // STAGGER ASSIGNMENT: per side the BAND-RUN feed (a1 / b2, inboard
+    // descents at ±246) takes the HIGH level and the DOWN-TURN feed (b1 /
+    // a2, rail-line descents) the DEEP one, so the down-turn feed's long low
+    // run passes UNDER the band-run feed's descent, corner disc and rise,
+    // while the band-run feed's short low hop never reaches the rail
+    // stations. Both other assignments interfere — the all-down-turn layout
+    // has NO feasible assignment at all (the double-nesting contradiction in
+    // the header; both failure modes were caught by tools/v2_check.py on v3
+    // drafts, not by eye).
     sub desc_a1 = LinearTendon(length: in_a1_top - lo_hi_c) at transform3(orient_identity(), vec3(out_a1_desc_x, plane_out, (in_a1_top + lo_hi_c) / 2))
     sub desc_b1 = LinearTendon(length: in_b1_top - lo_lo_c) at transform3(orient_identity(), vec3(out_b1_desc_x, plane_out, (in_b1_top + lo_lo_c) / 2))
     sub desc_a2 = LinearTendon(length: in_a2_top - lo_in_lo_c) at transform3(orient_identity(), vec3(out_a2_desc_x, plane_in,  (in_a2_top + lo_in_lo_c) / 2))
@@ -1044,7 +1222,7 @@ pub structure DriveTendons {
     sub run_lo_a1 = LinearTendon(length: corner_a1_x - up_a1_x) at transform3(rot_to_x, vec3((corner_a1_x + up_a1_x) / 2, plane_out, low_hi))
     sub run_lo_b1 = LinearTendon(length: corner_b1_x - up_b1_x) at transform3(rot_to_x, vec3((corner_b1_x + up_b1_x) / 2, plane_out, low_lo))
     sub run_lo_a2 = LinearTendon(length: up_a2_x - corner_a2_x) at transform3(rot_to_x, vec3((corner_a2_x + up_a2_x) / 2, plane_in, low_in_lo))
-    sub run_lo_b2 = LinearTendon(length: corner_b2_x - up_b2_x) at transform3(rot_to_x, vec3((corner_b2_x + up_b2_x) / 2, plane_in, low_in_hi))
+    sub run_lo_b2 = LinearTendon(length: up_b2_x - corner_b2_x) at transform3(rot_to_x, vec3((corner_b2_x + up_b2_x) / 2, plane_in, low_in_hi))
     sub rise_a1 = LinearTendon(length: flz_out1 - lo_hi_c) at transform3(orient_identity(), vec3(fl_out_x_a, plane_out, (flz_out1 + lo_hi_c) / 2))
     sub rise_b1 = LinearTendon(length: flz_out1 - lo_lo_c) at transform3(orient_identity(), vec3(fl_out_x_b, plane_out, (flz_out1 + lo_lo_c) / 2))
     sub rise_a2 = LinearTendon(length: flz_out2 - lo_in_lo_c) at transform3(orient_identity(), vec3(fl_in_x_a,  plane_in,  (flz_out2 + lo_in_lo_c) / 2))
@@ -1062,18 +1240,28 @@ pub structure DriveTendons {
     // placement is silently dropped before the kernel today — #6583 — so
     // these compare the parent-frame coordinates that place the geometry.)
     //
-    // 1. Every mid-corridor descent stays inside the corridor.
-    constraint out_b2_desc_x < mid_corr_x
-    constraint out_b2_desc_x > 0mm - mid_corr_x
-    // 2. Descents that pass a unit do so OUTBOARD of its outer disc edge.
+    // 1. (v3) Every OUT descent hangs outboard of the fairlead hardware in
+    //    its plane, by more than a disc + rope + floor.
     constraint out_a1_desc_x > fl_out_x_a + r_pitch + rope_r + clear_min
-    constraint out_a2_desc_x < fl_in_x_b - r_pitch - rope_r - clear_min
-    // 3. A descent clears the vertical it descends beside by more than the two
-    //    turn discs need (a1: its OWN rise at fl_out_x_a; a2: unit B's inboard
-    //    vertical fl_in_x_b — b2's rise — a2's own rise is 278mm away at
-    //    fl_in_x_a and never binds).
+    constraint out_b1_desc_x > fl_out_x_a + r_pitch + rope_r + clear_min
+    constraint out_a2_desc_x < fl_out_x_b - r_pitch - rope_r - clear_min
+    constraint out_b2_desc_x < fl_out_x_b - r_pitch - rope_r - clear_min
+    // 2. The band-run descents clear the vertical they descend beside by
+    //    more than the two turn discs need (a1: its OWN rise at fl_out_x_a;
+    //    b2: unit B's outboard vertical fl_out_x_b — b1's rise and b2-in's
+    //    descent — b2's own rise is 214mm away at fl_in_x_b, never binding).
     constraint out_a1_desc_x - fl_out_x_a > turn_gap - 1mm
-    constraint fl_in_x_b - out_a2_desc_x > turn_gap - 1mm
+    constraint fl_out_x_b - out_b2_desc_x > turn_gap - 1mm
+    // 3. Z-LEVEL SEPARATION: a z_a member crosses z_b hardware only from
+    //    ABOVE, and the level gap itself is the clearance — band run over a
+    //    down-turn disc's top (rope), and the moved_y-line rear-turn disc
+    //    bottom over the down-turn disc top (5mm disc half-width). The
+    //    neg_corn line mirrors both identically. Plus: the two rear lines
+    //    are y-separated enough that a moved_y disc's machineward edge
+    //    clears the neg_corn strands passing beneath it.
+    constraint z_a - z_b > rope_r + clear_min
+    constraint z_a - z_b - 5mm > clear_min
+    constraint neg_corn - moved_y - r_pitch > rope_r + clear_min
     // 4. The two low runs sharing a plane are staggered by more than a disc
     //    diameter plus rope, so the overlapping spans never touch. (Both
     //    planes get this by construction — low_lo is one stagger below.)
@@ -1101,12 +1289,19 @@ pub structure DriveTendons {
     constraint flz_out2 - r_pitch - low_hi > rope_r + clear_min
     constraint neg_drop - fl_frame_z - low_hi > rope_r + clear_min
     constraint neg_drop - fl_frame_z - low_in_hi > rope_r + clear_min
-    // 6. The IN descents clear the drum flange band in their plane.
-    constraint cap_x_m - fl_in_x_a > drum_band + rope_r + clear_min
-    // 8. The mid corridor is wide enough to admit a rope at all — the check
-    //    that would have caught the v1 layout at cap_x = 100mm.
-    constraint mid_corr_x > rope_r + clear_min
-    // 9. WRAP SENSE: a turn pulley must sit on the side of its vertical that
+    // 8. Every fairlead vertical clears its unit's drum-flange strip: all
+    //    four verticals sit exactly fl_vert from their own drum axis (rule 4),
+    //    so one bound covers them all.
+    constraint fl_vert > drum_band + rope_r + clear_min
+    // 9. Z-NESTING LAW, held as live guards (this is the law that makes a
+    //    full A↔B mirror infeasible — see the v3 header):
+    //    in plane_out the z_b IN-run rides BELOW the z_a descent's top
+    //    (z_b < z_a − r_pitch), so it must STOP short of that station…
+    constraint fl_in_x_a - in_b1_dn_x > rope_r * 2 + clear_min
+    //    …while in plane_in the z_b IN-run crosses the z_a hardware legally
+    //    from ABOVE: it must clear the a2 down-idler's disc top.
+    constraint neg_z_b - in_a2_top - r_pitch > rope_r + clear_min
+    // 10. WRAP SENSE: a turn pulley must sit on the side of its vertical that
     //    FACES the incoming run — tangency alone does not pin this, and an
     //    inverted sign puts the pulley on the wrong side of its own rope while
     //    still reading as "two segments tangent to this pulley" (exactly how
@@ -1117,7 +1312,7 @@ pub structure DriveTendons {
     constraint (corner_b1_x - fl_out_x_b) * (up_b1_x - fl_out_x_b) > 0mm * 1mm
     constraint (corner_a2_x - fl_in_x_a)  * (up_a2_x - fl_in_x_a)  > 0mm * 1mm
     constraint (corner_b2_x - fl_in_x_b)  * (up_b2_x - fl_in_x_b)  > 0mm * 1mm
-    // 10. #6586 PINS: every hand-kept literal above equals the derived cell it
+    // 11. #6586 PINS: every hand-kept literal above equals the derived cell it
     //    stands in for. These are the whole safety story for the workaround —
     //    if the drive geometry moves and a literal does not follow, the design
     //    fails here rather than silently rendering rope in the wrong place.

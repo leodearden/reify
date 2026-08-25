@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Independent pairwise clearance sweep for printer_v01 rear routing v2.
+"""Independent pairwise clearance sweep for printer_v01 rear routing v3.
+
+v3 (2026-08-25, symmetry round): unit B side-swapped (mirror-twin balanced
+config — FL_IN_B is now the INBOARD vertical), b2-in feeds from the right
+RAIL, and the OUT feeds use TWO mirror-paired schemes: rail strands (b1/a2)
+turn straight down at ±rail_x (one X-axis disc), return strands (a1/b2) take
+a band run to a v2-style outboard descent at ±246. All-four-down-turns is
+infeasible (double-nested spans defeat any two-level stagger) — this sweep is
+what caught both bad drafts.
 
 Mirrors the DERIVATIONS in printer.ri's DriveTendons (not its literals), so a
 disagreement means the .ri and this script disagree about the tangency rules.
@@ -42,15 +50,17 @@ FRAME_HX, FRAME_HZ, WEB_HZ, SIDE_Y, PLATE_T, WEB_T = 84.0, 72.0, 56.0, 40.0, 8.0
 
 # derived stations
 FL_IN_A, FL_OUT_A = CAP_X - FL_VERT, CAP_X + FL_VERT       # 32 / 168
-FL_IN_B, FL_OUT_B = -CAP_X - FL_VERT, -CAP_X + FL_VERT     # -168 / -32
+FL_IN_B, FL_OUT_B = -CAP_X + FL_VERT, -CAP_X - FL_VERT     # -32 / -168 (v3 side-swap)
 FLZ_IN1, FLZ_OUT1 = DROP + W1I, DROP + W1O
 FLZ_IN2, FLZ_OUT2 = DROP + W2I, DROP + W2O
 IN_A1_TOP, IN_B1_TOP = ZA - R_P, ZB - R_P
 IN_A2_TOP, IN_B2_TOP = -ZA - R_P, -ZB - R_P
-OUT_A1_X = FL_OUT_A + TURN_GAP
-OUT_B1_X = RAIL_X
-OUT_A2_X = FL_IN_B - TURN_GAP
-OUT_B2_X = 0.0
+# v3: rail strands descend at their own line (down-turn); return strands take
+# a band run to a v2-style outboard descent
+OUT_A1_X = FL_OUT_A + TURN_GAP    # +246, band-run feed
+OUT_B1_X = RAIL_X                 # +400, down-turn feed
+OUT_A2_X = -RAIL_X                # -400, down-turn feed
+OUT_B2_X = FL_OUT_B - TURN_GAP    # -246, band-run feed
 LO_HI_C, LO_LO_C = LOW_HI + R_P, LOW_LO + R_P
 LO_IN_HI_C, LO_IN_LO_C = LOW_IN_HI + R_P, LOW_IN_LO + R_P
 
@@ -65,46 +75,57 @@ def rope_z(n, z0, z1, x, y): cyl(n, (x, y, (z0+z1)/2), 'Z', ROPE, abs(z1-z0)/2, 
 def disc(n, c, ax): cyl(n, c, ax, R_P, PHW, 'disc')
 
 # ── rail / return feeds (rear portions) ──────────────────────────────────────
-rope_y('rail_r_bu', -430, 0, RAIL_X, ZB)      # span_bu 430 -> B w1-out feed
-rope_y('rail_r_bl', -400, 0, RAIL_X, -ZB)     # B w2-out feed
-rope_y('rail_l_au', -430, 0, -RAIL_X, ZA)     # A w1-in feed (flipped)
-rope_y('rail_l_al', -400, 0, -RAIL_X, -ZA)    # A w2-out feed
-rope_y('ret_r_u', -430, 400, RET_R, ZA)       # A w1-out feed
-rope_y('ret_r_l', -400, 400, RET_R, -ZA)      # A w2-in feed
-rope_y('ret_l_u', -430, 400, RET_L, ZB)       # B w1-in feed
-rope_y('ret_l_l', -400, 400, RET_L, -ZB)      # B w2-in feed
+# The +z rail strands are modelled to -430 = rail default span (-400) PLUS the
+# lead_bk_* 30mm leaf continuations (#6592: RailTendons span overrides are
+# inert, so the .ri models the continuation as separate collinear segments —
+# ONE physical rope, one solid here). The -z strands render the 400 default,
+# overshooting their -382 wrap tangents by 18mm of fictitious rope that the
+# pass-through tangency suppression absorbs.
+rope_y('rail_r_bu', -430, 0, RAIL_X, ZB)      # -> b1-OUT down-turn (incl. lead_bk_b1)
+rope_y('rail_r_bl', -400, 0, RAIL_X, -ZB)     # -> b2-IN rear turn (18mm overshoot)
+rope_y('rail_l_au', -430, 0, -RAIL_X, ZA)     # -> a1-IN rear turn (incl. lead_bk_a1)
+rope_y('rail_l_al', -400, 0, -RAIL_X, -ZA)    # -> a2-OUT down-turn (18mm overshoot)
+rope_y('ret_r_u', -430, 400, RET_R, ZA)       # a1-OUT down-turn
+rope_y('ret_r_l', -382, 400, RET_R, -ZA)      # 782mm -> a2-IN rear turn (v3 trim)
+rope_y('ret_l_u', -430, 400, RET_L, ZB)       # b1-IN rear turn
+rope_y('ret_l_l', -382, 400, RET_L, -ZB)      # 782mm -> b2-OUT down-turn (v3)
 
-# ── rear pulleys ─────────────────────────────────────────────────────────────
-disc('corner_bl_u', (IN_L, MOVED_Y, ZA), 'Z')          # A w1-IN
-disc('corner_bl_l', (IN_L, -CORNER_Y, -ZA), 'Z')       # A w2-OUT emitter
-disc('corner_br_u', (RAIL_X, MOVED_Y, ZB - R_P), 'X')  # B w1-OUT down-turn
-disc('corner_br_l', (IN_R, -CORNER_Y, -ZB), 'Z')       # B w2-OUT emitter
-disc('backidler_r_u', (OUT_R, MOVED_Y, ZA), 'Z')       # A w1-OUT emitter
-disc('backidler_r_l', (OUT_R, -CORNER_Y, -ZA), 'Z')    # A w2-IN
-disc('backidler_l_u', (OUT_L, MOVED_Y, ZB), 'Z')       # B w1-IN
-disc('backidler_l_l', (OUT_L, -CORNER_Y, -ZB), 'Z')    # B w2-IN
+# ── rear discs (v3: IN turns vertical-axis on one side per plane, OUT
+# down-turns X-axis on the other) ────────────────────────────────────────────
+disc('corner_bl_u', (IN_L, MOVED_Y, ZA), 'Z')            # a1-IN rear turn
+disc('backidler_l_u', (OUT_L, MOVED_Y, ZB), 'Z')         # b1-IN rear turn
+disc('backidler_r_l', (OUT_R, -CORNER_Y, -ZA), 'Z')      # a2-IN rear turn
+disc('corner_br_l', (IN_R, -CORNER_Y, -ZB), 'Z')         # b2-IN rear turn (v3; was b2-OUT emitter)
+disc('backidler_r_u', (OUT_R, MOVED_Y, ZA), 'Z')         # a1-OUT rear turn (band run)
+disc('backidler_l_l', (OUT_L, -CORNER_Y, -ZB), 'Z')      # b2-OUT rear turn (band run)
+disc('dnturn_b1', (OUT_B1_X, MOVED_Y, IN_B1_TOP), 'X')   # b1-OUT down-turn (v2 corner_br_u)
+disc('dnturn_a2', (OUT_A2_X, -CORNER_Y, IN_A2_TOP), 'X') # a2-OUT down-turn
 
 # ── IN feeds ─────────────────────────────────────────────────────────────────
 rope_x('run_in_a1', IN_L, FL_IN_A - R_P, PLANE_OUT, ZA)
 rope_x('run_in_b1', OUT_L, FL_IN_B - R_P, PLANE_OUT, ZB)
 rope_x('run_in_a2', FL_OUT_A + R_P, OUT_R, PLANE_IN, -ZA)
-rope_x('run_in_b2', OUT_L, FL_OUT_B - R_P, PLANE_IN, -ZB)
+rope_x('run_in_b2', FL_OUT_B + R_P, IN_R, PLANE_IN, -ZB)
 disc('idler_in_a1', (FL_IN_A - R_P, PLANE_OUT, IN_A1_TOP), 'Y')
 disc('idler_in_b1', (FL_IN_B - R_P, PLANE_OUT, IN_B1_TOP), 'Y')
 disc('idler_in_a2', (FL_OUT_A + R_P, PLANE_IN, IN_A2_TOP), 'Y')
-disc('idler_in_b2', (FL_OUT_B - R_P, PLANE_IN, IN_B2_TOP), 'Y')
+disc('idler_in_b2', (FL_OUT_B + R_P, PLANE_IN, IN_B2_TOP), 'Y')
 rope_z('vert_in_a1', FLZ_IN1, IN_A1_TOP, FL_IN_A, PLANE_OUT)
 rope_z('vert_in_b1', FLZ_IN1, IN_B1_TOP, FL_IN_B, PLANE_OUT)
 rope_z('vert_in_a2', FLZ_IN2, IN_A2_TOP, FL_OUT_A, PLANE_IN)
 rope_z('vert_in_b2', FLZ_IN2, IN_B2_TOP, FL_OUT_B, PLANE_IN)
 
-# ── OUT feeds ────────────────────────────────────────────────────────────────
+# ── OUT feeds (v3 hybrid: band runs + down-idlers for the return-strand
+# feeds; the rail-strand down-turn discs live in the rear-disc block) ────────
 rope_x('run_out_a1', OUT_A1_X + R_P, OUT_R, PLANE_OUT, ZA)
-rope_x('run_out_a2', IN_L, OUT_A2_X - R_P, PLANE_IN, -ZA)
-rope_x('run_out_b2', OUT_B2_X + R_P, IN_R, PLANE_IN, -ZB)
+rope_x('run_out_b2', OUT_L, OUT_B2_X - R_P, PLANE_IN, -ZB)
 disc('idler_dn_a1', (OUT_A1_X + R_P, PLANE_OUT, IN_A1_TOP), 'Y')
-disc('idler_dn_a2', (OUT_A2_X - R_P, PLANE_IN, IN_A2_TOP), 'Y')
-disc('idler_dn_b2', (OUT_B2_X + R_P, PLANE_IN, IN_B2_TOP), 'Y')
+disc('idler_dn_b2', (OUT_B2_X - R_P, PLANE_IN, IN_B2_TOP), 'Y')
+# Stagger: the band-run feed (a1 / b2, inboard descents) takes the HIGH level
+# and the down-turn feed (b1 / a2) the DEEP one, so the down-turn feed's long
+# low run passes UNDER the band-run feed's descent/corner/rise while the
+# band-run feed's short hop never reaches the rail stations. Both other
+# assignments interfere; all-four-down-turns has NO feasible assignment.
 rope_z('desc_a1', LO_HI_C, IN_A1_TOP, OUT_A1_X, PLANE_OUT)
 rope_z('desc_b1', LO_LO_C, IN_B1_TOP, OUT_B1_X, PLANE_OUT)
 rope_z('desc_a2', LO_IN_LO_C, IN_A2_TOP, OUT_A2_X, PLANE_IN)
@@ -112,33 +133,35 @@ rope_z('desc_b2', LO_IN_HI_C, IN_B2_TOP, OUT_B2_X, PLANE_IN)
 disc('corner_lo_a1', (OUT_A1_X - R_P, PLANE_OUT, LO_HI_C), 'Y')
 disc('corner_lo_b1', (OUT_B1_X - R_P, PLANE_OUT, LO_LO_C), 'Y')
 disc('corner_lo_a2', (OUT_A2_X + R_P, PLANE_IN, LO_IN_LO_C), 'Y')
-disc('corner_lo_b2', (OUT_B2_X - R_P, PLANE_IN, LO_IN_HI_C), 'Y')
+disc('corner_lo_b2', (OUT_B2_X + R_P, PLANE_IN, LO_IN_HI_C), 'Y')
 disc('idler_up_a1', (FL_OUT_A + R_P, PLANE_OUT, LO_HI_C), 'Y')
 disc('idler_up_b1', (FL_OUT_B + R_P, PLANE_OUT, LO_LO_C), 'Y')
 disc('idler_up_a2', (FL_IN_A - R_P, PLANE_IN, LO_IN_LO_C), 'Y')
-disc('idler_up_b2', (FL_IN_B + R_P, PLANE_IN, LO_IN_HI_C), 'Y')
+disc('idler_up_b2', (FL_IN_B - R_P, PLANE_IN, LO_IN_HI_C), 'Y')
 rope_x('run_lo_a1', FL_OUT_A + R_P, OUT_A1_X - R_P, PLANE_OUT, LOW_HI)
 rope_x('run_lo_b1', FL_OUT_B + R_P, OUT_B1_X - R_P, PLANE_OUT, LOW_LO)
 rope_x('run_lo_a2', OUT_A2_X + R_P, FL_IN_A - R_P, PLANE_IN, LOW_IN_LO)
-rope_x('run_lo_b2', FL_IN_B + R_P, OUT_B2_X - R_P, PLANE_IN, LOW_IN_HI)
+rope_x('run_lo_b2', OUT_B2_X + R_P, FL_IN_B - R_P, PLANE_IN, LOW_IN_HI)
 rope_z('rise_a1', LO_HI_C, FLZ_OUT1, FL_OUT_A, PLANE_OUT)
 rope_z('rise_b1', LO_LO_C, FLZ_OUT1, FL_OUT_B, PLANE_OUT)
 rope_z('rise_a2', LO_IN_LO_C, FLZ_OUT2, FL_IN_A, PLANE_IN)
 rope_z('rise_b2', LO_IN_HI_C, FLZ_OUT2, FL_IN_B, PLANE_IN)
 
 # ── drive units (drums, fairlead pulleys, leads, collars) ────────────────────
-for tag, ux in (('A', CAP_X), ('B', -CAP_X)):
+# v3: unit B carries the mirror-twin balanced pulley arrangement (side −1):
+# its in-pulleys sit on its local +x (inboard) instead of −x.
+for tag, ux, sd in (('A', CAP_X, 1.0), ('B', -CAP_X, -1.0)):
     cyl(f'cap{tag}_core', (ux, CAP_Y, DROP), 'Z', PITCH_R, GL / 2, 'drum', f'drum{tag}')
     cyl(f'cap{tag}_flU', (ux, CAP_Y, DROP + GL / 2 + FLANGE_W / 2), 'Z', FLANGE_R, FLANGE_W / 2, 'drum', f'drum{tag}')
     cyl(f'cap{tag}_flL', (ux, CAP_Y, DROP - GL / 2 - FLANGE_W / 2), 'Z', FLANGE_R, FLANGE_W / 2, 'drum', f'drum{tag}')
-    disc(f'fl{tag}_w1in', (ux - PULLEY_X, PLANE_OUT, DROP + W1I), 'Y')
-    disc(f'fl{tag}_w1out', (ux + PULLEY_X, PLANE_OUT, DROP + W1O), 'Y')
-    disc(f'fl{tag}_w2in', (ux + PULLEY_X, PLANE_IN, DROP + W2I), 'Y')
-    disc(f'fl{tag}_w2out', (ux - PULLEY_X, PLANE_IN, DROP + W2O), 'Y')
-    rope_x(f'lead{tag}_w1in', ux - PULLEY_X, ux, PLANE_OUT, DROP + W1I - R_P)
-    rope_x(f'lead{tag}_w1out', ux, ux + PULLEY_X, PLANE_OUT, DROP + W1O + R_P)
-    rope_x(f'lead{tag}_w2in', ux, ux + PULLEY_X, PLANE_IN, DROP + W2I - R_P)
-    rope_x(f'lead{tag}_w2out', ux - PULLEY_X, ux, PLANE_IN, DROP + W2O + R_P)
+    disc(f'fl{tag}_w1in', (ux - sd * PULLEY_X, PLANE_OUT, DROP + W1I), 'Y')
+    disc(f'fl{tag}_w1out', (ux + sd * PULLEY_X, PLANE_OUT, DROP + W1O), 'Y')
+    disc(f'fl{tag}_w2in', (ux + sd * PULLEY_X, PLANE_IN, DROP + W2I), 'Y')
+    disc(f'fl{tag}_w2out', (ux - sd * PULLEY_X, PLANE_IN, DROP + W2O), 'Y')
+    rope_x(f'lead{tag}_w1in', ux - sd * PULLEY_X, ux, PLANE_OUT, DROP + W1I - R_P)
+    rope_x(f'lead{tag}_w1out', ux, ux + sd * PULLEY_X, PLANE_OUT, DROP + W1O + R_P)
+    rope_x(f'lead{tag}_w2in', ux, ux + sd * PULLEY_X, PLANE_IN, DROP + W2I - R_P)
+    rope_x(f'lead{tag}_w2out', ux - sd * PULLEY_X, ux, PLANE_IN, DROP + W2O + R_P)
     for sy, sn in ((SIDE_Y, 'pos'), (-SIDE_Y, 'neg')):
         box(f'fr{tag}_plate_{sn}', (ux - FRAME_HX, CAP_Y + sy - PLATE_T / 2, DROP - FRAME_HZ),
             (ux + FRAME_HX, CAP_Y + sy + PLATE_T / 2, DROP + FRAME_HZ), 'frame', f'collar{tag}')
@@ -166,6 +189,22 @@ def seg_seg(p1, q1, p2, q2):
 def box_pt(bx, p):
     return math.dist(p, [min(max(p[i], bx['lo'][i]), bx['hi'][i]) for i in range(3)])
 def clearance(A, B):
+    if A['k'] == 'c' and B['k'] == 'c' and A['ax'] == B['ax']:
+        # Parallel cylinders: exact face/rim separation. The generic capsule
+        # bound below wildly over-flags two thin coaxial-offset discs (their
+        # capsules nearly touch while the real rims are far apart in the
+        # axial direction).
+        i = 'XYZ'.index(A['ax'])
+        gap = max((A['c'][i] - A['hl']) - (B['c'][i] + B['hl']),
+                  (B['c'][i] - B['hl']) - (A['c'][i] + A['hl']))
+        d = math.dist([A['c'][j] for j in range(3) if j != i],
+                      [B['c'][j] for j in range(3) if j != i])
+        rad = d - A['r'] - B['r']
+        if gap <= 0:
+            return rad
+        if rad <= 0:
+            return gap
+        return math.hypot(gap, rad)
     if A['k'] == 'c' and B['k'] == 'c':
         p1, q1 = seg(A); p2, q2 = seg(B)
         return seg_seg(p1, q1, p2, q2) - A['r'] - B['r']
@@ -242,7 +281,7 @@ rows.sort()
 
 print(f"solids: {len(S)}   pairs: {len(S)*(len(S)-1)//2}")
 print(f"\n=== stations (cap_x={CAP_X:.0f}) ===")
-print(f"  verticals: A in {FL_IN_A:.0f} out {FL_OUT_A:.0f} | B in {FL_IN_B:.0f} out {FL_OUT_B:.0f}   mid corridor +/-{CAP_X-PULLEY_X-R_P-ROPE-CLEAR:.0f}")
+print(f"  verticals: A in {FL_IN_A:.0f} out {FL_OUT_A:.0f} | B in {FL_IN_B:.0f} out {FL_OUT_B:.0f}   (v3 side-swap: station set mirror-symmetric)")
 print(f"  descents:  a1 {OUT_A1_X:.0f}  b1 {OUT_B1_X:.0f}  a2 {OUT_A2_X:.0f}  b2 {OUT_B2_X:.0f}")
 print(f"  low runs:  hi {LOW_HI:.0f}  lo {LOW_LO:.0f}   fairlead z: {FLZ_IN1:.1f} {FLZ_OUT1:.1f} {FLZ_IN2:.1f} {FLZ_OUT2:.1f}")
 print(f"\n=== findings < {CLEAR}mm ===")
