@@ -790,12 +790,35 @@ pub structure DriveTendons {
     //
     // Fairlead mirrors — DERIVED through RearDrive's relays (#5360 landed
     // 2026-07-31); every one of these was a hand-kept literal until 2026-08-25.
-    let cap_x_m   = self.rear_drive.cap_x        // drive-unit lateral offset
-    let fl_vert   = self.rear_drive.unit_vert_x  // rope vertical stand-off from the drum axis
-    let flz_in1   = neg_drop + self.rear_drive.unit_w1_in    // w1_in  pulley centre (world z)
-    let flz_out1  = neg_drop + self.rear_drive.unit_w1_out   // w1_out
-    let flz_in2   = neg_drop + self.rear_drive.unit_w2_in    // w2_in
-    let flz_out2  = neg_drop + self.rear_drive.unit_w2_out   // w2_out
+    let cap_x_d   = self.rear_drive.cap_x        // drive-unit lateral offset
+    let fl_vert_d = self.rear_drive.unit_vert_x  // rope vertical stand-off from the drum axis
+    let flz_in1_d  = neg_drop + self.rear_drive.unit_w1_in    // w1_in  pulley centre (world z)
+    let flz_out1_d = neg_drop + self.rear_drive.unit_w1_out   // w1_out
+    let flz_in2_d  = neg_drop + self.rear_drive.unit_w2_in    // w2_in
+    let flz_out2_d = neg_drop + self.rear_drive.unit_w2_out   // w2_out
+
+    // ── WORKAROUND for #6586 — hand-kept, MACHINE-PINNED ────────────────────
+    // A value that flows from ANY `self.<sub>.<member>` read into a CONSTRUCTOR
+    // ARGUMENT evaluates to undef inside the child, so the child's geometry
+    // silently never realizes — and because an undef operand makes a
+    // constraint INDETERMINATE rather than violated, `reify check` still
+    // reports success. Using the six derived cells above for LinearTendon
+    // `length:` overrides cost 18 of this file's 47 tendon segments (found
+    // 2026-08-25: Leo spotted pulleys with no rope on them).
+    //
+    // So: placements and constraints keep using the DERIVED cells (both work
+    // fine), while anything feeding a `length:` argument comes from the
+    // literals below — each PINNED to its derived value by the constraints at
+    // the end of this structure. A Capstan/RearDrive resize therefore fails
+    // LOUDLY here instead of silently deleting rope. Delete the literals and
+    // re-point the stations at the _d cells once #6586 lands.
+    let cap_x_m   = 100mm
+    let fl_vert   = 68mm
+    let flz_in1   = 0mm - 168.870157mm
+    let flz_out1  = 0mm - 226.956719mm
+    let flz_in2   = 0mm - 213.043281mm
+    let flz_out2  = 0mm - 271.129843mm
+    let pin_slack = 0.002mm
     let fl_frame_z = self.rear_drive.unit_frame_z   // collar plate half-height
     let rope_r     = 3mm    // == LinearTendon diameter / 2
     let clear_min  = 6mm    // the drive's surface-clearance floor
@@ -986,6 +1009,22 @@ pub structure DriveTendons {
     // 7. The mid corridor is wide enough to admit a rope at all — the check
     //    that would have caught the v1 layout at cap_x = 100mm.
     constraint mid_corr_x > rope_r + clear_min
+    // 8. #6586 PINS: every hand-kept literal above equals the derived cell it
+    //    stands in for. These are the whole safety story for the workaround —
+    //    if the drive geometry moves and a literal does not follow, the design
+    //    fails here rather than silently rendering rope in the wrong place.
+    constraint cap_x_m  < cap_x_d   + pin_slack
+    constraint cap_x_m  > cap_x_d   - pin_slack
+    constraint fl_vert  < fl_vert_d + pin_slack
+    constraint fl_vert  > fl_vert_d - pin_slack
+    constraint flz_in1  < flz_in1_d  + pin_slack
+    constraint flz_in1  > flz_in1_d  - pin_slack
+    constraint flz_out1 < flz_out1_d + pin_slack
+    constraint flz_out1 > flz_out1_d - pin_slack
+    constraint flz_in2  < flz_in2_d  + pin_slack
+    constraint flz_in2  > flz_in2_d  - pin_slack
+    constraint flz_out2 < flz_out2_d + pin_slack
+    constraint flz_out2 > flz_out2_d - pin_slack
 }
 
 // ── CoreXY motion system (directly composed) ─────────────────────────────────
