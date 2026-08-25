@@ -115,12 +115,15 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
 /// (`reify-compiler/src/conformance/mod.rs:33`) is `Warning` pre-δ, and the
 /// planned Warning→Error flip must not move any pin that filters through here.
 ///
-/// Kept deliberately in sync with the identically-named helpers in
-/// `harness_compilation_surface/examples_smoke.rs` and
-/// `struct_ctor_field_conformance_tests.rs`; integration tests are separate
-/// binaries and cannot share a private helper without a support-crate hop, and
-/// the set is small enough that duplication is cheaper than the indirection.
-#[allow(dead_code)]
+/// THIRD verbatim copy of this set — `harness_compilation_surface/
+/// examples_smoke.rs` and `struct_ctor_field_conformance_tests.rs` hold the
+/// other two, because integration tests are separate binaries and cannot share
+/// a private helper without a support-crate hop. At three copies the
+/// duplication no longer pays for itself: a new member of `DiagnosticCode`'s
+/// conformance family has to be added in three places, and a miss is SILENT
+/// (the stale copy simply stops matching rather than failing to build). The
+/// hoist into `reify-test-support` is filed as #6323 — it is out of this task's
+/// module locks, so it is cited here rather than done here.
 fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
     matches!(
         code,
@@ -132,6 +135,47 @@ fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
                 | DiagnosticCode::TypeNotConformingToVector
         )
     )
+}
+
+/// The prefix `emit_arg_type_mismatch` puts before the offending param label in
+/// every ctor-conformance message it words
+/// (`reify-compiler/src/conformance/mod.rs`; full shape `argument 'X' has type
+/// 'A' but param 'X' requires type 'B'`).
+///
+/// Mirrors `CTOR_DIAGNOSTIC_ARG_PREFIX` in
+/// `harness_compilation_surface/examples_smoke.rs`, and rides the same #6323
+/// hoist as [`is_ctor_conformance_code`].
+const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
+
+/// The two `RayleighDamping` params task #6093 retyped, in declaration order.
+const RAYLEIGH_PARAMS: [&str; 2] = ["alpha", "beta"];
+
+/// True when `message` is a ctor-conformance diagnostic naming exactly `param`.
+///
+/// Matched on the QUOTED label (`argument 'beta'`), never a bare
+/// `contains(param)`: a module compiled through `compile_source_with_stdlib`
+/// carries the diagnostics of the probe source AND of the whole stdlib prelude,
+/// so an unquoted match would also catch any prelude message that merely
+/// contains the word. Same reasoning as the `names_typo` closure in
+/// [`misspelled_ctor_label_is_silently_appended_not_diagnosed`].
+fn names_ctor_arg(message: &str, param: &str) -> bool {
+    message.contains(&format!("{CTOR_DIAGNOSTIC_ARG_PREFIX}{param}'"))
+}
+
+/// True when `d` is a ctor-conformance diagnostic naming one of
+/// [`RAYLEIGH_PARAMS`] — i.e. one attributable to a `RayleighDamping` ctor
+/// rather than to some unrelated prelude construct.
+///
+/// This is the narrowing every count-based pin below filters through. Without
+/// it a pin counts EVERY conformance diagnostic in the module, prelude
+/// included, so a future stdlib ctor emitting one would flip the pin red with a
+/// message pointing at RayleighDamping. `CTOR_FIELD_CONFORMANCE_SEVERITY` is
+/// `Warning` pre-δ, so such a diagnostic need not even break the build to do it.
+fn judges_rayleigh_ctor_arg(d: &Diagnostic) -> bool {
+    is_ctor_conformance_code(d.code)
+        && RAYLEIGH_PARAMS
+            .iter()
+            .any(|p| names_ctor_arg(&d.message, p))
 }
 
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
@@ -257,17 +301,13 @@ fn no_damping_marker_structure() {
 /// orthogonality so transient response stays in real arithmetic.
 ///
 /// Assertions:
-///   (a) exactly 2 params, (b) the two params are (alpha, beta) with their
-///       registered named dimensions. What this pins is the declared
-///       (name, dimension) PAIRS: structure-ctor args bind BY NAME (the
-///       by-name binder `expr.rs` grew in task-4522 — a `name:` label is
-///       resolved against the template's param cells, and positional args
-///       only fill the slots no label claimed), so `RayleighDamping(beta:
-///       …, alpha: …)` binds correctly and a caller is not order-bound.
-///       Declaration order appears here only because the assertion loop
-///       below walks `params` positionally. It is still worth pinning,
-///       for a different reason: the MISLABEL path is silently lenient, so
-///       a renamed param fails quietly — pinned by
+///   (a) exactly 2 params, (b) the declared (name, dimension) PAIRS are
+///       (alpha, Frequency) and (beta, Time). Declaration ORDER is not part
+///       of the claim — it appears only because the assertion loop below
+///       walks `params` positionally. That ctor args bind by NAME, and that
+///       the mislabel path is silently lenient (so a renamed param fails
+///       quietly), are pinned executably by
+///       [`structure_ctor_args_bind_by_name_not_positionally`] and
 ///       [`misspelled_ctor_label_is_silently_appended_not_diagnosed`],
 ///   (c) neither carries a `default_expr` (input-only fields without a
 ///       canonical default — PRD §4.2 lists no defaults),
@@ -742,9 +782,11 @@ structure DampingFieldBareProbe {
 /// strictness.md §7.1 (task #5627) landed. Measured on this branch: the same
 /// snippet against the pre-retype `Real` params was silent.
 ///
-/// Filters on `DiagnosticCode` IDENTITY across ALL severities, not on
-/// `errors_only`/`warnings_only`: `CTOR_FIELD_CONFORMANCE_SEVERITY` is
-/// `Warning` pre-δ and the Warning→Error flip must not break this pin.
+/// Judged through [`judges_rayleigh_ctor_arg`]: severity-agnostic (the
+/// `Warning`→`Error` flip of `CTOR_FIELD_CONFORMANCE_SEVERITY` must not move
+/// this pin) and narrowed to diagnostics naming `alpha`/`beta`, so an unrelated
+/// future prelude conformance diagnostic cannot flip this red with a message
+/// that misdirects at RayleighDamping.
 #[test]
 fn bare_real_rayleigh_ctor_arg_emits_arg_type_mismatch() {
     let bare = compile_source_with_stdlib(
@@ -757,21 +799,21 @@ structure BareCtorArgProbe {
     let mismatches: Vec<&str> = bare
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && judges_rayleigh_ctor_arg(d))
         .map(|d| d.message.as_str())
         .collect();
     assert_eq!(
         mismatches.len(),
         2,
         "a bare dimensionless literal at each of the two dimensioned slots must \
-         raise ArgTypeMismatch; got: {:#?}",
+         raise exactly one ArgTypeMismatch naming that slot; got {:?} out of \
+         module diagnostics {:#?}",
+        mismatches,
         bare.diagnostics
     );
-    for param in ["alpha", "beta"] {
+    for param in RAYLEIGH_PARAMS {
         assert!(
-            mismatches
-                .iter()
-                .any(|m| m.contains(&format!("argument '{param}'"))),
+            mismatches.iter().any(|m| names_ctor_arg(m, param)),
             "one ArgTypeMismatch must name `{param}`; got: {:?}",
             mismatches
         );
@@ -787,13 +829,16 @@ structure MigratedCtorArgProbe {
 }
 "#,
     );
+    let migrated_judged: Vec<&Diagnostic> = migrated
+        .diagnostics
+        .iter()
+        .filter(|d| judges_rayleigh_ctor_arg(d))
+        .collect();
     assert!(
-        migrated
-            .diagnostics
-            .iter()
-            .all(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch)),
-        "the migrated unit-literal form must be accepted; got: {:#?}",
-        migrated.diagnostics
+        migrated_judged.is_empty(),
+        "the migrated unit-literal form must be accepted — no ctor-conformance \
+         diagnostic at ANY severity may name `alpha` or `beta`; got: {:#?}",
+        migrated_judged
     );
 }
 
@@ -815,9 +860,7 @@ structure MigratedCtorArgProbe {
 /// `DimensionVector` EQUALITY, so two well-formed dimensioned args at the two
 /// correct labels still fail when their dimensions are transposed.
 ///
-/// Same all-severities `DiagnosticCode`-identity filter, for the same reason:
-/// `CTOR_FIELD_CONFORMANCE_SEVERITY` is `Warning` pre-δ and the planned
-/// Warning→Error flip must not break this pin.
+/// Judged through [`judges_rayleigh_ctor_arg`], for the reasons recorded there.
 #[test]
 fn swapped_rayleigh_ctor_unit_dimensions_emit_arg_type_mismatch() {
     let swapped = compile_source_with_stdlib(
@@ -830,7 +873,7 @@ structure SwappedCtorArgProbe {
     let mismatches: Vec<&str> = swapped
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && judges_rayleigh_ctor_arg(d))
         .map(|d| d.message.as_str())
         .collect();
     assert_eq!(
@@ -838,14 +881,14 @@ structure SwappedCtorArgProbe {
         2,
         "a `Time` literal at the `Frequency` slot and a `Frequency` literal at \
          the `Time` slot must EACH raise ArgTypeMismatch — strict \
-         DimensionVector equality, not merely dimensioned-vs-Real; got: {:#?}",
+         DimensionVector equality, not merely dimensioned-vs-Real; got {:?} out \
+         of module diagnostics {:#?}",
+        mismatches,
         swapped.diagnostics
     );
-    for param in ["alpha", "beta"] {
+    for param in RAYLEIGH_PARAMS {
         assert!(
-            mismatches
-                .iter()
-                .any(|m| m.contains(&format!("argument '{param}'"))),
+            mismatches.iter().any(|m| names_ctor_arg(m, param)),
             "one ArgTypeMismatch must name `{param}` — a gate that fired only \
              once would leave half the transposition unreported; got: {:?}",
             mismatches
