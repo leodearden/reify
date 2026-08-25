@@ -237,7 +237,7 @@ pub fn recognize_representation_within(expr: &CompiledExpr) -> Option<(ValueCell
 /// ([`recognize_representation_within`]'s `match_representation_within_shape`:
 /// UFC name + arity + arg0 `ValueRef`/member-access typed `StructureRef` + arg1
 /// `Literal Scalar` LENGTH finite ≥ 0) through a single walk that cannot drift
-/// from itself. See [`compute_representation_bounds`] for the traversal and for
+/// from itself. See `compute_representation_bounds` for the traversal and for
 /// why this mirror was retired in #6170.
 ///
 /// # Consumers
@@ -292,7 +292,7 @@ pub fn module_declares_representation_within(module: &reify_compiler::CompiledMo
 /// # Built solely from the bound table
 ///
 /// Everything — which subjects are named, in what order, and at what bound —
-/// comes from [`compute_representation_bounds`]; this function performs NO
+/// comes from `compute_representation_bounds`; this function performs NO
 /// independent scan of `module.templates`. That is what gives the message its
 /// two non-decorative properties: per-subject **min-fold** (a subject bounded
 /// twice is reported once, at the tighter bound) and deterministic
@@ -585,7 +585,18 @@ fn resolve_repr_tol_key(
 /// demanded-tolerance budget — see PRD §4.8; do not couple it to
 /// [`extract_output_tolerance_bound`], which is owned by
 /// `docs/prds/v0_2/per-purpose-tolerance.md`.
-pub fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
+///
+/// # Visibility: `pub(crate)` on purpose
+///
+/// C-BOUND declares this `pub(crate)` and it stays there. Every cross-crate
+/// consumer wants a DECISION, not the raw table: reify-cli takes
+/// [`module_declares_representation_within`] (routing) and
+/// [`unenforced_representation_bound_diagnostic`] (refusal), which are the two
+/// public seams. Exporting the `BTreeMap` as well would publish an internal
+/// table shape — subject-name keys, SI-metre values — as reify-eval API with no
+/// caller to justify the commitment. The in-crate callers just above already
+/// satisfy dead-code analysis, so no `#[allow(dead_code)]` is needed either.
+pub(crate) fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
     let mut bounds: BTreeMap<String, f64> = BTreeMap::new();
     for template in &module.templates {
         // Guards are NEITHER evaluated NOR filtered on: the table is a static

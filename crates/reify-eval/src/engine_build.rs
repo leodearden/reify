@@ -5160,11 +5160,13 @@ impl Engine {
         //      answers it against `achieved_repr_tol` keys AFTER realization, not
         //      from static IR at this point in the build. Narrowing therefore
         //      needs the realization graph, which is a design change rather than
-        //      a local edit; it is filed as a follow-up and is orthogonal to
-        //      task θ (which narrows on achievability, not on subject
-        //      relatedness). Until then the broad posture is the safe direction:
-        //      it can refuse an export that would have been fine, never ship one
-        //      whose bound is unenforced (PRD §1.1).
+        //      a local edit; it is filed as **#6531** ("Narrow the
+        //      RepresentationWithin export refusal from module-global to
+        //      subject-related occurrences") and is orthogonal to task θ (#6173,
+        //      which narrows on achievability, not on subject relatedness), so
+        //      θ landing will not close #6531. Until then the broad posture is
+        //      the safe direction: it can refuse an export that would have been
+        //      fine, never ship one whose bound is unenforced (PRD §1.1).
         let refusal = crate::tolerance_combine::unenforced_representation_bound_diagnostic(module);
 
         // (2) Deterministic declaration-order walk of every occurrence sub:
@@ -5236,6 +5238,20 @@ impl Engine {
                 //      refused artifact carries the TRUE declared destination —
                 //      but BEFORE subject-handle resolution, colour resolution
                 //      and `export_with_options`, so nothing is serialized.
+                //
+                //      IT IS ALSO DELIBERATELY AFTER THE `DisplayDeferred` ARM
+                //      ABOVE, WHICH `continue`s. A DisplayOutput writes no file
+                //      at all, so there is no artifact for η to withhold:
+                //      refusing it would flip a previously exit-0 build to
+                //      exit-1 and print a refusal naming an EMPTY path (a
+                //      viewport sink has no destination). η's contract is
+                //      "refuse the WRITE", and a deferred viewport sink is not
+                //      a write. Moving this block above that arm would keep
+                //      every file-target test green while silently swallowing
+                //      the info-severity I_DISPLAY_OUTPUT_DEFERRED signal, so
+                //      the ordering is pinned by
+                //      `build_outputs_defers_display_output_even_in_a_bounded_module`
+                //      in `tests.rs` rather than left to comment discipline.
                 //
                 //      A recognized-but-empty-bytes artifact, not an early
                 //      return with zero artifacts: with zero artifacts the CLI

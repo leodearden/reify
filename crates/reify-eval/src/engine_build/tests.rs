@@ -10362,14 +10362,31 @@ structure DCheck {
     /// A gate that over-fired would refuse every export in the repo, so this test
     /// is what bounds the blast radius of step-6.
     ///
+    /// # Scope: the η DELTA only
+    ///
+    /// The artifact SHAPE for this exact module — one artifact, `format == Stl`,
+    /// `path == /tmp/d/o.stl`, non-empty bytes, one export call — is already
+    /// pinned by [`build_outputs_drives_single_stl_output`] above, which uses a
+    /// byte-identical module. Re-asserting it here would be a second copy of
+    /// somebody else's contract, so this test asserts only what η could
+    /// plausibly break:
+    ///
+    /// * bytes are still produced (the refusal did NOT fire), and
+    /// * NO Error-severity diagnostic appears (the refusal did not ride in as a
+    ///   diagnostic while leaving the bytes alone), and
+    /// * `export_with_options` ran exactly once (serialization was reached, not
+    ///   short-circuited).
+    ///
     /// GREEN today and must STAY green.
     #[test]
     fn build_outputs_exports_normally_without_a_representation_within_bound() {
         use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
-        use std::path::{Path, PathBuf};
+        use std::path::Path;
         use std::sync::{Arc, Mutex};
 
-        // Byte-identical to the refusal test's module MINUS `structure DCheck`.
+        // Byte-identical to the refusal test's module MINUS `structure DCheck`
+        // (and to `build_outputs_drives_single_stl_output`'s module, which owns
+        // the artifact-shape assertions this test deliberately does not repeat).
         let module = parse_and_compile_with_stdlib(
             r#"structure def D {
     let part = box(10mm, 20mm, 5mm)
@@ -10390,15 +10407,12 @@ structure DCheck {
 
         let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
 
-        assert_eq!(
-            outputs.artifacts.len(),
-            1,
-            "exactly one ExportArtifact for the single STLOutput occurrence, got {}",
-            outputs.artifacts.len()
-        );
-        let art = &outputs.artifacts[0];
-        assert_eq!(art.path, PathBuf::from("/tmp/d/o.stl"));
-        assert_eq!(art.format, reify_ir::ExportFormat::Stl);
+        let art = outputs.artifacts.first().unwrap_or_else(|| {
+            panic!(
+                "the single STLOutput occurrence must still yield an artifact; got {}",
+                outputs.artifacts.len()
+            )
+        });
         assert!(
             !art.bytes.is_empty(),
             "an UNBOUNDED module must still export bytes — the refusal must not fire \
@@ -10416,5 +10430,145 @@ structure DCheck {
             1,
             "export_with_options must be called exactly once for the unbounded module — \
              serialization is untouched by η"
+        );
+    }
+
+    /// A DisplayOutput occurrence in a BOUNDED module keeps its info-severity
+    /// [`crate::I_DISPLAY_OUTPUT_DEFERRED`] artifact — η does not turn it into a
+    /// refusal.
+    ///
+    /// # What this pins that no other test does
+    ///
+    /// The `(5a)` refusal gate sits AFTER the `OutputTarget::DisplayDeferred`
+    /// arm, which `continue`s. That ordering is load-bearing but invisible:
+    /// hoisting the `if let Some(d) = &refusal` block above the target match
+    /// would keep every OTHER η test green (they all declare file targets) while
+    /// silently converting deferred viewport sinks into Errors. The damage would
+    /// be real — a DisplayOutput writes no file, so there is nothing for η to
+    /// withhold; the build would flip from exit-0 to exit-1 and print a refusal
+    /// naming an EMPTY path. This test is the only thing standing between that
+    /// edit and a green suite.
+    ///
+    /// The module mixes BOTH sink kinds under one bound so the assertions are
+    /// two-sided: the file target must STILL be refused (proving the gate is
+    /// live here, not merely absent) while the display target must still defer.
+    #[test]
+    fn build_outputs_defers_display_output_even_in_a_bounded_module() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        // The refusal test's module PLUS a DisplayOutput sibling on the same
+        // subject, so one `RepresentationWithin` bound covers both sinks.
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+    sub d = DisplayOutput(subject: part)
+}
+
+structure DCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
+
+        // (a) The DisplayOutput still yields exactly one INFO artifact.
+        let deferred: Vec<&crate::ExportArtifact> = outputs
+            .artifacts
+            .iter()
+            .filter(|a| {
+                a.diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(crate::I_DISPLAY_OUTPUT_DEFERRED))
+            })
+            .collect();
+        assert_eq!(
+            deferred.len(),
+            1,
+            "the DisplayOutput occurrence must still surface exactly one \
+             I_DISPLAY_OUTPUT_DEFERRED artifact in a bounded module — a refusal gate \
+             hoisted above the DisplayDeferred arm would swallow it; got artifacts {:?}",
+            outputs
+                .artifacts
+                .iter()
+                .map(|a| a.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+        let display = deferred[0];
+        assert!(
+            display.path.as_os_str().is_empty(),
+            "a viewport sink has no destination, so its artifact path stays EMPTY; got {}",
+            display.path.display()
+        );
+        assert!(
+            display.bytes.is_empty(),
+            "the deferred display artifact carries zero bytes (it is a skipped entry, \
+             not a file); got {} bytes",
+            display.bytes.len()
+        );
+        assert!(
+            !display
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error),
+            "η must NOT attach an Error to a deferred viewport sink — that would flip a \
+             DisplayOutput-only build from exit-0 to exit-1 while naming an empty path; \
+             got {:?}",
+            display.diagnostics
+        );
+        assert!(
+            display.diagnostics.iter().all(|d| d.severity == Severity::Info),
+            "every diagnostic on the deferred display artifact is info-severity; got {:?}",
+            display.diagnostics
+        );
+
+        // (b) Two-sided: the FILE sibling under the SAME bound IS still refused,
+        //     so (a) reflects the ordering rather than a gate that never fired.
+        let refused: Vec<&crate::ExportArtifact> = outputs
+            .artifacts
+            .iter()
+            .filter(|a| {
+                a.diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport))
+            })
+            .collect();
+        assert_eq!(
+            refused.len(),
+            1,
+            "the STLOutput sibling must still be refused under the same bound — \
+             otherwise this test would pass with the gate switched off entirely; got {}",
+            refused.len()
+        );
+        assert_eq!(
+            refused[0].path,
+            PathBuf::from("/tmp/d/o.stl"),
+            "the refused FILE artifact still carries its true declared destination"
+        );
+        assert!(
+            refused[0].bytes.is_empty(),
+            "the refused file artifact carries zero bytes"
+        );
+
+        // (c) Neither sink reached the serializer.
+        let exported = exported.lock().unwrap().clone();
+        assert!(
+            exported.is_empty(),
+            "no occurrence may reach export(): the DisplayOutput defers and the \
+             STLOutput is refused; got {exported:?}"
         );
     }
