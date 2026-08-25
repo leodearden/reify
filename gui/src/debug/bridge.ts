@@ -461,6 +461,19 @@ async function pollUntil(
  * a timeout. The cost is that a typo'd id reads as instant success, so callers
  * proving a teardown should confirm the pane exists first. Under 'visible' the
  * same typo fails loudly (timeout), which is why only this arm needs the note.
+ *
+ * THE OTHER KNOWN TRAP, and the one this predicate OWNS — the UNSCOPED path.
+ * With no `viewportId`, `resolveByTestId` commits to the document-order-FIRST
+ * match and only THEN does this closure evaluate `state` on that one element;
+ * it never looks for the first element that SATISFIES the state. So an unscoped
+ * wait is not proof about any one pane in either direction. It misleads in three
+ * distinct ways, enumerated once in docs/debug-mcp-recipe.md under
+ * "wait_for_selector: the unscoped-wait trap" and pinned as behaviour by
+ * waitFor.test.ts cases (h)/(i)/(j) — do not read the asymmetry above as the
+ * whole list. Unlike that asymmetry this is a known limitation rather than a
+ * deliberate contract: first-match is #5891's back-compat promise for the DRIVE
+ * tools, but this predicate only OBSERVES, so quantifying over all matches here
+ * would break no caller. That fix is tracked by #6564.
  */
 function buildSelectorPredicate(opts: {
   testId: string;
