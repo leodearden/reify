@@ -9,8 +9,11 @@ import {
 import { AXIS_LABEL_RENDER_ORDER } from './renderOrder';
 
 /**
- * Offset from origin where each axis label is placed.
- * Must be > AxesHelper size (2) so labels sit just beyond the axis tip.
+ * INITIAL offset from origin where each axis label is placed.
+ *
+ * Must be > AxesHelper size (2) so labels sit just beyond the axis tip. This is the
+ * offset in force before any scene bounds have arrived; once they have, scene.ts's
+ * `fitHelpers` calls `setOffset` with a scene-scaled distance (see below).
  */
 const LABEL_OFFSET = 2.3;
 
@@ -164,18 +167,58 @@ function makeTextSprite(spec: LabelSpec): Sprite {
  * (see Viewport.tsx createEffect — set `axisLabels.visible` alongside
  * `axes.visible` so they toggle together with the Grid button).
  *
- * Returns `{ group, dispose }`. Call `dispose()` in the owning component's
+ * Returns `{ group, dispose, setOffset }`. Call `dispose()` in the owning component's
  * onCleanup to release the CanvasTexture and SpriteMaterial GPU resources
  * for each sprite (renderer.dispose() does NOT free per-object materials or
  * textures, so on Viewport unmount/remount these would otherwise leak).
+ *
+ * `setOffset(distance)` exists so scene.ts's `fitHelpers` can keep the labels just
+ * beyond a scene-scaled axis tip. Callers must use it INSTEAD of scaling the Group,
+ * for the shader reason in the COUPLING WARNING above.
  */
-export function createAxisLabels(): { group: Group; dispose(): void } {
+export function createAxisLabels(): {
+  group: Group;
+  dispose(): void;
+  setOffset(distance: number): void;
+} {
   const group = new Group();
   const sprites: Sprite[] = [];
   for (const spec of LABELS) {
     const sprite = makeTextSprite(spec);
     sprites.push(sprite);
     group.add(sprite);
+  }
+
+  /** Unit direction per axis, derived from the LABELS spec rather than re-deduced
+   *  from the letter, so direction has exactly one definition in this module.
+   *  LABEL_OFFSET divides out exactly (2.3/2.3 = 1, 0/2.3 = 0), so the units are
+   *  exact and `setOffset(d)` lands on `d` and `0` with no float drift. */
+  const unitByAxis = new Map<LabelSpec['axis'], [number, number, number]>(
+    LABELS.map((spec) => [
+      spec.axis,
+      spec.position.map((c) => c / LABEL_OFFSET) as [number, number, number],
+    ]),
+  );
+
+  /**
+   * Move every label to `distance` along its own axis.
+   *
+   * Reposition — never scale the Group. The r183 sprite shader multiplies the
+   * on-screen size by `length(modelMatrix[0].xyz)`, which includes ancestor scale,
+   * so a Group scale would silently undo LABEL_SCREEN_SCALE's constant screen size.
+   *
+   * Non-finite or non-positive distances are ignored rather than applied: a
+   * degenerate scene measurement upstream must leave a usable label ring standing,
+   * not collapse it onto the origin, mirror it behind the origin, or poison the
+   * sprite positions with NaN (which would remove them from the frustum entirely).
+   */
+  function setOffset(distance: number): void {
+    if (!Number.isFinite(distance) || distance <= 0) return;
+    for (const sprite of sprites) {
+      const unit = unitByAxis.get(sprite.userData.axis as LabelSpec['axis']);
+      if (!unit) continue;
+      sprite.position.set(unit[0] * distance, unit[1] * distance, unit[2] * distance);
+    }
   }
 
   function dispose(): void {
@@ -185,5 +228,5 @@ export function createAxisLabels(): { group: Group; dispose(): void } {
     }
   }
 
-  return { group, dispose };
+  return { group, dispose, setOffset };
 }
