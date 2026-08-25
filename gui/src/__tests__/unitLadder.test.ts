@@ -186,6 +186,22 @@ describe('quantityUnitAlphabet', () => {
     expect([...BASE_UNIT_LABELS]).toEqual(['mm', 'cm', 'm', 'deg', 'rad']);
   });
 
+  it('pins BASE_UNIT_DIMENSIONS — the dimensions of those same labels', () => {
+    // Pinned by CONTENT, not by iterating it. Every other `BASE_UNIT_DIMENSIONS`
+    // assertion in this file loops over the constant itself, so it is tautological
+    // with respect to what the constant holds: dropping `'Angle'` would fail
+    // nothing here, while the ladder-less panel would then accept `90` in an Angle
+    // cell that `set_parameter` refuses — the panel-accepts/engine-refuses
+    // regression task #5757 closed, re-entered on the degraded path.
+    //
+    // The cross-end direction (everything gated here is gated by the engine too)
+    // is `every_dimension_the_frontend_floor_gates_is_gated_here_too` in
+    // `gui/src-tauri/src/tests/engine_tests.rs`. That guard hand-mirrors these
+    // pairs on its own side, so this assertion is what makes a one-sided edit
+    // loud on the side that OWNS the value.
+    expect([...BASE_UNIT_DIMENSIONS].sort()).toEqual(['Angle', 'Length']);
+  });
+
   // (b) Baseline UNION the ladders' labels, ASCII-normalized.
   it('unions the baseline with the ladder labels, normalized to ASCII', () => {
     expect(new Set(quantityUnitAlphabet(SUPERSCRIPT_LADDERS))).toEqual(

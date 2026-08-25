@@ -276,25 +276,24 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  * predicate exists to make the refusal INLINE, keeping the typed text on screen
  * for correction instead of discarding it behind an async error toast.
  *
- * THE TWO ENDS KEY ON DIFFERENT FACTS, and the gap is bounded rather than
- * absent. The backend reads the cell's DECLARED type (`Type::Scalar {
- * dimension }`); this reads `ValueData.dimension`, which `format_determined_cell`
- * derives from the cell's CURRENT VALUE via `display_scalar` — the empty string
- * for `Undef`, `Option(None)`, or any non-Scalar. For a Scalar-valued
- * `Type::Scalar` cell the two facts coincide, which is every cell reachable
- * through this panel's editor today: the `<input>` renders only for
- * `determinacy === 'determined'`, and a covered cell never accepts a bare
- * number, so its committed value stays a Scalar. Where they can diverge they
- * diverge BOTH ways — a `Type::Option<Length>` cell surfaces
- * `dimension: 'Length'` (`display_scalar` recurses through `Option(Some(..))`),
- * so this gate refuses a bare number the backend would take; a `Type::Scalar`
- * cell whose current value is not a Scalar surfaces `''`, so this gate admits
- * one the backend then refuses behind the very toast this predicate exists to
- * avoid. Both are reachable only by callers that bypass this gate
- * (`bridge.setParameter` directly, the GUI MCP surface), so it is a latent
- * drift surface, not a live defect. Closing it properly means surfacing the
- * DECLARED dimension on `ValueData` as a field of its own, so both ends read
- * one fact; until then it is recorded here rather than claimed away.
+ * THE TWO ENDS KEY ON DIFFERENT FACTS, and the residual gap runs ONE way and IS
+ * reachable from this panel. The backend reads the cell's DECLARED type; this
+ * reads `ValueData.dimension`, which `format_determined_cell` derives from the
+ * cell's CURRENT VALUE via `display_scalar` — the empty string for `Undef`,
+ * `Option(None)`, or any non-Scalar. For a Scalar-valued cell the two coincide.
+ *
+ * The live case is a `none`-valued `Option<Length>`: `display_scalar` returns
+ * `None`, the dimension serialises as `''`, this gate admits the bare number,
+ * and the backend — which unwraps `Type::Option` before gating — refuses it
+ * behind exactly the async toast this predicate exists to avoid. The user still
+ * gets the actionable "expects Length, got the bare number '120'" rather than a
+ * generic type error, so the outcome is correct and only the INLINE-ness is
+ * lost. An `Option(Some(80mm))` cell surfaces `'Length'` and is gated inline as
+ * usual, so the divergence is confined to the `none` state.
+ *
+ * Closing it properly means surfacing the DECLARED dimension on `ValueData` as a
+ * field of its own, so both ends read one fact; until then it is recorded here
+ * rather than claimed away.
  *
  * IT FAILS OPEN ONLY BELOW THE FLOOR. With `ladders` undefined or empty — the
  * `get_unit_ladders` fetch not resolved, or failed — nothing beyond
