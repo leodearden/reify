@@ -237,8 +237,8 @@ _fixture() {
 #           An UPPER bound against a Duration -- what a Rust upper bound on
 #           elapsed time looks like, whether the left operand is `x.elapsed()`
 #           or a bound variable holding it. That is exactly why the rule does
-#           not key on `.elapsed()`: the bound deleted from
-#           watcher_drop_joins_worker_without_hanging_even_with_a_pending_event
+#           not key on `.elapsed()`: the bound deleted from what is now
+#           watcher_drop_wakes_and_joins_a_worker_parked_indefinitely
 #           compared a bound variable, and an .elapsed()-keyed rule would have
 #           missed it.
 #           THREE spellings, because an upper bound has three natural ones and
