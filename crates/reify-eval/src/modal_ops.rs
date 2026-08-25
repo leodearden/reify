@@ -4090,44 +4090,46 @@ mod tests {
     /// concrete-value anchor for the formula itself — α=2, β=0, ω=10 ⇒ ζ=0.1 —
     /// already lives one crate away in
     /// `reify-stdlib::modal::free_vibration::tests::rayleigh_damping_ratio_mass_proportional`
-    /// and is deliberately NOT restated here; every arm below carries
-    /// information that anchor does not.
+    /// and is deliberately NOT restated here.
+    ///
+    /// Deliberately carries NO corpus-derived constant. An earlier arm anchored
+    /// on the ζ₁ ≈ 0.042 quoted in the prose of
+    /// `examples/modal/transient_step_response.ri` for that example's
+    /// fundamental — but with ω computed HERE as 2π·f it only re-evaluated
+    /// β·ω/2, adding nothing to the arms below, while coupling this test to a
+    /// number that shifts whenever that example's mesh or element order changes
+    /// (red for an unrelated reason) and drifts silently the other way (prose
+    /// edited, constant not).
     #[test]
     fn rayleigh_coefficients_are_consumed_on_the_angular_rate_scale() {
-        // CORPUS ANCHOR. examples/modal/transient_step_response.ri:29-31 quotes
-        // ζ₁ ≈ 0.042 for its `beta: 0.0003s` at the fixture's fundamental
-        // f₁ ≈ 44.7 Hz. That number is only reachable on the rad/s scale:
-        // β·ω₁/2 = 0.0003·281/2 ≈ 0.042, where reading ω as cycles/s would give
-        // 0.0003·44.7/2 ≈ 0.0067 — off by 2π and far outside this tolerance.
-        // Asserted against the PROSE's value, not against the implementation's
-        // own formula re-derived (which could not fail).
-        let f1 = 44.7_f64;
-        let omega1 = 2.0 * std::f64::consts::PI * f1;
-        let zeta_beta = rayleigh_damping_ratio(0.0, 0.0003, omega1);
-        assert!(
-            (zeta_beta - 0.042).abs() < 5e-4,
-            "ζ₁ must match the ≈ 0.042 that examples/modal/transient_step_response.ri \
-             quotes for β = 0.0003s at f₁ ≈ 44.7 Hz — reachable only if ω is rad/s; \
-             got {zeta_beta}"
-        );
-
-        // SYMMETRY. Reading ω as cycles/s instead of rad/s would inflate the
-        // α contribution by 2π and deflate the β contribution by 2π. Both
+        // Reading ω as cycles/s instead of rad/s would inflate the α
+        // contribution by 2π and deflate the β contribution by 2π. Both
         // coefficients carry the convention, which is what makes typing only
         // α as `AngularVelocity` (leaving β : `Time`) an incoherent pair.
+        //
+        // Any positive rate exhibits it — the claim is a RATIO, so the
+        // particular value is immaterial and is chosen to be plainly arbitrary.
+        // Compared against 1e-12 rather than an engineering tolerance: the
+        // factor is exactly 2π, and a band wide enough to absorb a nearby-but-
+        // wrong scale would not be judging the convention at all.
         let two_pi = 2.0 * std::f64::consts::PI;
-        let zeta_alpha_cyc = rayleigh_damping_ratio(2.0, 0.0, f1);
-        let zeta_alpha_rad = rayleigh_damping_ratio(2.0, 0.0, omega1);
+        let f_cyc = 7.5_f64;
+        let omega_rad = two_pi * f_cyc;
+
+        let zeta_alpha_cyc = rayleigh_damping_ratio(2.0, 0.0, f_cyc);
+        let zeta_alpha_rad = rayleigh_damping_ratio(2.0, 0.0, omega_rad);
         assert!(
             (zeta_alpha_cyc / zeta_alpha_rad - two_pi).abs() < 1e-12,
             "the α term must scale by 2π with the ω convention; got {}",
             zeta_alpha_cyc / zeta_alpha_rad
         );
-        let zeta_beta_cyc = rayleigh_damping_ratio(0.0, 0.0003, f1);
+
+        let zeta_beta_cyc = rayleigh_damping_ratio(0.0, 0.0003, f_cyc);
+        let zeta_beta_rad = rayleigh_damping_ratio(0.0, 0.0003, omega_rad);
         assert!(
-            (zeta_beta_cyc * two_pi / zeta_beta - 1.0).abs() < 1e-12,
+            (zeta_beta_cyc * two_pi / zeta_beta_rad - 1.0).abs() < 1e-12,
             "the β term must scale by 1/2π with the ω convention; got {}",
-            zeta_beta_cyc / zeta_beta
+            zeta_beta_cyc / zeta_beta_rad
         );
     }
 
