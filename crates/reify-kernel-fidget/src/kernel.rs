@@ -345,10 +345,66 @@ impl Default for FidgetKernel {
 }
 
 /// Extract an `f64` from a `Value` (Int/Real/Scalar). Mirrors the OCCT
-/// adapter's `extract_f64` (`crates/reify-kernel-occt/src/lib.rs:140-143`).
+/// adapter's `extract_f64` (`crates/reify-kernel-occt/src/lib.rs:224`).
+///
+/// # Why this stays after the C4 tripwire landed (task #5751)
+///
+/// All four of fidget's numeric extraction sites are length-semantic and now
+/// go through [`extract_length_f64`]; fidget's catch-all arm rejects every
+/// other op, so no production caller remains. It is kept as the *ungated*
+/// shape mirrored from the OCCT adapter — which still has five deliberately
+/// ungated sites (3 dimensionless unit-normal components, 2 ANGLE) — and as
+/// the reference side of the C4 accept/reject parity test, which asserts
+/// `extract_length_f64` and `extract_f64` agree on disposition and payload for
+/// every `Value` shape.
+#[allow(dead_code)]
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
     v.as_f64()
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
+}
+
+/// Length-semantic numeric extraction + the C4 kernel LENGTH tripwire.
+///
+/// Identical accept/reject disposition and `Ok` payload to [`extract_f64`];
+/// the only differences are (a) a `tracing::warn!` naming op kind and field
+/// when a non-LENGTH value arrives, (b) the opt-in debug assertion, and (c) an
+/// `Err` string that names op kind and field instead of the bare
+/// `"expected numeric value"`.
+///
+/// **A tripwire, not a gate** (PRD D5 / ratified decision 4): a violation is
+/// *reported* and execution proceeds exactly as before. A fired tripwire means
+/// a hole in the eval-layer gate (`required_length_value` /
+/// `required_length_values`, `crates/reify-eval/src/geometry_ops.rs:482`/`:523`),
+/// not a kernel bug. Canonical rationale, plus the C2 corollary about
+/// `GeometryOp` construction routes, lives with the shared classifier in
+/// `crates/reify-ir/src/kernel_validation.rs`. Contract:
+/// `docs/prds/v0_6/units-length-gate-completion.md` C4/D5, boundary rows 13-14.
+///
+/// The warn is emitted HERE rather than from `reify-ir` because the house
+/// pattern for a kernel diagnostic is a `tracing::warn!` whose `target:` names
+/// the emitting crate (`reify_kernel_gmsh::repair`,
+/// `reify_kernel_manifold::kernel`), and because it keeps `reify-ir` — a
+/// dependency of 13+ crates — free of a `tracing` edge. The message string
+/// still comes from the single `kernel_validation.rs` formatter, so the two
+/// kernels cannot drift.
+fn extract_length_f64(
+    v: &Value,
+    op: &GeometryOp,
+    field: &'static str,
+) -> Result<f64, GeometryError> {
+    let op_kind = op.kind_name();
+    if let Some(msg) = reify_ir::check_length_field(op_kind, field, v) {
+        tracing::warn!(
+            target: "reify_kernel_fidget::length_tripwire",
+            reason = "non_length_field",
+            op_kind = op_kind,
+            field = field,
+            "{msg}"
+        );
+    }
+    v.as_f64().ok_or_else(|| {
+        GeometryError::OperationFailed(reify_ir::non_numeric_kernel_field_message(op_kind, field))
+    })
 }
 
 /// Returns `true` iff `v` is both finite and strictly positive.
@@ -368,7 +424,7 @@ impl GeometryKernel for FidgetKernel {
             // Input validation runs at the boundary so `sphere_tree` can
             // assume a finite positive radius.
             GeometryOp::Sphere { radius } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 if !is_positive_finite(r) {
                     return Err(GeometryError::OperationFailed(
                         SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
@@ -382,9 +438,9 @@ impl GeometryKernel for FidgetKernel {
                 height,
                 depth,
             } => {
-                let w = extract_f64(width)?;
-                let h = extract_f64(height)?;
-                let d = extract_f64(depth)?;
+                let w = extract_length_f64(width, op, "width")?;
+                let h = extract_length_f64(height, op, "height")?;
+                let d = extract_length_f64(depth, op, "depth")?;
                 // Combined check: all three dimensions validated together so
                 // a single shared const covers any failure.  Using
                 // `BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE` (from
