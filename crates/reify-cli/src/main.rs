@@ -1042,6 +1042,28 @@ fn cmd_build(args: &[String]) -> ExitCode {
             // Follow-on task θ narrows this refusal to genuinely UNACHIEVABLE
             // bounds once the export path gains a real measurement (hard-dep on
             // task 6085); until then it fires for any declared bound.
+            //
+            // KNOWN REPORTING ASYMMETRY WITH MODE B — deliberate, not an
+            // oversight. Returning here means a refused `-o` build prints the
+            // refusal and NOTHING ELSE: no constraint results, no
+            // "No constraints violated (N indeterminate)." summary. Mode B
+            // below prints both, because it MUST realize anyway (it needs the
+            // elaborated `StructureInstance`s to enumerate `: Output`
+            // occurrences at all) and gets the constraint results for free from
+            // the same `build_outputs_with_result` call. Mode A has no such
+            // obligation: `-o` names its destination outright, so realization
+            // buys nothing the refusal needs.
+            //
+            // The two surfaces are unified on WHAT IS REFUSED and on the
+            // diagnostic itself — one shared
+            // `unenforced_representation_bound_diagnostic`, one E_* token, one
+            // typed code, one exit gate — and that is the property η contracts
+            // for (C-SURFACE (2)). They are NOT unified on the surrounding
+            // report, and buying that symmetry costs a full realization plus
+            // OCCT tessellation (5-20 s on the PRD §2.2 measurements) on a build
+            // that is about to write nothing, which is exactly what PRD §6's
+            // gate-cost rule forbids. A user who wants the constraint state runs
+            // `reify check` — which the refusal message itself tells them to do.
             if let Some(diag) =
                 reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic(&compiled)
             {
