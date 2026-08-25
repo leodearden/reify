@@ -1066,7 +1066,7 @@ fn params_and_lets_main_let_provenance_and_freshness() {
 /// provenance slug is ALSO discriminating: the v1 Let cache-MISS (already
 /// γ-migrated, `eval_cached_let_miss_provenance_and_determinacy`) stamps
 /// `TraceSource::CachedServe` (`cached-serve`) while the migrated re-serve
-/// stamps the distinct `TraceSource::CachedReserve` (`cached-reserve`), so
+/// stamps the distinct `TraceSource::CachedReuse` (`cached-reuse`), so
 /// assertion (4) below pins the re-serve as the last writer from the journal
 /// alone — without reaching for the in-memory `CacheLeg`, which
 /// `commit_cell_result` consumes and never records.
@@ -1170,15 +1170,15 @@ fn eval_cached_let_reserve_preserves_freshness_and_commits() {
     );
 
     // (4) Provenance is self-describing FROM THE JOURNAL ALONE: the re-serve's
-    // Started slug is `cached-reserve`, distinct from the v1 cache-MISS arm's
+    // Started slug is `cached-reuse`, distinct from the v1 cache-MISS arm's
     // `cached-serve`. Without the split, all three commit sites inside
     // eval_cached would stamp one slug and a §2.6 divergence audit could not
     // attribute this event to a producing path.
     assert_eq!(
         last_started_payload(&engine, &y_id),
-        Some("cached-reserve".to_string()),
+        Some("cached-reuse".to_string()),
         "the Let preserve-freshness re-serve must stamp the distinct \
-         'cached-reserve' provenance slug, not the cache-MISS arm's 'cached-serve'"
+         'cached-reuse' provenance slug, not the cache-MISS arm's 'cached-serve'"
     );
 }
 
@@ -1220,7 +1220,7 @@ const PLAIN_PARAM_SRC: &str = r#"
 /// The journal KIND of the last event — `Completed`, vs today's bare `CacheHit`
 /// — is the RED signal (mirrors test-4). As of the #5238 review amendment the
 /// provenance slug also discriminates: the migrated re-serve stamps
-/// `TraceSource::CachedReserve` (`cached-reserve`), distinct from the cache-MISS
+/// `TraceSource::CachedReuse` (`cached-reuse`), distinct from the cache-MISS
 /// arm's `TraceSource::CachedServe`, pinned by assertion (4) below.
 ///
 /// Assertion (5) pins the property the whole determinacy-reproduction argument
@@ -1345,9 +1345,9 @@ fn eval_cached_param_reserve_commits_and_preserves() {
     // assertion (4) for why the slug had to be split off `cached-serve`).
     assert_eq!(
         last_started_payload(&engine, &w_id),
-        Some("cached-reserve".to_string()),
+        Some("cached-reuse".to_string()),
         "the Param preserve-freshness re-serve must stamp the distinct \
-         'cached-reserve' provenance slug, not the cache-MISS arm's 'cached-serve'"
+         'cached-reuse' provenance slug, not the cache-MISS arm's 'cached-serve'"
     );
 
     // (5) EARLY-CUTOFF branch pinned: `pending_cause` survives the re-serve.

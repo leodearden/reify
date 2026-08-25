@@ -23,7 +23,9 @@ use reify_ir::{
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
-use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_commit::{
+    CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result, commit_cell_result_at,
+};
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
@@ -478,10 +480,28 @@ fn record_subpath_started(
     });
 }
 
-/// Pre-migration direct four-leg write for an `eval_cached` preserve-freshness
-/// re-serve, used as the GRACEFUL-DEGRADATION fallback when the cache entry's
-/// stored `DeterminacyState` is not expressible by any `DeterminacyRule`
-/// (`DeterminacyRule::preserving` returned `None` — i.e. `Auto`/`Provisional`).
+/// The shared pre-migration direct four-leg write for an `eval_cached`
+/// preserve-freshness re-serve that may have to carry a stored
+/// `DeterminacyState` no `DeterminacyRule` can express
+/// (`DeterminacyRule::preserving` returns `None` — i.e. `Auto`/`Provisional`),
+/// and so cannot route through `commit_cell_result`.
+///
+/// Two callers, both inside `Engine::eval_cached`:
+///
+/// 1. The **Auto-cell pre-seed re-serve** (`cell.kind.is_auto()` cache-reuse
+///    block), which is unmigrated precisely BECAUSE it must preserve a stored
+///    `(Value::Undef, DeterminacyState::Auto)` — the site cell_commit.rs's
+///    "Determinacy dimension — OPEN" gap names. It calls this unconditionally.
+/// 2. The migrated **Param/Let re-serves**, as the GRACEFUL-DEGRADATION fallback
+///    when `DeterminacyRule::preserving` returns `None`.
+///
+/// Keeping (1) as a second, byte-identical inline copy is exactly the
+/// hand-sync drift `commit_cell_result` was introduced to eliminate, so both
+/// callers share this one body (#5238 review amendment). Its behaviour —
+/// including `Auto` preservation across all four legs — is pinned directly by
+/// `reserve_preserving_determinacy_direct_tests` at the tail of this file,
+/// which matters because the `debug_assert!` guarding caller (2) fires before
+/// its `None` arm can run in a debug build.
 ///
 /// task #5238: the Param and Let re-serves normally route through
 /// `commit_cell_result`, which derives the committed determinacy from a
@@ -7816,6 +7836,15 @@ impl Engine {
                     // Auto-preserving variant, a determinacy-dimension change orthogonal to
                     // this task's freshness scope. See cell_commit.rs "Known scope gaps" +
                     // PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4/§7.2.
+                    //
+                    // It DOES share the write itself with its migrated siblings: the
+                    // four-leg direct write below is `reserve_preserving_determinacy_direct`,
+                    // the same helper the Param/Let re-serves degrade to when
+                    // `DeterminacyRule::preserving` returns None. Keeping a second,
+                    // byte-identical inline copy here would reintroduce exactly the
+                    // hand-sync drift risk commit_cell_result exists to remove — and this
+                    // block is the very site the helper's doc names as the reason
+                    // Auto/Provisional are inexpressible.
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
@@ -7823,28 +7852,23 @@ impl Engine {
                     {
                         let val = val.clone();
                         let preserved_freshness = entry.freshness.clone();
-                        snapshot_values.insert(cell.id.clone(), (val.clone(), det));
-                        values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
-                        let result = entry.result.clone();
                         // μ (#5062): replay this clean-served cell's stored
                         // per-cell diagnostics (last use of `entry` before the
                         // &mut record below).
                         diagnostics.extend(entry.diagnostics.iter().cloned());
-                        self.cache.record_evaluation_with_freshness(
-                            node_id.clone(),
-                            result,
-                            version,
+                        reserve_preserving_determinacy_direct(
+                            &mut values,
+                            &mut snapshot_values,
+                            &mut self.cache,
+                            &mut self.journal,
+                            cell.id.clone(),
+                            val,
+                            det,
                             trace,
+                            version,
                             preserved_freshness,
                         );
-                        self.journal.record(EvalEvent {
-                            timestamp: Instant::now(),
-                            node_id,
-                            kind: EventKind::CacheHit,
-                            version,
-                            payload: None,
-                        });
                         stats.cache_hits += 1;
                         continue;
                     }
@@ -8031,7 +8055,7 @@ impl Engine {
                             // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
                             // the entry's own freshness forward verbatim (still
                             // record_evaluation_with_freshness under the hood) and emitting a
-                            // typed Started/Completed pair carrying the `cached-reserve`
+                            // typed Started/Completed pair carrying the `cached-reuse`
                             // provenance slug in place of the prior bare CacheHit — the sole
                             // observable delta, since value/determinacy/cache-content/freshness
                             // are all preserved. See cell_commit.rs "Known scope gaps"
@@ -8083,7 +8107,7 @@ impl Engine {
                                             cell.id.clone(),
                                             val,
                                             rule,
-                                            TraceSource::CachedReserve,
+                                            TraceSource::CachedReuse,
                                             trace,
                                             version,
                                             CacheLeg::RecordWithFreshness(preserved_freshness),
@@ -8268,7 +8292,7 @@ impl Engine {
                             // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
                             // the entry's own freshness forward verbatim (still
                             // record_evaluation_with_freshness under the hood) and emitting a
-                            // typed Started/Completed pair carrying the `cached-reserve`
+                            // typed Started/Completed pair carrying the `cached-reuse`
                             // provenance slug in place of the prior bare CacheHit — the sole
                             // observable delta, since value/determinacy/cache-content/freshness
                             // are all preserved. See cell_commit.rs "Known scope gaps"
@@ -8324,7 +8348,7 @@ impl Engine {
                                             cell.id.clone(),
                                             val,
                                             rule,
-                                            TraceSource::CachedReserve,
+                                            TraceSource::CachedReuse,
                                             trace,
                                             version,
                                             CacheLeg::RecordWithFreshness(preserved_freshness),
@@ -8436,8 +8460,8 @@ impl Engine {
                                 //
                                 // task #5238: `cached-serve` identifies THIS arm uniquely. The
                                 // two migrated preserve-freshness re-serves earlier in this
-                                // function stamp the distinct `TraceSource::CachedReserve`
-                                // (`cached-reserve`) instead, precisely so a §2.6 divergence
+                                // function stamp the distinct `TraceSource::CachedReuse`
+                                // (`cached-reuse`) instead, precisely so a §2.6 divergence
                                 // audit can separate a re-serve from a miss FROM THE JOURNAL
                                 // ALONE — neither the commit's `CacheLeg` (consumed inside
                                 // commit_cell_result, never recorded) nor `stats.cache_hits`/
@@ -10004,6 +10028,10 @@ impl Engine {
                     // below, so the Started→Completed/Failed pairing every path
                     // used to guarantee is preserved. Each such path `continue`s,
                     // so exactly one `Started` is still emitted per cell per pass.
+                    //
+                    // The migrated commit is stamped with the same `start` (via
+                    // `commit_cell_result_at`), so every exit from this arm reports
+                    // the same full-resolution `Duration` semantic.
                     let start = Instant::now();
 
                     // Snapshot test-instrumentation panic-injection state
@@ -10481,7 +10509,16 @@ impl Engine {
                     // `&mut *values` reborrows the &mut param (this commit is inside
                     // the topo loop; `values` is reused by later iterations and by
                     // `re_eval_consumers_of_in_walk_mints` after the loop).
-                    commit_cell_result(
+                    //
+                    // `commit_cell_result_at(start, ..)`, not the plain
+                    // `commit_cell_result`: `start` is the loop body's own Instant,
+                    // captured before this cell's evaluation, so the emitted
+                    // Started/Completed pair brackets the FULL resolution — the same
+                    // Duration semantic `record_eval_completed` documents and every
+                    // non-migrated sibling sub-path in this arm still uses. See
+                    // `commit_cell_result_at`'s doc (#5238 amendment).
+                    commit_cell_result_at(
+                        start,
                         CommitLegs {
                             values: &mut *values,
                             snapshot_values: &mut snapshot.values,
@@ -10925,6 +10962,10 @@ impl Engine {
             // "so the journal still records the visit" — depends on it). Each such
             // path `continue`s, so exactly one `Started` is still emitted per cell
             // per pass.
+            //
+            // The migrated commit is stamped with the same `start` (via
+            // `commit_cell_result_at`), so every exit from this loop body reports
+            // the same full-resolution `Duration` semantic.
             let start = Instant::now();
 
             // Snapshot test-instrumentation panic-injection state for this cell
@@ -11566,11 +11607,18 @@ impl Engine {
             // cached trace) so derivation is keyed off the current reads;
             // sorted_lets and let_traces share a key set, so take_trace cannot
             // fail. `&mut *values` reborrows the &mut param (reused by later
-            // iterations of this loop). `start` (captured above) is unused by
-            // this arm now — commit_cell_result captures its own Instant — but
-            // remains live for the sibling Pending-gate/@optimized/failure paths.
+            // iterations of this loop).
+            //
+            // `commit_cell_result_at(start, ..)`, not the plain
+            // `commit_cell_result`: `start` is this loop body's own Instant,
+            // captured before the cell's evaluation, so the emitted
+            // Started/Completed pair brackets the FULL resolution — the same
+            // Duration semantic `record_eval_completed` documents and every
+            // sibling sub-path in this loop body still uses. See
+            // `commit_cell_result_at`'s doc (#5238 amendment).
             let trace = take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
-            commit_cell_result(
+            commit_cell_result_at(
+                start,
                 CommitLegs {
                     values: &mut *values,
                     snapshot_values: &mut snapshot.values,
@@ -13795,6 +13843,290 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
             "b's cache freshness must stay Final (all-Final inputs, \
              still_refining=false derive Final) — preserved across the \
              RecordPropagating migration"
+        );
+    }
+
+    /// Asserts that `id`'s journal events strictly ALTERNATE `Started` →
+    /// terminal (`Completed` | `Failed`), starting with `Started`. In-crate
+    /// mirror of `assert_started_terminal_pairing` in
+    /// `tests/engine_eval_commit_migration.rs` — duplicated rather than shared
+    /// because an integration test's helpers are not reachable from the crate.
+    fn assert_started_terminal_pairing(engine: &Engine, id: &ValueCellId, label: &str) {
+        let node_id = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node_id);
+        let shape: Vec<&'static str> = events
+            .iter()
+            .filter_map(|e| match e.kind {
+                EventKind::Started => Some("Started"),
+                EventKind::Completed { .. } => Some("Completed"),
+                EventKind::Failed { .. } => Some("Failed"),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !shape.is_empty(),
+            "{label}: expected at least one Started/terminal journal event"
+        );
+        for (i, kind) in shape.iter().enumerate() {
+            assert_eq!(
+                *kind == "Started",
+                i % 2 == 0,
+                "{label}: journal events must alternate Started -> terminal, \
+                 starting with Started; got {shape:?} (offending index {i})"
+            );
+        }
+        assert_eq!(
+            shape.len() % 2,
+            0,
+            "{label}: every Started must have a paired terminal event; got {shape:?}"
+        );
+    }
+
+    /// Drives `evaluate_let_bindings` directly on the two-cell module,
+    /// pre-seeding param `a` into both maps exactly as
+    /// `evaluate_let_bindings_main_let_provenance_and_freshness` does.
+    fn run_evaluate_let_bindings(
+        engine: &mut Engine,
+        module: &reify_compiler::CompiledModule,
+        snapshot: &mut Snapshot,
+        version_id: u64,
+    ) {
+        let template = &module.templates[0];
+        let a_id = ValueCellId::new("T", "a");
+
+        let mut values = ValueMap::new();
+        values.insert(a_id.clone(), Value::Real(5.0));
+        snapshot
+            .values
+            .insert(a_id, (Value::Real(5.0), DeterminacyState::Determined));
+
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> = Vec::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.evaluate_let_bindings(
+            template,
+            &mut values,
+            snapshot,
+            version_id,
+            &[],
+            &meta_map,
+            &mut diagnostics,
+            &mut structured_detail,
+            &runtime_sink,
+        );
+    }
+
+    /// REGRESSION (#5238 review amendment, test-coverage). The integration-level
+    /// `non_migrated_let_subpaths_emit_paired_started_events` drives its fixture
+    /// through `engine.eval()`, which — with no sub-components and no solver
+    /// resolution — reaches only `evaluate_params_and_lets_unified`.
+    /// `evaluate_let_bindings` is called ONLY from the sub-component elaboration
+    /// pass and the two post-solver resolution passes, so ITS six
+    /// `record_subpath_started` insertions were entirely unpinned: deleting any
+    /// one of them kept the suite green.
+    ///
+    /// This closes that hole via the direct-call harness above, covering both
+    /// sub-paths reachable on the two-cell module:
+    ///   - the arch §9.1 panic-recovery `EventKind::Failed` path (pass 2, with
+    ///     `set_panic_on_eval` injected on the let);
+    ///   - the arch §7.2/§9.2 pre-eval Pending gate's `Completed { Unchanged }`
+    ///     (pass 3, with `a`'s cache entry poisoned to `Freshness::Failed` so the
+    ///     let's derived input freshness is `Pending`, and its own entry — present
+    ///     since pass 1 — accepts `mark_pending_with_cause`).
+    ///
+    /// Pass 1 (cold, all-Final) establishes the paired baseline via the migrated
+    /// `commit_cell_result_at` commit. Asserting strict alternation across ALL
+    /// passes is what makes this non-vacuous: a missing later `Started` shows up
+    /// as two consecutive terminal events.
+    #[test]
+    fn evaluate_let_bindings_non_migrated_subpaths_emit_paired_started_events() {
+        let module = two_cell_module();
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut snapshot = Snapshot::from_compiled_module(&module);
+
+        let a_id = ValueCellId::new("T", "a");
+        let b_id = ValueCellId::new("T", "b");
+        let a_node = NodeId::Value(a_id.clone());
+        let b_node = NodeId::Value(b_id.clone());
+
+        // Pass 1 — cold: `b` commits through commit_cell_result_at, which emits
+        // its own Started(cold-eval)/Completed pair.
+        run_evaluate_let_bindings(&mut engine, &module, &mut snapshot, 1);
+        assert_started_terminal_pairing(&engine, &b_id, "pass 1 (cold commit)");
+        let after_pass1 = engine.journal().events_for_node(&b_node).len();
+
+        // Pass 2 — panic-recovery Failed path.
+        engine.set_panic_on_eval(b_id.clone());
+        run_evaluate_let_bindings(&mut engine, &module, &mut snapshot, 2);
+        assert_started_terminal_pairing(&engine, &b_id, "pass 2 (panic recovery)");
+        let after_pass2 = engine.journal().events_for_node(&b_node).len();
+        assert!(
+            after_pass2 > after_pass1,
+            "non-vacuity: pass 2 must add journal events for b \
+             ({after_pass1} -> {after_pass2})"
+        );
+        assert!(
+            engine
+                .journal()
+                .events_for_node(&b_node)
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::Failed { .. })),
+            "pass 2 must have taken the panic-recovery Failed path"
+        );
+
+        // Pass 3 — pre-eval Pending gate. Withdraw the panic injection, then
+        // poison `a`'s cache entry so `b`'s derived input freshness is Pending
+        // (§9.2 carve-out: Failed input -> Pending output). `b`'s own entry
+        // exists, so `mark_pending_with_cause` succeeds and the gate quiets the
+        // cell with `Completed { Unchanged }` instead of evaluating it.
+        engine.clear_panic_on_eval();
+        let poison = reify_ir::ErrorRef::new("poisoned");
+        engine.cache_store_mut().record_evaluation(
+            a_node.clone(),
+            crate::cache::CachedResult::Value(Value::Real(5.0), DeterminacyState::Determined),
+            reify_core::VersionId(3),
+            crate::deps::DependencyTrace::default(),
+        );
+        assert!(
+            engine.cache_store_mut().mark_failed(&a_node, poison.clone()),
+            "sanity: a's cache entry must exist so mark_failed can poison it"
+        );
+        assert_eq!(
+            engine.cache_store().freshness(&a_node),
+            Freshness::Failed { error: poison },
+            "sanity: a is Failed before pass 3"
+        );
+
+        run_evaluate_let_bindings(&mut engine, &module, &mut snapshot, 3);
+        assert_started_terminal_pairing(&engine, &b_id, "pass 3 (pre-eval Pending gate)");
+        let after_pass3 = engine.journal().events_for_node(&b_node).len();
+        assert!(
+            after_pass3 > after_pass2,
+            "non-vacuity: pass 3 must add journal events for b \
+             ({after_pass2} -> {after_pass3})"
+        );
+        assert!(
+            matches!(
+                engine.cache_store().freshness(&b_node),
+                Freshness::Pending { .. }
+            ),
+            "pass 3 must have taken the pre-eval Pending gate (b's freshness \
+             should be Pending, got {:?})",
+            engine.cache_store().freshness(&b_node)
+        );
+    }
+}
+
+#[cfg(test)]
+mod reserve_preserving_determinacy_direct_tests {
+    use super::reserve_preserving_determinacy_direct;
+
+    use reify_core::{ValueCellId, VersionId};
+    use reify_ir::{DeterminacyState, ErrorRef, Freshness, PersistentMap, Value, ValueMap};
+
+    use crate::cache::{CacheStore, CachedResult, NodeId};
+    use crate::deps::DependencyTrace;
+    use crate::journal::{EventJournal, EventKind};
+
+    /// #5238 review amendment (test-coverage). `reserve_preserving_determinacy_direct`
+    /// is the shared four-leg direct write used by the `eval_cached` Auto-cell
+    /// pre-seed re-serve AND as the graceful-degradation fallback at the two
+    /// migrated Param/Let re-serves when `DeterminacyRule::preserving` returns
+    /// `None`. That fallback arm is unreachable in a debug build (the preceding
+    /// `debug_assert!` fires first) and the whole workspace tests in debug, so the
+    /// helper's BODY needs a direct unit test — otherwise the only executable
+    /// proof it writes the four legs correctly, and preserves a determinacy
+    /// `DeterminacyRule` cannot express, would be release-only.
+    ///
+    /// Exercises the exact case the fallback exists for: `DeterminacyState::Auto`
+    /// (inexpressible by any `DeterminacyRule` — see cell_commit.rs's
+    /// "Determinacy dimension — OPEN" gap) carried through VERBATIM, alongside a
+    /// non-`Final` injected freshness.
+    #[test]
+    fn direct_reserve_writes_four_legs_preserving_auto_and_freshness() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+
+        let cell_id = ValueCellId::new("S", "auto_cell");
+        let node_id = NodeId::Value(cell_id.clone());
+        let injected = Freshness::Failed {
+            error: ErrorRef::new("injected"),
+        };
+
+        reserve_preserving_determinacy_direct(
+            &mut values,
+            &mut snapshot_values,
+            &mut cache,
+            &mut journal,
+            cell_id.clone(),
+            Value::Undef,
+            DeterminacyState::Auto,
+            DependencyTrace::default(),
+            VersionId(7),
+            injected.clone(),
+        );
+
+        // Leg 1 — values.
+        assert_eq!(
+            values.get(&cell_id),
+            Some(&Value::Undef),
+            "values leg must carry the re-served value"
+        );
+
+        // Leg 2 — snapshot, carrying `Auto` VERBATIM (this is the whole point:
+        // routing through a DeterminacyRule would rewrite it to
+        // Determined/Undetermined).
+        assert_eq!(
+            snapshot_values.get(&cell_id),
+            Some(&(Value::Undef, DeterminacyState::Auto)),
+            "snapshot leg must preserve the stored Auto determinacy verbatim"
+        );
+
+        // Leg 3 — cache: same (value, determinacy) pair, and the supplied
+        // freshness written through `record_evaluation_with_freshness`.
+        let entry = cache
+            .get(&node_id)
+            .expect("the direct re-serve must write a cache entry");
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Undef);
+                assert_eq!(
+                    *d,
+                    DeterminacyState::Auto,
+                    "cache leg must preserve Auto verbatim"
+                );
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(
+            entry.freshness, injected,
+            "the direct re-serve must carry the entry's own freshness forward, \
+             not reset it to Final"
+        );
+
+        // Leg 4 — journal: exactly the pre-migration bare `CacheHit` shape (NOT
+        // commit_cell_result's Started/Completed pair — this site is deliberately
+        // unmigrated, see the helper's doc).
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            1,
+            "expected exactly one journal event (bare CacheHit), got {events:?}"
+        );
+        assert!(
+            matches!(events[0].kind, EventKind::CacheHit),
+            "the direct re-serve journals a bare CacheHit, got {:?}",
+            events[0].kind
+        );
+        assert!(
+            events[0].payload.is_none(),
+            "the bare CacheHit carries no payload, got {:?}",
+            events[0].payload
         );
     }
 }

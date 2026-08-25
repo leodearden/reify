@@ -33,7 +33,7 @@
 //!   `engine_eval.rs` (`evaluate_params_and_lets_unified`,
 //!   `evaluate_let_bindings`) and the `eval_cached` Param/Let
 //!   preserve-freshness re-serves are migrated onto these variants; the
-//!   latter two stamp [`TraceSource::CachedReserve`], distinct from the
+//!   latter two stamp [`TraceSource::CachedReuse`], distinct from the
 //!   cache-MISS arm's [`TraceSource::CachedServe`], so the journal alone
 //!   separates a re-serve from a miss.
 //! - **`CacheLeg::Skip`'s journal `Completed.outcome` is an unspecified
@@ -63,7 +63,12 @@
 //!   determinacy-PRESERVING `DeterminacyRule` VARIANT (carry the stored state
 //!   through `resolve` verbatim rather than resolving from the value);
 //!   deliberately out of #5238's freshness scope, since adding it would
-//!   smuggle an untested determinacy change into a freshness task.
+//!   smuggle an untested determinacy change into a freshness task. Both the
+//!   unmigrated Auto pre-seed re-serve and the two migrated re-serves' `None`
+//!   fallback share ONE direct-write body —
+//!   `engine_eval.rs`'s `reserve_preserving_determinacy_direct` — so closing
+//!   this gap is a single-site change and, until then, no second hand-synced
+//!   copy of the four-leg shape exists to drift.
 //! - **Failure-path commit shape — OPEN (by design; discovered by task
 //!   #5238).** [`commit_cell_result`] always writes the values and snapshot
 //!   legs and always emits a `Started`/`Completed` pair. The four propagating
@@ -166,7 +171,7 @@ pub enum TraceSource {
     ColdEval,
     /// Produced by the `eval_cached` warm pass's cache-MISS arm — a cold eval
     /// inside the cached-serve pass. Deliberately distinct from
-    /// [`TraceSource::CachedReserve`]: this arm recomputes a value and writes
+    /// [`TraceSource::CachedReuse`]: this arm recomputes a value and writes
     /// `Freshness::Final` via `CacheLeg::Record`.
     CachedServe,
     /// Re-served verbatim from an existing non-dirty cache entry by one of
@@ -177,7 +182,16 @@ pub enum TraceSource {
     /// separates a re-serve from a miss — a §2.6 divergence audit reading the
     /// slug must not have to reach for the in-memory `CacheLeg`, which
     /// [`commit_cell_result`] consumes and never records.
-    CachedReserve,
+    ///
+    /// Named `CachedReuse`/`"cached-reuse"`, NOT `CachedReserve`/
+    /// `"cached-reserve"`: sitting directly beside [`TraceSource::CachedServe`]
+    /// / `"cached-serve"`, a one-letter difference would have carried the whole
+    /// semantic load, and "reserve" (to set aside) is a different English word
+    /// from "re-serve" (to serve again) — the intended sense. "Reuse" is also
+    /// what the producing blocks in `engine_eval.rs` already call themselves
+    /// (`// Cache-reuse: not dirty + entry exists`). Renamed before the slug
+    /// shipped; [`TraceSource::as_str`]'s freeze rule now applies to it.
+    CachedReuse,
     /// Re-evaluation triggered by an edit to an upstream cell.
     EditReeval,
     /// Part of a guarded-group re-evaluation (the `GuardedParamCtx` family).
@@ -197,11 +211,16 @@ impl TraceSource {
     /// [`commit_cell_result`]) — and
     /// intended as the stable key a future divergence audit attributes a
     /// mismatch to, so these strings, once shipped, should not be renamed.
+    ///
+    /// Every variant's slug is pinned — for uniqueness AND for its exact
+    /// frozen string — by `trace_source_provenance_is_recorded_on_started_event`
+    /// in this module's tests, over the `ALL_TRACE_SOURCES` array that
+    /// `trace_source_enumeration_is_exhaustive` forces to stay exhaustive.
     pub fn as_str(&self) -> &'static str {
         match self {
             TraceSource::ColdEval => "cold-eval",
             TraceSource::CachedServe => "cached-serve",
-            TraceSource::CachedReserve => "cached-reserve",
+            TraceSource::CachedReuse => "cached-reuse",
             TraceSource::EditReeval => "edit-reeval",
             TraceSource::GuardedGroup => "guarded-group",
             TraceSource::PostPassOverwrite => "post-pass-overwrite",
@@ -344,8 +363,63 @@ pub(crate) struct CommitLegs<'a> {
 /// additionally carries a `cache-skip=<reason>` marker (see body), so the
 /// journal alone — with no access to the in-memory [`CommitOutcome`] — is
 /// sufficient to tell a genuine cache write apart from a skip.
+///
+/// The emitted `Started`/`Completed` pair brackets the COMMIT only: `Started`
+/// is timestamped at entry and `Completed`'s `EventPayload::Duration` measures
+/// from it. A caller that already captured an `Instant` before the work this
+/// commit concludes should call [`commit_cell_result_at`] with that instant
+/// instead, so the pair brackets the real evaluation — see its doc for why
+/// that matters.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn commit_cell_result(
+    legs: CommitLegs<'_>,
+    node: ValueCellId,
+    value: Value,
+    determinacy: DeterminacyRule,
+    trace: TraceSource,
+    dependency_trace: DependencyTrace,
+    version: VersionId,
+    cache_leg: CacheLeg,
+) -> CommitOutcome {
+    commit_cell_result_at(
+        Instant::now(),
+        legs,
+        node,
+        value,
+        determinacy,
+        trace,
+        dependency_trace,
+        version,
+        cache_leg,
+    )
+}
+
+/// [`commit_cell_result`], but with the journal `Started` event's timestamp —
+/// and therefore the `Completed` event's `EventPayload::Duration` span —
+/// supplied by the caller rather than captured at commit entry.
+///
+/// task #5238 amendment. `engine_eval.rs`'s `record_eval_completed` documents
+/// the house convention: "`start` is the `Instant` captured before the matching
+/// `EventKind::Started` record so that `Duration` spans the full resolution".
+/// The main let commits in `evaluate_params_and_lets_unified` and
+/// `evaluate_let_bindings` honoured that before being migrated onto this
+/// primitive — their `Completed` carried `start.elapsed()` measured from the
+/// top of the loop body, i.e. the whole evaluation. Routing them through
+/// [`commit_cell_result`], which captures its own `Instant`, silently narrowed
+/// those Durations to the commit's own (sub-microsecond) cost, while every
+/// non-migrated sibling sub-path in the SAME loop kept the full-resolution
+/// span — so one pass's journal would have mixed two incompatible `Duration`
+/// semantics per cell. No production consumer reads `Duration` today (only
+/// existence-matching, in `concurrent.rs`), which is why nothing failed; a
+/// future profiler reading the journal would simply have got wrong numbers for
+/// exactly the dominant cells.
+///
+/// Passing `started_at` also back-dates the `Started` event's own timestamp to
+/// the same instant, matching `record_subpath_started`'s behaviour, so the pair
+/// really does bracket the work rather than merely reporting its length.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_cell_result_at(
+    started_at: Instant,
     legs: CommitLegs<'_>,
     node: ValueCellId,
     value: Value,
@@ -364,7 +438,10 @@ pub(crate) fn commit_cell_result(
 
     let det = determinacy.resolve(&value);
     let node_id = NodeId::Value(node.clone());
-    let start = Instant::now();
+    // Supplied by the caller (see this fn's doc): the `Started` event is
+    // stamped with it and `Completed`'s Duration measures from it, so the pair
+    // brackets the caller's work, not just this commit.
+    let start = started_at;
 
     // The `Started` event's payload doubles as the journal-only source of
     // truth for the cache leg's fate: the trace-source slug always, plus a
@@ -851,25 +928,25 @@ mod tests {
 
         assert_eq!(outcome.trace_source, TraceSource::EditReeval);
 
-        // Every variant maps to a distinct, stable kebab slug.
-        let slugs = [
-            TraceSource::ColdEval.as_str(),
-            TraceSource::CachedServe.as_str(),
-            TraceSource::EditReeval.as_str(),
-            TraceSource::GuardedGroup.as_str(),
-            TraceSource::PostPassOverwrite.as_str(),
-            TraceSource::ConeReeval.as_str(),
-        ];
+        // Every variant maps to a distinct, stable kebab slug. `ALL_TRACE_SOURCES`
+        // is kept exhaustive by `trace_source_enumeration_is_exhaustive` below —
+        // adding a variant without listing it here is a compile error, not a
+        // silently-unchecked slug (#5238 amendment: `CachedReuse` was shipped
+        // while this list still had six entries, so neither its uniqueness nor
+        // its frozen string was covered).
+        let slugs: Vec<&'static str> = ALL_TRACE_SOURCES.iter().map(|t| t.as_str()).collect();
         assert_eq!(
             slugs,
             [
                 "cold-eval",
                 "cached-serve",
+                "cached-reuse",
                 "edit-reeval",
                 "guarded-group",
                 "post-pass-overwrite",
                 "cone-reeval",
-            ]
+            ],
+            "TraceSource slugs are frozen once shipped (see TraceSource::as_str)"
         );
         let unique: std::collections::HashSet<_> = slugs.iter().collect();
         assert_eq!(
@@ -877,6 +954,59 @@ mod tests {
             slugs.len(),
             "TraceSource slugs must be distinct: {slugs:?}"
         );
+    }
+
+    /// Every [`TraceSource`] variant, in declaration order — the list
+    /// `trace_source_provenance_is_recorded_on_started_event` pins slugs over.
+    ///
+    /// Kept exhaustive by `trace_source_enumeration_is_exhaustive`: because that
+    /// sentinel matches on `TraceSource` with no wildcard arm, adding a variant
+    /// fails to compile until it is named there, and the `ALL_TRACE_SOURCES.len()`
+    /// assertion then fails until it is added here too.
+    const ALL_TRACE_SOURCES: [TraceSource; 7] = [
+        TraceSource::ColdEval,
+        TraceSource::CachedServe,
+        TraceSource::CachedReuse,
+        TraceSource::EditReeval,
+        TraceSource::GuardedGroup,
+        TraceSource::PostPassOverwrite,
+        TraceSource::ConeReeval,
+    ];
+
+    /// Compile-time + run-time guard that `ALL_TRACE_SOURCES` really is every
+    /// variant, so the slug uniqueness/stability assertions above are checked
+    /// over the WHOLE enum rather than over a hand-maintained subset that
+    /// silently drifts (which is exactly how `CachedReuse` shipped uncovered).
+    #[test]
+    fn trace_source_enumeration_is_exhaustive() {
+        // Wildcard-free match: a new `TraceSource` variant fails to compile
+        // here until it is named, which is the whole point of the sentinel.
+        // Mapping each variant to its expected INDEX (rather than just
+        // counting) also catches a repeated or omitted entry in the array.
+        fn declaration_index(t: TraceSource) -> usize {
+            match t {
+                TraceSource::ColdEval => 0,
+                TraceSource::CachedServe => 1,
+                TraceSource::CachedReuse => 2,
+                TraceSource::EditReeval => 3,
+                TraceSource::GuardedGroup => 4,
+                TraceSource::PostPassOverwrite => 5,
+                TraceSource::ConeReeval => 6,
+            }
+        }
+        assert_eq!(
+            ALL_TRACE_SOURCES.len(),
+            7,
+            "ALL_TRACE_SOURCES must list every TraceSource variant exactly once"
+        );
+        for (i, t) in ALL_TRACE_SOURCES.iter().enumerate() {
+            assert_eq!(
+                declaration_index(*t),
+                i,
+                "ALL_TRACE_SOURCES[{i}] = {t:?} is out of order, repeated, or \
+                 omits a variant: {ALL_TRACE_SOURCES:?}"
+            );
+        }
     }
 
     /// Freshness analogue of `commit_record_writes_all_four_legs` for the new
@@ -1086,7 +1216,7 @@ mod tests {
             node.clone(),
             Value::Bool(true),
             DeterminacyRule::UnconditionalDetermined,
-            TraceSource::CachedReserve,
+            TraceSource::CachedReuse,
             DependencyTrace::default(),
             VersionId(2),
             CacheLeg::RecordWithFreshness(resupplied.clone()),
