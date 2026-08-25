@@ -544,9 +544,20 @@ impl ReifyToolContext for CliToolContext {
         //
         // The client-facing half of this declaration is the `reify_set_parameter`
         // schema text in `crates/reify-mcp/src/tools/write.rs`, which is what an
-        // MCP client actually sees over `tools/list`. The two must be kept in
-        // step; `set_parameter_schema_declares_the_si_unit_contract` in
-        // `crates/reify-mcp/tests/write_tools_tests.rs` pins the schema half.
+        // MCP client actually sees over `tools/list`.
+        //
+        // WHAT IS AND IS NOT MACHINE-CHECKED, stated plainly so nobody infers
+        // coverage that does not exist. The BEHAVIOUR above - verbatim SI
+        // install, the cell's own `DimensionVector` attached unchanged, and the
+        // paired `unit` on both `SetParamResult` and `get_parameters` - is
+        // pinned by `set_parameter_installs_a_bare_number_as_si_radians_on_an_angle_cell`
+        // in this file's own `mod tests`. The schema PROSE in `write.rs` is
+        // deliberately NOT pinned: an assertion over the wording of a string
+        // literal is a documentation meta-test, green for any sentence
+        // containing the right tokens and red for any semantically identical
+        // rewording. Keeping the schema text in step with this code is
+        // therefore a REVIEW-TIME obligation, not a machine-checked one.
+        //
         // The paired OUTBOUND declaration is the `unit` field built by
         // `dimension_unit` in `get_parameters` above.
         //
