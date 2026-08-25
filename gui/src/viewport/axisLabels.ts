@@ -14,9 +14,35 @@ import { AXIS_LABEL_RENDER_ORDER } from './renderOrder';
 const LABEL_OFFSET = 2.3;
 
 /**
- * Size (Three.js world units) of the label sprite quad.
+ * On-screen size of a label sprite, as a fraction of the viewport HEIGHT divided
+ * by cot(fov/2)/2 — i.e. the `scale` the r183 sprite shader consumes when the
+ * material sets `sizeAttenuation: false`.
+ *
+ * Derivation (three r183 `sprite.glsl.js`, verbatim):
+ *
+ *     vec4 mvPosition = modelViewMatrix[3];
+ *     vec2 scale = vec2(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz));
+ *     #ifndef USE_SIZEATTENUATION
+ *       if (isPerspective) scale *= -mvPosition.z;
+ *     #endif
+ *
+ * That `-mvPosition.z` factor exactly cancels the perspective divide, so the
+ * label's share of the viewport height is
+ *
+ *     f = s * cot(fov/2) / 2
+ *
+ * with NO camera-distance term. At the app's fov of 60 (see scene.ts),
+ * 0.055 * 1.7320508 / 2 = 4.8% of the viewport height, at EVERY camera distance.
+ *
+ * WHY (#6588): with three.js's default `sizeAttenuation: true` the divide survives
+ * and f = worldScale * cot(fov/2) / (2 * d). At the reported dogfood camera
+ * (0.2923, -0.2809, 1.8260) the Z label at (0, 0, 2.3) is only d = 0.6237 away, so
+ * the old LABEL_SCALE of 0.5 world units gave f = 0.694 — the glyph covered 69% of
+ * the frame, magnified ~9x out of a 64-texel texture. That bilinear magnification
+ * across ~9-px texel cells is the reported blocky stair-stepped band, and a
+ * magnified "Z"/"Y" reads as a band terminating in a triangular wedge.
  */
-const LABEL_SCALE = 0.5;
+const LABEL_SCREEN_SCALE = 0.055;
 
 interface LabelSpec {
   axis: 'X' | 'Y' | 'Z';
@@ -65,13 +91,21 @@ function makeTextSprite(spec: LabelSpec): Sprite {
     depthTest: true,
     depthWrite: false,
     transparent: true,
+    // Constant screen size regardless of camera distance — see LABEL_SCREEN_SCALE
+    // for the shader derivation and the #6588 repro this prevents.
+    //
+    // This does NOT weaken #6587's depth fix: `mvPosition = modelViewMatrix[3]` is
+    // still the sprite's WORLD position, so the fragment depth (and hence occlusion
+    // by model geometry in front of the label) is unchanged. A label behind the
+    // camera yields w_clip < 0 and is near-plane clipped, not mirrored into frame.
+    sizeAttenuation: false,
   });
 
   const sprite = new Sprite(material);
   sprite.name = `axis-label-${spec.axis}`;
   sprite.userData.axis = spec.axis;
   sprite.renderOrder = AXIS_LABEL_RENDER_ORDER;
-  sprite.scale.set(LABEL_SCALE, LABEL_SCALE, 1);
+  sprite.scale.set(LABEL_SCREEN_SCALE, LABEL_SCREEN_SCALE, 1);
   sprite.position.set(...spec.position);
 
   return sprite;
@@ -87,6 +121,16 @@ function makeTextSprite(spec: LabelSpec): Sprite {
  * helper tier (AXIS_LABEL_RENDER_ORDER), so they always draw over the axis they
  * annotate. The coplanar grid still cannot occlude them, because the grid writes
  * no depth either (see scene.ts, #4214).
+ *
+ * Labels are also CONSTANT SCREEN SIZE (`sizeAttenuation: false`), covering ~4.8%
+ * of the viewport height at any camera distance — see LABEL_SCREEN_SCALE for the
+ * shader derivation and the #6588 defect it prevents.
+ *
+ * COUPLING WARNING: the r183 sprite shader reads `length(modelMatrix[0].xyz)`, i.e.
+ * the sprite's WORLD matrix, so an ANCESTOR scale multiplies the on-screen size and
+ * silently re-breaks that invariant. The returned `group` must therefore never be
+ * scaled. To follow a scene-sized axis triad, reposition the sprites via `setOffset`
+ * instead (scene.ts's `fitHelpers` does exactly this).
  *
  * Visibility should be driven by the same signal that controls the axes
  * (see Viewport.tsx createEffect — set `axisLabels.visible` alongside
