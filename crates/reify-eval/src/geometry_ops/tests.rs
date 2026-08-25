@@ -23810,6 +23810,71 @@
         }
     }
 
+    /// The one origin input δ genuinely CHANGED without changing its dimension
+    /// verdict: a NON-FINITE LENGTH `Scalar`.
+    ///
+    /// This is deliberately NOT a row in the table above. Every row there
+    /// asserts `diagnostics.is_empty()`, and that emptiness is itself the
+    /// assertion — "a wrong shape / wrong variant / degenerate normal is not a
+    /// units rejection". A NaN LENGTH is the opposite: it DOES push exactly one
+    /// diagnostic, so folding it in would have meant giving every row an
+    /// expected-diagnostics column and diluting the emptiness claim to a count.
+    ///
+    /// The behaviour it pins, and why both halves matter:
+    ///   - PRE-δ this input returned `PLANE_ORIGIN_SHAPE_ERR` and pushed
+    ///     NOTHING, because `point3_components` filtered non-finite through
+    ///     `as_f64().filter(is_finite)` and so reported it as a malformed SHAPE;
+    ///   - POST-δ `accept_arg` ACCEPTS it (it IS a Length, merely NaN), takes
+    ///     `accept_length_value`'s non-finite arm, and produces one
+    ///     `Severity::Warning` with NO code plus the units `Err`.
+    ///
+    /// The Warning-vs-Error split is the whole point: only a DIMENSION rejection
+    /// is backed by an `ArgRejection` and can carry
+    /// `DimensionedArgRejected`. Asserting `code == None` here is what stops a
+    /// future "promote everything to Error + code" edit from landing silently —
+    /// that promotion is task 6157's severity residual, and it must be a
+    /// deliberate, visible change of this assertion.
+    #[test]
+    fn decode_plane_non_finite_length_origin_warns_without_a_code() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let plane = plane_of(
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::length(f64::NAN),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ]),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            decode_plane(&plane, "mirror", &mut diagnostics),
+            Err("missing or non-Length argument 'ox' for mirror".to_string()),
+            "a non-finite LENGTH takes the units `Err`, NOT the pre-δ shape \
+             message — δ moved this input and the decoder doc says so"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "only the ONE non-finite component may be diagnosed; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "a non-finite LENGTH was ACCEPTED by `accept_arg`, so it is not a \
+             dimension rejection and stays a Warning (task 6157 residual)"
+        );
+        assert_eq!(
+            diagnostics[0].code, None,
+            "no `ArgRejection` was minted, so there is nothing to hang \
+             `DimensionedArgRejected` on"
+        );
+        assert_eq!(
+            diagnostics[0].message,
+            "argument 'ox' for mirror evaluated to a non-finite Length",
+            "the wording is `accept_length_value`'s, inherited unchanged"
+        );
+    }
+
     // ── δ: `decode_axis` gates its ORIGIN, not its DIRECTION (task 5745) ──────
 
     /// The pre-δ wrong-SHAPE message for an axis ORIGIN, kept byte-identical by
@@ -24000,6 +24065,50 @@
                 diagnostics
             );
         }
+    }
+
+    /// `decode_plane_non_finite_length_origin_warns_without_a_code`'s axis
+    /// sibling — same delta, same Warning-vs-Error split, same reason it sits
+    /// outside the `diagnostics.is_empty()` table above. Both decoders are
+    /// pinned because both docs now make the claim, and one decoder drifting
+    /// while the other holds is exactly the shape of regression a shared-helper
+    /// refactor produces.
+    #[test]
+    fn decode_axis_non_finite_length_origin_warns_without_a_code() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let axis = axis_of(
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(f64::INFINITY),
+                reify_ir::Value::length(0.0),
+            ]),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            decode_axis(&axis, "circular", &mut diagnostics),
+            Err("missing or non-Length argument 'oy' for circular".to_string()),
+            "a non-finite LENGTH takes the units `Err`, NOT the pre-δ shape \
+             message; `oy` because the FIRST error wins and only `oy` failed"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "only the ONE non-finite component may be diagnosed; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "non-finite is not a dimension rejection (task 6157 residual)"
+        );
+        assert_eq!(
+            diagnostics[0].code, None,
+            "no `ArgRejection` was minted, so no `DimensionedArgRejected`"
+        );
+        assert_eq!(
+            diagnostics[0].message,
+            "argument 'oy' for circular evaluated to a non-finite Length"
+        );
     }
 
     // ── δ: NurbsSurface control points are LENGTH-gated (task 5745) ──────────
@@ -24347,6 +24456,67 @@
             "a shape failure is not an `ArgSpec` rejection; got: {:?}",
             diagnostics
         );
+    }
+
+    /// (h) The PRECEDENCE branch: a units failure in an EARLIER row must not be
+    /// masked by a STRUCTURAL failure in a LATER one.
+    ///
+    /// This is the row that exercises `cp_err.unwrap_or_else(..)`'s `Some` arm
+    /// in the malformed-row `else` block. Every other malformed-row row in this
+    /// block puts the bad row at index 0, where `cp_err` is necessarily `None`
+    /// and only the `unwrap_or_else` FALLBACK is ever taken — so without this
+    /// test a refactor that wrote `return Err(format!("...row {} must be a
+    /// List..."))` directly would silently reverse the precedence and stay green.
+    ///
+    /// The reversal is not cosmetic. An author with one bare pole in row 0 and a
+    /// typo'd row 1 would be told about the STRUCTURE (a message they can only
+    /// act on after they have already found the units bug) instead of the units
+    /// failure that is both first in the file and the 1000× hazard this whole
+    /// PRD exists for. FIRST-error-wins across BOTH kinds is the contract the
+    /// production comment states; this is its executable form.
+    #[test]
+    fn compile_geometry_op_nurbs_surface_units_error_beats_a_later_malformed_row() {
+        let malformed_row = reify_ir::Value::Real(2.0);
+        let (result, diagnostics) = compile_nurbs(reify_ir::Value::List(vec![
+            // Row 0 is well-formed but its single pole is BARE → sets `cp_err`.
+            reify_ir::Value::List(vec![bare_real_vector3(0.01, 0.0, 0.0)]),
+            // Row 1 is not a List at all → the structural early-return, which
+            // must hand back the units error already in `cp_err`.
+            malformed_row.clone(),
+        ]));
+        assert_eq!(
+            result.expect_err("a bare pole plus a malformed row must be rejected"),
+            "missing or non-Length argument 'control_points[0][0].x' for nurbs_surface",
+            "the EARLIER units failure wins; the later structural message \
+             (\"control_points row 1 must be a List of points, got {:?}\") must \
+             NOT surface first",
+            malformed_row
+        );
+        // The units half really did run: all three coordinates of the one bare
+        // pole are diagnosed before the structural return fires, so the author
+        // fixes the whole pole in one rebuild rather than one axis at a time.
+        let rejections: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected))
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            3,
+            "all three coordinates of the bare pole must be diagnosed even \
+             though a later row aborts the read; got: {:?}",
+            diagnostics
+        );
+        for (d, axis) in rejections.iter().zip(["x", "y", "z"]) {
+            assert_eq!(d.severity, reify_core::Severity::Error);
+            assert_eq!(
+                d.message,
+                expected_length_rejection(
+                    "nurbs_surface",
+                    &format!("control_points[0][0].{axis}"),
+                    "Real"
+                )
+            );
+        }
     }
 
     // ── δ SCOPE LOCK: the three DIRECTION positions stay un-gated (task 5745) ─
@@ -25198,6 +25368,121 @@
             result.is_none(),
             "non-Plane args[1] must fall through to None (cell stays Undef), got {:?}",
             result
+        );
+    }
+
+    /// δ (task 5745): a BARE plane ORIGIN still falls through to `None`, but is
+    /// no longer SILENT.
+    ///
+    /// The split arm is the one `decode_plane` caller whose δ behaviour change
+    /// is a user-visible EXIT-CODE change, and it is the one the production
+    /// comment makes a claim about: "a BARE origin is no longer one of the
+    /// silent cases — the gate has already pushed its `Severity::Error` +
+    /// `DimensionedArgRejected` diagnostic by the time we get here, so `reify
+    /// eval` exits 1 through INV-SF-2's pure severity fold rather than producing
+    /// an unexplained empty split." This test is that claim's executable form.
+    ///
+    /// Both halves are load-bearing and neither implies the other:
+    ///   - `None` pins that δ did NOT change the fall-through contract (PRD
+    ///     invariant #2 — the selector cell keeps its compiled `Undef` default,
+    ///     exactly as for a wrong-VARIANT plane arg in the test above);
+    ///   - the three diagnostics pin the ONLY thing that carries the failure out
+    ///     of here. `try_eval_topology_selector` discards the decoder's `Err`
+    ///     string entirely (`Err(_) => return None`), so the pushed `Diagnostic`
+    ///     is the sole channel to the CLI's severity fold. A future caller
+    ///     handing `decode_plane` a scratch `Vec<Diagnostic>` that it then drops
+    ///     would restore the pre-δ silent empty split with exit 0 — a regression
+    ///     the `None` assertion alone cannot see.
+    #[test]
+    fn split_dispatch_bare_plane_origin_returns_none_but_diagnoses() {
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        // A kernel that WOULD succeed if it were ever reached — so a green
+        // `None` here proves the gate stopped the dispatch, not the kernel.
+        let mut kernel = SplitMockKernel::new(
+            reify_test_support::mocks::MockGeometryKernel::new(),
+            vec![GeometryHandleId(5), GeometryHandleId(6)],
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("MySolid", "solid"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: reify_core::identity::RealizationNodeId::new("MySolid", 0),
+                upstream_values_hash: [0xAB; 32],
+                kernel_handle: Some(parent_handle),
+            },
+        );
+        // args[1]: a well-formed Plane whose ORIGIN is bare — the exact shape
+        // `plane_xy(10)` produces, and the 1000× hazard δ exists to catch. The
+        // NORMAL beside it stays bare on purpose (D3, BINDING) and must
+        // contribute no diagnostic of its own.
+        values.insert(
+            ValueCellId::new("MySolid", "plane"),
+            reify_ir::Value::Plane {
+                origin: Box::new(bare_real_vector3(10.0, 0.0, 0.0)),
+                normal: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "split",
+            "MySolid",
+            "solid",
+            Type::Geometry,
+            "plane",
+            Type::Plane,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "a bare plane origin must still fall through to None (cell stays \
+             Undef) — δ changed the NOISE, not the fall-through; got {:?}",
+            result
+        );
+        let rejections: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+            })
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            3,
+            "the empty split must be EXPLAINED: one Error per bare origin \
+             component, which is what makes `reify eval` exit 1; got: {:?}",
+            diagnostics
+        );
+        for (d, name) in rejections.iter().zip(["ox", "oy", "oz"]) {
+            assert_eq!(
+                d.message,
+                expected_length_rejection("split", name, "Real"),
+                "the label is the selector's own function name, threaded as \
+                 `kind_label`, so the author is told WHICH builtin rejected"
+            );
+        }
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "the deliberately-bare NORMAL contributes nothing, and no kernel \
+             warning may appear — the dispatch never reached the kernel; got: \
+             {:?}",
+            diagnostics
         );
     }
 
