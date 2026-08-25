@@ -55,7 +55,12 @@ fn canonical_prism() -> Vec<[f64; 3]> {
     ]
 }
 
-fn perturbed_prism_guess() -> Vec<[f64; 3]> {
+/// Perturbed prism guess, with the fixed `PERTURB` displacement table scaled
+/// by `k` — lets regression tests probe how far off-symmetry a starting guess
+/// can be while still converging. `perturbed_prism_guess()` delegates here at
+/// `k = 1.0`, so the landed GroupRatios golden and step-1's tests are
+/// byte-identical to before this generalisation.
+fn perturbed_prism_guess_scaled(k: f64) -> Vec<[f64; 3]> {
     const PERTURB: [[f64; 3]; 6] = [
         [0.0009, -0.0011, 0.0007],
         [-0.0013, 0.0006, 0.0010],
@@ -67,8 +72,12 @@ fn perturbed_prism_guess() -> Vec<[f64; 3]> {
     canonical_prism()
         .iter()
         .zip(PERTURB.iter())
-        .map(|(p, d)| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
+        .map(|(p, d)| [p[0] + k * d[0], p[1] + k * d[1], p[2] + k * d[2]])
         .collect()
+}
+
+fn perturbed_prism_guess() -> Vec<[f64; 3]> {
+    perturbed_prism_guess_scaled(1.0)
 }
 
 /// Top {0,1,2} and bottom {3,4,5} membrane triangles.
@@ -325,5 +334,53 @@ fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
              (the membrane already contributes w=σ/(2√3) to every horizontal \
              edge, so this q leaves D_combined with the wrong nullity)",
         );
+    }
+}
+
+/// Regression lock (task 6537): the Explicit combined form-find fix must hold
+/// across a range of surface stresses σ and starting-guess perturbation
+/// magnitudes, not just the single (σ=0.2, perturbed×1) cell exercised by
+/// `combined_explicit_analytic_q_from_perturbed_guess_converges` above.
+#[test]
+fn combined_explicit_analytic_q_converges_across_sigma_and_perturbation() {
+    let (members, kinds) = triplex_topology();
+    let surfaces = prism_surfaces();
+
+    for &sigma in &[0.05_f64, 0.2, 0.5, 2.0] {
+        let sigmas = vec![sigma; 2];
+        let q = analytic_combined_q(sigma);
+        let spec = ForceDensitySpec::Explicit(q);
+
+        let guesses: [(&str, Vec<[f64; 3]>); 4] = [
+            ("canonical", canonical_prism()),
+            ("scaled x1", perturbed_prism_guess_scaled(1.0)),
+            ("scaled x10", perturbed_prism_guess_scaled(10.0)),
+            ("scaled x50", perturbed_prism_guess_scaled(50.0)),
+        ];
+
+        for (label, guess) in guesses {
+            let cell = format!("sigma={sigma}, guess={label}");
+            let result =
+                form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+                    .unwrap_or_else(|e| panic!("[{cell}] must form-find, got {e:?}"));
+
+            assert!(result.converged, "[{cell}] combined solve must converge");
+            assert_eq!(result.nullity, 4, "[{cell}] combined D must have nullity 4");
+
+            let d = reassemble_d_combined(
+                6,
+                &members,
+                &result.force_densities,
+                &surfaces,
+                &sigmas,
+                &result.nodes,
+            );
+            let resid = free_residual_scaled(&d, &result.nodes);
+            assert!(
+                resid < EQUIL_TOL,
+                "[{cell}] combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, \
+                 expected < {EQUIL_TOL:.0e}",
+            );
+        }
     }
 }

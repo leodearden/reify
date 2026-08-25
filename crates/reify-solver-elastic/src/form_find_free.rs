@@ -1509,6 +1509,26 @@ mod tests {
         ]
     }
 
+    /// Closed-form COMBINED self-stress for the triplex + two equilateral
+    /// membrane triangles, struts-then-cables order (σ-aware sibling of
+    /// [`closed_form_q`]). At the free-standing equilibrium both membrane
+    /// triangles are equilateral, so every cotangent in the surface stencil is
+    /// cot(60°) = 1/√3 and `Σ_T σ_T·L_T` collapses to a uniform extra edge
+    /// weight w = σ·cot(60°)/2 = σ/(2√3) on exactly the six horizontal cables.
+    /// Hence D_combined(q) ≡ D_line(q + w·1{horizontal}), and a valid form
+    /// needs q + w·1{horizontal} ∝ the triplex self-stress (-√3, 1, √3).
+    /// Pinning the horizontals at 1 gives λ = 1 + σ/(2√3), i.e.
+    /// q_strut = -(√3 + σ/2), q_horiz = 1, q_vert = +(√3 + σ/2).
+    fn closed_form_combined_q(sigma: f64) -> Vec<f64> {
+        let a = 3.0_f64.sqrt() + sigma / 2.0;
+        vec![
+            -a, -a, -a, // struts
+            1.0, 1.0, 1.0, // top horizontals
+            1.0, 1.0, 1.0, // bottom horizontals
+            a, a, a, // verticals
+        ]
+    }
+
     #[test]
     fn closed_form_prism_q_has_nullity_four_with_spectral_gap() {
         let (members, _kinds) = triplex_topology();
@@ -2340,6 +2360,67 @@ mod tests {
 
         // Primary honest signal: combined free-node equilibrium residual at the
         // SOLVED geometry, assembled INDEPENDENTLY (faer-free, via reassemble_d_free).
+        let d_combined = reassemble_d_free(
+            6,
+            &members,
+            &result.force_densities,
+            &surfaces,
+            &sigmas,
+            &result.nodes,
+        );
+        let resid = free_equilibrium_residual_scaled(&d_combined, &result.nodes);
+        assert!(
+            resid < 1e-9,
+            "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < 1e-9",
+        );
+    }
+
+    /// Unit-level mirror of the integration test's headline (task 6537):
+    /// `Explicit` combined free-standing form-finding, from the perturbed
+    /// guess, must converge to the closed-form combined self-stress. Verified
+    /// through the module's own faer-free helpers (`reassemble_d_free` /
+    /// `free_equilibrium_residual_scaled`) rather than the crate-root
+    /// integration-test path, so a regression here is caught independently.
+    #[test]
+    fn surfaces_free_explicit_combined_q_converges_from_perturbed_guess() {
+        // Pin the closed form to its derivation rather than to a copied
+        // literal: q_strut = -(√3 + σ/2) at σ=0.2 is exactly -(√3 + 0.1).
+        assert_eq!(
+            closed_form_combined_q(0.2)[0],
+            -(3.0_f64.sqrt() + 0.1),
+            "closed_form_combined_q(0.2)[0] must equal its derivation -(√3 + σ/2) exactly",
+        );
+
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        let surfaces = prism_surfaces();
+        let sigma = 0.2_f64;
+        let sigmas = vec![sigma; 2];
+        let q = closed_form_combined_q(sigma);
+        let spec = ForceDensitySpec::Explicit(q);
+
+        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+            .expect("combined explicit q from perturbed guess must form-find");
+
+        assert!(result.converged, "combined solve must converge");
+        assert_eq!(result.nullity, 4, "combined D must have nullity 4");
+
+        // Force signs: struts compressive, cables tensile.
+        for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
+            match kind {
+                MemberKind::Strut => assert!(
+                    n_i < 0.0,
+                    "strut {idx} must be compressive (N < 0), got {n_i}",
+                ),
+                MemberKind::Cable => assert!(
+                    n_i > 0.0,
+                    "cable {idx} must be tensile (N > 0), got {n_i}",
+                ),
+            }
+        }
+
+        // Primary honest signal: combined free-node equilibrium residual at
+        // the SOLVED geometry, assembled INDEPENDENTLY (faer-free).
         let d_combined = reassemble_d_free(
             6,
             &members,
