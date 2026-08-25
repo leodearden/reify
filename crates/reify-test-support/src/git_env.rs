@@ -128,9 +128,10 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// `reify-audit`'s PRODUCTION path. The script's own comment above the
 /// exclusion now records that as an accepted blind spot rather than an
 /// assumed-safe one, and both manifests on the edge — `crates/reify-audit`'s
-/// and this crate's — state the fact in one line each. All three point HERE,
-/// and this paragraph is the one full account: a reader arriving from any of
-/// them should need nothing further.
+/// and this crate's — name the fact and both reaches at their own site, then
+/// defer the argument here rather than restating it. All three point HERE, and
+/// this paragraph is the one full account: a reader arriving from any of them
+/// should need nothing further.
 ///
 /// Whether the arrangement warrants a dep-free `reify-git-env` leaf crate the
 /// sweep does cover, or a narrower `EXCLUDE_CRATES`, is tracked as follow-up
