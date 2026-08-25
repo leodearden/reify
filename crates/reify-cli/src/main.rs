@@ -1067,28 +1067,47 @@ fn cmd_build(args: &[String]) -> ExitCode {
             if let Some(diag) =
                 reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic(&compiled)
             {
-                // Report and exit through the EXISTING report_eval_output +
-                // build_is_success pair rather than a bespoke ExitCode::FAILURE:
-                // `build_is_success` is `!has_error_diagnostic && !SomeViolated`,
-                // so an Error diagnostic alone already yields non-zero, and
-                // `report_eval_output` puts the message on stderr in the same
+                // Report through the EXISTING report_eval_output path rather
+                // than a bespoke stderr write, so the refusal lands in the same
                 // order as every other diagnostic (PRD INV-SF-2: "η rides
                 // `cmd_build`'s existing gate rather than adding a per-code
                 // bolt-on").
+                //
+                // THE EXIT CODE IS UNCONDITIONAL, AND THAT IS THE POINT: reaching
+                // this arm means the artifact is BEING REFUSED and the write below
+                // is being skipped outright, so write-suppression and exit code
+                // must not be able to decouple. Deriving it from
+                // `build_is_success(&outcome, has_error_diagnostic)` instead would
+                // couple them to the builder's severity — a contract pinned only
+                // by a unit test in another crate. Were
+                // `unenforced_representation_bound_diagnostic` ever to return a
+                // Warning/Info, `cmd_build` would write NO file at the `-o`
+                // target, print nothing on stdout (`report_constraint_results(&[])`
+                // writes nothing) and exit 0: a silent no-op export, the worst
+                // failure mode a build command has. This is behaviour-preserving
+                // today — the builder returns `Severity::Error` and
+                // `constraint_results` is empty, so `build_is_success` is already
+                // `false` here — and it stays correct if that ever changes.
+                //
+                // The `debug_assert` is the loud half of the same guard: a
+                // severity regression fails the test suite at this line instead of
+                // silently degrading the report (a non-Error diagnostic would print
+                // as a warning while the build still exits non-zero — accurate exit
+                // code, misleading message).
+                debug_assert_eq!(
+                    diag.severity,
+                    Severity::Error,
+                    "the export refusal must be Error-severity: it is what the rest of \
+                     the CLI's reporting treats as a refusal rather than an advisory"
+                );
                 let diagnostics = [diag];
-                let outcome = report_eval_output(
+                let _ = report_eval_output(
                     &[],
                     &diagnostics,
                     &mut std::io::stdout(),
                     &mut std::io::stderr(),
                 );
-                let has_error_diagnostic =
-                    diagnostics.iter().any(|d| d.severity == Severity::Error);
-                return if build_is_success(&outcome, has_error_diagnostic) {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                };
+                return ExitCode::FAILURE;
             }
 
             let format = match path {
