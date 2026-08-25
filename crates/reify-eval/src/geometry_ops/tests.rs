@@ -23154,6 +23154,67 @@
         assert!(decompose_transform_to_arrays(&v).is_none());
     }
 
+    /// ζ/5747: the QUIET wrapper's silence, PINNED rather than assumed.
+    ///
+    /// `decompose_transform_to_arrays` is now a thin `Option` wrapper over the
+    /// gated `accept_transform_to_arrays`, so a `Scalar{DIMENSIONLESS}`
+    /// translation is REJECTED where pre-ζ it decoded. What must not change is
+    /// that the rejection is SILENT: its two remaining callers
+    /// (`interferes` / `min_clearance`'s `world_transform`, `walk_templates`'
+    /// `composed_world`) treat `None` as "use the raw handle" and their
+    /// transforms are LENGTH by construction, so a diagnostic there would
+    /// double-report the pose producer's own failure.
+    #[test]
+    fn decompose_transform_to_arrays_rejects_dimensionless_translation_quietly() {
+        let v = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Scalar {
+                    si_value: 5.0,
+                    dimension: reify_core::DimensionVector::DIMENSIONLESS,
+                },
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        assert!(
+            decompose_transform_to_arrays(&v).is_none(),
+            "a dimensionless translation component must no longer decode (ζ/R8)"
+        );
+
+        // And the same value through the LOUD entry point DOES speak, which is
+        // what proves the silence above is the wrapper's policy and not a gate
+        // that quietly failed to fire.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = super::accept_transform_to_arrays(
+            &v,
+            "apply_transform",
+            &|_| "shape".to_string(),
+            &mut diagnostics,
+        )
+        .expect_err("the loud route must reject a dimensionless translation");
+        assert!(
+            err.contains("translation.x"),
+            "the loud Err must name the offending coordinate; got: {err:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "the loud route must push exactly one diagnostic; got: {diagnostics:?}"
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{:?}",
+            diagnostics[0]
+        );
+    }
+
     // ── decode_orientation_to_axis_angle unit tests (task γ, #4166) ─────────
 
     /// Identity quaternion → canonical no-op: axis [1,0,0], angle 0.0.
