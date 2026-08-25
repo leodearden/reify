@@ -20038,9 +20038,15 @@ structure def Part {
 /// `tests/commands_tests.rs:125`. The returned `TempDir` must be kept alive
 /// (bind it, don't discard it) for as long as the session is used.
 fn writeback_session() -> (tempfile::TempDir, std::path::PathBuf, EngineSession) {
+    writeback_session_from(writeback_source())
+}
+
+/// `writeback_session()` parameterized by source text, so the rejection-taxonomy
+/// cluster can use its own fixture without perturbing `writeback_source()`.
+fn writeback_session_from(source: &str) -> (tempfile::TempDir, std::path::PathBuf, EngineSession) {
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let path = dir.path().join("part.ri");
-    std::fs::write(&path, writeback_source()).expect("write part.ri should succeed");
+    std::fs::write(&path, source).expect("write part.ri should succeed");
 
     let mut session = EngineSession::new(
         Box::new(SimpleConstraintChecker),
@@ -20130,5 +20136,147 @@ fn apply_param_to_source_honours_the_replaced_literals_unit() {
         !disk_text.contains("250mm"),
         "must not fall back to the canonical ladder's mm when the hint is \
          honourable, got: {disk_text}"
+    );
+}
+
+/// Rejection-taxonomy fixture for `apply_param_to_source`: one param of every
+/// shape the RESOLVE phase must discriminate between — a rewritable quantity
+/// literal (`width`), a BinOp default (`computed`), a solver-determined `auto`
+/// default (`solved`), a param with NO default (`no_default`), and a Bool
+/// literal default (`flag`) that must stay rewritable.
+///
+/// Deliberately SEPARATE from `writeback_source()`: that fixture's
+/// byte-for-byte test (`apply_param_to_source_rewrites_only_the_default_span`)
+/// derives its expectation from its own text, so adding params there would
+/// silently widen an unrelated assertion.
+fn writeback_rejection_source() -> &'static str {
+    r#"structure def Part {
+    param width: Length = 80mm
+    param computed: Length = width * 2
+    param solved: Length = auto
+    param no_default: Length
+    param flag: Bool = true
+
+    let body = box(width, width, computed)
+}"#
+}
+
+/// Assert the full NO-MUTATION ledger after a REJECTED `apply_param_to_source`:
+/// every one of the four state surfaces — the on-disk `.ri`, the `source_map`
+/// buffer the engine parses from, the stored `compile_failure`, and the eval
+/// state as seen through `build_gui_state` — must be exactly as the call found
+/// them ("on failure NONE are mutated", INV-GUI-3).
+fn assert_writeback_untouched(
+    session: &mut EngineSession,
+    path: &std::path::Path,
+    expected_source: &str,
+) {
+    let disk = std::fs::read_to_string(path).expect("disk file should be readable");
+    assert_eq!(
+        disk, expected_source,
+        "disk text must be byte-identical after a rejected write-back"
+    );
+
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a rejected write-back");
+        assert_eq!(
+            source_map_text, expected_source,
+            "source_map text must be byte-identical after a rejected write-back"
+        );
+    }
+
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a rejected write-back must not leave compile diagnostics describing text \
+         that reached neither disk nor source_map"
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a rejected write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a rejected write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a rejected write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_discriminates_its_resolve_phase_rejections() {
+    // PRD §7 B7 requires a STRUCTURED error: δ (the MCP `set_parameter` tool)
+    // is the consumer that must map "you named something that does not exist"
+    // apart from "that param's default is not a literal I may rewrite". α's
+    // `Option`-returning span resolver collapses all of these into one `None`,
+    // so the discrimination has to be rebuilt here in γ.
+    //
+    // Substrings, not exact prose — the taxonomy is the contract, the wording
+    // is not.
+    let cases: &[(&str, &[&str])] = &[
+        // Entity absent from the module.
+        ("Nope.width", &["Unknown parameter", "Nope.width"]),
+        // Entity present, member absent.
+        ("Part.nope", &["Unknown parameter", "Part.nope"]),
+        // No `.` at all — never even a well-formed cell id.
+        ("width", &["Invalid cell ID", "width"]),
+        // A real, editable cell whose param simply has no default to rewrite.
+        ("Part.no_default", &["Part.no_default", "no default"]),
+        // NON-LITERAL defaults: refusing these is the point of the taxonomy —
+        // splicing over `width * 2` would silently destroy a user-authored
+        // parametric relationship, and splicing over `auto` would destroy a
+        // solver-determined value. Both must name the offending kind so the
+        // two are distinguishable from each other, and both must say the
+        // existing expression survives.
+        (
+            "Part.computed",
+            &["Part.computed", "not a literal", "BinOp", "preserved"],
+        ),
+        (
+            "Part.solved",
+            &["Part.solved", "not a literal", "Auto", "preserved"],
+        ),
+    ];
+
+    for (cell_id, expected_substrings) in cases {
+        let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+        let err = session
+            .apply_param_to_source(cell_id, &mm(250.0))
+            .expect_err(&format!("{cell_id} must be REFUSED, not written back"));
+
+        for needle in *expected_substrings {
+            assert!(
+                err.contains(needle),
+                "rejection for {cell_id:?} should mention {needle:?}, got: {err}"
+            );
+        }
+
+        assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+    }
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_bool_literal_default() {
+    // The literal-ness gate must admit the whole literal set, not just
+    // quantities: Number/Quantity/String/Bool defaults all stay rewritable.
+    // This is the guard against over-narrowing the gate added for `computed`
+    // and `solved`.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.flag", &reify_ir::Value::Bool(false))
+        .expect("a Bool literal default must stay rewritable");
+
+    let disk = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk,
+        writeback_rejection_source().replace("param flag: Bool = true", "param flag: Bool = false"),
+        "only the Bool default span should change"
     );
 }
