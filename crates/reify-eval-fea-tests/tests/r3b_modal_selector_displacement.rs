@@ -549,6 +549,102 @@ fn displacement_at_accepts_selector_location_overload() {
     );
 }
 
+// ── amendment: guard the two migrated RayleighDamping ctor sites this crate
+//    reaches, which `examples_smoke`'s corpus walk does not ───────────────────
+
+/// The prefix every ctor-conformance diagnostic puts before the offending param
+/// label (`reify-compiler/src/conformance/mod.rs`; full shape `argument 'X' has
+/// type 'A' but param 'X' requires type 'B'`).
+const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
+
+/// The `RayleighDamping` params task #6093 retyped to `Frequency` / `Time`.
+const RAYLEIGH_PARAMS: [&str; 2] = ["alpha", "beta"];
+
+/// Diagnostics in `module` naming a `RayleighDamping` ctor arg, at ANY severity.
+///
+/// Matched on the QUOTED label (`argument 'beta'`), never a bare
+/// `contains(param)`: a module compiled through `compile_source_with_stdlib`
+/// carries the diagnostics of the probe source AND of the whole stdlib prelude,
+/// so an unquoted match would also catch any prelude message that merely
+/// contains the word.
+///
+/// Code-AGNOSTIC on purpose, rather than through a FOURTH copy of the
+/// `is_ctor_conformance_code` set (`harness_compilation_surface/
+/// examples_smoke.rs`, `struct_ctor_field_conformance_tests.rs` and
+/// `modal_options_validation_tests.rs` hold the other three; the hoist into
+/// `reify-test-support` is filed as #6323). The quoted label is the
+/// discriminator that survives BOTH the planned `Warning`→`Error` flip of
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` and any re-classification of the emitted
+/// `DiagnosticCode` — including a re-emission that carries no code at all.
+fn rayleigh_ctor_arg_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<String> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            RAYLEIGH_PARAMS
+                .iter()
+                .any(|p| d.message.contains(&format!("{CTOR_DIAGNOSTIC_ARG_PREFIX}{p}'")))
+        })
+        .map(|d| format!("{:?}: {}", d.severity, d.message))
+        .collect()
+}
+
+/// Both `RayleighDamping` ctor sites reachable from this crate carry UNIT
+/// literals (`alpha: 0.0Hz, beta: 0.0003s`), not bare `Real`s.
+///
+/// MEASURED GAP this closes. `examples_smoke::
+/// no_example_emits_ctor_field_conformance_diagnostics` walks `examples/` only,
+/// so task #6093's three migrated sites under `examples/` are guarded and these
+/// two are not: reverting either back to `(alpha: 0.0, beta: 0.0003)` left the
+/// whole `r3b_modal_selector_displacement` suite green. Nor would the revert
+/// break the build — `CTOR_FIELD_CONFORMANCE_SEVERITY` is `Warning` pre-δ — so
+/// the regression would sit silent until the Warning→Error flip.
+///
+/// The two sites:
+///   - the inline probe source built by [`compile_displacement_at_probe`];
+///   - `tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri`, whose
+///     only other consumers (`gui/src/__tests__/reifyGrammarCorpus.test.ts` and
+///     `verify.sh`'s `_GUI_COUPLED_RI_FIXTURES`) judge PARSE shape, not
+///     conformance.
+///
+/// The fixture is a NEGATIVE fixture — it must still raise "no matching
+/// overload for displacement_at" — so this judges the ctor-arg axis ONLY, never
+/// `errors_only(..).is_empty()`.
+#[test]
+fn migrated_rayleigh_ctor_sites_emit_no_ctor_arg_diagnostics() {
+    let probe = compile_displacement_at_probe("tip_face");
+    let probe_hits = rayleigh_ctor_arg_diagnostics(&probe);
+    assert!(
+        probe_hits.is_empty(),
+        "the inline r3b probe's RayleighDamping ctor must carry unit literals; \
+         got ctor-arg diagnostics: {:#?}",
+        probe_hits
+    );
+
+    let fixture_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri"
+    );
+    let fixture_source = std::fs::read_to_string(fixture_path)
+        .unwrap_or_else(|e| panic!("fixture {fixture_path} must be readable: {e}"));
+    // Guard the guard: with no RayleighDamping ctor in the fixture the
+    // assertion below would pass vacuously, which is exactly the silent-hole
+    // shape this test exists to remove.
+    assert!(
+        fixture_source.contains("RayleighDamping("),
+        "{fixture_path} must still construct a RayleighDamping — otherwise the \
+         ctor-arg assertion below is vacuous"
+    );
+    let fixture = compile_source_with_stdlib(&fixture_source);
+    let fixture_hits = rayleigh_ctor_arg_diagnostics(&fixture);
+    assert!(
+        fixture_hits.is_empty(),
+        "{fixture_path}'s RayleighDamping ctor must carry unit literals; got \
+         ctor-arg diagnostics: {:#?}",
+        fixture_hits
+    );
+}
+
 /// The existing `location: String` form still compiles cleanly (the String
 /// overload is preserved, not replaced) — passes today and after step-11. Asserts
 /// the WHOLE pipeline is error-free, validating the probe source's health.
