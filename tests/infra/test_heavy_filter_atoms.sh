@@ -9,10 +9,10 @@
 # Assertions:
 #   A. scripts/heavy-test-filter-lib.sh exists on disk.
 #   B. REIFY_HEAVY_NEXTEST_FILTER is defined and non-empty once the lib is sourced.
-#   C. Each of the 7 expected binary-level atoms is present in the expression
+#   C. Each of the 8 expected binary-level atoms is present in the expression
 #      (task 6368 added the 7th, a test-scoped atom on harness_fea_solver_e2e).
 #   D. Drift-guard: the total count of `package(X) & binary(Y)` atoms parsed out
-#      of the expression is exactly 7 (catches silent membership drift -- an
+#      of the expression is exactly 8 (catches silent membership drift -- an
 #      extra or missing atom). The parser matches only the `package()`/`binary()`
 #      prefix of an atom, so the 7th atom's trailing `& test(...)` clause does
 #      not change how it is counted here.
@@ -75,7 +75,7 @@ assert "REIFY_HEAVY_NEXTEST_FILTER is defined and non-empty" \
     test -n "${REIFY_HEAVY_NEXTEST_FILTER:-}"
 
 # ---------------------------------------------------------------------------
-# Assertion C: each of the 7 expected atoms is present in the expression
+# Assertion C: each of the 8 expected atoms is present in the expression
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion C: expected atoms present in the heavy filter ---"
@@ -108,11 +108,14 @@ assert "heavy filter contains package(reify-eval-fea-tests) & binary(fea_diagnos
 assert "heavy filter contains package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/) (task 6368)" \
     _atom_present "package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/)"
 
+assert "heavy filter contains package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_bracket_minimize_mass_e2e::/) (task 2930)" \
+    _atom_present "package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_bracket_minimize_mass_e2e::/)"
+
 # ---------------------------------------------------------------------------
-# Assertion D: drift-guard -- exactly 7 package(X) & binary(Y) atoms total
+# Assertion D: drift-guard -- exactly 8 package(X) & binary(Y) atoms total
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion D: drift-guard -- exactly 7 binary-level atoms total ---"
+echo "--- Assertion D: drift-guard -- exactly 8 binary-level atoms total ---"
 
 # Parse every `package(X) & binary(Y)` atom out of the expression. Guarded with
 # `|| true` so a zero-match grep (RED state, filter unset/empty) does not trip
@@ -124,8 +127,8 @@ if [ -n "$_ATOMS" ]; then
     _ATOM_COUNT="$(printf '%s\n' "$_ATOMS" | wc -l | tr -d '[:space:]')"
 fi
 
-assert "exactly 7 package(X) & binary(Y) atoms parsed from heavy filter (count=${_ATOM_COUNT}; no silent membership drift)" \
-    test "$_ATOM_COUNT" -eq 7
+assert "exactly 8 package(X) & binary(Y) atoms parsed from heavy filter (count=${_ATOM_COUNT}; no silent membership drift)" \
+    test "$_ATOM_COUNT" -eq 8
 
 # ---------------------------------------------------------------------------
 # Assertion E: resolve-to-disk -- every parsed atom maps to a real test file
