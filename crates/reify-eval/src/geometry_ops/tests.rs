@@ -30859,3 +30859,247 @@
             );
         }
     }
+
+    // ---- units-length ζ (task 5747): the R8 arbitrary_pattern LIST form ----
+
+    /// `arbitrary_pattern(target, transform_list: List<Transform<3>>)` as a
+    /// `CompiledGeometryOp`, with the list passed through as an inline literal.
+    fn arbitrary_pattern_with_list(elements: Vec<reify_ir::Value>) -> CompiledGeometryOp {
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Arbitrary,
+            target: GeomRef::Step(0),
+            args: vec![(
+                "transform_list".into(),
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::List(elements),
+                    reify_core::Type::List(Box::new(reify_core::Type::transform(3))),
+                ),
+            )],
+        }
+    }
+
+    /// The SAME three-state table as `apply_transform`'s, at the LIST form.
+    ///
+    /// `pattern_arbitrary` decodes each element through the same helper, so it
+    /// inherits the ζ gate — but it has its OWN pre-ζ element message and its own
+    /// list-level shape errors, and nothing else proves the gate reaches it.
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_list_translation_follows_the_three_state_contract() {
+        let values = ValueMap::new();
+        let step_handles = vec![GeometryHandleId(42)];
+
+        // (i) ACCEPTED — both LENGTH elements decode to SI metres, nothing pushed.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let op = compile_geometry_op(
+            &arbitrary_pattern_with_list(vec![
+                transform_with_translation([
+                    reify_ir::Value::length(0.01),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ]),
+                transform_with_translation([
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.02),
+                    reify_ir::Value::length(0.0),
+                ]),
+            ]),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect("a list of LENGTH transforms must be accepted");
+        let reify_ir::GeometryOp::ArbitraryPattern { transforms, .. } = op else {
+            panic!("expected GeometryOp::ArbitraryPattern, got {op:?}");
+        };
+        assert_eq!(
+            transforms,
+            vec![
+                ([1.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0]),
+                ([1.0, 0.0, 0.0, 0.0], [0.0, 0.02, 0.0]),
+            ],
+            "both translations must stay SI metres, byte-identical"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an accepted list must push ZERO diagnostics; got: {diagnostics:?}"
+        );
+
+        // (ii) REJECTED — the SECOND element offends, so the gate must reach past
+        // a successfully-decoded first element.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &arbitrary_pattern_with_list(vec![
+                transform_with_translation([
+                    reify_ir::Value::length(0.01),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ]),
+                transform_with_translation([
+                    reify_ir::Value::Scalar {
+                        si_value: 5.0,
+                        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+                    },
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ]),
+            ]),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a dimensionless element translation must drop the op; got: {result:?}"
+        );
+        let rejections: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("argument expects Length"))
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            1,
+            "exactly ONE rejection diagnostic; got: {diagnostics:?}"
+        );
+        let rej = rejections[0];
+        assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+        assert_eq!(
+            rej.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{rej:?}"
+        );
+        assert!(
+            rej.message.contains("arbitrary_pattern")
+                && rej.message.contains("translation.x argument expects")
+                && rej.message.contains("Length")
+                && rej
+                    .message
+                    .contains("pass a dimensioned length such as `5mm`"),
+            "must name the builtin, the coordinate and carry the migration hint; \
+             got: {:?}",
+            rej.message
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("not a valid Transform<3>")),
+            "a units rejection must NOT also emit the generic element shape message; \
+             got: {diagnostics:?}"
+        );
+
+        // (iii) UNDEFINED — D10 wording, no rejection diagnostic.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &arbitrary_pattern_with_list(vec![transform_with_translation([
+                reify_ir::Value::Undef,
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])]),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result
+            .err()
+            .expect("an Undef element translation component must drop the op");
+        assert!(
+            err.contains("unresolved (Undef)") && err.contains("translation.x"),
+            "Undef must use the DISTINCT unresolved wording naming the coordinate; \
+             got: {err:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("argument expects Length")),
+            "Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+        );
+    }
+
+    /// The list form's SHAPE errors must stay byte-identical to pre-ζ: the
+    /// per-element one and the two list-level ones, each still a Warning with no
+    /// units code.
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_list_shape_errors_keep_their_pre_zeta_wording() {
+        let values = ValueMap::new();
+        let step_handles = vec![GeometryHandleId(42)];
+
+        // An element that is not a `Transform` at all.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &arbitrary_pattern_with_list(vec![reify_ir::Value::Real(5.0)]),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result.err().as_deref(),
+            Some("arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"),
+            "the pre-ζ element Err string must survive byte-identical"
+        );
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+        assert_eq!(
+            diagnostics[0].message,
+            "arbitrary_pattern dropped: 'transform_list' element is not a valid Transform<3>",
+            "the pre-ζ element Warning text must survive byte-identical"
+        );
+        assert!(
+            diagnostics[0].code != Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "a shape mismatch must NOT acquire a units code; got: {diagnostics:?}"
+        );
+
+        // The two LIST-LEVEL errors are untouched by ζ.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &arbitrary_pattern_with_list(vec![]),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result.err().as_deref(),
+            Some("arbitrary_pattern: 'transform_list' is empty")
+        );
+        assert_eq!(
+            diagnostics[0].message,
+            "arbitrary_pattern dropped: 'transform_list' is empty"
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let not_a_list = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Arbitrary,
+            target: GeomRef::Step(0),
+            args: vec![("transform_list".into(), literal_f64(5.0))],
+        };
+        let result = compile_geometry_op(
+            &not_a_list,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result.err().as_deref(),
+            Some("arbitrary_pattern: 'transform_list' arg is not a List<Transform<3>>")
+        );
+        assert_eq!(
+            diagnostics[0].message,
+            "arbitrary_pattern dropped: 'transform_list' arg is not a List<Transform<3>>"
+        );
+    }
