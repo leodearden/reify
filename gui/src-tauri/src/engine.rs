@@ -5520,15 +5520,17 @@ fn resolve_driving_params_from_ast(
                                     // DELIBERATELY NOT the ladder-backed `COMPOSED_UNIT_INDEX` the
                                     // parameter-editor path uses. This site consumes an
                                     // already-parsed `reify_ast::UnitExpr` from .ri SOURCE, so its
-                                    // admissible tokens are exactly what the lexer produced;
-                                    // admitting curated DISPLAY labels like `L` or `mm³` here would
-                                    // let the GUI resolve a literal the compiler itself rejects —
-                                    // a GUI/compiler disagreement in the opposite direction to the
-                                    // one #5757 fixes.
+                                    // admissible tokens are exactly what the LEXER AND REGISTRY can
+                                    // produce; admitting curated DISPLAY labels like `L` or `mm³`,
+                                    // which no `.ri` file can even carry here, would let the GUI
+                                    // resolve a literal the compiler rejects outright.
                                     //
-                                    // Still narrower than the compiler: user-declared units from a
-                                    // module's `UnitRegistry` (`km`, `ft`, `psi`, …) resolve there
-                                    // and not here, and land in the `None` arm below.
+                                    // That is the only line being held. Everything else this arm
+                                    // declines is a GAP, not a boundary: the compiler resolves both
+                                    // user-declared registry units (`km`, `ft`, `psi`, …) and the
+                                    // SI-derived prefixed units `si_units.rs` generates (`MPa`,
+                                    // `kN`, `kJ`, …), and all of them land in the `None` arm below.
+                                    // Closing that is task γ (#3803)'s registry work.
                                     match reify_core::unit_symbol_to_si(unit.as_str()) {
                                         Some((factor, _)) => Some(value * factor),
                                         None => {
@@ -6578,40 +6580,23 @@ fn parse_constraint_key(key: &str) -> Option<ConstraintNodeId> {
 /// Rewrites the two superscript exponent glyphs the curated ladder tables use
 /// (U+00B2 → `^2`, U+00B3 → `^3`) and touches nothing else.
 ///
-/// WHAT IS ACTUALLY GUARANTEED, and what merely holds. The frontend folds every
-/// curated label through its own copy to build the typed-input alphabet and to
-/// pre-fill an edit buffer (`editSeedUnitLabel` in
-/// `gui/src/panels/PropertyEditor.tsx`), so whatever the twins produce has to
-/// stay parseable here. [`COMPOSED_UNIT_INDEX`] registers BOTH spellings of
-/// every curated rung — the raw one and this function's output — so a TS twin
-/// that is either the IDENTITY or AGREES with this function on the curated
-/// labels can only ever emit a spelling the engine parses. That much is pinned,
-/// by the accept-set tests that walk `unit_ladders()` in both spellings.
+/// NO CROSS-LANGUAGE CHECK EXISTS. The twins are held together by two
+/// mirror-image goldens —
+/// `normalize_unit_label_rewrites_only_the_superscript_exponent_glyphs` here,
+/// the `normalizeUnitLabel` block in `gui/src/__tests__/unitLadder.test.ts`
+/// there — so a deliberate change to either side must edit its own golden, while
+/// an accidental one-sided change is NOT caught. A TS-only edit adding an arm
+/// for a glyph this function lacks would put a spelling into the panel's
+/// alphabet, and into its edit-buffer seed, that the engine then refuses.
 ///
-/// NOTHING COMPARES THE TWO FUNCTIONS. There is no cross-language check, so the
-/// stronger claim — "the twins agree" — is carried by two mirror-image goldens,
-/// one per language: `normalize_unit_label_rewrites_only_the_superscript_exponent_glyphs`
-/// here, the `normalizeUnitLabel` block in `gui/src/__tests__/unitLadder.test.ts`
-/// there. A deliberate change to either side must edit its own golden, which is
-/// where the obligation is legible; an accidental one-sided change is not caught.
-/// The residual that leaves is REAL and stated rather than argued away: a TS-only
-/// edit that rewrote U+00B2 to something other than `^2`, or added an arm for
-/// a glyph this function lacks, would put a spelling into the panel's alphabet —
-/// and into its edit-buffer seed — that the engine then refuses. That is the
-/// class of defect task #5757 exists to close, re-opened one glyph at a time.
-///
-/// WHAT BOUNDS THAT SURFACE is the curated data itself, and that IS gated:
+/// What bounds that surface is the curated data, and that IS gated:
 /// `curated_unit_labels_carry_no_glyph_outside_the_shared_normalizer_alphabet`
-/// asserts every rung label is ASCII apart from U+00B2/U+00B3. So only
-/// the two arms below are reachable from curated data today, and a rung
-/// introducing a third glyph fails that test — at which point BOTH twins and
-/// BOTH goldens must be extended together — rather than shipping a silent
-/// asymmetry.
+/// asserts every rung label is ASCII apart from U+00B2/U+00B3, so a rung
+/// introducing a third glyph fails there — at which point both twins and both
+/// goldens must be extended together.
 ///
-/// Like its twin this is a pure glyph substitution with no exceptions, so it
-/// must only ever be handed a unit LABEL. The `×10ⁿ` engineering-notation
-/// superscripts `reify-ir` produces format a MAGNITUDE, not a unit, and are
-/// deliberately out of scope.
+/// Handed unit LABELS only. The `×10ⁿ` engineering-notation superscripts
+/// `reify-ir` produces format a MAGNITUDE, not a unit, and are out of scope.
 pub(crate) fn normalize_unit_label(label: &str) -> String {
     label.replace('\u{00B2}', "^2").replace('\u{00B3}', "^3")
 }
@@ -6722,88 +6707,60 @@ pub(crate) fn dimension_requires_unit(
 /// `UNIT_TABLE` the PRD's open question 5 asks to retire):
 ///
 ///   * `reify_core::display_units::unit_ladders()` — the curated per-dimension
-///     DISPLAY ladders. The frontend derives its own typed-input alphabet from
-///     this very table, fetched over the `get_unit_ladders` IPC command (see
-///     `quantityUnitAlphabet` in `gui/src/stores/unitLadder.ts`), so making it
-///     the backend's accept-set is what makes the two ENDS AGREE rather than
-///     adding a second table to keep in lockstep. Before this they disagreed
-///     on 19 labels the panel admitted and the engine refused with
-///     `Cannot parse value '<input>'`.
+///     DISPLAY ladders. The frontend derives its typed-input alphabet from this
+///     same table over the `get_unit_ladders` IPC command (`quantityUnitAlphabet`
+///     in `gui/src/stores/unitLadder.ts`), so reading it here is what makes the
+///     two ends AGREE by construction instead of by lockstep maintenance.
 ///
-///     BOTH spellings of every rung are registered: the raw superscript one a
-///     user sees in the picker and may copy-paste, and the ASCII one
-///     [`normalize_unit_label`] produces — which is the only one the frontend
-///     gate admits, since `normalizeUnitLabel` is one-way. Registering both
-///     makes the backend a strict SUPERSET of that gate, so no
-///     frontend-accepted spelling can ever be refused here.
+///   * `reify_core::BUILTIN_UNITS` — the DSL's bare built-in symbols, which
+///     `reify_core::unit_symbol_to_si` is a faithful view of. Contributes the SI
+///     bases no ladder carries (`s`, `K`, `A`, `mol`, `cd`).
 ///
-///   * `reify_core::BUILTIN_UNITS` — the DSL's bare built-in unit symbols, the
-///     table `reify_core::unit_symbol_to_si` is a faithful view of. This is the
-///     delegation the units-length PRD §M9 names, and it contributes the SI
-///     bases no curated ladder carries (`s`, `K`, `A`, `mol`, `cd`).
+/// BOTH SPELLINGS of every curated rung are registered: the raw superscript one
+/// a user can copy-paste from the picker, and the ASCII one
+/// [`normalize_unit_label`] produces — the only one the frontend gate admits,
+/// since `normalizeUnitLabel` is one-way. That makes this a strict SUPERSET of
+/// the frontend gate, so no frontend-accepted spelling can be refused on commit.
+/// Pinned by `parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings`.
 ///
-/// DELIBERATELY NOT the compiler's per-module `UnitRegistry` (`km`, `ft`,
-/// `psi`, `degC`, `bar`, `rpm`, and arbitrary compounds). Reaching it needs the
-/// prelude-seeding from `compile_builder/units_phase.rs`, handling for affine
-/// offset units (`si = v*factor + offset`), and a `&str -> reify_ast::UnitExpr`
-/// parser that exists nowhere in the workspace — all to admit spellings the
-/// frontend gate rejects outright, so they are unreachable from the property
-/// editor.
+/// ORDERING IS LOAD-BEARING: [`resolve_quantity_suffix`] takes the first
+/// matching suffix, so descending label length is what stops `m` shadowing `cm`
+/// and `m^3` shadowing `kg/m^3`. BYTE length, not char count — `strip_suffix`
+/// works on bytes and the superscript glyphs are two bytes each. Pinned by the
+/// `debug_assert!` in [`parse_value_string`] and, for release builds, by
+/// `unit_table_ordering_invariant_holds`.
 ///
-/// ORDERING IS LOAD-BEARING. `parse_value_string` scans this by suffix and
-/// takes the first match whose remainder parses as a number, so descending
-/// label length is what stops `m` shadowing `cm`, `Pa` shadowing `MPa`, and
-/// `m^3` shadowing `kg/m^3`. Byte length (not char count) is the right key:
-/// `strip_suffix` works on bytes, and the superscript glyphs are two bytes
-/// each. Pinned in debug builds by the `debug_assert!` in `parse_value_string`
-/// and in release builds by `unit_table_ordering_invariant_holds`.
-///
-/// ONE LABEL, ONE ANSWER. Ordering settles which label a string ends with;
-/// nothing has to settle what a label MEANS, because the index holds at most
-/// one entry per spelling. That is asserted of the COMPOSED INDEX ITSELF by
-/// `composed_unit_index_holds_at_most_one_entry_per_spelling` — note the
-/// builder's dedup key is `(label, dimension)`, so the same label under two
-/// dimensions would be registered twice and silently resolved by first-match.
-/// Three further guards constrain the SOURCE tables upstream of that
+/// ONE LABEL, ONE ANSWER: at most one entry per spelling, so a match needs no
+/// disambiguation and the lookup can be FLAT, with no narrowing by the edited
+/// cell's dimension. Pinned by
+/// `composed_unit_index_holds_at_most_one_entry_per_spelling` — the direct guard
+/// is the load-bearing one because the builder's dedup key is
+/// `(label, dimension)`, and because the three source-table guards
 /// (`curated_ladder_labels_are_unique_across_every_dimension`, reify-core's
-/// `builtin_unit_symbols_are_unique`, and
-/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap`),
-/// but each is one-sided — none of them compares a NORMALIZED curated label
-/// against a builtin symbol, which is why the direct guard is the load-bearing
-/// one.
+/// `builtin_unit_symbols_are_unique`,
+/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap`) are
+/// each one-sided: none compares a NORMALIZED curated label to a builtin symbol.
 ///
-/// That is why the lookup is flat, with NO narrowing by the declared dimension
-/// of the cell being edited. Task #5757 originally resolved dimension-first and
-/// fell back to the flat scan; its amendment review showed the first pass could
-/// never return anything the second would not, so it was only ever a second
-/// O(n) scan. If a future edit makes a label genuinely ambiguous, the first
-/// guard above fails loudly rather than letting first-match silently pick a
-/// dimension for the user.
+/// A CROSS-DIMENSION LITERAL IS NOT REFUSED HERE. The frontend's per-cell
+/// alphabet always carries the `BASE_UNIT_LABELS` floor, so the panel admits a
+/// Length literal in a Volume cell; refusing it here would re-open the same
+/// frontend/backend disagreement in the opposite direction. It resolves to its
+/// OWN dimension and is refused by reify-eval's `DimensionMismatch`, which names
+/// both.
 ///
-/// A CROSS-DIMENSION LITERAL IS THEREFORE NOT REFUSED HERE, and that too is
-/// deliberate. The frontend's per-cell alphabet always carries the
-/// `BASE_UNIT_LABELS` floor (`mm`, `cm`, `m`, `deg`, `rad`) alongside the
-/// cell's own ladder, so a Length literal typed into a Volume cell is admitted
-/// by the panel; refusing it here with `Cannot parse value` would re-open the
-/// very frontend/backend disagreement this task closes, just in the opposite
-/// direction. It is not silently accepted either — it resolves to its OWN
-/// dimension and is refused one layer down by reify-eval's `DimensionMismatch`,
-/// which names both.
+/// DELIBERATELY NOT the compiler's per-module `UnitRegistry` (`km`, `ft`, `psi`,
+/// `degC`, and arbitrary compounds). Reaching it needs prelude-seeding from
+/// `compile_builder/units_phase.rs`, affine-offset handling, and a
+/// `&str -> reify_ast::UnitExpr` parser that exists nowhere in the workspace —
+/// all to admit spellings the frontend gate rejects outright.
 ///
-/// WHAT THIS INDEX COVERS ALSO DECIDES WHERE THE BARE-NUMBER GATE FIRES.
+/// WHAT THIS INDEX COVERS ALSO DECIDES WHERE THE BARE-NUMBER GATE FIRES:
 /// [`parse_value_string_for_cell`] refuses a bare number only for a dimension
-/// [`LADDER_COVERAGE`] records — i.e. exactly the dimensions whose rungs were
-/// registered above. A cell whose dimension this index cannot express is left
-/// on the SI-number path DELIBERATELY: with no parseable unit, refusing the
-/// bare number would leave it with no accepted input at all rather than
-/// disambiguating anything.
-///
-/// The bounded, understood case is `Money`. Sixteen `param … : Money`
-/// declarations across `examples/*.ri` spell their literals `NUSD`, and `USD`
-/// is reachable only through the compiler's per-module `UnitRegistry` — the
-/// registry the paragraph above excludes on cost grounds. So Money cells keep
-/// taking a bare SI number, which is what they took before task #5757, and
-/// widening the index is what would change that.
+/// [`LADDER_COVERAGE`] records. A dimension this index cannot express keeps the
+/// SI-number path, because refusing there would remove the cell's last accepted
+/// input rather than disambiguate anything. The bounded in-tree case is `Money`,
+/// whose `examples/*.ri` literals spell `NUSD` and whose `USD` is reachable only
+/// through the excluded `UnitRegistry`.
 static COMPOSED_UNIT_INDEX: std::sync::LazyLock<Vec<ComposedUnit>> =
     std::sync::LazyLock::new(|| {
         /// Register one spelling. `(label, dimension)` is the identity: the
@@ -6870,6 +6827,43 @@ pub(crate) fn composed_unit_index() -> &'static [ComposedUnit] {
     &COMPOSED_UNIT_INDEX
 }
 
+/// The suffix scan: first entry of `index` that `s` ends with AND whose stripped
+/// remainder is a number, as a `Scalar` in that entry's dimension.
+///
+/// TWO INDEPENDENT DEFENCES against a shorter label shadowing a longer one:
+///
+///   1. `index` order. Callers pass it longest-label-first, so `m` is reached
+///      only after `cm`, and `m^3` only after `kg/m^3`.
+///   2. The remainder check. A candidate wins only if what precedes the label
+///      parses as a number, so `m^3` matching `"5kg/m^3"` is rejected on the
+///      `"5kg/"` remainder and the scan continues regardless of order.
+///
+/// Taking `index` as a parameter rather than reading the static is what makes
+/// (2) separately observable:
+/// `parse_value_string_remainder_guard_disambiguates_without_the_ordering`
+/// passes a deliberately reverse-sorted copy, where defence (1) is inverted and
+/// only (2) can produce the right answer. Production has exactly one caller,
+/// [`parse_value_string`], which passes [`composed_unit_index`].
+///
+/// ONE LABEL, ONE ANSWER: the index holds at most one entry per spelling (see
+/// [`COMPOSED_UNIT_INDEX`]), so a match needs no disambiguation and no second
+/// lookup.
+pub(crate) fn resolve_quantity_suffix(index: &[ComposedUnit], s: &str) -> Option<Value> {
+    for entry in index {
+        let Some(num_str) = s.strip_suffix(entry.label.as_str()) else {
+            continue;
+        };
+        let Ok(v) = num_str.trim().parse::<f64>() else {
+            continue;
+        };
+        return Some(Value::Scalar {
+            si_value: v * entry.si_scale,
+            dimension: entry.dimension,
+        });
+    }
+    None
+}
+
 /// Parse a value string into a Value, with no cell context.
 ///
 /// Supported formats:
@@ -6898,10 +6892,9 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
         return Ok(Value::Bool(false));
     }
 
-    // Quantity literals (number + unit suffix), scanned longest-suffix-first
-    // over the composed index so `m` cannot shadow `cm` nor `m^3` shadow
-    // `kg/m^3`. The debug_assert! enforces that ordering at call-time in debug
-    // builds; #[test] unit_table_ordering_invariant_holds covers release builds.
+    // Quantity literals (number + unit suffix). The debug_assert! enforces the
+    // index ordering at call-time in debug builds; #[test]
+    // unit_table_ordering_invariant_holds covers release builds.
     let index = composed_unit_index();
     debug_assert!(
         index
@@ -6909,24 +6902,8 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
             .all(|w| w[0].label.len() >= w[1].label.len()),
         "composed unit index must be sorted by descending suffix byte length"
     );
-    for entry in index {
-        let Some(num_str) = s.strip_suffix(entry.label.as_str()) else {
-            continue;
-        };
-        // A candidate only wins if the REMAINDER is a number. This is the
-        // second, order-independent defence against suffix shadowing: `m^3` is
-        // a suffix of `5kg/m^3`, but stripping it leaves `"5kg/"`, so the scan
-        // continues to `kg/m^3`.
-        let Ok(v) = num_str.trim().parse::<f64>() else {
-            continue;
-        };
-        // The matched entry IS the answer. ONE LABEL, ONE ANSWER: the index
-        // holds at most one entry per spelling (see its doc), so there is
-        // nothing to disambiguate and no second lookup to make.
-        return Ok(Value::Scalar {
-            si_value: v * entry.si_scale,
-            dimension: entry.dimension,
-        });
+    if let Some(v) = resolve_quantity_suffix(index, s) {
+        return Ok(v);
     }
 
     // Plain integer
@@ -6940,6 +6917,25 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
     }
 
     Err(format!("Cannot parse value '{}'", s))
+}
+
+/// Peel `Option<…>` wrappers down to the type a supplied value must satisfy.
+///
+/// `param parasitic_error : Option<Length> = none` declares a cell that takes a
+/// `Length`, and a bare number is exactly as ambiguous there as in a plain
+/// `Length` cell — so [`parse_value_string_for_cell`] gates through this rather
+/// than matching `Type::Scalar` directly. Without it those cells skipped the
+/// gate and fell through to reify-eval's generic `TypeKindMismatch` instead of
+/// the actionable message. Nothing accepted is lost: `none` is not parseable by
+/// `parse_value_string` on any path, so the gate can only ever be reached with a
+/// value the Option cell had to satisfy anyway. Looped rather than one-shot
+/// because the type is structural; `Option<Option<T>>` is not expected in tree.
+fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
+    let mut ty = ty;
+    while let reify_core::Type::Option(inner) = ty {
+        ty = inner;
+    }
+    ty
 }
 
 /// Parse a value string for a SPECIFIC declared cell type (task #5757).
@@ -6956,69 +6952,45 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
 ///
 /// Fixed HERE rather than in reify-eval deliberately: that Int/Real coercion is
 /// load-bearing there (it is what lets `edit_param` emit a Warning rather than a
-/// hard error — see the `edit_param_non_int_*_count_emits_warning` tests) and
-/// sits on the hot path for every param override in the workspace, not just GUI
-/// edits. Rejecting before `edit_check` is ever called fixes the user-visible
-/// defect with no risk to the evaluator.
+/// hard error) and sits on the hot path for every param override in the
+/// workspace, not just GUI edits.
 ///
-/// Unit RESOLUTION is unchanged by the cell type — `parse_value_string` does all
-/// of it, against one flat index. See `COMPOSED_UNIT_INDEX` for why narrowing
-/// that lookup by the cell's declared dimension would be a dead branch, and why
-/// a cross-dimension literal is left for reify-eval's `DimensionMismatch`
-/// rather than refused here as an unparseable string.
+/// Unit RESOLUTION is unchanged by the cell type — [`parse_value_string`] does
+/// all of it against one flat index; see [`COMPOSED_UNIT_INDEX`].
 ///
-/// THE GATE IS CONDITIONAL ON EXPRESSIBILITY, not on dimensionedness. It fires
-/// only where `dimension_requires_unit` reports a curated ladder, because the
-/// 1000× ambiguity it targets presupposes that a unit COULD have been typed.
-/// Where none can be, refusing the bare number disambiguates nothing and simply
-/// removes the cell's last accepted input — it becomes permanently uneditable
-/// through `set_parameter`, in the property editor AND on the GUI MCP surface.
-/// Such cells keep the SI-number behaviour they had before this gate existed.
-/// WHICH dimensions those are, and why the in-tree `Money` case is one of them,
-/// belongs to `COMPOSED_UNIT_INDEX` — read it there rather than here; this doc
-/// deliberately does not carry a second copy of that argument.
+/// THE GATE KEYS ON EXPRESSIBILITY, not on dimensionedness: it fires only where
+/// [`dimension_requires_unit`] reports a curated ladder, because the 1000×
+/// ambiguity it targets presupposes a unit COULD have been typed. Where none
+/// can be, refusing removes the cell's last accepted input and makes the row
+/// permanently uneditable through `set_parameter` — in the panel AND on the GUI
+/// MCP surface.
 ///
-/// The gate is scoped as narrowly as it can be:
+/// Each conjunct, and what pins it:
 ///
-///   * only `Value::Int` / `Value::Real` are refused. Every other variant falls
-///     through so reify-eval keeps emitting its own `TypeKindMismatch` /
-///     `DimensionMismatch` diagnostics — notably `Value::Bool`, whose message
-///     an existing test depends on;
-///   * `dimension_requires_unit(dimension).is_some()` is the load-bearing
-///     check. NAMEDNESS IS NOT THE KEY: a COMPOSED dimension (no
-///     `NAMED_DIMENSIONS` entry, hence no canonical name) and a NAMED but
-///     unladdered one (`Money`, `Torque`) are both ungated, and for the same
-///     reason — pinned together by
-///     `parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness`,
-///     which exists because keying on `canonical_name().is_some()` would read
-///     as an equivalent refactor and split them;
-///   * `!dimension.is_dimensionless()` is kept as an explicit conjunct even
-///     though every covered dimension is non-dimensionless by construction, so
-///     that a future curated ladder for a dimensionless quantity cannot
-///     silently start gating every ratio slider. Every non-`Type::Scalar` cell
-///     type (`Type::Int`, `Type::Bool`, `Type::String`, …) yields no declared
-///     dimension at all and so cannot be gated, and a
-///     `Type::Scalar { DIMENSIONLESS }` cell — which is what `param x : Real`
-///     compiles to, `Real` being that type's Display form, not a variant of its
-///     own — falls on the permissive side. That is what keeps every
-///     dimensionless slider in the panel working.
+///   * `unwrap_optional` first, so an `Option<Length>` cell is gated like a
+///     `Length` one — `parse_value_string_for_cell_gates_through_an_option_wrapper`;
+///   * only `Value::Int` / `Value::Real` are refused; every other variant falls
+///     through to reify-eval's own `TypeKindMismatch` / `DimensionMismatch`,
+///     notably `Value::Bool`, whose message an existing test depends on;
+///   * `dimension_requires_unit(..).is_some()` — NAMEDNESS IS NOT THE KEY. A
+///     COMPOSED dimension and a NAMED-but-unladdered one (`Money`, `Torque`) are
+///     both ungated for the same reason, pinned together by
+///     `parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness`
+///     because keying on `canonical_name().is_some()` would read as an
+///     equivalent refactor and split them;
+///   * `!dimension.is_dimensionless()` is explicit even though every covered
+///     dimension is non-dimensionless by construction, so a future curated
+///     ladder for a dimensionless quantity cannot silently start gating every
+///     ratio slider. `param x : Real` compiles to
+///     `Type::Scalar { DIMENSIONLESS }` and falls on the permissive side.
 ///
-/// THE MESSAGE IS BUILT FROM THE LADDER DATA THE GATE JUST CONSULTED, so it is
-/// total by construction rather than by a fallback nobody can exercise, and it
-/// can only ever name a rung this index can actually parse (pinned across every
-/// curated ladder by
-/// `every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses`). The
-/// input is quoted in its TRIMMED form, so the literal it suggests is one the
-/// frontend's whitespace-free quantity grammar also accepts. It does NOT point
-/// at a unit picker: `pickerLadder` in `gui/src/panels/PropertyEditor.tsx`
-/// renders no `<select>` for a ladder of fewer than two rungs, and the
-/// `Force`/`Energy`/`Power` ladders carry exactly one each.
-///
-/// The wording echoes the shape reify-eval's `arg_acceptance::ArgRejection`
-/// uses for the same defect class at the geometry-argument chokepoint
-/// (`E_DIMENSIONED_ARG_REJECTED`, same PRD). It is re-phrased rather than
-/// reused because that module is `pub(crate)` in reify-eval and unreachable
-/// from here.
+/// THE MESSAGE IS BUILT FROM THE LADDER DATA THE GATE JUST CONSULTED, so it can
+/// only name a rung this index parses — pinned across every curated ladder by
+/// `every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses`. The
+/// input is quoted TRIMMED so the suggested literal also satisfies the
+/// frontend's whitespace-free grammar. It does NOT point at a unit picker:
+/// `pickerLadder` renders no `<select>` for a ladder of fewer than two rungs,
+/// and `Force`/`Energy`/`Power` carry exactly one each.
 pub(crate) fn parse_value_string_for_cell(
     s: &str,
     cell_type: &reify_core::Type,
@@ -7034,7 +7006,7 @@ pub(crate) fn parse_value_string_for_cell(
     let s = s.trim();
     let value = parse_value_string(s)?;
 
-    if let reify_core::Type::Scalar { dimension } = cell_type
+    if let reify_core::Type::Scalar { dimension } = unwrap_optional(cell_type)
         && !dimension.is_dimensionless()
         && matches!(value, Value::Int(_) | Value::Real(_))
         && let Some((expected, rung)) = dimension_requires_unit(dimension)

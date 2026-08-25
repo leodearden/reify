@@ -2007,15 +2007,23 @@ fn composed_unit_index_holds_at_most_one_entry_per_spelling() {
 // (A hand-written mirror would be a fifth curated label table — the drift
 // defect `unitLadder.ts`'s #5788 D6 note exists to prevent, restated in Rust.)
 
-/// The ladder-dimension NAME -> `DimensionVector` reverse lookup, resolved here
-/// independently of the implementation so these tests PIN the mapping rather
-/// than restate whatever the implementation happens to do.
+/// The ladder-dimension NAME -> `DimensionVector` reverse lookup used to state
+/// these tests' expectations.
 ///
-/// Mirrors the first-match `NAMED_DIMENSIONS` scan `reify-compiler`'s
-/// `resolve_dimension_type` uses (that function is `pub(crate)`, so it cannot
-/// be called from here). Totality across the curated ladders is separately
-/// guaranteed by reify-core's own
-/// `every_ladder_dimension_round_trips_through_canonical_name`.
+/// NOT AN INDEPENDENT ORACLE, and deliberately not sold as one: this is the same
+/// first-match `NAMED_DIMENSIONS` scan as production's `ladder_dimension`
+/// (`gui/src-tauri/src/engine.rs`), duplicated only because that function is
+/// private (as is `reify-compiler`'s `resolve_dimension_type`, which it in turn
+/// mirrors). So every dimension-EQUALITY assertion built on it is a CONSISTENCY
+/// check — it pins that the index files a rung under the same vector this scan
+/// yields, and would agree with the index even if `NAMED_DIMENSIONS` mapped a
+/// ladder name to the wrong vector.
+///
+/// The mapping itself is guarded where it lives, by reify-core's
+/// `every_ladder_dimension_round_trips_through_canonical_name`. What the
+/// assertions here DO independently establish is the other half: that each
+/// spelling resolves to the one ladder carrying it (via the uniqueness and
+/// agreement guards below) with the `si_scale` that ladder advertises.
 fn dimension_for_ladder_name(name: &str) -> reify_core::DimensionVector {
     reify_core::NAMED_DIMENSIONS
         .iter()
@@ -2091,8 +2099,16 @@ fn parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings() {
                     "{literal:?} must resolve to the {:?} ladder's dimension",
                     ladder.dimension
                 );
+                // RELATIVE, not absolute. This walk is generic over every rung
+                // the curated table grows, and those scales span 1e9 (GPa) to
+                // 1e-9 (mm³) today. An absolute 1e-10 band is ±3.3% at the mm³
+                // rung and VACUOUS below si_scale ≈ 3e-11 — `si_value == 0.0`
+                // would pass while `rungs_checked` still incremented, so the
+                // non-vacuity floor below would not notice. The expected value
+                // is exact by construction (same `si_scale`, same product), so
+                // the band only has to absorb one rounding of the multiply.
                 assert!(
-                    (si_value - expected_si).abs() < 1e-10,
+                    (si_value - expected_si).abs() <= 1e-12 * expected_si.abs(),
                     "{literal:?} → {si_value}, expected {expected_si} \
                      (= {MAGNITUDE} * si_scale {})",
                     opt.si_scale
@@ -2331,9 +2347,11 @@ fn curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap() {
 ///
 /// Expected values are exact by construction — `si_value = magnitude *
 /// si_scale`, with the scale read from the same curated table the resolver
-/// reads — so the 1e-10 absolute tolerance (the convention established by
-/// `parse_value_string_all_units_correct` on values of this magnitude) only
-/// absorbs the multiplication.
+/// reads — so the tolerance only has to absorb one rounding of that multiply.
+///
+/// It is RELATIVE for the reason the generic walk above states: callers pass
+/// expectations spanning 1e10 (`10GPa`) to 5e-9 (`5mm^3`), and a fixed 1e-10
+/// absolute band is ±2% at the small end and vacuous below it.
 fn assert_parses_to_scalar(input: &str, expected_si: f64, expected_dim: reify_core::DimensionVector) {
     use reify_ir::Value;
 
@@ -2348,7 +2366,7 @@ fn assert_parses_to_scalar(input: &str, expected_si: f64, expected_dim: reify_co
                 "{input:?} must carry dimension {expected_dim:?}, got {dimension:?}"
             );
             assert!(
-                (si_value - expected_si).abs() < 1e-10,
+                (si_value - expected_si).abs() <= 1e-12 * expected_si.abs(),
                 "{input:?} → {si_value}, expected {expected_si}"
             );
         }
@@ -2436,14 +2454,17 @@ fn parse_value_string_accepts_the_builtin_symbols_no_ladder_carries() {
     assert_parses_to_scalar("7cd", 7.0, DimensionVector::LUMINOUS_INTENSITY);
 }
 
-/// Longest-suffix-first plus the remainder-must-parse guard together
-/// disambiguate the compound labels.
+/// Longest-suffix-first: a shorter registered label must not shadow the longer
+/// one the input actually ends with.
 ///
-/// `5kg/m^3` is the interesting one: `m^3` is also a registered label and also
-/// a suffix of the input, but stripping it leaves `"5kg/"`, which is not a
-/// finite f64 — so even if the ordering ever regressed, the candidate is
-/// rejected and the scan continues to `kg/m^3`. Ordering and the remainder
-/// guard are independent defences; this pins both.
+/// This pins the ORDERING defence only. With the index correctly sorted every
+/// case below is decided by longest-first alone — no input here reaches the
+/// state the remainder guard exists for. That second defence is pinned
+/// separately by
+/// `parse_value_string_remainder_guard_disambiguates_without_the_ordering`
+/// (continue-to-correct-match) and by the `10zPa` case in
+/// `parse_value_string_widening_does_not_disturb_the_non_ladder_paths`
+/// (continue-to-`Err`).
 #[test]
 fn parse_value_string_compound_labels_are_not_shadowed_by_their_own_suffixes() {
     use reify_core::DimensionVector;
@@ -2462,6 +2483,73 @@ fn parse_value_string_compound_labels_are_not_shadowed_by_their_own_suffixes() {
     // shadow `cm`, and now also must not shadow `in`/`mm`.
     assert_parses_to_scalar("100cm", 1.0, DimensionVector::LENGTH);
     assert_parses_to_scalar("100mm", 0.1, DimensionVector::LENGTH);
+}
+
+/// The remainder guard alone disambiguates the compound labels, with the
+/// ordering defence not merely absent but INVERTED.
+///
+/// The scan is run over a reverse-sorted copy of the real index — shortest label
+/// first — so `m^3` is reached before `kg/m^3` and `cm^3` before `g/cm^3`. Every
+/// such candidate is rejected on its non-numeric remainder (`"5kg/"`, `"5g/c"`),
+/// and the scan continues to the label that leaves a number. This is the
+/// continue-to-CORRECT-MATCH path; nothing else in the suite reaches it, because
+/// with the index sorted correctly no input can (a longer label is only ever
+/// reached first, and only ever with a shorter one behind it).
+///
+/// It drives production's `resolve_quantity_suffix` rather than restating the
+/// scan, so what is pinned is the real loop's behaviour on a hostile ordering.
+#[test]
+fn parse_value_string_remainder_guard_disambiguates_without_the_ordering() {
+    use crate::engine::{composed_unit_index, resolve_quantity_suffix};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
+
+    // Ascending byte length — the exact inverse of the production invariant.
+    let mut reversed: Vec<&crate::engine::ComposedUnit> = composed_unit_index().iter().collect();
+    reversed.sort_by_key(|e| e.label.len());
+    let inverted: Vec<_> = reversed
+        .into_iter()
+        .map(|e| crate::engine::ComposedUnit {
+            label: e.label.clone(),
+            si_scale: e.si_scale,
+            dimension: e.dimension,
+        })
+        .collect();
+    assert!(
+        inverted
+            .windows(2)
+            .all(|w| w[0].label.len() <= w[1].label.len()),
+        "the copy must really be mis-ordered, or this test proves nothing"
+    );
+    // The premise: a strictly shorter registered label IS a suffix of the
+    // compound one, and under this ordering it is reached first.
+    assert!(
+        inverted.iter().any(|e| e.label == "m^3")
+            && inverted.iter().any(|e| e.label == "kg/m^3")
+            && inverted.iter().position(|e| e.label == "m^3")
+                < inverted.iter().position(|e| e.label == "kg/m^3"),
+        "premise: `m^3` must be reached before `kg/m^3` in the inverted index"
+    );
+
+    for (input, expected_si, expected_dim) in [
+        ("5kg/m^3", 5.0, DimensionVector::MASS_DENSITY),
+        ("5g/cm^3", 5000.0, DimensionVector::MASS_DENSITY),
+    ] {
+        let parsed = resolve_quantity_suffix(&inverted, input).unwrap_or_else(|| {
+            panic!("{input:?} must still resolve on a mis-ordered index — the remainder guard is what makes the scan order-independent")
+        });
+        let Value::Scalar { si_value, dimension } = parsed else {
+            panic!("{input:?} must resolve to a Value::Scalar; got {parsed:?}");
+        };
+        assert_eq!(
+            dimension, expected_dim,
+            "{input:?} must resolve to the DENSITY label, not the VOLUME label it also ends with"
+        );
+        assert!(
+            (si_value - expected_si).abs() <= 1e-12 * expected_si.abs(),
+            "{input:?} → {si_value}, expected {expected_si}"
+        );
+    }
 }
 
 /// Widening the accept-set must not change anything else `parse_value_string`
@@ -2925,6 +3013,71 @@ fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness(
     }
 }
 
+/// An `Option<Length>` cell is gated exactly like a `Length` one.
+///
+/// The shape is real in tree — `examples/option_map_or.ri` (`param empty :
+/// Option<Length> = none`), `crates/reify-compiler/stdlib/flexures.ri`
+/// (`parasitic_error`), four `Option<Pressure>` params in
+/// `stdlib/fdm_correlations.ri`. Matching `Type::Scalar` directly skipped every
+/// one of them, and the `none`-valued state is reachable from the panel's own
+/// gate: `display_scalar` returns `None` for `Value::Option(None)`, so
+/// `format_determined_cell` emits `dimension: ""` and `acceptsBareNumber('', …)`
+/// lets the bare number through to be refused here.
+///
+/// Not a corruption either way — reify-eval maps `Value::Int` onto
+/// `Type::Int | Type::Scalar { .. }` only, so the Option cell hard-errors
+/// regardless. What the unwrap buys is the ACTIONABLE message this task exists
+/// to produce, in place of a generic `TypeKindMismatch`.
+#[test]
+fn parse_value_string_for_cell_gates_through_an_option_wrapper() {
+    use reify_core::{DimensionVector, Type};
+    use reify_ir::Value;
+
+    let optional_length = Type::Option(Box::new(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    }));
+
+    // (a) A bare number is refused, with the same words the unwrapped cell gets.
+    let err = crate::engine::parse_value_string_for_cell("120", &optional_length)
+        .expect_err("a bare number is as ambiguous in an Option<Length> cell as in a Length one");
+    let bare = crate::engine::parse_value_string_for_cell("120", &Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    })
+    .expect_err("premise: the unwrapped Length cell refuses it");
+    assert_eq!(
+        err, bare,
+        "the Option wrapper must not change the diagnostic — it is the same cell content"
+    );
+
+    // (b) A united literal still commits, so the wrapper does not brick the row.
+    let parsed = crate::engine::parse_value_string_for_cell("120mm", &optional_length)
+        .expect("a united literal must still parse for an Option<Length> cell");
+    assert!(
+        matches!(parsed, Value::Scalar { dimension, .. } if dimension == DimensionVector::LENGTH),
+        "`120mm` must resolve to a Length Scalar; got {parsed:?}"
+    );
+
+    // (c) An UNCOVERED dimension stays ungated through the wrapper too — the
+    //     unwrap changes which type is inspected, never the coverage rule.
+    let optional_torque = Type::Option(Box::new(Type::Scalar {
+        dimension: DimensionVector::TORQUE,
+    }));
+    assert!(
+        matches!(
+            crate::engine::parse_value_string_for_cell("120", &optional_torque),
+            Ok(Value::Int(120))
+        ),
+        "Option<Torque> has no curated ladder, so its bare number must survive"
+    );
+
+    // (d) Nothing was accepted that was not accepted before: `none` is not a
+    //     literal this parser has ever produced, on either shape.
+    assert!(
+        crate::engine::parse_value_string_for_cell("none", &optional_length).is_err(),
+        "`none` is not parseable here, so the gate cannot have removed it"
+    );
+}
+
 /// EVERY curated ladder's dimension is gated, and the rung its refusal names
 /// parses back to that same dimension.
 ///
@@ -2933,9 +3086,9 @@ fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness(
 /// "cannot name a unit the index could not have parsed" — total by
 /// construction. That claim was argued for ten dimensions and executed for one
 /// (`Length`, by the two tests either side of this one). Here it is made
-/// checkable for all of them, in both directions: coverage implies the gate
-/// fires, and the words the gate produces resolve through the very index its
-/// coverage was derived from.
+/// checkable for all of them: coverage implies the gate fires, and the rung
+/// coverage names for a dimension parses back through `parse_value_string` to
+/// that same dimension.
 ///
 /// Driven off `unit_ladders()` rather than a hand-written list of dimension
 /// names, so a new curated ladder is covered automatically — the same
@@ -2997,16 +3150,17 @@ fn every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses() {
             "{literal:?} must resolve to the dimension whose refusal named it"
         );
 
-        // And the gate really fires for a cell of this dimension, with the words
-        // coverage just supplied.
-        let err = crate::engine::parse_value_string_for_cell("120", &Type::Scalar { dimension })
-            .expect_err(
-                "a covered dimension must refuse a bare number — that is what coverage MEANS",
-            );
-        assert!(
-            err.contains(name) && err.contains(&format!("'120{rung}'")),
-            "the {name} refusal must name its dimension and the concrete literal \
-             '120{rung}'; got {err:?}"
+        // And the gate really fires for a cell of this dimension.
+        //
+        // Only that it FIRES is asserted. The message's CONTENT is not re-checked
+        // here: it is formatted from the very `(name, rung)` this loop already
+        // holds, so `err.contains(name)` would hold for any coverage table
+        // including a wrong one. The claim that the words are usable is carried
+        // by the round-trip above (the named rung parses, and to this dimension)
+        // and by `the_bare_number_refusal_names_a_rung_from_the_cells_own_ladder`,
+        // which derives its expectation from `unit_ladders()` instead.
+        crate::engine::parse_value_string_for_cell("120", &Type::Scalar { dimension }).expect_err(
+            "a covered dimension must refuse a bare number — that is what coverage MEANS",
         );
         gated += 1;
     }
@@ -10682,8 +10836,9 @@ fn literal_bind_still_defers_compound_unit_expressions_to_task_3803() {
     );
 }
 
-/// `bind(y_axis, 5MPa)` — `MPa` is a curated PRESSURE ladder rung, and a unit
-/// the compiler's own registry resolves, but NOT a `BUILTIN_UNITS` symbol.
+/// `bind(y_axis, 5MPa)` — `MPa` is a curated PRESSURE ladder rung and a unit the
+/// compiler's own registry resolves (`si_units.rs` generates `Pa` with the
+/// `k`/`M`/`G` prefixes), but NOT a `BUILTIN_UNITS` symbol.
 const SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE: &str = r#"
 structure Kinematic {
     let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
@@ -10693,57 +10848,36 @@ structure Kinematic {
 }
 "#;
 
-/// The DIRECTION of the delegation: this site resolves DSL symbols, never GUI
-/// display labels.
+/// This site resolves DSL symbols, never GUI display labels — plus the bounded
+/// SUBSET of the DSL the `BUILTIN_UNITS` delegation currently reaches.
 ///
-/// `MPa` is the discriminating case, and the reason this test drives the engine
-/// rather than just asserting things about `unit_symbol_to_si`. It is a rung of
-/// the curated Pressure ladder — so `COMPOSED_UNIT_INDEX` resolves it and the
-/// parameter editor parses `5MPa` happily — while `BUILTIN_UNITS` does not
-/// carry it. Rewiring this site to the ladder-backed index would therefore turn
-/// this `None` into a `Some`, which is exactly the regression the deferral note
-/// on the `Mul`/`Div`/`Pow` arm and the `unit_symbol_to_si` comment guard
-/// against: the GUI resolving a literal by a table the compiler does not share.
+/// TWO DIFFERENT THINGS ARE PINNED HERE; only the first is a designed boundary.
 ///
-/// (`L` and the superscript spellings cannot be tested the same way — `L` is not
-/// a DSL unit at all, since `reify-compiler/stdlib/units.ri` declares no SI
-/// volume units, and superscripts have never been lexable, so no `.ri` file can
-/// carry either into this site. They are covered by the table assertion below.)
+/// (a) THE BOUNDARY. The curated display labels `L`, `mm³`, `kg/m³`, `mm^3` are
+/// not DSL unit symbols at all and must never resolve here — admitting them
+/// would let the GUI read a literal by a table the compiler does not share. They
+/// cannot be tested through the engine: `L` is declared nowhere
+/// (`reify-compiler/stdlib/units.ri` declares no SI volume units and
+/// `si_units.rs` generates none), superscripts have never been lexable, so the
+/// compiler rejects such a source outright with `unknown unit:` and no `.ri`
+/// file can carry one into this site. The table is the only observable.
+///
+/// (b) THE DEFERRED GAP, `5MPa`. `MPa` is a curated Pressure rung that the
+/// compiler DOES resolve — `si_units.rs` generates `Pa` with the `k`/`M`/`G`
+/// prefixes — while `BUILTIN_UNITS` does not carry it, so this site silently
+/// drops it. That is the same class as the user-declared `km`/`ft`/`psi` gap in
+/// the `None` arm's own note, and six curated rungs sit in it (`Pa`, `kPa`,
+/// `MPa`, `GPa`, `N`, `J`, `W`). It is NOT a boundary: closing it is task γ
+/// (#3803)'s registry work, and doing so means UPDATING the assertion below to
+/// the resolved value, not preserving the `None`.
+///
+/// Structurally, in fact, every literal that REACHES this site is
+/// compiler-resolvable — an unresolvable one fails to compile — so `None` here
+/// always means the GUI is behind the compiler, never that the GUI is holding a
+/// line. What guards the direction that matters is (a).
 #[test]
 fn literal_bind_universe_is_dsl_symbols_not_gui_display_labels() {
-    // The premise: the two tables genuinely disagree about `MPa`.
-    assert!(
-        reify_core::unit_symbol_to_si("MPa").is_none(),
-        "premise: `MPa` must be outside BUILTIN_UNITS for this test to discriminate"
-    );
-    assert!(
-        crate::engine::composed_unit_index()
-            .iter()
-            .any(|e| e.label == "MPa"),
-        "premise: `MPa` must be IN the composed index (it is a curated Pressure \
-         ladder rung) for this test to discriminate"
-    );
-
-    // The behaviour: the bind site follows the DSL table, so it declines.
-    assert_eq!(
-        literal_bind_initial_value_si(SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE),
-        None,
-        "bind(y_axis, 5MPa) must NOT resolve — `MPa` is a display-ladder rung the \
-         GUI parameter editor parses, not a DSL builtin symbol. A Some here means \
-         this site was rewired to the ladder-backed composed index, letting the \
-         GUI resolve literals by a table the compiler does not share."
-    );
-
-    // …while the symbols this site DOES admit are exactly the builtin ones.
-    for label in ["in", "kg", "g", "s", "K", "A", "mol", "cd"] {
-        assert!(
-            reify_core::unit_symbol_to_si(label).is_some(),
-            "{label:?} must be resolvable as a DSL unit symbol"
-        );
-    }
-    // And the display-only spellings are outside the DSL table entirely. No
-    // `.ri` source can carry these into the bind site (see the doc above), so
-    // the table is the only observable.
+    // (a) The display-only spellings are outside the DSL table entirely.
     for label in ["L", "mm\u{00B3}", "kg/m\u{00B3}", "mm^3"] {
         assert!(
             reify_core::unit_symbol_to_si(label).is_none(),
@@ -10751,6 +10885,37 @@ fn literal_bind_universe_is_dsl_symbols_not_gui_display_labels() {
              must not be able to resolve it"
         );
     }
+    // …while the symbols this site DOES admit are exactly the builtin ones.
+    for label in ["in", "kg", "g", "s", "K", "A", "mol", "cd"] {
+        assert!(
+            reify_core::unit_symbol_to_si(label).is_some(),
+            "{label:?} must be resolvable as a DSL unit symbol"
+        );
+    }
+
+    // (b) The gap, pinned as CURRENT STATE. The premise: the composed index
+    // carries `MPa` and `BUILTIN_UNITS` does not, so the two delegations
+    // genuinely differ on it.
+    assert!(
+        reify_core::unit_symbol_to_si("MPa").is_none(),
+        "premise: `MPa` must be outside BUILTIN_UNITS for this to discriminate"
+    );
+    assert!(
+        crate::engine::composed_unit_index()
+            .iter()
+            .any(|e| e.label == "MPa"),
+        "premise: `MPa` must be IN the composed index (it is a curated Pressure \
+         ladder rung) for this to discriminate"
+    );
+    assert_eq!(
+        literal_bind_initial_value_si(SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE),
+        None,
+        "bind(y_axis, 5MPa) does not resolve today: this site delegates to \
+         BUILTIN_UNITS, which lacks the SI-derived prefixed units the compiler \
+         generates. A Some here means either the gap was closed (task γ #3803 — \
+         update this to the resolved value) or the site was rewired to the \
+         ladder-backed composed index (a regression: see (a))."
+    );
 }
 
 /// Source for mixed-bind test (literal before param): two snapshot() calls bind
