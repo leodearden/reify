@@ -551,4 +551,48 @@ mod tests {
             None
         );
     }
+
+    /// **Cross-kernel byte-identity (step-9D).**
+    ///
+    /// `reify-ir` cannot depend on either kernel crate, so the identity is
+    /// established structurally: there is exactly ONE producer of the
+    /// diagnostic, and both kernels are required to emit its output verbatim.
+    /// The per-kernel half of this claim lives in
+    /// `fidget_length_field_enumeration_is_complete` and
+    /// `occt_every_length_field_is_gated`, each of which `assert_eq!`s the
+    /// captured message against `check_length_field`'s return for the same
+    /// `(op_kind, field, value)`.
+    ///
+    /// Here we pin the properties that make that possible: the message is a
+    /// pure function of `(op_kind, field, value)` with no kernel identity in
+    /// it, so "what fidget emits" and "what occt emits" are the same `String`
+    /// by construction rather than by two literals happening to agree.
+    #[test]
+    fn diagnostic_is_kernel_independent_so_both_kernels_emit_one_string() {
+        for (op_kind, field) in [("Sphere", "radius"), ("Box", "width")] {
+            let v = Value::Real(1.0);
+
+            // Two independent evaluations stand in for the two kernels'
+            // call sites; both go through the single shared producer.
+            let as_fidget_would = check_length_field(op_kind, field, &v);
+            let as_occt_would = check_length_field(op_kind, field, &v);
+            assert_eq!(as_fidget_would, as_occt_would);
+
+            let msg = as_fidget_would.expect("a bare Real is a violation");
+
+            // No kernel identity leaks into the shared string — that is what
+            // keeps the two emissions byte-identical. Kernel attribution is
+            // carried by the `tracing` event's `target:`
+            // (`reify_kernel_{fidget,occt}::length_tripwire`), not by the text.
+            for kernel_token in ["fidget", "Fidget", "occt", "Occt", "OCCT"] {
+                assert!(
+                    !msg.contains(kernel_token),
+                    "the shared diagnostic must not name a kernel ({kernel_token}): {msg}"
+                );
+            }
+
+            // ...and it is a pure function of its inputs.
+            assert_eq!(msg, non_length_kernel_field_message(op_kind, field, "Real"));
+        }
+    }
 }

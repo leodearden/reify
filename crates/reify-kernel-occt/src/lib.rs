@@ -13683,4 +13683,531 @@ mod tests {
         });
         assert_no_warn_for_field(&capture, "angle");
     }
+
+    /// **C4 accept/reject parity (step-9A).**
+    ///
+    /// For every `Value` shape, `extract_length_f64` and `extract_f64` agree on
+    /// the accept/reject DISPOSITION, and where both accept, on the `f64`
+    /// payload bit-for-bit.
+    ///
+    /// Error STRINGS are deliberately excluded from the parity claim: C4 itself
+    /// requires the length-field error to change from the bare
+    /// `"expected numeric value"` to one naming op kind and field. An error
+    /// message is not accept/reject behaviour — the same inputs are still
+    /// `Err`, only the string improves — so this asserts the upgrade instead.
+    #[test]
+    fn occt_length_tripwire_never_changes_accept_reject() {
+        let op = GeometryOp::Fillet {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            radius: Value::Real(2.0),
+        };
+        let cases = vec![
+            Value::Int(2),
+            Value::Real(2.0),
+            Value::length(2.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: reify_core::DimensionVector::MASS,
+            },
+            Value::String("x".into()),
+            Value::Undef,
+        ];
+        for v in cases {
+            let gated = extract_length_f64(&v, &op, "radius");
+            let plain = extract_f64(&v);
+            assert_eq!(
+                gated.is_ok(),
+                plain.is_ok(),
+                "disposition diverged for {v:?}"
+            );
+            match (gated, plain) {
+                (Ok(a), Ok(b)) => assert_eq!(a.to_bits(), b.to_bits(), "payload diverged for {v:?}"),
+                (Err(GeometryError::OperationFailed(s)), Err(_)) => {
+                    assert!(s.contains("Fillet"), "{v:?}: {s}");
+                    assert!(s.contains("radius"), "{v:?}: {s}");
+                    assert!(
+                        !s.contains("expected numeric value"),
+                        "{v:?}: still the bare legacy string: {s}"
+                    );
+                }
+                (g, p) => panic!("unexpected pairing for {v:?}: {g:?} vs {p:?}"),
+            }
+        }
+    }
+
+    /// **Full 41-field enumeration (step-9B).**
+    ///
+    /// The completeness check for the PRD's 46 = 41 + 3 + 2 split, proved by
+    /// OBSERVATION rather than by asserting a table against itself: every one of
+    /// the 41 LENGTH-semantic `(op, field)` pairs is driven through
+    /// `OcctKernel::execute` with a bare `Value::Real` in the field under test
+    /// and a properly dimensioned value in every other length field of the same
+    /// op, so exactly ONE diagnostic is expected and it must name that exact op
+    /// kind and field.
+    ///
+    /// Assertions are on the emitted WARN only, never on the `Result`: the
+    /// tripwire fires before the OCCT call, so a downstream geometric failure
+    /// cannot invalidate the assertion — and asserting on `Result` would make
+    /// this test hostage to OCCT behaviour.
+    ///
+    /// A site left on the plain context-free `extract_f64` fails here.
+    #[test]
+    fn occt_every_length_field_is_gated() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = OcctKernel::new();
+        // Ops taking a target/profile/path handle get one real Box. Five arms
+        // (LinearPattern, Thicken, ZoneSlab, OffsetSolid, LinearPattern2D)
+        // resolve the handle BEFORE extraction, so it must be valid.
+        let target = make_box_20_10_5(&mut kernel);
+
+        let cases: Vec<(GeometryOp, &str, &str)> = vec![
+            (
+                GeometryOp::Box {
+                        width: Value::Real(2.0),
+                        height: Value::length(3.0),
+                        depth: Value::length(4.0),
+                },
+                "Box",
+                "width",
+            ),
+            (
+                GeometryOp::Box {
+                        width: Value::length(2.0),
+                        height: Value::Real(3.0),
+                        depth: Value::length(4.0),
+                },
+                "Box",
+                "height",
+            ),
+            (
+                GeometryOp::Box {
+                        width: Value::length(2.0),
+                        height: Value::length(3.0),
+                        depth: Value::Real(4.0),
+                },
+                "Box",
+                "depth",
+            ),
+            (
+                GeometryOp::Cylinder {
+                        radius: Value::Real(1.0),
+                        height: Value::length(2.0),
+                },
+                "Cylinder",
+                "radius",
+            ),
+            (
+                GeometryOp::Cylinder {
+                        radius: Value::length(1.0),
+                        height: Value::Real(2.0),
+                },
+                "Cylinder",
+                "height",
+            ),
+            (
+                GeometryOp::Sphere {
+                        radius: Value::Real(1.0),
+                },
+                "Sphere",
+                "radius",
+            ),
+            (
+                GeometryOp::Tube {
+                        outer_r: Value::Real(2.0),
+                        inner_r: Value::length(1.0),
+                        height: Value::length(3.0),
+                },
+                "Tube",
+                "outer_r",
+            ),
+            (
+                GeometryOp::Tube {
+                        outer_r: Value::length(2.0),
+                        inner_r: Value::Real(1.0),
+                        height: Value::length(3.0),
+                },
+                "Tube",
+                "inner_r",
+            ),
+            (
+                GeometryOp::Tube {
+                        outer_r: Value::length(2.0),
+                        inner_r: Value::length(1.0),
+                        height: Value::Real(3.0),
+                },
+                "Tube",
+                "height",
+            ),
+            (
+                GeometryOp::Cone {
+                        bottom_radius: Value::Real(2.0),
+                        top_radius: Value::length(1.0),
+                        height: Value::length(3.0),
+                },
+                "Cone",
+                "bottom_radius",
+            ),
+            (
+                GeometryOp::Cone {
+                        bottom_radius: Value::length(2.0),
+                        top_radius: Value::Real(1.0),
+                        height: Value::length(3.0),
+                },
+                "Cone",
+                "top_radius",
+            ),
+            (
+                GeometryOp::Cone {
+                        bottom_radius: Value::length(2.0),
+                        top_radius: Value::length(1.0),
+                        height: Value::Real(3.0),
+                },
+                "Cone",
+                "height",
+            ),
+            (
+                GeometryOp::Wedge {
+                        width: Value::Real(2.0),
+                        depth: Value::length(3.0),
+                        height: Value::length(4.0),
+                        top_width: Value::length(1.0),
+                },
+                "Wedge",
+                "width",
+            ),
+            (
+                GeometryOp::Wedge {
+                        width: Value::length(2.0),
+                        depth: Value::Real(3.0),
+                        height: Value::length(4.0),
+                        top_width: Value::length(1.0),
+                },
+                "Wedge",
+                "depth",
+            ),
+            (
+                GeometryOp::Wedge {
+                        width: Value::length(2.0),
+                        depth: Value::length(3.0),
+                        height: Value::Real(4.0),
+                        top_width: Value::length(1.0),
+                },
+                "Wedge",
+                "height",
+            ),
+            (
+                GeometryOp::Wedge {
+                        width: Value::length(2.0),
+                        depth: Value::length(3.0),
+                        height: Value::length(4.0),
+                        top_width: Value::Real(1.0),
+                },
+                "Wedge",
+                "top_width",
+            ),
+            (
+                GeometryOp::Torus {
+                        major_radius: Value::Real(3.0),
+                        minor_radius: Value::length(1.0),
+                },
+                "Torus",
+                "major_radius",
+            ),
+            (
+                GeometryOp::Torus {
+                        major_radius: Value::length(3.0),
+                        minor_radius: Value::Real(1.0),
+                },
+                "Torus",
+                "minor_radius",
+            ),
+            (
+                GeometryOp::HalfSpace {
+                        nx: Value::Real(0.0),
+                        ny: Value::Real(0.0),
+                        nz: Value::Real(1.0),
+                        px: Value::Real(0.0),
+                        py: Value::length(0.0),
+                        pz: Value::length(0.0),
+                },
+                "HalfSpace",
+                "px",
+            ),
+            (
+                GeometryOp::HalfSpace {
+                        nx: Value::Real(0.0),
+                        ny: Value::Real(0.0),
+                        nz: Value::Real(1.0),
+                        px: Value::length(0.0),
+                        py: Value::Real(0.0),
+                        pz: Value::length(0.0),
+                },
+                "HalfSpace",
+                "py",
+            ),
+            (
+                GeometryOp::HalfSpace {
+                        nx: Value::Real(0.0),
+                        ny: Value::Real(0.0),
+                        nz: Value::Real(1.0),
+                        px: Value::length(0.0),
+                        py: Value::length(0.0),
+                        pz: Value::Real(0.0),
+                },
+                "HalfSpace",
+                "pz",
+            ),
+            (
+                GeometryOp::Fillet {
+                        target,
+                        edges: vec![],
+                        radius: Value::Real(0.1),
+                },
+                "Fillet",
+                "radius",
+            ),
+            (
+                GeometryOp::Chamfer {
+                        target,
+                        edges: vec![],
+                        distance: Value::Real(0.1),
+                },
+                "Chamfer",
+                "distance",
+            ),
+            (
+                GeometryOp::ChamferAsymmetric {
+                        target,
+                        edges: vec![],
+                        d1: Value::Real(0.1),
+                        d2: Value::length(0.2),
+                },
+                "ChamferAsymmetric",
+                "d1",
+            ),
+            (
+                GeometryOp::ChamferAsymmetric {
+                        target,
+                        edges: vec![],
+                        d1: Value::length(0.1),
+                        d2: Value::Real(0.2),
+                },
+                "ChamferAsymmetric",
+                "d2",
+            ),
+            (
+                GeometryOp::LinearPattern {
+                        target,
+                        direction: [1.0, 0.0, 0.0],
+                        count: 2,
+                        spacing: Value::Real(1.0),
+                },
+                "LinearPattern",
+                "spacing",
+            ),
+            (
+                GeometryOp::Thicken {
+                        target,
+                        offset: Value::Real(0.1),
+                },
+                "Thicken",
+                "offset",
+            ),
+            (
+                GeometryOp::OffsetCurve {
+                        target,
+                        reference: None,
+                        direction: None,
+                        distance: Value::Real(0.1),
+                },
+                "OffsetCurve",
+                "distance",
+            ),
+            (
+                GeometryOp::ZoneSlab {
+                        target,
+                        width: Value::Real(1.0),
+                },
+                "ZoneSlab",
+                "width",
+            ),
+            (
+                GeometryOp::OffsetSolid {
+                        target,
+                        distance: Value::Real(0.1),
+                },
+                "OffsetSolid",
+                "distance",
+            ),
+            (
+                GeometryOp::Shell {
+                        target,
+                        faces_to_remove: vec![],
+                        open_face_handles: vec![],
+                        thickness: Value::Real(0.1),
+                },
+                "Shell",
+                "thickness",
+            ),
+            (
+                GeometryOp::Extrude {
+                        profile: target,
+                        distance: Value::Real(1.0),
+                },
+                "Extrude",
+                "distance",
+            ),
+            (
+                GeometryOp::Pipe {
+                        path: target,
+                        radius: Value::Real(0.5),
+                },
+                "Pipe",
+                "radius",
+            ),
+            (
+                GeometryOp::ExtrudeSymmetric {
+                        profile: target,
+                        distance: Value::Real(1.0),
+                },
+                "ExtrudeSymmetric",
+                "distance",
+            ),
+            (
+                GeometryOp::LinearPattern2D {
+                        target,
+                        direction1: [1.0, 0.0, 0.0],
+                        count1: 2,
+                        direction2: [0.0, 1.0, 0.0],
+                        count2: 2,
+                        spacing1: Value::Real(1.0),
+                        spacing2: Value::length(2.0),
+                },
+                "LinearPattern2D",
+                "spacing1",
+            ),
+            (
+                GeometryOp::LinearPattern2D {
+                        target,
+                        direction1: [1.0, 0.0, 0.0],
+                        count1: 2,
+                        direction2: [0.0, 1.0, 0.0],
+                        count2: 2,
+                        spacing1: Value::length(1.0),
+                        spacing2: Value::Real(2.0),
+                },
+                "LinearPattern2D",
+                "spacing2",
+            ),
+            (
+                GeometryOp::RectangleProfile {
+                        width: Value::Real(2.0),
+                        height: Value::length(3.0),
+                },
+                "RectangleProfile",
+                "width",
+            ),
+            (
+                GeometryOp::RectangleProfile {
+                        width: Value::length(2.0),
+                        height: Value::Real(3.0),
+                },
+                "RectangleProfile",
+                "height",
+            ),
+            (
+                GeometryOp::CircleProfile {
+                        radius: Value::Real(1.0),
+                },
+                "CircleProfile",
+                "radius",
+            ),
+            (
+                GeometryOp::EllipseProfile {
+                        semi_major: Value::Real(2.0),
+                        semi_minor: Value::length(1.0),
+                },
+                "EllipseProfile",
+                "semi_major",
+            ),
+            (
+                GeometryOp::EllipseProfile {
+                        semi_major: Value::length(2.0),
+                        semi_minor: Value::Real(1.0),
+                },
+                "EllipseProfile",
+                "semi_minor",
+            ),
+        ];
+        assert_eq!(
+            cases.len(),
+            41,
+            "the PRD's 46 = 41 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
+        );
+
+        for (op, op_kind, field) in cases {
+            let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+            tracing::subscriber::with_default(subscriber, || {
+                let _ = kernel.execute(&op);
+            });
+            capture.assert_count_and_any_message_contains(1, op_kind);
+            capture.assert_any_event_field_contains("op_kind", op_kind);
+            capture.assert_any_event_field_contains("field", field);
+            // Step-9D's per-kernel half: the kernel emits the SHARED formatter's
+            // string verbatim, never a re-rolled literal.
+            assert_eq!(
+                capture.messages()[0],
+                reify_ir::check_length_field(op_kind, field, &Value::Real(1.0))
+                    .expect("a bare Real is a violation"),
+                "{op_kind}.{field}: message drifted from the shared formatter"
+            );
+        }
+    }
+
+    /// **Release contract, boundary row 14 (step-9C).**
+    ///
+    /// In a release build the assertion is compiled out entirely, so even with
+    /// the arm held a bare-`Value::Real` `execute` must (i) not panic,
+    /// (ii) still emit the diagnostic naming op kind and field, and (iii) return
+    /// the SAME disposition as the dimensioned control.
+    ///
+    /// This is the half a debug-only test cannot reach. It executes for real on
+    /// the merge gate, which forces `--profile both` (`scripts/verify.sh`,
+    /// `DF_VERIFY_ROLE=merge`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn occt_release_armed_bare_length_reports_without_panicking() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let _g = reify_ir::arm_length_tripwire_assert();
+        assert!(reify_ir::length_tripwire_assert_armed());
+
+        let mut kernel = OcctKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let bare = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::Real(0.020),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.005),
+            })
+        });
+
+        capture.assert_count_and_any_message_contains(3, "Box");
+        capture.assert_any_event_field_contains("field", "width");
+
+        // Same SI magnitudes, properly dimensioned: the disposition must match.
+        let control = kernel.execute(&GeometryOp::Box {
+            width: Value::length(0.020),
+            height: Value::length(0.010),
+            depth: Value::length(0.005),
+        });
+        assert_eq!(
+            bare.is_ok(),
+            control.is_ok(),
+            "armed release build changed the accept/reject disposition: \
+             bare={bare:?} control={control:?}"
+        );
+    }
 }

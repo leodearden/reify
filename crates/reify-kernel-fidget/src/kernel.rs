@@ -1245,4 +1245,99 @@ mod tests {
         assert!(handle.repr.is_none());
         assert_ne!(handle.id, GeometryHandleId::INVALID);
     }
+
+    /// **C4 accept/reject parity (step-9A).**
+    ///
+    /// For every `Value` shape, `extract_length_f64` and `extract_f64` agree on
+    /// the accept/reject DISPOSITION, and where both accept, on the `f64`
+    /// payload bit-for-bit.
+    ///
+    /// Error STRINGS are deliberately excluded from the parity claim: C4 itself
+    /// requires the length-field error to change from the bare
+    /// `"expected numeric value"` to one naming op kind and field. An error
+    /// message is not accept/reject behaviour — the same inputs are still
+    /// `Err`, only the string improves — so this asserts the upgrade instead.
+    #[test]
+    fn fidget_length_tripwire_never_changes_accept_reject() {
+        let op = GeometryOp::Sphere {
+            radius: Value::Real(2.0),
+        };
+        let cases = vec![
+            Value::Int(2),
+            Value::Real(2.0),
+            Value::length(2.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: reify_core::DimensionVector::MASS,
+            },
+            Value::String("x".into()),
+            Value::Undef,
+        ];
+        for v in cases {
+            let gated = extract_length_f64(&v, &op, "radius");
+            let plain = extract_f64(&v);
+            assert_eq!(
+                gated.is_ok(),
+                plain.is_ok(),
+                "disposition diverged for {v:?}"
+            );
+            match (gated, plain) {
+                (Ok(a), Ok(b)) => assert_eq!(a.to_bits(), b.to_bits(), "payload diverged for {v:?}"),
+                (Err(GeometryError::OperationFailed(s)), Err(_)) => {
+                    assert!(s.contains("Sphere"), "{v:?}: {s}");
+                    assert!(s.contains("radius"), "{v:?}: {s}");
+                    assert!(
+                        !s.contains("expected numeric value"),
+                        "{v:?}: still the bare legacy string: {s}"
+                    );
+                }
+                (g, p) => panic!("unexpected pairing for {v:?}: {g:?} vs {p:?}"),
+            }
+        }
+    }
+
+    /// **Release contract, boundary row 14 (step-9C).**
+    ///
+    /// In a release build the assertion is compiled out entirely, so even with
+    /// the arm held a bare-`Value::Real` `execute` must (i) not panic,
+    /// (ii) still emit the diagnostic naming op kind and field, and (iii) return
+    /// the SAME disposition as the dimensioned control.
+    ///
+    /// This is the half a debug-only test cannot reach. It executes for real on
+    /// the merge gate, which forces `--profile both` (`scripts/verify.sh`,
+    /// `DF_VERIFY_ROLE=merge`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn fidget_release_armed_bare_length_reports_without_panicking() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let _g = reify_ir::arm_length_tripwire_assert();
+        assert!(reify_ir::length_tripwire_assert_armed());
+
+        let mut kernel = FidgetKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let bare = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::Real(0.002),
+                height: Value::Real(0.002),
+                depth: Value::Real(0.002),
+            })
+        });
+
+        capture.assert_count_and_any_message_contains(3, "Box");
+        capture.assert_any_event_field_contains("field", "width");
+
+        // Same SI magnitudes, properly dimensioned: the disposition must match.
+        let control = kernel.execute(&GeometryOp::Box {
+            width: Value::length(0.002),
+            height: Value::length(0.002),
+            depth: Value::length(0.002),
+        });
+        assert_eq!(
+            bare.is_ok(),
+            control.is_ok(),
+            "armed release build changed the accept/reject disposition: \
+             bare={bare:?} control={control:?}"
+        );
+    }
 }
