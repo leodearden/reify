@@ -259,6 +259,15 @@ structure def TensegritySurface {
 //   To reach a specific design force level, scale the whole gauge; there is no
 //   absolute-units knob to reach for.
 //
+//   That covariance is EXACT on the line-only path, where D is assembled once
+//   and λ cancels algebraically. On the SURFACES path it holds only
+//   APPROXIMATELY today: the geometry comes from a cotangent fixed point whose
+//   stopping rule is an ABSOLUTE residual tolerance, normalised by geometry
+//   scale but never by |D| — and |D| is linear in (q, σ). A whole-gauge rescale
+//   therefore scales the residual too, so the iteration can stop at a different
+//   iterate, and a large enough λ may not converge at all. That is a solver-side
+//   defect, not a property of the gauge; tracked as task #6119.
+//
 //   `surface_stresses` σ shares this SAME gauge, which is why it too is
 //   `List<Real>`. σ enters the assembly ADDITIVELY with q in
 //   D = CᵀQC + Σ_T σ_T·L_T, and the cotangent weights L_T are dimensionless
