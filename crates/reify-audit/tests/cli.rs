@@ -3211,9 +3211,9 @@ mod freshness_gate {
     ///
     /// `since_sha` is derived by P1 as `{commit}^1`, which does NOT resolve in
     /// `scenario()`'s one-commit repo. That is fine and deliberate: both SHAs
-    /// are passed verbatim into the `tools/call` arguments
-    /// (`src/jcodemunch_client.rs:1063-1070`) with no local git resolution, and
-    /// the mock errors the call regardless.
+    /// are passed verbatim into `RealJCodemunchOps::get_changed_symbols`'s
+    /// `tools/call` arguments with no local git resolution, and the mock errors
+    /// the call regardless.
     fn write_p1_done_task(tasks_file: &std::path::Path, commit: &str) {
         let mut task = done_task_fixture("synthetic-per-call-p1", commit, 1_700_000_000);
         // `seed.rs` is the one file `init_git_repo_with_one_commit` actually
@@ -3279,9 +3279,9 @@ mod freshness_gate {
     /// literal. The seam tests over there prove `assert_live_leg` FIRES on a
     /// given string; they cannot prove that string is what the binary actually
     /// emits. This test observes the breadcrumb come out of the REAL binary on
-    /// the ordinary merge gate, so a reword of the `eprintln!` at
-    /// `src/jcodemunch_client.rs:1135` turns THIS test red instead of silently
-    /// reverting the capstone to vacuous.
+    /// the ordinary merge gate, so a reword of the `eprintln!` in
+    /// `RealJCodemunchOps::get_dead_code`'s `Err` arm turns THIS test red
+    /// instead of silently reverting the capstone to vacuous.
     ///
     /// Both consumers read the SAME constant, so a reword is one edit in
     /// `tests/common/breadcrumbs.rs` and both move together. When each binary
@@ -3338,8 +3338,8 @@ mod freshness_gate {
              run's emptiness is EXPLAINED BY. Every assertion above passed, so \
              without this one the run is indistinguishable from a genuine \
              zero-finding success. If the `eprintln!` at \
-             src/jcodemunch_client.rs:1135 was reworded, update \
-             breadcrumbs::PDEAD_GET_DEAD_CODE — the live capstone reads the \
+             the Err arm of RealJCodemunchOps::get_dead_code was reworded, \
+             update breadcrumbs::PDEAD_GET_DEAD_CODE — the live capstone reads the \
              same constant and moves with it.\nstderr:\n{stderr}"
         );
     }
@@ -3350,13 +3350,13 @@ mod freshness_gate {
     /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
     /// `breadcrumbs::P1_CALL`, which reads the same
     /// `breadcrumbs::P1_GET_CHANGED_SYMBOLS` this test asserts on — so a
-    /// reword of the `eprintln!` at `src/jcodemunch_client.rs:1074` is one
-    /// edit and both consumers move.
+    /// reword of the `eprintln!` in `RealJCodemunchOps::get_changed_symbols`'s
+    /// `Err` arm is one edit and both consumers move.
     ///
     /// `find_references` is NOT asserted HERE, and could not be: this
     /// responder errors every tool, so `get_changed_symbols` returns no
-    /// symbol and the loop at `src/p1_producer_orphan.rs:131/146` never runs
-    /// its body. That is a property of THIS responder, not of the harness —
+    /// symbol, so `p1_producer_orphan::check`'s `for symbol in ...` loop —
+    /// which is where the `find_references` call lives — never runs its body. That is a property of THIS responder, not of the harness —
     /// the sibling below (`per_call_fail_soft_on_p1s_second_call`) dispatches
     /// on the arguments to reach it.
     #[test]
@@ -3381,7 +3381,8 @@ mod freshness_gate {
         assert!(
             stderr.contains(breadcrumbs::P1_GET_CHANGED_SYMBOLS),
             "the real binary must emit the per-call fail-soft breadcrumb. If \
-             the `eprintln!` at src/jcodemunch_client.rs:1074 was reworded, \
+             the `eprintln!` in the Err arm of \
+             RealJCodemunchOps::get_changed_symbols was reworded, \
              update breadcrumbs::P1_GET_CHANGED_SYMBOLS — the live capstone \
              reads the same constant.\nstderr:\n{stderr}"
         );
@@ -3395,18 +3396,18 @@ mod freshness_gate {
     /// that responder, not of the mock: `spawn_mock_mcp`'s closure receives
     /// the `tools/call` arguments, and the two calls are trivially
     /// distinguishable — `get_changed_symbols` sends
-    /// `{repo, since_sha, until_sha}` (`src/jcodemunch_client.rs:1063-1070`)
-    /// while `find_references` sends `{repo, identifier}` (`:1112-1115`). So
+    /// `{repo, since_sha, until_sha}` while `find_references` sends
+    /// `{repo, identifier}` (each op's own `call_tool` arguments). So
     /// this test DISPATCHES: it answers the first call with a real symbol row
     /// and errors only the second, which is what walks the real binary into
-    /// the `Err` arm at `:1117`.
+    /// `RealJCodemunchOps::find_references`'s `Err` arm.
     ///
     /// Without it, `P1_FIND_REFERENCES` would be pinned only by
     /// `jcodemunch_live.rs`'s seam test — i.e. against SYNTHETIC stderr, which
     /// proves `assert_live_leg` fires on the string but not that the binary
-    /// ever emits it. A reword of `:1117` would then leave every test green
-    /// while the live capstone asserted the absence of a string that can no
-    /// longer appear.
+    /// ever emits it. A reword of that `Err` arm would then leave every test
+    /// green while the live capstone asserted the absence of a string that can
+    /// no longer appear.
     ///
     /// The symbol row is `seed`/`seed.rs`/line 1, which is not decoration:
     /// `init_git_repo_with_one_commit` commits exactly `pub fn seed() {}` into
@@ -3426,8 +3427,7 @@ mod freshness_gate {
 
         // `identifier` is present ONLY in find_references' arguments — error
         // that one, answer get_changed_symbols with one well-formed
-        // `added_symbols` row (the shape `changed_symbols_from_wire` reads,
-        // `src/jcodemunch_client.rs:556-579`).
+        // `added_symbols` row (the shape `changed_symbols_from_wire` reads).
         let mock = spawn_mock_mcp(|args| {
             if args.get("identifier").is_some() {
                 None
@@ -3480,8 +3480,8 @@ mod freshness_gate {
             stderr.contains(breadcrumbs::P1_FIND_REFERENCES),
             "the real binary must emit find_references' per-call fail-soft \
              breadcrumb. If the `eprintln!` at \
-             src/jcodemunch_client.rs:1117 was reworded, update \
-             breadcrumbs::P1_FIND_REFERENCES — the live capstone reads the \
+             the Err arm of RealJCodemunchOps::find_references was reworded, \
+             update breadcrumbs::P1_FIND_REFERENCES — the live capstone reads the \
              same constant.\nstderr:\n{stderr}"
         );
     }

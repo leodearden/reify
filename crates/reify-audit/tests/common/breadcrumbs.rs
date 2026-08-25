@@ -9,11 +9,11 @@
 //!   ordinary merge gate. That is the production-side lock: reword the
 //!   `eprintln!` and these tests go red.
 //! - `tests/jcodemunch_live.rs` (`assert_live_leg`) asserts the literal is
-//!   ABSENT from a live leg's stderr. That is the vacuity check: a per-call
-//!   error happens AFTER a successful handshake, so exit is 0, the
-//!   construction breadcrumb is silent, the §4.3 gate has already admitted,
-//!   and `[]` is perfectly well-formed — the breadcrumb is the ONLY signal
-//!   that the run produced nothing because the serve refused the call.
+//!   ABSENT from a live leg's stderr. That is the vacuity check — link 4 of
+//!   the five-part chain, whose canonical statement is the header of
+//!   `tests/jcodemunch_live.rs` ("THE FIVE-PART CHAIN"). The short version:
+//!   nothing else in that chain can tell an empty-by-failure run from an
+//!   empty-by-fact one, so the breadcrumb is the only signal there is.
 //!
 //! # Why they live here rather than in either consumer
 //!
@@ -35,27 +35,25 @@
 //! file in `tests/common/` compiles into its consumers and never becomes a
 //! test binary of its own.
 
-/// `RealJCodemunchOps::get_dead_code`'s `Err` arm
-/// (`src/jcodemunch_client.rs:1135`).
+/// `RealJCodemunchOps::get_dead_code`'s `Err` arm.
 ///
-/// Reached by `--pattern PDEAD`, whose single jcodemunch op is
-/// `src/pdead_dead_code.rs:35`.
+/// Reached by `--pattern PDEAD`, whose single jcodemunch op is the
+/// `get_dead_code` call in `pdead_dead_code::check`.
 #[allow(dead_code)]
 pub const PDEAD_GET_DEAD_CODE: &str = "jcodemunch get_dead_code_v2:";
 
-/// `RealJCodemunchOps::get_changed_symbols`'s `Err` arm
-/// (`src/jcodemunch_client.rs:1074`).
+/// `RealJCodemunchOps::get_changed_symbols`'s `Err` arm.
 ///
-/// Runs unconditionally on every P1 leg (`src/p1_producer_orphan.rs:131`), so
-/// it is the load-bearing half of the P1 pair: its silence is evidence.
+/// Runs unconditionally on every P1 leg — it opens `p1_producer_orphan::check`'s
+/// `for symbol in ...` loop — so it is the load-bearing half of the P1 pair:
+/// its silence is evidence.
 #[allow(dead_code)]
 pub const P1_GET_CHANGED_SYMBOLS: &str = "jcodemunch get_changed_symbols:";
 
-/// `RealJCodemunchOps::find_references`'s `Err` arm
-/// (`src/jcodemunch_client.rs:1117`).
+/// `RealJCodemunchOps::find_references`'s `Err` arm.
 ///
-/// CONDITIONALLY reachable: `src/p1_producer_orphan.rs:146` sits inside the
-/// `for symbol in ... get_changed_symbols(...)` loop opened at `:131`, so it
+/// CONDITIONALLY reachable: `p1_producer_orphan::check` calls `find_references`
+/// from INSIDE its `for symbol in ... get_changed_symbols(...)` loop, so it
 /// runs once per RETURNED symbol. If `get_changed_symbols` legitimately
 /// returns zero symbols this breadcrumb is unreachable and its absence
 /// carries no information — which is a statement about the live leg's
@@ -75,8 +73,8 @@ pub const PDEAD_CALL: &[&str] = &[PDEAD_GET_DEAD_CODE];
 /// Every per-call breadcrumb `--pattern P1` can emit.
 ///
 /// Deliberately NOT listed here: `get_untested_symbols` /
-/// `get_layer_violations` (`src/jcodemunch_client.rs:1152`, `:1168`). Neither
-/// op is reachable from PDEAD or P1, so asserting their breadcrumbs would be
+/// `get_layer_violations` (the other two `RealJCodemunchOps` `Err` arms).
+/// Neither op is reachable from PDEAD or P1, so asserting their breadcrumbs is
 /// decorative — a check that can never fire reads like coverage while
 /// providing none.
 #[allow(dead_code)]
