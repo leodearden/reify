@@ -1558,8 +1558,7 @@ fn nested_guarded_geometry_constraint_lands_in_the_inner_arm() {
         + inner.constraints.len()
         + inner.else_constraints.len();
     assert_eq!(
-        total,
-        4,
+        total, 4,
         "each of the four rounded calls must synthesize exactly one constraint \
          into exactly one arm, got {total}"
     );

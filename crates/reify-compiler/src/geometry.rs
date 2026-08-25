@@ -968,8 +968,17 @@ impl<'a> GeometryConstraintSink<'a> {
     /// future geometry-lowering arm inherits the fix instead of re-discovering
     /// the duplication.
     ///
-    /// Both halves of the key are load-bearing, and each guards a different
-    /// failure:
+    /// The scan is over `self.constraints` — whichever vec this sink was handed
+    /// — so the EFFECTIVE key is `(the arm vec, span, content_hash)`. That is
+    /// the right key, not an accident of implementation: a guarded call's
+    /// predicate is filed into its own `CompiledGuardedGroup` arm (see
+    /// `emit_guarded_geometry_realizations`'s arm-routing contract), and the
+    /// same span and content under two different guards really are two
+    /// different constraints — each activates on a different condition, so
+    /// collapsing them would drop one arm's check.
+    ///
+    /// Both halves of the per-vec key are load-bearing, and each guards a
+    /// different failure:
     ///
     /// - **span** distinguishes two genuinely distinct source calls. Two
     ///   `rounded_box` calls with character-for-character identical arguments
@@ -1039,6 +1048,18 @@ impl<'a> GeometryConstraintSink<'a> {
 /// solver-driven radius is genuinely constrained rather than merely reported.
 /// Both halves — the check verdict and the solve — are pinned end-to-end by
 /// `reify-eval/tests/harness_geometry/rounded_corner_runtime_constraint.rs`.
+///
+/// **Where the synthesized constraint lands** is not this function's choice —
+/// it pushes to whichever vec the caller's `constraint_sink` was built over. For
+/// a call inside a `where`/`else` group that is the group's own arm
+/// (`constraints` / `else_constraints`), NOT the entity's flat
+/// `TopologyTemplate::constraints`, so the predicate is only checked while its
+/// arm is live; see `emit_guarded_geometry_realizations` (entity.rs) for the
+/// routing contract and its consequences. The `auto` solver claim above is
+/// correspondingly narrower for a guarded call:
+/// `filter_constraints_reading_autos` reads only the flat vec, so a guard-only
+/// constraint is checked but not solver-bounded — a pre-existing property of
+/// every guarded constraint, noted in that same contract.
 ///
 /// **Exception**: a `Type::Error` `corner_r` is left alone entirely — no
 /// diagnostic, no constraint. It only ever arrives on the param-driven path
