@@ -3918,20 +3918,26 @@ fn pattern_arbitrary(
         }
         let mut transforms = Vec::with_capacity(elements.len());
         for element in elements {
-            match decompose_transform_to_arrays(element) {
-                Some(decoded) => transforms.push(decoded),
-                None => {
+            // The second LOUD route into the ζ/R8 gate (task 5747). The
+            // early-return-on-first-bad-element behaviour is UNCHANGED: a partial
+            // pattern is worse than a dropped op, and the all-failures-at-once
+            // discipline applies WITHIN one transform's triple — which
+            // `accept_length_point3` already provides — not ACROSS list elements,
+            // where widening it would turn one bad transform into a storm.
+            transforms.push(accept_transform_to_arrays(
+                element,
+                "arbitrary_pattern",
+                &|diagnostics: &mut Vec<Diagnostic>| {
                     diagnostics.push(Diagnostic::warning(
                         "arbitrary_pattern dropped: 'transform_list' element is not a valid \
                          Transform<3>"
                             .to_string(),
                     ));
-                    return Err(
-                        "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
-                            .into(),
-                    );
-                }
-            }
+                    "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
+                        .to_string()
+                },
+                diagnostics,
+            )?);
         }
         return Ok(reify_ir::GeometryOp::ArbitraryPattern {
             target: target_id,
@@ -3939,6 +3945,11 @@ fn pattern_arbitrary(
         });
     }
 
+    // The SCALAR-TRIPLE form below is deliberately untouched by ζ/5747: its
+    // `t{i}_dx/dy/dz` offsets are already LENGTH-gated by task 5744's
+    // `required_length_args` group read (see the comment inside the loop), so it
+    // reaches the SAME Contract C chokepoint by the NAMED-ARG route while the
+    // list form above reaches it by the decoded-value route.
     let mut transforms = Vec::new();
     let mut idx = 0;
     loop {
