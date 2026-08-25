@@ -13,6 +13,48 @@
 //! Every test that asserts the error message should `assert_eq!` against these
 //! constants rather than using substring containment, so that message drift
 //! between the two kernels is caught at compile time rather than by accident.
+//!
+//! # The C4 kernel LENGTH tripwire
+//!
+//! This module also owns the **kernel LENGTH tripwire** mandated by contract
+//! C4 of `docs/prds/v0_6/units-length-gate-completion.md`: the classifier
+//! [`check_length_field`] and the two shared message formatters
+//! [`non_length_kernel_field_message`] and
+//! [`non_numeric_kernel_field_message`].  They are a third member of the same
+//! single-source-of-truth family as the constants above, and are governed by
+//! the same rule — both kernels emit the *same* string, produced here, so a
+//! test can `assert_eq!` against one source rather than substring-matching two
+//! drifting literals.
+//!
+//! **It is a tripwire, not a gate** (PRD D5 / ratified decision 4).  A
+//! violation is *reported*, never rejected: `check_length_field` returns a
+//! message and the caller's accept/reject disposition is unchanged.  A hard
+//! kernel gate is not available, because hundreds of legitimate kernel-side
+//! fixtures pass bare `Value::Real` (occt 546, reify-ir 242, fidget 40) and a
+//! kernel error carries neither a source span nor an argument name, so it
+//! could not produce an actionable diagnostic even when it fired.
+//!
+//! **Emission stays in the kernels.**  This module owns the pure
+//! classifier/formatters/arming state only; each kernel emits its own
+//! `tracing::warn!` whose `target:` names the emitting crate, per the house
+//! pattern at `crates/reify-kernel-gmsh/src/repair.rs:135-143` and
+//! `crates/reify-kernel-manifold/src/kernel.rs:1159-1167`.  That keeps
+//! `reify-ir` — a dependency of 13+ crates — free of a `tracing` edge.
+//!
+//! ## C2 corollary: what this tripwire is actually watching for
+//!
+//! On `main` today, **no route constructs a [`crate::geometry::GeometryOp`]
+//! outside `compile_geometry_op`**: there is no serde deserialization path
+//! into `GeometryOp`, and the one other construction site
+//! (`crates/reify-kernel-occt/src/handle.rs:887`,
+//! `OcctKernelHandle::extrude_with_history`) is not live.  A route that did so
+//! would be out of contract, and this tripwire is the **runtime detector** if
+//! one ever appears.
+//!
+//! The eval-layer gate that *should* have caught a bare value first is
+//! `required_length_value` / `required_length_values` at
+//! `crates/reify-eval/src/geometry_ops.rs:482`/`:523`.  A fired tripwire
+//! therefore indicates a hole in the eval-layer gate, **not** a kernel bug.
 
 /// Error message emitted when a Sphere `radius` value fails the
 /// finite-and-strictly-positive check.
@@ -31,6 +73,131 @@ pub const SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE: &str =
 /// constant rather than inlining a literal.
 pub const BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE: &str =
     "box dimensions must be finite positive values";
+
+// ── C4 kernel LENGTH tripwire: classifier + shared message formatters ────────
+
+use crate::value::Value;
+use reify_core::DimensionVector;
+
+/// Classify a [`Value`] arriving at a **length-semantic kernel field**.
+///
+/// Returns `None` when `v` carries [`DimensionVector::LENGTH`] — the only
+/// in-contract shape for a length field.  Otherwise returns `Some(msg)`, where
+/// `msg` is [`non_length_kernel_field_message`]'s output and therefore names
+/// BOTH the op kind and the field (boundary rows 13/14; C4 forbids a bare
+/// `"expected numeric value"` here).
+///
+/// A bare `Value::Real` / `Value::Int` is DIMENSIONLESS under
+/// [`Value::dimension`], so it classifies as a violation — which is exactly the
+/// case the tripwire exists to catch.
+///
+/// This is a **detector, never a gate**: the caller must report the message and
+/// then proceed with the disposition it would have had anyway.  See the module
+/// docs for the D5 rationale and the C2 corollary.
+///
+/// `op_kind` should come from [`crate::geometry::GeometryOp::kind_name`] so it
+/// stays correct as variants are added; `field` is the literal field name at
+/// the call site.
+pub fn check_length_field(op_kind: &str, field: &str, v: &Value) -> Option<String> {
+    if v.dimension() == DimensionVector::LENGTH {
+        return None;
+    }
+    let msg = non_length_kernel_field_message(op_kind, field, &got_label(v));
+    // step-4 seam: the opt-in `cfg(debug_assertions)` panic arm goes here. It
+    // must panic with *this* `msg`, so the assertion text and the release
+    // diagnostic text are one string by construction rather than two literals
+    // free to drift.
+    Some(msg)
+}
+
+/// The shared diagnostic for a **non-LENGTH** value at a length-semantic kernel
+/// field.
+///
+/// Mirrors the wording shape of `reify-eval`'s
+/// `arg_acceptance.rs:152` template (`"{builtin}: {arg_name} argument expects
+/// {expected}, got {got}"`) so kernel-layer and eval-layer unit diagnostics
+/// read alike.  The wording shape only is mirrored — `arg_acceptance` lives in
+/// `reify-eval` and the adapter → eval dependency direction is deliberately
+/// inverted (documented in both kernel `Cargo.toml`s), so the code cannot be
+/// shared.
+///
+/// Both kernels MUST emit exactly this string; tests `assert_eq!` against it.
+pub fn non_length_kernel_field_message(op_kind: &str, field: &str, got: &str) -> String {
+    format!("kernel length tripwire: {op_kind}.{field} expects Length, got {got}")
+}
+
+/// The length-field replacement for the legacy context-free
+/// `"expected numeric value"` kernel error.
+///
+/// Emitted as the `Err` payload when a length-semantic field receives a value
+/// that `Value::as_f64` cannot read at all.  C4 requires this string to name
+/// the op kind and the field — "never a bare `expected numeric value`" — so the
+/// failure is attributable without a source span.
+///
+/// Changing an error *message* is not changing accept/reject behaviour: the
+/// same inputs are still `Err`, only the string improves.
+pub fn non_numeric_kernel_field_message(op_kind: &str, field: &str) -> String {
+    format!("kernel length tripwire: {op_kind}.{field} expects Length, got a non-numeric value")
+}
+
+/// Name the observed value for the `got` slot of
+/// [`non_length_kernel_field_message`].
+///
+/// For a [`Value::Scalar`] the *dimension* is what matters — a
+/// `Scalar<Mass>` at a length field is a different bug from a bare `Real` — so
+/// the label carries it, via [`DimensionVector::canonical_name`] when the
+/// dimension is a named singleton and the raw exponent rendering
+/// ([`DimensionVector`]'s `Display`, e.g. `"m·kg^-1"`, `"dimensionless"`)
+/// otherwise.
+///
+/// There is no `Value::type_name()` in `reify-ir`, and `reify-eval`'s
+/// `value_short_label` is unreachable across the inverted adapter → eval
+/// dependency edge, so this is a small local match.  The trailing wildcard
+/// keeps a newly added `Value` variant from breaking the build; it can only
+/// ever be reached by a value that is already a tripwire violation.
+fn got_label(v: &Value) -> String {
+    match v {
+        Value::Bool(_) => "Bool".to_string(),
+        Value::Int(_) => "Int".to_string(),
+        Value::Real(_) => "Real".to_string(),
+        Value::String(_) => "String".to_string(),
+        Value::Scalar { dimension, .. } => match dimension.canonical_name() {
+            Some(name) => format!("Scalar<{name}>"),
+            None => format!("Scalar<{dimension}>"),
+        },
+        Value::Undef => "Undef".to_string(),
+        Value::List(_) => "List".to_string(),
+        Value::Point(_) => "Point".to_string(),
+        Value::Vector(_) => "Vector".to_string(),
+        Value::Direction { .. } => "Direction".to_string(),
+        Value::Enum { .. } => "Enum".to_string(),
+        Value::Option(_) => "Option".to_string(),
+        Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
+        other => format!("{}", ValueVariantName(other)),
+    }
+}
+
+/// `Display` shim naming a [`Value`] variant not enumerated in [`got_label`].
+///
+/// Renders the leading identifier of the value's `Debug` form, which is the
+/// variant name for every `Value` variant, without dragging the (potentially
+/// very large) payload into a diagnostic string.
+struct ValueVariantName<'a>(&'a Value);
+
+impl std::fmt::Display for ValueVariantName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let dbg = format!("{:?}", self.0);
+        let name: &str = dbg
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
+        if name.is_empty() {
+            f.write_str("value")
+        } else {
+            f.write_str(name)
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

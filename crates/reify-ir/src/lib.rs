@@ -79,6 +79,7 @@ pub use geometry::{
 };
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+    check_length_field, non_length_kernel_field_message, non_numeric_kernel_field_message,
 };
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
