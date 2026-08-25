@@ -1174,6 +1174,12 @@ structure def Probe {
 /// 286-1 value:
 ///
 /// (a) Structural: `tolerance_value` is a `Let` cell in the compiled stdlib template.
+/// (a2) Static type: that same cell's COMPILER-INFERRED type is `Scalar<LENGTH>`.
+///     This is a function of the builtin's argument ORDER (see the assert), so it
+///     is the one place in the tree that would catch a silent revert to
+///     grade-first — measured: mutating the prelude call site back to
+///     `iso_it_tolerance(grade, nominal_min, nominal_max)` makes this assert fail
+///     with `left: Int`.
 /// (b) Eval: iso_it_tolerance(30mm, 50mm, 7) yields LENGTH Scalar ≈ 24.969µm
 ///     (IT7@Ø30–50 = 25µm per ISO 286-1; α's test pins this to 24.969e-6 m).
 ///
@@ -1202,6 +1208,34 @@ fn iso_tolerance_grade_tolerance_value_derived_let() {
         "ISOToleranceGrade.tolerance_value should be a Let cell (derived from iso_it_tolerance), \
          got {:?}",
         tol_cell.kind
+    );
+
+    // (a2) Static-type check: the COMPILER-INFERRED type of the derived let ──
+    //
+    // `iso_it_tolerance` is not registered in any of the units.rs builtin name
+    // families, so its call sites fall through the NoUserFunctions ladder to the
+    // terminal FIRST-ARG fallback. That makes this cell's static type a direct
+    // function of the builtin's argument ORDER:
+    //   grade-first  (grade, nmin, nmax) → arg-0 is Int    → inferred Int
+    //   subject-first (nmin, nmax, grade) → arg-0 is Length → inferred Scalar<LENGTH>
+    // i.e. the #6091 flip moved this cell from the wrong static type to the right
+    // one as an incidental side effect. It is user-visible — it governs unit
+    // checking on every downstream expression over `tolerance_value` (and over
+    // `it7_width` at the example's own call site) — so it is pinned here rather
+    // than left to chance. Without this assertion a later registration or ladder
+    // change could silently revert it and nothing in the tree would notice.
+    //
+    // This pins the OBSERVED type only. It deliberately does NOT add a builtin
+    // signature-registry row for `iso_it_tolerance`: that remains task #6006's
+    // surface (registry τ4), and duplicating it here would collide with it.
+    assert_eq!(
+        tol_cell.cell_type,
+        Type::length(),
+        "ISOToleranceGrade.tolerance_value should infer Scalar<LENGTH> under the \
+         subject-first argument order (arg-0 is a Length, so the first-arg fallback \
+         is accidentally correct); an `Int` here means the argument order regressed \
+         to grade-first, got {:?}",
+        tol_cell.cell_type
     );
 
     // (b) Eval: tolerance_value = iso_it_tolerance(30mm, 50mm, 7) ≈ 24.969µm ──
