@@ -127,15 +127,30 @@ use reify_core::DimensionVector;
 
 /// Classify a [`Value`] arriving at a **length-semantic kernel field**.
 ///
-/// Returns `None` when `v` carries [`DimensionVector::LENGTH`] — the only
-/// in-contract shape for a length field.  Otherwise returns `Some(msg)`, where
-/// `msg` is [`non_length_kernel_field_message`]'s output and therefore names
-/// BOTH the op kind and the field (boundary rows 13/14; C4 forbids a bare
+/// Returns `None` only for a [`Value::Scalar`] carrying
+/// [`DimensionVector::LENGTH`] — the one in-contract shape for a length field.
+/// Otherwise returns `Some(msg)`, where `msg` is
+/// [`non_length_kernel_field_message`]'s output and therefore names BOTH the op
+/// kind and the field (boundary rows 13/14; C4 forbids a bare
 /// `"expected numeric value"` here).
 ///
-/// A bare `Value::Real` / `Value::Int` is DIMENSIONLESS under
-/// [`Value::dimension`], so it classifies as a violation — which is exactly the
-/// case the tripwire exists to catch.
+/// A bare `Value::Real` / `Value::Int` is not a `Scalar` at all, so it
+/// classifies as a violation — which is exactly the case the tripwire exists to
+/// catch.
+///
+/// # Why the accept test is `Scalar`-shaped, not `v.dimension()`-shaped
+///
+/// [`Value::dimension`] derives an AGGREGATE's dimension from its FIRST
+/// component, so `Value::Point([length(1.0), length(0.0), length(0.0)])`
+/// reports `LENGTH`.  A `dimension()`-keyed accept test would therefore judge
+/// that aggregate in-contract at a *scalar* length field: no diagnostic, no
+/// armed panic — even though it cannot be a length and `Value::as_f64` rejects
+/// it a line later.  It was also inconsistent, since
+/// `Value::Point([Real(1.0), ..])` WAS flagged.  A hand-built
+/// [`crate::geometry::GeometryOp`] is precisely the C2-corollary route this
+/// tripwire watches for (module docs § (c)), so an aggregate slipping past the
+/// classifier is a real hole in the detector.  Matching on the `Scalar` shape
+/// closes it: `Point`/`Vector`/`List`/`Complex` now report.
 ///
 /// This is a **detector, never a gate**: the caller must report the message and
 /// then proceed with the disposition it would have had anyway.  See the module
@@ -145,7 +160,7 @@ use reify_core::DimensionVector;
 /// stays correct as variants are added; `field` is the literal field name at
 /// the call site.
 pub fn check_length_field(op_kind: &str, field: &str, v: &Value) -> Option<String> {
-    if v.dimension() == DimensionVector::LENGTH {
+    if matches!(v, Value::Scalar { dimension, .. } if *dimension == DimensionVector::LENGTH) {
         return None;
     }
     let msg = non_length_kernel_field_message(op_kind, field, &got_label(v));
@@ -181,10 +196,13 @@ thread_local! {
 
 /// Is the [`check_length_field`] debug assertion armed on this thread?
 ///
+/// TEST-FACING; see [`arm_length_tripwire_assert`].
+///
 /// Always `false` unless a [`LengthTripwireAssertGuard`] from
 /// [`arm_length_tripwire_assert`] is alive on this thread. Reads correctly in
 /// both profiles; in release the assertion it guards is compiled out, so an
 /// armed release build still only *reports*.
+#[doc(hidden)]
 pub fn length_tripwire_assert_armed() -> bool {
     ASSERT_ARMED.with(std::cell::Cell::get)
 }
@@ -193,6 +211,9 @@ pub fn length_tripwire_assert_armed() -> bool {
 ///
 /// Restores the previous arm state on `Drop`, so nesting composes and a
 /// `#[should_panic]` unwind still cleans up.
+///
+/// TEST-FACING; see [`arm_length_tripwire_assert`].
+#[doc(hidden)]
 #[must_use = "the assertion is disarmed as soon as the guard is dropped"]
 pub struct LengthTripwireAssertGuard {
     prev: bool,
@@ -207,6 +228,23 @@ impl Drop for LengthTripwireAssertGuard {
 /// Arm the [`check_length_field`] debug assertion for the current thread until
 /// the returned guard is dropped.
 ///
+/// # TEST-ONLY. Never call this from production code
+///
+/// `reify-ir` is a dependency of 13+ crates and has no `cfg(test)`-only export
+/// path to hide this behind, so the three arming symbols
+/// ([`arm_length_tripwire_assert`], [`LengthTripwireAssertGuard`],
+/// [`length_tripwire_assert_armed`]) are `#[doc(hidden)]` rather than absent:
+/// they do not appear in the advertised API surface. Calling this from
+/// production code would, in a debug build, convert every legacy bare-`Value`
+/// kernel op on that thread into a panic — the exact PRD D5 breakage the
+/// default-disarmed design exists to avoid.
+///
+/// **Bind the guard.** `let _g = arm_length_tripwire_assert();` arms for the
+/// enclosing scope; `let _ = arm_length_tripwire_assert();` drops it
+/// IMMEDIATELY, silently turning an injection test into a no-op that still
+/// passes its non-panic assertions. The `#[must_use]` on the guard does not
+/// catch that form — only a bare unbound call.
+///
 /// # The default is DISARMED, and why
 ///
 /// C4's letter asks for an assertion "under `cfg(debug_assertions)`". A
@@ -215,9 +253,9 @@ impl Drop for LengthTripwireAssertGuard {
 /// base of task #5751 —
 ///
 /// - **539** `Value::Real(` / `Value::Int(` occurrences inside
-///   `crates/reify-kernel-occt/src/lib.rs`'s own `mod tests` (which begins at
-///   `:4887`; e.g. `make_box_20_10_5`, which feeds three bare `Value::Real`s
-///   straight into `GeometryOp::Box`);
+///   `crates/reify-kernel-occt/src/lib.rs`'s own `#[cfg(all(test, has_occt))]
+///   mod tests` (e.g. its `make_box_20_10_5` helper, which feeds three bare
+///   `Value::Real`s straight into `GeometryOp::Box`);
 /// - **39 of the 52** `crates/reify-kernel-occt/tests/harness_occt/*.rs`
 ///   modules contain `Value::Real(`;
 /// - **43** occurrences across the **17** in-crate
@@ -246,6 +284,7 @@ impl Drop for LengthTripwireAssertGuard {
 /// violation naming op kind and field whether or not the assertion is armed.
 /// Arming only escalates that report to a panic, and only for the arming
 /// thread, so a test can assert the tripwire fires without a subscriber.
+#[doc(hidden)]
 pub fn arm_length_tripwire_assert() -> LengthTripwireAssertGuard {
     let prev = ASSERT_ARMED.with(|c| c.replace(true));
     LengthTripwireAssertGuard { prev }
@@ -289,54 +328,74 @@ pub fn non_numeric_kernel_field_message(op_kind: &str, field: &str) -> String {
 /// the label carries it, via [`DimensionVector::canonical_name`] when the
 /// dimension is a named singleton and the raw exponent rendering
 /// ([`DimensionVector`]'s `Display`, e.g. `"m·kg^-1"`, `"dimensionless"`)
-/// otherwise.
+/// otherwise.  Every other variant is named by the `&'static str` table in
+/// [`value_variant_name`], so no payload is ever walked.
 ///
 /// There is no `Value::type_name()` in `reify-ir`, and `reify-eval`'s
 /// `value_short_label` is unreachable across the inverted adapter → eval
-/// dependency edge, so this is a small local match.  The trailing wildcard
-/// keeps a newly added `Value` variant from breaking the build; it can only
-/// ever be reached by a value that is already a tripwire violation.
+/// dependency edge, so this is a small local match.
 fn got_label(v: &Value) -> String {
-    match v {
-        Value::Bool(_) => "Bool".to_string(),
-        Value::Int(_) => "Int".to_string(),
-        Value::Real(_) => "Real".to_string(),
-        Value::String(_) => "String".to_string(),
-        Value::Scalar { dimension, .. } => match dimension.canonical_name() {
+    if let Value::Scalar { dimension, .. } = v {
+        return match dimension.canonical_name() {
             Some(name) => format!("Scalar<{name}>"),
             None => format!("Scalar<{dimension}>"),
-        },
-        Value::Undef => "Undef".to_string(),
-        Value::List(_) => "List".to_string(),
-        Value::Point(_) => "Point".to_string(),
-        Value::Vector(_) => "Vector".to_string(),
-        Value::Direction { .. } => "Direction".to_string(),
-        Value::Enum { .. } => "Enum".to_string(),
-        Value::Option(_) => "Option".to_string(),
-        Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
-        other => format!("{}", ValueVariantName(other)),
+        };
     }
+    value_variant_name(v).to_string()
 }
 
-/// `Display` shim naming a [`Value`] variant not enumerated in [`got_label`].
+/// The `&'static str` variant-name table backing [`got_label`].
 ///
-/// Renders the leading identifier of the value's `Debug` form, which is the
-/// variant name for every `Value` variant, without dragging the (potentially
-/// very large) payload into a diagnostic string.
-struct ValueVariantName<'a>(&'a Value);
-
-impl std::fmt::Display for ValueVariantName<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let dbg = format!("{:?}", self.0);
-        let name: &str = dbg
-            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .next()
-            .unwrap_or("");
-        if name.is_empty() {
-            f.write_str("value")
-        } else {
-            f.write_str(name)
-        }
+/// # Why this is a table and not a `Debug`-prefix shim
+///
+/// The obvious shortcut — `format!("{v:?}")` and keep the leading identifier —
+/// materialises the ENTIRE payload before truncating it.  The variants that
+/// reach this table are exactly the ones most likely to be enormous
+/// ([`Value::Set`], [`Value::Map`], [`Value::StructureInstance`]), so a
+/// violation carrying a 100k-element `Set` at a length field would recursively
+/// format the whole set to produce the three characters `"Set"` — on the kernel
+/// boundary, which is a hot path.  Naming the variant directly costs nothing.
+///
+/// Every current [`Value`] variant has an explicit arm.  The trailing wildcard
+/// is unreachable today and exists only so that adding a variant is not an
+/// instant build break in an unrelated crate; it can only ever be reached by a
+/// value that is already a tripwire violation.
+fn value_variant_name(v: &Value) -> &'static str {
+    match v {
+        Value::Bool { .. } => "Bool",
+        Value::Int { .. } => "Int",
+        Value::Real { .. } => "Real",
+        Value::String { .. } => "String",
+        Value::Scalar { .. } => "Scalar",
+        Value::Enum { .. } => "Enum",
+        Value::List { .. } => "List",
+        Value::Set { .. } => "Set",
+        Value::Map { .. } => "Map",
+        Value::Option { .. } => "Option",
+        Value::Field { .. } => "Field",
+        Value::Lambda { .. } => "Lambda",
+        Value::Tensor { .. } => "Tensor",
+        Value::Point { .. } => "Point",
+        Value::Vector { .. } => "Vector",
+        Value::Complex { .. } => "Complex",
+        Value::Orientation { .. } => "Orientation",
+        Value::Frame { .. } => "Frame",
+        Value::Transform { .. } => "Transform",
+        Value::Plane { .. } => "Plane",
+        Value::Axis { .. } => "Axis",
+        Value::Direction { .. } => "Direction",
+        Value::BoundingBox { .. } => "BoundingBox",
+        Value::Range { .. } => "Range",
+        Value::Matrix { .. } => "Matrix",
+        Value::SampledField { .. } => "SampledField",
+        Value::StructureInstance { .. } => "StructureInstance",
+        Value::GeometryHandle { .. } => "GeometryHandle",
+        Value::AffineMap { .. } => "AffineMap",
+        Value::Selector { .. } => "Selector",
+        Value::Feature { .. } => "Feature",
+        Value::Undef => "Undef",
+        #[allow(unreachable_patterns)]
+        _ => "value",
     }
 }
 
@@ -346,12 +405,15 @@ mod tests {
     use crate::value::Value;
     use reify_core::DimensionVector;
 
-    /// The five non-LENGTH values a kernel length field can receive.
+    /// The non-LENGTH values a kernel length field can receive.
     ///
     /// `Real`/`Int` are the bare-literal case the C4 tripwire exists to
     /// detect; `Scalar{MASS}` is a *dimensioned but wrong* value;
-    /// `String`/`Undef` are the non-numeric cases that also fail
-    /// `Value::as_f64`.
+    /// `String`/`Bool`/`Undef` are the non-numeric cases that also fail
+    /// `Value::as_f64`; and `Point`/`List` are the AGGREGATE cases — a
+    /// `Point` of three LENGTHs is the shape a `v.dimension()`-keyed accept
+    /// test would wrongly wave through, since `Value::dimension` derives an
+    /// aggregate's dimension from its first component.
     fn non_length_values() -> Vec<Value> {
         vec![
             Value::Real(1.0),
@@ -361,7 +423,14 @@ mod tests {
                 dimension: DimensionVector::MASS,
             },
             Value::String("x".into()),
+            Value::Bool(true),
             Value::Undef,
+            Value::Point(vec![
+                Value::length(1.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ]),
+            Value::List(vec![Value::length(1.0)]),
         ]
     }
 
@@ -467,6 +536,97 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    /// An AGGREGATE whose first component is a LENGTH is still a violation.
+    ///
+    /// This is the hole a `v.dimension()`-keyed accept test leaves open:
+    /// `Value::dimension` derives a `Point`/`Vector`'s dimension from its FIRST
+    /// component, so `Point([length, length, length])` reports `LENGTH` and
+    /// would be judged in-contract at a scalar length field — no diagnostic, no
+    /// armed panic — even though `Value::as_f64` rejects it a line later.  It
+    /// was also inconsistent with `Point([Real, ..])`, which WAS flagged.
+    #[test]
+    fn length_dimensioned_aggregate_is_still_a_violation() {
+        // `Point`/`Vector` are the two variants `Value::dimension` derives
+        // from a first component, so these are the ones that would slip past a
+        // `dimension()`-keyed accept test.
+        for aggregate in [
+            Value::Point(vec![
+                Value::length(1.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ]),
+            Value::Vector(vec![
+                Value::length(1.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ]),
+        ] {
+            // Precondition: this aggregate genuinely does report LENGTH, so the
+            // test is exercising the classifier and not a trivially-false
+            // premise.
+            assert_eq!(
+                aggregate.dimension(),
+                DimensionVector::LENGTH,
+                "premise: {aggregate:?} must report LENGTH via Value::dimension"
+            );
+            let msg = check_length_field("Fillet", "radius", &aggregate).unwrap_or_else(|| {
+                panic!("an aggregate at a scalar length field must be a violation: {aggregate:?}")
+            });
+            assert!(msg.contains("Fillet"), "{msg}");
+            assert!(msg.contains("radius"), "{msg}");
+        }
+
+        // `List` reports DIMENSIONLESS rather than deriving from its first
+        // element, so it was already flagged — pinned here so the two aggregate
+        // shapes stay classified alike whichever way `Value::dimension` moves.
+        let list = Value::List(vec![Value::length(1.0)]);
+        assert!(
+            check_length_field("Fillet", "radius", &list).is_some(),
+            "a List at a scalar length field must be a violation"
+        );
+
+        // Control: the SCALAR shape it is imitating is still accepted.
+        assert_eq!(
+            check_length_field("Fillet", "radius", &Value::length(1.0)),
+            None
+        );
+    }
+
+    /// The `got` label never drags a payload into the diagnostic.
+    ///
+    /// `Set`/`Map`/`StructureInstance` are the variants that reach
+    /// `value_variant_name`'s table rather than a bespoke arm, and are exactly
+    /// the ones that can be enormous.  A `Debug`-prefix shim would recursively
+    /// format the whole collection to produce a three-character label; the
+    /// table costs nothing.  Asserting the message length is bounded pins that
+    /// property rather than merely the spelling.
+    #[test]
+    fn got_label_names_bulk_variants_without_materialising_their_payload() {
+        let big: std::collections::BTreeSet<Value> =
+            (0..2_000).map(|i| Value::Real(f64::from(i))).collect();
+        let expected = non_length_kernel_field_message("Fillet", "radius", "Set");
+        let msg = check_length_field("Fillet", "radius", &Value::Set(big))
+            .expect("a Set at a length field is a violation");
+        assert_eq!(msg, expected);
+        assert!(
+            msg.len() < 128,
+            "the diagnostic must not carry the payload ({} bytes): {msg}",
+            msg.len()
+        );
+
+        // A second bulk variant, so a single hardcoded arm cannot pass.
+        let map: std::collections::BTreeMap<Value, Value> = (0..2_000)
+            .map(|i| (Value::Int(i), Value::Real(f64::from(i as i32))))
+            .collect();
+        let msg = check_length_field("Fillet", "radius", &Value::Map(map))
+            .expect("a Map at a length field is a violation");
+        assert_eq!(
+            msg,
+            non_length_kernel_field_message("Fillet", "radius", "Map")
+        );
+        assert!(msg.len() < 128, "{msg}");
+    }
+
     /// The `got` label distinguishes the observed variant, and names the
     /// dimension for a dimensioned-but-wrong `Scalar`.
     #[test]
@@ -501,7 +661,9 @@ mod tests {
     /// The `#[cfg(debug_assertions)]` attribute is MANDATORY on a
     /// `#[should_panic]` test for a debug-only assertion: in release the assert
     /// is compiled out and an ungated test would falsely pass. This is the
-    /// in-repo rule documented at `crates/reify-kernel-occt/src/lib.rs:5822-5835`.
+    /// in-repo rule documented in `crates/reify-kernel-occt/src/lib.rs`'s
+    /// `mod tests`, above the three `#[should_panic(expected = "must be a
+    /// parent_handle key")]` tests.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "Fillet")]
@@ -572,6 +734,47 @@ mod tests {
         assert!(!length_tripwire_assert_armed());
     }
 
+    /// **The arm is THREAD-LOCAL, and that is load-bearing.**
+    ///
+    /// Two stated invariants ride on it, and a refactor to a process-global
+    /// `static ARMED: AtomicBool` would keep every other test in this module
+    /// green while breaking both:
+    ///
+    /// 1. An armed injection test must not panic an unrelated PARALLEL test's
+    ///    legitimate bare-`Value` op — `cargo test` runs tests as threads in one
+    ///    process, so a global arm would produce order-dependent flakes across
+    ///    the ~1500 legacy fixtures (PRD D5).
+    /// 2. The arm deliberately does NOT cross a kernel-thread boundary, so
+    ///    `OcctKernelHandle`'s worker thread never sees it and an injection test
+    ///    must drive the kernel on the test thread.
+    ///
+    /// Profile-independent: in debug a global arm would panic the spawned
+    /// thread (surfacing as a `join` error); in release the panic arm is
+    /// compiled out, so the `length_tripwire_assert_armed()` read is what
+    /// catches it.
+    #[test]
+    fn arm_is_thread_local_and_does_not_cross_a_spawned_thread() {
+        let _g = arm_length_tripwire_assert();
+        assert!(length_tripwire_assert_armed());
+
+        std::thread::spawn(|| {
+            assert!(
+                !length_tripwire_assert_armed(),
+                "the arm must not be visible on another thread — a process-global \
+                 arm would flake every parallel test holding a bare Value"
+            );
+            assert!(
+                check_length_field("Fillet", "radius", &Value::Real(1.0)).is_some(),
+                "an unarmed thread must REPORT the violation, not raise it"
+            );
+        })
+        .join()
+        .expect("the spawned thread must not panic — it inherits no arm");
+
+        // ...and the outer thread's own arm survived the excursion.
+        assert!(length_tripwire_assert_armed());
+    }
+
     /// **Boundary row 14 — the release contract.**
     ///
     /// In a release build the panic arm is compiled out entirely, so even an
@@ -603,33 +806,29 @@ mod tests {
         );
     }
 
-    /// **Cross-kernel byte-identity (step-9D).**
+    /// **Cross-kernel byte-identity (step-9D), this crate's half.**
     ///
-    /// `reify-ir` cannot depend on either kernel crate, so the identity is
-    /// established structurally: there is exactly ONE producer of the
-    /// diagnostic, and both kernels are required to emit its output verbatim.
-    /// The per-kernel half of this claim lives in
+    /// This test pins ONLY what `reify-ir` can pin: the shared diagnostic
+    /// carries no kernel identity and is a pure function of
+    /// `(op_kind, field, value)`, which is *why* "what fidget emits" and "what
+    /// occt emits" can be the same `String` by construction rather than by two
+    /// literals happening to agree.
+    ///
+    /// The byte-identity half itself is NOT assertable here — `reify-ir` cannot
+    /// depend on either kernel crate. It lives in
     /// `fidget_length_field_enumeration_is_complete` and
     /// `occt_every_length_field_is_gated`, each of which `assert_eq!`s the
-    /// captured message against `check_length_field`'s return for the same
-    /// `(op_kind, field, value)`.
+    /// message captured from the real kernel against `check_length_field`'s
+    /// return for the same `(op_kind, field, value)`.
     ///
-    /// Here we pin the properties that make that possible: the message is a
-    /// pure function of `(op_kind, field, value)` with no kernel identity in
-    /// it, so "what fidget emits" and "what occt emits" are the same `String`
-    /// by construction rather than by two literals happening to agree.
+    /// (An earlier draft opened by comparing two identical calls to this pure
+    /// function against each other, as a stand-in for "the two kernels". That
+    /// assertion cannot fail for ANY implementation, so it is gone.)
     #[test]
-    fn diagnostic_is_kernel_independent_so_both_kernels_emit_one_string() {
+    fn shared_diagnostic_carries_no_kernel_identity() {
         for (op_kind, field) in [("Sphere", "radius"), ("Box", "width")] {
             let v = Value::Real(1.0);
-
-            // Two independent evaluations stand in for the two kernels'
-            // call sites; both go through the single shared producer.
-            let as_fidget_would = check_length_field(op_kind, field, &v);
-            let as_occt_would = check_length_field(op_kind, field, &v);
-            assert_eq!(as_fidget_would, as_occt_would);
-
-            let msg = as_fidget_would.expect("a bare Real is a violation");
+            let msg = check_length_field(op_kind, field, &v).expect("a bare Real is a violation");
 
             // No kernel identity leaks into the shared string — that is what
             // keeps the two emissions byte-identical. Kernel attribution is
