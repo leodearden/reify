@@ -4052,17 +4052,18 @@ mod tests {
         );
     }
 
-    /// T5 (rewrite-failure facet, #5193): `rewrite_files_to_abs`'s `Err` arm
-    /// (commands.rs:464-484) is graceful degradation, not a hard failure —
-    /// when a `files[]` entry can't be canonicalized (e.g. it was removed
-    /// from disk between the engine load and the abs-path rewrite), the
-    /// entry must be left as its stem-only module key rather than panicking,
-    /// erroring the whole open, or silently disappearing from `files[]`.
+    /// T5 (rewrite-failure facet, #5193): the `Err` arm of
+    /// `rewrite_files_to_abs` (in `commands.rs`) is graceful degradation, not
+    /// a hard failure — when a `files[]` entry can't be canonicalized (e.g. it
+    /// was removed from disk between the engine load and the abs-path
+    /// rewrite), the entry must be left as its stem-only module key rather
+    /// than panicking, erroring the whole open, or silently disappearing from
+    /// `files[]`.
     ///
     /// `source_map` (and so `GuiState::files`) always holds exactly one
-    /// entry: `commit_state` clears and re-inserts a single key per load
-    /// (engine.rs:282-283), and v1 does not add imported modules' content to
-    /// `source_map` either (engine.rs:879-884). So the only way to reach
+    /// entry: `commit_state` (in `engine.rs`) clears and re-inserts a single
+    /// key per load, and v1 does not add imported modules' content to
+    /// `source_map` either. So the only way to reach
     /// this branch is to delete the just-loaded file between
     /// `load_file_into_engine` (which reads it while it still exists) and
     /// `resolve` (whose canonicalize call then fails) — exactly what this
