@@ -16,6 +16,17 @@ use std::time::Duration;
 
 mod common;
 
+/// The per-call fail-soft breadcrumb literals, shared with
+/// `tests/jcodemunch_live.rs`.
+///
+/// `#[path]` rather than a `common::` re-export: the two binaries consume
+/// these with opposite polarity — the tests here assert the literal is
+/// PRESENT in the real binary's stderr, `assert_live_leg` over there asserts
+/// it is ABSENT — and an absence check is only meaningful against a string
+/// the binary can actually emit. See the module's own header.
+#[path = "common/breadcrumbs.rs"]
+mod breadcrumbs;
+
 // -----------------------------------------------------------------------
 // Fixture helpers
 // -----------------------------------------------------------------------
@@ -3262,19 +3273,21 @@ mod freshness_gate {
 
     /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
     ///
-    /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via its
-    /// `PDEAD_CALL_BREADCRUMBS` constant. This test is the anti-rot lock for
-    /// that literal. The seam tests over there prove `assert_live_leg` FIRES
-    /// on a given string; they cannot prove that string is what the binary
-    /// actually emits. This test observes the breadcrumb come out of the REAL
-    /// binary on the ordinary merge gate, so a reword of the `eprintln!` at
+    /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
+    /// `breadcrumbs::PDEAD_CALL`. This test is the anti-rot lock for that
+    /// literal. The seam tests over there prove `assert_live_leg` FIRES on a
+    /// given string; they cannot prove that string is what the binary actually
+    /// emits. This test observes the breadcrumb come out of the REAL binary on
+    /// the ordinary merge gate, so a reword of the `eprintln!` at
     /// `src/jcodemunch_client.rs:1135` turns THIS test red instead of silently
     /// reverting the capstone to vacuous.
     ///
-    /// If you reword that `eprintln!`, you must carry the new literal to
-    /// `jcodemunch_live.rs::PDEAD_CALL_BREADCRUMBS` as well — fixing only this
-    /// test restores the green build while leaving the capstone vacuous, which
-    /// is the precise failure mode PRD §2.4 describes.
+    /// Both consumers read the SAME constant, so a reword is one edit in
+    /// `tests/common/breadcrumbs.rs` and both move together. When each binary
+    /// spelled its own copy, only prose bound them: fixing this test alone
+    /// restored the green build while leaving the capstone asserting the
+    /// absence of a string that could no longer appear — PRD §2.4's failure
+    /// mode displaced one file over.
     ///
     /// The sibling below (`serve_down_fail_soft_takes_precedence_over_a_stale_index`,
     /// above) pins the CONSTRUCTION layer; this pins the PER-CALL layer. They
@@ -3334,30 +3347,32 @@ mod freshness_gate {
 
         // --- the fifth, and the only one that can tell the difference ---
         assert!(
-            stderr.contains("jcodemunch get_dead_code_v2:"),
+            stderr.contains(breadcrumbs::PDEAD_GET_DEAD_CODE),
             "the real binary must emit the per-call fail-soft breadcrumb this \
              run's emptiness is EXPLAINED BY. Every assertion above passed, so \
              without this one the run is indistinguishable from a genuine \
              zero-finding success. If the `eprintln!` at \
-             src/jcodemunch_client.rs:1135 was reworded, carry the new literal \
-             to jcodemunch_live.rs::PDEAD_CALL_BREADCRUMBS.\nstderr:\n{stderr}"
+             src/jcodemunch_client.rs:1135 was reworded, update \
+             breadcrumbs::PDEAD_GET_DEAD_CODE — the live capstone reads the \
+             same constant and moves with it.\nstderr:\n{stderr}"
         );
     }
 
     /// PER-CALL FAIL-SOFT, P1 leg — the anti-rot lock for the load-bearing
-    /// half of `jcodemunch_live.rs`'s `P1_CALL_BREADCRUMBS`.
+    /// half of `breadcrumbs::P1_CALL`.
     ///
     /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
-    /// `P1_CALL_BREADCRUMBS`. A reword of the `eprintln!` at
-    /// `src/jcodemunch_client.rs:1074` must be carried to that constant too,
-    /// not just to this test.
+    /// `breadcrumbs::P1_CALL`, which reads the same
+    /// `breadcrumbs::P1_GET_CHANGED_SYMBOLS` this test asserts on — so a
+    /// reword of the `eprintln!` at `src/jcodemunch_client.rs:1074` is one
+    /// edit and both consumers move.
     ///
-    /// `find_references` is deliberately NOT asserted: it runs once per symbol
-    /// returned by `get_changed_symbols` (`src/p1_producer_orphan.rs:131/146`),
-    /// and that call errored, so it is unreachable here. Asserting it would be
-    /// a check that can never fire. Its literal is pinned by
-    /// `jcodemunch_live.rs`'s seam test only — an asymmetry recorded beside
-    /// the constant rather than papered over.
+    /// `find_references` is NOT asserted HERE, and could not be: this
+    /// responder errors every tool, so `get_changed_symbols` returns no
+    /// symbol and the loop at `src/p1_producer_orphan.rs:131/146` never runs
+    /// its body. That is a property of THIS responder, not of the harness —
+    /// the sibling below (`per_call_fail_soft_on_p1s_second_call`) dispatches
+    /// on the arguments to reach it.
     #[test]
     fn per_call_fail_soft_on_the_p1_pair() {
         let s = scenario();
@@ -3390,11 +3405,122 @@ mod freshness_gate {
         );
 
         assert!(
-            stderr.contains("jcodemunch get_changed_symbols:"),
+            stderr.contains(breadcrumbs::P1_GET_CHANGED_SYMBOLS),
             "the real binary must emit the per-call fail-soft breadcrumb. If \
              the `eprintln!` at src/jcodemunch_client.rs:1074 was reworded, \
-             carry the new literal to \
-             jcodemunch_live.rs::P1_CALL_BREADCRUMBS.\nstderr:\n{stderr}"
+             update breadcrumbs::P1_GET_CHANGED_SYMBOLS — the live capstone \
+             reads the same constant.\nstderr:\n{stderr}"
+        );
+    }
+
+    /// PER-CALL FAIL-SOFT, P1's SECOND call — the anti-rot lock for
+    /// `breadcrumbs::P1_FIND_REFERENCES`.
+    ///
+    /// The sibling above errors EVERY tool, so `get_changed_symbols` returns
+    /// nothing and `find_references` is never reached. That is a limitation of
+    /// that responder, not of the mock: `spawn_mock_mcp`'s closure receives
+    /// the `tools/call` arguments, and the two calls are trivially
+    /// distinguishable — `get_changed_symbols` sends
+    /// `{repo, since_sha, until_sha}` (`src/jcodemunch_client.rs:1063-1070`)
+    /// while `find_references` sends `{repo, identifier}` (`:1112-1115`). So
+    /// this test DISPATCHES: it answers the first call with a real symbol row
+    /// and errors only the second, which is what walks the real binary into
+    /// the `Err` arm at `:1117`.
+    ///
+    /// Without it, `P1_FIND_REFERENCES` would be pinned only by
+    /// `jcodemunch_live.rs`'s seam test — i.e. against SYNTHETIC stderr, which
+    /// proves `assert_live_leg` fires on the string but not that the binary
+    /// ever emits it. A reword of `:1117` would then leave every test green
+    /// while the live capstone asserted the absence of a string that can no
+    /// longer appear.
+    ///
+    /// The symbol row is `seed`/`seed.rs`/line 1, which is not decoration:
+    /// `init_git_repo_with_one_commit` commits exactly `pub fn seed() {}` into
+    /// the scenario repo, so suppression enrichment
+    /// (`RealJCodemunchOps::get_changed_symbols`) reads a file that EXISTS and
+    /// finds no `#[allow(dead_code)]` / `#[cfg(test)]` above the declaration.
+    /// A symbol that tripped either guard would be skipped before
+    /// `find_references` was ever called, and this test would pass vacuously.
+    ///
+    /// HERMETIC and gate-resident: no serve, no network, no `uvx`, no
+    /// `#[ignore]`.
+    #[test]
+    fn per_call_fail_soft_on_p1s_second_call() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+        write_p1_done_task(&s.tasks_file, &s.live_head);
+
+        // `identifier` is present ONLY in find_references' arguments — error
+        // that one, answer get_changed_symbols with one well-formed
+        // `added_symbols` row (the shape `changed_symbols_from_wire` reads,
+        // `src/jcodemunch_client.rs:556-579`).
+        let mock = spawn_mock_mcp(|args| {
+            if args.get("identifier").is_some() {
+                None
+            } else {
+                Some(serde_json::json!({
+                    "added_symbols": [{"name": "seed", "file": "seed.rs", "line": 1}]
+                }))
+            }
+        });
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a per-call failure must still fail-soft, not refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "the gate must have ADMITTED this run; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("jcodemunch unreachable at"),
+            "the handshake must have SUCCEEDED; stderr:\n{stderr}"
+        );
+        // The FIRST call must have SUCCEEDED, or this test would be re-proving
+        // the sibling above rather than reaching the second call at all.
+        assert!(
+            !stderr.contains(breadcrumbs::P1_GET_CHANGED_SYMBOLS),
+            "get_changed_symbols was answered, so its breadcrumb must be \
+             silent — if it fired, the dispatch predicate is wrong and \
+             find_references was never reached; stderr:\n{stderr}"
+        );
+
+        // The symbol flowed all the way through: find_references errored, so
+        // it returned no reference, so P1 found no non-test caller and
+        // reported the orphan. Asserting the FINDING (not emptiness) is what
+        // proves the row survived decode + enrichment + every per-symbol
+        // suppression guard.
+        let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly the one orphan finding for `seed`; \
+             got {findings:?}\nstderr:\n{stderr}"
+        );
+        assert_eq!(
+            findings[0]["pattern"], "P1ProducerOrphan",
+            "the finding must come from the P1 detector; \
+             got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0]["summary"].as_str().unwrap_or_default().contains("`seed`"),
+            "the finding must name the symbol the mock returned, or the row \
+             did not actually reach the detector; got {:?}",
+            findings[0]
+        );
+
+        assert!(
+            stderr.contains(breadcrumbs::P1_FIND_REFERENCES),
+            "the real binary must emit find_references' per-call fail-soft \
+             breadcrumb. If the `eprintln!` at \
+             src/jcodemunch_client.rs:1117 was reworded, update \
+             breadcrumbs::P1_FIND_REFERENCES — the live capstone reads the \
+             same constant.\nstderr:\n{stderr}"
         );
     }
 

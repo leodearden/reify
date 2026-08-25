@@ -174,6 +174,16 @@
 
 mod common;
 
+/// The per-call fail-soft breadcrumb literals, shared with `tests/cli.rs`.
+///
+/// `#[path]` rather than a `common::` re-export: this module is consumed by
+/// two test binaries with opposite polarity (cli.rs asserts PRESENCE against
+/// the real binary; `assert_live_leg` below asserts ABSENCE on a live leg),
+/// and the absence direction is only meaningful against a string the binary
+/// can actually emit. See the module's own header.
+#[path = "common/breadcrumbs.rs"]
+mod breadcrumbs;
+
 // -----------------------------------------------------------------------
 // Finding-shape predicates (pure; no serve needed)
 // -----------------------------------------------------------------------
@@ -669,9 +679,15 @@ const PREFLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// # No redirect following
 ///
 /// `/mcp/` (trailing slash) 307-redirects and the redirect DROPS the
-/// `mcp-session-id` header — pinned at `src/bin/reify-audit.rs:185-188` and in
-/// δ's header. `redirects(0)` makes such a response fail conjunct 1 loudly
-/// here rather than silently losing the session downstream.
+/// `mcp-session-id` header — pinned by the `--jcodemunch-url` flag doc on
+/// `Args::jcodemunch_url` in `src/bin/reify-audit.rs` (and reinforced at both
+/// of that flag's default-value sites) and in δ's header. `redirects(0)` makes
+/// such a response fail conjunct 1 loudly here rather than silently losing the
+/// session downstream.
+///
+/// The pin is cited by SYMBOL, not by line range: it sits ~230 lines into a
+/// file whose earlier half churns, so a range goes stale on any edit above it
+/// — and this one had, pointing at the exit-code convention block instead.
 fn serve_identity_probe(url: &str) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(PREFLIGHT_TIMEOUT)
@@ -756,8 +772,9 @@ fn status_conjunct_failure(url: &str, code: u16) -> String {
     format!(
         "{url} answered `initialize` with HTTP {code}, not 200 — a 307 here \
          means the URL carries a trailing slash, and `/mcp/` redirects in a way \
-         that DROPS the mcp-session-id header (pinned at \
-         src/bin/reify-audit.rs:185-188 and in scripts/with-jcodemunch-serve.sh)"
+         that DROPS the mcp-session-id header (pinned by the --jcodemunch-url \
+         flag doc in src/bin/reify-audit.rs and in \
+         scripts/with-jcodemunch-serve.sh)"
     )
 }
 
@@ -962,7 +979,7 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
         pdead_code,
         &pdead_findings,
         &pdead_stderr,
-        PDEAD_CALL_BREADCRUMBS,
+        breadcrumbs::PDEAD_CALL,
     );
 
     // ---------------------------------------------------------------
@@ -991,7 +1008,7 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
         "--runs-db",
         runs_db,
     ]);
-    assert_live_leg("P1", p1_code, &p1_findings, &p1_stderr, P1_CALL_BREADCRUMBS);
+    assert_live_leg("P1", p1_code, &p1_findings, &p1_stderr, breadcrumbs::P1_CALL);
 
     // ---------------------------------------------------------------
     // 8. Operator-facing acceptance evidence. PRINTED, never asserted.
@@ -1017,62 +1034,6 @@ fn live_capstone_completes_a_real_session_over_a_freshly_indexed_non_empty_corpu
 /// diagnostic that needs it so an operator never has to reconstruct it.
 const RUN_COMMAND: &str = "  CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcodemunch-serve.sh --port 8917 -- \\\n\
      \x20   cargo test -p reify-audit --test jcodemunch_live -- --ignored --nocapture";
-
-/// The per-call fail-soft breadcrumbs `--pattern PDEAD` can emit.
-///
-/// Copied from `src/jcodemunch_client.rs:1135`, the `Err` arm of
-/// `RealJCodemunchOps::get_dead_code`. `--pattern PDEAD` reaches exactly one
-/// jcodemunch op (`src/pdead_dead_code.rs:35`), which is why this slice has
-/// exactly one entry.
-///
-/// WHY THIS LITERAL CANNOT SILENTLY ROT: `tests/cli.rs`'s
-/// `freshness_gate::per_call_fail_soft_is_a_vacuous_pass_the_capstone_must_catch`
-/// observes this exact string coming out of the REAL binary, hermetically, on
-/// the ordinary merge gate. The seam tests in `live_leg_seam` below prove
-/// `assert_live_leg` FIRES on this literal; they cannot prove the binary emits
-/// it. Reword the `eprintln!` and that cli.rs test goes red — carry the new
-/// literal here rather than deleting the assertion.
-const PDEAD_CALL_BREADCRUMBS: &[&str] = &["jcodemunch get_dead_code_v2:"];
-
-/// The per-call fail-soft breadcrumbs `--pattern P1` can emit.
-///
-/// Copied from `src/jcodemunch_client.rs:1074` and `:1117`, the `Err` arms of
-/// `RealJCodemunchOps::get_changed_symbols` and `::find_references`.
-/// `--pattern P1` reaches both (`src/p1_producer_orphan.rs:131` and `:146`).
-///
-/// # `find_references` is CONDITIONALLY reachable — its absence proves nothing
-///
-/// `:146` sits INSIDE the `for symbol in ... get_changed_symbols(...)` loop
-/// opened at `:131`, so it runs once per returned symbol. If that first call
-/// legitimately returns zero symbols the second breadcrumb is unreachable and
-/// its absence carries no information at all. `get_changed_symbols` has no
-/// such precondition: it runs on every P1 leg, so it is the load-bearing half
-/// of the pair and the only one whose silence is evidence.
-///
-/// Deliberately NOT listed: `get_untested_symbols` / `get_layer_violations`
-/// (`:1152`, `:1168`). Neither op is reachable from PDEAD or P1, so asserting
-/// their breadcrumbs would be decorative — a check that can never fire reads
-/// like coverage while providing none.
-///
-/// WHY THESE LITERALS CANNOT SILENTLY ROT — with one recorded ASYMMETRY:
-/// `tests/cli.rs`'s `freshness_gate::per_call_fail_soft_on_the_p1_pair`
-/// observes `"jcodemunch get_changed_symbols:"` coming out of the REAL binary,
-/// hermetically, on the ordinary merge gate; reword the `eprintln!` at
-/// `src/jcodemunch_client.rs:1074` and that test goes red.
-///
-/// `"jcodemunch find_references("` gets NO such production-level lock, and
-/// that is a deliberate consequence of its conditional reachability rather
-/// than an oversight: under the mock, `get_changed_symbols` errors, so no
-/// symbol is returned and `find_references` is never called — a cli.rs
-/// assertion on it could never fire. Its literal is therefore pinned by
-/// `live_leg_seam::live_leg_rejects_the_find_references_per_call_fail_soft`
-/// alone, i.e. against SYNTHETIC stderr. A reword of `:1117` would leave both
-/// halves green; the `get_changed_symbols` half is the one carrying real
-/// weight.
-const P1_CALL_BREADCRUMBS: &[&str] = &[
-    "jcodemunch get_changed_symbols:",
-    "jcodemunch find_references(",
-];
 
 /// The FIVE-part per-leg assertion, in the order that makes a failure
 /// self-diagnosing.
@@ -1105,8 +1066,8 @@ const P1_CALL_BREADCRUMBS: &[&str] = &[
 /// answered the call.
 ///
 /// `call_breadcrumbs` is per-leg because the reachable op set is — see
-/// `PDEAD_CALL_BREADCRUMBS` / `P1_CALL_BREADCRUMBS`, including the caveat that
-/// P1's `find_references` breadcrumb is only reachable when
+/// `breadcrumbs::PDEAD_CALL` / `breadcrumbs::P1_CALL`, including the caveat
+/// that P1's `find_references` breadcrumb is only reachable when
 /// `get_changed_symbols` returned at least one symbol.
 ///
 /// Shared by both legs rather than written twice, so the two cannot drift into
@@ -1239,7 +1200,7 @@ mod live_leg_seam {
             Some(0),
             &[],
             HEALTHY_STDERR,
-            PDEAD_CALL_BREADCRUMBS,
+            breadcrumbs::PDEAD_CALL,
         );
     }
 
@@ -1257,7 +1218,7 @@ mod live_leg_seam {
     fn live_leg_rejects_the_get_dead_code_per_call_fail_soft() {
         let stderr =
             vacuous_pass_stderr("jcodemunch get_dead_code_v2: transport error: connection closed");
-        assert_live_leg("PDEAD", Some(0), &[], &stderr, PDEAD_CALL_BREADCRUMBS);
+        assert_live_leg("PDEAD", Some(0), &[], &stderr, breadcrumbs::PDEAD_CALL);
     }
 
     /// The load-bearing half of the P1 pair: `get_changed_symbols` runs
@@ -1270,10 +1231,10 @@ mod live_leg_seam {
         let stderr = vacuous_pass_stderr(
             "jcodemunch get_changed_symbols: transport error: connection closed",
         );
-        assert_live_leg("P1", Some(0), &[], &stderr, P1_CALL_BREADCRUMBS);
+        assert_live_leg("P1", Some(0), &[], &stderr, breadcrumbs::P1_CALL);
     }
 
-    /// The SECOND entry of `P1_CALL_BREADCRUMBS`, which also proves the check
+    /// The SECOND entry of `breadcrumbs::P1_CALL`, which also proves the check
     /// scans the whole slice rather than stopping at the first element: this
     /// fixture carries no `get_changed_symbols` line at all.
     #[test]
@@ -1284,7 +1245,7 @@ mod live_leg_seam {
         let stderr = vacuous_pass_stderr(
             "jcodemunch find_references(some_symbol): transport error: connection closed",
         );
-        assert_live_leg("P1", Some(0), &[], &stderr, P1_CALL_BREADCRUMBS);
+        assert_live_leg("P1", Some(0), &[], &stderr, breadcrumbs::P1_CALL);
     }
 
     /// The CONSTRUCTION layer, which has shipped since step-9 with no seam
@@ -1301,7 +1262,7 @@ mod live_leg_seam {
              transport error: connection refused — P1 degraded to zero findings; \
              P2/P5 still run (pass --no-jcodemunch to silence)",
         );
-        assert_live_leg("PDEAD", Some(0), &[], &stderr, PDEAD_CALL_BREADCRUMBS);
+        assert_live_leg("PDEAD", Some(0), &[], &stderr, breadcrumbs::PDEAD_CALL);
     }
 }
 
