@@ -103,11 +103,101 @@ pub fn check_length_field(op_kind: &str, field: &str, v: &Value) -> Option<Strin
         return None;
     }
     let msg = non_length_kernel_field_message(op_kind, field, &got_label(v));
-    // step-4 seam: the opt-in `cfg(debug_assertions)` panic arm goes here. It
-    // must panic with *this* `msg`, so the assertion text and the release
-    // diagnostic text are one string by construction rather than two literals
-    // free to drift.
+    // The opt-in debug assertion. Compiled out entirely in release, so C4's
+    // "never changes release accept/reject behaviour" holds by construction —
+    // and it panics with *this* `msg`, so the assertion text and the release
+    // diagnostic text are one string, never two literals free to drift.
+    #[cfg(debug_assertions)]
+    if length_tripwire_assert_armed() {
+        panic!("{msg}");
+    }
     Some(msg)
+}
+
+// ── arming state for the opt-in debug assertion ──────────────────────────────
+
+thread_local! {
+    /// Whether the debug assertion is armed **on this thread**.
+    ///
+    /// THREAD-LOCAL, deliberately — not a global `AtomicBool`. `cargo test`
+    /// runs tests in parallel threads inside one process, so a process-global
+    /// arm would let one test's deliberate injection panic an unrelated
+    /// thread's legitimate bare-`Value` op, producing order-dependent flakes
+    /// across the ~1500 legacy fixtures. Thread-local scoping makes the arm
+    /// invisible outside the test that took it.
+    ///
+    /// The consequence is that an arm does NOT cross a kernel-thread boundary
+    /// (e.g. `OcctKernelHandle`'s worker thread), so an injection test must
+    /// drive the kernel on the test thread — which every existing in-crate
+    /// occt test already does.
+    static ASSERT_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Is the [`check_length_field`] debug assertion armed on this thread?
+///
+/// Always `false` unless a [`LengthTripwireAssertGuard`] from
+/// [`arm_length_tripwire_assert`] is alive on this thread. Reads correctly in
+/// both profiles; in release the assertion it guards is compiled out, so an
+/// armed release build still only *reports*.
+pub fn length_tripwire_assert_armed() -> bool {
+    ASSERT_ARMED.with(std::cell::Cell::get)
+}
+
+/// RAII arm for the [`check_length_field`] debug assertion.
+///
+/// Restores the previous arm state on `Drop`, so nesting composes and a
+/// `#[should_panic]` unwind still cleans up.
+#[must_use = "the assertion is disarmed as soon as the guard is dropped"]
+pub struct LengthTripwireAssertGuard {
+    prev: bool,
+}
+
+impl Drop for LengthTripwireAssertGuard {
+    fn drop(&mut self) {
+        ASSERT_ARMED.with(|c| c.set(self.prev));
+    }
+}
+
+/// Arm the [`check_length_field`] debug assertion for the current thread until
+/// the returned guard is dropped.
+///
+/// # The default is DISARMED, and why
+///
+/// C4's letter asks for an assertion "under `cfg(debug_assertions)`". A
+/// *default-armed* assertion is not implementable: it would panic the exact
+/// fixtures PRD D5 exists to protect. Measured on this branch —
+///
+/// - 567 bare `Value::Real` / `Value::Int` occurrences in
+///   `crates/reify-kernel-occt/src/lib.rs`'s own `mod tests` (`:4885+`,
+///   e.g. `make_box_20_10_5` at `:4923`);
+/// - 45 further `crates/reify-kernel-occt/tests/harness_occt/` modules;
+/// - all 17 `crates/reify-kernel-fidget/src/kernel.rs` in-crate tests;
+/// - ~40 more workspace test files
+///   (`reify-eval/tests/harness_kernel_realization/*`,
+///   `reify-kernel-conformance`,
+///   `reify-test-support/src/{fixtures,mocks,kernel_assertions}.rs`,
+///   `gui/src-tauri/src/tests/engine_tests.rs`)
+///
+/// — all feed bare `Value::Real` into length-semantic `GeometryOp` fields. A
+/// default-armed assertion would panic every one of them, which is exactly the
+/// breakage D5 forbids. Keying the default on `cfg(test)` does not help
+/// either: every external test binary links the kernel libs WITHOUT
+/// `cfg(test)` and would be armed regardless.
+///
+/// The in-repo precedent for the identical call is
+/// `crates/reify-kernel-gmsh/src/repair.rs:126-129`: "Rather than a
+/// `debug_assert!` (which hard-crashes debug/test builds and CI), we emit a
+/// `tracing::warn!` so the concern stays visible in any build without crashing
+/// tests."
+///
+/// **The detector is never dormant.** The RELEASE diagnostic half is
+/// unconditional in both profiles — every kernel length site reports a
+/// violation naming op kind and field whether or not the assertion is armed.
+/// Arming only escalates that report to a panic, and only for the arming
+/// thread, so a test can assert the tripwire fires without a subscriber.
+pub fn arm_length_tripwire_assert() -> LengthTripwireAssertGuard {
+    let prev = ASSERT_ARMED.with(|c| c.replace(true));
+    LengthTripwireAssertGuard { prev }
 }
 
 /// The shared diagnostic for a **non-LENGTH** value at a length-semantic kernel

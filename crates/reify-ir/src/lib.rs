@@ -78,8 +78,10 @@ pub use geometry::{
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, debug_assert_query_many_invariant,
 };
 pub use kernel_validation::{
-    BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
-    check_length_field, non_length_kernel_field_message, non_numeric_kernel_field_message,
+    BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, LengthTripwireAssertGuard,
+    SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, arm_length_tripwire_assert, check_length_field,
+    length_tripwire_assert_armed, non_length_kernel_field_message,
+    non_numeric_kernel_field_message,
 };
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
