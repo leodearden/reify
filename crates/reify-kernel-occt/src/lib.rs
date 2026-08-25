@@ -221,9 +221,60 @@ const ANGLE_ABS_MIN: f64 = 1e-30;
 
 #[cfg(has_occt)]
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
+///
+/// Length-semantic fields go through [`extract_length_f64`] instead. This
+/// context-free form survives for the FIVE deliberately ungated OCCT fields —
+/// `HalfSpace`'s `nx`/`ny`/`nz` (dimensionless unit-normal components) and
+/// `CircularPattern.angle` / `Draft.angle` (ANGLE, PRD 3's surface) — each
+/// marked at its call site with a `// not length-semantic:` comment.
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
     v.as_f64()
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
+}
+
+#[cfg(has_occt)]
+/// Length-semantic numeric extraction + the C4 kernel LENGTH tripwire.
+///
+/// Identical accept/reject disposition and `Ok` payload to [`extract_f64`];
+/// the only differences are (a) a `tracing::warn!` naming op kind and field
+/// when a non-LENGTH value arrives, (b) the opt-in debug assertion, and (c) an
+/// `Err` string that names op kind and field instead of the bare
+/// `"expected numeric value"`.
+///
+/// **A tripwire, not a gate** (PRD D5 / ratified decision 4): a violation is
+/// *reported* and execution proceeds exactly as before. A fired tripwire means
+/// a hole in the eval-layer gate (`required_length_value` /
+/// `required_length_values`, `crates/reify-eval/src/geometry_ops.rs:482`/`:523`),
+/// not a kernel bug. Canonical rationale, plus the C2 corollary about
+/// `GeometryOp` construction routes, lives with the shared classifier in
+/// `crates/reify-ir/src/kernel_validation.rs`. Contract:
+/// `docs/prds/v0_6/units-length-gate-completion.md` C4/D5, boundary rows 13-14.
+///
+/// The warn is emitted HERE rather than from `reify-ir` because the house
+/// pattern for a kernel diagnostic is a `tracing::warn!` whose `target:` names
+/// the emitting crate (`reify_kernel_gmsh::repair`,
+/// `reify_kernel_manifold::kernel`), and because it keeps `reify-ir` — a
+/// dependency of 13+ crates — free of a `tracing` edge. The message string
+/// still comes from the single `kernel_validation.rs` formatter, so the two
+/// kernels cannot drift.
+fn extract_length_f64(
+    v: &Value,
+    op: &GeometryOp,
+    field: &'static str,
+) -> Result<f64, GeometryError> {
+    let op_kind = op.kind_name();
+    if let Some(msg) = reify_ir::check_length_field(op_kind, field, v) {
+        tracing::warn!(
+            target: "reify_kernel_occt::length_tripwire",
+            reason = "non_length_field",
+            op_kind = op_kind,
+            field = field,
+            "{msg}"
+        );
+    }
+    v.as_f64().ok_or_else(|| {
+        GeometryError::OperationFailed(reify_ir::non_numeric_kernel_field_message(op_kind, field))
+    })
 }
 
 #[cfg(has_occt)]
@@ -2447,9 +2498,9 @@ impl OcctKernel {
                 height,
                 depth,
             } => {
-                let w = extract_f64(width)?;
-                let h = extract_f64(height)?;
-                let d = extract_f64(depth)?;
+                let w = extract_length_f64(width, op, "width")?;
+                let h = extract_length_f64(height, op, "height")?;
+                let d = extract_length_f64(depth, op, "depth")?;
                 if !(w.is_finite()
                     && w > 0.0
                     && h.is_finite()
@@ -2465,8 +2516,8 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Cylinder { radius, height } => {
-                let r = extract_f64(radius)?;
-                let h = extract_f64(height)?;
+                let r = extract_length_f64(radius, op, "radius")?;
+                let h = extract_length_f64(height, op, "height")?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "cylinder radius must be a finite positive value".into(),
@@ -2481,7 +2532,7 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Sphere { radius } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
@@ -2495,9 +2546,9 @@ impl OcctKernel {
                 inner_r,
                 height,
             } => {
-                let outer = extract_f64(outer_r)?;
-                let inner = extract_f64(inner_r)?;
-                let h = extract_f64(height)?;
+                let outer = extract_length_f64(outer_r, op, "outer_r")?;
+                let inner = extract_length_f64(inner_r, op, "inner_r")?;
+                let h = extract_length_f64(height, op, "height")?;
                 validate_positive_finite(outer, "tube outer radius")?;
                 validate_positive_finite(inner, "tube inner radius")?;
                 validate_positive_finite(h, "tube height")?;
@@ -2523,9 +2574,9 @@ impl OcctKernel {
                 top_radius,
                 height,
             } => {
-                let bottom_r = extract_f64(bottom_radius)?;
-                let top_r = extract_f64(top_radius)?;
-                let h = extract_f64(height)?;
+                let bottom_r = extract_length_f64(bottom_radius, op, "bottom_radius")?;
+                let top_r = extract_length_f64(top_radius, op, "top_radius")?;
+                let h = extract_length_f64(height, op, "height")?;
                 if !(bottom_r.is_finite() && bottom_r >= 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "cone bottom_radius must be finite and non-negative".into(),
@@ -2555,10 +2606,10 @@ impl OcctKernel {
                 height,
                 top_width,
             } => {
-                let w = extract_f64(width)?;
-                let d = extract_f64(depth)?;
-                let h = extract_f64(height)?;
-                let ltx = extract_f64(top_width)?;
+                let w = extract_length_f64(width, op, "width")?;
+                let d = extract_length_f64(depth, op, "depth")?;
+                let h = extract_length_f64(height, op, "height")?;
+                let ltx = extract_length_f64(top_width, op, "top_width")?;
                 validate_positive_finite(w, "wedge width")?;
                 validate_positive_finite(d, "wedge depth")?;
                 validate_positive_finite(h, "wedge height")?;
@@ -2574,8 +2625,8 @@ impl OcctKernel {
                 major_radius,
                 minor_radius,
             } => {
-                let major = extract_f64(major_radius)?;
-                let minor = extract_f64(minor_radius)?;
+                let major = extract_length_f64(major_radius, op, "major_radius")?;
+                let minor = extract_length_f64(minor_radius, op, "minor_radius")?;
                 validate_positive_finite(major, "torus major radius")?;
                 validate_positive_finite(minor, "torus minor radius")?;
                 // Both values are already validated finite+positive above,
@@ -2597,11 +2648,14 @@ impl OcctKernel {
                 ny,
                 nz,
             } => {
-                let px = extract_f64(px)?;
-                let py = extract_f64(py)?;
-                let pz = extract_f64(pz)?;
+                let px = extract_length_f64(px, op, "px")?;
+                let py = extract_length_f64(py, op, "py")?;
+                let pz = extract_length_f64(pz, op, "pz")?;
+                // not length-semantic: dimensionless unit-normal component, not a length.
                 let nx = extract_f64(nx)?;
+                // not length-semantic: dimensionless unit-normal component, not a length.
                 let ny = extract_f64(ny)?;
+                // not length-semantic: dimensionless unit-normal component, not a length.
                 let nz = extract_f64(nz)?;
                 // Validate that the normal is non-zero (gp_Dir requires it).
                 let norm_sq = nx * nx + ny * ny + nz * nz;
@@ -2636,7 +2690,7 @@ impl OcctKernel {
                 edges,
                 radius,
             } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "fillet radius must be a finite positive value".into(),
@@ -2664,7 +2718,7 @@ impl OcctKernel {
                 edges,
                 distance,
             } => {
-                let d = extract_f64(distance)?;
+                let d = extract_length_f64(distance, op, "distance")?;
                 if !(d.is_finite() && d > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "chamfer distance must be a finite positive value".into(),
@@ -2693,8 +2747,8 @@ impl OcctKernel {
                 d1,
                 d2,
             } => {
-                let d1 = extract_f64(d1)?;
-                let d2 = extract_f64(d2)?;
+                let d1 = extract_length_f64(d1, op, "d1")?;
+                let d2 = extract_length_f64(d2, op, "d2")?;
                 if !(d1.is_finite() && d1 > 0.0 && d2.is_finite() && d2 > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "asymmetric chamfer distances must be finite positive values".into(),
@@ -2751,7 +2805,7 @@ impl OcctKernel {
                 spacing,
             } => {
                 let shape = self.get_shape(*target)?;
-                let sp = extract_f64(spacing)?;
+                let sp = extract_length_f64(spacing, op, "spacing")?;
                 if *count == 0 {
                     return Err(GeometryError::OperationFailed(
                         "linear pattern count must be >= 1".into(),
@@ -2775,6 +2829,7 @@ impl OcctKernel {
                 angle,
             } => {
                 let shape = self.get_shape(*target)?;
+                // not length-semantic: ANGLE, not LENGTH — PRD 3's surface, not this one.
                 let total_angle = extract_f64(angle)?;
                 if *count == 0 {
                     return Err(GeometryError::OperationFailed(
@@ -2848,6 +2903,7 @@ impl OcctKernel {
                 angle,
                 plane,
             } => {
+                // not length-semantic: ANGLE, not LENGTH — PRD 3's surface, not this one.
                 let angle_rad = extract_f64(angle)?;
                 if faces.is_empty() {
                     // 3-arg / empty-selection back-compat: draft ALL draftable
@@ -2867,7 +2923,7 @@ impl OcctKernel {
             }
             GeometryOp::Thicken { target, offset } => {
                 let shape = self.get_shape(*target)?;
-                let off = extract_f64(offset)?;
+                let off = extract_length_f64(offset, op, "offset")?;
                 ffi::ffi::thicken_shape(shape, off)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -2877,7 +2933,7 @@ impl OcctKernel {
                 reference,
                 direction,
             } => {
-                let dist = extract_f64(distance)?;
+                let dist = extract_length_f64(distance, op, "distance")?;
                 // Build the offset wire inside an inner scope so the immutable
                 // `get_shape` borrow(s) drop before `store_with_repr` takes
                 // `&mut self` (mirrors `extract_edges` / `execute_split`'s
@@ -2903,13 +2959,13 @@ impl OcctKernel {
             }
             GeometryOp::ZoneSlab { target, width } => {
                 let shape = self.get_shape(*target)?;
-                let w = extract_f64(width)?;
+                let w = extract_length_f64(width, op, "width")?;
                 ffi::ffi::zone_slab_shape(shape, w)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::OffsetSolid { target, distance } => {
                 let shape = self.get_shape(*target)?;
-                let d = extract_f64(distance)?;
+                let d = extract_length_f64(distance, op, "distance")?;
                 ffi::ffi::offset_solid_shape(shape, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -2919,7 +2975,7 @@ impl OcctKernel {
                 faces_to_remove,
                 open_face_handles,
             } => {
-                let th = extract_f64(thickness)?;
+                let th = extract_length_f64(thickness, op, "thickness")?;
                 // Curated-handle path (shell_open): open_face_handles is
                 // non-empty → delegate to shell_solid_faces and early-return,
                 // mirroring the Draft execute arm's curated dispatch
@@ -3064,7 +3120,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Extrude { profile, distance } => {
-                let dist = extract_f64(distance)?;
+                let dist = extract_length_f64(distance, op, "distance")?;
                 if !dist.is_finite() {
                     return Err(GeometryError::OperationFailed(
                         "extrude distance must be finite".into(),
@@ -3146,7 +3202,7 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Pipe { path, radius } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 validate_positive_finite(r, "pipe radius")?;
                 let path_shape = self.get_shape(*path)?;
                 // Orient the circular profile onto the path's start frame: build
@@ -3168,7 +3224,7 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::ExtrudeSymmetric { profile, distance } => {
-                let dist = extract_f64(distance)?;
+                let dist = extract_length_f64(distance, op, "distance")?;
                 if !dist.is_finite() {
                     return Err(GeometryError::OperationFailed(
                         "extrude_symmetric distance must be finite".into(),
@@ -3421,8 +3477,8 @@ impl OcctKernel {
                 spacing2,
             } => {
                 let shape = self.get_shape(*target)?;
-                let sp1 = extract_f64(spacing1)?;
-                let sp2 = extract_f64(spacing2)?;
+                let sp1 = extract_length_f64(spacing1, op, "spacing1")?;
+                let sp2 = extract_length_f64(spacing2, op, "spacing2")?;
                 // Validate direction vectors are finite (NaN/Inf would cause
                 // undefined OCCT behavior).  Consistent with Mirror arm.
                 if !direction1[0].is_finite()
@@ -3496,8 +3552,8 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::RectangleProfile { width, height } => {
-                let w = extract_f64(width)?;
-                let h = extract_f64(height)?;
+                let w = extract_length_f64(width, op, "width")?;
+                let h = extract_length_f64(height, op, "height")?;
                 if !(w.is_finite() && w > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "rectangle_profile width must be a finite positive value".into(),
@@ -3513,7 +3569,7 @@ impl OcctKernel {
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
             GeometryOp::CircleProfile { radius } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "circle_profile radius must be a finite positive value".into(),
@@ -3536,8 +3592,8 @@ impl OcctKernel {
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
             GeometryOp::EllipseProfile { semi_major, semi_minor } => {
-                let a = extract_f64(semi_major)?;
-                let b = extract_f64(semi_minor)?;
+                let a = extract_length_f64(semi_major, op, "semi_major")?;
+                let b = extract_length_f64(semi_minor, op, "semi_minor")?;
                 if !(a.is_finite() && a > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "ellipse_profile semi_major must be a finite positive value".into(),
