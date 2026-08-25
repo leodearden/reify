@@ -47,11 +47,19 @@
 //! * **Mode B (no `-o`)** — the engine withholds the file by emitting an
 //!   empty-bytes artifact, which the CLI writer skips.
 //!
-//! All four tests use the cheap `repr_within_with_stl_output.ri` fixture (a
-//! `box`, not a sphere), so none imports the 5-20 s OCCT tessellation cost PRD
-//! §6's gate-cost rule warns about. They are deliberately NOT OCCT-gated: η's
-//! refusal is a static module-shape decision taken before any measurement, so it
-//! fires identically in stub and OCCT builds — unlike
+//! The three REFUSAL tests use the cheap `repr_within_with_stl_output.ri`
+//! fixture (a `box`, not a sphere), so none of them imports the 5-20 s OCCT
+//! tessellation cost PRD §6's gate-cost rule warns about — the refusal is taken
+//! before any realization runs. The C2 negative
+//! (`build_dash_o_still_exports_a_module_without_a_bound`) reuses `bracket.ri`,
+//! the same module `cli_build.rs`'s `build_valid_bracket_exits_success` already
+//! exports; being the positive control it MUST reach the exporter, so it pays a
+//! full realization + export and is the one test here whose runtime tracks the
+//! kernel rather than the parser.
+//!
+//! All four are deliberately NOT OCCT-gated: η's refusal is a static
+//! module-shape decision taken before any measurement, so it fires identically
+//! in stub and OCCT builds — unlike
 //! `check_representation_within_violated_under_occt` above, which needs a real
 //! measured deviation.
 
