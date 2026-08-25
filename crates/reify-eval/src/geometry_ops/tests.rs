@@ -31103,3 +31103,159 @@
             "arbitrary_pattern dropped: 'transform_list' arg is not a List<Transform<3>>"
         );
     }
+
+    // ---- units-length ζ (task 5747): R8 SCOPE LOCK ----
+    //
+    // Characterization only — no impl pair. Every assertion below passes on
+    // arrival; the whole value of this section is FAILING if a later change
+    // widens ζ past its charter.
+
+    /// (a) The two QUIET pose routes stay quiet AND stay working.
+    ///
+    /// `decompose_transform_to_arrays`' remaining callers are
+    /// `interferes` / `min_clearance`'s per-body `world_transform` and
+    /// `walk_templates`' `composed_world`. Both already treat `None` as
+    /// "identity / not decomposable → use the raw handle, no kernel op", and both
+    /// read transforms that are LENGTH BY CONSTRUCTION:
+    /// `identity_pose_transform` and `compose_pose_chain`'s seed both mint
+    /// `reify_ir::Value::length(0.0)`, `frame_to_pose_transform` already
+    /// hard-requires LENGTH components, and `reify_stdlib::compose_transforms`
+    /// requires `t1_dim == t2_dim` so composition preserves the dimension. A
+    /// rejection there is therefore unreachable in production, and emitting one
+    /// would DOUBLE-REPORT a failure the pose producer has already diagnosed.
+    ///
+    /// Do not "fix" the silence: it is a caller policy, not a hole.
+    #[test]
+    fn zeta_scope_lock_quiet_pose_routes_decode_length_and_stay_silent() {
+        // Minted exactly as `identity_pose_transform` / `compose_pose_chain`'s
+        // seed do — a LENGTH translation triple.
+        let pose = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        assert_eq!(
+            decompose_transform_to_arrays(&pose),
+            Some(([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])),
+            "a pose minted the production way must still decode through the quiet \
+             wrapper — ζ must not break the FK/pose readers"
+        );
+
+        // And a rejection through the quiet wrapper pushes NOTHING into a
+        // caller-visible sink.
+        let dimensionless = transform_with_translation([
+            reify_ir::Value::Scalar {
+                si_value: 5.0,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
+            },
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let mut sink: Vec<Diagnostic> = Vec::new();
+        let decoded = decompose_transform_to_arrays(&dimensionless);
+        assert!(decoded.is_none(), "ζ rejects a dimensionless translation");
+        assert!(
+            sink.is_empty(),
+            "the quiet wrapper must never reach a caller's diagnostic sink; got: {sink:?}"
+        );
+        // Belt and braces: the sink is untouched because the wrapper owns its own
+        // throwaway one, so a future signature change that threads the caller's
+        // sink through would fail HERE rather than silently doubling pose reports.
+        sink.push(Diagnostic::warning("sentinel".to_string()));
+        assert!(decompose_transform_to_arrays(&dimensionless).is_none());
+        assert_eq!(
+            sink.len(),
+            1,
+            "the quiet wrapper must not append to a caller's sink; got: {sink:?}"
+        );
+    }
+
+    /// (b) The ROTATION half is untouched.
+    ///
+    /// D11 keeps the linear/rotation part dimensionless-required; ζ neither
+    /// loosened nor tightened it. A `Transform`'s `Orientation` carries bare
+    /// `f64` fields, not `Value`s, so no dimension can be demanded of `w/x/y/z`
+    /// in the first place — and `decode_orientation_to_axis_angle` is unmodified.
+    #[test]
+    fn zeta_scope_lock_rotation_half_demands_no_dimension() {
+        for (label, q) in [
+            ("identity", [1.0, 0.0, 0.0, 0.0]),
+            ("90° about z", [std::f64::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2]),
+            // Non-unit norm is the KERNEL's to reject, not the eval seam's.
+            ("non-unit", [2.0, 0.0, 0.0, 0.0]),
+        ] {
+            let v = transform_with_translation([
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ]);
+            let reify_ir::Value::Transform { translation, .. } = v else {
+                unreachable!()
+            };
+            let with_q = reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: q[0],
+                    x: q[1],
+                    y: q[2],
+                    z: q[3],
+                }),
+                translation,
+            };
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let (rotation, _) = super::accept_transform_to_arrays(
+                &with_q,
+                "apply_transform",
+                &|_| "shape".to_string(),
+                &mut diagnostics,
+            )
+            .unwrap_or_else(|e| panic!("{label}: a legal quaternion must decode; got {e}"));
+            assert_eq!(rotation, q, "{label}: the quaternion passes through as-is");
+            assert!(
+                diagnostics.is_empty(),
+                "{label}: the rotation half must push nothing; got: {diagnostics:?}"
+            );
+        }
+    }
+
+    /// (c) The regression control that stops the units rows from passing
+    /// vacuously: a fully dimensioned LENGTH transform still produces
+    /// byte-identical `GeometryOp::ApplyTransform` rotation + translation arrays.
+    #[test]
+    fn zeta_scope_lock_dimensioned_apply_transform_arrays_are_byte_identical() {
+        let values = ValueMap::new();
+        let step_handles = vec![GeometryHandleId(42)];
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let op = compile_geometry_op(
+            &apply_transform_with(transform_of([0.5, 0.5, 0.5, 0.5], [0.03, -0.01, 0.2])),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect("a fully dimensioned LENGTH transform must still compile");
+        let reify_ir::GeometryOp::ApplyTransform {
+            target,
+            rotation,
+            translation,
+        } = op
+        else {
+            panic!("expected GeometryOp::ApplyTransform, got {op:?}");
+        };
+        assert_eq!(target, GeometryHandleId(42));
+        assert_eq!(
+            (rotation, translation),
+            ([0.5, 0.5, 0.5, 0.5], [0.03, -0.01, 0.2]),
+            "ζ must not perturb the stored arrays for an accepted transform"
+        );
+        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
+    }
