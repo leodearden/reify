@@ -49,7 +49,9 @@ resolved interactively with Leo in that session. Substrate probes (fixtures
 - `MeshingOptions.threads` is CPU worker threads (cache-key note), **not** screw threads —
   a red-herring name collision; this PRD deliberately avoids the bare word "threads" in
   its pragma/type names (`#thread_repr`, `ThreadRepr`).
-- `iso_it_tolerance` (`crates/reify-stdlib/src/tolerancing.rs:117-133`) is the house
+- `iso_it_tolerance` (`fn iso_it_tolerance` in `crates/reify-stdlib/src/tolerancing.rs`
+  — cited by SYMBOL, not by line range: the range this bullet used to carry went stale
+  twice inside task #6091 alone, once per edit landed above the function) is the house
   pattern for standards builtins: pure `fn(&[Value]) -> Value`, dispatcher arm, `diagnose`
   classifier (`E_TolerancingOutOfEnvelope`), `.ri` derived-let caller, layered tests
   pinning published table cells.

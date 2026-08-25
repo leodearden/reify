@@ -236,11 +236,16 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
             // decode's `?`, which would otherwise discard this shape as merely
             // "ill-typed" and leave the caller with a silent `Undef`.
             if is_legacy_grade_first_shape(args) {
+                // No tracker id in the message text: this string reaches a `.ri`
+                // author's stderr, and `#6091` is unresolvable outside this repo.
+                // The provenance lives in `is_legacy_grade_first_shape`'s doc
+                // comment; what makes the message ACTIONABLE is the correct order,
+                // which it spells twice.
                 return Some(Diagnostic::error(
                     "E_TolerancingLegacyArgOrder: iso_it_tolerance is subject-first \u{2014} \
                      iso_it_tolerance(nominal_min, nominal_max, grade). The grade-first \
-                     spelling iso_it_tolerance(grade, nominal_min, nominal_max) was \
-                     superseded by task #6091; move the grade to the last argument.",
+                     spelling iso_it_tolerance(grade, nominal_min, nominal_max) is no \
+                     longer supported; move the grade to the last argument.",
                 ));
             }
             let (min_mm, max_mm, grade) = parse_iso_well_typed(args)?;
