@@ -351,4 +351,114 @@ mod tests {
             "a dimensioned-but-wrong Scalar must name its dimension: {mass}"
         );
     }
+
+    // ── the opt-in debug assertion and its RAII arming guard ─────────────────
+
+    /// Boundary row 13, half 1: ARMED, in a debug build, a violation PANICS
+    /// with a message naming the OP KIND.
+    ///
+    /// The `#[cfg(debug_assertions)]` attribute is MANDATORY on a
+    /// `#[should_panic]` test for a debug-only assertion: in release the assert
+    /// is compiled out and an ungated test would falsely pass. This is the
+    /// in-repo rule documented at `crates/reify-kernel-occt/src/lib.rs:5822-5835`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Fillet")]
+    fn armed_debug_assertion_panics_naming_the_op_kind() {
+        let _g = arm_length_tripwire_assert();
+        let _ = check_length_field("Fillet", "radius", &Value::Real(1.0));
+    }
+
+    /// Boundary row 13, half 2: the twin pinning the FIELD NAME.
+    ///
+    /// `should_panic(expected = ...)` takes a single substring, so both halves
+    /// of "names BOTH the op kind and the field name" need their own test.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "radius")]
+    fn armed_debug_assertion_panics_naming_the_field() {
+        let _g = arm_length_tripwire_assert();
+        let _ = check_length_field("Fillet", "radius", &Value::Real(1.0));
+    }
+
+    /// DEFAULT IS DISARMED, in every profile.
+    ///
+    /// This is the property that keeps the ~1500 legacy bare-`Value` kernel
+    /// fixtures green (PRD D5): unarmed, a violation is *reported*, never
+    /// raised.
+    #[test]
+    fn unarmed_violation_reports_and_never_panics() {
+        assert!(!length_tripwire_assert_armed());
+        let msg = check_length_field("Fillet", "radius", &Value::Real(1.0))
+            .expect("a bare Real at a length field is a violation");
+        assert!(msg.contains("Fillet"), "{msg}");
+        assert!(msg.contains("radius"), "{msg}");
+    }
+
+    /// The guard restores the PREVIOUS arm state on `Drop`, so an armed scope
+    /// cannot leak into the rest of the thread — including out of a
+    /// `#[should_panic]` unwind.
+    #[test]
+    fn guard_restores_previous_state_on_drop() {
+        assert!(!length_tripwire_assert_armed());
+        {
+            let _g = arm_length_tripwire_assert();
+            assert!(length_tripwire_assert_armed());
+        }
+        assert!(!length_tripwire_assert_armed());
+
+        // ...and the unarmed behaviour is genuinely back.
+        let msg = check_length_field("Fillet", "radius", &Value::Real(1.0));
+        assert!(msg.is_some());
+    }
+
+    /// Nesting composes: the inner guard's `Drop` restores the OUTER arm,
+    /// not the process default.
+    #[test]
+    fn nested_guards_compose() {
+        assert!(!length_tripwire_assert_armed());
+        let outer = arm_length_tripwire_assert();
+        assert!(length_tripwire_assert_armed());
+        {
+            let _inner = arm_length_tripwire_assert();
+            assert!(length_tripwire_assert_armed());
+        }
+        assert!(
+            length_tripwire_assert_armed(),
+            "inner guard's Drop must restore the OUTER arm, not the default"
+        );
+        drop(outer);
+        assert!(!length_tripwire_assert_armed());
+    }
+
+    /// **Boundary row 14 — the release contract.**
+    ///
+    /// In a release build the panic arm is compiled out entirely, so even an
+    /// ARMED violation must return `Some(msg)` naming op kind and field rather
+    /// than panicking. C4: the tripwire never changes release accept/reject
+    /// behaviour.
+    ///
+    /// This runs for real on the merge gate, which forces `--profile both`
+    /// (`scripts/verify.sh`, `DF_VERIFY_ROLE=merge`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_armed_violation_reports_and_never_panics() {
+        let _g = arm_length_tripwire_assert();
+        assert!(length_tripwire_assert_armed());
+        let msg = check_length_field("Fillet", "radius", &Value::Real(1.0))
+            .expect("a bare Real at a length field is a violation in release too");
+        assert!(msg.contains("Fillet"), "{msg}");
+        assert!(msg.contains("radius"), "{msg}");
+    }
+
+    /// Control: the tripwire must not fire on CORRECT input, armed or not.
+    /// Profile-independent — a debug build would panic here if it did.
+    #[test]
+    fn armed_length_value_is_still_not_a_violation() {
+        let _g = arm_length_tripwire_assert();
+        assert_eq!(
+            check_length_field("Fillet", "radius", &Value::length(0.001)),
+            None
+        );
+    }
 }
