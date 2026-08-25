@@ -1509,6 +1509,47 @@ fn assert_single_arg_type_mismatch_warning_in(
     );
 }
 
+/// Quantity-rule sibling of [`assert_single_arg_type_mismatch_warning_in`]: the
+/// same four checks, PLUS the two fragments that discriminate the quantity-slot
+/// emitter from the whole-type `emit_arg_type_mismatch`.
+///
+/// Without those fragments a quantity fixture is VACUOUS against a family/arity
+/// regression. Count, `Severity::Warning`, `ArgTypeMismatch` and "the message
+/// names the param" are all satisfied by the whole-type emitter too, so if a
+/// shape arm's own family/arity check started rejecting the arg the pre-existing
+/// `emit_arg_type_mismatch` would fire instead — same code, same severity, still
+/// naming the param — and the fixture would stay GREEN while the rule it exists
+/// to pin no longer fired at all. These `.ri` fixtures are the ONLY tests that
+/// reach the rule from real source (the `conformance/mod.rs` probes construct the
+/// `Type` directly and bypass the `math_fn_result_type` chain), so that is
+/// exactly where a masked regression costs the most.
+///
+/// Arguments run PARAM-then-ARG, matching `assert_quantity_slot_conflict`
+/// (`conformance/mod.rs`), which applies these same two fragments on the fn-call
+/// (Error) leg. This is its ctor (Warning) twin.
+fn assert_single_quantity_conflict_warning_in(
+    module: &CompiledModule,
+    param_name: &str,
+    expected_param_quantity: &str,
+    expected_arg_quantity: &str,
+    label: &str,
+) {
+    assert_single_arg_type_mismatch_warning_in(module, param_name, label);
+    let diags = ctor_conformance_diags(module);
+    let has_quantity = format!("has quantity '{expected_arg_quantity}'");
+    let requires_quantity = format!("requires quantity '{expected_param_quantity}'");
+    assert!(
+        diags[0].message.contains(&has_quantity)
+            && diags[0].message.contains(&requires_quantity),
+        "{label}: the diagnostic must come from the QUANTITY-slot rule, naming the ARG's slot \
+         after `has quantity` ({has_quantity:?}) and the PARAM's after `requires quantity` \
+         ({requires_quantity:?}) — without this the whole-type emit_arg_type_mismatch would \
+         satisfy every other assertion here and the fixture would pass while the rule never \
+         fired. Got: {:?}",
+        diags[0].message
+    );
+}
+
 const SRC_FLOOR_STRING: &str = r#"module test.floor_string
 structure def W { param label : String }
 structure def Root { let a = W(label: 42) }
@@ -2356,9 +2397,11 @@ structure def Root {
 ///
 /// The ctor-path (Warning) twin of `conformance/mod.rs`'s
 /// `dimensionless_quantity_param_rejects_dimensioned_vector_arg` (fn-call path,
-/// Error). Routing through `assert_single_arg_type_mismatch_warning` pins code +
-/// Warning severity + param name for this cell from birth, so the rule's
-/// severity split cannot drift silently at the new leg.
+/// Error). Routing through [`assert_single_quantity_conflict_warning_in`] pins
+/// code + Warning severity + param name for this cell from birth — so the rule's
+/// severity split cannot drift silently at the new leg — PLUS the two quantity
+/// fragments, without which none of the other four checks could tell this
+/// emitter from the whole-type `emit_arg_type_mismatch`.
 ///
 /// This INVERTS task 5766's symmetric tolerance on the param side only. Its
 /// enabling premise is task 5848's landed ruling that direction/axis fields are
@@ -2380,9 +2423,11 @@ fn vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch() {
     );
     // The `_in` variant so the guard above and the assertion share that one
     // compile, as the two sibling fences directly above do.
-    assert_single_arg_type_mismatch_warning_in(
+    assert_single_quantity_conflict_warning_in(
         &module,
         "dir",
+        "Real",
+        "Scalar[m]",
         "Vector3<Dimensionless> ← Vector3<Length>",
     );
 }
@@ -2444,9 +2489,11 @@ fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
     );
     // The `_in` variant so the guard above and the assertion share that one
     // compile of the source plus the whole stdlib.
-    assert_single_arg_type_mismatch_warning_in(
+    assert_single_quantity_conflict_warning_in(
         &module,
         "origin",
+        "Real",
+        "Scalar[m]",
         "Point3<Dimensionless> ← Point3<Length> (from component [0] alone)",
     );
 }
@@ -2470,9 +2517,11 @@ fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
         "fixture must compile cleanly, got: {:?}",
         errors_only(&module)
     );
-    assert_single_arg_type_mismatch_warning_in(
+    assert_single_quantity_conflict_warning_in(
         &module,
         "origin",
+        "Real",
+        "Scalar[m]",
         "Point3<Real> ← Point3<Length> — Real and Dimensionless are the same cell",
     );
 }
@@ -2612,9 +2661,11 @@ fn matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_
     );
     // The `_in` variant so the guard above and the assertion share that one
     // compile of the source plus the whole stdlib.
-    assert_single_arg_type_mismatch_warning_in(
+    assert_single_quantity_conflict_warning_in(
         &module,
         "jac",
+        "Real",
+        "Scalar[m]",
         "Matrix<3,3,Dimensionless> ← Tensor2x3<Length> (from cell [0][0] alone)",
     );
 }
