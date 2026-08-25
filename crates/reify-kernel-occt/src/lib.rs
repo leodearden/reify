@@ -13437,4 +13437,194 @@ mod tests {
             depth: Value::Real(10.0),
         },
     );
+
+    // ── C4 kernel LENGTH tripwire (task #5751) ───────────────────────────────
+    //
+    // Boundary rows 13/14 of `docs/prds/v0_6/units-length-gate-completion.md`
+    // through the real OCCT path. The tripwire is a DETECTOR, never a gate.
+    //
+    // Every kernel here is built with `OcctKernel::new()` on the TEST THREAD
+    // (as `make_box_20_10_5` already does) rather than through
+    // `OcctKernelHandle`, whose worker thread would not see the thread-local
+    // arm.
+
+    /// The §2/D3 probe case, made attributable.
+    ///
+    /// `fillet(box(10mm,10mm,10mm), 1)` today produces a span-less
+    /// `OCCT make_fillet_with_history: unexpected: BRepFilletAPI_MakeFillet
+    /// failed`. Calling `extract_length_f64` directly means no OCCT execution
+    /// happens at all, so the assertion cannot be perturbed by a downstream
+    /// `BRepFilletAPI_MakeFillet` failure.
+    #[test]
+    fn occt_extract_length_f64_bare_value_names_op_kind_and_field() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let op = GeometryOp::Fillet {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            radius: Value::Real(1.0),
+        };
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let got = tracing::subscriber::with_default(subscriber, || {
+            extract_length_f64(&Value::Real(1.0), &op, "radius")
+        });
+
+        capture.assert_count(1);
+        let msg = &capture.messages()[0];
+        assert!(msg.contains("Fillet"), "{msg}");
+        assert!(msg.contains("radius"), "{msg}");
+        capture.assert_any_event_field_contains("op_kind", "Fillet");
+        capture.assert_any_event_field_contains("field", "radius");
+
+        // Detector, not gate: the extraction still succeeds with the same
+        // payload `extract_f64` would have produced.
+        assert_eq!(got.expect("a bare Real still extracts"), 1.0);
+    }
+
+    /// End-to-end wiring proof through `OcctKernel::execute`: one diagnostic
+    /// per bare Box dimension, naming the op kind and that field.
+    #[test]
+    fn occt_execute_box_bare_dimensions_emits_tripwire_diagnostics() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = OcctKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(5.0),
+            })
+        });
+
+        capture.assert_count_and_any_message_contains(3, "Box");
+        capture.assert_any_event_field_contains("field", "width");
+        capture.assert_any_event_field_contains("field", "height");
+        capture.assert_any_event_field_contains("field", "depth");
+        assert!(
+            result.is_ok(),
+            "the tripwire is a detector, not a gate: {result:?}"
+        );
+    }
+
+    /// Negative control: dimensioned LENGTH inputs emit ZERO diagnostics.
+    #[test]
+    fn occt_execute_dimensioned_box_emits_no_tripwire_diagnostic() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = OcctKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::length(0.020),
+                height: Value::length(0.010),
+                depth: Value::length(0.005),
+            })
+        });
+
+        capture.assert_count(0);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// Boundary row 13 through the real OCCT path, half 1 (op kind).
+    ///
+    /// `#[cfg(debug_assertions)]` is mandatory on a `#[should_panic]` test for
+    /// a debug-only assertion — see the rule documented at
+    /// `crates/reify-kernel-occt/src/lib.rs` `mod tests` (the three
+    /// `"must be a parent_handle key"` tests).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Box")]
+    fn occt_armed_bare_length_panics_naming_the_op_kind() {
+        let _g = reify_ir::arm_length_tripwire_assert();
+        let mut kernel = OcctKernel::new();
+        let _ = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(20.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(5.0),
+        });
+    }
+
+    /// Boundary row 13 through the real OCCT path, half 2 (field name).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "width")]
+    fn occt_armed_bare_length_panics_naming_the_field() {
+        let _g = reify_ir::arm_length_tripwire_assert();
+        let mut kernel = OcctKernel::new();
+        let _ = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(20.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(5.0),
+        });
+    }
+
+    /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
+    ///
+    /// The PRD's split is 46 = 41 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
+    /// — dimensionless unit-normal components, not lengths. The 2 are
+    /// `CircularPattern.angle` and `Draft.angle` — ANGLE, which is PRD 3's
+    /// surface, not this one. All five must stay on the plain, context-free
+    /// `extract_f64`.
+    ///
+    /// Without this control a blanket conversion of all 46 sites would pass
+    /// every other test in this module.
+    #[test]
+    fn occt_non_length_fields_stay_ungated() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        /// Assert no captured WARN names `field` in its message or its
+        /// structured `field` value.
+        fn assert_no_warn_for_field(capture: &reify_test_support::WarnCapture, field: &str) {
+            for fields in capture.fields_by_event() {
+                assert_ne!(
+                    fields.get("field").map(String::as_str),
+                    Some(field),
+                    "{field} must stay on the ungated extract_f64; captured: {:?}",
+                    capture.messages()
+                );
+            }
+        }
+
+        // 3 dimensionless unit-normal components. Point coords are properly
+        // dimensioned, so a correct build emits nothing at all here.
+        let mut kernel = OcctKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = kernel.execute(&GeometryOp::HalfSpace {
+                px: Value::length(0.0),
+                py: Value::length(0.0),
+                pz: Value::length(0.0),
+                nx: Value::Real(0.0),
+                ny: Value::Real(0.0),
+                nz: Value::Real(1.0),
+            });
+        });
+        for n in ["nx", "ny", "nz"] {
+            assert_no_warn_for_field(&capture, n);
+        }
+        capture.assert_count(0);
+
+        // 2 ANGLE fields. A bare `Value::Real` in each: if either had been
+        // converted, a `field = "angle"` warn would appear.
+        let mut kernel = OcctKernel::new();
+        let target = make_box_20_10_5(&mut kernel);
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = kernel.execute(&GeometryOp::CircularPattern {
+                target,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                count: 2,
+                angle: Value::Real(std::f64::consts::PI),
+            });
+            let _ = kernel.execute(&GeometryOp::Draft {
+                target,
+                faces: vec![],
+                angle: Value::Real(0.05),
+                plane: target,
+            });
+        });
+        assert_no_warn_for_field(&capture, "angle");
+    }
 }
