@@ -452,3 +452,99 @@ describe('createScene', () => {
     expect(typeof result.disposeAxisLabels).toBe('function');
   });
 });
+
+
+// ── fitHelpers (#6588) ───────────────────────────────────────────────────────
+// The grid (20 units), the axes triad (2 units) and the label ring (2.3 units)
+// carry absolute sizes chosen for the ~10 m CAD default scene. In a sub-metre
+// .ri model the camera ends up INSIDE that helper envelope: the 20 m grid's far
+// lines converge into a dark 0x444466 horizon band and the 2 m triad draws a
+// hard diagonal across every part. fitHelpers sizes them to the actual scene.
+
+describe('fitHelpers (#6588)', () => {
+  function setup() {
+    const canvas = document.createElement('canvas');
+    return createScene(canvas, 800, 600);
+  }
+
+  /** Box3-like fake whose getSize writes the given extent. Same shape as the
+   *  adjustClipping fakes above — fitHelpers must not need a real Box3. */
+  function boundsWithSize(x: number, y: number, z: number, isEmpty = false) {
+    return {
+      isEmpty: () => isEmpty,
+      getCenter: (target: any) => {
+        target.x = 0; target.y = 0; target.z = 0;
+        return target;
+      },
+      getSize: (target: any) => {
+        target.x = x; target.y = y; target.z = z;
+        return target;
+      },
+    };
+  }
+
+  /** Non-zero coordinate of each label sprite, keyed by its declared axis. */
+  function labelOffsets(result: any): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const sprite of result.axisLabels.children as any[]) {
+      const axis = sprite.userData.axis as 'X' | 'Y' | 'Z';
+      out[axis] = axis === 'X' ? sprite.position.x
+        : axis === 'Y' ? sprite.position.y
+        : sprite.position.z;
+    }
+    return out;
+  }
+
+  function expectNoOp(result: any, before: Record<string, number>) {
+    // Neither helper was resized...
+    expect((result.grid as any).scale.setScalar).not.toHaveBeenCalled();
+    expect((result.axes as any).scale.setScalar).not.toHaveBeenCalled();
+    expect((result.grid as any).scale.x).toBe(1);
+    expect((result.axes as any).scale.x).toBe(1);
+    // ...and the label ring stayed where construction put it. A guard that let a
+    // degenerate measurement through would show up here as 0 / NaN / Infinity.
+    expect(labelOffsets(result)).toEqual(before);
+  }
+
+  it('exposes a fitHelpers method', () => {
+    const result = setup();
+    expect(result).toHaveProperty('fitHelpers');
+    expect(typeof (result as any).fitHelpers).toBe('function');
+  });
+
+  it('empty bounds are a no-op', () => {
+    const result = setup() as any;
+    const before = labelOffsets(result);
+    const emptyBounds = {
+      isEmpty: () => true,
+      getCenter: vi.fn(),
+      getSize: vi.fn(),
+    };
+
+    result.fitHelpers(emptyBounds as any);
+
+    expectNoOp(result, before);
+    // The isEmpty() early return must fire BEFORE any measurement, mirroring
+    // adjustClipping's guard.
+    expect(emptyBounds.getSize).not.toHaveBeenCalled();
+  });
+
+  it('zero-size bounds are a no-op', () => {
+    const result = setup() as any;
+    const before = labelOffsets(result);
+    // A single degenerate mesh can produce a non-empty Box3 of zero extent.
+    // radius would be 0, and a 0-unit grid is worse than an oversized one.
+    result.fitHelpers(boundsWithSize(0, 0, 0) as any);
+    expectNoOp(result, before);
+  });
+
+  it.each([
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+  ])('non-finite (%s) bounds are a no-op', (_label, v) => {
+    const result = setup() as any;
+    const before = labelOffsets(result);
+    result.fitHelpers(boundsWithSize(v, v, v) as any);
+    expectNoOp(result, before);
+  });
+});
