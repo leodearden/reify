@@ -4824,10 +4824,11 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  // (n)/(o), the TESTID escape — this resolver's busiest, since every #5891
-  // scoped tool reaches it — moved to the `resolveByTestId testId` row of the
-  // `debug bridge escapeAttrValue` table at the end of this file. Case (f)
-  // above keeps the sibling VIEWPORTID arm, which no row covers.
+  // The TESTID escape — this resolver's busiest arm, since every #5891 scoped
+  // tool reaches it — is pinned by the `resolveByTestId testId` row of the
+  // `debug bridge escapeAttrValue` table at the end of this file, so this block
+  // carries no case for it. Case (f) above keeps the sibling VIEWPORTID arm,
+  // which no row covers.
 });
 
 // ---------------------------------------------------------------------------
@@ -4928,15 +4929,23 @@ type EscapeSite = {
   mountHit: (value: string) => () => void;
   expectHit: (value: string) => unknown;
   /**
-   * A JSON-supplied NON-string this site hands to the escape unvalidated, plus
-   * the diagnostic it must still reach.
+   * A JSON-supplied NON-string, plus the SCHEMA-VIOLATION diagnostic the site's
+   * boundary guard must answer it with.
    *
-   * Present only where the handler casts a param straight out of the JSON
-   * payload (`params.testId as string`, `params.name as string`) with no typeof
-   * guard, so a `{"testId": 3}` request reaches `escapeAttrValue` as a number.
-   * Absent where the value cannot arrive non-string: the tree rows interpolate
-   * `path` into a template BEFORE escaping, and the fea row's `viewportId` is
-   * rejected by a typeof guard first (case (n) of the set_fea_channel block).
+   * This half does not exercise the escape at all — that is the point. THE
+   * BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS` in bridge.ts requires a
+   * wrong-typed param to be rejected BEFORE resolution, so that `{"testId": 3}`
+   * cannot coerce to `"3"` and come back as `element with data-testid="3" not
+   * found` — a diagnostic that says the DOM is missing something when the
+   * REQUEST is what is malformed. The rows pin the rejection per site because
+   * the guard is per site; `escapeAttrValue`'s own `String()` coercion is the
+   * backstop underneath it, and no dispatch path reaches it non-string today.
+   *
+   * Present only on the two sites whose param is caller-supplied verbatim.
+   * Absent where the value cannot arrive non-string at all: the tree rows
+   * interpolate `path` into a template BEFORE escaping, and the fea row's
+   * `viewportId` has its own typeof guard (case (n) of the set_fea_channel
+   * block).
    */
   nonString?: { value: unknown; expected: unknown };
 };
@@ -4986,7 +4995,9 @@ const ESCAPE_SITES: EscapeSite[] = [
     },
     // A single match, so the response stays the bare success shape.
     expectHit: () => ({ ok: true }),
-    nonString: { value: 3, expected: { error: RESOLVE_BY_TESTID_ERRORS.notFound('3') } },
+    // NOT `notFound('3')`: click_element rejects the wrong type at its own
+    // boundary, so the resolver — and the escape below it — is never reached.
+    nonString: { value: 3, expected: { error: 'testId is required' } },
   },
   // open_menu's `name` — menu names are simple lowercase identifiers BY
   // CONVENTION only, and this tool boundary does not enforce it.
@@ -5004,7 +5015,8 @@ const ESCAPE_SITES: EscapeSite[] = [
     // names, so `ctx.menuBar` is undefined and `open` falls back to the
     // requested name. This row is about the selector round trip, not menu state.
     expectHit: (value) => ({ ok: true, open: value }),
-    nonString: { value: 3, expected: { error: 'menu trigger not found: 3' } },
+    // NOT `menu trigger not found: 3`: same boundary rejection as the testId row.
+    nonString: { value: 3, expected: { error: 'name is required' } },
   },
   // driveTreeNode, design panel. Both panels feed the same escape through a
   // different testid prefix, so each is its own row.
@@ -5180,18 +5192,20 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
         verifyHit();
       });
 
-      // The two arms must agree on NON-strings too, not just on metacharacters.
-      // `CSS.escape` takes a WebIDL DOMString and so coerces its argument, but
-      // the fallback arm calls `String.prototype.replace` — which THROWS
-      // `TypeError: v.replace is not a function` on a number. The dispatcher
-      // turns that into `{error: 'v.replace is not a function'}`: exactly the
-      // opaque-internal-message failure the escape exists to prevent, reached
-      // through a wrong TYPE instead of a metacharacter. Only the fallback arm
-      // can regress here, so an arm-blind version of this case would be green
-      // on the branch that cannot break.
+      // The per-site boundary guard — THE BOUNDARY RULE on
+      // `RESOLVE_BY_TESTID_ERRORS` in bridge.ts. With the guard in place both
+      // arms answer identically, because neither is reached; the case is run
+      // under both anyway because DELETING the guard fails differently on each,
+      // and neither failure is the contract. The fallback arm would call
+      // `String.prototype.replace` and THROW `TypeError: v.replace is not a
+      // function`, which the dispatcher surfaces as
+      // `{error: 'v.replace is not a function'}` — an opaque internal message.
+      // The CSS.escape arm would coerce silently and answer a malformed REQUEST
+      // with a missing-ELEMENT diagnostic. An arm-blind version of this case
+      // would be green on whichever branch it did not happen to run.
       if (site.nonString) {
         const { value, expected } = site.nonString;
-        it(`[${arm.name}] ${site.label}: a JSON-supplied non-string coerces rather than throwing inside the escape`, async () => {
+        it(`[${arm.name}] ${site.label}: a JSON-supplied non-string is rejected at the boundary, never coerced into a not-found`, async () => {
           arm.install();
           const stores = makeStores();
           await initDebugBridge(stores);

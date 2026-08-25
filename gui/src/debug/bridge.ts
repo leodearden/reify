@@ -64,6 +64,23 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // `notFound` reproduces the pre-#5891 message byte for byte — it was duplicated
 // inline in click_element/focus_element/scroll/element_screenshot, and callers
 // (including the visual-regression harness) match on it.
+//
+// THE BOUNDARY RULE. `notFound` asserts that no such element EXISTS, so it must
+// never be the answer to a WRONG-TYPED request: `{"testId": 3}` would otherwise
+// coerce to `"3"` and come back as `element with data-testid="3" not found`,
+// sending a harness author hunting in the DOM instead of fixing the payload.
+// Every tool that resolves by testid therefore rejects a non-string at its OWN
+// boundary, BEFORE resolution, reusing that tool's existing required-param
+// wording rather than adding a seventh error constant — dom_query,
+// click_element, focus_element, scroll, element_screenshot, wait_for_selector
+// and wait_for's selector arm all do, and `open_menu` gives its `name` the same
+// treatment. Six spell the guard `typeof testId !== 'string' || testId === ''`;
+// element_screenshot's `!testId || typeof testId !== 'string'` is the same
+// predicate written the other way round, kept as it stood. Those guards are also
+// what makes `resolveByTestId(testId: string, …)` honest: the call sites used to
+// reach it through a `params.testId as string` cast that the JSON payload could
+// falsify. `escapeAttrValue`'s `String()` coercion sits BELOW this boundary as a
+// backstop, not as the validation (task #6178 review amendment).
 export const RESOLVE_BY_TESTID_ERRORS = {
   notFound: (testId: string) => `element with data-testid="${testId}" not found`,
   notFoundForViewport: (testId: string, id: string) =>
@@ -233,10 +250,15 @@ function pickFeaChannelSelect(
  * non-string — surfacing as `{error: 'v.replace is not a function'}`, exactly
  * the opaque-internal-message failure this helper exists to prevent, reached
  * through a wrong TYPE rather than a metacharacter. Coercing here closes every
- * call site at once, which matters because the handlers cast their params
- * straight out of the JSON payload (`params.testId as string`,
- * `params.name as string`) with no typeof guard, so `{"name": 3}` arrives here
- * as a number and must still reach its own not-found diagnostic.
+ * call site at once.
+ *
+ * That coercion is a BACKSTOP, not the validation. Since #6178's review
+ * amendment every caller-supplied value that reaches this helper has already
+ * passed a `typeof` guard at its own tool boundary — see THE BOUNDARY RULE on
+ * `RESOLVE_BY_TESTID_ERRORS` — so no dispatch path hands it a non-string today.
+ * It stays because a call site added later WITHOUT that guard would otherwise
+ * fail as an opaque internal TypeError under the fallback arm alone, the one arm
+ * no real webview takes, so the gap would never show up in a browser.
  */
 function escapeAttrValue(v: unknown): string {
   const s = String(v);
@@ -826,8 +848,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     },
 
     dom_query: (params) => {
-      const testId = params.testId as string;
-      if (!testId) return { error: 'testId is required' };
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') return { error: 'testId is required' };
 
       // #5891: dom_query is an existence PROBE, not a driver, so it collapses BOTH
       // absence errors — `notFound` (no such testid anywhere) and
@@ -956,8 +978,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // --- App-chrome commands (frontend-mediated, C1) ---
 
     open_menu: (params) => {
-      const name = params.name as string;
-      if (!name) return { error: 'name is required' };
+      const name = params.name;
+      if (typeof name !== 'string' || name === '') return { error: 'name is required' };
 
       // Menu names are simple lowercase identifiers by convention, but that
       // convention is caller-side and this tool boundary does not enforce it —
@@ -967,8 +989,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // surfaces as an opaque CSS-parser message instead of the
       // `menu trigger not found` diagnostic below. Pinned by the
       // `open_menu name` row of the `debug bridge escapeAttrValue` table in
-      // debugBridge.test.tsx, which also covers a non-string `name` — this
-      // handler's `!name` guard rejects only a missing or empty one.
+      // debugBridge.test.tsx, whose `nonString` half pins the separate property
+      // that the guard above rejects `{"name": 3}` outright rather than letting
+      // it coerce into a `menu trigger not found: 3` that reads as a missing
+      // menu — THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS`.
       const el = document.querySelector(
         `[data-testid="menu-trigger-${escapeAttrValue(name)}"]`,
       );
@@ -1053,8 +1077,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // --- Write commands (frontend-mediated) ---
 
     click_element: (params) => {
-      const testId = params.testId as string;
-      if (!testId) return { error: 'testId is required' };
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') return { error: 'testId is required' };
 
       const r = resolveByTestId(testId, params.viewportId);
       if ('error' in r) return r;
@@ -1222,8 +1246,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     },
 
     focus_element: (params) => {
-      const testId = params.testId as string;
-      if (!testId) return { error: 'testId is required' };
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') return { error: 'testId is required' };
       const r = resolveByTestId(testId, params.viewportId);
       if ('error' in r) return r;
       (r.el as HTMLElement).focus();
@@ -1260,8 +1284,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // `viewportId` — it resolves no testid, so scoping is meaningless there and
       // must not become a spurious rejection for a caller threading the param
       // through generically.
-      const testId = params.testId as string;
-      if (!testId) return { error: 'testId or target:"editor" is required' };
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') {
+        return { error: 'testId or target:"editor" is required' };
+      }
       // Guard order is unchanged from pre-#5891: testId presence, then element
       // resolution, then the finite-number checks. The viewport ladder lives
       // INSIDE resolution, so it takes the slot the old not-found check held and

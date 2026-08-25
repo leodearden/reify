@@ -158,6 +158,15 @@ Three distinct error shapes exist depending on which layer the error originates.
 { "error": "viewport not ready" }
 ```
 
+A **wrong-typed** parameter is a schema violation, and gets a §2a error that
+says so — never a not-found. `{"testId": 3}` does not come back as
+`element with data-testid="3" not found`, which would send a harness author
+hunting in the DOM for an element that was never asked for; every
+testid-resolving tool rejects the type at its own boundary before resolution.
+That rule is stated once as THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS` in
+`bridge.ts`, and pinned per call site by the `nonString` half of the
+`debug bridge escapeAttrValue` table in `debugBridge.test.tsx`.
+
 The Rust transport passes this object through verbatim: the JSON string
 returned by the JS bridge is parsed by `DebugBridge::resolve` →
 `serde_json::from_str`, so any extra fields survive intact.
