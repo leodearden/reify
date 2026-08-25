@@ -420,6 +420,10 @@ pub structure CapstanUnit {
     /// Relays for composing levels (#5360 landed 2026-07-31: one-level reads of
     /// derived lets chain across sub levels, so parents read these instead of
     /// hand-keeping mirrors).
+    /// Axial migration of the active wrap point = the stroke this whole unit
+    /// (collar + all four fairlead pulleys) translates along Z as the drum
+    /// reels. Every fairlead-vs-fixed clearance must hold across it.
+    let band_stroke    = self.capstan.lead * self.capstan.active_turns
     let frame_web_half = self.frame.web_half_z
     let frame_half_x   = self.frame.half_x
     let frame_half_z   = self.frame.half_z
@@ -479,6 +483,7 @@ pub structure RearDrive {
     let unit_web_half = self.unit_a.frame_web_half  // collar web half-height
     let unit_frame_x  = self.unit_a.frame_half_x    // collar half-width
     let unit_frame_z  = self.unit_a.frame_half_z    // collar plate half-height
+    let unit_stroke   = self.unit_a.band_stroke     // fairlead migration stroke
     // Fairlead band heights (unit-local z of each pulley centre) — these are
     // what the drive-plane routing must descend to / rise from, and were the
     // last hand-kept literals in DriveTendons (flz_in1 = −168.9 etc.).
@@ -828,6 +833,14 @@ pub structure DriveTendons {
     /// the analytic sweep; neither v1 nor the first v2 draft stated it, and
     /// the w2 rises were 31mm against a 42mm requirement.)
     let rise_min   = r_pitch * 2 + clear_min
+    /// HALF the fairlead's axial migration. The whole drive unit translates
+    /// along Z as the drum reels (stroke = the active wrap band, ~60mm), so
+    /// every below-entry pulley drops this far toward the fixed up-turn discs
+    /// at the bottom of travel. Checking the rise rule only at the NOMINAL
+    /// band position is what let unit B's w2_out pulley end up 20.7mm from
+    /// idler_up_b2 against a 42mm requirement (found 2026-08-25 when Leo
+    /// asked whether the carriages collide as the capstans turn).
+    let stroke_half = self.rear_drive.unit_stroke / 2
     /// Stagger between the two low runs sharing a tangent plane — must exceed
     /// a turn disc's diameter plus rope and clearance (constraint below).
     let low_stagger = r_pitch * 2 + rope_r + clear_min + 5mm
@@ -837,9 +850,9 @@ pub structure DriveTendons {
     // Each plane's upper level is set by whichever bound binds — the rise rule
     // or passing under the collar plates — and the lower level is one stagger
     // below it; all four are pinned by constraints.
-    let low_hi     = 0mm - 320mm     // plane_out upper (collar-bound)
+    let low_hi     = 0mm - 352mm     // plane_out upper (bound by the collar's SWEPT envelope)
     let low_lo     = low_hi - low_stagger
-    let low_in_hi  = 0mm - 340mm     // plane_in upper (rise-bound by flz_out2)
+    let low_in_hi  = 0mm - 364mm     // plane_in upper (rise-bound by flz_out2 AT THE BOTTOM OF TRAVEL)
     let low_in_lo  = low_in_hi - low_stagger
 
     // ── Free vertical corridors (the rule the v1 hand-solve violated) ───────
@@ -1007,21 +1020,31 @@ pub structure DriveTendons {
     //    the fairlead pulley it feeds — coaxial discs in one plane — clear.
     //    This is the rule the sweep found; it is what forces plane_in's runs
     //    deeper than plane_out's (flz_out2 sits ~44mm below flz_out1).
-    constraint flz_out1 - lo_hi_c > rise_min
-    constraint flz_out1 - lo_lo_c > rise_min
-    constraint flz_out2 - lo_in_hi_c > rise_min
-    constraint flz_out2 - lo_in_lo_c > rise_min
-    // 6. Every low run passes below the collar plates AND the below-entry
+    //    Evaluated at the WORST CASE of the fairlead's travel (the pulley at
+    //    the bottom of its migration), not at the nominal band position.
+    constraint flz_out1 - stroke_half - lo_hi_c    > rise_min
+    constraint flz_out1 - stroke_half - lo_lo_c    > rise_min
+    constraint flz_out2 - stroke_half - lo_in_hi_c > rise_min
+    constraint flz_out2 - stroke_half - lo_in_lo_c > rise_min
+    // 6. COLLAR SWEEP: the collar (which translates with the band) must clear
+    //    the fixed low-turn discs at the BOTTOM of its travel. The webs are
+    //    the binding member — they span the full y range of both tangent
+    //    planes, so they pass right over the turn discs, unlike the plates
+    //    which sit outboard of every rope. This is the same worst-case-of-
+    //    travel class as the rise rule above and was found the same way.
+    constraint neg_drop - fl_web_half - stroke_half - lo_hi_c - r_pitch > clear_min
+    constraint neg_drop - fl_web_half - stroke_half - lo_in_hi_c - r_pitch > clear_min
+    // 7. Every low run passes below the collar plates AND the below-entry
     //    pulley discs (the lowest hardware on the drive units).
     constraint flz_out2 - r_pitch - low_hi > rope_r + clear_min
     constraint neg_drop - fl_frame_z - low_hi > rope_r + clear_min
     constraint neg_drop - fl_frame_z - low_in_hi > rope_r + clear_min
     // 6. The IN descents clear the drum flange band in their plane.
     constraint cap_x_m - fl_in_x_a > drum_band + rope_r + clear_min
-    // 7. The mid corridor is wide enough to admit a rope at all — the check
+    // 8. The mid corridor is wide enough to admit a rope at all — the check
     //    that would have caught the v1 layout at cap_x = 100mm.
     constraint mid_corr_x > rope_r + clear_min
-    // 8. WRAP SENSE: a turn pulley must sit on the side of its vertical that
+    // 9. WRAP SENSE: a turn pulley must sit on the side of its vertical that
     //    FACES the incoming run — tangency alone does not pin this, and an
     //    inverted sign puts the pulley on the wrong side of its own rope while
     //    still reading as "two segments tangent to this pulley" (exactly how
@@ -1032,7 +1055,7 @@ pub structure DriveTendons {
     constraint (corner_b1_x - fl_out_x_b) * (up_b1_x - fl_out_x_b) > 0mm * 1mm
     constraint (corner_a2_x - fl_in_x_a)  * (up_a2_x - fl_in_x_a)  > 0mm * 1mm
     constraint (corner_b2_x - fl_in_x_b)  * (up_b2_x - fl_in_x_b)  > 0mm * 1mm
-    // 9. #6586 PINS: every hand-kept literal above equals the derived cell it
+    // 10. #6586 PINS: every hand-kept literal above equals the derived cell it
     //    stands in for. These are the whole safety story for the workaround —
     //    if the drive geometry moves and a literal does not follow, the design
     //    fails here rather than silently rendering rope in the wrong place.
