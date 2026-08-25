@@ -84,6 +84,16 @@ const GRID_DIVISIONS = 20;
 const AXES_BASE_LENGTH = 2;
 
 /**
+ * How far past the axis tip the label ring sits, as a multiple of the axis length.
+ *
+ * Must be > 1 so the letter clears the tip rather than landing on the vector it
+ * annotates. Kept small so the ring stays inside the scene's neighbourhood — the
+ * #6588 defect was a ring parked at a fixed 2.3 world units, which for a sub-metre
+ * model is several times the whole scene.
+ */
+const LABEL_TIP_MARGIN = 1.15;
+
+/**
  * Creates a Three.js scene with camera, renderer, lights, and helpers.
  * @param canvas - The HTML canvas element to render into.
  * @param width - Initial viewport width.
@@ -187,7 +197,11 @@ export function createScene(
   axesMaterial.depthWrite = false;
   scene.add(axes);
 
-  const { group: axisLabels, dispose: disposeAxisLabels } = createAxisLabels();
+  const {
+    group: axisLabels,
+    dispose: disposeAxisLabels,
+    setOffset: setAxisLabelOffset,
+  } = createAxisLabels();
   scene.add(axisLabels);
 
   function resize(w: number, h: number) {
@@ -265,6 +279,14 @@ export function createScene(
     //   r = 0.005 -> 1 mm cells, 20 mm grid.
     grid.scale.setScalar(gridWorldSize / GRID_BASE_SIZE);
     axes.scale.setScalar(axesWorldLength / AXES_BASE_LENGTH);
+
+    // The labels must follow the tip they annotate, and they must do so by MOVING,
+    // not by scaling their Group: the r183 sprite shader multiplies on-screen size
+    // by length(modelMatrix[0].xyz), which includes ancestor scale, so a Group scale
+    // here would silently undo axisLabels.ts's constant-screen-size fix and
+    // reproduce #6588 with nothing else changing. See createAxisLabels' setOffset
+    // doc for the same constraint stated from the other end.
+    setAxisLabelOffset(axesWorldLength * LABEL_TIP_MARGIN);
 
     // No requestRender() here: Viewport.tsx's mesh-sync effect already invalidates
     // after calling this, and re-rendering from inside a sizing helper would couple
