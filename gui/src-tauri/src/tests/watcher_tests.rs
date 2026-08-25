@@ -689,6 +689,15 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //   * The budget over an in-process producer thread in
 //     wait_for_detects_value_set_by_another_thread: two orders of
 //     magnitude of margin, no filesystem and no inotify involved.
+//   * The budget in
+//     watcher_delivers_an_injected_pending_entry_whose_window_has_already_elapsed
+//     -- a generous `wait_for` budget over a hard POSITIVE assert, on an
+//     entry stamped in the PAST and therefore already ready when it lands.
+//     Descheduling only makes such an entry READIER, so there is no window
+//     to miss -- which is the precise property the pre-#6438 form of
+//     watcher_drop_discards_a_pending_event_rather_than_delivering_it
+//     lacked. Added by the #6438 review pass to pin the notify wiring both
+//     Drop tests below silently depend on.
 //   * The registration-barriered condition-polls that pair a generous
 //     `wait_for` / `wait_until_with_retry` budget with a hard POSITIVE
 //     assert (the watcher_detects_*, watcher_emits_*, watcher_rereads_*,
@@ -1719,6 +1728,96 @@ fn far_future_stamp() -> Instant {
     // both of the guard's rules are single-physical-line by design.
     let stamp = Instant::now().checked_add(Duration::from_secs(3600)); // wallclock:allow -- see above
     stamp.expect("an hour past now is representable as an Instant")
+}
+
+/// An `Instant` far enough BEFORE the present that a `Debouncer` entry
+/// stamped with it is ALREADY ready to drain -- the mirror of
+/// [`far_future_stamp`], and the seam the drive-half test just below rests
+/// on.
+///
+/// No escape is needed here and none is taken: subtracting from the raw clock
+/// is not a deadline. `Debouncer::drain_ready` asks
+/// `now.duration_since(last_seen) >= window`, so moving `last_seen` FURTHER
+/// into the past only makes that hold sooner. The direction is monotone under
+/// descheduling -- the safe one -- exactly like the lower bounds
+/// `tests/infra/test_no_new_wallclock_rust_deadlines.sh` deliberately does
+/// not match, and unlike the future offset above, which has to argue its case
+/// with an escape.
+///
+/// `checked_sub` rather than `-`: on Linux an `Instant` is CLOCK_MONOTONIC,
+/// i.e. time since boot, so an hour before now is not representable on a host
+/// that booted more recently and `Instant - Duration` panics there. The
+/// `unwrap_or` fallback degrades to `now`, which costs the caller one debounce
+/// window of real waiting and nothing else: the entry still drains, far inside
+/// the generous budget the caller polls with.
+fn already_elapsed_stamp() -> Instant {
+    let now = Instant::now();
+    now.checked_sub(Duration::from_secs(3600)).unwrap_or(now)
+}
+
+/// THE DRIVE HALF of `FileWatcher::record_pending_for_test` -- the half the
+/// two `Drop` tests below depend on and neither one exercises (#6438 review).
+///
+/// Both of those inject a future-stamped, structurally un-drainable entry and
+/// then assert NON-delivery, and `pending_paths()` only proves the entry
+/// landed in the shared map. So the hook's documented claim to record
+/// "exactly as if the notify closure had observed a change ... same lock,
+/// same `Debouncer::record` call, same `notify_one` afterwards" was untested
+/// on its second half: delete the `cvar.notify_one()`, or wire the hook to a
+/// different `Condvar`, and every test in this file still passes green --
+/// while the equivalence those two tests' vacuity argument rests on has
+/// quietly stopped holding.
+///
+/// This test closes that by injecting an ALREADY-ELAPSED stamp and asserting
+/// the callback fires with that path. The wake-up is the load-bearing part:
+/// with an empty debouncer the worker's `next_wait` returns `None`, so it
+/// parks in `cvar.wait(guard)` with NO timeout at all, and only a notify on
+/// that exact condvar can wake it. A hook that recorded into the map without
+/// notifying -- or that notified a different one -- leaves the worker parked
+/// forever and turns this assertion red on its budget, rather than letting a
+/// timeout paper over the missing wire.
+///
+/// LOAD DIRECTION, per this file's REAL-CLOCK LEDGER: this is the blessed
+/// shape -- a generous budget paired with a hard POSITIVE assert, with no
+/// upper bound on elapsed time anywhere. Descheduling only makes an
+/// already-elapsed entry MORE ready, never less, so there is no window to
+/// miss here (which is exactly what made the pre-#6438 form of the test below
+/// flaky) and nothing that inverts under load.
+#[test]
+fn watcher_delivers_an_injected_pending_entry_whose_window_has_already_elapsed() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let received: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let received_clone = received.clone();
+
+    // Nothing is written to disk in this test either, so -- as in the discard
+    // test below -- the notify closure cannot produce an event of its own and
+    // every path that reaches `received` came through the injection hook.
+    let Some(watcher) = try_watcher(dir.path(), None, move |event| {
+        if let FileEvent::Changed(path) = event {
+            received_clone.lock().unwrap().push(path);
+        }
+    }) else {
+        return;
+    };
+
+    let ri_file = dir.path().join("injected.ri");
+    watcher.record_pending_for_test(ri_file.clone(), ChangeKind::Changed, already_elapsed_stamp());
+
+    let delivered = wait_for(&received, Duration::from_secs(10), |paths| {
+        paths.iter().any(|p| p.ends_with("injected.ri"))
+    });
+
+    let paths = received.lock().unwrap();
+    assert!(
+        delivered,
+        "an injected entry whose debounce window has already elapsed should be \
+         drained and delivered to the callback -- if this fails, the injection \
+         hook recorded into the debouncer without waking the worker (or woke a \
+         different condvar), which would also make the two Drop tests below \
+         pass vacuously; got: {:?}",
+        *paths
+    );
 }
 
 /// `Drop` must cleanly shut down and join the worker thread even while a
