@@ -342,7 +342,7 @@ Greek labels are PRD-local; task IDs are assigned/reused at decompose. Re-homed 
 
 **Gated cross-PRD (kept, not shipped in the prismatic batch).**
 
-- **2930 — bracket auto-thickness, minimize-mass, end-to-end (kept a bracket).** Rewrite to honest grammar — a bare `minimize` plus a **separate `constraint` member**, *not* the `minimize … where …` form decision #5 originally ratified (see decision #5's 2026-08-25 correction; the guard is silently dropped, owner task **6575**, which now gates 2930). *Signal (leaf):* `reify build` of the bracket example converges a thickness and the design loop holds. *Prereqs:* α, β, **A=4093, P1=4091, P2=4092** (producer-completion, cross-PRD; P2→P1, A→2881/2882, 3429 transitive via P1). Re-dep 2930 (applied): `[2924,2926,2928,3092]` → `[α(4084), β(4085), A(4093), P1(4091), P2(4092), 2926, 2928, 3092]`.
+- **2930 — bracket auto-thickness, minimize-mass, end-to-end (kept a bracket).** Rewrite to honest grammar — a bare `minimize` plus a **separate `constraint` member**, *not* the `minimize … where …` form decision #5 originally ratified (see decision #5's 2026-08-25 correction; the guard is silently dropped, owner task **6575** — which does *not* gate 2930: 2930's implementer engineered around the defect with the separate-`constraint` form). *Signal (leaf):* `reify build` of the bracket example converges a thickness and the design loop holds. *Prereqs:* α, β, **A=4093, P1=4091, P2=4092** (producer-completion, cross-PRD; P2→P1, A→2881/2882, 3429 transitive via P1). Re-dep 2930 (applied): `[2924,2926,2928,3092]` → `[α(4084), β(4085), A(4093), P1(4091), P2(4092), 2926, 2928, 3092]`.
 
 ---
 
