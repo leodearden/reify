@@ -549,29 +549,23 @@ fn debouncer_paths_are_coalesced_and_drained_independently() {
     assert_eq!(deb.next_wait(t0 + Duration::from_millis(160)), None);
 }
 
-/// PREMISE PIN for the far-future-stamp idiom used by
-/// `watcher_drop_discards_a_pending_event_rather_than_delivering_it` below,
-/// which injects via `FileWatcher::record_pending_for_test` at the stamp from
-/// `far_future_stamp()` below, and then asserts against a debouncer entry that
-/// must STILL be pending.
+/// PREMISE PIN for the far-future-stamp idiom that
+/// `watcher_drop_discards_a_pending_event_rather_than_delivering_it` below
+/// rests on: it injects via `FileWatcher::record_pending_for_test` at the
+/// stamp from `far_future_stamp()`, then asserts the entry is STILL pending.
 ///
-/// The mathematical identity those tests rest on: `Instant::duration_since`
-/// SATURATES to zero when `earlier > self` (saturating rather than panicking
-/// since Rust 1.60), so `Debouncer::drain_ready`'s
-/// `now.duration_since(pending.last_seen) >= window` test can never hold for
-/// an entry stamped in the future, no matter how much real time passes.
-/// `next_wait` saturates the same way and therefore keeps reporting a FULL
-/// window, so the worker just re-parks instead of spinning.
+/// The identity that makes a future-stamped entry structurally un-drainable
+/// -- how `Instant::duration_since` saturates, and what that does to
+/// `drain_ready` and `next_wait` -- is stated ONCE, at the seam it belongs
+/// to: `FileWatcher::record_pending_for_test` in `watcher.rs`. This test is
+/// the EXECUTABLE half of that statement (#6438 review: the argument had been
+/// written out in four places, so a change to `drain_ready` would have needed
+/// four prose edits while only this test went red).
 ///
-/// That turns "win a 100ms real-time race against the debounce window" --
-/// which is what that test used to do, and is how this class of flake was
-/// born -- into a structural invariant with zero wall-clock dependence.
-///
-/// Keeping the identity pinned HERE means a future change to `drain_ready`
-/// that breaks it (swapping in `checked_duration_since`, reordering the
-/// comparison operands, or comparing signed deltas) turns THIS test red at
-/// the identity, rather than silently converting that test back into a
-/// wall-clock flake.
+/// So a change that breaks the identity -- `checked_duration_since`,
+/// reordered comparison operands, signed deltas -- turns THIS test red at the
+/// identity, instead of silently converting the discard test back into the
+/// wall-clock flake it was.
 #[test]
 fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window() {
     let t0 = Instant::now();
@@ -1710,15 +1704,11 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
 /// run. The single seam that takes real time out of
 /// `watcher_drop_discards_a_pending_event_rather_than_delivering_it` below.
 ///
-/// `Debouncer::drain_ready` asks `now.duration_since(last_seen) >= window`,
-/// and `Instant::duration_since` saturates to zero whenever `last_seen` lies
-/// in the future -- so an entry stamped here is structurally un-drainable
-/// rather than merely unlikely to be drained, and `next_wait` saturates
-/// identically (a full window every time), so the worker parks rather than
-/// spins. That identity is pinned directly, and independently of any watcher,
+/// WHY an entry stamped here is structurally un-drainable, rather than merely
+/// unlikely to be drained: stated once, at the seam, in
+/// `FileWatcher::record_pending_for_test` in `watcher.rs`. Pinned executably
 /// by `debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window`
-/// above -- if it ever stops holding, that test goes red at the identity
-/// instead of these two going flaky again.
+/// above, which goes red at the identity if it ever stops holding.
 ///
 /// THIS FILE'S ONE ESCAPE, and why it is argued rather than dodged (#6438
 /// review). The line below is the only real-`Instant` offset in the file, and
@@ -1735,14 +1725,12 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
 /// copy in prose would silently mark THAT line escaped too, and would inflate
 /// any "count the escapes in tree" audit.)
 ///
-/// An earlier draft of this task dodged the rule instead of arguing with it:
-/// it spelled the offset `checked_add` precisely BECAUSE Rule A then keyed on
-/// `+` alone, and said so here. That was a bypass documented as house style
-/// -- it hid this site from the guard and, worse, advertised an undetectable
-/// spelling to every future author of a real deadline. Rule A now matches
-/// `Instant::now()` followed by `+` OR by `.checked_add`. `checked_add`
-/// survives here on its own merits (it states the no-overflow intent
-/// outright), and the escape does the arguing.
+/// `checked_add` is kept for stating the no-overflow intent outright, NOT as a
+/// way around the rule: an earlier draft of this task spelled it that way
+/// precisely because Rule A then keyed on `+` alone, which hid this site and
+/// advertised an undetectable spelling to every future author of a real
+/// deadline. Rule A now matches both spellings, and the escape does the
+/// arguing.
 fn far_future_stamp() -> Instant {
     // The offset is bound on one line so the escape sits on the matched line:
     // both of the guard's rules are single-physical-line by design.

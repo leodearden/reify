@@ -38,34 +38,20 @@
 # The two guards share a spelling for their escape comment, and nothing else.
 # ---------------------------------------------------------------------------
 #
-# THE TWO RULES (both single-physical-line; see the detector for rationale):
-#   Rule A -- the raw clock used as a deadline, in either half of that:
-#             `Instant::now()` immediately followed by `+` or by
-#             `.checked_add` (the deadline BUILT by hand instead of taken
-#             through the WaitClock seam that watcher_tests.rs provides), or
-#             `Instant::now()` on either side of a comparison operator (that
-#             deadline CHECKED -- `while Instant::now() < deadline`). The
-#             comparison half is not decoration: the build half alone is
-#             evaded by nothing more devious than a line break, since
-#             `let start = Instant::now();` followed later by
-#             `let deadline = start + Duration::from_secs(5);` puts
-#             `Instant::now()` adjacent to nothing at all -- and that is the
-#             exact construct #6438 deleted. A hand-rolled deadline is inert
-#             unless it is compared against the clock, so the comparison is
-#             where an otherwise invisible one resurfaces.
-#   Rule B -- an UPPER bound on elapsed time, in either of its two families.
-#             Against a `Duration`, in three spellings: `x < Duration::..`,
-#             `x <= Duration::..`, and the reversed `Duration::.. > x` /
-#             `>= x`. Or against a plain number after a scalar accessor, in
-#             two: `x.as_millis() < 500` / `x.as_secs_f64() <= 2.0`, and the
-#             reversed `500 > x.as_millis()`. The scalar family carries no
-#             `Duration::` token anywhere on the line, so the Duration family
-#             alone left `assert!(start.elapsed().as_millis() < 500)` -- the
-#             same upper bound with the type erased -- completely invisible.
-#             An upper bound on elapsed time inverts under descheduling.
-#             LOWER bounds (`x >= Duration::..`, `x > Duration::..`,
-#             `x.as_millis() >= 150`, `150 < x.as_millis()`) are deliberately
-#             NOT matched -- they are monotone-safe.
+# THE TWO RULES, one line each. The canonical statement is the comment block
+# on `_detect_rust_wallclock_deadline` below: it carries the regexes, every
+# spelling matched and every spelling deliberately not matched, and the reason
+# for each. It sits with the code it describes, so it is the copy to read and
+# the copy to keep true -- this summary is deliberately not a second one.
+#   Rule A -- the raw clock used as a deadline: `Instant::now()` offset by hand
+#             (`+` or `.checked_add`) rather than taken through the WaitClock
+#             seam watcher_tests.rs provides, or compared against a deadline,
+#             in either operand order.
+#   Rule B -- an UPPER bound on elapsed time: against a `Duration`, or against
+#             a plain number after a scalar accessor (`.as_millis()` and
+#             friends), in either operand order. Upper bounds invert under
+#             descheduling; LOWER bounds are monotone-safe and are NOT matched.
+# Both rules are single-physical-line by construction.
 #
 # Escape: a same-line comment carrying the token `wallclock` immediately
 # followed by `:allow`. It is written apart HERE on purpose -- see SELF-MATCH
