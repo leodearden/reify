@@ -25,7 +25,8 @@
 // Module placement: see the ordering notes on the `std.dynamics` entry in
 // `stdlib_loader.rs` (`std.kinematic` and `std.ports` must precede) —
 // encoding note 3 below covers the `Frame3`/`origin` half of that
-// constraint.
+// constraint. The last-module slot belongs to `std.determinacy.purposes`,
+// pinned by crates/reify-compiler/tests/stdlib_loader_tests.rs::std_determinacy_purposes_is_last_stdlib_module.
 // Hard dependencies: `std.units` (Mass / Length / Time) and `std.trajectory`
 // (for the `JointValue` alias used by TrajectorySample).
 //
