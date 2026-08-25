@@ -22,6 +22,7 @@ vi.mock('three', async () => {
 });
 
 import { createAxisLabels } from '../../viewport/axisLabels';
+import { AXES_RENDER_ORDER, AXIS_LABEL_RENDER_ORDER } from '../../viewport/renderOrder';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -114,24 +115,29 @@ describe('createAxisLabels', () => {
     expect(zSprite.position.y).toBe(0);
   });
 
-  it('all sprites have depthTest === false (always-on-top)', () => {
+  it('label sprites are depth-tested so geometry between the camera and the label tip occludes them (#6587)', () => {
     const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
-      expect(child.material.depthTest).toBe(false);
+      // Assert on ctorOpts, NOT material.depthTest: MockSpriteMaterial defaults
+      // depthTest to `opts.depthTest ?? true`, so a material.depthTest assertion
+      // would pass vacuously if the option were dropped from axisLabels.ts entirely.
+      expect(child.material.ctorOpts.depthTest).toBe(true);
     }
   });
 
-  it('all sprites have depthWrite === false (always-on-top)', () => {
+  it('label sprites write no depth and stay transparent', () => {
     const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
-      expect(child.material.depthWrite).toBe(false);
+      expect(child.material.ctorOpts.depthWrite).toBe(false);
+      expect(child.material.ctorOpts.transparent).toBe(true);
     }
   });
 
-  it('all sprites have renderOrder > 0', () => {
+  it('label sprites sit at the top of the helper tier, after the axes they annotate', () => {
     const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
-      expect(child.renderOrder).toBeGreaterThan(0);
+      expect(child.renderOrder).toBe(AXIS_LABEL_RENDER_ORDER);
+      expect(child.renderOrder).toBeGreaterThan(AXES_RENDER_ORDER);
     }
   });
 

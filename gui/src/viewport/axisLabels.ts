@@ -5,17 +5,13 @@ import {
   SpriteMaterial,
 } from 'three';
 
+import { AXIS_LABEL_RENDER_ORDER } from './renderOrder';
+
 /**
  * Offset from origin where each axis label is placed.
  * Must be > AxesHelper size (2) so labels sit just beyond the axis tip.
  */
 const LABEL_OFFSET = 2.3;
-
-/**
- * Render order for axis labels — above axes (renderOrder 1) so labels are
- * always visible when the axes overlay is visible.
- */
-const LABEL_RENDER_ORDER = 2;
 
 /**
  * Size (Three.js world units) of the label sprite quad.
@@ -63,7 +59,10 @@ function makeTextSprite(spec: LabelSpec): Sprite {
   const material = new SpriteMaterial({
     map: texture,
     color: spec.color,
-    depthTest: false,
+    // Depth-tested: labels are world-space geometry at the axis tips, so model
+    // geometry between them and the camera must occlude them (#6587). They still
+    // write no depth — see the helper rule in ./renderOrder.ts.
+    depthTest: true,
     depthWrite: false,
     transparent: true,
   });
@@ -71,7 +70,7 @@ function makeTextSprite(spec: LabelSpec): Sprite {
   const sprite = new Sprite(material);
   sprite.name = `axis-label-${spec.axis}`;
   sprite.userData.axis = spec.axis;
-  sprite.renderOrder = LABEL_RENDER_ORDER;
+  sprite.renderOrder = AXIS_LABEL_RENDER_ORDER;
   sprite.scale.set(LABEL_SCALE, LABEL_SCALE, 1);
   sprite.position.set(...spec.position);
 
@@ -82,8 +81,12 @@ function makeTextSprite(spec: LabelSpec): Sprite {
  * Create a Group containing three camera-facing "X"/"Y"/"Z" text sprites
  * positioned just beyond the tips of the AxesHelper triad.
  *
- * The labels render always-on-top (depthTest=false, depthWrite=false,
- * renderOrder > axes renderOrder=1) so the coplanar grid never occludes them.
+ * Labels follow the uniform viewport-helper rule (see ./renderOrder.ts): they are
+ * depth-TESTED, so a model surface between the camera and the label tip correctly
+ * occludes them (#6587), and they never write depth. They sit at the top of the
+ * helper tier (AXIS_LABEL_RENDER_ORDER), so they always draw over the axis they
+ * annotate. The coplanar grid still cannot occlude them, because the grid writes
+ * no depth either (see scene.ts, #4214).
  *
  * Visibility should be driven by the same signal that controls the axes
  * (see Viewport.tsx createEffect — set `axisLabels.visible` alongside

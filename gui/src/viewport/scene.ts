@@ -12,6 +12,7 @@ import {
 import type { Box3, Group } from 'three';
 import { THEME_TOKENS } from '../theme';
 import { createAxisLabels } from './axisLabels';
+import { GRID_RENDER_ORDER, AXES_RENDER_ORDER } from './renderOrder';
 
 export interface SceneContext {
   scene: Scene;
@@ -25,6 +26,28 @@ export interface SceneContext {
   /** Dispose the CanvasTexture and SpriteMaterial for each axis-label sprite.
    *  Call from Viewport.tsx onCleanup to release GPU resources on unmount. */
   disposeAxisLabels: () => void;
+}
+
+/**
+ * Narrow a three.js helper's `material` to the single material it actually carries.
+ *
+ * GridHelper and AxesHelper each currently construct exactly one LineBasicMaterial,
+ * but their types (and a future three.js version) allow an array. Every depth flag
+ * this module sets is a MUTATION of that material, and a mutation applied to an array
+ * object would silently miss the real material — restoring the #4214 z-fight with no
+ * test failure, because the unit-test mocks hand back a plain object. Fail loudly
+ * instead of drifting.
+ *
+ * @param helper - The helper whose material to narrow.
+ * @param name - Helper class name, used in the error message.
+ */
+function singleMaterial<T>(helper: { material: T | T[] }, name: string): T {
+  if (Array.isArray(helper.material)) {
+    throw new Error(
+      `${name}.material is unexpectedly an array — three.js API changed; update overlay logic in scene.ts.`,
+    );
+  }
+  return helper.material;
 }
 
 /**
@@ -76,37 +99,59 @@ export function createScene(
   scene.add(camera); // Camera must be in scene graph for its children to render
 
   // Helpers
+  //
+  // Viewport helpers (grid, axes, axis labels) all follow one rule, ordered by the
+  // ladder in ./renderOrder.ts:
+  //
+  //   depthTest  = true   — helpers are full-scene-scale WORLD geometry, not a HUD, so
+  //                         model geometry in front of them must occlude them (#6587).
+  //   depthWrite = false  — a helper contributes nothing to the depth buffer, so it can
+  //                         never occlude another helper drawn after it.
+  //
+  // Why that combination fixes the coplanar z-fight (#4214) without lying about depth:
+  // GridHelper's two CENTRE lines lie on its local X/Z axes, and the π/2 rotation below
+  // makes them exactly collinear with the AxesHelper's red (X) / green (Y) segments. Two
+  // collinear primitives built from different vertex data and model matrices produce depth
+  // values that differ only by float error, so under LESS_EQUAL the grey grid line
+  // sometimes won and occluded the axis vector.
+  //
+  // #4214 broke that tie with depthTest = false on the axes, which wins by disabling depth
+  // ENTIRELY — and therefore also made the axes (and the labels that copied the flag) beat
+  // every solid mesh in the scene, drawing straight through parts that enclose or sit in
+  // front of the origin. That is the #6587 defect, and this block reverses it.
+  //
+  // The tie is now broken by draw ORDER instead: three.js sorts by renderOrder BEFORE z in
+  // both painterSortStable and reversePainterSortStable, so the grid draws first and writes
+  // no depth, meaning the axes drawn after it can never fail their LEQUAL test against it —
+  // #4214 stays fixed at every zoom level — while real geometry, which DID write depth,
+  // still occludes both.
+  //
+  // ACCEPTED COSMETIC TRADE-OFF of grid depthWrite = false: an object drawn AFTER the grid
+  // that sits BEHIND it will overdraw the grid's 1px lines. The grid is last among opaque
+  // MODEL geometry, and the only opaque draws after it are the helpers in this tier — which
+  // are depthWrite = false themselves and are MEANT to overdraw it. (A future tier entry
+  // must preserve exactly that: opaque, higher renderOrder, and no depth write.) So the
+  // artifact is confined to the transparent pass — a hairline along grid lines under a
+  // ghosted/low-opacity part. Strictly smaller than the full-scene depth lie it replaces.
   const grid = new GridHelper(20, 20, 0x444466, 0x333344);
   // GridHelper lays in the XZ plane (Y-up default); rotate to lie on the XY plane (the floor under Z-up).
   grid.rotation.x = Math.PI / 2;
+  const gridMaterial = singleMaterial(grid, 'GridHelper');
+  grid.renderOrder = GRID_RENDER_ORDER;
+  // Both flags are assigned explicitly rather than left to three.js defaults: they ARE the
+  // helper-tier contract (see ./renderOrder.ts), and an explicit write is what the #6587
+  // regression tests can actually observe — a mock material that starts out untouched
+  // distinguishes "this module set it" from "the default happened to agree".
+  gridMaterial.depthTest = true;
+  gridMaterial.depthWrite = false;
   scene.add(grid);
 
   const axes = new AxesHelper(2);
-  // The AxesHelper is coplanar with the XY GridHelper (both lie in the Z=0 plane). Without
-  // intervention, floating-point depth jitter at some zoom levels causes the grey grid lines
-  // to win the LESS_EQUAL depth test and occlude the red (X) / green (Y) axis vectors.
-  //
-  // Fix: make the axes a deliberate always-on-top origin gizmo — a conventional CAD affordance.
-  // INTENTIONAL SIDE-EFFECT: depthTest=false means the axes render on top of ALL scene
-  // objects, including solid model geometry that encloses or sits in front of the origin, not
-  // just the coplanar grid. This is by design: always-visible origin axis gizmos are standard
-  // in CAD viewports and the helper is only 2 units long, so the cosmetic trade-off is
-  // acceptable and desirable (the gizmo is never accidentally hidden behind a model).
-  //   renderOrder = 1  — draw axes AFTER the grid (grid keeps the default renderOrder 0)
-  //   depthTest = false — axes fragments are never discarded; the gizmo is always on top
-  //   depthWrite = false — axes do not pollute the depth buffer for subsequent draws
-  // AxesHelper currently always constructs a single LineBasicMaterial. Guard against a future
-  // three.js version returning a material array, which would silently mutate the array object
-  // rather than the material and restore z-fighting without any test failure (the unit test mock
-  // uses a plain object, not an array, so it cannot catch that regression).
-  if (Array.isArray(axes.material)) {
-    throw new Error(
-      'AxesHelper.material is unexpectedly an array — three.js API changed; update overlay logic in scene.ts.',
-    );
-  }
-  axes.renderOrder = 1;
-  axes.material.depthTest = false;
-  axes.material.depthWrite = false;
+  const axesMaterial = singleMaterial(axes, 'AxesHelper');
+  axes.renderOrder = AXES_RENDER_ORDER;
+  // depthTest = true is the direct reversal of #4214's depthTest = false.
+  axesMaterial.depthTest = true;
+  axesMaterial.depthWrite = false;
   scene.add(axes);
 
   const { group: axisLabels, dispose: disposeAxisLabels } = createAxisLabels();
