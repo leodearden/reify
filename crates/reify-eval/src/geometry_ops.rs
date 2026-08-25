@@ -910,6 +910,23 @@ fn accept_variadic_length_args(
 /// (task 5743) is inherited for free. The `Unresolved` / `Invalid` `Err`
 /// wordings are lifted VERBATIM from [`required_length_arg`].
 ///
+/// SCOPE OF "byte-identical", stated precisely because the phrase recurs
+/// throughout this module: it is a claim about the pushed `Diagnostic` and about
+/// the `Err` STRING THIS FUNCTION RETURNS, not about whatever a caller then
+/// wraps that string in. The value-form pattern callers keep their PRE-δ
+/// per-builtin prefix — [`pattern_mirror`] wraps the decoder result in
+/// `format!("mirror: {}", e)` and [`pattern_circular`] in
+/// `format!("circular_pattern: {}", e)` — so the op-compile `Err` reaching
+/// `engine_build`'s "failed to compile geometry operation" wrapper reads
+/// `mirror: missing or non-Length argument 'ox' for mirror`, where the SCALAR
+/// branch's un-wrapped [`required_length_origin3`] reads
+/// `missing or non-Length argument 'ox' for mirror`. That stutter is cosmetic
+/// and PRE-EXISTS δ (it is on the merge-base at both sites), and the string is
+/// not the user-facing contract — the `Diagnostic` is, and that one IS identical
+/// across both forms. δ deliberately does not drop the prefix: doing so would
+/// change a pre-δ caller-facing message, which is precisely what the rest of
+/// this leaf's discipline forbids.
+///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
 /// a bare one is usually bare in EVERY component; short-circuiting would hand
@@ -1007,65 +1024,54 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
 /// every solver iteration, while only the rejection branches ever render a name.
 /// A `String` per coordinate would cost a 20×20 grid 1200 heap allocations per
 /// rebuild on the fully clean path, which is the interactive hot path.
+///
+/// The axis LETTERS are not spelled here. They are read from
+/// [`Stride::axes`] at [`Stride::Xyz`] — the table [`CoordName`]'s own `Display`
+/// already renders through — so this file holds exactly ONE `x`/`y`/`z` table and a
+/// reword cannot drift the grid renderer away from the stream one. An earlier
+/// draft carried a private three-variant `Axis3` enum with its own `letter()`;
+/// that made three independent spellings of `x|y|z` inside one crate (this one,
+/// `Stride::axes`, and `selector_vocabulary_v2::Axis::as_byte`), which is
+/// precisely the drift [`CoordName`]'s doc argues against. Reusing
+/// `selector_vocabulary_v2::Axis` instead was considered and NOT taken: it is a
+/// SELECTOR-VOCABULARY token (it parses the `x`/`y`/`z` words an author writes
+/// in a selector expression) and giving it a diagnostic-rendering method would
+/// couple two unrelated vocabularies; it also lives outside this task's file
+/// scope. Deriving from [`Stride`] keeps the reuse inside the module that owns
+/// the concern.
 #[derive(Clone, Copy)]
 struct GridCoordName {
     /// Row index into the control-point grid (the `u` direction).
     row: usize,
     /// Column index within that row (the `v` direction).
     col: usize,
-    /// Which of the point's three coordinates this names.
-    axis: Axis3,
-}
-
-/// Which coordinate of a 3-D point a [`GridCoordName`] names. An enum rather
-/// than a `usize` so no out-of-range axis is REPRESENTABLE — the same reasoning
-/// [`Stride`] records, and for the same reason: the renderer runs only once an
-/// author already has a broken `.ri` file, the worst possible place to discover
-/// an index typo.
-#[derive(Clone, Copy)]
-enum Axis3 {
-    X,
-    Y,
-    Z,
-}
-
-impl Axis3 {
-    /// The axis letter, as it appears in the rendered name.
-    fn letter(self) -> &'static str {
-        match self {
-            Axis3::X => "x",
-            Axis3::Y => "y",
-            Axis3::Z => "z",
-        }
-    }
+    /// Which of the point's three coordinates this names, as an index into
+    /// [`Stride::Xyz`]'s axis table.
+    ///
+    /// In bounds BY CONSTRUCTION: the field is private and the only ways to
+    /// mint a `GridCoordName` are the three constructors below, which hard-code
+    /// `0`/`1`/`2`. That is the same guarantee the discarded `Axis3` enum gave —
+    /// an out-of-range axis is unreachable — bought here without a second
+    /// letter table, which matters because the renderer runs only once an
+    /// author already has a broken `.ri` file, the worst possible place to
+    /// discover an index typo.
+    axis: usize,
 }
 
 impl GridCoordName {
     /// The X coordinate of the pole at `[row][col]`.
     fn x(row: usize, col: usize) -> Self {
-        Self {
-            row,
-            col,
-            axis: Axis3::X,
-        }
+        Self { row, col, axis: 0 }
     }
 
     /// The Y coordinate of the pole at `[row][col]`.
     fn y(row: usize, col: usize) -> Self {
-        Self {
-            row,
-            col,
-            axis: Axis3::Y,
-        }
+        Self { row, col, axis: 1 }
     }
 
     /// The Z coordinate of the pole at `[row][col]`.
     fn z(row: usize, col: usize) -> Self {
-        Self {
-            row,
-            col,
-            axis: Axis3::Z,
-        }
+        Self { row, col, axis: 2 }
     }
 }
 
@@ -1076,7 +1082,7 @@ impl std::fmt::Display for GridCoordName {
             "control_points[{}][{}].{}",
             self.row,
             self.col,
-            self.axis.letter()
+            Stride::Xyz.axes()[self.axis]
         )
     }
 }
@@ -1466,9 +1472,22 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
 /// - `Ok((origin, unit_normal))` — origin in metres, normal dimensionless unit vector.
 /// - `Err(message)` — for any of:
 ///   - wrong value variant (not `Value::Plane`), including `Value::Undef`;
-///   - an origin component that is not a finite LENGTH (a `Severity::Error`
-///     carrying [`reify_core::DiagnosticCode::DimensionedArgRejected`] is pushed
-///     per offending component — ALL THREE in one build, FIRST error returned);
+///   - an origin component that is a bare `Real`/`Int` or a wrong-dimension
+///     `Scalar` — one `Severity::Error` carrying
+///     [`reify_core::DiagnosticCode::DimensionedArgRejected`] per offending
+///     component (ALL THREE in one build, FIRST error returned);
+///   - an origin component that is a NON-FINITE LENGTH `Scalar` (NaN / ±inf) —
+///     one `Severity::Warning`, with NO code. This row is deliberately NOT the
+///     one above, for [`eval_named_arg_length`]'s reason: `accept_arg` ACCEPTED
+///     the value (it IS a Length, merely NaN/±inf), so it produced no
+///     `ArgRejection` and there is nothing to hang a dimension code on; its
+///     promotion is tracked as task 6157's severity residual rather than
+///     smuggled in here. δ DID move this input's behaviour — pre-δ
+///     [`point3_components`] filtered non-finite through `as_f64` and it landed
+///     on the SHAPE message below with no diagnostic at all, whereas it now
+///     reads "missing or non-Length argument 'ox' for {kind}" beside that one
+///     Warning (pinned by
+///     `decode_plane_non_finite_length_origin_warns_without_a_code`);
 ///   - origin or normal of the wrong SHAPE (not a 3-component `Point`/`Vector`),
 ///     or a normal with non-numeric / non-finite components — these keep their
 ///     pre-δ wording and push no diagnostic, because a wrong shape is not a
@@ -1536,9 +1555,15 @@ pub(crate) fn decode_plane(
 ///   dimensionless unit vector.
 /// - `Err(message)` — for any of:
 ///   - wrong value variant (not `Value::Axis`), including `Value::Undef`;
-///   - an origin component that is not a finite LENGTH (a `Severity::Error`
-///     carrying [`reify_core::DiagnosticCode::DimensionedArgRejected`] is pushed
-///     per offending component — ALL THREE in one build, FIRST error returned);
+///   - an origin component that is a bare `Real`/`Int` or a wrong-dimension
+///     `Scalar` — one `Severity::Error` carrying
+///     [`reify_core::DiagnosticCode::DimensionedArgRejected`] per offending
+///     component (ALL THREE in one build, FIRST error returned);
+///   - an origin component that is a NON-FINITE LENGTH `Scalar` (NaN / ±inf) —
+///     one `Severity::Warning`, with NO code, for exactly [`decode_plane`]'s
+///     reason and with exactly its pre-δ delta (the SHAPE message and silence
+///     become the units `Err` plus one Warning); pinned by
+///     `decode_axis_non_finite_length_origin_warns_without_a_code`;
 ///   - origin or direction of the wrong SHAPE (not a 3-component
 ///     `Point`/`Vector`), or a direction with non-numeric / non-finite
 ///     components — these keep their pre-δ wording and push no diagnostic. A
