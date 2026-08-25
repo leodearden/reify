@@ -30524,3 +30524,277 @@
             diagnostics
         );
     }
+
+    // ---- units-length ζ (task 5747): the R8 transform translation triple ----
+
+    /// Build a `Value::Transform` with an identity rotation and the three given
+    /// translation components stored VERBATIM (no `Value::length` wrapping), so a
+    /// row can hand the gate a `Scalar{DIMENSIONLESS}`, a bare `Real` or an
+    /// `Undef` in one coordinate. [`transform_of`] always mints LENGTH
+    /// components and so cannot express the rejection rows.
+    fn transform_with_translation(components: [reify_ir::Value; 3]) -> reify_ir::Value {
+        reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(components.to_vec())),
+        }
+    }
+
+    /// `apply_transform(target, transform: <v>)` as a `CompiledGeometryOp`,
+    /// with `v` passed through as an inline literal.
+    fn apply_transform_with(v: reify_ir::Value) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)),
+                (
+                    "transform".into(),
+                    reify_ir::CompiledExpr::literal(v, reify_core::Type::transform(3)),
+                ),
+            ],
+        }
+    }
+
+    /// Contract C1's three-state table at `apply_transform`'s translation triple.
+    ///
+    /// The R8 signal is the DIAGNOSTIC, not the exit code: every rejection row
+    /// below already drops the op today (probe, 2026-08-25), and what ζ changes
+    /// is that the generic `'transform' arg is not a valid Transform<3>` is
+    /// replaced by the C1 units wording naming the offending coordinate. The one
+    /// genuine accept→reject flip is the `Scalar{DIMENSIONLESS}` row — and that
+    /// value shape is NOT expressible from `.ri` source (a `5mm / 1mm` division
+    /// collapses to `Value::Real`), which is why it is pinned here at the unit
+    /// level rather than as an e2e fixture.
+    #[test]
+    fn compile_geometry_op_apply_transform_translation_follows_the_three_state_contract() {
+        let values = ValueMap::new();
+        let step_handles = vec![GeometryHandleId(42)];
+
+        // (i) ACCEPTED — a LENGTH triple decodes to SI metres byte-identically
+        // (the gate must not re-scale) and pushes nothing.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let op = compile_geometry_op(
+            &apply_transform_with(transform_with_translation([
+                reify_ir::Value::length(0.005),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect("a LENGTH translation triple must be accepted");
+        let reify_ir::GeometryOp::ApplyTransform {
+            rotation,
+            translation,
+            ..
+        } = op
+        else {
+            panic!("expected GeometryOp::ApplyTransform, got {op:?}");
+        };
+        assert_eq!(rotation, [1.0, 0.0, 0.0, 0.0], "rotation must pass through");
+        assert_eq!(
+            translation,
+            [0.005, 0.0, 0.0],
+            "translation must stay SI metres, byte-identical"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an accepted LENGTH triple must push ZERO diagnostics; got: {diagnostics:?}"
+        );
+
+        // (ii) REJECTED — the offender sits in the FIRST component, so the
+        // FIRST-error-wins precedence names `translation.x`.
+        for (label, offender) in [
+            (
+                // THE accept→reject flip, and the only expression of PRD
+                // boundary row 7's "`Scalar{DIMENSIONLESS}` form".
+                "Scalar{DIMENSIONLESS}",
+                reify_ir::Value::Scalar {
+                    si_value: 5.0,
+                    dimension: reify_core::DimensionVector::DIMENSIONLESS,
+                },
+            ),
+            // Already dropped pre-ζ: assert the MESSAGE, never an exit-code flip.
+            ("bare Real", reify_ir::Value::Real(5.0)),
+            (
+                "wrong-dimension Scalar (MASS)",
+                reify_ir::Value::Scalar {
+                    si_value: 5.0,
+                    dimension: reify_core::DimensionVector::MASS,
+                },
+            ),
+        ] {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &apply_transform_with(transform_with_translation([
+                    offender,
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ])),
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "{label}: must drop the op, got: {result:?}"
+            );
+
+            let rejections: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.message.contains("argument expects Length"))
+                .collect();
+            assert_eq!(
+                rejections.len(),
+                1,
+                "{label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+            );
+            let rej = rejections[0];
+            assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{rej:?}"
+            );
+            assert!(
+                rej.message.contains("apply_transform")
+                    && rej.message.contains("translation.x argument expects")
+                    && rej.message.contains("Length")
+                    && rej
+                        .message
+                        .contains("pass a dimensioned length such as `5mm`"),
+                "{label}: must name the builtin, the coordinate and carry the migration \
+                 hint; got: {:?}",
+                rej.message
+            );
+            // THE ENTIRE R8 SIGNAL: the pre-ζ generic shape message must be GONE
+            // on the units path.
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("not a valid Transform<3>")),
+                "{label}: a units rejection must NOT also emit the generic shape \
+                 message; got: {diagnostics:?}"
+            );
+        }
+
+        // (iii) UNDEFINED — D10: its own wording, and no rejection diagnostic.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &apply_transform_with(transform_with_translation([
+                reify_ir::Value::Undef,
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result
+            .err()
+            .expect("an Undef translation component must drop the op");
+        assert!(
+            err.contains("unresolved (Undef)") && err.contains("translation.x"),
+            "Undef must use the DISTINCT unresolved wording naming the coordinate, not \
+             \"missing or non-Length\"; got: {err:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("argument expects Length")),
+            "Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+        );
+    }
+
+    /// A wrong SHAPE is deliberately NOT a units rejection: both pins below must
+    /// stay byte-identical to their pre-ζ Warning and `Err`, and must carry ZERO
+    /// `DimensionedArgRejected` diagnostics. This is `accept_length_point3`'s
+    /// `shape_err` discipline, lifted from δ/5745.
+    #[test]
+    fn compile_geometry_op_apply_transform_shape_mismatch_keeps_its_pre_zeta_wording() {
+        let values = ValueMap::new();
+        let step_handles = vec![GeometryHandleId(42)];
+
+        let rotation_not_orientation = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(1.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+            ])),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+        let translation_two_components = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+
+        for (label, v) in [
+            ("rotation is a Vector, not an Orientation", rotation_not_orientation),
+            ("translation is a 2-component Vector", translation_two_components),
+        ] {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &apply_transform_with(v),
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert_eq!(
+                result.err().as_deref(),
+                Some("apply_transform: 'transform' arg is not a valid Transform<3>"),
+                "{label}: the pre-ζ Err string must survive byte-identical"
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "{label}: exactly one diagnostic; got: {diagnostics:?}"
+            );
+            assert_eq!(
+                diagnostics[0].severity,
+                reify_core::Severity::Warning,
+                "{label}: a shape mismatch stays a Warning"
+            );
+            assert_eq!(
+                diagnostics[0].message,
+                "apply_transform dropped: 'transform' arg is not a valid Transform<3>",
+                "{label}: the pre-ζ Warning text must survive byte-identical"
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|d| d.code != Some(reify_core::DiagnosticCode::DimensionedArgRejected)),
+                "{label}: a shape mismatch must NOT acquire a units code; got: {diagnostics:?}"
+            );
+        }
+    }
