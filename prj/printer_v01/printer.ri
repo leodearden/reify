@@ -422,6 +422,7 @@ pub structure CapstanUnit {
     /// hand-keeping mirrors).
     let frame_web_half = self.frame.web_half_z
     let frame_half_x   = self.frame.half_x
+    let frame_half_z   = self.frame.half_z
 
     // ── Lead segments (drum-side only) ──────────────────────────────────────
     // Drum-side horizontals are EXACT: pulley tangent → drum tangent line
@@ -477,6 +478,7 @@ pub structure RearDrive {
     let unit_r_pitch  = self.unit_a.r_pitch         // fairlead pulley pitch radius
     let unit_web_half = self.unit_a.frame_web_half  // collar web half-height
     let unit_frame_x  = self.unit_a.frame_half_x    // collar half-width
+    let unit_frame_z  = self.unit_a.frame_half_z    // collar plate half-height
     // Fairlead band heights (unit-local z of each pulley centre) — these are
     // what the drive-plane routing must descend to / rise from, and were the
     // last hand-kept literals in DriveTendons (flz_in1 = −168.9 etc.).
@@ -736,35 +738,55 @@ pub structure DriveTendons {
     let neg_drop    = 0mm - cap_drop
     sub rear_drive = RearDrive() at transform3(orient_identity(), vec3(0mm, cap_y, neg_drop))
 
-    // ── Rear routing v1 (2026-07-23): drive plane ↔ fairleads ───────────────
+    // ── Rear routing v2 (2026-08-25): drive plane ↔ fairleads ───────────────
+    // v1 (2026-07-23) placed this web with hand-solved literal mm and a
+    // hand-verified clearance claim; an analytic pairwise sweep found NINE
+    // interfering pairs in it. v2 keeps v1's topology and DERIVES every
+    // position from the tangency rules below, so the layout re-solves when a
+    // parameter moves instead of being re-litigated by hand.
+    //
     // Loop→winding: each belt's +z loop feeds its OUTBOARD winding (w1), the
     // −z loop the MACHINE-side winding (w2) — the swap puts fairlead verticals
     // through in-runs. Per loop the IN end (band-top) arrives from ABOVE and
     // the OUT end (band-bottom) from BELOW (the static-balance requirement).
     //
-    // IN feeds — vertical-axis rear pulley → X-run in the winding's tangent
-    // plane → in-idler (axis ∥ Y) → vertical descent to the fairlead pulley.
-    // The two +z-level rear pulleys MOVED along Y to moved_y (−430) so their
-    // X-runs lie in plane_out with NO extra jog (Leo's insight); the −z ones
-    // stay at neg_corn (X-runs already in plane_in).
-    // OUT feeds — two schemes, chosen per level after collision-solving both
-    // tangent planes (each plane hosts BOTH belts' runs at different z):
-    //  • +z outs: X-axis DOWN-TURN pulley directly on the return/rail line
-    //    (far outboard, y = moved_y): belt A w1-out off the right return
-    //    (x=436), belt B w1-out via its moved rear pulley + a short drive-
-    //    plane run to a down-idler at x=108 (its descent starts below the
-    //    other belt's runs, so the inboard jog is safe at the LOWER level
-    //    of the pair… here belt B (+55) descends beside unit A, clear of
-    //    belt A's +80 runs which are above).
-    //  • −z outs: belt A w2-out jogs inboard off its (unmoved) rear pulley
-    //    to a down-idler at x=−91 (descent at −73, starting at −98 below
-    //    belt B's −55 runs); belt B w2-out is an X-axis down-turn on the
-    //    right rail line (x=400).
-    // Each descent → low corner → LOW RUN under the drive block → up-turn →
-    // RISE into the fairlead out-pulley from below. Low runs stagger at
-    // low_hi (−320: belt B w1, belt A w2) and low_lo (−365: belt A w1,
-    // belt B w2) so runs, discs, and rises clear each other (min surface
-    // clearance ≈ 6mm, verified pairwise during placement).
+    // THE FOUR TANGENCY RULES (every position below is one of these):
+    //  1. A vertical-axis rear pulley at (px, py, pz) turns a rail/return
+    //     Y-run into an X-run on the line y = py − r_pitch; the Y-run is
+    //     tangent at x = px ± r_pitch and the X-run's end is at x = px. The
+    //     four +z ends therefore sit at moved_y = plane_out + r_pitch so
+    //     their X-runs land in plane_out with NO extra jog (Leo's insight);
+    //     the −z ends sit at neg_corn, already tangent to plane_in.
+    //  2. An X-axis idler turning a horizontal X-run DOWN has centre
+    //     z = run_z − r_pitch; the descent leaves at x = centre_x ± r_pitch
+    //     and the run ends directly above the centre.
+    //  3. A low corner / up-turn has centre z = low_z + r_pitch; the run ends
+    //     at centre_x and the vertical is at centre_x ∓ r_pitch.
+    //  4. A descent/rise meets its fairlead pulley at the pulley's CENTRE
+    //     height on the outboard side (quarter wrap), i.e. at x = cap_x ±
+    //     fl_vert, z = flz_*.
+    //
+    // WHAT v1 GOT WRONG, and the rules v2 adds:
+    //  • A descent past a drive unit must clear the fairlead pulley DISCS
+    //    (they lie in XZ, radius r_pitch) as well as the drum and the runs —
+    //    v1 checked runs only, and put three descents inside discs. With the
+    //    discs, drum band and verticals excluded, a tangent plane has NO free
+    //    corridor between cap_x ∓ (pulley_x + r_pitch): a rope crossing the
+    //    block passes either through the MID corridor (|x| ≤ mid_corr_x) or
+    //    outboard of the unit entirely.
+    //  • A drive-plane X-run must not cross another end's DESCENT (a descent
+    //    occupies its x from the drive plane down to its pulley, so it is
+    //    present at the crossing run's z). This is why b1-out and b2-out take
+    //    their down-turn EARLY (at the rail/return line) instead of running
+    //    inboard at band height: the inboard route would cross a1-in's and
+    //    a2-in's descents respectively.
+    //  • A descent and its own rise need centre separation ≥ 2·r_pitch + the
+    //    two turn discs' clearance, or the low corner and the up-turn
+    //    overlap — the reason a1-out descends well outboard of its rise
+    //    rather than just beside it (turn_gap below).
+    // Low runs stagger at low_hi / low_lo wherever their x-spans overlap;
+    // every low run passes below the collar plates and the below-entry
+    // pulley discs.
     //
     // Fairlead mirrors — DERIVED through RearDrive's relays (#5360 landed
     // 2026-07-31); every one of these was a hand-kept literal until 2026-08-25.
@@ -774,8 +796,28 @@ pub structure DriveTendons {
     let flz_out1  = neg_drop + self.rear_drive.unit_w1_out   // w1_out
     let flz_in2   = neg_drop + self.rear_drive.unit_w2_in    // w2_in
     let flz_out2  = neg_drop + self.rear_drive.unit_w2_out   // w2_out
-    let low_hi    = 0mm - 320mm
-    let low_lo    = 0mm - 365mm
+    let fl_frame_z = self.rear_drive.unit_frame_z   // collar plate half-height
+    let rope_r     = 3mm    // == LinearTendon diameter / 2
+    let clear_min  = 6mm    // the drive's surface-clearance floor
+    /// A rise must be long enough that its up-turn idler and the fairlead
+    /// pulley it feeds — COAXIAL discs in the same tangent plane — clear each
+    /// other: 2·r_pitch of disc plus the clearance floor. (Found 2026-08-25 by
+    /// the analytic sweep; neither v1 nor the first v2 draft stated it, and
+    /// the w2 rises were 31mm against a 42mm requirement.)
+    let rise_min   = r_pitch * 2 + clear_min
+    /// Stagger between the two low runs sharing a tangent plane — must exceed
+    /// a turn disc's diameter plus rope and clearance (constraint below).
+    let low_stagger = r_pitch * 2 + rope_r + clear_min + 5mm
+    // The two tangent planes need DIFFERENT low levels: plane_out's rises end
+    // at the w1-out pulleys (flz_out1) but plane_in's at the much deeper
+    // w2-out pulleys (flz_out2), so plane_in's runs sit correspondingly lower.
+    // Each plane's upper level is set by whichever bound binds — the rise rule
+    // or passing under the collar plates — and the lower level is one stagger
+    // below it; all four are pinned by constraints.
+    let low_hi     = 0mm - 320mm     // plane_out upper (collar-bound)
+    let low_lo     = low_hi - low_stagger
+    let low_in_hi  = 0mm - 340mm     // plane_in upper (rise-bound by flz_out2)
+    let low_in_lo  = low_in_hi - low_stagger
 
     // ── Free vertical corridors (the rule the v1 hand-solve violated) ───────
     // A rope descending in a tangent plane past a drive unit must miss THREE
@@ -789,68 +831,161 @@ pub structure DriveTendons {
     // Everything inboard of a unit's inner disc edge is the MID corridor.
     let flange_r_m   = self.rear_drive.unit_pitch_r + 9mm   // == Capstan flange_r (pitch_r + rope_dia*1.5)
     let drum_band    = sqrt(flange_r_m * flange_r_m - cap_pitch_r * cap_pitch_r)
-    let rope_r       = 3mm                                   // == LinearTendon diameter / 2
-    let clear_min    = 6mm                                   // the drive's surface-clearance floor
     /// Inner edge of a unit's inboard fairlead disc — the mid corridor runs
     /// from −mid_corr_x to +mid_corr_x and is the only place a rope may pass
     /// between the two units.
     let mid_corr_x   = cap_x_m - fl_pulley_x - r_pitch - rope_r - clear_min
 
-    // Rear pulleys (BL/FR = belt A, BR/FL = belt B; _u/_l = its ±z levels).
-    sub corner_bl_u   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, moved_y,  z_a))        // A w1-IN (moved)
+    // ── Derived rope stations (rule 4: verticals at cap_x ± fl_vert) ────────
+    let fl_in_x_a  = cap_x_m - fl_vert          // unit A inboard  vertical (w1-in / w2-out)
+    let fl_out_x_a = cap_x_m + fl_vert          // unit A outboard vertical (w1-out / w2-in)
+    let fl_in_x_b  = 0mm - cap_x_m - fl_vert    // unit B outboard vertical (w1-in / w2-out)
+    let fl_out_x_b = 0mm - cap_x_m + fl_vert    // unit B inboard  vertical (w1-out / w2-in)
+    /// Minimum centre separation between a descent and its own rise: the two
+    /// turn discs sit at ∓r_pitch of them and must themselves clear.
+    let turn_gap   = r_pitch * 4 + clear_min
+
+    // ── IN feeds: rear pulley → X-run → down-idler → descent ────────────────
+    // (rules 1, 2, 4; the descent runs from the down-idler's centre height to
+    // the fairlead pulley's centre height.)
+    let in_a1_dn_x  = fl_in_x_a - r_pitch            // A w1: run ends here, descends at fl_in_x_a
+    let in_a1_run_c = (idler_in_l + in_a1_dn_x) / 2
+    let in_a1_run_l = in_a1_dn_x - idler_in_l
+    let in_a1_top   = z_a - r_pitch                  // down-idler centre height == descent top
+    let in_b1_dn_x  = fl_in_x_b - r_pitch
+    let in_b1_run_c = (idler_out_l + in_b1_dn_x) / 2
+    let in_b1_run_l = in_b1_dn_x - idler_out_l
+    let in_b1_top   = z_b - r_pitch
+    let in_a2_dn_x  = fl_out_x_a + r_pitch           // A w2 arrives from +x, descends at fl_out_x_a
+    let in_a2_run_c = (idler_out_r + in_a2_dn_x) / 2
+    let in_a2_run_l = idler_out_r - in_a2_dn_x
+    let in_a2_top   = neg_z_a - r_pitch
+    let in_b2_dn_x  = fl_out_x_b - r_pitch
+    let in_b2_run_c = (idler_out_l + in_b2_dn_x) / 2
+    let in_b2_run_l = in_b2_dn_x - idler_out_l
+    let in_b2_top   = neg_z_b - r_pitch
+
+    // ── OUT feeds: down-turn → descent → low corner → low run → rise ────────
+    // A w1-out and B w2-out take a short drive-plane run outboard of everything
+    // before turning down (their rises sit turn_gap inboard); B w1-out and
+    // A w2-out turn down AT the rail/return line and cross underneath, because
+    // an inboard drive-plane route would cross an IN descent.
+    let out_a1_desc_x = fl_out_x_a + turn_gap        // clear of its own rise at fl_out_x_a
+    let out_a1_run_c  = (idler_out_r + out_a1_desc_x + r_pitch) / 2
+    let out_a1_run_l  = idler_out_r - out_a1_desc_x - r_pitch
+    let out_b1_desc_x = rail_x                       // down-turn on the right rail line
+    let out_a2_desc_x = fl_in_x_b - turn_gap         // descends outboard (left) of unit B
+    let out_a2_run_c  = (idler_in_l + out_a2_desc_x - r_pitch) / 2
+    let out_a2_run_l  = out_a2_desc_x - r_pitch - idler_in_l
+    let out_b2_desc_x = 0mm                          // straight down the MID corridor
+    let out_b2_run_c  = (idler_in_r + out_b2_desc_x + r_pitch) / 2
+    let out_b2_run_l  = idler_in_r - out_b2_desc_x - r_pitch
+    // Low-corner / up-turn centre heights (rule 3).
+    let lo_hi_c = low_hi + r_pitch          // plane_out corner/up-turn centres
+    let lo_lo_c = low_lo + r_pitch
+    let lo_in_hi_c = low_in_hi + r_pitch    // plane_in corner/up-turn centres
+    let lo_in_lo_c = low_in_lo + r_pitch
+
+    // Rear pulleys. The four +z ends sit at moved_y (rule 1); the −z ends at
+    // neg_corn. B w1-out and B w2-out turn down immediately (X-axis discs).
+    sub corner_bl_u   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, moved_y,  z_a))        // A w1-IN
     sub corner_bl_l   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, neg_z_a))    // A w2-OUT emitter
-    sub corner_br_u   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, moved_y,  z_b))        // B w1-OUT emitter (moved)
-    sub corner_br_l   = IdlerPulley() at transform3(rot_to_x, vec3(rail_x, neg_corn, neg_z_b - r_pitch))       // B w2-OUT down-turn (X-axis)
-    sub backidler_r_u = IdlerPulley() at transform3(rot_to_x, vec3(return_x_r, moved_y, z_a - r_pitch))        // A w1-OUT down-turn (X-axis)
+    sub corner_br_u   = IdlerPulley() at transform3(rot_to_x, vec3(rail_x, moved_y, z_b - r_pitch))            // B w1-OUT down-turn (X-axis)
+    sub corner_br_l   = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, neg_corn, neg_z_b))    // B w2-OUT emitter
+    sub backidler_r_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, moved_y,  z_a))       // A w1-OUT emitter
     sub backidler_r_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, neg_z_a))   // A w2-IN
-    sub backidler_l_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, moved_y,  z_b))       // B w1-IN (moved)
+    sub backidler_l_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, moved_y,  z_b))       // B w1-IN
     sub backidler_l_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, neg_z_b))   // B w2-IN
 
-    // IN X-runs (rear pulley tangent → in-idler tangent) + in-idlers + verticals.
-    sub run_in_a1  = LinearTendon(length: 401mm) at transform3(rot_to_x, vec3(0mm - 181.5mm, plane_out, z_a))
-    sub run_in_b1  = LinearTendon(length: 237mm) at transform3(rot_to_x, vec3(0mm - 299.5mm, plane_out, z_b))
-    sub run_in_a2  = LinearTendon(length: 237mm) at transform3(rot_to_x, vec3(299.5mm,       plane_in,  neg_z_a))
-    sub run_in_b2  = LinearTendon(length: 363mm) at transform3(rot_to_x, vec3(0mm - 236.5mm, plane_in,  neg_z_b))
-    sub idler_in_a1 = IdlerPulley() at transform3(rot_to_y, vec3(19mm,        plane_out, z_a - r_pitch))
-    sub idler_in_b1 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 181mm, plane_out, z_b - r_pitch))
-    sub idler_in_a2 = IdlerPulley() at transform3(rot_to_y, vec3(181mm,       plane_in,  neg_z_a - r_pitch))
-    sub idler_in_b2 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 55mm,  plane_in,  neg_z_b - r_pitch))
-    sub vert_in_a1 = LinearTendon(length: 231mm) at transform3(orient_identity(), vec3(37mm,        plane_out, 0mm - 53.5mm))
-    sub vert_in_b1 = LinearTendon(length: 206mm) at transform3(orient_identity(), vec3(0mm - 163mm, plane_out, 0mm - 66mm))
-    sub vert_in_a2 = LinearTendon(length: 115mm) at transform3(orient_identity(), vec3(163mm,       plane_in,  0mm - 155.5mm))
-    sub vert_in_b2 = LinearTendon(length: 140mm) at transform3(orient_identity(), vec3(0mm - 37mm,  plane_in,  0mm - 143mm))
+    // IN X-runs + down-idlers + descents.
+    sub run_in_a1  = LinearTendon(length: in_a1_run_l) at transform3(rot_to_x, vec3(in_a1_run_c, plane_out, z_a))
+    sub run_in_b1  = LinearTendon(length: in_b1_run_l) at transform3(rot_to_x, vec3(in_b1_run_c, plane_out, z_b))
+    sub run_in_a2  = LinearTendon(length: in_a2_run_l) at transform3(rot_to_x, vec3(in_a2_run_c, plane_in,  neg_z_a))
+    sub run_in_b2  = LinearTendon(length: in_b2_run_l) at transform3(rot_to_x, vec3(in_b2_run_c, plane_in,  neg_z_b))
+    sub idler_in_a1 = IdlerPulley() at transform3(rot_to_y, vec3(in_a1_dn_x, plane_out, in_a1_top))
+    sub idler_in_b1 = IdlerPulley() at transform3(rot_to_y, vec3(in_b1_dn_x, plane_out, in_b1_top))
+    sub idler_in_a2 = IdlerPulley() at transform3(rot_to_y, vec3(in_a2_dn_x, plane_in,  in_a2_top))
+    sub idler_in_b2 = IdlerPulley() at transform3(rot_to_y, vec3(in_b2_dn_x, plane_in,  in_b2_top))
+    sub vert_in_a1 = LinearTendon(length: in_a1_top - flz_in1) at transform3(orient_identity(), vec3(fl_in_x_a,  plane_out, (in_a1_top + flz_in1) / 2))
+    sub vert_in_b1 = LinearTendon(length: in_b1_top - flz_in1) at transform3(orient_identity(), vec3(fl_in_x_b,  plane_out, (in_b1_top + flz_in1) / 2))
+    sub vert_in_a2 = LinearTendon(length: in_a2_top - flz_in2) at transform3(orient_identity(), vec3(fl_out_x_a, plane_in,  (in_a2_top + flz_in2) / 2))
+    sub vert_in_b2 = LinearTendon(length: in_b2_top - flz_in2) at transform3(orient_identity(), vec3(fl_out_x_b, plane_in,  (in_b2_top + flz_in2) / 2))
 
-    // OUT drive-plane runs (jogged outs only) + their down-idlers.
-    sub run_out_b1 = LinearTendon(length: 274mm) at transform3(rot_to_x, vec3(245mm,         plane_out, z_b))
-    sub run_out_a2 = LinearTendon(length: 291mm) at transform3(rot_to_x, vec3(0mm - 236.5mm, plane_in,  neg_z_a))
-    sub idler_dn_b1 = IdlerPulley() at transform3(rot_to_y, vec3(108mm,       plane_out, z_b - r_pitch))
-    sub idler_dn_a2 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 91mm,  plane_in,  neg_z_a - r_pitch))
+    // OUT drive-plane runs (the two that travel outboard before turning down).
+    sub run_out_a1 = LinearTendon(length: out_a1_run_l) at transform3(rot_to_x, vec3(out_a1_run_c, plane_out, z_a))
+    sub run_out_a2 = LinearTendon(length: out_a2_run_l) at transform3(rot_to_x, vec3(out_a2_run_c, plane_in,  neg_z_a))
+    sub run_out_b2 = LinearTendon(length: out_b2_run_l) at transform3(rot_to_x, vec3(out_b2_run_c, plane_in,  neg_z_b))
+    sub idler_dn_a1 = IdlerPulley() at transform3(rot_to_y, vec3(out_a1_desc_x + r_pitch, plane_out, in_a1_top))
+    sub idler_dn_a2 = IdlerPulley() at transform3(rot_to_y, vec3(out_a2_desc_x - r_pitch, plane_in,  in_a2_top))
+    sub idler_dn_b2 = IdlerPulley() at transform3(rot_to_y, vec3(out_b2_desc_x + r_pitch, plane_in,  in_b2_top))
 
     // OUT descents → low corners → low runs → up-turns → rises (from below).
-    sub desc_a1 = LinearTendon(length: 409mm) at transform3(orient_identity(), vec3(436mm,       plane_out, 0mm - 142.5mm))
-    sub desc_b1 = LinearTendon(length: 339mm) at transform3(orient_identity(), vec3(90mm,        plane_out, 0mm - 132.5mm))
-    sub desc_a2 = LinearTendon(length: 204mm) at transform3(orient_identity(), vec3(0mm - 73mm,  plane_in,  0mm - 200mm))
-    sub desc_b2 = LinearTendon(length: 274mm) at transform3(orient_identity(), vec3(400mm,       plane_in,  0mm - 210mm))
-    sub corner_lo_a1 = IdlerPulley() at transform3(rot_to_y, vec3(418mm,       plane_out, low_lo + r_pitch))
-    sub corner_lo_b1 = IdlerPulley() at transform3(rot_to_y, vec3(72mm,        plane_out, low_hi + r_pitch))
-    sub corner_lo_a2 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 55mm,  plane_in,  low_hi + r_pitch))
-    sub corner_lo_b2 = IdlerPulley() at transform3(rot_to_y, vec3(382mm,       plane_in,  low_lo + r_pitch))
-    sub run_lo_a1 = LinearTendon(length: 237mm) at transform3(rot_to_x, vec3(299.5mm,     plane_out, low_lo))
-    sub run_lo_b1 = LinearTendon(length: 91mm)  at transform3(rot_to_x, vec3(26.5mm,      plane_out, low_hi))
-    sub run_lo_a2 = LinearTendon(length: 74mm)  at transform3(rot_to_x, vec3(0mm - 18mm,  plane_in,  low_hi))
-    sub run_lo_b2 = LinearTendon(length: 563mm) at transform3(rot_to_x, vec3(100.5mm,     plane_in,  low_lo))
-    sub idler_up_a1 = IdlerPulley() at transform3(rot_to_y, vec3(181mm,       plane_out, low_lo + r_pitch))
-    sub idler_up_b1 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 19mm,  plane_out, low_hi + r_pitch))
-    sub idler_up_a2 = IdlerPulley() at transform3(rot_to_y, vec3(19mm,        plane_in,  low_hi + r_pitch))
-    sub idler_up_b2 = IdlerPulley() at transform3(rot_to_y, vec3(0mm - 181mm, plane_in,  low_lo + r_pitch))
-    sub rise_a1 = LinearTendon(length: 120mm) at transform3(orient_identity(), vec3(163mm,       plane_out, 0mm - 287mm))
-    sub rise_b1 = LinearTendon(length: 75mm)  at transform3(orient_identity(), vec3(0mm - 37mm,  plane_out, 0mm - 264.5mm))
-    sub rise_a2 = LinearTendon(length: 31mm)  at transform3(orient_identity(), vec3(37mm,        plane_in,  0mm - 286.5mm))
-    sub rise_b2 = LinearTendon(length: 76mm)  at transform3(orient_identity(), vec3(0mm - 163mm, plane_in,  0mm - 309mm))
+    // Stagger: plane_out A w1 at low_hi / B w1 at low_lo; plane_in B w2 at
+    // low_hi / A w2 at low_lo — so each plane's two low runs never share a z.
+    sub desc_a1 = LinearTendon(length: in_a1_top - lo_hi_c) at transform3(orient_identity(), vec3(out_a1_desc_x, plane_out, (in_a1_top + lo_hi_c) / 2))
+    sub desc_b1 = LinearTendon(length: in_b1_top - lo_lo_c) at transform3(orient_identity(), vec3(out_b1_desc_x, plane_out, (in_b1_top + lo_lo_c) / 2))
+    sub desc_a2 = LinearTendon(length: in_a2_top - lo_in_lo_c) at transform3(orient_identity(), vec3(out_a2_desc_x, plane_in,  (in_a2_top + lo_in_lo_c) / 2))
+    sub desc_b2 = LinearTendon(length: in_b2_top - lo_in_hi_c) at transform3(orient_identity(), vec3(out_b2_desc_x, plane_in,  (in_b2_top + lo_in_hi_c) / 2))
+    sub corner_lo_a1 = IdlerPulley() at transform3(rot_to_y, vec3(out_a1_desc_x - r_pitch, plane_out, lo_hi_c))
+    sub corner_lo_b1 = IdlerPulley() at transform3(rot_to_y, vec3(out_b1_desc_x - r_pitch, plane_out, lo_lo_c))
+    sub corner_lo_a2 = IdlerPulley() at transform3(rot_to_y, vec3(out_a2_desc_x + r_pitch, plane_in,  lo_in_lo_c))
+    sub corner_lo_b2 = IdlerPulley() at transform3(rot_to_y, vec3(out_b2_desc_x - r_pitch, plane_in,  lo_in_hi_c))
+    sub idler_up_a1 = IdlerPulley() at transform3(rot_to_y, vec3(fl_out_x_a + r_pitch, plane_out, lo_hi_c))
+    sub idler_up_b1 = IdlerPulley() at transform3(rot_to_y, vec3(fl_out_x_b - r_pitch, plane_out, lo_lo_c))
+    sub idler_up_a2 = IdlerPulley() at transform3(rot_to_y, vec3(fl_in_x_a - r_pitch,  plane_in,  lo_in_lo_c))
+    sub idler_up_b2 = IdlerPulley() at transform3(rot_to_y, vec3(fl_in_x_b + r_pitch,  plane_in,  lo_in_hi_c))
+    sub run_lo_a1 = LinearTendon(length: out_a1_desc_x - r_pitch - fl_out_x_a - r_pitch) at transform3(rot_to_x, vec3((out_a1_desc_x - r_pitch + fl_out_x_a + r_pitch) / 2, plane_out, low_hi))
+    sub run_lo_b1 = LinearTendon(length: out_b1_desc_x - r_pitch - fl_out_x_b + r_pitch) at transform3(rot_to_x, vec3((out_b1_desc_x - r_pitch + fl_out_x_b - r_pitch) / 2, plane_out, low_lo))
+    sub run_lo_a2 = LinearTendon(length: fl_in_x_a - r_pitch - out_a2_desc_x - r_pitch)  at transform3(rot_to_x, vec3((out_a2_desc_x + r_pitch + fl_in_x_a - r_pitch) / 2, plane_in, low_in_lo))
+    sub run_lo_b2 = LinearTendon(length: out_b2_desc_x - r_pitch - fl_in_x_b - r_pitch)  at transform3(rot_to_x, vec3((out_b2_desc_x - r_pitch + fl_in_x_b + r_pitch) / 2, plane_in, low_in_hi))
+    sub rise_a1 = LinearTendon(length: flz_out1 - lo_hi_c) at transform3(orient_identity(), vec3(fl_out_x_a, plane_out, (flz_out1 + lo_hi_c) / 2))
+    sub rise_b1 = LinearTendon(length: flz_out1 - lo_lo_c) at transform3(orient_identity(), vec3(fl_out_x_b, plane_out, (flz_out1 + lo_lo_c) / 2))
+    sub rise_a2 = LinearTendon(length: flz_out2 - lo_in_lo_c) at transform3(orient_identity(), vec3(fl_in_x_a,  plane_in,  (flz_out2 + lo_in_lo_c) / 2))
+    sub rise_b2 = LinearTendon(length: flz_out2 - lo_in_hi_c) at transform3(orient_identity(), vec3(fl_in_x_b,  plane_in,  (flz_out2 + lo_in_hi_c) / 2))
 
     constraint rail_x > 0mm
     constraint cap_drop > 0mm
     constraint low_hi > low_lo
+
+    // ── Clearance rules, stated in the design (2026-08-25) ──────────────────
+    // These are the pairs the v1 hand-solve got wrong. Each is a real
+    // separation in mm between derived stations, so an edit that re-breaks
+    // one fails `reify check` instead of needing another analytic sweep.
+    // (Cross-sub geometry queries would be the richer form, but a sub's `at`
+    // placement is silently dropped before the kernel today — #6583 — so
+    // these compare the parent-frame coordinates that place the geometry.)
+    //
+    // 1. Every mid-corridor descent stays inside the corridor.
+    constraint out_b2_desc_x < mid_corr_x
+    constraint out_b2_desc_x > 0mm - mid_corr_x
+    // 2. Descents that pass a unit do so OUTBOARD of its outer disc edge.
+    constraint out_a1_desc_x > fl_out_x_a + r_pitch + rope_r + clear_min
+    constraint out_a2_desc_x < fl_in_x_b - r_pitch - rope_r - clear_min
+    // 3. A descent clears its own rise by more than the two turn discs need.
+    constraint out_a1_desc_x - fl_out_x_a > turn_gap - 1mm
+    constraint fl_in_x_b - out_a2_desc_x > turn_gap - 1mm
+    // 4. The two low runs sharing a plane are staggered by more than a disc
+    //    diameter plus rope, so the overlapping spans never touch. (Both
+    //    planes get this by construction — low_lo is one stagger below.)
+    constraint low_stagger > r_pitch * 2 + rope_r + clear_min
+    // 5. RISE LENGTH: every rise is long enough that its up-turn idler and
+    //    the fairlead pulley it feeds — coaxial discs in one plane — clear.
+    //    This is the rule the sweep found; it is what forces plane_in's runs
+    //    deeper than plane_out's (flz_out2 sits ~44mm below flz_out1).
+    constraint flz_out1 - lo_hi_c > rise_min
+    constraint flz_out1 - lo_lo_c > rise_min
+    constraint flz_out2 - lo_in_hi_c > rise_min
+    constraint flz_out2 - lo_in_lo_c > rise_min
+    // 6. Every low run passes below the collar plates AND the below-entry
+    //    pulley discs (the lowest hardware on the drive units).
+    constraint flz_out2 - r_pitch - low_hi > rope_r + clear_min
+    constraint neg_drop - fl_frame_z - low_hi > rope_r + clear_min
+    constraint neg_drop - fl_frame_z - low_in_hi > rope_r + clear_min
+    // 6. The IN descents clear the drum flange band in their plane.
+    constraint cap_x_m - fl_in_x_a > drum_band + rope_r + clear_min
+    // 7. The mid corridor is wide enough to admit a rope at all — the check
+    //    that would have caught the v1 layout at cap_x = 100mm.
+    constraint mid_corr_x > rope_r + clear_min
 }
 
 // ── CoreXY motion system (directly composed) ─────────────────────────────────
