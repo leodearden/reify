@@ -5167,6 +5167,33 @@ impl Engine {
         //      θ landing will not close #6531. Until then the broad posture is
         //      the safe direction: it can refuse an export that would have been
         //      fine, never ship one whose bound is unenforced (PRD §1.1).
+        //
+        //      THE SAME BREADTH APPLIES TO **WHERE** THE BOUND IS DECLARED, and
+        //      two of those places are not the checker-structure idiom discussed
+        //      above. `compute_representation_bounds` walks ALL of
+        //      `module.templates`, so:
+        //
+        //        * a bound declared only inside an `@test` template refuses every
+        //          PRODUCTION export of that design (the table is deliberately
+        //          `templates`, not `non_test_templates()`); and
+        //        * a bound declared on the `: Output` OCCURRENCE TEMPLATE ITSELF
+        //          — the v0_2 per-purpose-tolerance idiom for DEMANDING an export
+        //          tolerance (`occurrence def TightSTL : Output { param subject :
+        //          D  constraint RepresentationWithin(subject, 1um) }`) — is
+        //          refused too, so the design that asks for a tolerance the
+        //          supported way is the one η blocks.
+        //
+        //      Both are the intended verdict, for the same reason as the
+        //      module-global posture: nothing on this path reads either bound
+        //      yet (task 6085 has not landed export-side honouring), so exempting
+        //      either would ship §1.1 verbatim rather than fix it. The full
+        //      rationale — and why narrowing the `@test` axis would fork the
+        //      traversal back into the hand-synced mirror #6170 retired — lives
+        //      on `unenforced_representation_bound_diagnostic` under
+        //      "What counts as a declared bound". Both are pinned by tests
+        //      (`build_outputs_refuses_a_bound_declared_on_the_output_occurrence_itself`
+        //      in `tests.rs`; the `@test` case in `tolerance_combine.rs`), so
+        //      changing either is a deliberate edit against a red test.
         let refusal = crate::tolerance_combine::unenforced_representation_bound_diagnostic(module);
 
         // (2) Deterministic declaration-order walk of every occurrence sub:

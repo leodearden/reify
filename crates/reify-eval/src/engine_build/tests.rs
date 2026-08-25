@@ -10106,6 +10106,118 @@ structure Assembly {
     // `design_dir` for path resolution, and every assertion is on the in-memory
     // artifact.
 
+    // ── Shared η Mode-B harness ───────────────────────────────────────────────
+    //
+    // Every η test below runs the SAME setup (two recorder buffers → an
+    // `ExportRecordingKernel` → an `Engine` with a `MockConstraintChecker` →
+    // `build_outputs_with_result` against the `/tmp/d` design dir) and, for the
+    // refusal cases, the SAME per-artifact "find the Error diagnostic, assert the
+    // typed code, assert the E_* token" triplet. Only the module source varies.
+    // Both are factored here so a change to the refusal contract is edited once
+    // rather than five times. Deliberately module-local and deliberately NOT
+    // retrofitted onto the older tests above: their inline setup is the
+    // established convention in this file and each varies the kernel differently
+    // (injected warnings, recorded options, executed handles).
+
+    /// What [`run_build_outputs`] observed: the returned bundle plus both
+    /// serializer-side signals.
+    struct BuildOutputsProbe {
+        outputs: crate::BuildOutputs,
+        /// Snapshot of the recording kernel's `exported` log. EMPTY is η's
+        /// strongest assertion — the refusal precedes serialization, so no bytes
+        /// can leak by any route, not merely that produced bytes were discarded.
+        exported: Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>,
+        /// How many times `export_with_options` was actually called — the
+        /// positive-direction counterpart used by the C2 negative below.
+        export_calls: usize,
+    }
+
+    /// Compile `src` with the stdlib prelude and drive
+    /// [`crate::Engine::build_outputs_with_result`] through a recording kernel.
+    ///
+    /// `/tmp/d` is a `design_dir` for path resolution ONLY — nothing here touches
+    /// the filesystem, and `ExportRecordingKernel` wraps `MockGeometryKernel`, so
+    /// no OCCT tessellation is imported either (PRD §6 gate-cost rule).
+    fn run_build_outputs(src: &str) -> BuildOutputsProbe {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(src);
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+        let recorded_options = kernel.recorded_options();
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let outputs =
+            engine.build_outputs_with_result(&module, std::path::Path::new("/tmp/d"), None);
+
+        let exported = exported.lock().unwrap().clone();
+        let export_calls = recorded_options.lock().unwrap().len();
+        BuildOutputsProbe {
+            outputs,
+            exported,
+            export_calls,
+        }
+    }
+
+    /// Assert `art` is an η refusal and return its refusal message for any
+    /// further (attribution) assertions.
+    ///
+    /// The three properties asserted here ARE the refusal contract, and they are
+    /// asserted together because each is load-bearing on its own:
+    /// * EMPTY bytes — what makes the CLI writer (which gates on
+    ///   `!bytes.is_empty()`, never on `format`) write no file.
+    /// * An `Error`-severity diagnostic — what the CLI's exit gate keys on.
+    /// * The typed [`reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport`]
+    ///   AND the [`crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT`] token — downstream
+    ///   tooling matches the code; the CLI integration tests see only captured
+    ///   stderr text and so match the token.
+    ///
+    /// `label` names the occurrence under test so a failure in a multi-occurrence
+    /// loop says which one broke.
+    fn assert_is_refusal(art: &crate::ExportArtifact, label: &str) -> String {
+        assert!(
+            art.bytes.is_empty(),
+            "the refused artifact `{label}` must carry ZERO bytes — that is what makes \
+             the CLI writer (which gates on `!bytes.is_empty()`) write no file; got {} \
+             bytes",
+            art.bytes.len()
+        );
+        let refusal = art
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == reify_core::Severity::Error)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the refused artifact `{label}` must carry an Error-severity \
+                     diagnostic — that is what the CLI's exit gate keys on; got {:?}",
+                    art.diagnostics
+                )
+            });
+        assert_eq!(
+            refusal.code,
+            Some(reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport),
+            "the refusal on `{label}` must carry the typed code so downstream tooling \
+             matches on it rather than on message substrings"
+        );
+        assert!(
+            refusal
+                .message
+                .contains(crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal message on `{label}` must embed the E_* token for the CLI \
+             integration tests, which observe only captured stderr text; got: {}",
+            refusal.message
+        );
+        refusal.message.clone()
+    }
+
     /// A module declaring a `RepresentationWithin` bound has its `Output`
     /// occurrence RECOGNIZED but REFUSED: one artifact, declared path and format
     /// preserved, zero bytes, an `Error` diagnostic carrying
@@ -10128,14 +10240,12 @@ structure Assembly {
     /// That failure IS §1.1 reproduced at the engine boundary.
     #[test]
     fn build_outputs_refuses_export_for_module_declaring_representation_within() {
-        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
-        use std::path::{Path, PathBuf};
-        use std::sync::{Arc, Mutex};
+        use std::path::PathBuf;
 
         // The `repr_within_with_stl_output.ri` fixture's shape: a geometry
         // structure owning an `: Output` occurrence, plus a SEPARATE checker
         // structure declaring the bound on it (the canonical idiom).
-        let module = parse_and_compile_with_stdlib(
+        let probe = run_build_outputs(
             r#"structure def D {
     let part = box(10mm, 20mm, 5mm)
     sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
@@ -10147,27 +10257,15 @@ structure DCheck {
 }"#,
         );
 
-        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
-        let mut engine = crate::Engine::new(
-            Box::new(MockConstraintChecker::new()),
-            Some(Box::new(kernel)),
-        );
-
-        let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
-
         assert_eq!(
-            outputs.artifacts.len(),
+            probe.outputs.artifacts.len(),
             1,
             "the STLOutput occurrence must still be RECOGNIZED (one artifact), so the \
              CLI reports it as refused rather than claiming the design declares no \
              `: Output` occurrences; got {}",
-            outputs.artifacts.len()
+            probe.outputs.artifacts.len()
         );
-        let art = &outputs.artifacts[0];
+        let art = &probe.outputs.artifacts[0];
         assert_eq!(
             art.path,
             PathBuf::from("/tmp/d/o.stl"),
@@ -10179,44 +10277,13 @@ structure DCheck {
             reify_ir::ExportFormat::Stl,
             "the refused artifact must preserve the DSL-driven format"
         );
-        assert!(
-            art.bytes.is_empty(),
-            "the refused artifact must carry ZERO bytes — that is what makes the CLI \
-             writer (which gates on `!bytes.is_empty()`) write no file; got {} bytes",
-            art.bytes.len()
-        );
-        let refusal = art
-            .diagnostics
-            .iter()
-            .find(|d| d.severity == reify_core::Severity::Error)
-            .unwrap_or_else(|| {
-                panic!(
-                    "the refused artifact must carry an Error-severity diagnostic — that \
-                     is what the CLI's exit gate keys on; got {:?}",
-                    art.diagnostics
-                )
-            });
-        assert_eq!(
-            refusal.code,
-            Some(reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport),
-            "the refusal must carry the typed code so downstream tooling matches on it \
-             rather than on message substrings"
-        );
-        assert!(
-            refusal
-                .message
-                .contains(crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
-            "the refusal message must embed the E_* token for the CLI integration \
-             tests, which observe only captured stderr text; got: {}",
-            refusal.message
-        );
+        assert_is_refusal(art, "D.o");
 
-        let exported = exported.lock().unwrap().clone();
         assert!(
-            exported.is_empty(),
+            probe.exported.is_empty(),
             "export_with_options must NEVER be called for a refused occurrence — the \
              refusal precedes serialization, so no bytes can leak by any route; got {:?}",
-            exported
+            probe.exported
         );
     }
 
@@ -10247,11 +10314,9 @@ structure DCheck {
     ///   grow with the occurrence count.
     #[test]
     fn build_outputs_refuses_every_output_occurrence_with_per_occurrence_attribution() {
-        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
-        use std::path::{Path, PathBuf};
-        use std::sync::{Arc, Mutex};
+        use std::path::PathBuf;
 
-        let module = parse_and_compile_with_stdlib(
+        let probe = run_build_outputs(
             r#"structure def D {
     let part = box(10mm, 20mm, 5mm)
     sub a = STLOutput(subject: part, resolution: 0.2mm, path: "a.stl")
@@ -10264,25 +10329,14 @@ structure DCheck {
 }"#,
         );
 
-        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
-        let mut engine = crate::Engine::new(
-            Box::new(MockConstraintChecker::new()),
-            Some(Box::new(kernel)),
-        );
-
-        let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
-
         assert_eq!(
-            outputs.artifacts.len(),
+            probe.outputs.artifacts.len(),
             2,
             "BOTH Output occurrences must be recognized-and-refused, so the CLI's \
              'all N `: Output` occurrence(s) were deferred or failed' branch reports \
              the right N; got {:?}",
-            outputs
+            probe
+                .outputs
                 .artifacts
                 .iter()
                 .map(|a| a.path.clone())
@@ -10290,7 +10344,8 @@ structure DCheck {
         );
 
         let mut messages = Vec::new();
-        for (art, (sub_name, file)) in outputs
+        for (art, (sub_name, file)) in probe
+            .outputs
             .artifacts
             .iter()
             .zip([("a", "a.stl"), ("b", "b.stl")])
@@ -10300,44 +10355,18 @@ structure DCheck {
                 PathBuf::from(format!("/tmp/d/{file}")),
                 "declaration-order walk must preserve each occurrence's declared path"
             );
+            let message = assert_is_refusal(art, &format!("D.{sub_name}"));
             assert!(
-                art.bytes.is_empty(),
-                "every refused artifact carries ZERO bytes; `{sub_name}` got {}",
-                art.bytes.len()
-            );
-            let refusal = art
-                .diagnostics
-                .iter()
-                .find(|d| d.severity == reify_core::Severity::Error)
-                .unwrap_or_else(|| {
-                    panic!("occurrence `{sub_name}` must carry an Error diagnostic")
-                });
-            assert_eq!(
-                refusal.code,
-                Some(reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport),
-                "every refusal carries the typed code, not just the first"
-            );
-            assert!(
-                refusal
-                    .message
-                    .contains(crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
-                "every refusal embeds the E_* token the CLI integration tests match \
-                 on; `{sub_name}` got: {}",
-                refusal.message
-            );
-            assert!(
-                refusal.message.contains(&format!("`D.{sub_name}`")),
+                message.contains(&format!("`D.{sub_name}`")),
                 "the refusal must name the occurrence it refused (`D.{sub_name}`), so \
-                 repeated copies are distinguishable; got: {}",
-                refusal.message
+                 repeated copies are distinguishable; got: {message}"
             );
             assert!(
-                refusal.message.contains(&format!("/tmp/d/{file}")),
+                message.contains(&format!("/tmp/d/{file}")),
                 "the refusal must name the destination it refused, mirroring the \
-                 sibling subject-unresolved artifact; got: {}",
-                refusal.message
+                 sibling subject-unresolved artifact; got: {message}"
             );
-            messages.push(refusal.message.clone());
+            messages.push(message);
         }
 
         assert_ne!(
@@ -10346,11 +10375,11 @@ structure DCheck {
              the module-level message carries zero information for the reader"
         );
 
-        let exported = exported.lock().unwrap().clone();
         assert!(
-            exported.is_empty(),
+            probe.exported.is_empty(),
             "no occurrence may reach export_with_options, however many are refused; \
-             got {exported:?}"
+             got {:?}",
+            probe.exported
         );
     }
 
@@ -10380,37 +10409,20 @@ structure DCheck {
     /// GREEN today and must STAY green.
     #[test]
     fn build_outputs_exports_normally_without_a_representation_within_bound() {
-        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
-        use std::path::Path;
-        use std::sync::{Arc, Mutex};
-
         // Byte-identical to the refusal test's module MINUS `structure DCheck`
         // (and to `build_outputs_drives_single_stl_output`'s module, which owns
         // the artifact-shape assertions this test deliberately does not repeat).
-        let module = parse_and_compile_with_stdlib(
+        let probe = run_build_outputs(
             r#"structure def D {
     let part = box(10mm, 20mm, 5mm)
     sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
 }"#,
         );
 
-        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
-        let recorded_options = kernel.recorded_options();
-        let mut engine = crate::Engine::new(
-            Box::new(MockConstraintChecker::new()),
-            Some(Box::new(kernel)),
-        );
-
-        let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
-
-        let art = outputs.artifacts.first().unwrap_or_else(|| {
+        let art = probe.outputs.artifacts.first().unwrap_or_else(|| {
             panic!(
                 "the single STLOutput occurrence must still yield an artifact; got {}",
-                outputs.artifacts.len()
+                probe.outputs.artifacts.len()
             )
         });
         assert!(
@@ -10426,8 +10438,7 @@ structure DCheck {
             art.diagnostics
         );
         assert_eq!(
-            recorded_options.lock().unwrap().len(),
-            1,
+            probe.export_calls, 1,
             "export_with_options must be called exactly once for the unbounded module — \
              serialization is untouched by η"
         );
@@ -10455,13 +10466,11 @@ structure DCheck {
     #[test]
     fn build_outputs_defers_display_output_even_in_a_bounded_module() {
         use reify_core::Severity;
-        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
-        use std::path::{Path, PathBuf};
-        use std::sync::{Arc, Mutex};
+        use std::path::PathBuf;
 
         // The refusal test's module PLUS a DisplayOutput sibling on the same
         // subject, so one `RepresentationWithin` bound covers both sinks.
-        let module = parse_and_compile_with_stdlib(
+        let probe = run_build_outputs(
             r#"structure def D {
     let part = box(10mm, 20mm, 5mm)
     sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
@@ -10473,18 +10482,7 @@ structure DCheck {
     constraint RepresentationWithin(subject, 1mm)
 }"#,
         );
-
-        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
-        let mut engine = crate::Engine::new(
-            Box::new(MockConstraintChecker::new()),
-            Some(Box::new(kernel)),
-        );
-
-        let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
+        let outputs = &probe.outputs;
 
         // (a) The DisplayOutput still yields exactly one INFO artifact.
         let deferred: Vec<&crate::ExportArtifact> = outputs
@@ -10565,10 +10563,90 @@ structure DCheck {
         );
 
         // (c) Neither sink reached the serializer.
-        let exported = exported.lock().unwrap().clone();
         assert!(
-            exported.is_empty(),
+            probe.exported.is_empty(),
             "no occurrence may reach export(): the DisplayOutput defers and the \
-             STLOutput is refused; got {exported:?}"
+             STLOutput is refused; got {:?}",
+            probe.exported
+        );
+    }
+
+    /// A bound declared ON THE `: Output` OCCURRENCE TEMPLATE ITSELF — the v0_2
+    /// per-purpose-tolerance idiom — is REFUSED, exactly like one declared on a
+    /// separate checker structure.
+    ///
+    /// # Why this shape needs its own test
+    ///
+    /// `docs/prds/v0_2/per-purpose-tolerance.md`'s documented way to DEMAND an
+    /// export tolerance is to put the constraint in the Output occurrence's own
+    /// body — `occurrence def TightSTL : Output { param subject : D  constraint
+    /// RepresentationWithin(subject, 1um) }` (see
+    /// `crate::tolerance_combine::extract_output_tolerance_bound` and
+    /// `reify_test_support::tolerance_fixtures::step_output_template_with_body`,
+    /// which build precisely this template). That is a `ValueRef` typed
+    /// `StructureRef` plus a LENGTH literal — the exact shape
+    /// `match_representation_within_shape` recognises — and user-defined
+    /// occurrence templates DO live in `module.templates`, so
+    /// `compute_representation_bounds` picks the bound up and η refuses.
+    ///
+    /// # The decision this pins: REFUSE, deliberately
+    ///
+    /// So the design that demands an export tolerance the supported way is the
+    /// design η refuses. That is the intended verdict TODAY and the safe
+    /// direction, because the demanded tolerance is not yet plumbed anywhere:
+    /// task 6085 has not landed `kernel.export()`-side honouring, so nothing on
+    /// the export path reads that bound, let alone demonstrates it is met.
+    /// Exempting this shape would ship PRD §1.1 verbatim — an artifact written
+    /// against an unhonoured bound, exit 0 — for exactly the designs that asked
+    /// for the tolerance most explicitly.
+    ///
+    /// The seam un-blocks in the other direction: once 6085 gives the export path
+    /// a real measurement, task θ (#6173) narrows the refusal from "any declared
+    /// bound" to "a bound this export cannot demonstrate it honours", at which
+    /// point a demanded-and-honoured tolerance stops being refused. This test is
+    /// what makes that flip a deliberate edit with a red test rather than a
+    /// silent behaviour change.
+    #[test]
+    fn build_outputs_refuses_a_bound_declared_on_the_output_occurrence_itself() {
+        let probe = run_build_outputs(
+            r#"occurrence def TightSTL : Output {
+    param subject : D
+    param path : String
+    param resolution : Length = 0.2mm
+    param format : OutputFormat = OutputFormat.STL
+    constraint RepresentationWithin(subject, 1um)
+}
+
+structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = TightSTL(subject: part, path: "o.stl")
+}"#,
+        );
+
+        assert_eq!(
+            probe.outputs.artifacts.len(),
+            1,
+            "the user-defined `: Output` occurrence must still be RECOGNIZED (trait-bound \
+             conformance, not a name match), so it is reported as refused rather than as \
+             absent; got {:?}",
+            probe
+                .outputs
+                .artifacts
+                .iter()
+                .map(|a| a.path.clone())
+                .collect::<Vec<_>>()
+        );
+        let message = assert_is_refusal(&probe.outputs.artifacts[0], "D.o");
+        assert!(
+            message.contains("D (bound 1.000e-6 m)"),
+            "the refusal must name the bound read off the OCCURRENCE template — subject \
+             `D` at the declared 1um — proving the bound came from the occurrence body \
+             and not from some other declaration; got: {message}"
+        );
+        assert!(
+            probe.exported.is_empty(),
+            "a bound declared on the Output occurrence itself must still refuse BEFORE \
+             serialization; got {:?}",
+            probe.exported
         );
     }

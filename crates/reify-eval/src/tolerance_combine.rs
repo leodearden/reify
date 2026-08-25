@@ -303,6 +303,44 @@ pub fn module_declares_representation_within(module: &reify_compiler::CompiledMo
 /// not by the template that declares the constraint, because the type is what
 /// the user must go and look at.
 ///
+/// # What counts as a declared bound: EVERY template, deliberately
+///
+/// The refusal inherits `compute_representation_bounds`' breadth verbatim, and
+/// that breadth is wider than the canonical checker-structure idiom in two ways
+/// a reader will not guess. Both are the intended verdict, not accidents of
+/// reuse, and both are pinned by tests so a later "obvious" narrowing is a
+/// deliberate edit against a red test rather than a silent behaviour change:
+///
+/// * **`@test` templates count.** The table iterates ALL of `module.templates`,
+///   *not* `non_test_templates()`, so a bound declared only inside an
+///   `@test structure TCheck { param subject : D  constraint
+///   RepresentationWithin(subject, 1mm) }` refuses every PRODUCTION export of
+///   that design. Narrowing here would fork the traversal — the routing
+///   predicate [`module_declares_representation_within`] IS this table's
+///   emptiness, and #6170's whole implementation constraint was to stop keeping
+///   two walks in sync by hand — so the refusal takes the one table the rest of
+///   C-BOUND already uses. It is also the safe direction: a `@test` bound is
+///   still the design stating what its representation must be within, and
+///   over-refusing costs a build, while under-refusing ships PRD §1.1.
+///   Pinned by
+///   `unenforced_representation_bound_diagnostic_refuses_a_bound_declared_in_a_test_template`.
+/// * **A bound on the `: Output` occurrence template itself counts.** The v0_2
+///   per-purpose-tolerance idiom (`occurrence def TightSTL : Output { param
+///   subject : D  constraint RepresentationWithin(subject, 1um) }` — see
+///   [`extract_output_tolerance_bound`] and
+///   `reify_test_support::tolerance_fixtures::step_output_template_with_body`)
+///   is exactly the shape the matcher recognises, and user-defined occurrence
+///   templates DO live in `module.templates`. So the design that DEMANDS an
+///   export tolerance the supported way is refused too. That is correct today
+///   precisely BECAUSE the demand is not yet plumbed: task 6085 has not landed
+///   `kernel.export()`-side honouring, so nothing on the export path reads that
+///   bound. Exempting it would ship §1.1 verbatim for the designs that asked
+///   most explicitly. The seam un-blocks in the other direction — once 6085
+///   lands a real measurement, task θ (#6173) narrows from "any declared bound"
+///   to "a bound this export cannot demonstrate it honours". Pinned by
+///   `build_outputs_refuses_a_bound_declared_on_the_output_occurrence_itself`
+///   in `engine_build/tests.rs`.
+///
 /// # Static, pre-eval, pre-measurement
 ///
 /// This reads compiled IR only. It evaluates nothing, realizes nothing and
@@ -2983,6 +3021,98 @@ structure AlphaChecker {
              the refusal text is reproducible across runs — `Alpha` must precede `Zeta` \
              even though `ZetaChecker` is declared first; got: {}",
             diag.message
+        );
+    }
+
+    /// A bound declared inside an `@test` template refuses PRODUCTION exports of
+    /// that design — the deliberate verdict, pinned so it cannot change silently.
+    ///
+    /// # What this pins that no other test does
+    ///
+    /// `compute_representation_bounds` iterates ALL of `module.templates`, *not*
+    /// `non_test_templates()`. That breadth was chosen for δ's measurement
+    /// routing (#6168); since η the export refusal INHERITS it, so a bound that
+    /// only ever appears under `@test` makes `reify build -o out.step` exit
+    /// non-zero and write nothing. Nothing else in the suite covers that, and the
+    /// narrowing looks like an obvious tidy-up: swapping in
+    /// `non_test_templates()` here would read as removing test-only noise while
+    /// actually changing production export behaviour — and would pass a green
+    /// suite without this test.
+    ///
+    /// # Why REFUSE is the deliberate choice
+    ///
+    /// * The routing predicate `module_declares_representation_within` IS this
+    ///   table's emptiness. A narrower refusal needs a SECOND, narrower table —
+    ///   reinstating exactly the hand-synced mirror #6170's implementation
+    ///   constraint retired.
+    /// * It is the safe direction. An `@test` template is still the design
+    ///   stating what its representation must be within; over-refusing costs the
+    ///   user a build and a clear message telling them to run `reify check`,
+    ///   while under-refusing ships PRD §1.1 — an artifact written against a
+    ///   bound nobody enforced, reported as success.
+    ///
+    /// The assertion is two-sided: the same module with the `@test` template
+    /// deleted must NOT be refused, so this pins the `@test` declaration as the
+    /// cause rather than something else in the module.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_refuses_a_bound_declared_in_a_test_template() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure def D {
+    param width : Length = 10mm
+}
+
+@test structure TDCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#,
+        );
+        assert!(
+            compiled.templates.iter().any(|t| t.name == "TDCheck" && t.is_test()),
+            "the fixture must actually compile `TDCheck` as an `@test` template — \
+             otherwise this test would pass for the ordinary-template reason; got {:?}",
+            compiled
+                .templates
+                .iter()
+                .map(|t| (t.name.clone(), t.is_test()))
+                .collect::<Vec<_>>()
+        );
+
+        let diag = unenforced_representation_bound_diagnostic(&compiled).unwrap_or_else(|| {
+            panic!(
+                "a bound declared inside an `@test` template must STILL refuse the \
+                 export: the refusal reads the C-BOUND table, which iterates ALL of \
+                 `module.templates` (not `non_test_templates()`), and narrowing it \
+                 would fork the traversal from the routing predicate"
+            )
+        });
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "an `@test`-declared bound is refused at full Error severity, not softened \
+             to a warning — the CLI exit gate keys on Error"
+        );
+        assert!(
+            diag.message.contains("D (bound 1.000e-3 m)"),
+            "the refusal must name the subject and bound read out of the `@test` \
+             template, proving the table saw it; got: {}",
+            diag.message
+        );
+
+        // Two-sided: the SAME module with the `@test` template deleted is not
+        // refused, so the `@test` declaration is what caused the refusal above.
+        let without = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure def D {
+    param width : Length = 10mm
+}
+"#,
+        );
+        assert!(
+            unenforced_representation_bound_diagnostic(&without).is_none(),
+            "the same module WITHOUT the `@test` checker must not be refused — \
+             otherwise the assertion above would hold for an unrelated reason"
         );
     }
 }
