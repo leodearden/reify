@@ -3236,6 +3236,42 @@ mod freshness_gate {
         );
     }
 
+    /// The assertions a PER-CALL fail-soft run PASSES — i.e. everything that
+    /// makes it indistinguishable from a genuine zero-finding success.
+    ///
+    /// Exit 0 (the seam fail-softs, it does not refuse); no `E_JC_INDEX_`
+    /// marker (the §4.3 gate ADMITTED the run, so a detector really did
+    /// execute and the breadcrumb the caller asserts on is reachable); no
+    /// `jcodemunch unreachable at` (the handshake SUCCEEDED, so this is the
+    /// PER-CALL layer and not the CONSTRUCTION one).
+    ///
+    /// Shared by all three `per_call_fail_soft_*` tests rather than written
+    /// three times over — the shape `jcodemunch_live.rs::assert_live_leg`
+    /// already uses for its two legs, and for the same reason: one contract
+    /// asserted in three places drifts into three subtly different claims
+    /// about it, and each copy then has to be found and fixed separately.
+    ///
+    /// Each caller adds only its own breadcrumb and findings assertions.
+    fn assert_admitted_after_a_successful_handshake(out: &std::process::Output, stderr: &str) {
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a per-call failure must still fail-soft, not refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "the gate must have ADMITTED this run — a refusal would mean no \
+             detector ever ran and the per-call breadcrumb is unreachable; \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("jcodemunch unreachable at"),
+            "the handshake must have SUCCEEDED, or this would be the \
+             CONSTRUCTION fail-soft layer rather than the PER-CALL one; \
+             stderr:\n{stderr}"
+        );
+    }
+
     /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
     ///
     /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
@@ -3287,22 +3323,7 @@ mod freshness_gate {
         let stderr = String::from_utf8_lossy(&out.stderr);
 
         // --- the four assertions that ALL PASS on this vacuous run ---
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "a per-call failure must still fail-soft, not refuse; stderr:\n{stderr}"
-        );
-        assert!(
-            !stderr.contains("E_JC_INDEX_"),
-            "the gate must have ADMITTED this run — a refusal would mean no \
-             detector ever ran and the breadcrumb below is unreachable; \
-             stderr:\n{stderr}"
-        );
-        assert!(
-            !stderr.contains("jcodemunch unreachable at"),
-            "the handshake must have SUCCEEDED, or this would be the \
-             construction layer rather than the per-call layer; stderr:\n{stderr}"
-        );
+        assert_admitted_after_a_successful_handshake(&out, &stderr);
         let findings = parse_findings_from_stderr(&stderr);
         assert!(
             findings.is_empty(),
@@ -3349,19 +3370,7 @@ mod freshness_gate {
         mock.stop();
         let stderr = String::from_utf8_lossy(&out.stderr);
 
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "a per-call failure must still fail-soft, not refuse; stderr:\n{stderr}"
-        );
-        assert!(
-            !stderr.contains("E_JC_INDEX_"),
-            "the gate must have ADMITTED this run; stderr:\n{stderr}"
-        );
-        assert!(
-            !stderr.contains("jcodemunch unreachable at"),
-            "the handshake must have SUCCEEDED; stderr:\n{stderr}"
-        );
+        assert_admitted_after_a_successful_handshake(&out, &stderr);
         let findings = parse_findings_from_stderr(&stderr);
         assert!(
             findings.is_empty(),
@@ -3432,19 +3441,7 @@ mod freshness_gate {
         mock.stop();
         let stderr = String::from_utf8_lossy(&out.stderr);
 
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "a per-call failure must still fail-soft, not refuse; stderr:\n{stderr}"
-        );
-        assert!(
-            !stderr.contains("E_JC_INDEX_"),
-            "the gate must have ADMITTED this run; stderr:\n{stderr}"
-        );
-        assert!(
-            !stderr.contains("jcodemunch unreachable at"),
-            "the handshake must have SUCCEEDED; stderr:\n{stderr}"
-        );
+        assert_admitted_after_a_successful_handshake(&out, &stderr);
         // The FIRST call must have SUCCEEDED, or this test would be re-proving
         // the sibling above rather than reaching the second call at all.
         assert!(
