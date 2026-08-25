@@ -1509,12 +1509,12 @@ structure SphereCheck {
 /// the table this file's author was given had already dropped 0.44mm, 0.46mm,
 /// and 0.60mm — three off-trend rows that would have shown a tooth. Reading the
 /// near-uniform envelope ratio as "very close to LINEAR" and concluding adjacent
-/// values can't swing far apart is FALSE and unsafe — do not assume that: the
-/// full sweep found swings up to 2.78x between neighbours. Even neighbours
-/// only 0.5 micrometres apart can swing 2.69x (0.5955mm → 1.223e-3 m vs.
-/// 0.5960mm → 4.541e-4 m, a 0.08% change in the request). 0.50mm's 0.76x
-/// reading in this table is one such tooth, not
-/// an isolated exception. The envelope trend still puts the 1e-3 m bound
+/// values can't swing far apart is FALSE and unsafe — do not assume that:
+/// `dfm_with_repr_within.ri`'s header note (the single source of truth for
+/// the staircase and its mechanism) documents adjacent-neighbour swings far
+/// larger than anything in this 8-point table. 0.50mm's 0.76x reading in this
+/// table is one such tooth, not an isolated exception. The envelope trend
+/// still puts the 1e-3 m bound
 /// crossing at ~0.4815mm, explaining why 0.49mm and 0.51mm violate here — but a
 /// tooth elsewhere in the range can flip that reading, so re-measure the actual
 /// candidate rather than trusting the envelope. The mechanism (a sphere-face
@@ -1525,10 +1525,17 @@ structure SphereCheck {
 ///
 /// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper to
 /// tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves with
-/// machine load) and still passes, as do both its measured neighbours, so there
-/// is no cliff within ±17%. The faster 0.48mm/0.50mm were rejected: 0.48mm clears
-/// the bound by only 0.12%, and 0.50mm passes only as an off-trend point with
-/// violations on both sides.
+/// machine load). Its safety margin does NOT rest on its measured neighbours —
+/// the tooth period near 0.30mm is ~0.006mm, so 0.25mm/0.35mm are roughly 8
+/// periods away and establish nothing about this locality; that neighbour
+/// argument is exactly the extrapolation the paragraph above labels FALSE and
+/// unsafe. The real argument is the envelope: teeth deviate DOWNWARD only
+/// (~0.758x, strictly safer than the envelope), so the envelope bounds the
+/// achieved deviation from above, and 0.3mm sits on it at 6.202e-4 m, 1.61x
+/// inside the 1e-3 m bound — every point within ±17% is likewise
+/// envelope-bounded below the bound. The faster 0.48mm/0.50mm were rejected:
+/// 0.48mm clears the bound by only 0.12%, and 0.50mm passes only as an
+/// off-trend point with violations on both sides.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
