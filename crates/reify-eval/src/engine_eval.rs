@@ -13940,6 +13940,15 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     /// `commit_cell_result_at` commit. Asserting strict alternation across ALL
     /// passes is what makes this non-vacuous: a missing later `Started` shows up
     /// as two consecutive terminal events.
+    ///
+    /// STILL UNCOVERED (stated rather than implied): 2 of `evaluate_let_bindings`'
+    /// 6 `record_subpath_started` insertions are pinned here — the pre-eval
+    /// Pending gate and the panic-recovery `Failed` path. The other 4 all sit
+    /// inside the `@optimized` compute-node branch (the Final-gate reuse, plus
+    /// the Ok / `Cancelled` / `Failed` dispatch outcomes) and need a fixture with
+    /// an `@optimized` let AND a registered compute trampoline, which this
+    /// two-cell direct-call harness deliberately does not build. Same 2-of-6
+    /// shape as the integration-level test covering the sibling evaluator.
     #[test]
     fn evaluate_let_bindings_non_migrated_subpaths_emit_paired_started_events() {
         let module = two_cell_module();
