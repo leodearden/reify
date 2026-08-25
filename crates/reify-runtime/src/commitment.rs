@@ -124,7 +124,7 @@ impl NodePolicyOverrides {
     /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
     ///
     /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
-    /// Reached today only through `crates/reify-cli/src/dev.rs::render_inspection`
+    /// Reached today only through `render_inspection` in the `reify` CLI binary
     /// (the `reify dev inspect-node` subcommand, δ step).
     pub fn resolve_with_traits(
         &self,
