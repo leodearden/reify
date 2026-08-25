@@ -734,6 +734,15 @@ pub fn run_modify_pipeline(
 /// compiled default expression. Callers needing only the compiled default
 /// expression should prefer [`get_let_expr_in`], which delegates here.
 ///
+/// Resolution matches on `id.member` alone; `id.entity` is not considered,
+/// and the first match in declaration order wins silently. A single
+/// `TopologyTemplate` can carry more than one cell with the same member name
+/// scoped to different sub-entities — e.g. `phase_sub_override_autos` /
+/// `phase_connect_auto_params` in `entities_phase.rs` push sub-entity-scoped
+/// `ValueCellDecl`s onto the *parent* template — so for a template known to
+/// carry sub-entity-scoped cells, check the returned cell's `id.entity` (or
+/// resolve by hand) rather than assuming the top-level cell was returned.
+///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
 /// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
@@ -1790,24 +1799,45 @@ mod tests {
         super::get_value_cell_in(&module, "S", "y");
     }
 
-    /// get_value_cell_in should return the cell — not panic — when its
-    /// default_expr is None. This is the property that distinguishes it from
-    /// get_let_expr_in, which panics with "has no default expr" in that same
-    /// case (see test_get_let_expr_in_panics_on_missing_default_expr below,
-    /// whose builder-synthesized fixture this test reuses): a source-level
-    /// `param` always carries a default in well-formed compiled output, so
-    /// `auto_param` is the only way to reach a `default_expr: None` cell.
-    /// Also asserts `cell.id.member` so the test cannot pass by returning
-    /// some other cell.
-    #[test]
-    fn test_get_value_cell_in_returns_cell_with_no_default_expr() {
+    /// Shared fixture for the two tests below: a module with a single template
+    /// `S` and a single `auto_param` cell named `x`. A source-level `param`
+    /// always carries a default in well-formed compiled output, so
+    /// `auto_param` is the only way to reach a `default_expr: None` cell —
+    /// exactly the precondition both `test_get_value_cell_in_returns_cell_with_no_default_expr`
+    /// and `test_get_let_expr_in_panics_on_missing_default_expr` depend on.
+    /// Asserted once here, loudly: if `auto_param` ever changes to synthesize
+    /// a placeholder default, this fires before either dependent test runs,
+    /// surfacing the broken assumption clearly instead of letting a dependent
+    /// test silently pass (or, for the `#[should_panic]` one, silently exercise
+    /// the wrong branch) for the wrong reason.
+    fn auto_param_module() -> reify_compiler::CompiledModule {
         use reify_core::{ModulePath, Type};
         let template = crate::builders::TopologyTemplateBuilder::new("S")
             .auto_param("S", "x", Type::dimensionless_scalar())
             .build();
-        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "x")
+            .expect("auto_param should have added cell 'x'");
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param must produce default_expr = None for this fixture's intent"
+        );
+        crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(template)
-            .build();
+            .build()
+    }
+
+    /// get_value_cell_in should return the cell — not panic — when its
+    /// default_expr is None. This is the property that distinguishes it from
+    /// get_let_expr_in, which panics with "has no default expr" in that same
+    /// case (see test_get_let_expr_in_panics_on_missing_default_expr below,
+    /// which reuses the same `auto_param_module` fixture). Also asserts
+    /// `cell.id.member` so the test cannot pass by returning some other cell.
+    #[test]
+    fn test_get_value_cell_in_returns_cell_with_no_default_expr() {
+        let module = auto_param_module();
         let cell = super::get_value_cell_in(&module, "S", "x");
         assert_eq!(
             cell.id.member, "x",
@@ -1816,10 +1846,8 @@ mod tests {
         );
         assert!(
             cell.default_expr.is_none(),
-            "auto_param must produce default_expr = None for this test's intent; \
-             if that ever changes, get_value_cell_in's exactly-two-panic contract \
-             needs re-verifying rather than this test silently passing for the \
-             wrong reason"
+            "auto_param_module's fixture guarantees default_expr = None; \
+             get_value_cell_in must return the cell as-is, not synthesize a default"
         );
     }
 
@@ -1884,34 +1912,15 @@ mod tests {
     }
 
     /// get_let_expr_in should panic with "has no default expr" for a value cell
-    /// whose default_expr is None. Uses a builder-synthesized module with an
-    /// auto_param (which always has default_expr = None) rather than a compiled
-    /// source, since a source-level `param` always carries a default in well-formed
-    /// compiled output.  The inline `assert!` below makes the precondition explicit:
-    /// if `auto_param` ever changes to synthesize a placeholder default, the guard
-    /// will fire loudly rather than silently letting the test pass for the wrong reason.
+    /// whose default_expr is None. Reuses the `auto_param_module` fixture above
+    /// (see its doc comment): that fixture's own precondition assert fires
+    /// before this test's call to get_let_expr_in if `auto_param` ever stops
+    /// producing `default_expr = None`, surfacing the broken assumption
+    /// clearly instead of silently exercising the wrong branch here.
     #[test]
     #[should_panic(expected = "has no default expr")]
     fn test_get_let_expr_in_panics_on_missing_default_expr() {
-        use reify_core::{ModulePath, Type};
-        let template = crate::builders::TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", Type::dimensionless_scalar())
-            .build();
-        // Precondition: auto_param must produce default_expr = None; if that ever
-        // changes this guard fires before get_let_expr_in, surfacing the broken
-        // assumption clearly instead of silently exercising the wrong branch.
-        let cell = template
-            .value_cells
-            .iter()
-            .find(|vc| vc.id.member == "x")
-            .expect("auto_param should have added cell 'x'");
-        assert!(
-            cell.default_expr.is_none(),
-            "auto_param must produce default_expr = None for this test's intent"
-        );
-        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
+        let module = auto_param_module();
         super::get_let_expr_in(&module, "S", "x");
     }
 
