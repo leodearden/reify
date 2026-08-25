@@ -170,6 +170,69 @@ describe('createAxisLabels', () => {
   });
 });
 
+// ── setOffset tests (#6588) ──────────────────────────────────────────────────
+// The label ring must be able to follow a SCENE-SIZED axis triad (scene.ts's
+// fitHelpers), and it must do so by repositioning the sprites — not by scaling
+// the Group, which the r183 sprite shader would fold into the on-screen size via
+// length(modelMatrix[0].xyz), undoing the constant-screen-size fix above.
+
+describe('createAxisLabels setOffset (#6588)', () => {
+  /** Sprite lookup by its own declared axis, not by array order. */
+  function byAxis(group: any, axis: 'X' | 'Y' | 'Z'): any {
+    const sprite = group.children.find((s: any) => s.userData.axis === axis);
+    expect(sprite).toBeDefined();
+    return sprite;
+  }
+
+  function expectRingAt(group: any, d: number): void {
+    expect(byAxis(group, 'X').position.x).toBe(d);
+    expect(byAxis(group, 'X').position.y).toBe(0);
+    expect(byAxis(group, 'X').position.z).toBe(0);
+
+    expect(byAxis(group, 'Y').position.y).toBe(d);
+    expect(byAxis(group, 'Y').position.x).toBe(0);
+    expect(byAxis(group, 'Y').position.z).toBe(0);
+
+    expect(byAxis(group, 'Z').position.z).toBe(d);
+    expect(byAxis(group, 'Z').position.x).toBe(0);
+    expect(byAxis(group, 'Z').position.y).toBe(0);
+  }
+
+  it('exposes setOffset alongside group and dispose', () => {
+    const result = createAxisLabels() as any;
+    expect(typeof result.setOffset).toBe('function');
+  });
+
+  it('setOffset(d) moves each sprite to d along its own axis, zero on the other two', () => {
+    const result = createAxisLabels() as any;
+    result.setOffset(0.35);
+    expectRingAt(result.group, 0.35);
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+  ])('setOffset(%s) is a no-op that leaves the previous offset in place', (_label, bad) => {
+    const result = createAxisLabels() as any;
+    result.setOffset(0.35);
+    result.setOffset(bad as number);
+    // A degenerate offset must not collapse the ring onto the origin, fold it
+    // behind the origin, or poison the positions with NaN/Infinity.
+    expectRingAt(result.group, 0.35);
+  });
+
+  it('leaves the construction-time offset untouched until setOffset is called', () => {
+    const result = createAxisLabels() as any;
+    // Same contract the "positioned beyond the axis tip" tests above assert: the
+    // default ring sits beyond the default AxesHelper(2) tip.
+    expect(byAxis(result.group, 'X').position.x).toBeGreaterThan(2);
+    expect(byAxis(result.group, 'Y').position.y).toBeGreaterThan(2);
+    expect(byAxis(result.group, 'Z').position.z).toBeGreaterThan(2);
+  });
+});
+
 // ── Screen-footprint tests (#6588) ───────────────────────────────────────────
 
 describe('axis label screen footprint (#6588)', () => {
