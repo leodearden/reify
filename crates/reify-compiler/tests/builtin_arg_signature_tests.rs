@@ -292,9 +292,11 @@ fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
         compiled.diagnostics
     );
     assert_eq!(
-        errors[0].message, "linear_pattern: spacing argument expects Length, got Scalar[rad]",
+        errors[0].message,
+        "linear_pattern: spacing argument expects Length, got Scalar[rad]; \
+         pass a dimensioned length such as `5mm`",
         "a wrong-unit spacing must name the builtin, the arg, the expected type \
-         and the offending unit"
+         and the offending unit, and carry the C1 migration hint"
     );
 }
 
@@ -403,5 +405,196 @@ fn moment_of_inertia_via_material_density_gives_no_arg_type_mismatch() {
          A false-positive here would break the stdlib Rigid trait universally.\n\
          Got: {:#?}",
         arg_type_mismatches
+    );
+}
+
+// ── Task 5750 (units-length η): the C1 migration hint on compile-layer slots ──
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md`, decision D9. The eval
+// layer's `ArgRejection::message` already appends a migration hint to a LENGTH
+// rejection; η makes the compile layer reproduce it VERBATIM so the two layers
+// read identically for the same authoring mistake.
+//
+// The tests below pin the hint on an EXISTING LENGTH slot (`linear_pattern`
+// spacing), deliberately BEFORE any new slot is added, so the primitive /
+// modify / sweep slots that follow are written once against the final
+// `ExpectedArg` shape rather than churned by a later field addition.
+
+/// The exact C1 hint clause the eval layer appends to a LENGTH rejection.
+///
+/// Hard-coded here on purpose: this test file is the DRIFT PIN. Deriving it
+/// from the same const the implementation reads would make the assertion a
+/// tautology — it would pass for whatever the implementation happened to say.
+const LENGTH_HINT: &str = "pass a dimensioned length such as `5mm`";
+
+/// (b) SIGNAL — the BARE-INT arm carries the hint too.
+///
+/// Not a duplicate of `linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch`:
+/// a bare `10` is a KIND mismatch (`Type::Int` where a dimensioned scalar is
+/// required) and a `10deg` is a DIMENSION mismatch between two dimensioned
+/// scalars. They travel different arms of `check_builtin_arg_types`
+/// (`Type::Scalar { .. }` vs the catch-all `other =>`), so pinning the hint on
+/// one says nothing about the other.
+#[test]
+fn linear_pattern_bare_int_spacing_message_carries_the_migration_hint() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare `10` spacing.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "linear_pattern: spacing argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`",
+        "the bare-Int arm must render the full C1 template, hint included"
+    );
+}
+
+/// (c) LAYER ATTRIBUTION (PRD decision D2) — a compile-layer LENGTH rejection
+/// carries `ArgTypeMismatch`, and explicitly NOT `DimensionedArgRejected`.
+///
+/// This is a REGRESSION PIN, not a RED test: it passes on the pre-η table and
+/// must keep passing. It exists because the task text for this leaf contains
+/// the ambiguous phrase "give it β's DiagnosticCode", which a future leaf could
+/// read literally. `DimensionedArgRejected`'s own minting rationale in
+/// `crates/reify-core/src/diagnostics.rs` forecloses that reading — it records
+/// that `ArgTypeMismatch` "was the closer candidate and was considered
+/// seriously", and was kept SEPARATE because "PRD leaf eta will emit
+/// `ArgTypeMismatch` at the compile layer for these very same argument
+/// positions, so sharing one code would make 'which layer rejected this?'
+/// unanswerable from the code alone".
+///
+/// Both PRD 3 (ANGLE) and task 5662 land on this same table, so the pin is what
+/// keeps the two layers independently observable as they do.
+#[test]
+fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "the compile layer must keep its own code"
+    );
+
+    let eval_layer_coded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DimensionedArgRejected))
+        .collect();
+    assert!(
+        eval_layer_coded.is_empty(),
+        "DimensionedArgRejected is the EVAL layer's code (task 5743). The compile \
+         layer must not borrow it, or 'which layer rejected this?' stops being \
+         answerable from the code alone (PRD decision D2). Got: {eval_layer_coded:#?}"
+    );
+}
+
+/// (d) NEGATIVE CONTROL — an ANGLE slot's message carries NO hint.
+///
+/// The compile layer MIRRORS the eval layer exactly: `angle_spec` has no
+/// migration hint either, so neither does this. Pinning it stops a future
+/// reader mistaking the ANGLE gap for an oversight in this task — PRD 3 owns
+/// closing both halves together, by binding seam decree.
+#[test]
+fn angle_slot_rejection_carries_no_migration_hint() {
+    let compiled = compile_struct_body(
+        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare `5` tol.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message, "faces_by_normal: tol argument expects Angle, got Int",
+        "an ANGLE slot must render the un-hinted template — eval's angle path has \
+         no hint either, and PRD 3 owns closing both halves together"
+    );
+    assert!(
+        !errors[0].message.contains("pass a dimensioned"),
+        "no migration hint may leak onto an ANGLE slot: {}",
+        errors[0].message
+    );
+}
+
+/// (e) ANTI-UNIFICATION GUARD — the builtin-slot LENGTH hint and the
+/// struct-ctor/fn-param LENGTH hint are DELIBERATELY not byte-identical.
+///
+/// `reify-compiler` already hosts a SECOND, unrelated migration-hint generator:
+/// `conformance::dimensioned_scalar_migration_hint` (task 5627, decisions
+/// D4-6), used for DIMENSIONED ctor / param slots. It is COMPUTED from the
+/// dimension via `canonical_name()` + `example_unit_literal()`, so for LENGTH it
+/// renders "pass a dimensioned **Length literal** such as `1m`" — capital L, the
+/// word "literal", and `1m` rather than `5mm`.
+///
+/// The two must NOT be unified, in either direction:
+/// * this builtin path must reproduce the EVAL-layer C1 text verbatim (D9), so
+///   the compile and eval diagnostics for one authoring mistake read the same;
+/// * rewording the ctor path to match would silently change already-shipped
+///   diagnostics that `struct_ctor_field_conformance_tests.rs` guards via
+///   `HINT_CLAUSE_PREFIX` / `HINT_EXAMPLE_INTRO`, and whose derived-from-the-
+///   registry shape is what makes that family drift-proof.
+///
+/// Without this pin a future reader "helpfully" collapsing the two would break
+/// one contract or the other, and no existing test would say so.
+#[test]
+fn builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different() {
+    let builtin = {
+        let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+        let errors = arg_type_mismatch_errors(&compiled);
+        assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
+        errors[0].message.clone()
+    };
+
+    let ctor = {
+        let compiled = compile_source_with_stdlib(
+            "module test.eta_hint_divergence\n\
+             structure def W { param p : Scalar<Length> }\n\
+             structure def Root { let a = W(p: 5) }\n",
+        );
+        // No severity filter here, unlike the builtin half: the ctor-conformance
+        // walker emits this family at `Severity::Warning` (task 5465's value-floor
+        // gradualism), whereas `check_builtin_arg_types` emits `Severity::Error`.
+        // That difference is orthogonal to the hint WORDING this test is about, so
+        // filtering on Error would make the test fail for an unrelated reason.
+        let rejections: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            1,
+            "expected exactly 1 ctor-conformance ArgTypeMismatch.\n\
+             All diagnostics: {:#?}",
+            compiled.diagnostics
+        );
+        rejections[0].message.clone()
+    };
+
+    assert!(
+        builtin.contains(LENGTH_HINT),
+        "the builtin slot must carry the EVAL-layer C1 hint verbatim ({LENGTH_HINT:?}); \
+         got: {builtin:?}"
+    );
+    assert!(
+        ctor.contains("pass a dimensioned Length literal such as `1m`"),
+        "the ctor-conformance path must keep its own COMPUTED hint shape \
+         (`dimensioned_scalar_migration_hint`); got: {ctor:?}"
+    );
+    assert!(
+        !ctor.contains(LENGTH_HINT),
+        "the ctor-conformance hint must NOT have been rewritten to the builtin \
+         wording — that would silently reword already-shipped diagnostics that \
+         struct_ctor_field_conformance_tests.rs guards. builtin: {builtin:?}; \
+         ctor: {ctor:?}"
     );
 }
