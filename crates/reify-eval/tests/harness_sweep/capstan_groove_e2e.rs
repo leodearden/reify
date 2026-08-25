@@ -107,11 +107,17 @@
 //! `helix_sweep_e2e`, whose `helix()` spine this design consumes.
 //!
 //! No other gate compiles anything under `prj/`, so this module is currently
-//! also the only regression guard on `dev_capstan.ri` as a whole.
+//! also the only regression guard on `dev_capstan.ri` as a whole. That is why
+//! its two FILE-WIDE claims — evaluation Error-freedom (`check_dev_capstan`,
+//! against an enumerated `volume()` exception list) and "constraints ran and
+//! none is violated" (`capstan_design_file_checks_clean_without_a_kernel`) —
+//! are stated on the kernel-free surface: behind the OCCT gate they would cover
+//! the file only on machines that happen to have a kernel.
 
-use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, ValueCellId};
 use reify_eval::{CheckResult, TessellateResult};
 use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value, ValueMap};
+use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
@@ -280,8 +286,32 @@ fn dev_capstan_checked() -> &'static CheckResult {
     R.get_or_init(check_dev_capstan)
 }
 
+/// The design file's compiled module, computed once per test binary — the
+/// single compilation EVERY other fixture and test in this module reads.
+///
+/// Memoized for correctness first and cost second. Two gates read the compiled
+/// module and the check surface *together*:
+/// `capstan_drive_constrains_the_shuttle_to_cover_the_band` counts
+/// `drive_template.constraints` against `result.constraint_results`, and
+/// [`check_dev_capstan`] maps diagnostic label spans back through
+/// `templates[].value_cells`. Both comparisons are only meaningful if the two
+/// sides came from the SAME compilation; reaching [`compile_dev_capstan`]
+/// twice would make them agree only by assuming the compiler is deterministic
+/// — an assumption neither gate states, and one that a future span-numbering
+/// or template-ordering change could quietly break. One `OnceLock` makes it a
+/// fact instead of an assumption.
+///
+/// The cost side is the ordinary saving: the file is read, parsed and
+/// stdlib-compiled once rather than once per caller, and the parse/compile
+/// Error-freedom assertions inside [`compile_dev_capstan`] run once.
+fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule {
+    static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
+    M.get_or_init(compile_dev_capstan)
+}
+
 /// Load, parse and compile `prj/printer_v01/dev_capstan.ri`, asserting both
-/// stages are Error-diagnostic-free. Shared by the two fixtures.
+/// stages are Error-diagnostic-free. Use [`dev_capstan_compiled`] rather than
+/// calling this directly — every caller must share one compilation.
 fn compile_dev_capstan() -> reify_compiler::CompiledModule {
     let source = std::fs::read_to_string(DEV_CAPSTAN)
         .unwrap_or_else(|e| panic!("failed to read design file {DEV_CAPSTAN}: {e}"));
@@ -315,15 +345,22 @@ fn compile_dev_capstan() -> reify_compiler::CompiledModule {
 /// surface raises by construction — see [`check_dev_capstan`].
 const VOLUME_UNRESOLVED_PREFIX: &str = "`volume` could not be resolved";
 
-/// How many of those the design file must produce: exactly one per
-/// `volume()`-consuming cell, i.e. `blank_volume` and `body_volume`
-/// (prj/printer_v01/dev_capstan.ri).
+/// Which cells the design file must produce those for, as `<entity>.<cell>`
+/// identities — one per `volume()`-consuming cell of
+/// `prj/printer_v01/dev_capstan.ri`.
+///
+/// Identities rather than a count. A bare `len() == 2` pin is satisfied by any
+/// TWO `volume()` cells, so an edit that drops `blank_volume` and adds an
+/// unrelated `volume()` cell elsewhere keeps the fixture green while its
+/// failure message goes on naming the two cells above — the fixture would be
+/// asserting a number and claiming an identity. Comparing the recovered set
+/// pins both at once: the length agreement is implied by the equality.
 ///
 /// Pinned rather than left open-ended so the exception stays an *enumerated*
-/// one. If a later edit legitimately adds a third `volume()` cell, bump this
-/// with it — a count that drifts on its own would put the exception back to
-/// being a blanket ignore.
-const EXPECTED_VOLUME_UNRESOLVED: usize = 2;
+/// one. If a later edit legitimately adds, renames or moves a `volume()` cell,
+/// this list moves with it — a set that drifted on its own would put the
+/// exception back to being a blanket ignore.
+const VOLUME_UNRESOLVED_CELLS: [&str; 2] = ["Capstan.blank_volume", "Capstan.body_volume"];
 
 /// Evaluate and constraint-check the design file with no kernel. Use
 /// [`dev_capstan_checked`] rather than calling this directly.
@@ -332,9 +369,9 @@ const EXPECTED_VOLUME_UNRESOLVED: usize = 2;
 /// a *known-exception* list rather than the empty set: the file's
 /// `blank_volume` / `body_volume` cells call `volume()`, a geometry-consumer
 /// builtin only resolvable on the build()/tessellate() path, so this surface
-/// reports exactly [`EXPECTED_VOLUME_UNRESOLVED`] `EvalUnresolved` errors
-/// naming `volume` by construction. Those are the OCCT fixture's business.
-/// Every other Error is a real evaluation regression and fails here.
+/// reports one `EvalUnresolved` error naming `volume` per cell in
+/// [`VOLUME_UNRESOLVED_CELLS`] by construction. Those are the OCCT fixture's
+/// business. Every other Error is a real evaluation regression and fails here.
 ///
 /// Enumerating them rather than dropping all diagnostics is what keeps the
 /// OCCT-less path — the one this fixture exists to serve — covered at all. The
@@ -343,14 +380,15 @@ const EXPECTED_VOLUME_UNRESOLVED: usize = 2;
 /// a later `Fairlead` cell) could stop evaluating and nothing would observe it:
 /// the Error-freedom assertion would live solely in the OCCT-gated
 /// [`tessellate_dev_capstan`], and this module is the only regression guard on
-/// `dev_capstan.ri` as a whole.
+/// `dev_capstan.ri` as a whole. `capstan_design_file_checks_clean_without_a_kernel`
+/// closes the same gap on the CONSTRAINT half of that surface.
 fn check_dev_capstan() -> CheckResult {
-    let compiled = compile_dev_capstan();
+    let compiled = dev_capstan_compiled();
     let mut engine = reify_eval::Engine::new(
         Box::new(reify_constraints::SimpleConstraintChecker),
         None,
     );
-    let result = engine.check(&compiled);
+    let result = engine.check(compiled);
 
     {
         let (volume_errors, unexpected): (Vec<_>, Vec<_>) = result
@@ -370,17 +408,47 @@ fn check_dev_capstan() -> CheckResult {
              so this is the only place such a regression is caught when OCCT is \
              absent: {unexpected:#?}"
         );
+        // WHICH cells raised them, not merely how many. The emission names only
+        // the builtin in its message and carries the offending cell's `span` as
+        // its label (`crates/reify-eval/src/engine_eval.rs`), so the identity is
+        // recovered by mapping that span back through the compiled module's value
+        // cells — the same compilation `result` came from, which is what
+        // [`dev_capstan_compiled`] guarantees.
+        let cell_by_span: HashMap<SourceSpan, &ValueCellId> = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.value_cells.iter())
+            .map(|cell| (cell.span, &cell.id))
+            .collect();
+        let mut got: Vec<String> = volume_errors
+            .iter()
+            .map(|d| match d.labels.first() {
+                Some(label) => match cell_by_span.get(&label.span) {
+                    Some(id) => format!("{}.{}", id.entity, id.member),
+                    // Not reachable through the emission site above, which labels
+                    // the cell it iterates; report it rather than silently
+                    // dropping the diagnostic out of the comparison.
+                    None => format!("<no value cell at span {:?}>", label.span),
+                },
+                None => "<unlabelled diagnostic>".to_string(),
+            })
+            .collect();
+        got.sort();
+        let mut want: Vec<String> = VOLUME_UNRESOLVED_CELLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        want.sort();
         assert_eq!(
-            volume_errors.len(),
-            EXPECTED_VOLUME_UNRESOLVED,
-            "{DEV_CAPSTAN} must raise exactly {EXPECTED_VOLUME_UNRESOLVED} \
-             `{VOLUME_UNRESOLVED_PREFIX}` errors on the kernel-free surface — one \
-             per `volume()`-consuming cell (`blank_volume`, `body_volume`). Got \
-             {}: fewer means a volume cell was dropped (the OCCT fixture's \
-             stock-removal gate would be gating less than it reads), more means one \
-             was added and `EXPECTED_VOLUME_UNRESOLVED` needs bumping with it: \
-             {volume_errors:#?}",
-            volume_errors.len()
+            got, want,
+            "the `{VOLUME_UNRESOLVED_PREFIX}` errors {DEV_CAPSTAN} raises on the \
+             kernel-free surface must be exactly one per cell in \
+             `VOLUME_UNRESOLVED_CELLS`. A MISSING entry means that cell was dropped \
+             or renamed — the OCCT fixture's stock-removal gate would then be gating \
+             less than it reads. An EXTRA entry means a `volume()` cell was added and \
+             the list needs moving with it. A SWAP (one dropped, one added) is the \
+             case a bare count could not see at all. Raw diagnostics: \
+             {volume_errors:#?}"
         );
     }
 
@@ -391,7 +459,7 @@ fn check_dev_capstan() -> CheckResult {
 /// real OCCT kernel, asserting the pipeline is Error-diagnostic-free at every
 /// stage. Use [`dev_capstan`] rather than calling this directly.
 fn tessellate_dev_capstan() -> TessellateResult {
-    let compiled = compile_dev_capstan();
+    let compiled = dev_capstan_compiled();
 
     // ---- Tessellate with a real OCCT kernel via SingleKernelHolder ----
     let mut planner = reify_geometry::SingleKernelHolder::new();
@@ -401,7 +469,7 @@ fn tessellate_dev_capstan() -> TessellateResult {
         Some(Box::new(planner)),
     );
 
-    let result = engine.tessellate_realizations(&compiled);
+    let result = engine.tessellate_realizations(compiled);
     let geom_errors: Vec<_> = result
         .diagnostics
         .iter()
@@ -1230,7 +1298,11 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
     // other `CapstanDrive`-scoped constraint. The template still holds the
     // expression, and `sub_cell_reads` recovers the `<sub>.<cell>` datums out of
     // it.
-    let compiled = compile_dev_capstan();
+    // The SAME compilation `dev_capstan_checked()` above was produced from
+    // ([`dev_capstan_compiled`]), so claim (2)'s count of declared constraints and
+    // its count of reported results are two views of one module rather than two
+    // compilations assumed to agree.
+    let compiled = dev_capstan_compiled();
     let drive_template = compiled
         .templates
         .iter()
@@ -1317,5 +1389,82 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
          present but checking nothing. Results: {unsatisfied:#?}",
         unsatisfied.len(),
         drive_constraints.len()
+    );
+}
+
+// ── …and the whole file still checks clean with no kernel at all ─────────────
+
+/// The file-wide statement plain `reify check` makes — constraints were checked,
+/// and none of them is `Violated` — asserted on the KERNEL-FREE surface.
+///
+/// Half of this is a DECOUPLING and half is NEW coverage, and the two are worth
+/// keeping apart:
+///
+///   * `Violated`-emptiness is, today, already implied by [`check_dev_capstan`]'s
+///     Error-freedom assertion, so this half adds no reach on its own.
+///     `SimpleConstraintChecker` co-emits a `DiagnosticCode::ConstraintViolated`
+///     `Diagnostic::error` alongside every `Satisfaction::Violated` result
+///     (`crates/reify-constraints/src/lib.rs`), so a violated `Fairlead` /
+///     `IdlerPulley` / `ShuttlePlate` constraint trips the fixture before
+///     execution ever reaches here — confirmed by dropping
+///     `IdlerPulley.sheave_od` below its `brg_od` bound, which panics in
+///     `check_dev_capstan`, not in this test. What this adds is that the
+///     file-wide constraint claim no longer RIDES on that co-emission: it reads
+///     `constraint_results` directly, so a checker that downgraded the
+///     diagnostic to a warning, or dropped it in favour of the typed result,
+///     could not silently take the gate down with it. This module neither owns
+///     that severity choice nor pins it anywhere else.
+///   * Non-emptiness is the half that is genuinely uncovered otherwise. An empty
+///     `constraint_results` emits NO diagnostic, so the fixture cannot see it,
+///     and every other kernel-free gate here quantifies over a subset: claim (2)
+///     of `capstan_drive_constrains_the_shuttle_to_cover_the_band` counts only
+///     `CapstanDrive` results, and
+///     `capstan_active_band_is_covered_by_the_fairlead_stroke` reads value cells
+///     rather than constraints. `capstan_surfaces_only_the_finished_drum` does
+///     make the file-wide non-emptiness statement — but it is OCCT-gated and
+///     returns early wherever the kernel is absent, and this module is the only
+///     regression guard on `dev_capstan.ri` as a whole. Without this test, a
+///     check surface that stopped producing results for every entity but
+///     `CapstanDrive` reads green on a kernel-free machine.
+///
+/// Deliberately the WEAK claim (`Violated`-emptiness) and deliberately
+/// file-wide, mirroring the scoping that OCCT-gated copy uses. A constraint
+/// reading one of the `volume()` cells would only be decidable with a kernel and
+/// would read `Indeterminate` here, so an all-`Satisfied` pin at file scope would
+/// fail on a legitimate edit rather than on a regression. The strict
+/// anything-but-`Satisfied` claims stay scoped to the entities whose constraint
+/// inputs are all defined on this surface: `Capstan` in
+/// `capstan_surfaces_only_the_finished_drum`, `CapstanDrive` in
+/// `capstan_drive_constrains_the_shuttle_to_cover_the_band` — which is where
+/// `Indeterminate` is caught, and why that test spells its claim positively.
+///
+/// The non-emptiness guard is not ceremony: a `Violated` filter over an empty
+/// `constraint_results` is vacuously green, the same trap
+/// `capstan_surfaces_only_the_finished_drum` guards against for the same reason.
+#[test]
+fn capstan_design_file_checks_clean_without_a_kernel() {
+    let result = dev_capstan_checked();
+
+    assert!(
+        !result.constraint_results.is_empty(),
+        "no constraints were checked at all on the kernel-free surface of \
+         {DEV_CAPSTAN} — every structure in the file declares some, so an empty \
+         result means the check never ran and the `Violated` filter below would \
+         pass vacuously"
+    );
+
+    let violated: Vec<_> = result
+        .constraint_results
+        .iter()
+        .filter(|c| c.satisfaction == Satisfaction::Violated)
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "{DEV_CAPSTAN} must satisfy every constraint at its defaults — read off \
+         `constraint_results` directly, so this holds however the checker chooses \
+         to report a violation as a diagnostic. Reaching HERE rather than \
+         `check_dev_capstan` means the violation raised no Error diagnostic, which \
+         is itself worth reading as a change in `SimpleConstraintChecker`'s \
+         reporting. Violated: {violated:#?}"
     );
 }
