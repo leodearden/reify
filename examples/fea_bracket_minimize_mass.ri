@@ -37,28 +37,28 @@
 // ── Sizing basis (closed-form, so the numbers are auditable) ─────────────────
 //
 // Geometry is a prismatic plate: coordinates run [0, length] x [0, width] x
-// [0, thickness], clamped at the root (x_min) face, with a uniform pressure `p`
-// pushing down on the `z_max` (top) face. That is a cantilever under a uniformly
-// distributed load, so Euler-Bernoulli gives the peak fibre stress at the root:
+// [0, thickness], clamped at the root (x_min) face, carrying a point load `P`
+// down the -Z axis at the free end. That is an end-loaded cantilever, so
+// Euler-Bernoulli gives the peak fibre stress at the root:
 //
-//     w      = p * width                     (load per unit length)
-//     M_max  = w * length^2 / 2              (root bending moment)
+//     M_max  = P * length                    (root bending moment)
 //     S      = width * thickness^2 / 6       (section modulus)
-//     sigma  = M_max / S = 3 * p * length^2 / thickness^2
+//     sigma  = M_max / S = 6 * P * length / (width * thickness^2)
 //
 // Inverting at sigma = yield gives the thickness the design loop should find:
 //
-//     thickness* = length * sqrt(3 * p / yield)
-//                = 0.05 m * sqrt(3 * 1.0e6 Pa / 310e6 Pa)
-//                = 0.05 * 0.0984 = 4.9 mm
+//     thickness* = sqrt(6 * P * length / (width * yield))
+//                = sqrt(6 * 750 N * 0.05 m / (0.03 m * 310e6 Pa))
+//                = sqrt(2.419e-5) = 4.9 mm
 //
-// `p = 1 MPa` is chosen to place that crossing at ~4.9 mm: two orders of
+// `P = 750 N` is chosen to place that crossing at ~4.9 mm: two orders of
 // magnitude above the 1 micron lower bound and three below the 10 m upper bound
 // of the default `Length` auto-param range, and a clear factor of ~2 away from
 // the solver's ~10 mm default seed, so a converged value cannot be confused with
 // an unmoved starting point. The seed itself is comfortably feasible
-// (sigma(10 mm) = 3 * 1e6 * 0.05^2 / 0.01^2 = 75 MPa, a 4.1x margin under the
-// 310 MPa yield), which lets the solver take its `initially_feasible` fast path.
+// (sigma(10 mm) = 6 * 750 * 0.05 / (0.03 * 1e-4) = 75 MPa, a 4.1x margin under
+// the 310 MPa yield), which lets the solver take its `initially_feasible` fast
+// path.
 //
 // The 50 mm x 30 mm footprint matches the FEA-in-the-loop producer fixture
 // (`fea_in_the_loop_producer.rs`), keeping the per-candidate mesh cost known.
@@ -66,6 +66,9 @@
 // Beam theory is the SIZING BASIS, not an assertion: the FEA solve on a coarse
 // tet mesh of a plate this stubby will not reproduce it exactly, and it is not
 // expected to. Its job is to put the stress/yield crossing in a sane place.
+// MEASURED: the loop converges at 4.52 mm, 8% below the 4.9 mm estimate — close
+// enough to confirm the constraint binds at the stress/yield crossing rather
+// than anywhere incidental, and NOT a threshold anything asserts against.
 
 structure FeaBracketMinimizeMass {
     // ── Geometry ─────────────────────────────────────────────────────────────
@@ -85,21 +88,39 @@ structure FeaBracketMinimizeMass {
 
     let material = Steel_AISI_1045()
 
-    // Geometry realization is deferred: this costs no kernel call at eval time,
-    // which is what makes `face(body, ...)` below cheap to evaluate on every
-    // one of the optimiser's trial thicknesses.
+    // Geometry realization is deferred — no kernel call at eval time.
     let body = box(length, width, thickness)
 
     // ── Loads and supports ───────────────────────────────────────────────────
     //
-    // 1 MPa pushing down on the top face. `face(body, "z_max")` names one of the
-    // six axis-aligned box faces the pressure path resolves
-    // (x_min/x_max/y_min/y_max/z_min/z_max, `box_face_plane` in
-    // elastic_static.rs); a descriptive name like "top" or "mount" resolves to
-    // nothing and the load is DROPPED with only a log warning — which would
-    // leave the stress constraint vacuous and this whole example a no-op.
-    // `direction: "normal"` means the traction follows the inward face normal.
-    let pressure = PressureLoad(magnitude: 1.0e6, face: face(body, "z_max"), direction: "normal")
+    // A 750 N service load at the free end, bending the bracket about its weak
+    // axis. `PointLoad.direction` defaults to vec3(0, 0, -1) — straight down the
+    // -Z axis, i.e. across the thickness — which is the canonical bending case
+    // and the one the sizing basis above assumes.
+    //
+    // WHY A POINT LOAD AND NOT A `PressureLoad` ON A NAMED FACE: a distributed
+    // pressure would be the nicer physical demo, but neither spelling of its
+    // `face` field survives an auto param today, and both fail SILENTLY.
+    // Measured on this very file:
+    //
+    //   - `face: face(body, "z_max")` (the modern typed-selector form) evaluates
+    //     the `pressure` cell to `{ "magnitude": Real(1000000.0), "face": Undef }`
+    //     — the hoisted selector mints `Value::Undef` instead of a
+    //     `Selector(Leaf { query: Named("z_max") })`, so `parse_pressure_spec`
+    //     reads no face name and DROPS the load. The design loop then runs
+    //     unopposed and thickness collapses to 2.88e-6 m, its lower bound. The
+    //     control is decisive: the identical spelling in
+    //     `examples/fea_pressure_smoke.ri`, whose box dims are all concrete,
+    //     mints a real selector. The difference is the unresolved `auto`
+    //     thickness feeding `box(...)`.
+    //   - `face: "z_max"` (the legacy String arm) DOES apply the load and does
+    //     converge — but `PressureLoad.face` is typed `Option<FaceSelector>`, so
+    //     it trips the ctor-field-conformance corpus gate as a true positive.
+    //
+    // Filed as follow-up ticket tkt_0RSVYHGPGEYD2QV9MTGTXPQ86S. Until it lands,
+    // `PointLoad.point` is a plain `String` by declaration — no selector to mint
+    // and no conformance debt — which keeps this example honest end-to-end.
+    let tip_load = PointLoad(point: "tip", force: 750.0)
 
     // "root" is the face name the synthetic cantilever clamp honours
     // (`SYNTHETIC_CLAMP_FACE`, elastic_static.rs) — the x_min end.
@@ -164,7 +185,7 @@ structure FeaBracketMinimizeMass {
     // passed explicitly because fn-param defaults for same-module struct
     // constructors are not supported.
     constraint solve_elastic_static(
-        material, length, width, thickness, [pressure], [mount],
+        material, length, width, thickness, [tip_load], [mount],
         ElasticOptions(shell_force: ShellForce.Off)
     ).max_von_mises < yield_limit
 
