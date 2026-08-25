@@ -4047,28 +4047,54 @@ impl<'a> Lowering<'a> {
             let op_start = left_node.end_byte();
             let op_end = right_node.start_byte();
             let op_text = self.source.get(op_start..op_end)?;
-            // Comments are `extras`, so one written between the operands lands
-            // INSIDE that slice, as a named child of THIS node — measured on a
-            // clean parse (`has_error() == false`):
+            // Classify the RAW slice FIRST, and stop there when it already reads
+            // as an operator.  That is the overwhelmingly common case — unit
+            // atoms are contiguous, so the slice is normally just `*`, `·` or `/`
+            // — and this function runs on every compound quantity literal of
+            // every parse, including each keystroke of a GUI reparse.  The
+            // comment sweep below costs a `TreeCursor` plus a `Vec` per node, so
+            // it must not be paid on that path.
+            //
+            // Behaviour-preserving, not an approximation: excision can only ever
+            // SHRINK the slice, and a slice whose trimmed form is exactly `*`,
+            // `·` or `/` cannot contain a comment at all — every comment opens
+            // with `/` and is at least two bytes, so its presence would leave the
+            // trimmed slice strictly longer than the operator alone.  Hence the
+            // raw `Mul`/`Div` answer is the same answer the residue would give.
+            //
+            // Everything else falls through to the sweep.  Comments are `extras`,
+            // so one written between the operands lands INSIDE the slice, as a
+            // named child of THIS node — measured on a clean parse
+            // (`has_error() == false`):
             //
             //   5N/*c*/*m   →   unit_expr(left, block_comment, right)
             //
             // No parens needed, and the `·` spelling behaves identically.  Cut
-            // the comment spans out before classifying, so a comment-bearing
+            // the comment spans out before re-classifying, so a comment-bearing
             // `Mul`/`Div` lowers to `Mul`/`Div`: the lowered tree must agree with
             // what the grammar ACCEPTED, and rejecting a clean parse would trade
             // one INV-SF-7 violation (wrong value) for a spurious error on valid
             // source.  Children come back in source order, so the spans are
             // already ascending and non-overlapping.
-            let mut comment_cursor = node.walk();
-            let comment_spans: Vec<(usize, usize)> = node
-                .named_children(&mut comment_cursor)
-                .filter(|child| matches!(child.kind(), "line_comment" | "block_comment"))
-                .map(|child| (child.start_byte(), child.end_byte()))
-                .filter(|&(start, end)| start >= op_start && end <= op_end)
-                .collect();
-            let op_residue = strip_unit_op_comments(op_text, op_start, &comment_spans);
-            return match classify_unit_op(&op_residue) {
+            //
+            // `op_residue` is bound in THIS scope, not inside the `else`, so the
+            // `Unrecognized(&str)` borrow into it outlives the match below.
+            let op_residue: Cow<'_, str>;
+            let raw_op = classify_unit_op(op_text);
+            let op = if matches!(raw_op, UnitOp::Mul | UnitOp::Div) {
+                raw_op
+            } else {
+                let mut comment_cursor = node.walk();
+                let comment_spans: Vec<(usize, usize)> = node
+                    .named_children(&mut comment_cursor)
+                    .filter(|child| matches!(child.kind(), "line_comment" | "block_comment"))
+                    .map(|child| (child.start_byte(), child.end_byte()))
+                    .filter(|&(start, end)| start >= op_start && end <= op_end)
+                    .collect();
+                op_residue = strip_unit_op_comments(op_text, op_start, &comment_spans);
+                classify_unit_op(&op_residue)
+            };
+            return match op {
                 UnitOp::Mul => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
                 UnitOp::Div => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
                 // Silent BY DESIGN, and not the INV-SF-7 shape: error recovery
@@ -4682,11 +4708,13 @@ enum UnitOp<'a> {
 
 /// Classify the operator slice between a `unit_expr`'s two operands.
 ///
-/// The caller passes the residue left by [`strip_unit_op_comments`], so the
-/// trimmed input is exactly `*`, `·` or `/` for every parse the grammar accepts
-/// — unit atoms are contiguous and the only other `extras` are whitespace and a
-/// never-emitted sentinel.  The match is nonetheless TOTAL; see [`UnitOp`] for
-/// why the leftover arms stay.
+/// The caller classifies the RAW slice first and, only if that does not already
+/// read as `Mul`/`Div`, re-classifies the residue left by
+/// [`strip_unit_op_comments`].  Either way the trimmed input it finally acts on
+/// is exactly `*`, `·` or `/` for every parse the grammar accepts — unit atoms
+/// are contiguous and the only other `extras` are whitespace and a never-emitted
+/// sentinel.  The match is nonetheless TOTAL; see [`UnitOp`] for why the leftover
+/// arms stay.
 ///
 /// Matched EXACTLY rather than by `contains`, and every arm is total, because the
 /// caller cannot afford an unhandled operator: a bare `None` out of
@@ -4738,8 +4766,10 @@ fn classify_unit_op(op_text: &str) -> UnitOp<'_> {
 /// raw text: a surprising CST then degrades to the loud `Unrecognized`
 /// diagnostic rather than to a panic or a silently wrong operator.
 ///
-/// Borrows in the common (comment-free) case — only source that actually puts a
-/// comment inside a unit expression pays an allocation.
+/// Borrows rather than allocating when `cuts` is empty.  The caller goes further
+/// and does not call this at all unless the raw slice failed to classify, so a
+/// comment-free unit expression pays neither this nor the `TreeCursor` + `Vec`
+/// needed to find the cuts.
 fn strip_unit_op_comments<'a>(
     slice: &'a str,
     slice_start: usize,
