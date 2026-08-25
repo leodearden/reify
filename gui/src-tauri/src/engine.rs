@@ -2200,9 +2200,7 @@ impl EngineSession {
         cell_id_str: &str,
         value: &Value,
     ) -> Result<GuiState, String> {
-        let span = self
-            .resolve_param_default_span(cell_id_str)
-            .ok_or_else(|| format!("no rewritable default literal for '{cell_id_str}'"))?;
+        let span = self.resolve_rewritable_default_span(cell_id_str)?;
         let (_, source) = self
             .resolve_source()
             .ok_or_else(|| "no module loaded".to_string())?;
@@ -2237,6 +2235,75 @@ impl EngineSession {
             .map_err(|e| format!("Error writing {}: {e}", path.display()))?;
 
         Ok(state)
+    }
+
+    /// Resolve the byte range [`Self::apply_param_to_source`] may splice over,
+    /// or a DISCRIMINATED rejection saying which of the four preconditions
+    /// failed (PRD §7 B7 — δ, the MCP `set_parameter` tool, is the consumer
+    /// that maps these categories into its tool result).
+    ///
+    /// α's [`Self::resolve_param_default_span`] collapses all four into one
+    /// `Option::None`, which is the right shape for a *resolver* and the wrong
+    /// shape for an *entry point*: "you named an entity that does not exist"
+    /// and "that param's default is a formula I refuse to overwrite" call for
+    /// opposite responses from the caller. The categories, in the order they
+    /// are checked:
+    ///
+    /// 1. **Malformed cell id** — no `.` at all, so it never denoted a cell.
+    ///    Propagated verbatim from `parse_cell_id`.
+    /// 2. **Unknown parameter** — the cell id is well-formed but names no cell
+    ///    in `compiled.templates[].value_cells`. This is the SAME existence
+    ///    check [`Self::set_parameter`] makes, deliberately: the two entry
+    ///    points must agree about what a cell id denotes, or the slider and
+    ///    the write-back would disagree about which params exist.
+    /// 3. **No default expression** — a real, editable cell whose param has
+    ///    nothing to rewrite. This bucket also absorbs the AST-walk refusals α
+    ///    documents (a name declared in more than one guarded branch; a param
+    ///    reachable only through a port body or an instance path), which is
+    ///    why the message hedges rather than asserting "declared without a
+    ///    default".
+    /// 4. **Non-literal default** — the gate this whole method exists for. See
+    ///    [`Self::apply_param_to_source`] for why a `BinOp`/`Auto`/call/ident
+    ///    default is REFUSED rather than spliced over.
+    ///
+    /// Every arm returns before any of the four state surfaces is touched.
+    fn resolve_rewritable_default_span(
+        &self,
+        cell_id_str: &str,
+    ) -> Result<reify_core::SourceSpan, String> {
+        let cell_id = parse_cell_id(cell_id_str)?;
+
+        let compiled = self
+            .core
+            .compiled()
+            .ok_or_else(|| "No module loaded".to_string())?;
+        let cell_exists = compiled
+            .templates
+            .iter()
+            .any(|t| t.value_cells.iter().any(|vc| vc.id == cell_id));
+        if !cell_exists {
+            return Err(format!("Unknown parameter '{cell_id_str}'"));
+        }
+
+        let default = self.resolve_param_default_expr(cell_id_str).ok_or_else(|| {
+            format!(
+                "parameter '{cell_id_str}' has no default expression to rewrite in source \
+                 (it may be declared without a default, declared in more than one guarded \
+                 branch, or not addressable by its bare name)"
+            )
+        })?;
+
+        match &default.kind {
+            reify_ast::ExprKind::NumberLiteral { .. }
+            | reify_ast::ExprKind::QuantityLiteral { .. }
+            | reify_ast::ExprKind::StringLiteral(_)
+            | reify_ast::ExprKind::BoolLiteral(_) => Ok(default.span),
+            other => Err(format!(
+                "cannot write '{cell_id_str}' back to source: its default is not a literal \
+                 ({}), so the existing expression is preserved rather than overwritten",
+                expr_kind_name(other)
+            )),
+        }
     }
 
     /// Task #5338: drop the geometry-derived value retention for one ENTITY —
@@ -4185,6 +4252,25 @@ impl EngineSession {
     /// a `load_from_compiled`-injected session. Plain `as_ref()?` is the correct
     /// degradation.
     pub fn resolve_param_default_span(&self, cell_id_str: &str) -> Option<reify_core::SourceSpan> {
+        self.resolve_param_default_expr(cell_id_str).map(|e| e.span)
+    }
+
+    /// Resolve the default EXPRESSION a `cell_id` names — the `&Expr`-returning
+    /// primitive [`Self::resolve_param_default_span`] is a thin
+    /// `.map(|e| e.span)` over.
+    ///
+    /// Every word of that method's contract applies here unchanged (the
+    /// entity-variant set, the instance-path and port-body exclusions, the
+    /// multiply-declared refusal, the `parsed_cache`-absent degradation); this
+    /// is the SAME walk, stopping one step earlier. Splitting it this way —
+    /// rather than re-deriving the expression from the span, or hand-rolling a
+    /// second member walk in this file — is what keeps the span a caller
+    /// splices and the expression it type-checks first from ever disagreeing.
+    ///
+    /// The caller that needs the expression rather than the span is
+    /// [`Self::apply_param_to_source`], whose literal-ness gate must refuse to
+    /// overwrite a `BinOp`, an `Auto`, a call or an identifier.
+    pub fn resolve_param_default_expr(&self, cell_id_str: &str) -> Option<&reify_ast::Expr> {
         // Reuse `parse_cell_id` — the SAME parse `set_parameter` uses — so this
         // resolver and the entry point that will consume it cannot disagree
         // about what a cell_id denotes.
@@ -4192,10 +4278,10 @@ impl EngineSession {
         let parsed = self.parsed_cache.as_ref()?;
         parsed.declarations.iter().find_map(|decl| match decl {
             reify_ast::Declaration::Structure(s) if s.name == cell.entity => {
-                reify_ast::find_param_default_span(&s.members, &cell.member)
+                reify_ast::find_param_default_expr(&s.members, &cell.member)
             }
             reify_ast::Declaration::Occurrence(o) if o.name == cell.entity => {
-                reify_ast::find_param_default_span(&o.members, &cell.member)
+                reify_ast::find_param_default_expr(&o.members, &cell.member)
             }
             _ => None,
         })
