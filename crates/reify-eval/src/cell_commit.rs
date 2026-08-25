@@ -31,8 +31,11 @@
 //!   `CacheStore::record_evaluation_with_freshness` (writing an explicit
 //!   caller-supplied freshness). The dominant let/param commit sites in
 //!   `engine_eval.rs` (`evaluate_params_and_lets_unified`,
-//!   `evaluate_let_bindings`) and the `eval_cached` preserve-freshness
-//!   re-serves are migrated onto these variants.
+//!   `evaluate_let_bindings`) and the `eval_cached` Param/Let
+//!   preserve-freshness re-serves are migrated onto these variants; the
+//!   latter two stamp [`TraceSource::CachedReserve`], distinct from the
+//!   cache-MISS arm's [`TraceSource::CachedServe`], so the journal alone
+//!   separates a re-serve from a miss.
 //! - **`CacheLeg::Skip`'s journal `Completed.outcome` is an unspecified
 //!   placeholder — OPEN**, not a meaningful `EvalOutcome` — see the doc comment at
 //!   the `Completed` event construction inside [`commit_cell_result`], and
@@ -48,20 +51,26 @@
 //!   or `Undetermined` — never `Auto` or `Provisional`. So a commit site that
 //!   must PRESERVE a stored `Auto` cannot be expressed through this
 //!   primitive at all, whichever [`CacheLeg`] it picks. That is what leaves
-//!   the `eval_cached` **Auto-cell pre-seed re-serve** (`engine_eval.rs`
-//!   ~@6461) unmigrated while its Param (~@6675) and Let (~@6884) siblings
-//!   are migrated: the Auto pre-seed writes `(Value::Undef, Auto)`, and
-//!   re-serving it through a `DeterminacyRule` would silently rewrite that
-//!   `Auto` to `Determined`/`Undetermined`. A future leaf closing this gap
-//!   needs a determinacy-PRESERVING `DeterminacyRule` variant (carry the
-//!   stored state through verbatim rather than resolving from the value);
+//!   `Engine::eval_cached`'s **Auto-cell pre-seed re-serve** (`engine_eval.rs`;
+//!   the `cell.kind.is_auto()` cache-reuse block) unmigrated while its Param
+//!   and Let cache-reuse re-serve siblings in the same function are migrated:
+//!   the Auto pre-seed writes `(Value::Undef, Auto)`, and re-serving it
+//!   through a `DeterminacyRule` would silently rewrite that `Auto` to
+//!   `Determined`/`Undetermined`. [`DeterminacyRule::preserving`] names
+//!   exactly this boundary — it returns `None` for `Auto`/`Provisional`, and
+//!   the two migrated re-serves degrade to a direct write on `None` rather
+//!   than assuming unreachability. A future leaf closing this gap needs a
+//!   determinacy-PRESERVING `DeterminacyRule` VARIANT (carry the stored state
+//!   through `resolve` verbatim rather than resolving from the value);
 //!   deliberately out of #5238's freshness scope, since adding it would
 //!   smuggle an untested determinacy change into a freshness task.
 //! - **Failure-path commit shape — OPEN (by design; discovered by task
 //!   #5238).** [`commit_cell_result`] always writes the values and snapshot
 //!   legs and always emits a `Started`/`Completed` pair. The four propagating
-//!   failure-path writes in `engine_eval.rs` (~@8321/@8389/@9311/@9390) have
-//!   the opposite shape: they journal `EventKind::Failed` (no pair), write
+//!   failure-path writes in `engine_eval.rs` — the compute-dispatch `Failed`
+//!   path and the panic-recovery path, one of each in
+//!   `Engine::evaluate_params_and_lets_unified`'s Let arm and in
+//!   `Engine::evaluate_let_bindings` — have the opposite shape: they journal `EventKind::Failed` (no pair), write
 //!   NEITHER the values nor the snapshot leg, and follow the cache write with
 //!   `mark_failed`. No freshness fidelity is lost by leaving them direct —
 //!   `mark_failed` immediately overwrites the just-propagated freshness with
@@ -116,6 +125,35 @@ impl DeterminacyRule {
             DeterminacyRule::Undetermined => DeterminacyState::Undetermined,
         }
     }
+
+    /// Selects the rule that REPRODUCES an already-stored `det` exactly, for a
+    /// commit site that must re-serve a cached `(value, determinacy)` pair
+    /// verbatim rather than derive a fresh determinacy from the value.
+    ///
+    /// Both returned rules resolve value-INDEPENDENTLY
+    /// ([`DeterminacyRule::UnconditionalDetermined`] always yields
+    /// `Determined`, [`DeterminacyRule::Undetermined`] always yields
+    /// `Undetermined`), so `preserving(det).unwrap().resolve(v) == det` for
+    /// every `v`. That exactness is load-bearing at the `eval_cached`
+    /// preserve-freshness re-serves: reproducing the stored pair byte-for-byte
+    /// keeps `CacheStore::record_evaluation_with_freshness` on its
+    /// content-hash EARLY-CUTOFF branch, which is the only branch that
+    /// preserves the entry's `pending_cause` and `diagnostics` (the Changed
+    /// branch resets both) — see `cache.rs`.
+    ///
+    /// Returns `None` for `Auto` and `Provisional`: no [`DeterminacyRule`]
+    /// yields either, so those states are NOT expressible through
+    /// [`commit_cell_result`] at all. This is the single site naming that
+    /// caveat — see the "Determinacy dimension — OPEN" bullet in this module's
+    /// doc. Callers must degrade gracefully on `None` (write the stored state
+    /// through directly), never assume unreachability.
+    pub fn preserving(det: DeterminacyState) -> Option<Self> {
+        match det {
+            DeterminacyState::Determined => Some(DeterminacyRule::UnconditionalDetermined),
+            DeterminacyState::Undetermined => Some(DeterminacyRule::Undetermined),
+            DeterminacyState::Auto | DeterminacyState::Provisional => None,
+        }
+    }
 }
 
 /// Provenance tag recorded on a commit's journal `Started` event: which
@@ -126,8 +164,20 @@ impl DeterminacyRule {
 pub enum TraceSource {
     /// First-time (cold) evaluation of a node with no prior cache entry.
     ColdEval,
-    /// Result served from an existing fresh cache entry.
+    /// Produced by the `eval_cached` warm pass's cache-MISS arm — a cold eval
+    /// inside the cached-serve pass. Deliberately distinct from
+    /// [`TraceSource::CachedReserve`]: this arm recomputes a value and writes
+    /// `Freshness::Final` via `CacheLeg::Record`.
     CachedServe,
+    /// Re-served verbatim from an existing non-dirty cache entry by one of
+    /// `eval_cached`'s preserve-freshness re-serves (Param and Let), which
+    /// reproduce the stored `(value, determinacy)` pair and carry the entry's
+    /// own freshness forward via `CacheLeg::RecordWithFreshness`. Split out
+    /// from [`TraceSource::CachedServe`] (task #5238) so the journal alone
+    /// separates a re-serve from a miss — a §2.6 divergence audit reading the
+    /// slug must not have to reach for the in-memory `CacheLeg`, which
+    /// [`commit_cell_result`] consumes and never records.
+    CachedReserve,
     /// Re-evaluation triggered by an edit to an upstream cell.
     EditReeval,
     /// Part of a guarded-group re-evaluation (the `GuardedParamCtx` family).
@@ -141,14 +191,17 @@ pub enum TraceSource {
 impl TraceSource {
     /// A stable, kebab-case slug identifying this provenance path. Recorded
     /// on the journal `Started` event's [`EventPayload::Custom`] payload —
-    /// verbatim on `CacheLeg::Record`, or with a `|cache-skip=<reason>`
-    /// suffix appended on `CacheLeg::Skip` (see [`commit_cell_result`]) — and
+    /// verbatim on every cache-WRITING [`CacheLeg`] (`Record`,
+    /// `RecordPropagating`, `RecordWithFreshness`), or with a
+    /// `|cache-skip=<reason>` suffix appended on `CacheLeg::Skip` (see
+    /// [`commit_cell_result`]) — and
     /// intended as the stable key a future divergence audit attributes a
     /// mismatch to, so these strings, once shipped, should not be renamed.
     pub fn as_str(&self) -> &'static str {
         match self {
             TraceSource::ColdEval => "cold-eval",
             TraceSource::CachedServe => "cached-serve",
+            TraceSource::CachedReserve => "cached-reserve",
             TraceSource::EditReeval => "edit-reeval",
             TraceSource::GuardedGroup => "guarded-group",
             TraceSource::PostPassOverwrite => "post-pass-overwrite",
@@ -204,19 +257,28 @@ pub enum CacheLeg {
 
 /// Outcome of a [`commit_cell_result`] call.
 ///
-/// Carries the `(value, determinacy)` pair so callers that previously read
-/// back the inserted tuple keep working, plus the cache/skip/provenance
-/// metadata the four-leg commit produced. Fields are private — migration
-/// call sites in other modules (leaves γ/δ/ε/ι) read them via the
-/// `pub(crate)` accessor methods below, not by reaching into the struct.
-// #5238: migration call sites discard the returned CommitOutcome, so `value`,
+/// Carries the resolved `determinacy` plus the cache/skip/provenance metadata
+/// the four-leg commit produced. Fields are private — migration call sites in
+/// other modules (leaves γ/δ/ε/ι) read them via the `pub(crate)` accessor
+/// methods below, not by reaching into the struct.
+///
+/// Deliberately does NOT carry the committed `Value` (#5238 amendment). It
+/// once did, purely so a caller could read the inserted tuple back — but no
+/// production call site ever did, and holding a 4th owner of the value forced
+/// an extra deep `Value` clone on EVERY commit. `Value` is not `Arc`-backed
+/// (`Value::List(Vec<Value>)`, `Value::Enum { payload: Vec<_> }`,
+/// `Value::String`), and the `eval_cached` preserve-freshness re-serves run
+/// this path for every clean cell on every warm pass, so that clone was a real
+/// per-cell-per-pass cost. A caller that needs the value back already owns it
+/// at the call site (it passed it in); the committed copies are readable from
+/// the `values`/`snapshot` legs.
+// #5238: migration call sites discard the returned CommitOutcome, so
 // `determinacy`, `skip_reason` and `trace_source` are read only by the accessors
 // below + tests until the §2.6 divergence-audit consumer (a future leaf) reads
 // them from non-test code. (`cache_outcome` is already read by non-test code.)
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CommitOutcome {
-    value: Value,
     determinacy: DeterminacyState,
     /// `Some` on `CacheLeg::Record` (forwarded from `record_evaluation`),
     /// `None` on `CacheLeg::Skip` — the authoritative in-memory signal that
@@ -237,12 +299,6 @@ pub struct CommitOutcome {
 // (a future leaf) consumes a commit's result from non-test code.
 #[allow(dead_code)]
 impl CommitOutcome {
-    /// The committed value — mirrors what was written to the values and
-    /// snapshot legs.
-    pub(crate) fn value(&self) -> &Value {
-        &self.value
-    }
-
     /// The resolved determinacy state — mirrors what was written to the
     /// snapshot leg's tuple and, on `CacheLeg::Record`, the cache leg's
     /// `CachedResult::Value`.
@@ -332,17 +388,16 @@ pub(crate) fn commit_cell_result(
         payload: Some(EventPayload::Custom(started_payload)),
     });
 
-    // Every commit needs 3 independently-owned copies of `value` (values leg,
-    // snapshot leg, and the returned `CommitOutcome`); `CacheLeg::Record`
-    // needs a 4th (the cache leg). `Value` is not `Copy` and can hold large
-    // payloads, so each extra owner costs a real clone — the two clones below
-    // cover values+snapshot, the cache leg's clone (Record arm only, below)
-    // is the 3rd, and the original `value` is reused via a move into
-    // `CommitOutcome` at the end of this function rather than a 4th clone.
-    // That is already the minimum possible for however many legs actually
-    // write; reordering cannot reduce it further (some owner must always be
-    // the one that "spends" the original via move, and one is all that's
-    // available).
+    // A cache-writing commit needs exactly 3 independently-owned copies of
+    // `value` (values leg, snapshot leg, cache leg). `Value` is not `Copy` and
+    // is not `Arc`-backed, so each extra owner costs a real deep clone. The two
+    // clones below cover values+snapshot; the ORIGINAL `value` is then MOVED
+    // into whichever cache-writing arm runs, so no third clone is made and
+    // `CommitOutcome` holds no value at all (#5238 amendment — see its doc).
+    // `CacheLeg::Skip` needs only 2 copies and simply drops the original. That
+    // is the minimum possible for however many legs actually write; reordering
+    // cannot reduce it further (some owner must always "spend" the original via
+    // move, and one is all that's available).
     values.insert(node.clone(), value.clone());
     snapshot_values.insert(node, (value.clone(), det));
 
@@ -350,7 +405,7 @@ pub(crate) fn commit_cell_result(
         CacheLeg::Record => {
             let outcome = cache.record_evaluation(
                 node_id.clone(),
-                CachedResult::Value(value.clone(), det),
+                CachedResult::Value(value, det),
                 version,
                 dependency_trace,
             );
@@ -359,7 +414,7 @@ pub(crate) fn commit_cell_result(
         CacheLeg::RecordPropagating { still_refining } => {
             let outcome = cache.record_evaluation_propagating_freshness(
                 node_id.clone(),
-                CachedResult::Value(value.clone(), det),
+                CachedResult::Value(value, det),
                 version,
                 dependency_trace,
                 still_refining,
@@ -369,7 +424,7 @@ pub(crate) fn commit_cell_result(
         CacheLeg::RecordWithFreshness(freshness) => {
             let outcome = cache.record_evaluation_with_freshness(
                 node_id.clone(),
-                CachedResult::Value(value.clone(), det),
+                CachedResult::Value(value, det),
                 version,
                 dependency_trace,
                 freshness,
@@ -403,7 +458,6 @@ pub(crate) fn commit_cell_result(
     });
 
     CommitOutcome {
-        value,
         determinacy: det,
         cache_outcome,
         skip_reason,
@@ -525,11 +579,11 @@ mod tests {
         assert!(matches!(events[0].kind, EventKind::Started));
         assert!(matches!(events[1].kind, EventKind::Completed { .. }));
 
-        // Returned CommitOutcome mirrors what was written to all four legs.
-        // Read via the pub(crate) accessors (not the private fields
-        // directly) to prove the accessors migration call sites will use
-        // return the right data.
-        assert_eq!(*outcome.value(), Value::Bool(true));
+        // Returned CommitOutcome mirrors the commit's metadata. Read via the
+        // pub(crate) accessors (not the private fields directly) to prove the
+        // accessors migration call sites will use return the right data. The
+        // committed VALUE is deliberately not carried on the outcome (#5238
+        // amendment); it is asserted above, on the legs that actually hold it.
         assert_eq!(outcome.determinacy(), DeterminacyState::Determined);
         assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
         assert_eq!(outcome.skip_reason(), None);
@@ -940,6 +994,16 @@ mod tests {
     /// preserve-freshness re-serves, which carry the entry's own freshness
     /// forward). All four legs must be written; a cold write reports
     /// `EvalOutcome::Changed`.
+    ///
+    /// The second half pins the branch the migration actually DEPENDS on: a
+    /// repeat commit of the SAME value on the SAME node takes
+    /// `record_evaluation_with_freshness`' content-hash EARLY-CUTOFF branch
+    /// (`EvalOutcome::Unchanged`, `cache.rs`), and the supplied freshness must
+    /// be written there too. That branch is the only one preserving the
+    /// entry's `pending_cause`/`diagnostics` — the Changed branch resets both —
+    /// so if a future determinacy-rule drift knocked a re-serve off it, the
+    /// Pending chain-cause would silently vanish. Asserting `Unchanged` here
+    /// makes that drift a unit-test failure rather than a silent regression.
     #[test]
     fn commit_record_with_freshness_writes_supplied_freshness() {
         let mut values = ValueMap::new();
@@ -1005,5 +1069,81 @@ mod tests {
         // cold write → Changed.
         assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
         assert_eq!(outcome.skip_reason(), None);
+
+        // ── EARLY-CUTOFF branch (the one the eval_cached re-serves ride) ──
+        // Re-commit the SAME value on the SAME node with a DIFFERENT supplied
+        // freshness. The content hash is unchanged, so `record_evaluation_with_-
+        // freshness` takes its early-cutoff branch and reports `Unchanged` —
+        // and must still write the newly supplied freshness verbatim.
+        let resupplied = Freshness::Intermediate { generation: 9 };
+        let outcome2 = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Bool(true),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::CachedReserve,
+            DependencyTrace::default(),
+            VersionId(2),
+            CacheLeg::RecordWithFreshness(resupplied.clone()),
+        );
+        assert_eq!(
+            outcome2.cache_outcome(),
+            Some(EvalOutcome::Unchanged),
+            "re-committing an identical (value, determinacy) pair must take \
+             record_evaluation_with_freshness' content-hash early-cutoff branch \
+             — the branch that preserves pending_cause/diagnostics, and the one \
+             the eval_cached preserve-freshness re-serves depend on"
+        );
+        let entry2 = cache
+            .get(&node_id)
+            .expect("the early-cutoff path must leave the cache entry in place");
+        assert_eq!(
+            entry2.freshness, resupplied,
+            "RecordWithFreshness must write the supplied freshness verbatim on \
+             the early-cutoff (Unchanged) path too, not only on the cold path"
+        );
+        assert_eq!(entry2.basis_version, VersionId(2));
+    }
+
+    /// Pins [`DeterminacyRule::preserving`]'s round-trip contract: for every
+    /// determinacy state it CAN express, the returned rule reproduces that
+    /// state value-independently — including on `Value::Undef`, where
+    /// `DeriveFromValue` would diverge. This is what makes the `eval_cached`
+    /// re-serves reproduce `entry.result` byte-for-byte (hence stay on the
+    /// early-cutoff branch pinned above).
+    ///
+    /// `Auto`/`Provisional` return `None` rather than panicking, so a caller
+    /// can degrade gracefully instead of aborting the whole evaluation on an
+    /// unexpected stored state (see the "Determinacy dimension — OPEN" bullet).
+    #[test]
+    fn determinacy_rule_preserving_round_trips_or_reports_inexpressible() {
+        for det in [DeterminacyState::Determined, DeterminacyState::Undetermined] {
+            let rule = DeterminacyRule::preserving(det)
+                .unwrap_or_else(|| panic!("{det:?} must be expressible"));
+            for value in [Value::Undef, Value::Bool(true), Value::Int(3)] {
+                assert_eq!(
+                    rule.resolve(&value),
+                    det,
+                    "preserving({det:?}) must reproduce {det:?} for value {value:?} \
+                     (value-independently), or the eval_cached re-serves would \
+                     rewrite the stored determinacy"
+                );
+            }
+        }
+        assert_eq!(
+            DeterminacyRule::preserving(DeterminacyState::Auto),
+            None,
+            "Auto is not expressible by any DeterminacyRule — callers must degrade"
+        );
+        assert_eq!(
+            DeterminacyRule::preserving(DeterminacyState::Provisional),
+            None,
+            "Provisional is not expressible by any DeterminacyRule — callers must degrade"
+        );
     }
 }

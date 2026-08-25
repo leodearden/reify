@@ -746,9 +746,10 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 /// DERIVE it differently. Cold goes through the migrated
 /// `evaluate_params_and_lets_unified` -> `CacheLeg::RecordPropagating {
 /// still_refining: false }`, i.e. genuine arch §7.2 propagation from the
-/// just-computed trace (engine_eval.rs ~@8467). Warm goes through the
-/// `eval_cached` Let cache-MISS arm's `CacheLeg::Record` -> `record_evaluation`,
-/// which hard-codes `Freshness::Final` (~@7025). A let with a genuinely
+/// just-computed trace (`Engine::evaluate_params_and_lets_unified`'s main-let
+/// commit). Warm goes through the `eval_cached` Let cache-MISS arm's
+/// `CacheLeg::Record` -> `record_evaluation`, which hard-codes
+/// `Freshness::Final`. A let with a genuinely
 /// non-`Final` input WOULD therefore diverge cold-vs-warm. That divergence is
 /// a PRE-EXISTING property of the warm cache-miss arm inherited from γ
 /// (#5053), not a regression introduced here, and migrating that arm off
@@ -1053,18 +1054,22 @@ fn params_and_lets_main_let_provenance_and_freshness() {
 /// commit while carrying that injected freshness forward verbatim.
 ///
 /// RED signal (journal shape): today the un-migrated Let re-serve
-/// (engine_eval.rs, ~@6853) writes `values`/`snapshot` + a direct
+/// (`Engine::eval_cached`'s Let cache-reuse block) writes `values`/`snapshot` + a direct
 /// `record_evaluation_with_freshness` and records a single
 /// `EventKind::CacheHit`, so the LAST journal event recorded for `y` after v2
 /// is `CacheHit`. GREEN after impl-4 routes the re-serve onto
 /// `commit_cell_result` (`CacheLeg::RecordWithFreshness(preserved)`), which
 /// emits a `Started`/`Completed` pair — so the LAST event becomes `Completed`.
 ///
-/// `last_started_payload` cannot distinguish RED from GREEN here: BOTH the v1
-/// Let cache-miss (already γ-migrated, `eval_cached_let_miss_provenance_and_determinacy`)
-/// and the migrated re-serve stamp the same `TraceSource::CachedServe` slug on
-/// their `Started` event, so the journal KIND of the last event — not its
-/// provenance slug — is the RED signal.
+/// The journal KIND of the last event — `Completed`, vs today's bare
+/// `CacheHit` — is the RED signal. As of the #5238 review amendment the
+/// provenance slug is ALSO discriminating: the v1 Let cache-MISS (already
+/// γ-migrated, `eval_cached_let_miss_provenance_and_determinacy`) stamps
+/// `TraceSource::CachedServe` (`cached-serve`) while the migrated re-serve
+/// stamps the distinct `TraceSource::CachedReserve` (`cached-reserve`), so
+/// assertion (4) below pins the re-serve as the last writer from the journal
+/// alone — without reaching for the in-memory `CacheLeg`, which
+/// `commit_cell_result` consumes and never records.
 ///
 /// Parity/characterization guards (green BEFORE and after the migration — the
 /// re-serve is behaviour-preserving in the value/determinacy/freshness
@@ -1117,7 +1122,7 @@ fn eval_cached_let_reserve_preserves_freshness_and_commits() {
     );
 
     // (v2) Version bump; y is not dirty and basis(1) != version(2) so it is not
-    // the fast-path → the Let preserve-freshness re-serve (~@6853) fires.
+    // the fast-path → the Let preserve-freshness re-serve fires.
     let v2 = engine.eval_cached(&module, VersionId(2));
 
     // (1) RED signal — the re-serve's LAST journal event for y is `Completed`
@@ -1163,11 +1168,24 @@ fn eval_cached_let_reserve_preserves_freshness_and_commits() {
         Some(&Value::Bool(true)),
         "determined(y) must stay true across the re-serve (determinacy preserved)"
     );
+
+    // (4) Provenance is self-describing FROM THE JOURNAL ALONE: the re-serve's
+    // Started slug is `cached-reserve`, distinct from the v1 cache-MISS arm's
+    // `cached-serve`. Without the split, all three commit sites inside
+    // eval_cached would stamp one slug and a §2.6 divergence audit could not
+    // attribute this event to a producing path.
+    assert_eq!(
+        last_started_payload(&engine, &y_id),
+        Some("cached-reserve".to_string()),
+        "the Let preserve-freshness re-serve must stamp the distinct \
+         'cached-reserve' provenance slug, not the cache-MISS arm's 'cached-serve'"
+    );
 }
 
 /// A plain defaulted `Length` param (`w`) with a sibling `determined(..)` probe
 /// (`w_det`) — drives the `eval_cached` Param preserve-freshness re-serve
-/// (engine_eval.rs, ~@6665). The Param-dimension analogue of `PLAIN_LET_SRC`:
+/// (`Engine::eval_cached`'s Param cache-reuse block). The Param-dimension
+/// analogue of `PLAIN_LET_SRC`:
 /// `w` survives a version bump not-dirty (no override ever set, entry present),
 /// so a second warm pass re-serves it through the preserve-freshness path
 /// rather than re-evaluating.
@@ -1192,18 +1210,27 @@ const PLAIN_PARAM_SRC: &str = r#"
 /// injected freshness forward verbatim.
 ///
 /// RED signal (journal shape): today the un-migrated Param re-serve
-/// (engine_eval.rs, ~@6665) writes `values`/`snapshot` + a direct
+/// (`Engine::eval_cached`'s Param cache-reuse block) writes `values`/`snapshot` + a direct
 /// `record_evaluation_with_freshness` and records a single `EventKind::CacheHit`,
 /// so the LAST journal event recorded for `w` after v2 is `CacheHit`. GREEN after
 /// impl-5 routes the re-serve onto `commit_cell_result`
 /// (`CacheLeg::RecordWithFreshness(preserved)`), which emits a `Started`/
 /// `Completed` pair — so the LAST event becomes `Completed`.
 ///
-/// `last_started_payload` cannot distinguish RED from GREEN here: BOTH the v1
-/// Param cache-miss and the migrated re-serve stamp the same
-/// `TraceSource::CachedServe` slug on their `Started` event, so the journal KIND
-/// of the last event — not its provenance slug — is the RED signal (mirrors
-/// test-4).
+/// The journal KIND of the last event — `Completed`, vs today's bare `CacheHit`
+/// — is the RED signal (mirrors test-4). As of the #5238 review amendment the
+/// provenance slug also discriminates: the migrated re-serve stamps
+/// `TraceSource::CachedReserve` (`cached-reserve`), distinct from the cache-MISS
+/// arm's `TraceSource::CachedServe`, pinned by assertion (4) below.
+///
+/// Assertion (5) pins the property the whole determinacy-reproduction argument
+/// exists to protect: the re-serve reproduces the stored `(value, determinacy)`
+/// pair byte-for-byte, so `record_evaluation_with_freshness` stays on its
+/// content-hash EARLY-CUTOFF branch — the only branch that preserves the
+/// entry's `pending_cause`. Injecting the Pending via `mark_pending_with_cause`
+/// (rather than the bare `mark_pending`) makes that cause observable, so a
+/// future determinacy-rule drift that knocked the re-serve onto the Changed
+/// branch would DROP the chain-cause and fail here instead of passing silently.
 ///
 /// Parity/characterization guards (green BEFORE and after the migration — the
 /// re-serve is behaviour-preserving in the value/determinacy/freshness
@@ -1242,15 +1269,22 @@ fn eval_cached_param_reserve_commits_and_preserves() {
         "determined(w) should be true after the v1 warm pass (baseline)"
     );
 
-    // Inject a non-Final (Pending) freshness onto w's cache entry. mark_pending
-    // (NOT set_freshness, which panics on Pending/Failed) sets freshness =
-    // Pending { last_substantive: ResultRef::of_hash(result_hash) } without
+    // Inject a non-Final (Pending) freshness onto w's cache entry.
+    // mark_pending_with_cause (NOT set_freshness, which panics on
+    // Pending/Failed) sets freshness = Pending { last_substantive:
+    // ResultRef::of_hash(result_hash) } AND records a `pending_cause`, without
     // touching the cached value or the dirty state, so the v2 re-serve still
-    // fires and must carry this freshness forward. The exact Pending value is
-    // read back (its last_substantive is derived internally), not constructed.
+    // fires and must carry both forward. The cause is what makes assertion (5)
+    // able to observe which `record_evaluation_with_freshness` branch ran: the
+    // early-cutoff branch preserves `pending_cause`, the Changed branch resets
+    // it to `None`. The exact Pending value is read back (its last_substantive
+    // is derived internally), not constructed.
+    let cause_node = NodeId::Value(w_det_id.clone());
     assert!(
-        engine.cache_store_mut().mark_pending(&w_node),
-        "mark_pending should find w's cache entry and flip its freshness"
+        engine
+            .cache_store_mut()
+            .mark_pending_with_cause(&w_node, cause_node.clone()),
+        "mark_pending_with_cause should find w's cache entry and flip its freshness"
     );
     let injected = engine.cache_store().freshness(&w_node);
     assert!(
@@ -1260,7 +1294,7 @@ fn eval_cached_param_reserve_commits_and_preserves() {
 
     // (v2) Version bump; w is not overridden, not dirty, and basis(1) !=
     // version(2) so it is not the fast-path → the Param preserve-freshness
-    // re-serve (~@6665) fires.
+    // re-serve fires.
     let v2 = engine.eval_cached(&module, VersionId(2));
 
     // (1) RED signal — the re-serve's LAST journal event for w is `Completed`
@@ -1305,6 +1339,36 @@ fn eval_cached_param_reserve_commits_and_preserves() {
         v2.eval_result.values.get(&w_det_id),
         Some(&Value::Bool(true)),
         "determined(w) must stay true across the re-serve (determinacy preserved)"
+    );
+
+    // (4) Provenance is self-describing FROM THE JOURNAL ALONE (see test-4's
+    // assertion (4) for why the slug had to be split off `cached-serve`).
+    assert_eq!(
+        last_started_payload(&engine, &w_id),
+        Some("cached-reserve".to_string()),
+        "the Param preserve-freshness re-serve must stamp the distinct \
+         'cached-reserve' provenance slug, not the cache-MISS arm's 'cached-serve'"
+    );
+
+    // (5) EARLY-CUTOFF branch pinned: `pending_cause` survives the re-serve.
+    // Only `record_evaluation_with_freshness`' content-hash early-cutoff branch
+    // leaves `pending_cause` in place; its Changed branch resets it to `None`.
+    // The re-serve rides that branch ONLY because it reproduces the stored
+    // `(value, determinacy)` pair exactly — so this assertion is the guard that
+    // a future determinacy-rule drift (which would change the content hash)
+    // cannot silently drop the Pending chain-cause.
+    assert_eq!(
+        engine
+            .cache_store()
+            .get(&w_node)
+            .expect("w's cache entry must survive the re-serve")
+            .pending_cause
+            .as_ref(),
+        Some(&cause_node),
+        "the Param re-serve must stay on record_evaluation_with_freshness' \
+         early-cutoff branch, which preserves pending_cause — a reset to None \
+         means the reproduced (value, determinacy) pair no longer content-hash \
+         matches the stored entry"
     );
 }
 
@@ -1385,7 +1449,7 @@ fn let_reserve_preserves_undetermined_determinacy() {
     );
 
     // (v2) Version bump; top_face is not dirty and basis(1) != version(2), so
-    // the Let preserve-freshness re-serve (~@6871) fires.
+    // the Let preserve-freshness re-serve fires.
     engine.eval_cached(&module, VersionId(2));
 
     assert_eq!(
@@ -1399,5 +1463,128 @@ fn let_reserve_preserves_undetermined_determinacy() {
         Some(DeterminacyState::Undetermined),
         "the Let re-serve must reproduce the stored Undetermined determinacy, \
          not upgrade it to Determined"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #5238 review amendment: journal Started→terminal PAIRING regression
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Three-cell chain with a panic-injectable leaf, driving every let sub-path
+/// that emits a terminal journal event WITHOUT routing through
+/// `commit_cell_result`: `a` takes the panic-recovery `EventKind::Failed`
+/// path, and `b`/`c` take the arch §7.2/§9.2 pre-eval Pending gate
+/// (`Completed { Unchanged }`).
+const PAIRING_CHAIN_SRC: &str = r#"
+    structure S {
+        param seed : Length = 1mm
+        let a = seed + 1mm
+        let b = a + 1mm
+        let c = b + 1mm
+    }
+"#;
+
+/// Asserts that `id`'s journal events strictly ALTERNATE
+/// `Started` → terminal (`Completed` | `Failed`), starting with `Started`.
+///
+/// This is the invariant #5238 nearly lost: both let evaluators used to emit
+/// one shared `Started` at the TOP of the loop body, covering every exit.
+/// Migrating the main success-path commit onto `commit_cell_result` (which
+/// emits its own slug-carrying `Started`) required deleting that shared event
+/// — which, on its own, would leave every OTHER exit emitting a terminal event
+/// with no paired `Started`. `record_subpath_started` re-pairs them lazily.
+fn assert_started_terminal_pairing(engine: &Engine, id: &ValueCellId, label: &str) {
+    let node_id = NodeId::Value(id.clone());
+    let events = engine.journal().events_for_node(&node_id);
+    let shape: Vec<&'static str> = events
+        .iter()
+        .filter_map(|e| match e.kind {
+            EventKind::Started => Some("Started"),
+            EventKind::Completed { .. } => Some("Completed"),
+            EventKind::Failed { .. } => Some("Failed"),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !shape.is_empty(),
+        "{label}: expected at least one Started/terminal journal event"
+    );
+    for (i, kind) in shape.iter().enumerate() {
+        let expected_started = i % 2 == 0;
+        assert_eq!(
+            *kind == "Started",
+            expected_started,
+            "{label}: journal events must alternate Started -> terminal, \
+             starting with Started; got {shape:?} (offending index {i})"
+        );
+    }
+    assert_eq!(
+        shape.len() % 2,
+        0,
+        "{label}: every Started must have a paired terminal event; got {shape:?}"
+    );
+}
+
+/// REGRESSION (#5238 review amendment): the let sub-paths that emit a terminal
+/// journal event without routing through `commit_cell_result` must still emit
+/// a paired `Started` event.
+///
+/// Covers two of the non-migrated sub-paths end-to-end:
+///   - the panic-recovery `EventKind::Failed` path (`a`, the panicking leaf);
+///   - the arch §7.2/§9.2 pre-eval Pending gate's `Completed { Unchanged }`
+///     (`b`/`c`, quieted downstream of the failure) — whose own in-code
+///     rationale, "so the journal still records the visit", presupposes the
+///     `Started` this test pins.
+///
+/// Pass 1 (cold, all-Final) establishes the paired baseline for every cell;
+/// pass 2 (panic injected on `a`) drives the sub-paths. Asserting strict
+/// alternation across BOTH passes is what makes this non-vacuous: a missing
+/// pass-2 `Started` shows up as two consecutive terminal events. Verified RED
+/// by neutering `record_subpath_started` — `a`'s shape degrades to
+/// `["Started", "Completed", "Failed"]`.
+#[test]
+fn non_migrated_let_subpaths_emit_paired_started_events() {
+    let module = parse_and_compile(PAIRING_CHAIN_SRC);
+    let mut engine = make_engine();
+
+    let a_id = ValueCellId::new("S", "a");
+    let b_id = ValueCellId::new("S", "b");
+    let c_id = ValueCellId::new("S", "c");
+
+    // Pass 1: cold baseline — every cell commits through commit_cell_result,
+    // which emits its own Started/Completed pair.
+    let _ = engine.eval(&module);
+    assert_started_terminal_pairing(&engine, &a_id, "pass 1: a");
+    assert_started_terminal_pairing(&engine, &b_id, "pass 1: b");
+    assert_started_terminal_pairing(&engine, &c_id, "pass 1: c");
+
+    // Pass 2: panic on `a` — a takes the panic-recovery Failed path, and the
+    // pre-eval Pending gate quiets b and c with Completed { Unchanged }.
+    engine.set_panic_on_eval(a_id.clone());
+    let _ = engine.eval(&module);
+
+    for (id, label) in [
+        (&a_id, "pass 2: a"),
+        (&b_id, "pass 2: b"),
+        (&c_id, "pass 2: c"),
+    ] {
+        assert_started_terminal_pairing(&engine, id, label);
+    }
+
+    // Non-vacuity: pass 2 really did add events for the quieted downstream
+    // cell (otherwise the alternation above would hold trivially on pass 1's
+    // events alone).
+    let c_events = engine
+        .journal()
+        .events_for_node(&NodeId::Value(c_id.clone()));
+    let c_started = c_events
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::Started))
+        .count();
+    assert!(
+        c_started >= 2,
+        "non-vacuity: c must have a Started event from EACH pass (pass 1's \
+         commit_cell_result commit + pass 2's lazily-paired gate Started); \
+         got {c_started}"
     );
 }

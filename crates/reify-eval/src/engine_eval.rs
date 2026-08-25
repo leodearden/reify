@@ -440,6 +440,102 @@ fn record_eval_completed(
     });
 }
 
+/// Records the journal `Started` event for a let-loop sub-path that emits its
+/// own terminal `Completed`/`Failed` event WITHOUT routing through
+/// `commit_cell_result`.
+///
+/// task #5238: both let evaluators (`evaluate_params_and_lets_unified`'s Let
+/// arm and `evaluate_let_bindings`) used to emit one shared
+/// `Started(payload: None)` at the TOP of the loop body, covering every exit.
+/// Migrating the main success-path commit onto `commit_cell_result` — which
+/// emits its own `Started(Custom(<provenance slug>))` — meant that shared
+/// event had to go, or it would be the FIRST `Started` observed for the cell
+/// and would mask the migrated commit's slug (§2.6).
+///
+/// Deleting it outright, however, would leave every OTHER exit from the loop
+/// body emitting a terminal event with no paired `Started` — silently breaking
+/// the Started→Completed/Failed pairing those paths had always guaranteed, and
+/// contradicting the pre-eval Pending gate's own rationale ("emit
+/// `Completed { Unchanged }` so the journal still records the visit", arch
+/// §7.2/§9.2). So each such sub-path records its `Started` LAZILY here,
+/// immediately before its terminal event and stamped with the loop body's
+/// already-captured `start` instant, preserving both the pairing AND the
+/// original `Started` timestamp. Every one of these sub-paths `continue`s, so
+/// it is mutually exclusive with the migrated commit: still exactly one
+/// `Started` per cell per pass, as before.
+fn record_subpath_started(
+    journal: &mut crate::journal::EventJournal,
+    node_id: NodeId,
+    version: VersionId,
+    start: Instant,
+) {
+    journal.record(EvalEvent {
+        timestamp: start,
+        node_id,
+        kind: EventKind::Started,
+        version,
+        payload: None,
+    });
+}
+
+/// Pre-migration direct four-leg write for an `eval_cached` preserve-freshness
+/// re-serve, used as the GRACEFUL-DEGRADATION fallback when the cache entry's
+/// stored `DeterminacyState` is not expressible by any `DeterminacyRule`
+/// (`DeterminacyRule::preserving` returned `None` — i.e. `Auto`/`Provisional`).
+///
+/// task #5238: the Param and Let re-serves normally route through
+/// `commit_cell_result`, which derives the committed determinacy from a
+/// `DeterminacyRule` and so cannot express `Auto`/`Provisional` (see
+/// cell_commit.rs's "Determinacy dimension — OPEN" gap). Those states are not
+/// reachable at either re-serve today — `Auto` is written only for cells whose
+/// `kind.is_auto()`, which are pre-seeded and re-served by their own
+/// (unmigrated) block, and `Provisional` is never constructed on the eval path.
+/// But the migration replaced a TOTAL operation (the old code passed
+/// `entry.result` through verbatim, so any stored state round-tripped), and
+/// this changeset already had to fix one false "this determinacy is
+/// unreachable" premise (see `let_reserve_preserves_undetermined_determinacy`).
+/// Aborting the whole evaluation via `unreachable!()` on a state that merely
+/// SHOULDN'T occur — e.g. a stale entry surviving an auto→param cell-kind
+/// change on the same `ValueCellId` under a persistent engine — would turn a
+/// benign re-serve into a hard panic, so the re-serves `debug_assert!` (loud in
+/// debug) and fall back here (correct in release) instead.
+///
+/// Writes the same four legs by hand, carrying `det` through VERBATIM:
+/// values, snapshot, `record_evaluation_with_freshness` (preserving the
+/// entry's own freshness), and a bare `EventKind::CacheHit` journal event —
+/// exactly the shape this site had before the migration.
+#[allow(clippy::too_many_arguments)]
+fn reserve_preserving_determinacy_direct(
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    cache: &mut crate::cache::CacheStore,
+    journal: &mut crate::journal::EventJournal,
+    cell_id: ValueCellId,
+    val: Value,
+    det: DeterminacyState,
+    trace: DependencyTrace,
+    version: VersionId,
+    freshness: Freshness,
+) {
+    let node_id = NodeId::Value(cell_id.clone());
+    snapshot_values.insert(cell_id.clone(), (val.clone(), det));
+    values.insert(cell_id, val.clone());
+    cache.record_evaluation_with_freshness(
+        node_id.clone(),
+        CachedResult::Value(val, det),
+        version,
+        trace,
+        freshness,
+    );
+    journal.record(EvalEvent {
+        timestamp: Instant::now(),
+        node_id,
+        kind: EventKind::CacheHit,
+        version,
+        payload: None,
+    });
+}
+
 /// Builds and topologically sorts the let-cell dependency graph for `template`,
 /// pushes a `Diagnostic::error` if a cycle is detected, and returns
 /// `(let_cells, let_traces, sorted_lets)`.
@@ -7706,19 +7802,20 @@ impl Engine {
                     // Preserve existing freshness (Failed/Pending) — see the
                     // analogous let-cell block comment for rationale (arch §7.1/§9.2).
                     //
-                    // task #5238: this Auto-cell pre-seed re-serve stays UNMIGRATED.
-                    // Its sibling Param (~@6665) and Let (~@6836) preserve-freshness
-                    // re-serves ARE now migrated onto commit_cell_result via
+                    // task #5238: this Auto-cell pre-seed re-serve stays UNMIGRATED. Its
+                    // sibling Param and Let cache-reuse re-serves further down this same
+                    // function ARE now migrated onto commit_cell_result via
                     // CacheLeg::RecordWithFreshness (which routes to
                     // record_evaluation_with_freshness, carrying the entry's freshness
                     // forward). This one cannot be: it can preserve a stored
                     // DeterminacyState::Auto (the Auto pre-seed writes (Undef, Auto)), and
                     // DeterminacyRule — from which commit_cell_result derives determinacy —
                     // resolves only to Determined or Undetermined, never Auto (nor
-                    // Provisional). Migrating it would require extending DeterminacyRule
-                    // with an Auto-preserving variant, a determinacy-dimension change
-                    // orthogonal to this task's freshness scope. See cell_commit.rs "Known
-                    // scope gaps" + PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4/§7.2.
+                    // Provisional); `DeterminacyRule::preserving` returns None for both.
+                    // Migrating it would require extending DeterminacyRule with an
+                    // Auto-preserving variant, a determinacy-dimension change orthogonal to
+                    // this task's freshness scope. See cell_commit.rs "Known scope gaps" +
+                    // PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4/§7.2.
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
@@ -7934,44 +8031,25 @@ impl Engine {
                             // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
                             // the entry's own freshness forward verbatim (still
                             // record_evaluation_with_freshness under the hood) and emitting a
-                            // typed Started/Completed pair carrying the `cached-serve`
+                            // typed Started/Completed pair carrying the `cached-reserve`
                             // provenance slug in place of the prior bare CacheHit — the sole
                             // observable delta, since value/determinacy/cache-content/freshness
                             // are all preserved. See cell_commit.rs "Known scope gaps"
                             // (Freshness dimension — CLOSED) + PRD §2.4/§7.2. (The Auto-cell
-                            // pre-seed re-serve above stays unmigrated — see its note ~@6448.)
+                            // pre-seed re-serve above stays unmigrated — see its own note.)
                             if !self.param_overrides.contains_key(&cell.id)
                                 && !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
                             {
-                                // Param re-serve stored determinacy is Determined or
-                                // Undetermined (Param cells are never Auto), so pick the rule
-                                // that reproduces the stored `det` EXACTLY — both
-                                // UnconditionalDetermined and Undetermined resolve value-
-                                // independently, so the committed `(val, det)` — hence
-                                // entry.result — matches, keeping record_evaluation_with_-
-                                // freshness on its content-hash early-cutoff path so the
-                                // preserved freshness is carried, not reset.
-                                let rule = match det {
-                                    DeterminacyState::Determined => {
-                                        DeterminacyRule::UnconditionalDetermined
-                                    }
-                                    DeterminacyState::Undetermined => DeterminacyRule::Undetermined,
-                                    // Auto and Provisional are solver-variable determinacy states
-                                    // (see the Auto|Provisional classification ~@3424). This
-                                    // eval_cached Param default-eval arm only ever stores
-                                    // Determined/Undetermined (Auto cells are a distinct
-                                    // ValueCellKind, pre-seeded + re-served separately ~@6448),
-                                    // and neither Auto nor Provisional is expressible by
-                                    // DeterminacyRule — so neither can reach a plain Param cache
-                                    // entry at this re-serve.
-                                    DeterminacyState::Auto | DeterminacyState::Provisional => {
-                                        unreachable!(
-                                            "param re-serve determinacy is never Auto/Provisional"
-                                        )
-                                    }
-                                };
+                                // Reproduce the stored `det` EXACTLY:
+                                // DeterminacyRule::preserving picks the rule that resolves
+                                // value-INDEPENDENTLY to `det`, so the committed `(val, det)` —
+                                // hence entry.result — byte-matches, keeping
+                                // record_evaluation_with_freshness on its content-hash
+                                // early-cutoff path (the only branch that preserves the entry's
+                                // pending_cause/diagnostics) so the preserved freshness is
+                                // carried, not reset.
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
                                 let trace = entry.dependency_trace.clone();
@@ -7979,21 +8057,51 @@ impl Engine {
                                 // stored per-cell diagnostics (last use of
                                 // `entry` before the &mut record below).
                                 diagnostics.extend(entry.diagnostics.iter().cloned());
-                                commit_cell_result(
-                                    CommitLegs {
-                                        values: &mut values,
-                                        snapshot_values: &mut snapshot_values,
-                                        cache: &mut self.cache,
-                                        journal: &mut self.journal,
-                                    },
-                                    cell.id.clone(),
-                                    val,
-                                    rule,
-                                    TraceSource::CachedServe,
-                                    trace,
-                                    version,
-                                    CacheLeg::RecordWithFreshness(preserved_freshness),
+                                let rule = DeterminacyRule::preserving(det);
+                                // Auto/Provisional are not expressible by any DeterminacyRule
+                                // and cannot reach a plain Param cache entry here (Auto is
+                                // written only for `kind.is_auto()` cells, pre-seeded and
+                                // re-served by their own block above; Provisional is never
+                                // constructed on the eval path). Assert that loudly in debug,
+                                // but DEGRADE rather than abort in release — the pre-migration
+                                // code passed entry.result through verbatim and was total, and
+                                // an unexpected stored state must not panic the whole eval.
+                                debug_assert!(
+                                    rule.is_some(),
+                                    "param re-serve determinacy is never Auto/Provisional, got \
+                                     {det:?}"
                                 );
+                                match rule {
+                                    Some(rule) => {
+                                        commit_cell_result(
+                                            CommitLegs {
+                                                values: &mut values,
+                                                snapshot_values: &mut snapshot_values,
+                                                cache: &mut self.cache,
+                                                journal: &mut self.journal,
+                                            },
+                                            cell.id.clone(),
+                                            val,
+                                            rule,
+                                            TraceSource::CachedReserve,
+                                            trace,
+                                            version,
+                                            CacheLeg::RecordWithFreshness(preserved_freshness),
+                                        );
+                                    }
+                                    None => reserve_preserving_determinacy_direct(
+                                        &mut values,
+                                        &mut snapshot_values,
+                                        &mut self.cache,
+                                        &mut self.journal,
+                                        cell.id.clone(),
+                                        val,
+                                        det,
+                                        trace,
+                                        version,
+                                        preserved_freshness,
+                                    ),
+                                }
                                 stats.cache_hits += 1;
                                 continue;
                             }
@@ -8160,7 +8268,7 @@ impl Engine {
                             // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
                             // the entry's own freshness forward verbatim (still
                             // record_evaluation_with_freshness under the hood) and emitting a
-                            // typed Started/Completed pair carrying the `cached-serve`
+                            // typed Started/Completed pair carrying the `cached-reserve`
                             // provenance slug in place of the prior bare CacheHit — the sole
                             // observable delta, since value/determinacy/cache-content/freshness
                             // are all preserved. See cell_commit.rs "Known scope gaps"
@@ -8169,13 +8277,11 @@ impl Engine {
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
                             {
-                                // Let re-serve stored determinacy is Determined or
-                                // Undetermined, so pick the rule that reproduces the stored
-                                // `det` EXACTLY — both UnconditionalDetermined and Undetermined
-                                // resolve value-independently, so the committed `(val, det)` —
-                                // hence entry.result — matches, keeping
-                                // record_evaluation_with_freshness on its content-hash early-
-                                // cutoff path so the preserved freshness is carried, not reset.
+                                // Reproduce the stored `det` EXACTLY — see the sibling Param
+                                // re-serve's note above for why byte-matching entry.result is
+                                // load-bearing (it keeps record_evaluation_with_freshness on its
+                                // content-hash early-cutoff branch, the only one that preserves
+                                // pending_cause/diagnostics).
                                 //
                                 // Undetermined is genuinely reachable here: the main let
                                 // evaluators do stamp UnconditionalDetermined, but they are not
@@ -8190,24 +8296,6 @@ impl Engine {
                                 // silently UPGRADED such an entry to Determined — see
                                 // `let_reserve_preserves_undetermined_determinacy` in
                                 // tests/engine_eval_commit_migration.rs.
-                                let rule = match det {
-                                    DeterminacyState::Determined => {
-                                        DeterminacyRule::UnconditionalDetermined
-                                    }
-                                    DeterminacyState::Undetermined => DeterminacyRule::Undetermined,
-                                    // Neither Auto nor Provisional is expressible by
-                                    // DeterminacyRule, and neither can reach a Let cache entry:
-                                    // Auto is written only for cells whose `kind.is_auto()` (a
-                                    // distinct ValueCellKind, pre-seeded + re-served separately
-                                    // ~@6448), and Provisional is never constructed on the eval
-                                    // path at all. Same structural argument as the sibling Param
-                                    // re-serve ~@6688.
-                                    DeterminacyState::Auto | DeterminacyState::Provisional => {
-                                        unreachable!(
-                                            "let re-serve determinacy is never Auto/Provisional"
-                                        )
-                                    }
-                                };
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
                                 let trace = entry.dependency_trace.clone();
@@ -8215,21 +8303,46 @@ impl Engine {
                                 // stored per-cell diagnostics (last use of
                                 // `entry` before the &mut record below).
                                 diagnostics.extend(entry.diagnostics.iter().cloned());
-                                commit_cell_result(
-                                    CommitLegs {
-                                        values: &mut values,
-                                        snapshot_values: &mut snapshot_values,
-                                        cache: &mut self.cache,
-                                        journal: &mut self.journal,
-                                    },
-                                    cell.id.clone(),
-                                    val,
-                                    rule,
-                                    TraceSource::CachedServe,
-                                    trace,
-                                    version,
-                                    CacheLeg::RecordWithFreshness(preserved_freshness),
+                                let rule = DeterminacyRule::preserving(det);
+                                // Auto/Provisional: same structural argument (and same
+                                // debug-loud / release-degrade policy) as the sibling Param
+                                // re-serve above.
+                                debug_assert!(
+                                    rule.is_some(),
+                                    "let re-serve determinacy is never Auto/Provisional, got \
+                                     {det:?}"
                                 );
+                                match rule {
+                                    Some(rule) => {
+                                        commit_cell_result(
+                                            CommitLegs {
+                                                values: &mut values,
+                                                snapshot_values: &mut snapshot_values,
+                                                cache: &mut self.cache,
+                                                journal: &mut self.journal,
+                                            },
+                                            cell.id.clone(),
+                                            val,
+                                            rule,
+                                            TraceSource::CachedReserve,
+                                            trace,
+                                            version,
+                                            CacheLeg::RecordWithFreshness(preserved_freshness),
+                                        );
+                                    }
+                                    None => reserve_preserving_determinacy_direct(
+                                        &mut values,
+                                        &mut snapshot_values,
+                                        &mut self.cache,
+                                        &mut self.journal,
+                                        cell.id.clone(),
+                                        val,
+                                        det,
+                                        trace,
+                                        version,
+                                        preserved_freshness,
+                                    ),
+                                }
                                 stats.cache_hits += 1;
                                 continue;
                             }
@@ -8317,28 +8430,23 @@ impl Engine {
                                 DeterminacyRule::UnconditionalDetermined,
                                 // `CachedServe` denotes eval_cached-PASS provenance, not a cache
                                 // hit: this is the cache-MISS arm (`stats.cache_misses` above) —
-                                // a cold eval within the cached-serve pass.
+                                // a cold eval within the cached-serve pass. Kept as CachedServe
+                                // (not ColdEval) per the frozen γ plan; `TraceSource::as_str`
+                                // declares these strings stable once shipped.
                                 //
-                                // task #5238: the slug is deliberately SHARED, not unique to this
-                                // arm. Three sites inside eval_cached now stamp `cached-serve`:
-                                // this miss arm, the migrated Param preserve-freshness re-serve
-                                // (~@6675) and the migrated Let one (~@6884). So a §2.6
-                                // divergence audit must read it only as "produced by the
-                                // eval_cached pass" and must NOT treat it as identifying the miss
-                                // arm; to separate them, key on the commit's `CacheLeg`
-                                // (`CacheLeg::Record` here vs `CacheLeg::RecordWithFreshness` at
-                                // the two re-serves) or on `stats.cache_misses`/`cache_hits` —
-                                // never on the slug alone. The sibling tests pin exactly this
-                                // (tests/engine_eval_commit_migration.rs: the last-event KIND, not
-                                // the provenance slug, separates a re-serve from a miss).
+                                // task #5238: `cached-serve` identifies THIS arm uniquely. The
+                                // two migrated preserve-freshness re-serves earlier in this
+                                // function stamp the distinct `TraceSource::CachedReserve`
+                                // (`cached-reserve`) instead, precisely so a §2.6 divergence
+                                // audit can separate a re-serve from a miss FROM THE JOURNAL
+                                // ALONE — neither the commit's `CacheLeg` (consumed inside
+                                // commit_cell_result, never recorded) nor `stats.cache_hits`/
+                                // `cache_misses` (per-pass, not per-node) is reachable from a
+                                // journal event.
                                 //
-                                // Still true: the Auto-cell pre-seed re-serve (~@6461) does NOT
-                                // route through commit_cell_result and emits no slug at all — see
-                                // its own note for why it stays unmigrated.
-                                //
-                                // Kept as CachedServe (not ColdEval) per the frozen γ plan;
-                                // `TraceSource::as_str` declares these strings stable once
-                                // shipped, so the fix is to this comment, not to the slug.
+                                // Still true: the Auto-cell pre-seed re-serve does NOT route
+                                // through commit_cell_result and emits no slug at all — see its
+                                // own note for why it stays unmigrated.
                                 TraceSource::CachedServe,
                                 trace,
                                 version,
@@ -9642,9 +9750,10 @@ impl Engine {
     /// `Failed{error}`, so no freshness fidelity is lost), a commit shape
     /// commit_cell_result structurally cannot represent — see the per-site
     /// notes at those failure paths (impl-6) and cell_commit.rs's module doc,
-    /// "Known scope gaps". The Param arm above uses plain `record_evaluation`
-    /// (Final-only) and is likewise unmigrated (out of this task's
-    /// named-site scope).
+    /// "Known scope gaps". Those and the Let arm's other non-migrated exits
+    /// keep their Started→terminal pairing via `record_subpath_started`. The
+    /// Param arm above uses plain `record_evaluation` (Final-only) and is
+    /// likewise unmigrated (out of this task's named-site scope).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_params_and_lets_unified(
         &mut self,
@@ -9880,15 +9989,21 @@ impl Engine {
 
                     // task #5238: the main success-path commit below is now
                     // routed through `commit_cell_result`, which emits its OWN
-                    // Started(Custom slug)+Completed pair. No manual
+                    // Started(Custom slug)+Completed pair. No SHARED
                     // Started(payload:None) is emitted here — it would be the
                     // FIRST Started observed for the cell and would mask the
-                    // migrated commit's `cold-eval` provenance slug (§2.6). The
-                    // sibling sub-paths in this arm (pre-eval Pending gate,
-                    // @optimized dispatch, and the two failure paths) still time
-                    // against `start`; they emit Completed/Failed directly and
-                    // are deliberately left unmigrated (see the deferral note on
-                    // this fn and impl-6).
+                    // migrated commit's `cold-eval` provenance slug (§2.6).
+                    //
+                    // The sibling sub-paths in this arm (pre-eval Pending gate,
+                    // @optimized Final-gate reuse, the three compute-dispatch
+                    // outcomes, and the panic-recovery path) emit
+                    // Completed/Failed directly and are deliberately left
+                    // unmigrated (see the deferral note on this fn and impl-6) —
+                    // but each records its OWN paired `Started` lazily via
+                    // `record_subpath_started`, stamped with the `start` captured
+                    // below, so the Started→Completed/Failed pairing every path
+                    // used to guarantee is preserved. Each such path `continue`s,
+                    // so exactly one `Started` is still emitted per cell per pass.
                     let start = Instant::now();
 
                     // Snapshot test-instrumentation panic-injection state
@@ -9915,6 +10030,15 @@ impl Engine {
                                 &node_id,
                                 "sorted_combined",
                                 "combined_traces",
+                            );
+                            // task #5238: lazily paired `Started` — see
+                            // `record_subpath_started` for why the shared pre-eval
+                            // `Started` moved here from the top of the loop body.
+                            record_subpath_started(
+                                &mut self.journal,
+                                node_id.clone(),
+                                VersionId(version_id),
+                                start,
                             );
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
@@ -9968,6 +10092,15 @@ impl Engine {
                                         &node_id,
                                         "sorted_combined",
                                         "combined_traces",
+                                    );
+                                    // task #5238: lazily paired `Started` — see
+                                    // `record_subpath_started` for why the shared pre-eval
+                                    // `Started` moved here from the top of the loop body.
+                                    record_subpath_started(
+                                        &mut self.journal,
+                                        node_id.clone(),
+                                        VersionId(version_id),
+                                        start,
                                     );
                                     self.journal.record(EvalEvent {
                                         timestamp: Instant::now(),
@@ -10117,6 +10250,15 @@ impl Engine {
                                         {
                                             n.running = None;
                                         }
+                                        // task #5238: lazily paired `Started` — see
+                                        // `record_subpath_started` for why the shared pre-eval
+                                        // `Started` moved here from the top of the loop body.
+                                        record_subpath_started(
+                                            &mut self.journal,
+                                            node_id.clone(),
+                                            VersionId(version_id),
+                                            start,
+                                        );
                                         self.journal.record(EvalEvent {
                                             timestamp: Instant::now(),
                                             node_id,
@@ -10138,6 +10280,15 @@ impl Engine {
                                             &node_id,
                                             "sorted_combined",
                                             "combined_traces",
+                                        );
+                                        // task #5238: lazily paired `Started` — see
+                                        // `record_subpath_started` for why the shared pre-eval
+                                        // `Started` moved here from the top of the loop body.
+                                        record_subpath_started(
+                                            &mut self.journal,
+                                            node_id.clone(),
+                                            VersionId(version_id),
+                                            start,
                                         );
                                         self.journal.record(EvalEvent {
                                             timestamp: Instant::now(),
@@ -10187,6 +10338,15 @@ impl Engine {
                                             false,
                                         );
                                         let _ = self.cache.mark_failed(&node_id, error.clone());
+                                        // task #5238: lazily paired `Started` — see
+                                        // `record_subpath_started` for why the shared pre-eval
+                                        // `Started` moved here from the top of the loop body.
+                                        record_subpath_started(
+                                            &mut self.journal,
+                                            node_id.clone(),
+                                            VersionId(version_id),
+                                            start,
+                                        );
                                         self.journal.record(EvalEvent {
                                             timestamp: Instant::now(),
                                             node_id: node_id.clone(),
@@ -10255,6 +10415,15 @@ impl Engine {
                                 false,
                             );
                             let _ = self.cache.mark_failed(&node_id, error.clone());
+                            // task #5238: lazily paired `Started` — see
+                            // `record_subpath_started` for why the shared pre-eval
+                            // `Started` moved here from the top of the loop body.
+                            record_subpath_started(
+                                &mut self.journal,
+                                node_id.clone(),
+                                VersionId(version_id),
+                                start,
+                            );
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id: node_id.clone(),
@@ -10740,14 +10909,22 @@ impl Engine {
 
             // task #5238: the main success-path commit below is now routed
             // through `commit_cell_result`, which emits its OWN
-            // Started(Custom slug)+Completed pair. No manual Started(payload:None)
+            // Started(Custom slug)+Completed pair. No SHARED Started(payload:None)
             // is emitted here — it would be the FIRST Started observed for the
             // cell and would mask the migrated commit's `cold-eval` provenance
-            // slug (§2.6). The sibling sub-paths in this loop body (pre-eval
-            // Pending gate, @optimized dispatch/Final-gate, and the two failure
-            // paths) still time against `start`; they emit Completed/Failed
-            // directly and are deliberately left unmigrated (see the deferral
-            // note on this fn and impl-6).
+            // slug (§2.6).
+            //
+            // The sibling sub-paths in this loop body (pre-eval Pending gate,
+            // @optimized Final-gate reuse, the three compute-dispatch outcomes,
+            // and the panic-recovery path) emit Completed/Failed directly and are
+            // deliberately left unmigrated (see the deferral note on this fn and
+            // impl-6) — but each records its OWN paired `Started` lazily via
+            // `record_subpath_started`, stamped with the `start` captured below,
+            // so the Started→Completed/Failed pairing every path used to
+            // guarantee is preserved (the arch §7.2/§9.2 gate's rationale below —
+            // "so the journal still records the visit" — depends on it). Each such
+            // path `continue`s, so exactly one `Started` is still emitted per cell
+            // per pass.
             let start = Instant::now();
 
             // Snapshot test-instrumentation panic-injection state for this cell
@@ -10814,6 +10991,15 @@ impl Engine {
                     // entry's `dependency_trace` is preserved (stable
                     // structure invariant during incremental re-eval).
                     let _ = take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
+                    // task #5238: lazily paired `Started` — see
+                    // `record_subpath_started` for why the shared pre-eval
+                    // `Started` moved here from the top of the loop body.
+                    record_subpath_started(
+                        &mut self.journal,
+                        node_id.clone(),
+                        VersionId(version_id),
+                        start,
+                    );
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id: node_id.clone(),
@@ -10879,6 +11065,15 @@ impl Engine {
                             snapshot.values.insert(cell_id.clone(), (cached_val, det));
                             let _trace =
                                 take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
+                            // task #5238: lazily paired `Started` — see
+                            // `record_subpath_started` for why the shared pre-eval
+                            // `Started` moved here from the top of the loop body.
+                            record_subpath_started(
+                                &mut self.journal,
+                                node_id.clone(),
+                                VersionId(version_id),
+                                start,
+                            );
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
@@ -11138,6 +11333,15 @@ impl Engine {
                                 if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id) {
                                     n.running = None;
                                 }
+                                // task #5238: lazily paired `Started` — see
+                                // `record_subpath_started` for why the shared pre-eval
+                                // `Started` moved here from the top of the loop body.
+                                record_subpath_started(
+                                    &mut self.journal,
+                                    node_id.clone(),
+                                    VersionId(version_id),
+                                    start,
+                                );
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -11173,6 +11377,15 @@ impl Engine {
                                 );
                                 // Journal a non-Changed event: the dispatch was
                                 // attempted but did not produce a new value.
+                                // task #5238: lazily paired `Started` — see
+                                // `record_subpath_started` for why the shared pre-eval
+                                // `Started` moved here from the top of the loop body.
+                                record_subpath_started(
+                                    &mut self.journal,
+                                    node_id.clone(),
+                                    VersionId(version_id),
+                                    start,
+                                );
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -11228,6 +11441,15 @@ impl Engine {
                                     false,
                                 );
                                 let _ = self.cache.mark_failed(&node_id, error.clone());
+                                // task #5238: lazily paired `Started` — see
+                                // `record_subpath_started` for why the shared pre-eval
+                                // `Started` moved here from the top of the loop body.
+                                record_subpath_started(
+                                    &mut self.journal,
+                                    node_id.clone(),
+                                    VersionId(version_id),
+                                    start,
+                                );
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id: node_id.clone(),
@@ -11312,6 +11534,15 @@ impl Engine {
                         false,
                     );
                     let _ = self.cache.mark_failed(&node_id, error.clone());
+                    // task #5238: lazily paired `Started` — see
+                    // `record_subpath_started` for why the shared pre-eval
+                    // `Started` moved here from the top of the loop body.
+                    record_subpath_started(
+                        &mut self.journal,
+                        node_id.clone(),
+                        VersionId(version_id),
+                        start,
+                    );
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id: node_id.clone(),
@@ -13402,8 +13633,9 @@ mod dependent_cells_admissibility_tests {
 // In-crate direct-call escape hatch — the plan-sanctioned pattern for a private
 // Engine evaluator, mirroring `reeval_cone_cell_provenance_and_determinacy_tests`
 // above. Reaching `evaluate_let_bindings` through a full cold `engine.eval()`
-// requires a module WITH a sub-component (engine_eval.rs ~@4210, gated on
-// `!template.sub_components.is_empty()`), and even then the now-migrated
+// requires a module WITH a sub-component (`Engine::eval`'s sub-component
+// elaboration pass, gated on `!template.sub_components.is_empty()`), and even
+// then the now-migrated
 // `evaluate_params_and_lets_unified` (#5238 impl-2) emits its OWN first
 // `Started(Custom "cold-eval")` event for the same let cell, so
 // `started_payload`'s first-match semantics could not isolate
@@ -13474,9 +13706,9 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     /// RED: `evaluate_let_bindings`' main let commit provenance + freshness
     /// preserved.
     ///
-    /// RED today: the main let commit (engine_eval.rs ~@9308-9338) emits its
-    /// `Started` journal event with `payload: None` (@~8746) and writes the
-    /// cache leg via a direct
+    /// RED today: `evaluate_let_bindings`' main let commit emits its `Started`
+    /// journal event with `payload: None` (from the shared pre-eval `Started`
+    /// at the top of its loop body) and writes the cache leg via a direct
     /// `record_evaluation_propagating_freshness(val, Determined, false)` call,
     /// so `started_payload(&engine, &b)` is `None`, not `Some("cold-eval")`.
     /// GREEN after impl-3 migrates the commit onto `commit_cell_result` with
