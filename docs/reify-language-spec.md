@@ -1540,6 +1540,28 @@ where needs_cooling {
 
 Desugars to per-declaration guards. `where` blocks do NOT introduce a new lexical scope.
 
+**Objectives take no guard, in either form.** `minimize`/`maximize` accept no
+`where_guard?` suffix and may not appear inside a `where` block. Because `where`
+controls structural *presence*, `minimize E where C` would mean "this objective
+exists only when C holds" -- and C invariably reads the very `auto` parameters the
+objective drives, so the objective's presence would depend on the solution it
+determines. The predicate an author wants there is a *constraint*, already
+spelled as a separate member:
+
+```
+constraint peak_stress < material.yield_stress
+minimize mass
+```
+
+The tree-sitter grammar does still *parse* a `where` suffix on `minimize`/`maximize`
+-- an artefact of the March-2026 six-way guard sweep (commit `66866d6311`) that this
+spec never authorised. The compiler MUST reject it with an error; until that lands
+(task 6575) it silently DISCARDS the guard -- the objective then runs unopposed with
+no diagnostic, so do not use the form. (Contrast `sub`,
+`forall connect` and `forall constraint` inside a `where` block: those are "not yet
+supported" -- deferred implementation, not excluded by design -- and they stay in the
+§15 productions.)
+
 **`else` clause (v0.1):**
 
 ```
@@ -2664,10 +2686,16 @@ purpose_param   ::= IDENT ':' type_expr
 purpose_member  ::= constraint_line | sub_decl | let_decl | minimize_decl | maximize_decl
                   | guarded_block
 
-guarded_block   ::= 'where' expr '{' purpose_member* '}' ('else' '{' purpose_member* '}')?
+(* Objectives take no guard, in either form (§6.3): minimize_decl/maximize_decl
+   carry no where_guard? suffix and are excluded from guarded bodies. *)
+guarded_purpose_member
+                ::= constraint_line | sub_decl | let_decl | guarded_block
 
-minimize_decl   ::= 'minimize' expr
-maximize_decl   ::= 'maximize' expr
+guarded_block   ::= 'where' expr '{' guarded_purpose_member* '}'
+                    ('else' '{' guarded_purpose_member* '}')?
+
+minimize_decl   ::= 'minimize' expr                      (* no where_guard? -- §6.3 *)
+maximize_decl   ::= 'maximize' expr                      (* no where_guard? -- §6.3 *)
 
 (* --- Enum declarations --- *)
 enum_decl       ::= 'pub'? 'enum' TYPE_IDENT type_params? '{' enum_variant (',' enum_variant)* '}'
@@ -2708,6 +2736,14 @@ member          ::= param_decl | port_decl | sub_decl | let_decl | type_alias_de
                    | where_block | match_block | meta_block
                    | minimize_decl | maximize_decl
 
+(* Objectives take no guard, in either form (§6.3): excluded from guarded bodies.
+   sub_decl/forall statements ARE admitted here -- the compiler's "not yet
+   supported" on those is deferred implementation, not a design exclusion. *)
+guarded_member  ::= param_decl | port_decl | sub_decl | let_decl | type_alias_decl
+                   | constraint_line | connect_stmt | chain_stmt
+                   | entity_decl | field_body | fn_decl
+                   | where_block | match_block | meta_block
+
 where_guard     ::= 'where' expr                         (* per-declaration guard *)
 
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
@@ -2736,7 +2772,7 @@ chain_stmt      ::= 'chain' IDENT ('->' IDENT)+
 
 port_ref        ::= path ('@' IDENT ('(' args ')')? )?
 
-where_block     ::= 'where' expr '{' member* '}' ('else' '{' member* '}')?
+where_block     ::= 'where' expr '{' guarded_member* '}' ('else' '{' guarded_member* '}')?
 
 match_block     ::= 'match' expr '{' match_arm* '}'
 match_arm       ::= pattern '=>' (member+ | expr)

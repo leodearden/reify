@@ -254,7 +254,23 @@ The integration-gate task (ε) names this table as its observable signal.
 2. **Correspondence = resample-to-grid + sample-at-OCCT-surface-vertices.** Prismatic-exact today; arbitrary geometry deferred to the producer half. The "solve-on-realization-mesh vs map-onto-vertices" fork (esc-2962-33) resolves to *both are the same grid intermediate; only the solve mesh differs*, and the solve mesh is `structural-analysis-fea`'s to change. (User-confirmed 2026-05-30.)
 3. **This PRD is the result-model seam, not the mesher seam.** Arbitrary-geometry producer-completion (P1 trampoline-consumes-realized-mesh, P2 face-selector BCs, existing 3429) stays owned by `structural-analysis-fea`; 2930's bracket gates on it cross-PRD. (User-confirmed.)
 4. **Capability (iv) is mostly pre-existing.** Only the `VonMises`-derived `max`/`argmax` reduction is net-new (β). The original "only scalar `max_von_mises` exists" premise was inaccurate.
-5. **2930 stays a bracket with the full field-reduction design loop**, rewritten to honest grammar (`minimize mass(body) where max(von_mises(fea.stress)) < material.yield_stress`; free-fn `face(body,"top")` per GR-040 — both parse, G3 verified), gated on producer-completion. No honest-scalar interim (Leo-ratified in 2930's parked note).
+5. **2930 stays a bracket with the full field-reduction design loop**, gated on producer-completion. No honest-scalar interim (Leo-ratified in 2930's parked note). The free-fn `face(body,"top")` half per GR-040 is sound — a real topology-selector (`units.rs:262,379`). **The objective grammar this decision originally ratified is not.**
+
+   **CORRECTED 2026-08-25 (Leo-ruled).** This decision originally specified the objective as `minimize mass(body) where max(von_mises(fea.stress)) < material.yield_stress`, on the stated basis *"both parse, G3 verified"*. That basis was a **G3 PARSE check only** (`grammar-fixture:fea-result-model-2.ri`, 0 ERROR nodes — an ephemeral `/tmp` probe, never committed). Parsing was verified; **semantics never were.** All three clauses of that line are broken, all measured at `main` `1040b07fe3`:
+
+   1. **The `where` guard is silently discarded.** `ts_parser.rs:2493-2511` lowers it into `MinimizeDecl.where_clause`, but the compiler's Minimize/Maximize arms (`entity.rs:3181`, `:3298`; `traits.rs:572`, `:577`) compile only `.expr` into an `ObjectiveTerm`, which has no guard slot (`reify-ir/src/constraint.rs:80-87`). The predicate registers **zero** constraints and emits **no diagnostic**. Measured: `constraint t < 20mm` + `minimize t where t > 5.0mm` resolves `t` to **1 µm** — the auto-param lower bound — where the `constraint` spelling of the same predicate resolves it to 12.5 mm. Every other member kind routes its guard through `compile_per_decl_guard`; these two are the hole. **Ruling (Leo, 2026-08-25): reject.** The compiler emits an Error; objectives take no guard in either form (`docs/reify-language-spec.md` §6.3 and §15 amended to match). Owner: **task 6575**.
+   2. **`max(von_mises(fea.stress))` does not type-check** — `dimension mismatch in comparison: Real vs Scalar[kg*m^-1*s^-2]`. `analysis_signatures.rs:73` lowers `von_mises`/`max_shear` as `scalar_or_real(tensor_quantity(args, 0))`, and `tensor_quantity` matches only `Type::Tensor` and `Type::Matrix`, falling through to DIMENSIONLESS for a `Type::Field` argument. Owner: **task 6577**.
+   3. **`mass(body)` is not a callable at all** — no `"mass"` entry in `crates/reify-compiler/src/units.rs`, no `fn mass` in any stdlib `.ri`. The nearest real primitive is `body_mass_props(body, density)`.
+
+   **The honest form is a bare `minimize` plus a separate `constraint` member** — which is what `examples/fea_bracket_minimize_mass.ri` (branch `task/2930`) already does, and documents at its lines 25-34:
+
+   ```
+   let mass = material.density * length * width * thickness
+   constraint solve_elastic_static(...) ... < material.yield_stress
+   minimize mass
+   ```
+
+   Do not reintroduce the `where` spelling.
 6. **2962 becomes a C-as-integration-gate leaf**: max-von-Mises readout + per-vertex contour + the pure-frontend Lock Current handler, with the contour as the integration gate over α/γ/δ.
 7. **Modal Φ (`ModalResult.shape`) is OUT of scope** — the report's §3-C modal twin is owned by task 3823 / a separate Φ-serialization decision, not this PRD.
 8. **R3 is split: classifier (4090, done) vs emission/plumbing (R3b, new).** Task 4090 delivered only the typed structs + `fea_structured_detail()` classifier with **zero production callers** — twice blocking ι/2966 (parks 2026-05-30, 2026-06-24) on a dependency-capability gap: the structs never reach the GUI IPC boundary. R3b is the missing emission half (§4.6): a neutral `reify-eval`-owned `StructuredComputeDetail::Fea(_)` wrapper on **both** `ComputeOutcome::{Completed,Failed}` (the `Unconstrained` rigid-body-arrows detail rides Completed-with-**warning**, not Failed) → a serde IPC mirror + `GuiState.fea_diagnostics` field. The neutral kernel enum gains no serde derive (consumer owns IPC serialization, per its header). `UnresolvedSelector` is channel-plumbed but data-deferred (no production `SelectorNoMatch` source until selector-BC emission, P2/4092). Channel-shape (wrapper enum vs raw `FeaDiagnosticDetail` field vs per-diagnostic pairing) and the both-paths finding ratified 2026-06-24 (/unblock 2966 → /prd). ι/2966 re-deps `[2924,2929,2961,4090]` → `[R3b, 2961]`.
@@ -272,7 +288,7 @@ The integration-gate task (ε) names this table as its observable signal.
   - **C = 4094** — migrate FEA callers/fixtures to the typed form (drop the `List<Real>`/`ConstitutiveLawInput` workarounds). Deps A.
   - **3429** (pending) — realization-op execution edge at `VolumeMesh` dispatch.
   - Full bracket chain: `2881/2882 → A → C` (type/idiom) + `3429 → P1 → P2` (functional), converging on **2930** (`α, β, A, P1, P2`). All `pending`, schedulable in dependency order now that 2881/2882 are activated.
-- **No novel substrate for the prismatic slice** — α/β/γ/δ/ε use only existing grammar and existing primitives (G3 fixtures `fea-result-model-1.ri`, `-2.ri` parse with 0 ERROR nodes).
+- **No novel substrate for the prismatic slice** — α/β/γ/δ/ε use only existing grammar and existing primitives (G3 fixtures `fea-result-model-1.ri`, `-2.ri` parse with 0 ERROR nodes). **These were PARSE checks only**, on ephemeral `/tmp` probes that were never committed: they establish that the grammar *accepts* a form, never that the compiler *implements* it. Decision #5's 2026-08-25 correction records three constructs that passed this G3 gate and are nonetheless broken — read it before treating any ✅ in the capability manifest as a semantic guarantee.
 
 ---
 
@@ -326,7 +342,7 @@ Greek labels are PRD-local; task IDs are assigned/reused at decompose. Re-homed 
 
 **Gated cross-PRD (kept, not shipped in the prismatic batch).**
 
-- **2930 — bracket auto-thickness, minimize-mass, end-to-end (kept a bracket).** Rewrite to honest grammar (decision #5). *Signal (leaf):* `reify build` of the bracket example converges a thickness and the design loop holds. *Prereqs:* α, β, **A=4093, P1=4091, P2=4092** (producer-completion, cross-PRD; P2→P1, A→2881/2882, 3429 transitive via P1). Re-dep 2930 (applied): `[2924,2926,2928,3092]` → `[α(4084), β(4085), A(4093), P1(4091), P2(4092), 2926, 2928, 3092]`.
+- **2930 — bracket auto-thickness, minimize-mass, end-to-end (kept a bracket).** Rewrite to honest grammar — a bare `minimize` plus a **separate `constraint` member**, *not* the `minimize … where …` form decision #5 originally ratified (see decision #5's 2026-08-25 correction; the guard is silently dropped, owner task **6575**, which now gates 2930). *Signal (leaf):* `reify build` of the bracket example converges a thickness and the design loop holds. *Prereqs:* α, β, **A=4093, P1=4091, P2=4092** (producer-completion, cross-PRD; P2→P1, A→2881/2882, 3429 transitive via P1). Re-dep 2930 (applied): `[2924,2926,2928,3092]` → `[α(4084), β(4085), A(4093), P1(4091), P2(4092), 2926, 2928, 3092]`.
 
 ---
 
