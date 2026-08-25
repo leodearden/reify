@@ -1,14 +1,25 @@
 /**
- * Single source of truth for the viewport's draw-order ladder.
+ * The viewport's draw-order ladder, and the source of truth for its HELPER tier.
  *
  * three.js sorts a render list by `renderOrder` BEFORE `z` — in both
  * `painterSortStable` (opaque pass) and `reversePainterSortStable` (transparent
  * pass) — so this ladder is authoritative and not depth-dependent:
  *
- *   -1      undeformed-geometry underlay        (meshManager.ts)
+ *   -1      undeformed-geometry underlay        (meshManager.ts, literal)
  *    0      model meshes                        (three.js default)
- *    1..9   scene-content overlays              (feaDiagnosticOverlay.ts uses 1)
- *   10..12  viewport helper tier                (this module)
+ *    1..9   scene-content overlays              (feaDiagnosticOverlay.ts, literal: 1)
+ *   10..12  viewport helper tier                (this module — the constants below)
+ *
+ * ## What this module does and does not own
+ *
+ * Only the helper tier is declared here. The underlay (-1) and scene-content
+ * overlay (1) values are still module-private literals at their use sites —
+ * `meshManager.ts` (`overlay.renderOrder = -1`) and `feaDiagnosticOverlay.ts`
+ * (`const OVERLAY_RENDER_ORDER = 1`) — so the table above is a DESCRIPTION of
+ * those tiers, not their definition. Migrating them into this module is tracked
+ * follow-up work; until it lands, `renderOrder.test.ts` scans both declarations
+ * and fails if either drifts into or above the helper tier, so the ladder above
+ * cannot silently stop being true.
  *
  * ## The invariant this tier exists to enforce (#6587, #4214)
  *
