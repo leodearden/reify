@@ -49,6 +49,24 @@ fn task_fixture(
     })
 }
 
+/// A [`task_fixture`] that P1 will actually CONSIDER: `status: "done"`, a
+/// `done_provenance.commit`, and a NON-NULL `done_at`.
+///
+/// P1 SKIPS a task whose `done_at` is null (`src/p1_producer_orphan.rs:104`)
+/// or whose `done_provenance.commit` is absent (`:126`), and `task_fixture`
+/// hardcodes `done_at: null` because most callers here are exercising other
+/// detectors. A P1 fixture that inherited that null would make its run vacuous
+/// no matter what the code under test did — the detector would never reach
+/// `get_changed_symbols` at all. Keeping those two eligibility rules in ONE
+/// place, rather than re-spelling the whole 9-field record at each P1 call
+/// site, is what stops a future field from silently making such a fixture
+/// inert again.
+fn done_task_fixture(task_id: &str, commit: &str, done_at: u64) -> serde_json::Value {
+    let mut task = task_fixture(task_id, "done", Some("merged"), Some(commit));
+    task["done_at"] = serde_json::json!(done_at);
+    task
+}
+
 /// Write tasks.json with the given task fixtures to `dir/tasks.json`.
 fn write_tasks_json(dir: &Path, tasks: &[serde_json::Value]) -> std::path::PathBuf {
     let path = dir.join("tasks.json");
@@ -3207,38 +3225,39 @@ mod freshness_gate {
         );
     }
 
-    /// Write ONE done task pinned to `commit` over `path`, replacing whatever
-    /// `scenario()` put there.
+    /// Overwrite `tasks_file` with ONE P1-eligible done task pinned to
+    /// `commit`, replacing whatever `scenario()` put there.
     ///
-    /// P1 SKIPS a task whose `done_at` is null (`src/p1_producer_orphan.rs:104`)
-    /// or whose `done_provenance.commit` is absent (`:126`), and `task_fixture`
-    /// above hardcodes `done_at: null`. A fixture that inherited either would
-    /// make the P1 leg vacuous no matter what the seam did — the run would
-    /// never reach `get_changed_symbols` and the breadcrumb assertion would be
-    /// asserting the absence of something unreachable.
+    /// The eligibility rules (`status: "done"`, a `done_provenance.commit`, a
+    /// non-null `done_at`) live in `done_task_fixture`, and the
+    /// serialize-and-write in `write_tasks_json`; this helper only supplies
+    /// what is scenario-specific.
     ///
     /// `since_sha` is derived by P1 as `{commit}^1`, which does NOT resolve in
     /// `scenario()`'s one-commit repo. That is fine and deliberate: both SHAs
     /// are passed verbatim into the `tools/call` arguments
     /// (`src/jcodemunch_client.rs:1063-1070`) with no local git resolution, and
     /// the mock errors the call regardless.
-    fn write_p1_done_task(path: &std::path::Path, commit: &str) {
-        let tasks = serde_json::json!([{
-            "task_id": "synthetic-per-call-p1",
-            "status": "done",
-            "files": ["crates/reify-audit/src/lib.rs"],
-            "done_provenance": {"kind": "merged", "commit": commit, "note": null},
-            "title": "Synthetic done task for the per-call fail-soft lock",
-            "prd": null,
-            "consumer_ref": null,
-            "audit_foundation": null,
-            "done_at": 1_700_000_000_u64
-        }]);
-        std::fs::write(
-            path,
-            serde_json::to_string_pretty(&tasks).expect("serialize"),
-        )
-        .expect("overwrite tasks.json with a P1-eligible done task");
+    fn write_p1_done_task(tasks_file: &std::path::Path, commit: &str) {
+        let mut task = done_task_fixture("synthetic-per-call-p1", commit, 1_700_000_000);
+        // `seed.rs` is the one file `init_git_repo_with_one_commit` actually
+        // commits into the scenario repo, so this record names a path that
+        // EXISTS where the binary is pointed. `task_fixture`'s default is a
+        // reify path with no meaning inside a throwaway temp repo; P1 never
+        // reads `files` on this route (it derives its range from
+        // `done_provenance.commit` and its symbols from `get_changed_symbols`),
+        // so an inert-but-plausible path would read as a live premise.
+        task["files"] = serde_json::json!(["seed.rs"]);
+
+        let dir = tasks_file
+            .parent()
+            .expect("the scenario's tasks.json must live in a directory");
+        let written = write_tasks_json(dir, &[task]);
+        assert_eq!(
+            written, tasks_file,
+            "write_tasks_json must land on the scenario's OWN tasks.json — the \
+             one `Scenario::run` passes as --tasks-file"
+        );
     }
 
     /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
@@ -3282,6 +3301,11 @@ mod freshness_gate {
         // fail-soft stays silent.
         let mock = spawn_mock_mcp(|_args| None);
         let out = s.run("PDEAD", &["--jcodemunch-url", mock.url()]);
+        // Tear the mock down BEFORE asserting so a failing assertion cannot
+        // leak the accept thread into the rest of the run (the convention
+        // every other mock-using test in this file follows; `Drop` alone sets
+        // the flag without joining the thread).
+        mock.stop();
         let stderr = String::from_utf8_lossy(&out.stderr);
 
         // --- the four assertions that ALL PASS on this vacuous run ---
@@ -3342,6 +3366,7 @@ mod freshness_gate {
 
         let mock = spawn_mock_mcp(|_args| None);
         let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
         let stderr = String::from_utf8_lossy(&out.stderr);
 
         assert_eq!(
