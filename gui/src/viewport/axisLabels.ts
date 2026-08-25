@@ -1,6 +1,7 @@
 import {
   CanvasTexture,
   Group,
+  LinearFilter,
   Sprite,
   SpriteMaterial,
 } from 'three';
@@ -44,6 +45,25 @@ const LABEL_OFFSET = 2.3;
  */
 const LABEL_SCREEN_SCALE = 0.055;
 
+/**
+ * Edge length, in texels, of the square offscreen canvas each glyph is drawn into.
+ *
+ * Sized against the WORST case rather than the typical one: LABEL_SCREEN_SCALE puts
+ * the label at 4.8% of the viewport height, which on a 1600-device-pixel-tall HiDPI
+ * viewport is ~77 device pixels — comfortably under 128, so the glyph is MINIFIED
+ * (never magnified) on every display we target. The #6588 value of 64 was on the
+ * wrong side of that line, and a magnified hard-edged glyph is exactly the reported
+ * stair-stepping.
+ */
+const LABEL_TEXTURE_PX = 128;
+
+/**
+ * Glyph height as a fraction of LABEL_TEXTURE_PX. Held constant so raising the
+ * texture resolution raises the LETTER's resolution rather than shrinking the
+ * letter inside a larger, mostly-empty canvas.
+ */
+const LABEL_FONT_RATIO = 0.75;
+
 interface LabelSpec {
   axis: 'X' | 'Y' | 'Z';
   color: number;
@@ -68,20 +88,28 @@ const LABELS: LabelSpec[] = [
  */
 function makeTextSprite(spec: LabelSpec): Sprite {
   const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 64;
+  canvas.width = LABEL_TEXTURE_PX;
+  canvas.height = LABEL_TEXTURE_PX;
 
+  const centre = LABEL_TEXTURE_PX / 2;
   const ctx = canvas.getContext('2d');
   if (ctx) {
-    ctx.clearRect(0, 0, 64, 64);
+    ctx.clearRect(0, 0, LABEL_TEXTURE_PX, LABEL_TEXTURE_PX);
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 48px sans-serif';
+    ctx.font = `bold ${Math.round(LABEL_TEXTURE_PX * LABEL_FONT_RATIO)}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(spec.axis, 32, 32);
+    ctx.fillText(spec.axis, centre, centre);
   }
 
   const texture = new CanvasTexture(canvas);
+  // CanvasTexture inherits minFilter = LinearMipmapLinearFilter. Now that
+  // LABEL_SCREEN_SCALE fixes the label at ~4.8% of the frame, the glyph is usually
+  // MINIFIED, so that default would resolve a 128-px letter through a blurred mip —
+  // trading #6588's stair-stepping for mush. Sample the base level directly and skip
+  // building the mip chain we would never want.
+  texture.minFilter = LinearFilter;
+  texture.generateMipmaps = false;
   const material = new SpriteMaterial({
     map: texture,
     color: spec.color,
