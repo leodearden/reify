@@ -123,15 +123,36 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// change, because no sweep will say so.
 ///
 /// That exclusion was written assuming a test-support crate's publics are
-/// reached only from test files. Two items break that assumption — this one and
-/// `crate::ignore_hygiene::extract_ignore_reason` — both reached from
-/// `reify-audit`'s PRODUCTION path. The script's own comment above the
-/// exclusion now records that as an accepted blind spot rather than an
-/// assumed-safe one, and both manifests on the edge — `crates/reify-audit`'s
-/// and this crate's — name the fact and both reaches at their own site, then
-/// defer the argument here rather than restating it. All three point HERE, and
-/// this paragraph is the one full account: a reader arriving from any of them
-/// should need nothing further.
+/// reached only from test files. Two items break that assumption, both
+/// reached from `reify-audit`'s PRODUCTION path:
+///
+/// - this one, together with [`REPO_REDIRECT_VARS`] — re-exported by
+///   `reify_audit::git_env`, whose `git -C <root>` constructor every
+///   repo-targeting call site above the edge is required to build through
+///   (added by task 5657);
+/// - `crate::ignore_hygiene::extract_ignore_reason` — read by
+///   `reify_audit::ptodo`'s scan for the §8.3 γ reason policy, and the
+///   original reason `reify-audit` carries this crate as a normal dependency
+///   rather than a dev-dependency.
+///
+/// Items, deliberately, and not a census of their call sites — such a census
+/// rots the moment one is renamed while still reading as authoritative, which
+/// is why `reify_audit::git_env`'s own module doc tells a reader to re-run the
+/// sweep rather than trust a list written down there.
+///
+/// This two-item list lives HERE and nowhere else. The three other sites that
+/// describe the arrangement state only the FACT that some of this crate's
+/// publics are on that production path, and point back here for which ones and
+/// why: the script's comment above the exclusion, which now records it as an
+/// accepted blind spot rather than an assumed-safe one, and both manifests
+/// (`crates/reify-audit`'s `[dependencies]` entry and this crate's package
+/// note). A reader arriving from any of them has reached the full account and
+/// needs nothing further.
+/// Single-sourcing it is not fastidiousness: nothing pins those sites to each
+/// other the way `crate::orphan_audit`'s `EXCLUDE_CRATES` is pinned across the
+/// language boundary, and the reify-audit copy had already drifted once — task
+/// 5657 added the second reach while that manifest sat outside its locked
+/// scope, leaving the comment naming only the first.
 ///
 /// Whether the arrangement warrants a dep-free `reify-git-env` leaf crate the
 /// sweep does cover, or a narrower `EXCLUDE_CRATES`, is tracked as follow-up

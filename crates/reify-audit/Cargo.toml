@@ -23,19 +23,16 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # endpoint is localhost (HTTP). See `crates/reify-audit/src/fused_memory_client.rs`.
 ureq = { version = "2.10", default-features = false, features = ["json"] }
 # reify-test-support: a deliberate PRODUCTION dependency, not a dev-dep that
-# drifted. TWO of that crate's publics are reached from this crate's production
-# path, so its `test-support` NAME under-describes what this edge carries:
-#   - reify_test_support::ignore_hygiene::extract_ignore_reason, called by
-#     production ptodo.rs::check (§8.3 γ lane) — the original reason for the
-#     promotion from dev-dep, and for a while the only reach;
-#   - reify_test_support::git_env::{REPO_REDIRECT_VARS, sanitize}, re-exported by
-#     src/git_env.rs and reached from production RealGitOps via git_env::command.
-#     Added by task 5657, which left this comment naming only the first because
-#     Cargo.toml was outside that task's locked scope.
-# Why both live BELOW the edge rather than here, and the open question about the
-# shape of the arrangement, are argued once in `sanitize`'s doc comment
-# (crates/reify-test-support/src/git_env.rs) — this comment points there rather
-# than restating it, so there is one place to edit when that question resolves.
+# drifted. Some of that crate's publics are reached from this crate's production
+# path, so its `test-support` NAME under-describes what this edge carries.
+# WHICH publics, why they live BELOW the edge rather than here, and the open
+# question about the shape of the arrangement are argued once in `sanitize`'s
+# doc comment (crates/reify-test-support/src/git_env.rs).
+# This comment deliberately does NOT restate that list. It carried its own copy
+# until task 5657 added a second reach while Cargo.toml sat outside that task's
+# locked scope, leaving the copy naming only the first — and nothing pins the
+# sites that mention this edge to each other. One destination means adding or
+# retiring a reach is one edit rather than several coordinated ones.
 # Acyclic: reify-test-support depends on reify-ast/core/ir/syntax/compiler —
 # none of which depend on reify-audit. PRD §4/§8.3/§10 sanction this direction.
 # Build-graph note: the transitive compiler-stack deps inflate the audit binary's
