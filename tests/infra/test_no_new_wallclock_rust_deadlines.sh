@@ -4,7 +4,9 @@
 # Regression guard (task #6438):
 #   Flags NEW hand-rolled real-clock deadlines and elapsed-time UPPER bounds
 #   in gui/src-tauri/src/tests/*.rs, so the flake class de-flaked by tasks
-#   #5143, #5422, #5709 and #6438 cannot silently return a FIFTH time.
+#   #5143, #5422, #5709 and #6438 cannot silently return a FIFTH time THERE.
+#   Read that as scoped to that one directory: it is where all four instances
+#   happened, and it is all this guard scans. See SCOPE under KNOWN LIMITS.
 #
 # The guard itself is a LOAD-INDEPENDENT static grep -- it is NOT a wall-clock
 # test, and it runs no cargo, no npm and no watcher.
@@ -78,7 +80,24 @@
 # a review, not added quietly.
 #
 # KNOWN LIMITS, stated rather than hidden -- this is a lexical guard, not a
-# type-aware one.
+# type-aware one, and it covers ONE directory.
+#
+# SCOPE, stated first because it bounds every other claim here. `_LIVE_DIR` is
+# gui/src-tauri/src/tests and its glob is non-recursive, so what this guard
+# ratchets is the file that produced all four flakes -- not the Rust half of
+# the tree. The identical Rule A shape exists elsewhere today, unguarded:
+#   * crates/reify-audit/tests/jcodemunch_session_live.rs -- 8 matching lines
+#   * crates/reify-cli/tests/harness_cli/cli_lsp_protocol.rs -- 4
+#   * crates/reify-fdm/src/slice.rs -- 2, and outside tests at that
+# i.e. 14 lines across 3 files, measured 2026-08-25 by running this guard's
+# own two regexes over crates/ and gui/. They hand-roll a deadline off the raw
+# clock and poll against it, which is exactly what Rule A exists to catch.
+# Pointing `_LIVE_DIR` at those roots is therefore NOT a one-line change: they
+# would fail the gate on day one, so extending the ratchet needs a per-file
+# baseline (or an escape argued at each site), and those files sit outside
+# task #6438's scope. Filed as follow-up work rather than done here or left
+# implied -- until it lands, a reader should assume the Rust half of the tree
+# is unguarded except for this one directory.
 #
 # FALSE NEGATIVES, i.e. shapes that get past it by construction:
 #   * A named constant: `assert!(elapsed < TIMEOUT_BUDGET)` carries neither a
