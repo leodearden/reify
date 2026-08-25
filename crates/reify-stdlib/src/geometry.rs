@@ -562,7 +562,13 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         // `affine_map(linear, translation)`: general construction from a 3×3
         // dimensionless matrix (row-major) and a Vector3 translation (stored in SI
         // meters). The linear part must be exactly 3×3 and dimensionless (G6
-        // dimensionless-linear-part contract); otherwise `Value::Undef`.
+        // dimensionless-linear-part contract), and the TRANSLATION must be LENGTH
+        // (task 5747, units-length ζ / R12); otherwise `Value::Undef`.
+        //
+        // The two halves are independent and stay that way: D11 keeps the LINEAR
+        // part dimensionless-required, so its check below is untouched by ζ, and
+        // `diagnose` bails on it FIRST so a dimensioned-linear call is never
+        // mislabelled as a translation rejection.
         "affine_map" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
@@ -580,9 +586,9 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 [data[3], data[4], data[5]],
                 [data[6], data[7], data[8]],
             ];
-            let (translation, _t_dim) = match decompose_vec3(&args[1]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
+            let translation = match decompose_vec3(&args[1]) {
+                Some((t, t_dim)) if t_dim == DimensionVector::LENGTH => t,
+                _ => return Some(Value::Undef),
             };
             Value::AffineMap {
                 linear,
@@ -1777,6 +1783,35 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
                 reify_core::Diagnostic::error(length_rejection_message(
                     "affine_translate",
                     "dx/dy/dz",
+                    &got,
+                ))
+                .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            )
+        }
+        // `affine_map` needs no such join: `translation` is literally the
+        // builtin's own parameter name for the whole `Vector3`.
+        //
+        // GUARD ORDER MATTERS. The LINEAR part is checked FIRST and bails, so a
+        // dimensioned-linear call — which fails the pre-existing D11
+        // dimensionless check, not ζ's — is never mislabelled as a translation
+        // rejection.
+        "affine_map" => {
+            if args.len() != 2 {
+                return None;
+            }
+            match matrix_components_f64(&args[0]) {
+                Some((3, 3, _, dim)) if dim.is_dimensionless() => {}
+                // Wrong shape or a dimensioned linear part: not ζ's to diagnose.
+                _ => return None,
+            }
+            let Value::Vector(items) = &args[1] else {
+                return None;
+            };
+            let got = length_group_rejection(items)?;
+            Some(
+                reify_core::Diagnostic::error(length_rejection_message(
+                    "affine_map",
+                    "translation",
                     &got,
                 ))
                 .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
