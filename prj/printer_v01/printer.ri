@@ -903,6 +903,18 @@ pub structure DriveTendons {
     let out_b2_desc_x = 0mm                          // straight down the MID corridor
     let out_b2_run_c  = (idler_in_r + out_b2_desc_x + r_pitch) / 2
     let out_b2_run_l  = idler_in_r - out_b2_desc_x - r_pitch
+    // Low corner + up-turn X stations, named ONCE so the placements below and
+    // the wrap-sense constraints at the end read the SAME cells (a constraint
+    // that re-states the offset instead of reading it cannot catch a flipped
+    // placement — it just agrees with itself).
+    let corner_a1_x = out_a1_desc_x - r_pitch
+    let corner_b1_x = out_b1_desc_x - r_pitch
+    let corner_a2_x = out_a2_desc_x + r_pitch
+    let corner_b2_x = out_b2_desc_x - r_pitch
+    let up_a1_x     = fl_out_x_a + r_pitch
+    let up_b1_x     = fl_out_x_b + r_pitch
+    let up_a2_x     = fl_in_x_a  - r_pitch
+    let up_b2_x     = fl_in_x_b  + r_pitch
     // Low-corner / up-turn centre heights (rule 3).
     let lo_hi_c = low_hi + r_pitch          // plane_out corner/up-turn centres
     let lo_lo_c = low_lo + r_pitch
@@ -949,18 +961,18 @@ pub structure DriveTendons {
     sub desc_b1 = LinearTendon(length: in_b1_top - lo_lo_c) at transform3(orient_identity(), vec3(out_b1_desc_x, plane_out, (in_b1_top + lo_lo_c) / 2))
     sub desc_a2 = LinearTendon(length: in_a2_top - lo_in_lo_c) at transform3(orient_identity(), vec3(out_a2_desc_x, plane_in,  (in_a2_top + lo_in_lo_c) / 2))
     sub desc_b2 = LinearTendon(length: in_b2_top - lo_in_hi_c) at transform3(orient_identity(), vec3(out_b2_desc_x, plane_in,  (in_b2_top + lo_in_hi_c) / 2))
-    sub corner_lo_a1 = IdlerPulley() at transform3(rot_to_y, vec3(out_a1_desc_x - r_pitch, plane_out, lo_hi_c))
-    sub corner_lo_b1 = IdlerPulley() at transform3(rot_to_y, vec3(out_b1_desc_x - r_pitch, plane_out, lo_lo_c))
-    sub corner_lo_a2 = IdlerPulley() at transform3(rot_to_y, vec3(out_a2_desc_x + r_pitch, plane_in,  lo_in_lo_c))
-    sub corner_lo_b2 = IdlerPulley() at transform3(rot_to_y, vec3(out_b2_desc_x - r_pitch, plane_in,  lo_in_hi_c))
-    sub idler_up_a1 = IdlerPulley() at transform3(rot_to_y, vec3(fl_out_x_a + r_pitch, plane_out, lo_hi_c))
-    sub idler_up_b1 = IdlerPulley() at transform3(rot_to_y, vec3(fl_out_x_b - r_pitch, plane_out, lo_lo_c))
-    sub idler_up_a2 = IdlerPulley() at transform3(rot_to_y, vec3(fl_in_x_a - r_pitch,  plane_in,  lo_in_lo_c))
-    sub idler_up_b2 = IdlerPulley() at transform3(rot_to_y, vec3(fl_in_x_b + r_pitch,  plane_in,  lo_in_hi_c))
-    sub run_lo_a1 = LinearTendon(length: out_a1_desc_x - r_pitch - fl_out_x_a - r_pitch) at transform3(rot_to_x, vec3((out_a1_desc_x - r_pitch + fl_out_x_a + r_pitch) / 2, plane_out, low_hi))
-    sub run_lo_b1 = LinearTendon(length: out_b1_desc_x - r_pitch - fl_out_x_b + r_pitch) at transform3(rot_to_x, vec3((out_b1_desc_x - r_pitch + fl_out_x_b - r_pitch) / 2, plane_out, low_lo))
-    sub run_lo_a2 = LinearTendon(length: fl_in_x_a - r_pitch - out_a2_desc_x - r_pitch)  at transform3(rot_to_x, vec3((out_a2_desc_x + r_pitch + fl_in_x_a - r_pitch) / 2, plane_in, low_in_lo))
-    sub run_lo_b2 = LinearTendon(length: out_b2_desc_x - r_pitch - fl_in_x_b - r_pitch)  at transform3(rot_to_x, vec3((out_b2_desc_x - r_pitch + fl_in_x_b + r_pitch) / 2, plane_in, low_in_hi))
+    sub corner_lo_a1 = IdlerPulley() at transform3(rot_to_y, vec3(corner_a1_x, plane_out, lo_hi_c))
+    sub corner_lo_b1 = IdlerPulley() at transform3(rot_to_y, vec3(corner_b1_x, plane_out, lo_lo_c))
+    sub corner_lo_a2 = IdlerPulley() at transform3(rot_to_y, vec3(corner_a2_x, plane_in,  lo_in_lo_c))
+    sub corner_lo_b2 = IdlerPulley() at transform3(rot_to_y, vec3(corner_b2_x, plane_in,  lo_in_hi_c))
+    sub idler_up_a1 = IdlerPulley() at transform3(rot_to_y, vec3(up_a1_x, plane_out, lo_hi_c))
+    sub idler_up_b1 = IdlerPulley() at transform3(rot_to_y, vec3(up_b1_x, plane_out, lo_lo_c))
+    sub idler_up_a2 = IdlerPulley() at transform3(rot_to_y, vec3(up_a2_x, plane_in,  lo_in_lo_c))
+    sub idler_up_b2 = IdlerPulley() at transform3(rot_to_y, vec3(up_b2_x, plane_in,  lo_in_hi_c))
+    sub run_lo_a1 = LinearTendon(length: corner_a1_x - up_a1_x) at transform3(rot_to_x, vec3((corner_a1_x + up_a1_x) / 2, plane_out, low_hi))
+    sub run_lo_b1 = LinearTendon(length: corner_b1_x - up_b1_x) at transform3(rot_to_x, vec3((corner_b1_x + up_b1_x) / 2, plane_out, low_lo))
+    sub run_lo_a2 = LinearTendon(length: up_a2_x - corner_a2_x) at transform3(rot_to_x, vec3((corner_a2_x + up_a2_x) / 2, plane_in, low_in_lo))
+    sub run_lo_b2 = LinearTendon(length: corner_b2_x - up_b2_x) at transform3(rot_to_x, vec3((corner_b2_x + up_b2_x) / 2, plane_in, low_in_hi))
     sub rise_a1 = LinearTendon(length: flz_out1 - lo_hi_c) at transform3(orient_identity(), vec3(fl_out_x_a, plane_out, (flz_out1 + lo_hi_c) / 2))
     sub rise_b1 = LinearTendon(length: flz_out1 - lo_lo_c) at transform3(orient_identity(), vec3(fl_out_x_b, plane_out, (flz_out1 + lo_lo_c) / 2))
     sub rise_a2 = LinearTendon(length: flz_out2 - lo_in_lo_c) at transform3(orient_identity(), vec3(fl_in_x_a,  plane_in,  (flz_out2 + lo_in_lo_c) / 2))
@@ -1009,7 +1021,18 @@ pub structure DriveTendons {
     // 7. The mid corridor is wide enough to admit a rope at all — the check
     //    that would have caught the v1 layout at cap_x = 100mm.
     constraint mid_corr_x > rope_r + clear_min
-    // 8. #6586 PINS: every hand-kept literal above equals the derived cell it
+    // 8. WRAP SENSE: a turn pulley must sit on the side of its vertical that
+    //    FACES the incoming run — tangency alone does not pin this, and an
+    //    inverted sign puts the pulley on the wrong side of its own rope while
+    //    still reading as "two segments tangent to this pulley" (exactly how
+    //    idler_up_b1 shipped wrong on 2026-08-25; Leo caught it by eye). The
+    //    corner and the up-turn must lie on the SAME side of the rise, so the
+    //    two offsets share a sign and their product is positive.
+    constraint (corner_a1_x - fl_out_x_a) * (up_a1_x - fl_out_x_a) > 0mm * 1mm
+    constraint (corner_b1_x - fl_out_x_b) * (up_b1_x - fl_out_x_b) > 0mm * 1mm
+    constraint (corner_a2_x - fl_in_x_a)  * (up_a2_x - fl_in_x_a)  > 0mm * 1mm
+    constraint (corner_b2_x - fl_in_x_b)  * (up_b2_x - fl_in_x_b)  > 0mm * 1mm
+    // 9. #6586 PINS: every hand-kept literal above equals the derived cell it
     //    stands in for. These are the whole safety story for the workaround —
     //    if the drive geometry moves and a literal does not follow, the design
     //    fails here rather than silently rendering rope in the wrong place.
