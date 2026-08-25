@@ -475,6 +475,22 @@ fn decode_tool_result(result: &Value) -> Result<Value, LoadError> {
 // Wire → struct adapters
 // -----------------------------------------------------------------------
 
+/// Read a `u64` field from a MUNCH row, tolerating both a JSON number (the
+/// normal typed-column shape) and a JSON string.
+///
+/// A 3-segment, type-less `__tables` spec (see [`parse_one_table_spec`]'s
+/// widened grammar) decodes EVERY column as `ColType::Str`, so a numeric
+/// column like `line` can arrive as a JSON string under that shape. Reading
+/// it with a bare `.as_u64()` would then silently drop the whole row in a
+/// `filter_map` adapter (`changed_symbols_from_wire`, `dead_symbols_from_wire`)
+/// — turning a version-drift grammar change into a silently-empty result,
+/// exactly the failure mode this module exists to avoid. Returns `None` when
+/// the field is absent or is neither a number nor a string parseable as `u64`.
+fn row_u64(row: &Value, key: &str) -> Option<u64> {
+    let v = row.get(key)?;
+    v.as_u64().or_else(|| v.as_str()?.parse().ok())
+}
+
 /// Parse signals from a Python-list string like `"['a', 'b', 'c']"`.
 ///
 /// Strips surrounding `[`/`]`, splits on `,`, trims whitespace and surrounding
@@ -524,7 +540,7 @@ fn dead_symbols_from_wire(decoded: &Value) -> Vec<DeadSymbol> {
             let name = row.get("name")?.as_str()?.to_string();
             let kind = row.get("kind")?.as_str()?.to_string();
             let file = row.get("file")?.as_str()?.to_string();
-            let line = row.get("line")?.as_u64()? as usize;
+            let line = row_u64(row, "line")? as usize;
             let confidence = row.get("confidence")?.as_f64()?;
             let signals_raw = row
                 .get("signals")
@@ -590,7 +606,7 @@ fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
         .filter_map(|row| {
             let name = row.get("name")?.as_str()?.to_string();
             let file = row.get("file")?.as_str()?.to_string();
-            let line = row.get("line")?.as_u64()? as usize;
+            let line = row_u64(row, "line")? as usize;
             Some(ChangedSymbol {
                 name,
                 file,
@@ -647,41 +663,66 @@ fn layer_violations_from_wire(decoded: &Value) -> Vec<LayerViolation> {
 
 /// Adapter: MUNCH-decoded value → `Vec<SymbolReference>`.
 ///
-/// Finds the first table whose rows carry a `file` field; returns an empty
-/// vec when absent. `file` is the only column P1 consumes, so it is the
-/// selector; `line` is read when present and defaults to `0` otherwise.
+/// Prefers the well-known `__rows__` table when present and carrying a
+/// `file` field; otherwise falls back to the first OTHER table whose rows
+/// carry a `file` field. Returns an empty vec when neither is found. `file`
+/// is the only column P1 consumes, so it is the selector; `line` is read
+/// when present and defaults to `0` otherwise.
+///
+/// The `__rows__`-first preference matters because `decoded` is a
+/// `serde_json::Map` — a `BTreeMap` (this crate does not enable
+/// `serde_json`'s `preserve_order` feature) — so a plain "iterate and
+/// return the first table with a `file` column" scan visits tables in
+/// ALPHABETICAL key order, not wire order. Without the preference, a future
+/// multi-table response whose alphabetically-first table happens to carry a
+/// `file` column would be silently selected over `__rows__`, returning the
+/// wrong reference set. See
+/// `find_references_from_wire_prefers_rows_table_when_another_table_sorts_first`.
 ///
 /// The real jcodemunch-mcp 1.108.54 `find_references` wire shape (measured
-/// 2026-08-22, re-confirmed live against `local/reify-4ae45bbd`) is
-/// `file|specifier|match_type` and carries NO `line` column at all — so
-/// `line == 0` means "the wire did not report one", not "line 1". Every
-/// fixture under `tests/fixtures/jcodemunch/` predates this: no captured
-/// `find_references` fixture exists (end-to-end validation is L-SMOKE's
-/// job), so this doc is the record of the live-measured shape.
+/// 2026-08-22, re-confirmed live against `local/reify-4ae45bbd`) names the
+/// table `__rows__` and is `file|specifier|match_type` — NO `line` column
+/// at all — so `line == 0` means "the wire did not report one", not
+/// "line 1". Every fixture under `tests/fixtures/jcodemunch/` predates
+/// this: no captured `find_references` fixture exists (end-to-end
+/// validation is L-SMOKE's job), so this doc is the record of the
+/// live-measured shape.
 fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
     let obj = match decoded.as_object() {
         Some(o) => o,
         None => return Vec::new(),
     };
-    for (_table_name, table_val) in obj {
-        if let Some(rows) = table_val.as_array() {
-            // Check whether this table's rows contain a `file` field.
-            if rows.iter().any(|r| r.get("file").is_some()) {
-                return rows
-                    .iter()
-                    .filter_map(|row| {
-                        let file = row.get("file")?.as_str()?.to_string();
-                        let line = row
-                            .get("line")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0) as usize;
-                        Some(SymbolReference { file, line })
-                    })
-                    .collect();
-            }
+
+    if let Some(rows) = obj.get("__rows__").and_then(Value::as_array)
+        && rows.iter().any(|r| r.get("file").is_some())
+    {
+        return references_from_rows(rows);
+    }
+
+    for (table_name, table_val) in obj {
+        if table_name == "__rows__" {
+            continue; // already tried above — avoids a double decode
+        }
+        if let Some(rows) = table_val.as_array()
+            && rows.iter().any(|r| r.get("file").is_some())
+        {
+            return references_from_rows(rows);
         }
     }
     Vec::new()
+}
+
+/// Decode a MUNCH row array (already known to carry a `file` field) into
+/// `Vec<SymbolReference>`. Shared by both the `__rows__`-preferred and the
+/// fallback-scan paths in [`find_references_from_wire`].
+fn references_from_rows(rows: &[Value]) -> Vec<SymbolReference> {
+    rows.iter()
+        .filter_map(|row| {
+            let file = row.get("file")?.as_str()?.to_string();
+            let line = row_u64(row, "line").unwrap_or(0) as usize;
+            Some(SymbolReference { file, line })
+        })
+        .collect()
 }
 
 // -----------------------------------------------------------------------
@@ -728,12 +769,62 @@ fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>
 fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option<String> {
     let (file, wire_line, file_line_count) = out_of_range.first()?;
     let n = out_of_range.len();
+    // Range-neutral phrasing ("outside the 1..=N range") deliberately avoids
+    // asserting `{wire_line} > {file_line_count}`: `wire_line` can be `0`
+    // (the "no line reported" sentinel — see `decl_line_out_of_range`), and
+    // `0 > file_line_count` is false, so a `>`-shaped message would read as
+    // self-contradictory for that entry (e.g. "line 0 > 13165 lines").
     Some(format!(
         "reify-audit: jcodemunch suppression enrichment: {n} symbol(s) have a declaration line \
-         past the file's current range (first: {file} line {wire_line} > {file_line_count} \
-         lines) — the jcodemunch index may be stale; re-index the repo. Suppression flags are \
-         unavailable for these symbols."
+         outside the file's 1..={file_line_count} range (first: {file} line {wire_line}) — the \
+         jcodemunch index may be stale; re-index the repo. Suppression flags are unavailable \
+         for these symbols."
     ))
+}
+
+/// Collect `(file, wire_line, file_line_count)` for every symbol whose
+/// wire-reported declaration line is out of range for its file, per
+/// [`decl_line_out_of_range`] — the SAME predicate `extract_suppression`
+/// uses for its own totality guard, so the two can never drift apart: the
+/// diagnostic this feeds is only correct when it fires for exactly the
+/// symbols `extract_suppression` treats as unlocatable.
+///
+/// `line_count_for(file)` should return `None` when the file's line count
+/// is unknown (e.g. the file could not be read), so an unreadable file is
+/// reported once by [`read_source_lines_for_enrichment`]'s own diagnostic
+/// and not double-reported here.
+///
+/// Factored out of `RealJCodemunchOps::get_changed_symbols`'s enrichment
+/// loop as an independently-tested step: before this helper existed, the
+/// out-of-range collection was a single `if` buried inside a loop that also
+/// drives `extract_suppression`, so deleting just that `if` would have left
+/// every other test in this file green. See
+/// `collect_stale_decl_lines_only_reports_symbols_out_of_range`.
+fn collect_stale_decl_lines(
+    symbols: &[ChangedSymbol],
+    line_count_for: impl Fn(&str) -> Option<usize>,
+) -> Vec<(String, usize, usize)> {
+    symbols
+        .iter()
+        .filter_map(|sym| {
+            let n = line_count_for(&sym.file)?;
+            decl_line_out_of_range(sym.line, n).then(|| (sym.file.clone(), sym.line, n))
+        })
+        .collect()
+}
+
+/// True when a 1-based declaration line is out of range for a file of
+/// `line_count` lines: either `0` (the "no line reported" sentinel) or
+/// beyond the file's last line.
+///
+/// Shared by [`extract_suppression`]'s totality guard and
+/// [`collect_stale_decl_lines`]'s diagnostic collection so the two can
+/// never drift apart — without a shared predicate, a later change to one
+/// (e.g. relaxing the guard's `>` to `>=`) could leave the other reporting
+/// symbols that were in fact scanned, or silently missing ones that were
+/// not.
+fn decl_line_out_of_range(decl_line_1based: usize, line_count: usize) -> bool {
+    decl_line_1based == 0 || decl_line_1based > line_count
 }
 
 // extract_suppression helper
@@ -769,11 +860,16 @@ fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option
 /// Callers should not let it be silent — see `stale_decl_line_diagnostic`,
 /// which `RealJCodemunchOps::get_changed_symbols` uses to surface a stale
 /// index on stderr.
+///
+/// Takes `lines: &[String]` (not `&[&str]`) so callers can pass the cached
+/// `Vec<String>` file contents directly instead of re-materialising a
+/// `Vec<&str>` adapter on every call — see `RealJCodemunchOps::get_changed_symbols`'s
+/// enrichment loop, which calls this once per symbol.
 fn extract_suppression(
-    lines: &[&str],
+    lines: &[String],
     decl_line_1based: usize,
 ) -> (bool, bool, Option<String>) {
-    if decl_line_1based == 0 || decl_line_1based > lines.len() {
+    if decl_line_out_of_range(decl_line_1based, lines.len()) {
         return (false, false, None);
     }
     let decl_idx = decl_line_1based - 1; // 0-based
@@ -841,6 +937,17 @@ fn extract_g_allow(line: &str) -> Option<String> {
 ///
 /// This is the key client-side scoping step: jcodemunch's `find_references`
 /// API has no server-side file-scope parameter, so filtering is done here.
+///
+/// KNOWN LIMITATION: this discards every cross-file reference, not only
+/// same-named symbols declared in other files. A symbol consumed ONLY from
+/// another file — arguably the strongest evidence that it is NOT an
+/// orphan — ends up with an empty reference list after this filter runs.
+/// `p1_producer_orphan.rs`'s non-test-caller check therefore only ever sees
+/// same-file callers, even though its own condition does not spell out a
+/// same-file conjunct. Loosening this (e.g. if jcodemunch ever grows a
+/// server-side file-scope parameter — see the `JCodemunchOps::find_references`
+/// doc at `lib.rs:1206-1213` — or having P1 treat cross-file refs as their
+/// own signal) is tracked as a follow-up rather than fixed here.
 fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolReference> {
     refs.into_iter().filter(|r| r.file == file).collect()
 }
@@ -1165,7 +1272,6 @@ impl JCodemunchOps for RealJCodemunchOps {
         // Cache by path: many symbols share the same file (e.g. decl.rs has
         // 1110+ rows), so reading each file once avoids O(symbols) disk reads.
         let mut file_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
-        let mut out_of_range: Vec<(String, usize, usize)> = Vec::new();
         for sym in &mut symbols {
             let path = self.project_root.join(&sym.file);
             let lines = match file_cache.entry(path.clone()) {
@@ -1179,17 +1285,28 @@ impl JCodemunchOps for RealJCodemunchOps {
                 }
             };
             if !lines.is_empty() {
-                if sym.line == 0 || sym.line > lines.len() {
-                    out_of_range.push((sym.file.clone(), sym.line, lines.len()));
-                }
-                let lines_ref: Vec<&str> = lines.iter().map(String::as_str).collect();
                 let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
-                    extract_suppression(&lines_ref, sym.line);
+                    extract_suppression(lines, sym.line);
                 sym.has_allow_dead_code = has_allow_dead_code;
                 sym.has_cfg_test = has_cfg_test;
                 sym.g_allow_marker = g_allow_marker;
             }
         }
+        // A second pass over the now-fully-populated `file_cache` rather
+        // than an inline push in the loop above: `collect_stale_decl_lines`
+        // is its own independently-tested function (see
+        // `decl_line_out_of_range` / `collect_stale_decl_lines`'s doc), so
+        // the wiring here reduces to "call it and hand the result to
+        // `stale_decl_line_diagnostic`" — deleting either line breaks
+        // compilation (an unresolved `out_of_range`) rather than silently
+        // reintroducing the silent-degradation failure mode this task
+        // exists to remove.
+        let out_of_range = collect_stale_decl_lines(&symbols, |file| {
+            file_cache
+                .get(&self.project_root.join(file))
+                .filter(|lines| !lines.is_empty())
+                .map(Vec::len)
+        });
         if let Some(msg) = stale_decl_line_diagnostic(&out_of_range) {
             eprintln!("{msg}");
         }
@@ -1514,6 +1631,32 @@ mod tests {
         assert!(row0.g_allow_marker.is_none());
     }
 
+    /// A 3-segment (type-less) `__tables` spec — the grammar
+    /// `parse_one_table_spec` widened to accept — decodes EVERY column as
+    /// `ColType::Str`, so `line` arrives as a JSON string rather than a
+    /// number. Before `row_u64`, `row.get("line")?.as_u64()?` bailed on a
+    /// `Value::String` and silently dropped the row inside `filter_map`;
+    /// this pins that a string-encoded `line` still decodes.
+    #[test]
+    fn changed_symbols_from_wire_tolerates_a_string_encoded_line_under_a_typeless_spec() {
+        let munch = concat!(
+            "#MUNCH/1 tool=get_changed_symbols enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:added_symbols:name|file|line\n",
+            "t,widget,a.rs,99\n",
+        );
+        let v = munch_decode(munch).expect("decode type-less added_symbols munch");
+        let symbols = changed_symbols_from_wire(&v);
+        assert_eq!(
+            symbols.len(),
+            1,
+            "a string-encoded line must not cause the row to be dropped; got {symbols:?}"
+        );
+        assert_eq!(symbols[0].name, "widget");
+        assert_eq!(symbols[0].file, "a.rs");
+        assert_eq!(symbols[0].line, 99);
+    }
+
     // ------------------------------------------------------------------
     // step-11 / step-12: layer_violations_from_wire (both fixtures)
     // ------------------------------------------------------------------
@@ -1556,7 +1699,8 @@ mod tests {
             "#[cfg(test)]",
             "// G-allow: reason text",
             "pub fn my_fn() {}",
-        ];
+        ]
+        .map(String::from);
         let (allow, cfg, g) = extract_suppression(&src, 4);
         assert!(allow, "has_allow_dead_code should be true");
         assert!(cfg, "has_cfg_test should be true");
@@ -1565,7 +1709,7 @@ mod tests {
 
     #[test]
     fn extract_suppression_clean_decl() {
-        let src = ["pub fn clean() {}"];
+        let src = ["pub fn clean() {}"].map(String::from);
         let (allow, cfg, g) = extract_suppression(&src, 1);
         assert!(!allow);
         assert!(!cfg);
@@ -1574,7 +1718,7 @@ mod tests {
 
     #[test]
     fn extract_suppression_blank_g_allow_returns_none() {
-        let src = ["// G-allow:", "pub fn my_fn() {}"];
+        let src = ["// G-allow:", "pub fn my_fn() {}"].map(String::from);
         let (_allow, _cfg, g) = extract_suppression(&src, 2);
         assert!(g.is_none(), "blank G-allow: should not produce a marker");
     }
@@ -1682,6 +1826,33 @@ mod tests {
         );
     }
 
+    /// `serde_json`'s default `Map` (this crate does not enable the
+    /// `preserve_order` feature) is a `BTreeMap`, so iterating it visits
+    /// keys in ALPHABETICAL order, not wire order. `"Aux"` sorts before
+    /// `"__rows__"` (`'A'` = 0x41 < `'_'` = 0x5F), so a selector that just
+    /// returns the first table whose rows carry a `file` column would pick
+    /// the decoy `"Aux"` table over the real `"__rows__"` table here.
+    /// `find_references_from_wire` must prefer `__rows__` regardless of
+    /// where it sorts.
+    #[test]
+    fn find_references_from_wire_prefers_rows_table_when_another_table_sorts_first() {
+        let decoded = json!({
+            "Aux": [
+                { "file": "wrong/decoy.rs", "line": 1 },
+            ],
+            "__rows__": [
+                { "file": "right/actual.rs", "specifier": "crate", "match_type": "named" },
+            ],
+        });
+        let refs = find_references_from_wire(&decoded);
+        assert_eq!(
+            refs.len(),
+            1,
+            "must select __rows__, not an alphabetically-earlier decoy table; got {refs:?}"
+        );
+        assert_eq!(refs[0].file, "right/actual.rs");
+    }
+
     // ------------------------------------------------------------------
     // munch_decode: row field-count mismatch returns Protocol error
     // ------------------------------------------------------------------
@@ -1770,7 +1941,8 @@ mod tests {
             "#[allow(dead_code)]",
             "",                    // blank line breaks contiguity
             "pub fn my_fn() {}",
-        ];
+        ]
+        .map(String::from);
         let (allow, _cfg, _g) = extract_suppression(&src, 3);
         assert!(
             !allow,
@@ -1786,7 +1958,8 @@ mod tests {
             "let x = 1;",          // code line breaks contiguity
             "#[cfg(test)]",
             "pub fn my_fn() {}",
-        ];
+        ]
+        .map(String::from);
         let (allow, cfg, _g) = extract_suppression(&src, 4);
         // cfg(test) is directly above the declaration — should be found.
         assert!(cfg, "cfg(test) is directly above the declaration");
@@ -1814,7 +1987,8 @@ mod tests {
             "fn placeholder() {}",
             "#[allow(dead_code)]",
             "pub fn my_fn() {}",
-        ];
+        ]
+        .map(String::from);
         let (allow, _cfg, _g) = extract_suppression(&src, 3);
         assert!(
             allow,
@@ -1829,10 +2003,70 @@ mod tests {
         );
 
         // decl_line_1based == 0 is out of range regardless of lines' length.
-        let (allow, cfg, g) = extract_suppression(&["a"], 0);
+        let (allow, cfg, g) = extract_suppression(&["a".to_string()], 0);
         assert!(
             !allow && !cfg && g.is_none(),
-            "extract_suppression(&[\"a\"], 0) must return the neutral triple"
+            "extract_suppression(&[\"a\".to_string()], 0) must return the neutral triple"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // decl_line_out_of_range: the shared guard predicate
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn decl_line_out_of_range_boundary_cases() {
+        assert!(
+            decl_line_out_of_range(0, 10),
+            "line 0 (not reported) is always out of range"
+        );
+        assert!(
+            !decl_line_out_of_range(10, 10),
+            "decl_line == line_count (final line) is IN range — strictly `>`, not `>=`"
+        );
+        assert!(
+            decl_line_out_of_range(11, 10),
+            "decl_line > line_count is out of range"
+        );
+        assert!(
+            decl_line_out_of_range(1, 0),
+            "any positive decl_line is out of range for a 0-line file"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // collect_stale_decl_lines: the enrichment loop's out-of-range
+    // collection, factored out so its wiring is independently testable
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn collect_stale_decl_lines_only_reports_symbols_out_of_range() {
+        fn sym(name: &str, file: &str, line: usize) -> ChangedSymbol {
+            ChangedSymbol {
+                name: name.to_string(),
+                file: file.to_string(),
+                line,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }
+        }
+        let symbols = vec![
+            sym("in_range", "a.rs", 5),   // in range for a.rs (10 lines) — excluded
+            sym("zero_line", "b.rs", 0),  // line 0 — included
+            sym("past_eof", "c.rs", 999), // past c.rs's 3 lines — included
+            sym("unreadable", "d.rs", 1), // d.rs has no known line count — excluded
+        ];
+        let line_counts: HashMap<&str, usize> =
+            HashMap::from([("a.rs", 10), ("b.rs", 10), ("c.rs", 3)]);
+        let out_of_range =
+            collect_stale_decl_lines(&symbols, |file| line_counts.get(file).copied());
+
+        assert_eq!(
+            out_of_range,
+            vec![("b.rs".to_string(), 0, 10), ("c.rs".to_string(), 999, 3),],
+            "must collect exactly the out-of-range symbols whose file's line count is known, \
+             in symbol order; got {out_of_range:?}"
         );
     }
 
@@ -1980,6 +2214,36 @@ mod tests {
             msg3.lines().count(),
             1,
             "diagnostic must stay one line regardless of the affected count; got: {msg3:?}"
+        );
+    }
+
+    /// `wire_line == 0` (the "no line reported" sentinel — see
+    /// `decl_line_out_of_range`) is one of the two conditions that lands a
+    /// symbol in `out_of_range`, alongside past-EOF. The message must not
+    /// claim `0 > file_line_count`: that comparison is false, so a `>`-shaped
+    /// message reads as self-contradictory ("line 0 > 200 lines") and its
+    /// "re-index" remedy is confusing for a wire that simply never reported
+    /// a line at all.
+    #[test]
+    fn stale_decl_line_diagnostic_wire_line_zero_is_not_self_contradictory() {
+        let zero_line = vec![("crates/some/src/lib.rs".to_string(), 0usize, 200usize)];
+        let msg = stale_decl_line_diagnostic(&zero_line)
+            .expect("a wire_line == 0 entry must still produce a diagnostic");
+        assert!(
+            msg.contains("reify-audit: jcodemunch"),
+            "diagnostic must carry the reify-audit: jcodemunch prefix; got: {msg}"
+        );
+        assert!(
+            !msg.contains("line 0 >"),
+            "diagnostic must not claim `0 > file_line_count` — that is false; got: {msg}"
+        );
+        assert!(
+            msg.contains("crates/some/src/lib.rs"),
+            "diagnostic must name the path; got: {msg}"
+        );
+        assert!(
+            msg.contains("line 0"),
+            "diagnostic must still name the reported wire line 0; got: {msg}"
         );
     }
 
