@@ -635,6 +635,69 @@ describe('fitHelpers (#6588)', () => {
     expect(result.axes.scale.x).toBeGreaterThan(1);
   });
 
+  // ── Label ring follows the scaled axis tip ─────────────────────────────────
+
+  it.each(CUBE_CASES)('%s: moves the label ring just beyond the scaled axis tip', (_label, L) => {
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(L, L, L) as any);
+
+    const radius = radiusOfCube(L);
+    const axesWorldLength = 2 * result.axes.scale.x;
+    const offsets = labelOffsets(result);
+
+    for (const axis of ['X', 'Y', 'Z'] as const) {
+      // Strictly beyond the tip, so the letter never sits ON the axis it annotates...
+      expect(offsets[axis]).toBeGreaterThan(axesWorldLength);
+      // ...but still inside the scene's own neighbourhood, not off at a fixed 2.3
+      // that is ~7x the whole model for the #6588 sub-metre case.
+      expect(offsets[axis]).toBeLessThanOrEqual(2.3 * radius);
+    }
+
+    // Isotropic ring: exact equality, since all three derive from one distance.
+    expect(offsets.X).toBe(offsets.Y);
+    expect(offsets.Y).toBe(offsets.Z);
+
+    // The other two coordinates of each sprite must be exactly 0 — a ring that
+    // drifted off-axis would still satisfy the distance bounds above.
+    for (const sprite of result.axisLabels.children as any[]) {
+      const axis = sprite.userData.axis as 'X' | 'Y' | 'Z';
+      if (axis !== 'X') expect(sprite.position.x).toBe(0);
+      if (axis !== 'Y') expect(sprite.position.y).toBe(0);
+      if (axis !== 'Z') expect(sprite.position.z).toBe(0);
+    }
+  });
+
+  it.each(CUBE_CASES)('%s: never scales the labels Group', (_label, L) => {
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(L, L, L) as any);
+
+    // THE coupling this pins: the r183 sprite shader multiplies on-screen size by
+    // length(modelMatrix[0].xyz), which includes ANCESTOR scale. Scaling this Group
+    // would look like a tidy way to resize the ring while silently re-breaking
+    // axisLabels.ts's constant-screen-size fix — the exact #6588 symptom.
+    // Repositioning via setOffset is the only sound mechanism.
+    expect(result.axisLabels.scale.setScalar).not.toHaveBeenCalled();
+    expect(result.axisLabels.scale.set).not.toHaveBeenCalled();
+    expect(result.axisLabels.scale.x).toBe(1);
+    expect(result.axisLabels.scale.y).toBe(1);
+    expect(result.axisLabels.scale.z).toBe(1);
+  });
+
+  it.each(CUBE_CASES)('%s: leaves each sprite\'s own screen scale alone', (_label, L) => {
+    // Compare against a freshly-created scene rather than a hard-coded literal, so
+    // this stays true if LABEL_SCREEN_SCALE is ever retuned.
+    const pristine = setup() as any;
+    const expected = (pristine.axisLabels.children[0] as any).scale.x;
+
+    const result = setup() as any;
+    result.fitHelpers(boundsWithSize(L, L, L) as any);
+
+    for (const sprite of result.axisLabels.children as any[]) {
+      expect(sprite.scale.x).toBe(expected);
+      expect(sprite.scale.y).toBe(expected);
+    }
+  });
+
   it('leaves the ~10 m CAD default scene looking exactly as it does today', () => {
     const result = setup() as any;
     // (6, 8, 0) has length exactly 10, so radius is exactly 5 with no float slack.

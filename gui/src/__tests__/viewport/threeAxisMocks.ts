@@ -30,6 +30,22 @@ export class MockGroup {
   children: any[] = [];
   visible = true;
   renderOrder = 0;
+  /** INERT recording scale. Nothing should ever scale the labels Group — the r183
+   *  sprite shader folds ancestor scale into the on-screen size via
+   *  `length(modelMatrix[0].xyz)`, so a Group scale silently undoes the
+   *  constant-screen-size fix (#6588). Present purely so "was never scaled" is an
+   *  observable assertion rather than a vacuous one against a missing property. */
+  scale = {
+    x: 1, y: 1, z: 1,
+    setScalar: vi.fn(function(this: any, v: number) {
+      this.x = v; this.y = v; this.z = v;
+      return this;
+    }),
+    set: vi.fn(function(this: any, x: number, y: number, z: number) {
+      this.x = x; this.y = y; this.z = z;
+      return this;
+    }),
+  };
   add(obj: any) {
     this.children.push(obj);
   }
