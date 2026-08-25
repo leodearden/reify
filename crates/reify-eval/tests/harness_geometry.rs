@@ -44,6 +44,8 @@ mod symbolic_geometry_eval;
 mod symbolic_selector_composition_eval;
 #[path = "harness_geometry/symbolic_selector_eval.rs"]
 mod symbolic_selector_eval;
+#[path = "harness_geometry/transform_translation_length_units_e2e.rs"]
+mod transform_translation_length_units_e2e;
 #[path = "harness_geometry/trait_assoc_fn_cylinder.rs"]
 mod trait_assoc_fn_cylinder;
 #[path = "harness_geometry/trait_assoc_fn_static_e2e.rs"]
