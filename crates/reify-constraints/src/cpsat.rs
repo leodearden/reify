@@ -7,7 +7,7 @@
 use reify_expr::{EvalContext, eval_expr};
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, ConstraintSolver, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, Value, ValueMap};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// Maximum number of integer domain values to enumerate.
 /// If bounds produce a larger range, the solver returns NoProgress.
@@ -52,16 +52,6 @@ const ENUMERATION_NODE_BUDGET: usize = 100_000;
 /// conflating the two is the natural implementation slip: a list that got
 /// shorter LOOKS like a search that stopped early, and it is not one.
 const RANKED_CANDIDATE_CAP: usize = 16;
-
-/// The solution cap the ranked path enumerates under.
-///
-/// Far above [`RANKED_CANDIDATE_CAP`] on purpose: the ranking has to SEE every
-/// feasible model to know which one is the argmin, and a cap that stopped at 16
-/// would return the sixteen models found FIRST rather than the sixteen best —
-/// while `complete: false` would then also strip the honest `ProvenOptimal`
-/// off every solve. The real bound on this path is
-/// [`ENUMERATION_NODE_BUDGET`], which bounds work rather than answers.
-const ENUMERATION_SOLUTION_CAP: usize = 100_000;
 
 /// A discrete constraint solver using backtracking search with forward-checking.
 ///
@@ -308,7 +298,7 @@ pub enum SolveAllResult {
 /// recursion carries four parameters instead of nine.
 ///
 /// Not merely cosmetic: `backtrack` already sat at seven parameters, and the
-/// enumeration generalisation adds an output vector, a solution cap and (step
+/// enumeration generalisation adds an output sink, a solution cap and (step
 /// β.4) a node budget on top. Threading those positionally would trip
 /// `clippy::too_many_arguments` under the workspace's `-D warnings` gate, and —
 /// more to the point — a nine-argument recursive call is where a transposed
@@ -328,6 +318,44 @@ struct SearchContext<'a> {
     /// solution turned up. See [`ENUMERATION_NODE_BUDGET`] for why the two
     /// bounds are both needed and why they share one `complete` channel.
     node_budget: usize,
+}
+
+/// Where a completed leaf assignment GOES, and how many have gone there.
+///
+/// # Why the search does not own a `Vec`
+///
+/// `backtrack_all` used to push straight into a `&mut Vec`, which forced every
+/// caller to MATERIALISE the entire solution set before it could look at any of
+/// it. For `solve()` (`cap = 2`) that is free. For the ranked path it is not:
+/// that path enumerates unboundedly and RETAINS only the best
+/// [`RANKED_CANDIDATE_CAP`], so a `Vec` meant up to a full
+/// [`ENUMERATION_NODE_BUDGET`] worth of live `HashMap`s — measured at ~99k of
+/// them, ~1 s, on 2×`Int(0..=999)` under a `Minimize` — held solely to keep
+/// sixteen. Scoring every model is inherent to an argmin; HOLDING every model
+/// is not.
+///
+/// Handing the search a SINK lets each caller consume a model the moment it is
+/// found and drop it, without the search learning which caller it serves and
+/// without a second backtracker growing to serve it (PRD2 §3.9 G7).
+///
+/// # Why `count` lives here and not in the callback
+///
+/// The solution `cap` is the SEARCH's stopping condition, not the sink's. A
+/// count the callback maintained and reported back would let a caller — by
+/// forgetting to increment, or by counting only the models it kept — silently
+/// disable the cap and with it the `complete` flag every honesty claim in this
+/// module is conjoined with.
+struct SolutionSink<'a> {
+    emit: &'a mut dyn FnMut(HashMap<ValueCellId, Value>),
+    count: usize,
+}
+
+impl SolutionSink<'_> {
+    /// Hand one completed model to the consumer, counting it first.
+    fn accept(&mut self, solution: HashMap<ValueCellId, Value>) {
+        self.count += 1;
+        (self.emit)(solution);
+    }
 }
 
 /// The owned half of a search's inputs — what [`build_search_inputs`] produces
@@ -530,14 +558,14 @@ fn backtrack_all(
     ctx: &SearchContext<'_>,
     var_index: usize,
     assignment: &mut ValueMap,
-    out: &mut Vec<HashMap<ValueCellId, Value>>,
+    out: &mut SolutionSink<'_>,
     nodes: &mut usize,
 ) -> bool {
     // No room left for another solution. Reached only for `cap == 0` — every
     // other path short-circuits at the base case below — but stated here so the
     // function is TOTAL over `cap` rather than relying on a caller to rule the
     // degenerate case out.
-    if out.len() >= ctx.cap {
+    if out.count >= ctx.cap {
         return false;
     }
 
@@ -550,10 +578,10 @@ fn backtrack_all(
                 solution.insert(var.id.clone(), val);
             }
         }
-        out.push(solution);
+        out.accept(solution);
         // Room for another? If not, stop the WHOLE search — `false` unwinds to
         // the root and becomes `complete: false` there.
-        return out.len() < ctx.cap;
+        return out.count < ctx.cap;
     }
 
     let var = &ctx.variables[var_index];
@@ -684,10 +712,59 @@ impl CpSatSolver {
         cap: usize,
         node_budget: usize,
     ) -> SolveAllResult {
-        let mut inputs = match build_search_inputs(problem) {
-            Ok(inputs) => inputs,
-            Err(reason) => return SolveAllResult::NotEnumerable { reason },
+        // COLLECTING is one consumer of [`CpSatSolver::enumerate_with_budget`],
+        // not the search's own behaviour — see [`SolutionSink`]. The `Vec` is
+        // built here, where a caller asked for the whole set, and nowhere else.
+        let mut solutions = Vec::new();
+        // Bound the sink's borrow of `solutions` to this block: a `&mut` closure
+        // built inline in the `match` scrutinee below would live until the end
+        // of the match and lock `solutions` out of the arms that move it.
+        let outcome = {
+            let mut collect = |solution| solutions.push(solution);
+            self.enumerate_with_budget(problem, cap, node_budget, &mut collect)
         };
+
+        match outcome {
+            Err(reason) => SolveAllResult::NotEnumerable { reason },
+            Ok(complete) => SolveAllResult::Enumerated {
+                solutions,
+                complete,
+            },
+        }
+    }
+
+    /// THE enumeration: run the search and hand every model to `on_solution` as
+    /// it is found.
+    ///
+    /// Returns `Ok(complete)` — `true` iff the space was EXHAUSTED, exactly as
+    /// [`SolveAllResult::Enumerated::complete`] documents — or `Err(reason)`
+    /// carrying the `domain_spec` rejection that stopped the search from
+    /// starting, which [`CpSatSolver::solve_all_with_budget`] turns into
+    /// [`SolveAllResult::NotEnumerable`].
+    ///
+    /// # Why the streaming form is the primitive
+    ///
+    /// Both shapes are needed and only one of them can be built from the other
+    /// without cost: collecting is `enumerate_with_budget` plus a `Vec::push`,
+    /// whereas streaming from a `Vec` is not streaming at all — the peak is
+    /// already paid by the time the first model is visible. So the streaming
+    /// form is the primitive and the collecting form is its specialization, in
+    /// the direction that keeps ONE backtracker (PRD2 §3.9 G7) and lets the
+    /// ranked path retain sixteen models out of ~1e5 without holding ~1e5.
+    ///
+    /// `on_solution` is a `&mut dyn FnMut` rather than a generic parameter on
+    /// purpose: it is called once per LEAF, so the indirection is amortised over
+    /// a whole root-to-leaf descent plus a scoring pass, and a generic would
+    /// monomorphise the entire recursive search once per call site for no
+    /// measurable gain.
+    pub(crate) fn enumerate_with_budget(
+        &self,
+        problem: &ResolutionProblem,
+        cap: usize,
+        node_budget: usize,
+        on_solution: &mut dyn FnMut(HashMap<ValueCellId, Value>),
+    ) -> Result<bool, String> {
+        let mut inputs = build_search_inputs(problem)?;
 
         let ctx = SearchContext {
             variables: &inputs.variables,
@@ -699,14 +776,18 @@ impl CpSatSolver {
             node_budget,
         };
 
-        let mut solutions = Vec::new();
+        let mut sink = SolutionSink {
+            emit: on_solution,
+            count: 0,
+        };
         let mut nodes = 0usize;
-        let complete = backtrack_all(&ctx, 0, &mut inputs.assignment, &mut solutions, &mut nodes);
-
-        SolveAllResult::Enumerated {
-            solutions,
-            complete,
-        }
+        Ok(backtrack_all(
+            &ctx,
+            0,
+            &mut inputs.assignment,
+            &mut sink,
+            &mut nodes,
+        ))
     }
 
     /// [`ConstraintSolver::solve`] with the node bound supplied explicitly.
@@ -740,8 +821,37 @@ impl CpSatSolver {
         // WHY `cap = 2` AND NOT 1. One is enough to ANSWER; two is the minimum
         // that can tell "exactly one model" from "at least two", and so the
         // minimum that can derive `unique` from something the solver actually
-        // observed. The extra work is one more solution's worth of search,
-        // bounded above by `node_budget`.
+        // observed.
+        //
+        // WHAT IT COSTS — stated the way `ENUMERATION_NODE_BUDGET` states it,
+        // because an earlier draft of this comment said "one more solution's
+        // worth of search" and that is WRONG in the common case. A model with
+        // exactly one solution never reaches the second collection at all, so
+        // the search runs to EXHAUSTION or to `node_budget`, whichever comes
+        // first, where the pre-β `cap = 1` search stopped at the first
+        // solution. On a small discrete space (`Bool` autos, a handful of
+        // `Enum` variants) that is cheap and buys a real `unique: true`. On
+        // `Type::Int` domains it is not: two autos at `MAX_INT_DOMAIN` is 10^6
+        // leaves, the budget bites first, and `complete: false` then makes
+        // `unique` come back FALSE anyway. Measured at ~371 ms for a
+        // 2×`Int(0..=999)` model with a genuinely unique solution whose
+        // constraint refs BOTH autos (so nothing prunes at depth 0), against
+        // ~7 ms and ~2000 nodes pre-β: the same answer for ~50x the wall clock.
+        //
+        // KNOWN GAP, left to the leaf that owns the real fix rather than
+        // papered over here. The same arithmetic makes
+        // `OptimalityStatus::ProvenOptimal` — the headline of the ranked path —
+        // unreachable for ANY two-`Int`-auto solve: `complete` cannot be true
+        // within budget, so the verdict degrades to `BestFound` on exactly the
+        // models a user is most likely to write. The fix is to make the DOMAINS
+        // smaller, not the search shallower, and that is PRD2 δ's `Int`
+        // bound-mining / `discrete_set` work — turning `Int(0..=999)` into the
+        // handful of values the constraints actually permit. Gating the
+        // second-solution search on the domain PRODUCT instead was considered
+        // and rejected: the product is an upper bound that pruning routinely
+        // beats by orders of magnitude (a depth-0 `x == 5` cuts 10^6 nodes to
+        // ~2000), so such a gate would answer `unique: false` for cheaply
+        // provable models to save work it was never going to do.
         //
         // It does not change WHICH point comes back. The search is depth-first
         // in a fixed order, so the first solution collected at `cap = 2` is the
@@ -757,65 +867,13 @@ impl CpSatSolver {
             } => {
                 // Read the count BEFORE the `into_iter` consumes the vector.
                 let model_count = solutions.len();
-                match solutions.into_iter().next() {
-                Some(values) => SolveResult::Solved {
-                    values,
-                    // HONEST `unique` (PRD2 D3, §3 decision 5). This replaces a
-                    // hardcoded `true` that every `Solved` arm emitted for every
-                    // problem — never a checked claim, because the pre-β search
-                    // stopped at the first solution and could not have known.
-                    //
-                    // `complete` is a CONJUNCT, not decoration. A search that
-                    // stopped early — solution cap or node budget — has not
-                    // proven a second model absent, and `model_count == 1` is
-                    // TRUE in exactly that case: one collected, the rest never
-                    // visited. Deriving the flag from the count alone would
-                    // reproduce the original lie with better manners. Pinned by
-                    // `a_model_found_before_the_budget_bit_is_not_reported_as_unique`.
-                    //
-                    // β sets the flag and stops there. It does NOT copy
-                    // `DimensionalSolver::finalise_uniqueness` (solver.rs:2686),
-                    // which demotes a non-unique STRICT-auto solve to
-                    // `Infeasible { ConstraintNonUnique }`. The engine's
-                    // non-unique warning is gated on `ap.free`
-                    // (engine_eval.rs:3355/5975), so nothing user-visible turns
-                    // on the strict case yet, and CP-SAT is unreachable in
-                    // production until the γ wiring — so the demotion POLICY
-                    // belongs with the step that first makes it observable. See
-                    // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
-                    // and task #6554, which owns that observable half.
-                    //
-                    // #5388 is this fix's continuous-side twin — the same
-                    // uniqueness-honesty question for `DimensionalSolver`, in
-                    // `solver.rs`/`registry.rs` (PRD2 §0.1, §7). Disjoint files;
-                    // coordinate, do not duplicate.
-                    unique: complete && model_count == 1,
-                },
-                // Nothing found — and `complete` is the ENTIRE discriminator
-                // between the two opposite verdicts that share this shape.
-                //
-                // Exhausted the space and found nothing: that is a PROOF of
-                // unsatisfiability, and `Infeasible` is the honest answer. The
-                // diagnostic is byte-identical to pre-β (D1).
-                None if complete => SolveResult::Infeasible {
-                    diagnostics: vec![Diagnostic::error(format!(
-                        "CpSatSolver: no satisfying assignment found for {} auto params with {} constraints",
-                        problem.auto_params.len(),
-                        problem.constraints.len()
-                    ))
-                    .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
-                },
-                // Stopped early and found nothing: that proves NOTHING. A
-                // truncated search has not shown the constraints unsatisfiable,
-                // and `Infeasible` is a diagnostic a user acts on by editing
-                // their model — emitting it here sends them to rewrite a design
-                // that was never wrong. `NoProgress` says the only true thing
-                // available: the solver declined to answer, and why. This is the
-                // loud direction D5 requires.
-                None => SolveResult::NoProgress {
-                    reason: enumeration_budget_exhausted_reason(problem, node_budget),
-                },
-                }
+                verdict_from_enumeration(
+                    problem,
+                    solutions.into_iter().next(),
+                    model_count,
+                    complete,
+                    node_budget,
+                )
             }
         }
     }
@@ -847,7 +905,13 @@ impl CpSatSolver {
     /// # The two callers
     ///
     /// An absent objective, and — deliberately — an objective that failed to
-    /// score EVERY model. On that second path `FeasibilityOnly` is in tension
+    /// score EVERY model. Only the FIRST reaches this method: the second has
+    /// already enumerated, so it calls [`verdict_from_enumeration`] on the walk
+    /// it performed and lifts that through [`lift_feasibility`] rather than
+    /// searching a second time. Both therefore share one verdict procedure and
+    /// one lift; neither re-derives the other's answer.
+    ///
+    /// On that second path `FeasibilityOnly` is in tension
     /// with F-result I3's "iff no objective governs the solve", and it is still
     /// the right answer: the alternative is `BestFound` carrying
     /// `objective_score: None`, which is the pairing I4 forbids outright, and it
@@ -862,19 +926,7 @@ impl CpSatSolver {
         problem: &ResolutionProblem,
         node_budget: usize,
     ) -> RankedSolveResult {
-        match self.solve_with_budget(problem, node_budget) {
-            SolveResult::Solved { values, unique } => RankedSolveResult::Ranked {
-                candidates: vec![RankedCandidate {
-                    values,
-                    objective_score: None,
-                    unique,
-                }],
-                optimality: OptimalityStatus::FeasibilityOnly,
-            },
-            non_solved => non_solved
-                .into_ranked_pass_through()
-                .expect("Solved arm already handled above"),
-        }
+        lift_feasibility(self.solve_with_budget(problem, node_budget))
     }
 
     /// [`ConstraintSolver::solve_ranked`] with the node bound supplied
@@ -893,17 +945,22 @@ impl CpSatSolver {
     /// | enumeration outcome                        | ranked result |
     /// |--------------------------------------------|---------------|
     /// | `NotEnumerable { reason }`                 | `NoProgress { reason }` — verbatim |
-    /// | scored ≥ 1 model                           | `Ranked`, sorted, truncated |
-    /// | scored 0 models (empty, unscorable, or no objective) | whatever `solve` says, lifted by [`CpSatSolver::feasibility_ranking`] |
+    /// | scored ≥ 1 model                           | `Ranked`, best-first, truncated to the carrier cap |
+    /// | scored 0 models (empty, or unscorable)     | [`verdict_from_enumeration`], lifted by [`lift_feasibility`] |
+    /// | no objective at all                        | [`CpSatSolver::feasibility_ranking`] |
     ///
-    /// The last row folds three cases together on purpose. `{ solutions: [],
-    /// complete: true }` is a proven contradiction and `solve` reports
-    /// `Infeasible`; `{ solutions: [], complete: false }` is a truncated search
-    /// and `solve` reports `NoProgress` naming the budget; an unscorable
-    /// objective still has feasible models and `solve` reports the first one.
-    /// Routing all three through `solve` means those three verdicts are decided
-    /// in exactly ONE place for both entry points, instead of being re-derived
-    /// here from the same `complete` flag and left to drift.
+    /// The third row folds three cases together on purpose. `{ 0 models,
+    /// complete }` is a proven contradiction and reports `Infeasible`;
+    /// `{ 0 models, truncated }` is a search that proved nothing and reports
+    /// `NoProgress` naming the budget; an unscorable objective still has
+    /// feasible models and reports the first one. All three read THE
+    /// ENUMERATION THIS FUNCTION ALREADY PERFORMED — the verdict procedure is
+    /// shared with `solve`, the search is not repeated, and the three verdicts
+    /// are still decided in exactly one place for both entry points.
+    ///
+    /// The fourth row is the only arm that searches at all: with no objective
+    /// there is nothing to enumerate past `cap = 2`, so it short-circuits
+    /// before the enumeration below ever starts.
     pub(crate) fn solve_ranked_with_budget(
         &self,
         problem: &ResolutionProblem,
@@ -915,97 +972,151 @@ impl CpSatSolver {
             return self.feasibility_ranking(problem, node_budget);
         };
 
-        let (solutions, complete) =
-            match self.solve_all_with_budget(problem, ENUMERATION_SOLUTION_CAP, node_budget) {
-                // Verbatim the reason `solve()` hands to `SolveResult::NoProgress`
-                // for this problem, so the two entry points give a user the same
-                // account of the same failure.
-                SolveAllResult::NotEnumerable { reason } => {
-                    return RankedSolveResult::NoProgress { reason };
-                }
-                SolveAllResult::Enumerated {
-                    solutions,
-                    complete,
-                } => (solutions, complete),
-            };
+        // STREAMED, not materialised (see `SolutionSink`). The ranking must SEE
+        // every feasible model to know which is the argmin, but it only ever
+        // RETAINS `RANKED_CANDIDATE_CAP` of them, and the three running values
+        // below are everything the discarded ones contribute.
+        let mut retained: BinaryHeap<ScoredModel> = BinaryHeap::new();
+        // Every model the search produced, scorable or not — one of the two
+        // inputs `verdict_from_enumeration` needs if nothing scores.
+        let mut model_count = 0usize;
+        // The first model that failed to score, kept ONLY until something does.
+        // If nothing ever does, this is model 0 — precisely the point `solve`
+        // would have returned — and the fallback below hands it over. If
+        // anything scores, `best` is `Some` and this is never read, so the
+        // common path pays no clone.
+        let mut first_unscored: Option<HashMap<ValueCellId, Value>> = None;
+        // `(best score seen, how many models attained it)` over ALL SCORED
+        // MODELS, not just the retained ones. Maintained incrementally here
+        // rather than recomputed over `retained` afterwards, because a tie
+        // outside the retained sixteen is still a tie: counting only what
+        // survives truncation would silently redefine `unique` from "no other
+        // model attains this score" to "no other model in the carrier does".
+        let mut best: Option<(f64, usize)> = None;
 
-        // Score every model, remembering its ENUMERATION INDEX — the tiebreak
-        // below needs it, and it is only available here.
-        let mut scored: Vec<(usize, HashMap<ValueCellId, Value>, f64)> =
-            Vec::with_capacity(solutions.len());
-        for (index, solution) in solutions.into_iter().enumerate() {
-            // `build_scoring_values` rather than a hand-rolled overlay. It
-            // documents a crate-scoped INVARIANT that no site may build a
-            // scoring map as `current_values.clone()` overlaid with the solved
-            // autos: that leaves every DEPENDENT CELL holding its pre-solve
-            // value, so an objective reading one scores the model against
-            // arithmetic that never happened.
-            //
-            // `dispatch: None` — cpsat has no compute-dispatch plumbing of its
-            // own, and its forward-check evaluates through a bare
-            // `EvalContext::new` for the same reason. Passing `None` keeps
-            // scoring and pruning reading the same context shape, so this adds
-            // no dispatch capability cpsat did not already have.
-            let full = crate::solver::build_scoring_values(
-                &problem.current_values,
-                &solution,
-                &problem.dependent_cells,
-                &problem.functions,
-                None,
-            );
-            // `eval_objective_set` already normalises `Maximize` to
-            // "lower is better" (it accumulates `-weight · v`) and rejects any
-            // non-finite fold with `None`, so every score reaching the sort is
-            // a finite, well-ordered, minimisation-sense f64 (F-result I2).
-            if let Some(score) =
-                crate::solver::eval_objective_set(objective, &full, &problem.functions, None)
-            {
-                scored.push((index, solution, score));
-            }
-            // A model that did not score is DROPPED, mirroring
-            // `solve_ranked_impl`'s "Solved-but-unscored candidate is dropped".
-            // Carrying it would mean a candidate with `objective_score: None`
-            // inside a scored ranking — the pairing I4 forbids — and it could
-            // not be placed in the order anyway.
-        }
+        // Bound the sink's borrows to this block so the state above is free
+        // again for the arms below.
+        let outcome = {
+            let mut on_solution = |solution: HashMap<ValueCellId, Value>| {
+                let index = model_count;
+                model_count += 1;
+
+                // `build_scoring_values` rather than a hand-rolled overlay. It
+                // documents a crate-scoped INVARIANT that no site may build a
+                // scoring map as `current_values.clone()` overlaid with the
+                // solved autos: that leaves every DEPENDENT CELL holding its
+                // pre-solve value, so an objective reading one scores the model
+                // against arithmetic that never happened.
+                //
+                // `dispatch: None` — cpsat has no compute-dispatch plumbing of
+                // its own, and its forward-check evaluates through a bare
+                // `EvalContext::new` for the same reason. Passing `None` keeps
+                // scoring and pruning reading the same context shape, so this
+                // adds no dispatch capability cpsat did not already have.
+                let full = crate::solver::build_scoring_values(
+                    &problem.current_values,
+                    &solution,
+                    &problem.dependent_cells,
+                    &problem.functions,
+                    None,
+                );
+                // `eval_objective_set` already normalises `Maximize` to
+                // "lower is better" (it accumulates `-weight · v`) and rejects
+                // any non-finite fold with `None`, so every score reaching the
+                // heap is a finite, well-ordered, minimisation-sense f64
+                // (F-result I2).
+                let Some(score) =
+                    crate::solver::eval_objective_set(objective, &full, &problem.functions, None)
+                else {
+                    // A model that did not score is DROPPED from the ranking,
+                    // mirroring `solve_ranked_impl`'s "Solved-but-unscored
+                    // candidate is dropped". Carrying it would mean a candidate
+                    // with `objective_score: None` inside a scored ranking — the
+                    // pairing I4 forbids — and it could not be placed in the
+                    // order anyway.
+                    if first_unscored.is_none() {
+                        first_unscored = Some(solution);
+                    }
+                    return;
+                };
+
+                // Exact `==` on f64 is deliberate: the question is whether two
+                // models attained the SAME score, and `eval_objective_set` has
+                // already filtered NaN out, so equality here is the total,
+                // reflexive kind.
+                best = Some(match best {
+                    Some((seen, ties)) if score == seen => (seen, ties + 1),
+                    Some((seen, ties)) if seen < score => (seen, ties),
+                    _ => (score, 1),
+                });
+
+                // Bounded retention: push, then evict the WORST. `ScoredModel`
+                // orders worst-greatest, so a `BinaryHeap`'s root IS the one the
+                // carrier would have dropped, and peak memory is
+                // `RANKED_CANDIDATE_CAP` models rather than every model found.
+                retained.push(ScoredModel {
+                    score,
+                    index,
+                    values: solution,
+                });
+                if retained.len() > RANKED_CANDIDATE_CAP {
+                    retained.pop();
+                }
+            };
+            // `cap = usize::MAX`: on this path the NODE budget is the only
+            // bound, and it is the only one that ever could be. A solution is
+            // pushed only at a leaf, and every leaf is reached through a node
+            // increment in its parent's value loop, so `solutions ≤ nodes`
+            // always holds — any solution cap at or above `node_budget` is
+            // unreachable by construction. An earlier draft passed a named
+            // `ENUMERATION_SOLUTION_CAP = 100_000` here, equal to
+            // `ENUMERATION_NODE_BUDGET`; it read as a second, independent bound
+            // and was inert, and nothing pinned it because nothing could.
+            self.enumerate_with_budget(problem, usize::MAX, node_budget, &mut on_solution)
+        };
+
+        let complete = match outcome {
+            // Verbatim the reason `solve()` hands to `SolveResult::NoProgress`
+            // for this problem, so the two entry points give a user the same
+            // account of the same failure.
+            Err(reason) => return RankedSolveResult::NoProgress { reason },
+            Ok(complete) => complete,
+        };
 
         // Nothing scored at all. Not an empty `Ranked` (I2 requires a non-empty
-        // candidate list) and not a claim of infeasibility either — the models
-        // exist, they just could not be ordered. See `feasibility_ranking`.
-        if scored.is_empty() {
-            return self.feasibility_ranking(problem, node_budget);
-        }
-
-        // Ascending score, ties broken by ascending enumeration index — the
-        // same score-then-start-index shape `DimensionalSolver::solve_ranked_impl`
-        // uses. Without the second key, tied candidates land wherever the sort
-        // leaves them, which makes the ranking unstable run-to-run for exactly
-        // the problems where the choice is arbitrary (D4).
+        // candidate list) and not a claim of infeasibility either.
         //
-        // `partial_cmp` returns `None` only for NaN, which `eval_objective_set`
-        // already filtered out, so `unwrap_or(Equal)` is a defensive fallback
-        // that is never exercised.
-        scored.sort_by(|a, b| {
-            a.2.partial_cmp(&b.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
+        // Three cases share this arm and all three are decided by
+        // `verdict_from_enumeration`, on THE ENUMERATION JUST PERFORMED rather
+        // than a second one: `{ 0 models, complete }` is a proven contradiction
+        // and reports `Infeasible`; `{ 0 models, truncated }` proves nothing and
+        // reports `NoProgress` naming the budget; models that exist but could
+        // not be ordered report the first one, feasibility-only. Routing all
+        // three through the shared verdict means `solve` and `solve_ranked`
+        // cannot drift about the same problem. See `feasibility_ranking`.
+        let Some((best_score, best_ties)) = best else {
+            return lift_feasibility(verdict_from_enumeration(
+                problem,
+                first_unscored,
+                model_count,
+                complete,
+                node_budget,
+            ));
+        };
 
         // `RankedCandidate.unique` is a claim about the SCORE — "no other
-        // solution with the same objective value exists" — not about the model
-        // count. Two models tying at the optimum makes the winner non-unique
-        // even though each is individually a perfectly good answer.
-        //
-        // Exact `==` on f64 is deliberate: the question is whether two models
-        // attained the SAME score, and `eval_objective_set` has already
-        // filtered NaN out, so equality here is the total, reflexive kind.
+        // solution with the same objective value exists" (reify-ir
+        // `ranked.rs:83-85`) — not about the model count. Two models tying at
+        // the optimum makes the winner non-unique even though each is
+        // individually a perfectly good answer. This is why `solve_ranked` and
+        // `solve` can honestly disagree about `unique` on one problem once an
+        // objective governs it; `unique_means_something_different_once_an_objective_governs_the_solve`
+        // pins that divergence as intended.
         //
         // `complete` is a conjunct for the same reason it is in `solve`: a
         // truncated enumeration never saw the models it did not visit, so it
         // cannot know none of them ties.
-        let best_score = scored[0].2;
-        let winner_unique =
-            complete && scored.iter().filter(|(_, _, s)| *s == best_score).count() == 1;
+        let winner_unique = complete && best_ties == 1;
 
         // Derived from `complete` ALONE, and computed before truncation so the
         // dependency cannot accidentally acquire a second input. A shorter list
@@ -1031,25 +1142,213 @@ impl CpSatSolver {
             }
         };
 
-        // Truncate strictly AFTER the sort, so the carrier keeps the best
-        // `RANKED_CANDIDATE_CAP` rather than the first ones found.
-        let candidates: Vec<RankedCandidate> = scored
+        // `into_sorted_vec` yields ASCENDING `ScoredModel` order — score, then
+        // enumeration index — which is best-first, so the bounded heap replaces
+        // the full sort rather than sitting under one.
+        let candidates: Vec<RankedCandidate> = retained
+            .into_sorted_vec()
             .into_iter()
-            .take(RANKED_CANDIDATE_CAP)
             .enumerate()
-            .map(|(rank, (_, values, score))| RankedCandidate {
-                values,
-                objective_score: Some(score),
+            .map(|(rank, model)| RankedCandidate {
+                values: model.values,
+                objective_score: Some(model.score),
                 // Only the winner can be unique; an alternative optimum is by
                 // definition not *the* solution. Mirrors `solve_ranked_impl`.
                 unique: rank == 0 && winner_unique,
             })
             .collect();
 
+        // The running `best` and the retained heap are two views of the same
+        // scored stream, and the head of the carrier is where they must agree.
+        // They can only diverge if the eviction rule and the ordering stop
+        // matching — i.e. if `ScoredModel`'s `Ord` is ever flipped — and that
+        // failure is otherwise silent: the ranking still comes back
+        // well-formed, just headed by the wrong model.
+        debug_assert_eq!(
+            candidates.first().and_then(|c| c.objective_score),
+            Some(best_score),
+            "the retained heap must keep the globally best score the running \
+             tally saw; a mismatch means eviction and ordering disagree",
+        );
+
         RankedSolveResult::Ranked {
             candidates,
             optimality,
         }
+    }
+}
+
+/// One scored model inside the ranked path's bounded retention heap.
+///
+/// Ordered WORST-GREATEST so a [`BinaryHeap`] — a max-heap — keeps the worst
+/// retained candidate at its root and `pop` evicts exactly the one the carrier
+/// would have dropped anyway. `into_sorted_vec` then yields ascending order,
+/// which is best-first, so the same `Ord` serves both the eviction and the final
+/// ranking and there is no second comparison rule to drift from this one.
+///
+/// Ties fall through to the ENUMERATION INDEX — the same score-then-start-index
+/// shape `DimensionalSolver::solve_ranked_impl` uses. Without that second key,
+/// tied candidates land wherever the heap leaves them, which makes the ranking
+/// unstable run-to-run for exactly the problems where the choice is arbitrary
+/// (D4).
+///
+/// `partial_cmp` returns `None` only for NaN, which `eval_objective_set` has
+/// already filtered out, so `unwrap_or(Equal)` is a defensive fallback that is
+/// never exercised — and `Eq`/`Ord` are therefore honest rather than a lie told
+/// to satisfy the heap's bounds.
+struct ScoredModel {
+    score: f64,
+    index: usize,
+    values: HashMap<ValueCellId, Value>,
+}
+
+impl Ord for ScoredModel {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .partial_cmp(&other.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(self.index.cmp(&other.index))
+    }
+}
+
+impl PartialOrd for ScoredModel {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for ScoredModel {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for ScoredModel {}
+
+/// Lift a [`SolveResult`] into the ranked carrier as a FEASIBILITY-ONLY ranking.
+///
+/// The shared tail of [`CpSatSolver::feasibility_ranking`] and the ranked
+/// path's nothing-scored fallback. Split out from the former so the latter can
+/// reuse the lift WITHOUT reusing the search that used to be welded in front of
+/// it — see [`verdict_from_enumeration`] for what that second search cost.
+///
+/// `Infeasible` and `NoProgress` go through `into_ranked_pass_through`,
+/// reify-ir's canonical anti-drift seam for exactly these two arms
+/// (constraint.rs:349) — the same one the trait default lift uses.
+fn lift_feasibility(solved: SolveResult) -> RankedSolveResult {
+    match solved {
+        SolveResult::Solved { values, unique } => RankedSolveResult::Ranked {
+            candidates: vec![RankedCandidate {
+                values,
+                objective_score: None,
+                unique,
+            }],
+            optimality: OptimalityStatus::FeasibilityOnly,
+        },
+        non_solved => non_solved
+            .into_ranked_pass_through()
+            .expect("Solved arm already handled above"),
+    }
+}
+
+/// The `Solved` / `Infeasible` / `NoProgress` verdict an enumeration implies —
+/// the ONE place that decision is made, for both entry points.
+///
+/// # Why this is a function and not two match arms
+///
+/// Both entry points reach this decision, and until this existed only one of
+/// them MADE it: `solve_ranked`'s "nothing scored" fallback re-derived it by
+/// calling [`CpSatSolver::solve_with_budget`], which walked the whole space a
+/// SECOND time from scratch. Measured at ~2x wall clock on an unsatisfiable
+/// coupled 2×`Int(0..=999)` model — 726 ms for the ranked entry point against
+/// 341 ms for `solve` on the identical problem — and reached on all three of
+/// that fallback's arms (a proven contradiction, a budget-truncated empty
+/// search, an objective that scored nothing). The triple this function reads
+/// was already in hand at that point; the second walk bought exactly nothing.
+///
+/// # Why it takes `(first, model_count, complete)` and not the `Vec`
+///
+/// So the ranked path can call it while STREAMING (see [`SolutionSink`]): that
+/// path never holds the solution set, but it can always hold three values. The
+/// triple is also everything the decision actually reads — taking the `Vec`
+/// would let a future arm start reading solutions 2..n and quietly make the
+/// streaming caller unable to satisfy it.
+///
+/// # Why the two callers' `cap`s do not make them disagree
+///
+/// `solve` enumerates at `cap = 2` and the ranked fallback at `cap = usize::MAX`,
+/// yet both get the same verdict for the same problem. With zero solutions the
+/// cap never trips, so the two searches are the SAME walk. With one, the cap
+/// still never trips. With two or more, `cap = 2` reports
+/// `model_count == 2, complete == false` and the unbounded cap reports
+/// `model_count == n ≥ 2` — and `complete && model_count == 1` is false either
+/// way. `first` is the first model in a fixed depth-first order, so it is the
+/// same model at every cap (D4).
+fn verdict_from_enumeration(
+    problem: &ResolutionProblem,
+    first: Option<HashMap<ValueCellId, Value>>,
+    model_count: usize,
+    complete: bool,
+    node_budget: usize,
+) -> SolveResult {
+    match first {
+        Some(values) => SolveResult::Solved {
+            values,
+            // HONEST `unique` (PRD2 D3, §3 decision 5). This replaces a
+            // hardcoded `true` that every `Solved` arm emitted for every
+            // problem — never a checked claim, because the pre-β search
+            // stopped at the first solution and could not have known.
+            //
+            // `complete` is a CONJUNCT, not decoration. A search that
+            // stopped early — solution cap or node budget — has not
+            // proven a second model absent, and `model_count == 1` is
+            // TRUE in exactly that case: one collected, the rest never
+            // visited. Deriving the flag from the count alone would
+            // reproduce the original lie with better manners. Pinned by
+            // `a_model_found_before_the_budget_bit_is_not_reported_as_unique`.
+            //
+            // β sets the flag and stops there. It does NOT copy
+            // `DimensionalSolver::finalise_uniqueness` (solver.rs:2686),
+            // which demotes a non-unique STRICT-auto solve to
+            // `Infeasible { ConstraintNonUnique }`. The engine's
+            // non-unique warning is gated on `ap.free`
+            // (engine_eval.rs:3355/5975), so nothing user-visible turns
+            // on the strict case yet, and CP-SAT is unreachable in
+            // production until the γ wiring — so the demotion POLICY
+            // belongs with the step that first makes it observable. See
+            // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
+            // and task #6554, which owns that observable half.
+            //
+            // #5388 is this fix's continuous-side twin — the same
+            // uniqueness-honesty question for `DimensionalSolver`, in
+            // `solver.rs`/`registry.rs` (PRD2 §0.1, §7). Disjoint files;
+            // coordinate, do not duplicate.
+            unique: complete && model_count == 1,
+        },
+        // Nothing found — and `complete` is the ENTIRE discriminator
+        // between the two opposite verdicts that share this shape.
+        //
+        // Exhausted the space and found nothing: that is a PROOF of
+        // unsatisfiability, and `Infeasible` is the honest answer. The
+        // diagnostic is byte-identical to pre-β (D1).
+        None if complete => SolveResult::Infeasible {
+            diagnostics: vec![Diagnostic::error(format!(
+                "CpSatSolver: no satisfying assignment found for {} auto params with {} constraints",
+                problem.auto_params.len(),
+                problem.constraints.len()
+            ))
+            .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
+        },
+        // Stopped early and found nothing: that proves NOTHING. A
+        // truncated search has not shown the constraints unsatisfiable,
+        // and `Infeasible` is a diagnostic a user acts on by editing
+        // their model — emitting it here sends them to rewrite a design
+        // that was never wrong. `NoProgress` says the only true thing
+        // available: the solver declined to answer, and why. This is the
+        // loud direction D5 requires.
+        None => SolveResult::NoProgress {
+            reason: enumeration_budget_exhausted_reason(problem, node_budget),
+        },
     }
 }
 
@@ -3158,6 +3457,59 @@ mod solve_ranked_override_tests {
         );
     }
 
+    /// (h) `unique` MEANS TWO DIFFERENT THINGS AT THE TWO ENTRY POINTS, AND
+    /// THAT IS DELIBERATE.
+    ///
+    /// `SolveResult::Solved.unique` is a claim about the MODEL COUNT — "exactly
+    /// one assignment satisfies these constraints". `RankedCandidate.unique` is
+    /// a claim about the SCORE — reify-ir `ranked.rs:83-85`, "no other solution
+    /// with the SAME OBJECTIVE VALUE". Where no objective governs the solve the
+    /// two coincide, and
+    /// `a_feasibility_rankings_unique_flag_matches_what_solve_reports` pins
+    /// exactly that. Once an objective governs it they come APART, and this
+    /// fixture makes them answer OPPOSITELY on one problem: `a || b` has three
+    /// models, so `solve` says `unique: false`, while their scores are 11/1/10,
+    /// so exactly one model attains the minimum and the ranked winner says
+    /// `unique: true`.
+    ///
+    /// Pinned because the divergence looks exactly like a bug. A reader who met
+    /// only the agreement unit would reasonably read agreement as the general
+    /// contract and "fix" this — by widening the ranked flag to the model count
+    /// (losing the tie information that is the ONLY thing distinguishing a sole
+    /// optimum from two alternatives at the same score) or by narrowing
+    /// `solve`'s to the ranked one (a flag with no objective to be about).
+    /// Neither is a repair, so the disagreement gets an assertion rather than
+    /// silence.
+    #[test]
+    fn unique_means_something_different_once_an_objective_governs_the_solve() {
+        let p = a_or_b_scored(ObjectiveSense::Minimize);
+
+        let solve_unique = match CpSatSolver.solve(&p) {
+            SolveResult::Solved { unique, .. } => unique,
+            other => panic!("expected Solved for `a || b`; got {other:?}"),
+        };
+        let (candidates, _) = ranked(CpSatSolver.solve_ranked(&p));
+
+        assert!(
+            !solve_unique,
+            "`a || b` has three models, so the MODEL-COUNT claim is false: \
+             `solve` must not report this design as uniquely determined",
+        );
+        assert!(
+            candidates[0].unique,
+            "the scores are {:?} and exactly one model attains the minimum, so \
+             the SCORE claim is true: the ranked winner is the only model at \
+             its objective value",
+            candidates.iter().map(score).collect::<Vec<_>>(),
+        );
+        assert_ne!(
+            solve_unique, candidates[0].unique,
+            "the two flags are DIFFERENT claims and this fixture is built so \
+             they disagree; if they ever agree here, one of them has quietly \
+             been redefined as the other",
+        );
+    }
+
     // -----------------------------------------------------------------------
     // HONESTY EDGES AND NON-OBJECTIVE ARMS (PRD2 §4.2, D2, D5; F-result I2/I4).
     //
@@ -3179,6 +3531,12 @@ mod solve_ranked_override_tests {
     // is the single most likely implementation slip on this path, so (c) and (d)
     // pin them from opposite sides.
     // -----------------------------------------------------------------------
+
+    /// How many models [`twenty_ints`] has. Named so the carrier-cap unit can
+    /// assert the fixture actually EXCEEDS `RANKED_CANDIDATE_CAP` rather than
+    /// leaving that relationship to a reader comparing two literals in
+    /// different places.
+    const TWENTY_INTS_MODEL_COUNT: usize = 20;
 
     /// Twenty models, `n ∈ 0..=19`, more than [`RANKED_CANDIDATE_CAP`] so the
     /// carrier truncation is genuinely exercised, and cheap enough (20 nodes)
@@ -3243,6 +3601,16 @@ mod solve_ranked_override_tests {
     /// `solve()` in one place and `solve_ranked()` in another would then get
     /// two different accounts of one design's determinacy, with nothing
     /// anywhere to reconcile them.
+    ///
+    /// SCOPE OF THE AGREEMENT PINNED HERE: both fixtures are objective-free, and
+    /// that is the only regime in which the two flags mean the same thing. A
+    /// feasibility ranking has no scores, so "no other model" and "no other
+    /// model at this score" collapse into one claim. Once an objective governs
+    /// the solve they are different claims and can honestly disagree —
+    /// `unique_means_something_different_once_an_objective_governs_the_solve`
+    /// pins a fixture where they answer oppositely. Reading this unit as a
+    /// general agreement contract and propagating it is the mistake that unit
+    /// exists to block.
     #[test]
     fn a_feasibility_rankings_unique_flag_matches_what_solve_reports() {
         let many = problem(
@@ -3292,8 +3660,33 @@ mod solve_ranked_override_tests {
     /// `candidates[0]` is asserted to be the true global argmin as well, so the
     /// unit cannot pass on an implementation that truncated BEFORE sorting and
     /// kept the first sixteen models found instead of the best sixteen.
+    ///
+    /// `RANKED_CANDIDATE_CAP`'s VALUE is pinned here, the way
+    /// `the_public_solve_all_is_exactly_the_production_budget_specialization`
+    /// pins `ENUMERATION_NODE_BUDGET`'s. Without it this unit is satisfied by
+    /// any cap at all: lowering it to 8 would pass silently (8 candidates, cap
+    /// 8) while quietly halving what a user gets back, and raising it to 25
+    /// would fail with a message about a 20-model fixture rather than about the
+    /// constant that actually moved.
     #[test]
     fn carrier_truncation_keeps_the_best_and_never_downgrades_optimality() {
+        assert_eq!(
+            RANKED_CANDIDATE_CAP, 16,
+            "PRD2 §10 Q1 sets the ranked carrier at a top-N of 16; changing it \
+             changes how many alternatives a user is offered, so it belongs in \
+             a commit that says so",
+        );
+        // A `const` block, not a runtime `assert!`: the relationship between two
+        // constants is knowable at compile time, so a fixture that stopped
+        // exceeding the carrier should fail the BUILD rather than one test.
+        const {
+            assert!(
+                TWENTY_INTS_MODEL_COUNT > RANKED_CANDIDATE_CAP,
+                "the fixture must produce MORE models than the carrier holds, \
+                 or the truncation this unit exists to exercise never happens",
+            )
+        };
+
         let (candidates, optimality) =
             ranked(CpSatSolver.solve_ranked(&twenty_ints(ObjectiveSense::Minimize)));
 
@@ -3373,52 +3766,7 @@ mod solve_ranked_override_tests {
         );
     }
 
-    /// (e) THE OPTIMALITY VERDICT REACHES THE ENGINE'S WARNING GATE CORRECTLY.
-    ///
-    /// `engine_eval.rs` (6127, 7539) gates `W_SOLVER_OPTIMALITY_UNPROVEN` on
-    /// `BestFound` AND `matches!(reason, BestFoundReason::IterationLimit)` —
-    /// `ConvergedWithinBudget` and `Unreported` explicitly do NOT fire it. That
-    /// predicate is REPRODUCED here rather than described, so the two arms are
-    /// pinned as what they are: PRD2 B6 ("warning fires" on a capped
-    /// enumeration) and B5 ("no warning" on a complete one) both remain
-    /// satisfiable downstream at γ/ε with zero engine changes.
-    ///
-    /// The `IterationLimit` choice is deliberate and imperfect — its
-    /// `describe()` text is inaccurate for an enumeration cap on an exact
-    /// solver — but it is the ONLY variant that keeps the truncated case
-    /// audible, and silence is the one outcome D5 rules out. Task #6553 owns
-    /// the honest variant.
-    #[test]
-    fn the_optimality_verdict_matches_the_engines_warning_gate_predicate() {
-        // Exactly `engine_eval.rs`'s gate, spelled out.
-        fn fires_warning(o: &OptimalityStatus) -> bool {
-            matches!(
-                o,
-                OptimalityStatus::BestFound {
-                    reason: BestFoundReason::IterationLimit
-                }
-            )
-        }
-
-        let (_, truncated) =
-            ranked(CpSatSolver.solve_ranked_with_budget(&twenty_ints(ObjectiveSense::Maximize), 5));
-        let (_, complete) =
-            ranked(CpSatSolver.solve_ranked(&twenty_ints(ObjectiveSense::Minimize)));
-
-        assert!(
-            fires_warning(&truncated),
-            "PRD2 B6: a capped enumeration must reach the engine's warning gate. \
-             `ConvergedWithinBudget` or `Unreported` would be SILENT — the user \
-             would read an unproven answer as a proven one; got {truncated:?}",
-        );
-        assert!(
-            !fires_warning(&complete),
-            "PRD2 B5: an honest `ProvenOptimal` silences the warning with zero \
-             engine changes; got {complete:?}",
-        );
-    }
-
-    /// (f) A DOMAIN THAT CANNOT BE BUILT ⇒ `NoProgress`, NOT AN EMPTY `Ranked`.
+    /// (e) A DOMAIN THAT CANNOT BE BUILT ⇒ `NoProgress`, NOT AN EMPTY `Ranked`.
     ///
     /// I2 requires `Ranked.candidates` to be non-empty, so a ranking has no
     /// well-formed way to say "I could not start". `NoProgress` is that channel,
@@ -3444,7 +3792,7 @@ mod solve_ranked_override_tests {
         }
     }
 
-    /// (g) A PROVEN CONTRADICTION ⇒ `Infeasible`, WITH THE SAME CODE `solve()`
+    /// (f) A PROVEN CONTRADICTION ⇒ `Infeasible`, WITH THE SAME CODE `solve()`
     /// REPORTS.
     ///
     /// The code is asserted, not just the variant: `ConstraintUnsatisfiable` is
@@ -3488,7 +3836,7 @@ mod solve_ranked_override_tests {
         );
     }
 
-    /// (h) AN OBJECTIVE THAT SCORES NOTHING STILL RETURNS A WELL-FORMED ANSWER.
+    /// (g) AN OBJECTIVE THAT SCORES NOTHING STILL RETURNS A WELL-FORMED ANSWER.
     ///
     /// The objective here reads `S.ghost`, a cell that exists nowhere, so it
     /// folds to `Undef` at every model and `eval_objective_set` rejects all
