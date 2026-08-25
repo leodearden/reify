@@ -193,7 +193,7 @@ pub fn __infer_mul_div_result_for_parity_test(
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 // G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
-// consumed by tests/registry_seed_result_types.rs (the §7.3(2) family-arm swap's
+// consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the §7.3(2) family-arm swap's
 // type-preservation pin).
 pub fn __registry_result_type_for_test(
     name: &str,

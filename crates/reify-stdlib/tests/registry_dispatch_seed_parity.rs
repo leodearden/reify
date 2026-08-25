@@ -2,7 +2,8 @@
 //! `docs/prds/v0_6/builtin-signature-registry.md` §7.3(3), invariant I-REG-2).
 //!
 //! Two layers, deliberately separated — the same split
-//! `tests/registry_seed_result_types.rs` uses on the compiler side:
+//! `reify-compiler`'s `tests/harness_builtin_registry/registry_seed_result_types.rs`
+//! uses on the compiler side:
 //!
 //! **(a) The registry path itself.** Every probe below routes through
 //! `reify_stdlib::__registry_dispatch_for_test`, the `test-support`-gated shim

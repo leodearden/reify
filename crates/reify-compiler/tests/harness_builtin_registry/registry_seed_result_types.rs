@@ -15,13 +15,18 @@
 //! registry entry point. This layer is the RED signal: `builtin_registry.rs`
 //! does not exist yet, so the binary does not compile.
 //!
-//! Built on the `mod common; use common::compile_with_stdlib_helper;` template
-//! of `analysis_stress_fn_compile.rs` (same `cell_type` helper, same
+//! Built on the `common::compile_with_stdlib_helper` template of
+//! `analysis_stress_fn_compile.rs` (same `cell_type` helper, same
 //! zero-Error-diagnostics precondition). Compiles WITH stdlib because
 //! `parse_length_r`'s result type is the PRELUDE `Result<T,E>` (task #4035).
+//!
+//! LAYOUT: this is a module of the `harness_builtin_registry.rs` compile unit
+//! (C1 contract, `tests/infra/test_harness_kloc_cap.sh`), not a standalone
+//! `tests/*.rs` binary. `common` is therefore declared ONCE at that root and
+//! imported here as `use crate::common::…` — a local `mod common;` would load
+//! the same source twice in this unit (`clippy::duplicate_mod`).
 
-mod common;
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_compiler::__registry_result_type_for_test as registry_result_type;
 use reify_core::{DimensionVector, Severity, Type};
 
