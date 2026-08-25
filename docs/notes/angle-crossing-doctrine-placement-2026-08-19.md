@@ -26,6 +26,17 @@ reader asking what (if anything) currently enforces hard constraints 3 and
 
 ## 1. Measurements (prerequisite P1; re-run at fixed historical commit `db3caf593c`)
 
+**Load-bearing vs. snapshot.** `units.md`'s own four numbers — 6117 bytes,
+98 lines, 4514-byte section, 1042-byte L58 — and its 3rd-of-17 rank are the
+load-bearing figures this decision rests on. Everything else below in this
+note — other chunks' byte counts, the corpus total/mean, the
+`reify-audit` pdoccover pass count — is this pass's snapshot: recompute
+rather than cite it forward. A mismatch on a non-load-bearing figure below
+is expected drift, not a falsified record; a mismatch on one of the four
+load-bearing figures is the thing to investigate. (See "Revision
+history" at the end of this note for how this section's anchor, and an
+earlier guard-test attempt referenced in §4, evolved.)
+
 **This was executed, not asserted** — every number below is real stdout,
 re-run against a clean extraction of commit `db3caf593c` ("Merge task/6441
 into main"): `git archive db3caf593c | tar -x` into a scratch directory
@@ -42,42 +53,15 @@ re-verified here: `db3caf593c` is still an ancestor of both the current
 branch tip and current `main`, so — unlike a merge-base or a branch-tip
 SHA — it stays citable no matter how many more times either moves.
 
-A prior revision of this section attributed the same census to ancestor
-commit `2e3f228d2d`, superseding both the original P1 pass and a later,
-mid-implementation re-verification pass. That attribution does not hold
-up: no tree at `2e3f228d2d` produces the block that was pasted under it —
-`geometry.md` is 8243 bytes there, not the 8622 the block recorded, and
-8622 first exists via commit `a29bcbe812`, which `2e3f228d2d` is not a
-descendant of. The pasted numbers were not fabricated — they are a real,
-internally consistent snapshot of some later tree — but the citation was
-unverifiable at the SHA it named, which is exactly the defect this note's
-evidence exists to avoid. This revision replaces that block with a fresh
-run against a commit independently re-verified to actually produce it,
-rather than hand-patching the old block's numbers.
-
-`units.md`'s own four numbers — 6117 bytes, 98 lines, 4514-byte section,
-1042-byte L58 — and its "3rd largest of 17" rank are the load-bearing
-figures this decision rests on, and they reproduce exactly at `db3caf593c`
-and in the live tree alike (re-verified both ways). The *other* chunks'
-byte counts are not load-bearing and are expected to drift as unrelated
-sibling tasks land documentation on `main`: relative to the P1 baseline,
-`stdlib.md` moved once (4606 → 5022, via `21991bb8a6`/`e88dbdf1b4`) and
-`geometry.md` moved twice (7200 → 8243 → 8622, the second hop via
-`a29bcbe812`); both hops predate `db3caf593c` and are already reflected in
-the block below. `constraints.md` (1498 → 1646) and `traits.md` (3232 →
-3335) read differently from the block this section previously carried, but
-that is not fresh drift since this pass — it is the correction described
-above: the previous block's mis-attributed source tree predated the #6213
-amend that moved both, while `db3caf593c` postdates it, so both rows are
-already at their post-amend value below and are not expected to move again
-on that account. Any figure *derived* from these rows — the corpus mean,
-and which chunk currently ranks largest — is exactly as drift-subject as
-the rows themselves, even though it is written below as a plain number:
-treat it as this pass's snapshot, not a constant to cite forward. A future
-re-run that finds a *non-`units.md`* row, or a derived total/mean/rank
-built only from non-`units.md` rows, mismatched against this block is
-expected drift, not a falsified record; a mismatch on one of `units.md`'s
-own four numbers would be the thing to investigate.
+The *other* chunks' byte counts are not load-bearing and drift as
+unrelated sibling tasks land documentation on `main`: relative to the P1
+baseline, `stdlib.md` moved once (4606 → 5022, via
+`21991bb8a6`/`e88dbdf1b4`) and `geometry.md` moved twice (7200 → 8243 →
+8622, via `a29bcbe812`); both hops predate `db3caf593c` and are already
+reflected in the block below. `constraints.md` (1646) and `traits.md`
+(3335) are already at their post-`#6213`-amend values in that block — see
+Revision history for the earlier, mis-anchored pass that predated the
+amend.
 
 ### Byte census — all 17 chunks
 
@@ -105,8 +89,8 @@ $ for f in crates/reify-mcp/src/tools/chunks/*.md; do wc -c "$f"; done | sort -n
 `units.md` is the **3rd largest of 17** — below `geometry.md` (8622) and
 `enums.md` (7227) — against a corpus mean of 49892 / 17 ≈ **2935 bytes**.
 (That mean and the exact `geometry.md` figure are this pass's snapshot, not
-a constant — see the drift note above; recompute rather than cite them
-forward.) `geometry.md` and `enums.md` swapped rank between P1 and later
+a constant — see the load-bearing note above; recompute rather than cite
+them forward.) `geometry.md` and `enums.md` swapped rank between P1 and later
 passes (`geometry.md` was 7200, then 8243, then 8622 as of `a29bcbe812`);
 `units.md`'s own rank — 3rd of 17 — is unaffected by any of it.
 
@@ -171,13 +155,10 @@ $ cargo test -p reify-audit --test pdoccover
 PASS: 27 | FAIL: 0 | SKIP: 0
 ```
 
-The load-bearing part of this check is `FAIL: 0` — the suite is green —
-not the pass count. `reify-audit` is outside this task's scope (§4), so
-its test count is exactly as drift-subject as the non-`units.md`
-byte-census rows above and moves whenever a sibling task adds or removes
-a `reify-audit` test: an earlier pass on this branch recorded `PASS: 22`
-here. This task neither adds nor removes a `reify-audit` test, so neither
-count says anything about this task's own change; only green/red does.
+Only `FAIL: 0` is load-bearing here, per the note at the top of §1 —
+`reify-audit` is outside this task's scope, so its pass count drifts
+independent of this task's own change (an earlier pass here recorded
+`PASS: 22`).
 
 ## 2. Verdict
 
@@ -195,9 +176,8 @@ byte-census drift, on a different instrument; see §5.)
 
 **(i) Absolute size is not an outlier.** `units.md` at 6117 bytes is the 3rd
 largest of 17 chunks, below `geometry.md` (8622) and `enums.md` (7227);
-corpus mean ~2935 (§1's byte census — the `geometry.md` figure and the mean
-are today's snapshot of chunks this task does not touch and will drift
-again; `units.md`'s 3rd-of-17 rank is what does not). No per-topic size
+corpus mean ~2935 (§1's byte census; snapshot, not load-bearing — see §1).
+No per-topic size
 policy exists anywhere in `docs/prds/`
 or `docs/legibility/` (grepped, zero hits). The MCP tool serves one topic
 per call (`reference.rs` → `get_chunk`), so a large chunk costs only the
@@ -262,28 +242,18 @@ This residual has consumed four filings (#6181 → #6267 → esc-6267-2/-3 →
 hand-run greps, and constraint 4 had *already* been breached once
 (esc-6267-3 caught the `Hz`/`rad/s` removal by eye, after the fact).
 
-An earlier revision of this branch attempted to close that gap by adding
-two guard tests to `crates/reify-mcp/src/tools/language_chunks.rs`'s
-existing `#[cfg(test)] mod tests`:
-`angle_crossing_goal_vocabulary_survives_in_the_corpus` and
-`field_operator_names_keep_a_chunk_mention`, backed by a new
-`pub fn chunk_corpus()` accessor and a private `corpus_contains_word`
-matcher mirroring `reify_audit::pdoccover::contains_word`'s semantics.
-
-**Comprehensive review rejected both, twice, as documentation
-meta-tests, and a later revision removed them** along with the test-only
-infrastructure that existed solely to back them (`chunk_corpus()`,
-`CORPUS`, and three matcher helpers) — `language_chunks.rs` is
-byte-identical to `main` again (§5). The rejection is not re-litigated
-here: both tests asserted on the *prose* of `include_str!`-embedded
-markdown constants — that a handful of hand-picked words survive
-somewhere in the corpus — which pins wording, not behaviour, and cannot
-detect whether the documentation is correct or findable.
-`field_operator_names_keep_a_chunk_mention` additionally duplicated
+This branch tried closing that gap with two hand-rolled guard tests in
+`language_chunks.rs` (added, then removed after review — see Revision
+history). **Comprehensive review rejected both, twice, as documentation
+meta-tests**, and the rejection holds on two independent grounds. First,
+both tests asserted on the *prose* of `include_str!`-embedded markdown
+constants — that a handful of hand-picked words survive somewhere in the
+corpus — which pins wording, not behaviour, and cannot detect whether the
+documentation is correct or findable. Second, one of them duplicated
 `reify_audit::pdoccover::documented_names`
 (`crates/reify-audit/src/pdoccover.rs`), which computes the identical
 word-boundary-mention question against the *live* nine-member
-`FIELD_OP_NAMES` registry; this guard's hard-coded four-of-nine copy
+`FIELD_OP_NAMES` registry; that guard's hard-coded four-of-nine copy
 verified strictly *less* than the tool it mirrored, and would silently go
 stale the moment that registry gained or lost a member.
 
@@ -318,13 +288,9 @@ verdict is "change nothing."
 
 ## 5. Re-verification
 
-An earlier revision of this branch added the two guard tests described in
-§4 to `language_chunks.rs`; comprehensive review rejected them as
-documentation meta-tests, and they were removed along with the
-`chunk_corpus()`/`CORPUS` infrastructure that backed them, leaving
-`language_chunks.rs` byte-identical to `main` again. The counts below are
-lower than an earlier pass on this branch recorded, on purpose, reflecting
-that removal.
+The counts below are lower than an earlier pass on this branch recorded,
+on purpose — reflecting the guard-test removal described in §4 and
+Revision history.
 
 The `Hz`/`rad/s` and PDOCCOVER-name grep instruments still reproduce
 byte-for-byte against the §1 blocks above — re-run fresh for this section,
@@ -337,21 +303,16 @@ $ cargo test -p reify-audit --test pdoccover
 PASS: 27 | FAIL: 0 | SKIP: 0
 ```
 
-Green again (`FAIL: 0`), matching §1's baseline re-run above; as there,
-the pass count itself is not load-bearing — `reify-audit` is a suite this
-task does not own, so its count drifts with sibling activity independent
-of anything this task does.
+Green again (`FAIL: 0`), matching §1's baseline re-run above; the count
+itself is a snapshot, not load-bearing (see §1).
 
-`cargo test -p reify-mcp` is green at **110/110** — three fewer than the
-count an earlier pass on this branch established, which is the expected
-delta: exactly the two rejected guards plus
-`contains_word_matches_word_boundaries_only`, which existed only to cover
-one of them. Unlike `reify-audit`, `reify-mcp` *is* a suite this task
-touches — by removing those three tests — but the absolute totals on
-either side of that delta are still this pass's snapshot, not a constant:
-a sibling landing an unrelated `reify-mcp` test between passes would move
-both totals without affecting the one load-bearing fact they establish,
-that exactly three tests, and only those three, are now gone.
+`cargo test -p reify-mcp` is green at **110/110** — three fewer than an
+earlier pass on this branch, the expected delta from removing the two
+rejected guards plus `contains_word_matches_word_boundaries_only` (which
+existed only to cover one of them). Unlike `reify-audit`, `reify-mcp`
+*is* a suite this task touches; per the load-bearing note in §1, the
+totals themselves are a snapshot — the load-bearing fact is the delta,
+exactly those three tests and no others.
 
 ```
 $ cargo clippy -p reify-mcp --all-targets -- -D warnings
@@ -360,22 +321,12 @@ BUILD OK | warnings: 0 | errors: 0
 
 And directly, rather than inferred from instrument output — every diff
 instrument below is anchored to this branch's **merge base with `main`**,
-not to `main`'s moving tip, and that choice is deliberate rather than
-incidental. The text this replaces anchored the same checks to `main`
-directly (`git diff main -- <path>`, and a whole-directory `git diff
---stat main -- crates/reify-mcp/src/tools/chunks/`) and, for the
-whole-directory check, pasted a non-empty 2-file hunk with a paragraph
-attributing it to task #6213 having landed on `main` after this branch's
-then-merge-base. Re-run on this tip, that same check is empty: this
-branch has since been rebased onto a newer `main` tip whose ancestry
-already includes #6213, so the divergence the pasted hunk described no
-longer exists relative to the current fork point, and both the pasted
-stdout and the paragraph explaining it are stale in the opposite
-direction. This is the same failure mode this note's own Provenance row
-already documents for branch-tip SHAs, and that §1 already documents for
-the byte census: a check anchored to a moving target — `main`'s tip, a
-branch-tip SHA — cannot survive a rebase, because a rebase is precisely
-the operation that moves the target out from under it.
+not to `main`'s moving tip (a deliberate choice, not the original one —
+see Revision history). A check anchored to a moving target — `main`'s
+tip, a branch-tip SHA — cannot survive a rebase, because a rebase is
+precisely the operation that moves the target out from under it; this is
+the same failure mode this note's own Provenance row documents for
+branch-tip SHAs, and §1 documents for the byte census.
 
 A merge-base-anchored form does not have that failure mode. It diffs from
 this branch's fixed fork point, so it only ever reports *this task's own*
@@ -416,3 +367,31 @@ docs/notes/angle-crossing-doctrine-placement-2026-08-19.md
 This task's entire diff, relative to where it actually branched, is this
 note and nothing else. No chunk `.md` file — in particular not
 `units.md` — and no code file was ever touched by this task.
+
+## Revision history
+
+This note went through several revisions before landing; the full detail
+is in `git log` for this file. The high-level shape, for a reader
+wondering why other sections mention tests or anchors that are not in the
+current text:
+
+- **Census re-anchored.** An earlier pass anchored §1's byte census to
+  ancestor commit `2e3f228d2d`; that attribution did not hold up under
+  re-verification (no tree at that SHA produces the pasted block). A
+  later revision re-ran the census against `db3caf593c` instead and
+  replaced the block with that run's real stdout.
+- **Guard tests added, then removed.** An earlier revision added two
+  tests to `crates/reify-mcp/src/tools/language_chunks.rs`
+  (`angle_crossing_goal_vocabulary_survives_in_the_corpus`,
+  `field_operator_names_keep_a_chunk_mention`) plus a `chunk_corpus()`
+  accessor and matcher helpers to back them. Comprehensive review
+  rejected both, twice, as documentation meta-tests (§4); a later
+  revision removed them and their supporting infrastructure, leaving
+  `language_chunks.rs` byte-identical to `main`.
+- **§5 diff instruments re-anchored from `main` to merge-base.** An
+  earlier revision anchored §5's diff checks to `main`'s tip and, for a
+  time, pasted a non-empty whole-directory hunk attributed to task
+  #6213; a later rebase past #6213 made that pasted output stale in the
+  opposite direction. A later revision re-anchored every diff instrument
+  in §5 to `git diff --name-only "$(git merge-base HEAD main)" HEAD`,
+  which is invariant under both rebase and sibling drift.
