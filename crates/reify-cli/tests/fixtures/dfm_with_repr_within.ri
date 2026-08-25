@@ -66,26 +66,37 @@
 // `cylinder(1000mm, 2000mm)`, whose curved face IS edge-segment-quantised,
 // comes back perfectly smooth (ratio 0.493-0.500, zero teeth), which falsifies
 // that explanation. The real mechanism is a two-ladder phase collision on the
-// SPHERE FACE: interior surface nodes are truncation-quantised at
-// 0.7*ArcAngularStep (BRepMesh_SphereRangeSplitter.cxx:25-27) while the seam
-// meridian edge is tessellated at HALF the deflection
-// (BRepMesh_CurveTessellator.cxx:74) — the 0.70000-vs-0.70711 mismatch between
-// those two constants drifts the two node ladders in and out of phase as
-// #precision varies, producing the teeth.
+// SPHERE FACE, measured against OCCT 7.8 — the system OCCT reify's kernel
+// links directly (CLAUDE.md native-deps note). OCCT is unpinned and
+// unvendored in-tree, so treat the file:line citations below as pointers into
+// 7.8 sources to re-verify, not a guarantee against a future OCCT bump:
+// interior surface nodes are truncation-quantised at the literal constant
+// 0.7*ArcAngularStep (BRepMesh_SphereRangeSplitter's angular-step factor,
+// BRepMesh_SphereRangeSplitter.cxx:25-27) while the seam meridian edge is
+// tessellated at HALF the deflection, i.e. the literal constant 0.5
+// (BRepMesh_CurveTessellator's seam-edge handling,
+// BRepMesh_CurveTessellator.cxx:74). Since chord deflection scales as theta^2
+// (deflection ~ r*theta^2/8), halving the deflection yields an effective
+// angular step of sqrt(0.5)=0.70711*ArcAngularStep, not 0.5x — the resulting
+// 0.70000-vs-0.70711 gap between the splitter's literal factor and the
+// tessellator's derived effective factor drifts the two node ladders in and
+// out of phase as #precision varies, producing the teeth.
 //
-// NEAR THE BOUND this dominates: 0.49mm (1.013e-3) and 0.51mm (1.056e-3) both
-// VIOLATE the 1.000e-3 m bound while 0.50mm between them passes at a 2.63x
-// margin — a 2.66x-2.77x swing in achieved deviation across a ±2% change in
-// #precision here (the 388-point sweep's largest measured adjacent swing
-// overall is 2.78x, at 0.68mm → 5.156e-4 m vs. 0.69mm → 1.434e-3 m; a separate
-// pair 0.08% apart in the request, 0.5955mm → 1.223e-3 m vs. 0.5960mm →
-// 4.541e-4 m, swings 2.69x).  FARTHER BELOW THE BOUND the measured points
-// happen to track ~2.08x #precision (0.25mm → 5.198e-4, 0.30mm → 6.202e-4,
-// 0.35mm → 7.271e-4), but that local ratio is an observation of the upper
-// envelope, not a guarantee — the teeth recur across the whole range, and
-// extrapolating the envelope is exactly what makes a tooth like 0.50mm's look
-// like a one-off. 0.3mm was chosen because BOTH its neighbours also clear the
-// bound, not because it is a smooth optimum.
+// NEAR THE BOUND this dominates: the 388-point sweep's largest measured
+// adjacent swing overall is 2.78x, at 0.68mm → 5.156e-4 m vs. 0.69mm →
+// 1.434e-3 m; a separate pair 0.08% apart in the request, 0.5955mm →
+// 1.223e-3 m vs. 0.5960mm → 4.541e-4 m, swings 2.69x — so a value that
+// clears the bound today can be one retune away from a tooth that doesn't.
+// FARTHER BELOW THE BOUND the ~2.08x envelope ratio is an observation of the
+// upper envelope, not a guarantee — the teeth recur across the whole range,
+// and extrapolating the envelope is exactly what makes a tooth look like a
+// one-off. This fixture's own value (6.202e-4 m against the 1mm bound,
+// stated above) is this note's own single source of truth; the 8-point
+// neighbourhood grid around it lives in
+// `representation_within_assertion.rs`'s `OCCT_SOURCE_FINE` doc comment —
+// see there rather than restating the grid here. 0.3mm was chosen because
+// both its measured neighbours in that grid also clear the bound, not
+// because it is a smooth optimum.
 //
 // To re-derive any candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
