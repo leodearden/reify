@@ -31259,3 +31259,130 @@
         );
         assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
     }
+
+    // ---- units-length ζ (task 5747): the CROSS-CRATE wording drift guard ----
+
+    /// R12's rejection wording is rendered by a private MIRROR of
+    /// `ArgRejection::message` inside reify-stdlib. This test is the only thing
+    /// holding the two crates to one string.
+    ///
+    /// WHY THE MIRROR EXISTS. Contract C1(i) makes
+    /// [`crate::arg_acceptance::ArgRejection::message`] the sole owner of the
+    /// `expects Length` phrasing and the `5mm` migration hint. But the workspace
+    /// dependency arrow runs reify-eval → reify-stdlib, and `arg_acceptance` is
+    /// `pub(crate)` to reify-eval, so reify-stdlib physically cannot call it.
+    /// Moving that module down into reify-ir so both crates could share one
+    /// source of truth was considered and REJECTED: it would (a) unfreeze a file
+    /// the PRD explicitly marks FROZEN, (b) widen a deliberately crate-private
+    /// API to the whole workspace, and (c) collide head-on with task 5752's
+    /// chartered shrink of that very module doc.
+    ///
+    /// THE PRECEDENT IT COPIES — same crates, same boundary, same reason:
+    /// [`super::affine_apply_linear_det`] already mirrors
+    /// `reify_stdlib::matrix::mat3_det` with the recorded rationale "since they
+    /// cannot share a single source of truth across the crate boundary", guarded
+    /// by `affine_apply_linear_det_matches_stdlib_determinant_builtin` above.
+    ///
+    /// This module — reify-eval's own test module — is the ONLY place that can
+    /// see BOTH `reify_stdlib::geometry_diagnose` and reify-eval's `pub(crate)`
+    /// `arg_acceptance`, which is why the guard lives here rather than beside the
+    /// mirror it guards.
+    ///
+    /// The reference `expected` / `migration_hint` are read from
+    /// [`crate::arg_acceptance::length_spec`] rather than re-typed, so a REWORD
+    /// of `length_spec` fails this test instead of silently forking the two
+    /// crates.
+    #[test]
+    fn affine_translate_and_affine_map_rejection_wording_matches_the_shared_arg_rejection_template()
+    {
+        use crate::arg_acceptance::{ArgRejection, length_spec};
+
+        let spec = length_spec();
+        let dimensionless = reify_ir::Value::Scalar {
+            si_value: 5.0,
+            dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        };
+        let mass = |v: f64| reify_ir::Value::Scalar {
+            si_value: v,
+            dimension: reify_core::DimensionVector::MASS,
+        };
+
+        // (got label, the three components carrying that shape)
+        let shapes: [(&str, [reify_ir::Value; 3]); 3] = [
+            (
+                "Real",
+                [
+                    reify_ir::Value::Real(5.0),
+                    reify_ir::Value::Real(0.0),
+                    reify_ir::Value::Real(0.0),
+                ],
+            ),
+            (
+                "dimensionless Scalar",
+                [
+                    dimensionless.clone(),
+                    reify_ir::Value::Scalar {
+                        si_value: 0.0,
+                        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+                    },
+                    reify_ir::Value::Scalar {
+                        si_value: 0.0,
+                        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+                    },
+                ],
+            ),
+            ("Mass Scalar", [mass(5.0), mass(0.0), mass(0.0)]),
+        ];
+
+        let identity_matrix = reify_ir::Value::Matrix(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+                .iter()
+                .map(|row| row.iter().map(|&x| reify_ir::Value::Real(x)).collect())
+                .collect(),
+        );
+
+        for (got, components) in shapes {
+            // The REFERENCE string, built by the OWNER of the template.
+            let reference = ArgRejection {
+                got: got.to_string(),
+                expected: spec.type_name,
+                migration_hint: spec.migration_hint,
+            };
+
+            for (builtin, arg_name, args) in [
+                (
+                    "affine_translate",
+                    "dx/dy/dz",
+                    components.to_vec(),
+                ),
+                (
+                    "affine_map",
+                    "translation",
+                    vec![
+                        identity_matrix.clone(),
+                        reify_ir::Value::Vector(components.to_vec()),
+                    ],
+                ),
+            ] {
+                let diag = reify_stdlib::geometry_diagnose(builtin, &args).unwrap_or_else(|| {
+                    panic!("{builtin} / {got}: the stdlib gate must produce a diagnostic")
+                });
+                assert_eq!(
+                    diag.message,
+                    reference.message(builtin, arg_name),
+                    "{builtin} / {got}: reify-stdlib's mirrored wording has drifted from \
+                     `ArgRejection::message` + `length_spec()`"
+                );
+                assert_eq!(
+                    diag.severity,
+                    reify_core::Severity::Error,
+                    "{builtin} / {got}: severity drift"
+                );
+                assert_eq!(
+                    diag.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{builtin} / {got}: code drift"
+                );
+            }
+        }
+    }
