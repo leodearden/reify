@@ -662,8 +662,10 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //     -- an upper bound on real elapsed time around `drop`, plus a
 //     `sleep(10ms)` that was its only (and never-confirmed) "an entry is
 //     pending" precondition. Both replaced; see the tombstone in its body.
-//   * wait_for_returns_true_promptly_when_condition_already_satisfied --
-//     an upper bound on `start.elapsed()`; see the tombstone just below.
+//   * wait_for_returns_true_when_the_condition_is_already_satisfied
+//     (renamed here off `..._returns_true_promptly_...`, so the name cited
+//     resolves to a live symbol) -- an upper bound on `start.elapsed()`;
+//     see the tombstone just below.
 //
 // JUDGED SAFE, and why:
 //   * Fixed sleeps gating NEGATIVE assertions, in
@@ -1755,15 +1757,25 @@ fn far_future_stamp() -> Instant {
 /// not match, and unlike the future offset above, which has to argue its case
 /// with an escape.
 ///
-/// `checked_sub` rather than `-`: on Linux an `Instant` is CLOCK_MONOTONIC,
-/// i.e. time since boot, so an hour before now is not representable on a host
-/// that booted more recently and `Instant - Duration` panics there. The
-/// `unwrap_or` fallback degrades to `now`, which costs the caller one debounce
-/// window of real waiting and nothing else: the entry still drains, far inside
-/// the generous budget the caller polls with.
+/// ONE SECOND, not the hour an earlier draft used, and the fallback is LOUD
+/// (#6438 review). On Linux an `Instant` is CLOCK_MONOTONIC -- time since boot
+/// -- so an offset larger than the host's uptime is not representable, and an
+/// hour is a realistic uptime for a freshly booted CI VM or container. With a
+/// silent `unwrap_or(now)` the stamp there was not already-elapsed at all: the
+/// caller quietly degraded into an ordinary 100ms-debounce delivery test,
+/// still green, testing something other than its name -- the same silent
+/// vacuity this task exists to remove elsewhere in this file. A second is an
+/// order of magnitude past DEBOUNCE_DURATION, which is all the callers need,
+/// and is representable on any host that has been up long enough to run a
+/// test at all; `expect` rather than a fallback so that if it somehow is not,
+/// the run says so instead of quietly testing less.
+///
+/// `checked_sub` rather than `-` for the same reason: `Instant - Duration`
+/// panics on underflow with no message worth reading.
 fn already_elapsed_stamp() -> Instant {
     let now = Instant::now();
-    now.checked_sub(Duration::from_secs(3600)).unwrap_or(now)
+    now.checked_sub(Duration::from_secs(1))
+        .expect("a second before now is representable as an Instant (host uptime < 1s?)")
 }
 
 /// THE DRIVE HALF of `FileWatcher::record_pending_for_test` -- the half the
