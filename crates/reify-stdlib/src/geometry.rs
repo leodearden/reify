@@ -5604,6 +5604,179 @@ mod tests {
         );
     }
 
+    // ── units-length ζ (task 5747): the R12 affine_translate translation ──────
+    //
+    // TWO HALVES, because the VALUE and the DIAGNOSTIC are produced by different
+    // functions: `eval_builtin` decides whether the map is built at all, while
+    // `diagnose` — the post-`Undef` hook reify-expr already calls — is what
+    // supplies the `Severity::Error` that makes `reify eval` exit 1. Returning
+    // `Value::Undef` alone does NOT flip the exit code (measured: a mixed-dimension
+    // `affine_translate(5mm, 0kg, 0mm)` prints `undef` + a `note:` at exit 0).
+
+    #[test]
+    fn affine_translate_shared_mass_returns_undef() {
+        let mass = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::MASS,
+        };
+        assert!(
+            eval_builtin("affine_translate", &[mass(5.0), mass(0.0), mass(0.0)]).is_undef(),
+            "a shared-MASS translation triple must be Undef (ζ/R12)"
+        );
+    }
+
+    #[test]
+    fn affine_translate_bare_reals_return_undef() {
+        // D1 / ratified decision 2: bare is DIMENSIONLESS and strict equality
+        // rejects it. Zero is NOT special-cased.
+        assert!(
+            eval_builtin(
+                "affine_translate",
+                &[Value::Real(5.0), Value::Real(0.0), Value::Real(0.0)]
+            )
+            .is_undef(),
+            "a bare Real translation triple must be Undef (ζ/R12)"
+        );
+        assert!(
+            eval_builtin(
+                "affine_translate",
+                &[Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]
+            )
+            .is_undef(),
+            "bare ZERO is not special-cased"
+        );
+    }
+
+    #[test]
+    fn affine_translate_shared_angle_returns_undef() {
+        assert!(
+            eval_builtin(
+                "affine_translate",
+                &[Value::angle(1.0), Value::angle(0.0), Value::angle(0.0)]
+            )
+            .is_undef(),
+            "a shared-ANGLE translation triple must be Undef (ζ/R12)"
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_translate_mass_is_a_coded_error() {
+        let mass = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::MASS,
+        };
+        let diag = super::diagnose("affine_translate", &[mass(5.0), mass(0.0), mass(0.0)])
+            .expect("a MASS translation triple must be diagnosed");
+        assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{diag:?}"
+        );
+        // FULL EQUALITY, not `contains`: this message IS the user-facing contract.
+        assert_eq!(
+            diag.message,
+            "affine_translate: dx/dy/dz argument expects Length, got Mass Scalar; \
+             pass a dimensioned length such as `5mm`"
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_translate_bare_real_is_a_coded_error() {
+        let diag = super::diagnose(
+            "affine_translate",
+            &[Value::Real(5.0), Value::Real(0.0), Value::Real(0.0)],
+        )
+        .expect("a bare Real translation triple must be diagnosed");
+        assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{diag:?}"
+        );
+        assert_eq!(
+            diag.message,
+            "affine_translate: dx/dy/dz argument expects Length, got Real; \
+             pass a dimensioned length such as `5mm`"
+        );
+    }
+
+    #[test]
+    fn diagnose_affine_translate_length_returns_none() {
+        assert!(
+            super::diagnose(
+                "affine_translate",
+                &[Value::length(0.005), Value::length(0.0), Value::length(0.0)]
+            )
+            .is_none(),
+            "an accepted LENGTH triple must not be diagnosed"
+        );
+    }
+
+    /// ζ deliberately changes only what its OWN gate newly rejects.
+    ///
+    /// A MIXED-dimension triple fails `decompose_xyz3`'s CONSISTENCY rule, not
+    /// the LENGTH rule — and it ALREADY returned `Undef` at exit 0 before ζ.
+    /// Pinning the non-change stops a later reader "completing" it by accident
+    /// and thereby misnaming the offending argument.
+    #[test]
+    fn diagnose_affine_translate_mixed_dimensions_stays_silent() {
+        let args = [
+            Value::length(0.005),
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::length(0.0),
+        ];
+        assert!(
+            eval_builtin("affine_translate", &args).is_undef(),
+            "a mixed-dimension triple was Undef before ζ and stays Undef"
+        );
+        assert!(
+            super::diagnose("affine_translate", &args).is_none(),
+            "a consistency failure is NOT a ζ units rejection and must stay silent"
+        );
+    }
+
+    /// Wrong arity and non-numeric / non-finite components stay silent, matching
+    /// the `transform3` convention the existing `diagnose` doc states.
+    #[test]
+    fn diagnose_affine_translate_arity_and_non_numeric_stay_silent() {
+        for (label, args) in [
+            ("0 args", vec![]),
+            ("1 arg", vec![Value::Real(1.0)]),
+            ("2 args", vec![Value::Real(1.0), Value::Real(2.0)]),
+            (
+                "4 args",
+                vec![
+                    Value::length(1.0),
+                    Value::length(2.0),
+                    Value::length(3.0),
+                    Value::length(4.0),
+                ],
+            ),
+            (
+                "non-numeric",
+                vec![
+                    Value::String("x".to_string()),
+                    Value::length(0.0),
+                    Value::length(0.0),
+                ],
+            ),
+            (
+                "non-finite",
+                vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)],
+            ),
+        ] {
+            assert!(
+                super::diagnose("affine_translate", &args).is_none(),
+                "{label}: must stay silent; got: {:?}",
+                super::diagnose("affine_translate", &args)
+            );
+        }
+    }
+
     #[test]
     fn diagnose_non_affine_name_returns_none() {
         assert!(
