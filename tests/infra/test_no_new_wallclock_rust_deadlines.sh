@@ -79,7 +79,11 @@
 #
 # ALLOWLIST: exactly ONE escape exists in tree -- `far_future_stamp()` in
 # watcher_tests.rs, the single legitimate real-`Instant` offset in the
-# directory, argued at the site in its own doc comment. (An earlier draft of
+# directory, argued at the site in its own doc comment. That count is CHECKED,
+# not merely asserted here: Section 3 counts escape-annotated lines under the
+# live directory and compares them against `_ESC_ALLOWLIST_SIZE`, because the
+# detector skips an escaped line without counting it and so returns 0 for one
+# escape and for twenty alike. (An earlier draft of
 # this guard spelled that site with `checked_add` specifically BECAUSE Rule A
 # did not match it. That was a documented bypass masquerading as house style:
 # it made the one site invisible AND blessed an undetectable spelling for
@@ -337,6 +341,56 @@ _detect_rust_wallclock_deadline() {
         echo "     the second, so state the argument where the next reader will find it." >&2
         return 1
     fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _count_rust_wallclock_escapes <dir>
+#
+# Prints (stdout) the number of PHYSICAL lines carrying the escape token
+# across all *.rs files in <dir>, and lists each one (stderr) as
+# "file:lineno: <content>". Always returns 0 -- the COUNT is the result, and
+# what to do with it is the caller's assertion, not this function's.
+#
+# WHY THIS EXISTS AT ALL (#6438 review). The detector above `continue`s on an
+# escaped line without counting it, so its rc is 0 whether the tree holds one
+# escape or twenty. The header's ALLOWLIST paragraph and Section 3's prose
+# both claimed exactly ONE escape exists; nothing checked it, so a second
+# could be added silently -- precisely the failure mode the allowlist says a
+# second escape must not have ("a deliberate, reviewable act rather than
+# pre-existing noise"). Counting turns that prose into an assertion: adding an
+# escape now also requires editing _ESC_ALLOWLIST_SIZE below, which is a
+# one-line diff a reviewer cannot miss.
+#
+# It counts LINES, not sites, which is the same unit the detector skips on --
+# so the two can never disagree about what an escape is.
+# ---------------------------------------------------------------------------
+_count_rust_wallclock_escapes() {
+    local dir="$1"
+
+    # Split across two adjacent single-quoted strings, as everywhere else in
+    # this file: a contiguous copy here would annotate this very line and
+    # would make the counter count itself if it were ever pointed at a .rs
+    # copy of its own logic.
+    local _esc_re; _esc_re='wallcl''ock:allow'
+
+    local _n=0
+    local f
+    for f in "$dir"/*.rs; do
+        [ -f "$f" ] || continue
+
+        local _lineno=0
+        local _line
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            _lineno=$((_lineno + 1))
+            if [[ "$_line" =~ $_esc_re ]]; then
+                echo "$f:$_lineno: $_line" >&2
+                _n=$((_n + 1))
+            fi
+        done < "$f"
+    done
+
+    echo "$_n"
     return 0
 }
 # ===========================================================================
@@ -781,6 +835,50 @@ _detect_rust_wallclock_deadline "$_s2z_tmpdir" 2>/dev/null || _s2z_rc=$?
 assert "2z: a comment QUOTING a forbidden shape is flagged too (documented, returns 1)" \
     test "$_s2z_rc" -eq 1
 
+# ---------------------------------------------------------------------------
+# 2aa: escape COUNTER, zero case. A clean file (and a violating one that
+#      carries no escape) must count zero -- the counter keys on the escape
+#      token, not on whether a line would otherwise be flagged.
+# ---------------------------------------------------------------------------
+_s2aa_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2aa_tmpdir")
+_fixture "$_s2aa_tmpdir" "fixture.rs" \
+    '    let t0 = Instant::now();' \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+
+_s2aa_count="$(_count_rust_wallclock_escapes "$_s2aa_tmpdir" 2>/dev/null)"
+assert "2aa: a directory with no escape annotations counts 0" \
+    test "$_s2aa_count" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2ab: escape COUNTER, one case -- the shape of the single in-tree escape.
+# ---------------------------------------------------------------------------
+_s2ab_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2ab_tmpdir")
+_fixture "$_s2ab_tmpdir" "fixture.rs" \
+    "    let stamp = Instant::now().checked_add(Duration::from_secs(3600)); // $_ESC_TOKEN -- reason" \
+    '    let t0 = Instant::now();'
+
+_s2ab_count="$(_count_rust_wallclock_escapes "$_s2ab_tmpdir" 2>/dev/null)"
+assert "2ab: a single escape annotation counts 1" \
+    test "$_s2ab_count" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2ac: escape COUNTER, MANY case, across two files. This is the assertion
+#      that matters: a counter that saturated at one -- or that stopped at
+#      the first file, as a `grep -l`-shaped implementation would -- would
+#      pass 2ab and still let a second escape land silently, which is the
+#      whole reason the counter exists.
+# ---------------------------------------------------------------------------
+_s2ac_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2ac_tmpdir")
+_fixture "$_s2ac_tmpdir" "aaa.rs" \
+    "    let a = Instant::now() + Duration::from_secs(1); // $_ESC_TOKEN -- reason" \
+    "    let b = Instant::now() + Duration::from_secs(2); // $_ESC_TOKEN -- reason"
+_fixture "$_s2ac_tmpdir" "zzz.rs" \
+    "    let c = Instant::now() + Duration::from_secs(3); // $_ESC_TOKEN -- reason"
+
+_s2ac_count="$(_count_rust_wallclock_escapes "$_s2ac_tmpdir" 2>/dev/null)"
+assert "2ac: three escapes across two files count 3, not 1 and not 2" \
+    test "$_s2ac_count" -eq 3
+
 # ===========================================================================
 # Section 3: LIVE guard -- scan the real gui/src-tauri/src/tests for
 #             un-escaped hand-rolled deadlines and elapsed upper bounds.
@@ -789,10 +887,20 @@ assert "2z: a comment QUOTING a forbidden shape is flagged too (documented, retu
 # exactly three violations, all in watcher_tests.rs: one Rule A (the 5s
 # hand-rolled poll deadline) and two Rule B (the 1s and 2s elapsed upper
 # bounds). That task deleted all three, so every remaining Rule A/B match in
-# the directory is the single escaped site, `far_future_stamp()` -- which this
-# scan therefore proves is still the ONLY one. If this assertion ever fails,
-# read the reported lines before reaching for an escape: the three sanctioned
-# fixes in the detector's remediation hint come first, in that order.
+# the directory is the single escaped site, `far_future_stamp()`. If the
+# violation assertion ever fails, read the reported lines before reaching for
+# an escape: the three sanctioned fixes in the detector's remediation hint
+# come first, in that order.
+#
+# TWO ASSERTIONS, NOT ONE (#6438 review). The violation scan alone does not
+# say what the paragraph above wants it to say. The detector skips an escaped
+# line without counting it, so its rc is 0 for one escape and for twenty
+# alike -- a second escape could be added and BOTH the header's allowlist and
+# this comment would go on claiming there was one. So the escape count is
+# asserted separately, against a number stated here. Adding an escape now
+# takes a diff to _ESC_ALLOWLIST_SIZE as well as to the annotated line, which
+# is exactly the "deliberate, reviewable act" the allowlist asks for -- and
+# the reviewer sees the count change rather than having to grep for it.
 # ===========================================================================
 echo ""
 echo "--- Section 3: live scan of gui/src-tauri/src/tests ---"
@@ -803,5 +911,31 @@ _s3_rc=0
 _detect_rust_wallclock_deadline "$_LIVE_DIR" 2>&1 || _s3_rc=$?
 assert "live scan: no un-escaped hand-rolled deadlines or elapsed upper bounds in gui/src-tauri/src/tests (returns 0)" \
     test "$_s3_rc" -eq 0
+
+# The allowlist as a NUMBER rather than as prose. One escape:
+# `far_future_stamp()` in watcher_tests.rs, argued in its own doc comment.
+# Changing this line is the reviewable act; see the header's ALLOWLIST
+# paragraph before you do.
+_ESC_ALLOWLIST_SIZE=1
+
+_s3_esc_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s3_esc_tmpdir")
+_s3_esc_count="$(_count_rust_wallclock_escapes "$_LIVE_DIR" 2>"$_s3_esc_tmpdir/escapes.txt")"
+
+if [ "$_s3_esc_count" != "$_ESC_ALLOWLIST_SIZE" ]; then
+    echo "" >&2
+    echo "Escape-annotated lines under $_LIVE_DIR: $_s3_esc_count; the allowlist says $_ESC_ALLOWLIST_SIZE." >&2
+    echo "The annotated lines are:" >&2
+    cat "$_s3_esc_tmpdir/escapes.txt" >&2
+    echo "" >&2
+    echo "An escape suppresses BOTH rules on its line, so each one is a hole in this guard." >&2
+    echo "If the new site is genuinely legitimate, argue it where the next reader will find" >&2
+    echo "it -- in a doc comment at the site, as far_future_stamp() does -- and raise" >&2
+    echo "_ESC_ALLOWLIST_SIZE in this file so the change is visible in review. If a site was" >&2
+    echo "REMOVED, lower it. Do not delete this assertion: it is the only thing standing" >&2
+    echo "between one argued escape and an allowlist nobody reads." >&2
+fi
+
+assert "live scan: escape-annotated line count matches the allowlist size" \
+    test "$_s3_esc_count" -eq "$_ESC_ALLOWLIST_SIZE"
 
 test_summary
