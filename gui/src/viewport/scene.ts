@@ -55,6 +55,22 @@ function singleMaterial<T>(helper: { material: T | T[] }, name: string): T {
 }
 
 /**
+ * Snap `x` UP to the nearest 1 | 2 | 5 x 10^k.
+ *
+ * A grid is a measuring aid, so its cell must be a size a reader can hold in their
+ * head: 0.1 m, 0.2 m, 0.5 m — never 0.10392... m. Snapping UP (never down) also
+ * bounds the result: the worst case is a value just above 2, which snaps to 5, so
+ * the returned spacing is at most 2.5x the requested one.
+ *
+ * @param x - Requested spacing; must be finite and > 0 (callers guard).
+ */
+function niceSpacing(x: number): number {
+  const decade = Math.pow(10, Math.floor(Math.log10(x)));
+  const m = x / decade; // in [1, 10)
+  return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * decade;
+}
+
+/**
  * Base dimensions the viewport helpers are CONSTRUCTED with. They are also the
  * denominators `fitHelpers` divides by to turn a target world size into an object
  * scale, so they must stay in one place rather than being repeated as literals at
@@ -225,6 +241,34 @@ export function createScene(
     sceneBounds.getSize(size);
     const radius = size.length() / 2;
     if (!Number.isFinite(radius) || radius <= 0) return;
+
+    // radius / 5 targets ~10 cells across the model's diameter: enough to read the
+    // grid as a ruler, few enough that it does not extend far enough to converge
+    // into a horizon band.
+    const spacing = niceSpacing(radius / 5);
+    const gridWorldSize = spacing * GRID_DIVISIONS;
+    const axesWorldLength = spacing * 3;
+
+    // A GridHelper/AxesHelper is a LineSegments, so a UNIFORM object scale rescales
+    // the line SPACING along with the extent — no geometry rebuild, and no dispose()
+    // of the old buffers. The division count stays GRID_DIVISIONS, so line density
+    // (and therefore the aliasing budget) is scene-independent: the grid never gains
+    // lines as the model shrinks.
+    //
+    // Worked cases:
+    //   r = 0.3   -> 0.1 m cells, 2 m grid, 0.3 m axes. The sub-metre printer stops
+    //                sitting inside a 20 m grid whose far lines converge into the
+    //                reported dark 0x444466 horizon band, and the 2 m triad stops
+    //                drawing a hard diagonal across every part in frame.
+    //   r = 5     -> 1 m cells, 20 m grid — IDENTICAL to the pre-#6588 default, so
+    //                the ~10 m CAD scene the helpers were tuned for is undisturbed.
+    //   r = 0.005 -> 1 mm cells, 20 mm grid.
+    grid.scale.setScalar(gridWorldSize / GRID_BASE_SIZE);
+    axes.scale.setScalar(axesWorldLength / AXES_BASE_LENGTH);
+
+    // No requestRender() here: Viewport.tsx's mesh-sync effect already invalidates
+    // after calling this, and re-rendering from inside a sizing helper would couple
+    // this module to the render-on-demand loop it knows nothing about.
   }
 
   return { scene, camera, renderer, resize, adjustClipping, fitHelpers, grid, axes, axisLabels, disposeAxisLabels };
