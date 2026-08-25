@@ -635,6 +635,10 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 // round before them. So this ledger enumerates the real-clock sites in
 // the file, including -- especially -- the ones judged safe, with the
 // reason, and names them by test function so it survives line drift.
+// Every cited name is kept on ONE physical line for that reason: a name
+// wrapped across a comment break is invisible to `grep <test_name>`, which
+// is the only mechanism by which a rename or deletion can surface a stale
+// row here at all. If a name no longer fits the prose, reflow the PROSE.
 //
 // READ THIS AS A SNAPSHOT, NOT AS A CHECKED INVARIANT. It was accurate
 // when written (#6438) and nothing verifies it since; the enforced half
@@ -662,42 +666,49 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //     an upper bound on `start.elapsed()`; see the tombstone just below.
 //
 // JUDGED SAFE, and why:
-//   * Fixed sleeps gating NEGATIVE assertions (watcher_ignores_non_ri_
-//     file_changes, watcher_with_target_file_only_fires_for_that_file).
+//   * Fixed sleeps gating NEGATIVE assertions, in
+//     watcher_ignores_non_ri_file_changes and
+//     watcher_with_target_file_only_fires_for_that_file.
 //     Descheduling makes a negative assertion MORE likely to hold, never
 //     less, so these cannot invert. They carry a VACUITY risk instead --
 //     a different class, out of scope here; both are already barriered by
 //     a positive registration confirmation, which is what stops it.
-//   * The sub-debounce-window sleep in watcher_rereads_final_content_
-//     after_nonatomic_truncate_then_append. If load stretches it past
-//     DEBOUNCE_DURATION the two writes merely split into separate
-//     debounce cycles; the ASSERTED claim (terminal content) holds either
-//     way, and the coalescing-fidelity claim is `eprintln!`-downgraded
-//     rather than asserted, precisely so this cannot fail on load.
+//   * The sub-debounce-window sleep in
+//     watcher_rereads_final_content_after_nonatomic_truncate_then_append.
+//     If load stretches it past DEBOUNCE_DURATION the two writes merely
+//     split into separate debounce cycles; the ASSERTED claim (terminal
+//     content) holds either way, and the coalescing-fidelity claim is
+//     `eprintln!`-downgraded rather than asserted, precisely so this
+//     cannot fail on load.
 //   * The sleep in that same test's bounded watcher-construction retry
 //     loop: retry-with-cap terminating in an environment skip, with no
 //     timing assertion riding on it at all.
-//   * The LOWER bounds on `start.elapsed()` in wait_for_returns_false_
-//     after_timeout_when_never_satisfied and wait_until_with_retry_
-//     returns_false_after_the_timeout_when_never_satisfied. Monotone
-//     under descheduling, i.e. the safe direction, by the invariant
+//   * The LOWER bounds on `start.elapsed()` in
+//     wait_for_returns_false_after_timeout_when_never_satisfied and
+//     wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied.
+//     Monotone under descheduling, i.e. the safe direction, by the invariant
 //     above -- and load-bearing in the other: they are what proves
 //     `WallClock::sleep` really blocks.
-//   * The budget in wait_for_watch_registration_via_removal_confirms_a_
-//     watch_behind_a_target_file_filter, spent on a NEGATIVE claim (no
-//     Changed event behind the filter) -- safe direction, as above.
+//   * The budget in
+//     wait_for_watch_registration_via_removal_confirms_a_watch_behind_a_target_file_filter,
+//     spent on a NEGATIVE claim (no Changed event behind the filter) --
+//     safe direction, as above.
 //   * The budget over an in-process producer thread in
 //     wait_for_detects_value_set_by_another_thread: two orders of
 //     magnitude of margin, no filesystem and no inotify involved.
-//   * The budget in
+//   * The two budgets, and the settle sleep between them, in
 //     watcher_delivers_an_injected_pending_entry_whose_window_has_already_elapsed
-//     -- a generous `wait_for` budget over a hard POSITIVE assert, on an
-//     entry stamped in the PAST and therefore already ready when it lands.
+//     -- generous `wait_for` budgets over hard POSITIVE asserts, on entries
+//     stamped in the PAST and therefore already ready when they land.
 //     Descheduling only makes such an entry READIER, so there is no window
 //     to miss -- which is the precise property the pre-#6438 form of
 //     watcher_drop_discards_a_pending_event_rather_than_delivering_it
-//     lacked. Added by the #6438 review pass to pin the notify wiring both
-//     Drop tests below silently depend on.
+//     lacked. The settle sleep is not a budget and nothing is asserted
+//     about it: it only makes the worker more certainly parked, so load
+//     STRENGTHENS what that phase catches instead of inverting it. Added
+//     by the #6438 review pass to pin the notify wiring both Drop tests
+//     below silently depend on -- see its doc comment for the measurement
+//     that showed a one-phase version could not.
 //   * The registration-barriered condition-polls that pair a generous
 //     `wait_for` / `wait_until_with_retry` budget with a hard POSITIVE
 //     assert (the watcher_detects_*, watcher_emits_*, watcher_rereads_*,
@@ -1769,13 +1780,28 @@ fn already_elapsed_stamp() -> Instant {
 /// quietly stopped holding.
 ///
 /// This test closes that by injecting an ALREADY-ELAPSED stamp and asserting
-/// the callback fires with that path. The wake-up is the load-bearing part:
-/// with an empty debouncer the worker's `next_wait` returns `None`, so it
-/// parks in `cvar.wait(guard)` with NO timeout at all, and only a notify on
-/// that exact condvar can wake it. A hook that recorded into the map without
-/// notifying -- or that notified a different one -- leaves the worker parked
-/// forever and turns this assertion red on its budget, rather than letting a
-/// timeout paper over the missing wire.
+/// the callback fires with that path.
+///
+/// WHY THERE ARE TWO PHASES, and why the first one alone is not enough. The
+/// notify only matters when the worker is ALREADY blocked in `cvar.wait`: if
+/// it has not reached its park yet, its next `drain_ready` finds the injected
+/// entry regardless and delivers it. A freshly constructed watcher is exactly
+/// that case -- the worker thread has just been spawned and, on a loaded
+/// host, may not have run a single iteration by the time the test injects. So
+/// a one-phase version of this test passes with `cvar.notify_one()` DELETED
+/// from the hook, which was measured, not assumed (#6438 review: the deleted
+/// -notify build passed the one-phase form in 0.02s).
+///
+/// The second phase closes it. Once the first delivery has been observed the
+/// worker has drained the map and is on its way back to an INDEFINITE park --
+/// `next_wait` returns `None` on an empty debouncer, so that park has no
+/// timeout that could paper over a missing wire. The settle delay before the
+/// second injection is not a budget and nothing is asserted about it: a
+/// LONGER delay only makes the worker more certainly parked, so the mutation
+/// -catching power of this test grows under load rather than inverting, and
+/// the delivery assertion itself passes either way while the hook is correct.
+/// With `notify_one()` removed the second phase hangs and fails on its
+/// budget, which is what makes this test the drive half's real pin.
 ///
 /// LOAD DIRECTION, per this file's REAL-CLOCK LEDGER: this is the blessed
 /// shape -- a generous budget paired with a hard POSITIVE assert, with no
@@ -1801,22 +1827,43 @@ fn watcher_delivers_an_injected_pending_entry_whose_window_has_already_elapsed()
         return;
     };
 
-    let ri_file = dir.path().join("injected.ri");
-    watcher.record_pending_for_test(ri_file.clone(), ChangeKind::Changed, already_elapsed_stamp());
-
-    let delivered = wait_for(&received, Duration::from_secs(10), |paths| {
-        paths.iter().any(|p| p.ends_with("injected.ri"))
+    // PHASE 1: the record -> drain -> callback path itself. The worker may
+    // still be starting up here, so this phase does not depend on the notify.
+    watcher.record_pending_for_test(
+        dir.path().join("first.ri"),
+        ChangeKind::Changed,
+        already_elapsed_stamp(),
+    );
+    let first_delivered = wait_for(&received, Duration::from_secs(10), |paths| {
+        paths.iter().any(|p| p.ends_with("first.ri"))
     });
-
-    let paths = received.lock().unwrap();
     assert!(
-        delivered,
+        first_delivered,
         "an injected entry whose debounce window has already elapsed should be \
-         drained and delivered to the callback -- if this fails, the injection \
-         hook recorded into the debouncer without waking the worker (or woke a \
-         different condvar), which would also make the two Drop tests below \
-         pass vacuously; got: {:?}",
-        *paths
+         drained and delivered to the callback; got: {:?}",
+        *received.lock().unwrap()
+    );
+
+    // PHASE 2: the notify. The first delivery is proof the worker drained the
+    // map, so it is now heading for an indefinite `cvar.wait` -- see the doc
+    // comment for why this phase, and not the first, is what fails when
+    // `record_pending_for_test` stops waking the worker.
+    std::thread::sleep(Duration::from_millis(50));
+    watcher.record_pending_for_test(
+        dir.path().join("second.ri"),
+        ChangeKind::Changed,
+        already_elapsed_stamp(),
+    );
+    let second_delivered = wait_for(&received, Duration::from_secs(10), |paths| {
+        paths.iter().any(|p| p.ends_with("second.ri"))
+    });
+    assert!(
+        second_delivered,
+        "an entry injected once the worker had already parked was never \
+         delivered -- the injection hook recorded into the debouncer without \
+         waking the worker (or woke a different condvar), which would also let \
+         the two Drop tests below pass vacuously; got: {:?}",
+        *received.lock().unwrap()
     );
 }
 
