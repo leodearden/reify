@@ -822,7 +822,23 @@ fn inverse_dynamics_fns_have_mechanism_and_snapshot_param_types() {
          trajectory: MotionTrajectory); got: {:?}",
         inverse_dynamics.params
     );
+    assert_eq!(
+        inverse_dynamics.return_type,
+        Type::List(Box::new(Type::List(Box::new(Type::StructureRef(
+            "JointForce".to_string()
+        ))))),
+        "inverse_dynamics return type should be List<List<JointForce>> (PRD §5.2); got: {:?}",
+        inverse_dynamics.return_type
+    );
 
+    // NOTE: the q_dot/q_ddot arm just below intentionally pins `List<dimensionless
+    // scalar>`, not a `JointValue`-named type — `JointValue` is `pub type JointValue
+    // = Real` (trajectory.ri, "no live owner" TODO), a placeholder the kinematic-
+    // completion PRD is expected to retarget (see the TODO(joint-value-type) notes
+    // above `TrajectorySample` in dynamics.ri). If that retarget lands, this exact-
+    // equality arm fails for that unrelated reason, not because Mechanism/Snapshot
+    // regressed — update the q_dot/q_ddot expected type below to match rather than
+    // loosening the Mechanism/Snapshot checks this test exists to guard.
     let inverse_dynamics_at_snapshot = find_function("inverse_dynamics_at_snapshot");
     assert_eq!(
         inverse_dynamics_at_snapshot.params,
@@ -847,5 +863,12 @@ fn inverse_dynamics_fns_have_mechanism_and_snapshot_param_types() {
         "inverse_dynamics_at_snapshot params should be exactly (mechanism: Mechanism, \
          snapshot: Snapshot, q_dot: List<JointValue>, q_ddot: List<JointValue>); got: {:?}",
         inverse_dynamics_at_snapshot.params
+    );
+    assert_eq!(
+        inverse_dynamics_at_snapshot.return_type,
+        Type::List(Box::new(Type::StructureRef("JointForce".to_string()))),
+        "inverse_dynamics_at_snapshot return type should be List<JointForce> (PRD §5.2); \
+         got: {:?}",
+        inverse_dynamics_at_snapshot.return_type
     );
 }
