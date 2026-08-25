@@ -145,8 +145,16 @@ of the default sweep), so the merge gate alone would not catch it.
 
 ```
 $ cargo test -p reify-audit --test pdoccover
-PASS: 22 | FAIL: 0 | SKIP: 0
+PASS: 27 | FAIL: 0 | SKIP: 0
 ```
+
+The load-bearing part of this check is `FAIL: 0` — the suite is green —
+not the pass count. `reify-audit` is outside this task's scope (§4), so
+its test count is exactly as drift-subject as the non-`units.md`
+byte-census rows above and moves whenever a sibling task adds or removes
+a `reify-audit` test: an earlier pass on this branch recorded `PASS: 22`
+here. This task neither adds nor removes a `reify-audit` test, so neither
+count says anything about this task's own change; only green/red does.
 
 ## 2. Verdict
 
@@ -303,14 +311,24 @@ same lines — `units.md:94` and `units.md:92` respectively, nothing in
 
 ```
 $ cargo test -p reify-audit --test pdoccover
-PASS: 22 | FAIL: 0 | SKIP: 0
+PASS: 27 | FAIL: 0 | SKIP: 0
 ```
+
+Green again (`FAIL: 0`), matching §1's baseline re-run above; as there,
+the pass count itself is not load-bearing — `reify-audit` is a suite this
+task does not own, so its count drifts with sibling activity independent
+of anything this task does.
 
 `cargo test -p reify-mcp` is green at **110/110** — three fewer than the
 count an earlier pass on this branch established, which is the expected
 delta: exactly the two rejected guards plus
 `contains_word_matches_word_boundaries_only`, which existed only to cover
-one of them.
+one of them. Unlike `reify-audit`, `reify-mcp` *is* a suite this task
+touches — by removing those three tests — but the absolute totals on
+either side of that delta are still this pass's snapshot, not a constant:
+a sibling landing an unrelated `reify-mcp` test between passes would move
+both totals without affecting the one load-bearing fact they establish,
+that exactly three tests, and only those three, are now gone.
 
 ```
 $ cargo clippy -p reify-mcp --all-targets -- -D warnings
