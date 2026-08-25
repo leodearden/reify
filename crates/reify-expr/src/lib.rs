@@ -9735,6 +9735,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn iso_it_tolerance_legacy_grade_first_emits_migration_error_into_sink() {
+        // The superseded grade-first spelling `(grade, nominal_min, nominal_max)`:
+        // arg-0 is an Int where the subject-first decode wants a LENGTH scalar, so
+        // iso_it_tolerance returns Value::Undef.
+        //
+        // Sink DELIVERY is the entire justification for the
+        // E_TolerancingLegacyArgOrder arm, and it is the half the unit-level
+        // classifier test (reify-stdlib tolerancing::tests) cannot see: that test
+        // proves `diagnose` returns Some(Diagnostic), not that anything downstream
+        // still calls `diagnose` for this shape. Without delivery the arm buys
+        // nothing over the pre-arm behaviour it exists to replace — the builtin
+        // returns Undef, nothing reaches the sink, and `reify eval` prints a bare
+        // `cell = undef` at exit 0 with nothing on stderr saying why.
+        //
+        // It is reachable today via the same route as its three siblings above
+        // (Undef result → the matches!(result, Value::Undef) gate in
+        // emit_undef_builtin_diagnostics → tolerancing_diagnose); this test is what
+        // would catch a future reorder or re-gating of that call.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(7), // grade in arg-0 — the pre-flip order
+            mm_val(30.0),  // 30mm nominal_min, displaced to arg-1
+            mm_val(50.0),  // 50mm nominal_max, displaced to arg-2
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "the grade-first spelling must not decode under the subject-first order"
+        );
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingLegacyArgOrder diagnostic must reach the sink, \
+             got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "the legacy grade-first spelling must emit Severity::Error (which is what \
+             moves a stale call site from exit 0 to exit 1 in cmd_eval)"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingLegacyArgOrder"),
+            "message must contain E_TolerancingLegacyArgOrder prefix (NOT \
+             E_TolerancingOutOfEnvelope — the legacy shape is mis-ordered, not \
+             out-of-envelope): {}",
+            diags[0].message
+        );
+    }
+
     // ── center_of_mass emit_snapshot_diagnostics wiring (task 4471 step-7) ──
     //
     // End-to-end tests that emit_snapshot_diagnostics pushes a
