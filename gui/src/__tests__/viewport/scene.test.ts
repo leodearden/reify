@@ -40,6 +40,7 @@ vi.mock('three', async () => {
     MockSpriteMaterial,
     MockCanvasTexture,
     MockColor: MockColorShared,
+    LinearFilter: LinearFilterShared,
   } = await import('./threeAxisMocks');
 
   class MockScene {
@@ -105,11 +106,32 @@ vi.mock('three', async () => {
     return mockArrayMaterialFor === name ? [{}, {}] : {};
   }
 
+  /** Recording uniform-scale stub: `setScalar` is a spy that also WRITES BACK, so a
+   *  test can assert both "was it called" and "what is the resulting factor". Starts
+   *  at the three.js identity 1 — unlike the depth flags above, 1 is not a value the
+   *  #6588 assertions accept as a pass (they demand a scene-derived factor), so
+   *  seeding it does not make anything vacuous; it makes the no-op guard tests real. */
+  function makeMockScale() {
+    const s = {
+      x: 1, y: 1, z: 1,
+      setScalar: vi.fn((v: number) => {
+        s.x = v; s.y = v; s.z = v;
+        return s;
+      }),
+      set: vi.fn((x: number, y: number, z: number) => {
+        s.x = x; s.y = y; s.z = z;
+        return s;
+      }),
+    };
+    return s;
+  }
+
   class MockGridHelper {
     type = 'GridHelper';
     visible = true;
     rotation = { x: 0, y: 0, z: 0 };
     renderOrder = 0;
+    scale = makeMockScale();
     material = mockHelperMaterialFor('GridHelper');
     constructor(public size?: number, public divisions?: number) {}
   }
@@ -118,6 +140,7 @@ vi.mock('three', async () => {
     type = 'AxesHelper';
     visible = true;
     renderOrder = 0;
+    scale = makeMockScale();
     material = mockHelperMaterialFor('AxesHelper');
     constructor(public size?: number) {}
   }
@@ -148,6 +171,9 @@ vi.mock('three', async () => {
     Sprite: MockSprite,
     SpriteMaterial: MockSpriteMaterial,
     CanvasTexture: MockCanvasTexture,
+    // scene.ts imports the REAL axisLabels.ts, so this factory must satisfy that
+    // module's 'three' imports too — including LinearFilter (#6588).
+    LinearFilter: LinearFilterShared,
   };
 });
 

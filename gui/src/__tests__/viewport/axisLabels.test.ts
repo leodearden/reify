@@ -11,6 +11,7 @@ vi.mock('three', async () => {
     MockSpriteMaterial,
     MockCanvasTexture,
     MockColor,
+    LinearFilter,
   } = await import('./threeAxisMocks');
   return {
     Group: MockGroup,
@@ -18,6 +19,10 @@ vi.mock('three', async () => {
     SpriteMaterial: MockSpriteMaterial,
     CanvasTexture: MockCanvasTexture,
     Color: MockColor,
+    // axisLabels.ts imports LinearFilter from 'three' to pin the label texture's
+    // minification filter (#6588); the factory must supply it or the import is
+    // undefined at module load.
+    LinearFilter,
   };
 });
 
