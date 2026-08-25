@@ -623,7 +623,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     "text": { "type": "string" },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Unscoped, the FIRST element in document order is selected BEFORE its state is evaluated, so an unscoped wait is not proof about any one pane in either direction; scope the wait whenever the follow-up action is scoped. The three concrete ways it misleads are enumerated in docs/debug-mcp-recipe.md, R3 wait_for_selector row. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Unscoped, the FIRST element in document order is selected BEFORE its state is evaluated, so an unscoped wait is not proof about any one pane in either direction; scope the wait whenever the follow-up action is scoped. The three concrete ways it misleads are enumerated in docs/debug-mcp-recipe.md under the heading 'wait_for_selector: the unscoped-wait trap'. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
