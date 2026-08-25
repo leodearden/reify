@@ -746,6 +746,7 @@ pub fn run_modify_pipeline(
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
 /// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+#[track_caller]
 pub fn get_value_cell_in<'a>(
     module: &'a reify_compiler::CompiledModule,
     template_name: &str,
@@ -778,6 +779,7 @@ pub fn get_value_cell_in<'a>(
 /// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent
 ///   (raised by [`get_value_cell_in`]).
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
     template_name: &str,
@@ -798,6 +800,7 @@ pub fn get_let_expr_in<'a>(
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
 /// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+#[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
     name: &str,
@@ -1733,21 +1736,44 @@ mod tests {
 
     // ── get_value_cell_in ─────────────────────────────────────────────────
 
-    /// get_value_cell_in should return the ValueCellDecl of the named cell in the
-    /// named template, asserting on `kind`/`cell_type` — fields get_let_expr_in
-    /// cannot reach — plus the resolved literal. Alpha and Beta both declare `w`
-    /// with different values (1.5 vs 2.7) so a wrong-template resolution is
-    /// observable; real-form literals stay `Real` regardless of whole-number
-    /// value (see `classify_number_literal` in reify-ast).
-    #[test]
-    fn test_get_value_cell_in_returns_cell_from_named_template() {
+    /// Shared fixture for `test_get_value_cell_in_returns_cell_from_named_template`
+    /// and `test_get_let_expr_in_finds_named_template`: two templates that both
+    /// declare `w`, with different values (1.5 vs 2.7), so a wrong-template
+    /// resolution is observable in the assertion (via [`assert_real_literal`])
+    /// rather than silently passing. Real-form literals stay `Real` regardless
+    /// of whole-number value (see `classify_number_literal` in reify-ast).
+    const ALPHA_BETA_W: &str = r#"
+        structure Alpha { let w = 1.5 }
+        structure Beta  { let w = 2.7 }
+    "#;
+
+    /// Assert that `expr` is `CompiledExprKind::Literal(Value::Real(expected))`.
+    /// Shared by `test_get_value_cell_in_returns_cell_from_named_template` and
+    /// `test_get_let_expr_in_finds_named_template`, both of which resolve
+    /// `Beta.w` from the [`ALPHA_BETA_W`] fixture and need the exact value
+    /// checked (Alpha's `w` is 1.5, Beta's is 2.7) so a wrong-template
+    /// resolution fails loudly instead of passing silently.
+    fn assert_real_literal(expr: &reify_ir::CompiledExpr, expected: f64) {
         use reify_ir::{CompiledExprKind, Value};
 
-        let source = r#"
-            structure Alpha { let w = 1.5 }
-            structure Beta  { let w = 2.7 }
-        "#;
-        let module = super::compile_source(source);
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+                *v, expected,
+                "expected literal {expected} (Alpha's w is 1.5, Beta's is 2.7) — \
+                 a wrong-template resolution would return the other value"
+            ),
+            other => {
+                panic!("expected CompiledExprKind::Literal(Value::Real({expected})), got {other:?}")
+            }
+        }
+    }
+
+    /// get_value_cell_in should return the ValueCellDecl of the named cell in the
+    /// named template, asserting on `kind`/`cell_type` — fields get_let_expr_in
+    /// cannot reach — plus the resolved literal (via [`assert_real_literal`]).
+    #[test]
+    fn test_get_value_cell_in_returns_cell_from_named_template() {
+        let module = super::compile_source(ALPHA_BETA_W);
         let cell = super::get_value_cell_in(&module, "Beta", "w");
         assert_eq!(
             cell.kind,
@@ -1762,21 +1788,12 @@ mod tests {
             "expected cell_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
             cell.cell_type
         );
-        match &cell
-            .default_expr
-            .as_ref()
-            .expect("Beta.w should have a default expr")
-            .kind
-        {
-            CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
-                *v, 2.7,
-                "expected Beta.w's literal to be 2.7 (Alpha's is 1.5) — \
-                 a wrong-template resolution would return the latter"
-            ),
-            other => panic!(
-                "expected CompiledExprKind::Literal(Value::Real(2.7)) for Beta.w, got {other:?}"
-            ),
-        }
+        assert_real_literal(
+            cell.default_expr
+                .as_ref()
+                .expect("Beta.w should have a default expr"),
+            2.7,
+        );
     }
 
     /// get_value_cell_in should panic with "no template named" when the template
@@ -1851,22 +1868,48 @@ mod tests {
         );
     }
 
+    /// get_value_cell_in resolves by `id.member` alone, ignoring `id.entity`,
+    /// and the first match in declaration order wins silently — documented on
+    /// get_value_cell_in's doc comment above. Pins that behaviour: a template
+    /// can carry two cells sharing member name `x` scoped to different
+    /// entities (e.g. a top-level cell and a sub-entity-scoped one pushed by
+    /// `phase_sub_override_autos` / `phase_connect_auto_params`), and this
+    /// asserts the FIRST-declared one wins. If resolution ever changed to
+    /// prefer the top-level cell, or to panic on ambiguity, this test would
+    /// catch it instead of every caller silently changing meaning.
+    #[test]
+    fn test_get_value_cell_in_resolves_by_member_first_declared_wins() {
+        use reify_core::{ModulePath, Type};
+
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", Type::length())
+            .auto_param("S.sub", "x", Type::dimensionless_scalar())
+            .build();
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let cell = super::get_value_cell_in(&module, "S", "x");
+        assert_eq!(
+            cell.id.entity, "S",
+            "expected the FIRST-declared cell (id.entity == \"S\") to win when \
+             two cells share member name 'x' with different id.entity; got \
+             id.entity {:?} — get_value_cell_in's documented member-only, \
+             first-match-wins contract has changed",
+            cell.id.entity
+        );
+    }
+
     // ── get_let_expr_in ───────────────────────────────────────────────────
 
     /// get_let_expr_in should return the default_expr of the named cell in the
     /// named template, even when the module has multiple templates. Reuses the
-    /// fixture shape and non-integer-literal rationale documented on
-    /// `test_get_value_cell_in_returns_cell_from_named_template` above — see
-    /// that test's doc comment rather than repeating it here.
+    /// [`ALPHA_BETA_W`] fixture and [`assert_real_literal`] helper defined
+    /// above `test_get_value_cell_in_returns_cell_from_named_template` — see
+    /// that test's doc comment rather than repeating the rationale here.
     #[test]
     fn test_get_let_expr_in_finds_named_template() {
-        use reify_ir::{CompiledExprKind, Value};
-
-        let source = r#"
-            structure Alpha { let w = 1.5 }
-            structure Beta  { let w = 2.7 }
-        "#;
-        let module = super::compile_source(source);
+        let module = super::compile_source(ALPHA_BETA_W);
         let expr = super::get_let_expr_in(&module, "Beta", "w");
         assert_eq!(
             expr.result_type,
@@ -1874,16 +1917,7 @@ mod tests {
             "expected result_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
             expr.result_type
         );
-        match &expr.kind {
-            CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
-                *v, 2.7,
-                "expected Beta.w's literal to be 2.7 (Alpha's is 1.5) — \
-                 a wrong-template resolution would return the latter"
-            ),
-            other => panic!(
-                "expected CompiledExprKind::Literal(Value::Real(2.7)) for Beta.w, got {other:?}"
-            ),
-        }
+        assert_real_literal(expr, 2.7);
     }
 
     /// get_let_expr_in should panic with "no template named" when the template
