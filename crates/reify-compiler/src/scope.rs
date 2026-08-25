@@ -340,6 +340,21 @@ impl<'u> CompilationScope<'u> {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
     }
 
+    /// The guard cell a name was registered under, if it is a guarded member.
+    ///
+    /// Reads the THIRD slot of the `names` entry, which `resolve` above reads
+    /// the first two of and discards. No new state: `register_guarded` records
+    /// the guard cell there already, from `compile_block_guard`'s sweep over a
+    /// group's `members` / `else_members` (guards.rs). For a NESTED group's
+    /// member this yields that group's OWN inner guard cell, because each
+    /// group registers only its own two member vecs.
+    ///
+    /// `None` for an unguarded name (registered via `register` /
+    /// `register_if_absent`) and for a name that is not in scope at all.
+    pub(crate) fn resolve_guard(&self, name: &str) -> Option<&ValueCellId> {
+        self.names.get(name).and_then(|(_, _, guard)| guard.as_ref())
+    }
+
     /// Register a match-arm `GuardedDeclGroup` under its logical name.
     ///
     /// Stored in `match_arm_groups` — deliberately separate from `names` so that
