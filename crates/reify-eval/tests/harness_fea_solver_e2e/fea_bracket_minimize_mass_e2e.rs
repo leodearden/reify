@@ -59,9 +59,10 @@
 //!
 //! # Runtime
 //!
-//! ~400s+ — a real Nelder-Mead-over-FEA loop, same order as the producer test.
-//! It is evicted from the merge gate by its own atom in
-//! `scripts/heavy-test-filter-lib.sh`.
+//! MEASURED 66s / 93s / 105s across three runs on a contended 32-core host — a
+//! real Nelder-Mead-over-FEA loop. Cheaper than the producer's ~490s but still
+//! ~30x this harness's 2.25s per-test mean, so it is evicted from the merge gate
+//! by its own test-scoped atom in `scripts/heavy-test-filter-lib.sh`.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{Severity, ValueCellId};
