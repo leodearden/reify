@@ -20,6 +20,10 @@ export interface SceneContext {
   renderer: WebGLRenderer;
   resize: (width: number, height: number) => void;
   adjustClipping: (sceneBounds: Box3) => void;
+  /** Resize the grid, axes triad and label ring to match the scene's extent.
+   *  Without it, a sub-metre model sits inside a 20 m grid and a 2 m triad — see
+   *  the implementation for the #6588 defect this exists to prevent. */
+  fitHelpers: (sceneBounds: Box3) => void;
   grid: GridHelper;
   axes: AxesHelper;
   axisLabels: Group;
@@ -49,6 +53,19 @@ function singleMaterial<T>(helper: { material: T | T[] }, name: string): T {
   }
   return helper.material;
 }
+
+/**
+ * Base dimensions the viewport helpers are CONSTRUCTED with. They are also the
+ * denominators `fitHelpers` divides by to turn a target world size into an object
+ * scale, so they must stay in one place rather than being repeated as literals at
+ * the construction site and again in the scaling arithmetic.
+ *
+ * The values are the historical defaults, chosen for the ~10 m CAD default scene
+ * (see Viewport.tsx's auto-fit comment); `fitHelpers` is what adapts them.
+ */
+const GRID_BASE_SIZE = 20;
+const GRID_DIVISIONS = 20;
+const AXES_BASE_LENGTH = 2;
 
 /**
  * Creates a Three.js scene with camera, renderer, lights, and helpers.
@@ -133,7 +150,7 @@ export function createScene(
   // must preserve exactly that: opaque, higher renderOrder, and no depth write.) So the
   // artifact is confined to the transparent pass — a hairline along grid lines under a
   // ghosted/low-opacity part. Strictly smaller than the full-scene depth lie it replaces.
-  const grid = new GridHelper(20, 20, 0x444466, 0x333344);
+  const grid = new GridHelper(GRID_BASE_SIZE, GRID_DIVISIONS, 0x444466, 0x333344);
   // GridHelper lays in the XZ plane (Y-up default); rotate to lie on the XY plane (the floor under Z-up).
   grid.rotation.x = Math.PI / 2;
   const gridMaterial = singleMaterial(grid, 'GridHelper');
@@ -146,7 +163,7 @@ export function createScene(
   gridMaterial.depthWrite = false;
   scene.add(grid);
 
-  const axes = new AxesHelper(2);
+  const axes = new AxesHelper(AXES_BASE_LENGTH);
   const axesMaterial = singleMaterial(axes, 'AxesHelper');
   axes.renderOrder = AXES_RENDER_ORDER;
   // depthTest = true is the direct reversal of #4214's depthTest = false.
@@ -181,5 +198,34 @@ export function createScene(
     camera.updateProjectionMatrix();
   }
 
-  return { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels, disposeAxisLabels };
+  /**
+   * Size the viewport helpers to the scene they annotate.
+   *
+   * #6588: the helpers above are built at fixed ABSOLUTE sizes tuned for the ~10 m
+   * CAD default scene, but most .ri models are far smaller. In a sub-metre model
+   * the camera sits deep inside the helper envelope, and the helpers stop reading
+   * as annotations: the 20 m grid's far lines converge into a solid dark 0x444466
+   * band running to the horizon behind the model, and the 2 m axes triad draws a
+   * hard diagonal straight across every part in frame. Neither is fixable by depth
+   * state (that was #6587's half) — the geometry itself is the wrong size.
+   *
+   * `radius` deliberately uses the SAME half-box-diagonal measure as adjustClipping
+   * above and as fitCamera.ts, so helper sizing and camera framing agree on how big
+   * the scene is rather than drifting apart under two definitions.
+   *
+   * The guard shape intentionally mirrors adjustClipping's isEmpty() early return,
+   * and extends it: a non-empty box can still have zero or non-finite extent, and a
+   * 0-unit (or NaN-unit) grid is strictly worse than an oversized one, so those
+   * measurements are dropped rather than applied.
+   */
+  function fitHelpers(sceneBounds: Box3): void {
+    if (sceneBounds.isEmpty()) return;
+
+    const size = new Vector3();
+    sceneBounds.getSize(size);
+    const radius = size.length() / 2;
+    if (!Number.isFinite(radius) || radius <= 0) return;
+  }
+
+  return { scene, camera, renderer, resize, adjustClipping, fitHelpers, grid, axes, axisLabels, disposeAxisLabels };
 }
