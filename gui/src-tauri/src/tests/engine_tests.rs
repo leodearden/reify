@@ -2130,6 +2130,58 @@ fn normalize_unit_label_rewrites_only_the_superscript_exponent_glyphs() {
     assert_eq!(normalize_unit_label("MPa"), "MPa");
 }
 
+/// The curated table stays inside the GLYPH ALPHABET both normalizers rewrite.
+///
+/// This does NOT catch a divergence between `normalize_unit_label` and its
+/// TypeScript twin — nothing does, and that function's doc says so and names the
+/// two mirror-image goldens that carry the obligation instead. What this does is
+/// BOUND the surface on which such a divergence could bite.
+///
+/// The bound: a one-sided rewrite rule only matters for a glyph that actually
+/// OCCURS in a curated label. For every other character both twins are the
+/// identity, so both ends spell the rung identically and `COMPOSED_UNIT_INDEX`
+/// registers exactly that spelling. The reachable surface is therefore the set
+/// of non-ASCII glyphs the curated table uses, and this pins that set at exactly
+/// the two arms both goldens already cover.
+///
+/// A rung introducing a third — an `m⁴`, a `·` in a compound label — fails HERE.
+/// That is the moment to extend both twins and both goldens together, rather
+/// than after a user reports that the panel admits a spelling the engine
+/// refuses.
+#[test]
+fn curated_unit_labels_carry_no_glyph_outside_the_shared_normalizer_alphabet() {
+    /// The two superscript exponent glyphs `normalize_unit_label` and
+    /// `normalizeUnitLabel` BOTH rewrite, and the only non-ASCII characters the
+    /// curated ladders are allowed to carry.
+    const SHARED: [char; 2] = ['\u{00B2}', '\u{00B3}'];
+
+    let ladders = crate::display_units::unit_ladders();
+    let mut checked = 0usize;
+    for ladder in &ladders {
+        for opt in &ladder.units {
+            for ch in opt.label.chars() {
+                assert!(
+                    ch.is_ascii() || SHARED.contains(&ch),
+                    "curated rung {:?} (ladder {:?}) carries {ch:?} (U+{:04X}), outside the \
+                     alphabet `normalize_unit_label` and its TypeScript twin \
+                     `normalizeUnitLabel` BOTH rewrite. Extend both normalizers and both \
+                     goldens before adding it — otherwise whichever side grows an arm first \
+                     admits a spelling the other refuses.",
+                    opt.label,
+                    ladder.dimension,
+                    ch as u32
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 20,
+        "expected at least 20 curated rungs to be inspected, got {checked} — the table \
+         shrank and an alphabet bound over a near-empty one proves nothing"
+    );
+}
+
 /// (b) Every `BUILTIN_UNITS` symbol resolves to its own factor and dimension.
 ///
 /// This is the PRD's named delegation target (§M9): the five SI bases no
@@ -2570,6 +2622,89 @@ fn set_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
         .expect("`in` must be accepted now that the accept-set is composed");
 }
 
+/// A CROSS-DIMENSION literal is not refused at the GUI boundary — it is refused
+/// one layer down, by reify-eval, with a message naming BOTH dimensions.
+///
+/// This is the executable form of the claim `COMPOSED_UNIT_INDEX` rests its
+/// flat, non-dimension-narrowed lookup on. That widening is the largest
+/// behavioural change in task #5757: `parse_value_string` resolves the whole
+/// composed index instead of five spellings, so `5kg` in a `Length` cell no
+/// longer dies here as `Cannot parse value '5kg'` — it resolves to
+/// `Value::Scalar { dimension: MASS }` and is handed to `edit_check`. The design
+/// licenses that on reify-eval catching it, and nothing pinned that.
+///
+/// It needs pinning because the adjacent arm of the very same guard is this
+/// task's whole reason for existing: `validate_param_override` (reify-eval
+/// `engine_admin.rs`) compares dimensions only under
+/// `let reify_ir::Value::Scalar { .. } = value`, which is exactly why an
+/// `Value::Int` slips through as a dimension WILDCARD and `120` becomes 120
+/// METRES. An edit to that pattern would silently turn a cross-dimension GUI
+/// edit into an ACCEPTED wrong value, and — before this test — no assertion
+/// anywhere would have failed.
+///
+/// Both halves are asserted, in order: the GUI layer PARSES it, and the engine
+/// then hard-`Err`s. The expected words are DERIVED from the two
+/// `DimensionVector` Display forms rather than spelled out, so this tracks
+/// `EngineError::DimensionMismatch`'s message instead of freezing a snapshot of
+/// it.
+#[test]
+fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_mismatch() {
+    use reify_core::{DimensionVector, Type};
+
+    // (1) The GUI boundary does NOT refuse it, and does not coerce it either:
+    //     `5kg` resolves to its OWN dimension. Narrowing the index lookup by the
+    //     cell's declared dimension would have made this an unparseable-string
+    //     error and re-opened the panel-accepts / engine-refuses gap in the
+    //     opposite direction, since the panel's per-cell alphabet always carries
+    //     the `BASE_UNIT_LABELS` floor alongside the cell's own ladder.
+    let parsed = crate::engine::parse_value_string_for_cell(
+        "5kg",
+        &Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    )
+    .expect("a cross-dimension literal must still PARSE — the refusal belongs to reify-eval");
+    let reify_ir::Value::Scalar {
+        dimension: got_dim, ..
+    } = parsed
+    else {
+        panic!("`5kg` must parse to a Value::Scalar; got {parsed:?}");
+    };
+    assert_eq!(
+        got_dim,
+        DimensionVector::MASS,
+        "`5kg` must resolve to its own dimension, never be coerced to the cell's"
+    );
+
+    // (2) …and the engine refuses it, naming both dimensions.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let err = session
+        .set_parameter("Bracket.width", "5kg")
+        .expect_err("a Mass literal in a Length cell must be a hard error, not a warning");
+    assert!(
+        err.contains(&format!(
+            "expected {}, got {}",
+            DimensionVector::LENGTH,
+            DimensionVector::MASS
+        )),
+        "the rejection must name BOTH the expected and the supplied dimension — that is what \
+         makes it actionable, and it is the whole reason the GUI layer deliberately says \
+         nothing here; got {err:?}"
+    );
+
+    // Refused BEFORE anything is committed, so the session is untouched and a
+    // subsequent good edit still lands.
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("the failed cross-dimension edit must not have poisoned the session");
+}
+
 /// An UNDIMENSIONED cell still takes a bare number.
 ///
 /// The gate keys on `!dimension.is_dimensionless()`, so `Real`, `Int` and
@@ -2880,6 +3015,91 @@ fn every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses() {
         "expected at least the ten curated ladders to be gated, got {gated} — the \
          curated table shrank and this loop is no longer covering what it claims"
     );
+}
+
+/// The backend gates every dimension the FRONTEND's static floor gates, and
+/// parses every label that floor admits.
+///
+/// `acceptsBareNumber` (`gui/src/stores/unitLadder.ts`) no longer fails open
+/// unconditionally when the `get_unit_ladders` fetch has not resolved or has
+/// failed. It keeps gating the `BASE_UNIT_DIMENSIONS` floor — the dimensions of
+/// the five `BASE_UNIT_LABELS` its alphabet carries unconditionally — because
+/// THIS side's `LADDER_COVERAGE` is built from the Rust-authored curated table
+/// and is always populated. Failing open on that path made the two ends disagree
+/// exactly where the panel could not see the ladders, and in the harmful
+/// direction: the panel accepted `80` in a Length cell, the engine refused it,
+/// and the typed text was discarded behind an async toast (task #5757
+/// amendment).
+///
+/// This is the direction that has to hold for that floor to be safe — the panel
+/// must never refuse INLINE what the engine would have accepted. Asserting it
+/// here, where the coverage table lives, is what stops a future curated-table
+/// edit from dropping the Length or Angle ladder and quietly bricking every such
+/// row in the ladder-less panel: coverage would go away on this side while the
+/// frontend's static floor kept gating.
+///
+/// THE FLOOR IS MIRRORED BY HAND, deliberately. It is not derived from
+/// `unit_ladders()` because it is not derived from `unit_ladders()` on the
+/// frontend either: it is the five labels `PropertyEditor` hard-coded before
+/// task #6028 made the alphabet ladder-derived, frozen so every ladder-less
+/// caller stays byte-identical to that behaviour. There is no table to derive it
+/// from, and five strings are not the curated table, so the standing #5788 D6
+/// prohibition on mirroring curated labels is untouched.
+#[test]
+fn every_dimension_the_frontend_floor_gates_is_gated_here_too() {
+    use crate::engine::dimension_requires_unit;
+
+    // `BASE_UNIT_LABELS` paired with `BASE_UNIT_DIMENSIONS`, i.e. each floor
+    // label alongside the canonical dimension name the frontend records for it.
+    const FLOOR: [(&str, &str); 5] = [
+        ("mm", "Length"),
+        ("cm", "Length"),
+        ("m", "Length"),
+        ("deg", "Angle"),
+        ("rad", "Angle"),
+    ];
+    // Non-unit, so a stray `* 1.0` cannot pass; integral, so `format!` renders
+    // no decimal point or exponent to perturb the remainder parse.
+    const MAGNITUDE: f64 = 3.0;
+
+    for (label, dimension_name) in FLOOR {
+        let dimension = dimension_for_ladder_name(dimension_name);
+
+        // (1) The floor's dimension is gated HERE, so the frontend gating it on
+        //     the ladders-absent path can only ever AGREE with the engine.
+        let (name, _rung) = dimension_requires_unit(&dimension).unwrap_or_else(|| {
+            panic!(
+                "the frontend's static floor gates {dimension_name} unconditionally, so this \
+                 side must gate it too — otherwise a ladders-less panel refuses a bare number \
+                 inline that `set_parameter` would have accepted"
+            )
+        });
+        assert_eq!(
+            name, dimension_name,
+            "coverage must report the floor's own dimension name — it is the word the panel \
+             and the engine both put in front of the user"
+        );
+
+        // (2) The floor's LABEL parses, and to that same dimension. This is what
+        //     keeps the ladders-absent seed honest: `editSeedUnitLabel` falls
+        //     back to the cell's `unit` badge there, so `80` + `mm` must be a
+        //     literal this engine takes.
+        let literal = format!("{MAGNITUDE}{label}");
+        let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
+            panic!("the floor label {label:?} must parse through the composed index; got {e}")
+        });
+        let reify_ir::Value::Scalar {
+            dimension: got_dim, ..
+        } = parsed
+        else {
+            panic!("{literal:?} must parse to a Value::Scalar; got {parsed:?}");
+        };
+        assert_eq!(
+            got_dim, dimension,
+            "{literal:?} must resolve to {dimension_name} — the dimension the frontend's floor \
+             files it under"
+        );
+    }
 }
 
 /// The refusal a COVERED cell gets names its dimension and a rung from ITS OWN

@@ -6578,10 +6578,35 @@ fn parse_constraint_key(key: &str) -> Option<ConstraintNodeId> {
 /// Rewrites the two superscript exponent glyphs the curated ladder tables use
 /// (U+00B2 → `^2`, U+00B3 → `^3`) and touches nothing else.
 ///
-/// KEEP THE TWO IN LOCKSTEP. The frontend folds every curated label through its
-/// copy to build the typed-input alphabet, so a divergence here is precisely a
-/// spelling the property editor admits and the engine then refuses — the class
-/// of defect task #5757 exists to close.
+/// WHAT IS ACTUALLY GUARANTEED, and what merely holds. The frontend folds every
+/// curated label through its own copy to build the typed-input alphabet and to
+/// pre-fill an edit buffer (`editSeedUnitLabel` in
+/// `gui/src/panels/PropertyEditor.tsx`), so whatever the twins produce has to
+/// stay parseable here. [`COMPOSED_UNIT_INDEX`] registers BOTH spellings of
+/// every curated rung — the raw one and this function's output — so a TS twin
+/// that is either the IDENTITY or AGREES with this function on the curated
+/// labels can only ever emit a spelling the engine parses. That much is pinned,
+/// by the accept-set tests that walk `unit_ladders()` in both spellings.
+///
+/// NOTHING COMPARES THE TWO FUNCTIONS. There is no cross-language check, so the
+/// stronger claim — "the twins agree" — is carried by two mirror-image goldens,
+/// one per language: `normalize_unit_label_rewrites_only_the_superscript_exponent_glyphs`
+/// here, the `normalizeUnitLabel` block in `gui/src/__tests__/unitLadder.test.ts`
+/// there. A deliberate change to either side must edit its own golden, which is
+/// where the obligation is legible; an accidental one-sided change is not caught.
+/// The residual that leaves is REAL and stated rather than argued away: a TS-only
+/// edit that rewrote U+00B2 to something other than `^2`, or added an arm for
+/// a glyph this function lacks, would put a spelling into the panel's alphabet —
+/// and into its edit-buffer seed — that the engine then refuses. That is the
+/// class of defect task #5757 exists to close, re-opened one glyph at a time.
+///
+/// WHAT BOUNDS THAT SURFACE is the curated data itself, and that IS gated:
+/// `curated_unit_labels_carry_no_glyph_outside_the_shared_normalizer_alphabet`
+/// asserts every rung label is ASCII apart from U+00B2/U+00B3. So only
+/// the two arms below are reachable from curated data today, and a rung
+/// introducing a third glyph fails that test — at which point BOTH twins and
+/// BOTH goldens must be extended together — rather than shipping a silent
+/// asymmetry.
 ///
 /// Like its twin this is a pure glyph substitution with no exceptions, so it
 /// must only ever be handed a unit LABEL. The `×10ⁿ` engineering-notation
