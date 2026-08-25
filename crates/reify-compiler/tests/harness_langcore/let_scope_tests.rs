@@ -735,14 +735,14 @@ fn multiple_geometry_lets_all_produce_realizations() {
 
 #[test]
 fn translate_let_bound_target_ops() {
-    // translate(hole, 1, 0, 0) where hole is a let-bound cylinder.
+    // translate(hole, 1mm, 0mm, 0mm) where hole is a let-bound cylinder.
     // Expected: cylinder sub-op at step 0, translate op referencing step 0.
     // Currently FAILS: translate compiles hole as scalar, no sub-op emitted.
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = translate(hole, 1, 0, 0)
+    let result = translate(hole, 1mm, 0mm, 0mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -879,7 +879,7 @@ fn extrude_let_bound_profile_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let profile = cylinder(r, h)
-    let result = extrude(profile, 10)
+    let result = extrude(profile, 10mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -941,7 +941,7 @@ fn shell_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = shell(body, 1)
+    let result = shell(body, 1mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -958,7 +958,7 @@ fn thicken_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = thicken(body, 1)
+    let result = thicken(body, 1mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -996,7 +996,7 @@ fn chamfer_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = chamfer(body, 2)
+    let result = chamfer(body, 2mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1015,7 +1015,7 @@ fn fillet_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = fillet(body, 2)
+    let result = fillet(body, 2mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1038,7 +1038,7 @@ fn chamfer_chained_shell_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = chamfer(shell(body, 0.5), 2)
+    let result = chamfer(shell(body, 0.5mm), 2mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1062,7 +1062,7 @@ fn fillet_chained_shell_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = fillet(shell(body, 0.5), 2)
+    let result = fillet(shell(body, 0.5mm), 2mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1091,7 +1091,7 @@ fn chamfer_fillet_shell_chained_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = chamfer(fillet(shell(body, 0.5), 2), 1)
+    let result = chamfer(fillet(shell(body, 0.5mm), 2mm), 1mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1122,7 +1122,7 @@ fn chamfer_shell_difference_chained_ops() {
     param h: Length = 10mm
     let a = cylinder(r, h)
     let b = cylinder(r2, h)
-    let result = chamfer(shell(difference(a, b), 0.5), 1)
+    let result = chamfer(shell(difference(a, b), 0.5mm), 1mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1193,7 +1193,7 @@ fn loft_let_bound_profiles_ops() {
 
 #[test]
 fn cross_category_composition_ops() {
-    // difference(body, translate(hole, 1, 0, 0)):
+    // difference(body, translate(hole, 1mm, 0mm, 0mm)):
     // body is inlined by resolve_boolean_arg (boolean path, unchanged).
     // translate(hole, ...) goes through the generic loop; hole → Sub("hole") (task #4668).
     // Expected: [Cylinder(body), Transform(Translate, Sub("hole")), BoolDiff(0,1)]
@@ -1203,7 +1203,7 @@ fn cross_category_composition_ops() {
     param h: Length = 10mm
     let body = cylinder(r, h)
     let hole = cylinder(r2, h)
-    let result = difference(body, translate(hole, 1, 0, 0))
+    let result = difference(body, translate(hole, 1mm, 0mm, 0mm))
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1226,7 +1226,7 @@ fn cyclic_refs_through_transforms_resolve_to_sub() {
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
-    let a = translate(b, 1, 0, 0)
+    let a = translate(b, 1mm, 0mm, 0mm)
     let b = rotate(a, 0, 0, 1, 90)
 }"#;
     // With the sibling-let pre-check (task #4668), a bare Ident arg that names a
@@ -1262,13 +1262,13 @@ fn cyclic_refs_through_transforms_resolve_to_sub() {
 
 #[test]
 fn translate_inline_geometry_arg_ops() {
-    // translate(cylinder(r, h), 1, 0, 0): the geometry arg is inline, not let-bound.
+    // translate(cylinder(r, h), 1mm, 0mm, 0mm): the geometry arg is inline, not let-bound.
     // The generic resolution block should still compile it as a sub-op.
     // Expected: [Cylinder, Transform(Translate, 0)]
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
-    let result = translate(cylinder(r, h), 1, 0, 0)
+    let result = translate(cylinder(r, h), 1mm, 0mm, 0mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1286,7 +1286,7 @@ fn translate_inline_geometry_arg_ops() {
 
 #[test]
 fn chained_transforms_step_indices() {
-    // let a = cylinder(r, h); let b = translate(a, 1, 0, 0); let c = rotate(b, 0, 0, 1, 90)
+    // let a = cylinder(r, h); let b = translate(a, 1mm, 0mm, 0mm); let c = rotate(b, 0, 0, 1, 90)
     // With sibling-let pre-check (task #4668): b → Sub("b") in c's rotate op; no inlining.
     // c's realization: [Rotate(Sub("b"))]
     // (b itself has [Translate(Sub("a"))]; a itself has [Cylinder])
@@ -1294,7 +1294,7 @@ fn chained_transforms_step_indices() {
     param r: Length = 5mm
     param h: Length = 10mm
     let a = cylinder(r, h)
-    let b = translate(a, 1, 0, 0)
+    let b = translate(a, 1mm, 0mm, 0mm)
     let c = rotate(b, 0, 0, 1, 90)
 }"#;
     let compiled = compile_no_errors(source);
@@ -1477,7 +1477,7 @@ fn ident_alias_with_transform() {
     param h: Length = 10mm
     let body = cylinder(r, h)
     let alias = body
-    let result = translate(alias, 1, 0, 0)
+    let result = translate(alias, 1mm, 0mm, 0mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -2348,7 +2348,7 @@ fn geometry_valued_if_then_else_chain_lowers_to_single_conditional_primitive() {
     }
 }
 
-/// RED step-3c: translate-wrapped `translate(box(a),tx,0,0)` vs `translate(box(b),tx,0,0)`
+/// RED step-3c: translate-wrapped `translate(box(a),tx,0mm,0mm)` vs `translate(box(b),tx,0mm,0mm)`
 /// hoists to `[Primitive{Box}, Transform{Translate}]` where the box has Conditional args.
 #[test]
 fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
@@ -2357,7 +2357,7 @@ fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
     param b: Length = 20mm
     param tx: Length = 5mm
     param axis: Length = 0
-    let body = if axis == 0 then translate(box(a, a, a), tx, 0, 0) else translate(box(b, b, b), tx, 0, 0)
+    let body = if axis == 0 then translate(box(a, a, a), tx, 0mm, 0mm) else translate(box(b, b, b), tx, 0mm, 0mm)
 }"#;
 
     let compiled = compile_with_diagnostics(source);

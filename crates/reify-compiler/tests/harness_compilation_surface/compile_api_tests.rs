@@ -541,7 +541,7 @@ fn compile_loft_produces_realization() {
 fn compile_shell_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let hollowed = shell(w, 1)
+    let hollowed = shell(w, 1mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_shell"));
     assert!(
@@ -575,7 +575,7 @@ fn compile_shell_produces_realization() {
 fn compile_thicken_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let thickened = thicken(w, 2)
+    let thickened = thicken(w, 2mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_thicken"));
     assert!(
@@ -1845,7 +1845,7 @@ fn loft_nested_in_union_correct_step_refs() {
 #[test]
 fn compile_boolean_op_union_via_compile() {
     let source = r#"structure S {
-    let a = union(sphere(1), cylinder(1, 2))
+    let a = union(sphere(1mm), cylinder(1mm, 2mm))
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_bool_union"));
     assert!(
@@ -1889,7 +1889,7 @@ fn compile_boolean_op_union_via_compile() {
 #[test]
 fn compile_boolean_op_union_all_via_compile() {
     let source = r#"structure S {
-    let a = union_all(sphere(1), sphere(2), sphere(3))
+    let a = union_all(sphere(1mm), sphere(2mm), sphere(3mm))
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -1954,7 +1954,7 @@ fn compile_boolean_op_union_all_via_compile() {
 #[test]
 fn compile_boolean_op_difference_via_compile() {
     let source = r#"structure S {
-    let a = difference(sphere(1), cylinder(1, 2))
+    let a = difference(sphere(1mm), cylinder(1mm, 2mm))
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -2001,7 +2001,7 @@ fn compile_boolean_op_difference_via_compile() {
 #[test]
 fn compile_boolean_op_intersection_all_via_compile() {
     let source = r#"structure S {
-    let a = intersection_all(sphere(1), sphere(2), sphere(3))
+    let a = intersection_all(sphere(1mm), sphere(2mm), sphere(3mm))
 }"#;
     let parsed = reify_syntax::parse(
         source,
