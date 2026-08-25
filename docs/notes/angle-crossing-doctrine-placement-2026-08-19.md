@@ -7,7 +7,7 @@
 | PRD | `docs/prds/v0_6/angle-dimension-completion.md` (leaf γ, docs-truth four-pack — the same leaf #6181/#6267 landed into) |
 | Task | #6290 |
 | Spun out of | esc-6267-1 / esc-6267-2 on #6267, which itself compressed the section #6181 (leaf γ) wrote |
-| Branch | `task/6290`, measurements anchored to ancestor commit `2e3f228d2d` ("Merge task/5982 into main" — this branch's merge-base when that pass ran; still resolvable, though the branch has been rebased again since) — the branch was rebased after both the P1 measurement pass and a second, mid-implementation measurement pass, so neither pass's branch-tip SHA resolves post-rebase; branch-tip SHAs are the wrong thing to cite here for exactly that reason. See §5 for the pass that replaces both. |
+| Branch | `task/6290` — the branch has been rebased multiple times since the original P1 measurement pass and since a later, mid-implementation measurement pass, so neither pass's branch-tip SHA resolves today; branch-tip SHAs are the wrong thing to cite for measurement provenance on a branch that gets rebased. §1 anchors the byte census to a fixed historical commit instead, for exactly that reason — see there for which one, and why. |
 | Date | 2026-08-19 |
 | Instrument | Byte census: `wc -c`/`wc -l` over `crates/reify-mcp/src/tools/chunks/*.md`, plus `sed -n` slices of `units.md`. Discoverability walk's instrument, unchanged from `docs/notes/angle-crossing-discoverability-2026-08-10.md`: `grep -rn <term> crates/reify-mcp/src/tools/chunks examples/best_practices/INDEX.md .claude/skills/reify-design/SKILL.md`, plus `grep -rnwE "gradient|divergence|curl|laplacian" crates/reify-mcp/src/tools/chunks/`. |
 
@@ -24,36 +24,60 @@ reader who wants to know why no lever was pulled — and, per §4, for the
 reader asking what (if anything) currently enforces hard constraints 3 and
 4.
 
-## 1. Measurements (prerequisite P1; re-run at ancestor commit `2e3f228d2d`, post-rebase)
+## 1. Measurements (prerequisite P1; re-run at fixed historical commit `db3caf593c`)
 
 **This was executed, not asserted** — every number below is real stdout,
-re-run at commit `2e3f228d2d`, which was this branch's merge-base at the time
-of that pass. The branch has been rebased again since, so `2e3f228d2d` is a
-resolvable historical anchor rather than today's merge-base — it is cited
-that way, not as a live one, and the numbers below still reproduce.
-The original P1 stdout and a second, mid-implementation re-verification
-stdout are superseded by this pass; both were genuine at the time, but
-their branch-tip provenance SHAs do not resolve post-rebase (see the
-Branch row above), so citing their numbers instead of re-running would
-have been unverifiable, not merely stale.
+re-run against a clean extraction of commit `db3caf593c` ("Merge task/6441
+into main"): `git archive db3caf593c | tar -x` into a scratch directory
+outside the repository (`git worktree add` needs write access to the
+shared `.git/worktrees/` metadata directory, which this task does not
+have; the archive extraction is an equivalent clean checkout for a
+read-only census). `db3caf593c` is cited as a fixed historical SHA, not as
+"the merge base" — a merge-base is a moving description that a later
+rebase invalidates (this branch's own merge-base with `main` has already
+moved once since this commit was chosen, to a later commit — see §5's
+re-verification), whereas a named commit's tree never changes and stays
+resolvable for as long as the commit stays reachable. Independently
+re-verified here: `db3caf593c` is still an ancestor of both the current
+branch tip and current `main`, so — unlike a merge-base or a branch-tip
+SHA — it stays citable no matter how many more times either moves.
+
+A prior revision of this section attributed the same census to ancestor
+commit `2e3f228d2d`, superseding both the original P1 pass and a later,
+mid-implementation re-verification pass. That attribution does not hold
+up: no tree at `2e3f228d2d` produces the block that was pasted under it —
+`geometry.md` is 8243 bytes there, not the 8622 the block recorded, and
+8622 first exists via commit `a29bcbe812`, which `2e3f228d2d` is not a
+descendant of. The pasted numbers were not fabricated — they are a real,
+internally consistent snapshot of some later tree — but the citation was
+unverifiable at the SHA it named, which is exactly the defect this note's
+evidence exists to avoid. This revision replaces that block with a fresh
+run against a commit independently re-verified to actually produce it,
+rather than hand-patching the old block's numbers.
 
 `units.md`'s own four numbers — 6117 bytes, 98 lines, 4514-byte section,
 1042-byte L58 — and its "3rd largest of 17" rank are the load-bearing
-figures this decision rests on, and they reproduce exactly across every
-pass, including this one. The *other* chunks' byte counts are not
-load-bearing and do drift as unrelated sibling tasks land documentation on
-`main` between passes: `stdlib.md` moved once (4606 → 5022, via
-`21991bb8a6`/`e88dbdf1b4`) and `geometry.md` has now moved *twice*
-(7200 → 8243 → 8622 — the second hop via `a29bcbe812`, which landed on
-`main` after the previous pass recorded this block at 8243). Any figure
-*derived* from these rows — the corpus mean, and which chunk currently
-ranks largest — is exactly as drift-subject as the rows themselves, even
-though it is written below as a plain number: treat it as this pass's
-snapshot, not a constant to cite forward. A future re-run that finds a
-*non-`units.md`* row, or a derived total/mean/rank built only from
-non-`units.md` rows, mismatched against this block is expected drift, not a
-falsified record; a mismatch on one of `units.md`'s own four numbers would
-be the thing to investigate.
+figures this decision rests on, and they reproduce exactly at `db3caf593c`
+and in the live tree alike (re-verified both ways). The *other* chunks'
+byte counts are not load-bearing and are expected to drift as unrelated
+sibling tasks land documentation on `main`: relative to the P1 baseline,
+`stdlib.md` moved once (4606 → 5022, via `21991bb8a6`/`e88dbdf1b4`) and
+`geometry.md` moved twice (7200 → 8243 → 8622, the second hop via
+`a29bcbe812`); both hops predate `db3caf593c` and are already reflected in
+the block below. `constraints.md` (1498 → 1646) and `traits.md` (3232 →
+3335) read differently from the block this section previously carried, but
+that is not fresh drift since this pass — it is the correction described
+above: the previous block's mis-attributed source tree predated the #6213
+amend that moved both, while `db3caf593c` postdates it, so both rows are
+already at their post-amend value below and are not expected to move again
+on that account. Any figure *derived* from these rows — the corpus mean,
+and which chunk currently ranks largest — is exactly as drift-subject as
+the rows themselves, even though it is written below as a plain number:
+treat it as this pass's snapshot, not a constant to cite forward. A future
+re-run that finds a *non-`units.md`* row, or a derived total/mean/rank
+built only from non-`units.md` rows, mismatched against this block is
+expected drift, not a falsified record; a mismatch on one of `units.md`'s
+own four numbers would be the thing to investigate.
 
 ### Byte census — all 17 chunks
 
@@ -62,16 +86,16 @@ $ for f in crates/reify-mcp/src/tools/chunks/*.md; do wc -c "$f"; done | sort -n
 1202 crates/reify-mcp/src/tools/chunks/guards.md
 1456 crates/reify-mcp/src/tools/chunks/collections.md
 1491 crates/reify-mcp/src/tools/chunks/functions.md
-1498 crates/reify-mcp/src/tools/chunks/constraints.md
 1573 crates/reify-mcp/src/tools/chunks/occurrences.md
 1579 crates/reify-mcp/src/tools/chunks/purposes.md
+1646 crates/reify-mcp/src/tools/chunks/constraints.md
 1653 crates/reify-mcp/src/tools/chunks/types.md
 1677 crates/reify-mcp/src/tools/chunks/fields.md
 1700 crates/reify-mcp/src/tools/chunks/parameters.md
 1723 crates/reify-mcp/src/tools/chunks/connect.md
 1758 crates/reify-mcp/src/tools/chunks/structures.md
 2111 crates/reify-mcp/src/tools/chunks/syntax.md
-3232 crates/reify-mcp/src/tools/chunks/traits.md
+3335 crates/reify-mcp/src/tools/chunks/traits.md
 5022 crates/reify-mcp/src/tools/chunks/stdlib.md
 6117 crates/reify-mcp/src/tools/chunks/units.md
 7227 crates/reify-mcp/src/tools/chunks/enums.md
@@ -79,13 +103,12 @@ $ for f in crates/reify-mcp/src/tools/chunks/*.md; do wc -c "$f"; done | sort -n
 ```
 
 `units.md` is the **3rd largest of 17** — below `geometry.md` (8622) and
-`enums.md` (7227) — against a corpus mean of 49641 / 17 ≈ **2920 bytes**.
+`enums.md` (7227) — against a corpus mean of 49892 / 17 ≈ **2935 bytes**.
 (That mean and the exact `geometry.md` figure are this pass's snapshot, not
 a constant — see the drift note above; recompute rather than cite them
-forward.) `geometry.md` and `enums.md` swapped rank between P1 and the
-previous pass (`geometry.md` was 7200, then 8243), and `geometry.md` has
-grown again since (8243 → 8622); `units.md`'s own rank — 3rd of 17 — is
-unaffected by any of it.
+forward.) `geometry.md` and `enums.md` swapped rank between P1 and later
+passes (`geometry.md` was 7200, then 8243, then 8622 as of `a29bcbe812`);
+`units.md`'s own rank — 3rd of 17 — is unaffected by any of it.
 
 ### `units.md` internal split
 
@@ -172,7 +195,7 @@ byte-census drift, on a different instrument; see §5.)
 
 **(i) Absolute size is not an outlier.** `units.md` at 6117 bytes is the 3rd
 largest of 17 chunks, below `geometry.md` (8622) and `enums.md` (7227);
-corpus mean ~2920 (§1's byte census — the `geometry.md` figure and the mean
+corpus mean ~2935 (§1's byte census — the `geometry.md` figure and the mean
 are today's snapshot of chunks this task does not touch and will drift
 again; `units.md`'s 3rd-of-17 rank is what does not). No per-topic size
 policy exists anywhere in `docs/prds/`
