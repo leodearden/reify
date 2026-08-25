@@ -135,6 +135,7 @@ vi.mock('three', async () => {
 });
 
 import { createScene } from '../../viewport/scene';
+import { GRID_RENDER_ORDER, AXES_RENDER_ORDER } from '../../viewport/renderOrder';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -335,25 +336,35 @@ describe('createScene', () => {
     expect(camera.updateProjectionMatrix).not.toHaveBeenCalled();
   });
 
-  it('axes draw after the grid (renderOrder) so the grid cannot occlude them', () => {
-    const result = setup();
-    expect(result.axes.renderOrder).toBe(1);
-    expect(result.axes.renderOrder).toBeGreaterThan(result.grid.renderOrder);
-    // Pin the grid's own renderOrder at the default so a regression that also
-    // mutated the grid would be caught (the fix relies on the grid staying at 0).
-    expect(result.grid.renderOrder).toBe(0);
-  });
-
-  it('axes ignore the depth buffer so coplanar grid lines never z-fight over them', () => {
+  it('axes are depth-tested so model geometry in front of the origin occludes them (#6587)', () => {
     const result = setup();
     const ax = result.axes as any;
-    expect(ax.material.depthTest).toBe(false);
+    // depthTest=false made the axis vectors draw straight through solid parts.
+    // They are full-scene-scale world geometry, not a HUD, so they must obey depth.
+    expect(ax.material.depthTest).toBe(true);
+    // ...but they still write no depth, so they cannot occlude the labels above them.
     expect(ax.material.depthWrite).toBe(false);
-    // Pin the grid's depth flags at defaults — the fix depends on the grid keeping
-    // normal depthTest/depthWrite so real 3D meshes still occlude it correctly.
+  });
+
+  it('the grid writes no depth so its centre lines can never z-fight the collinear X/Y axes (#4214)', () => {
+    const result = setup();
     const gr = result.grid as any;
+    // The grid stays depth-tested: real meshes in front of it still occlude it.
     expect(gr.material.depthTest).toBe(true);
-    expect(gr.material.depthWrite).toBe(true);
+    // depthWrite=false is what breaks the coplanar tie. The grid contributes nothing
+    // to the depth buffer, so the axes drawn after it can never fail their LEQUAL
+    // test against it — #4214 stays fixed without disabling depthTest anywhere.
+    expect(gr.material.depthWrite).toBe(false);
+  });
+
+  it('grid and axes draw in the helper tier, after all model geometry', () => {
+    const result = setup();
+    expect(result.grid.renderOrder).toBe(GRID_RENDER_ORDER);
+    expect(result.axes.renderOrder).toBe(AXES_RENDER_ORDER);
+    // Order within the tier is what decides the coplanar grid-vs-axes tie.
+    expect(result.grid.renderOrder).toBeLessThan(result.axes.renderOrder);
+    // The whole tier sits above the default mesh tier 0.
+    expect(result.grid.renderOrder).toBeGreaterThan(0);
   });
 
   it('returns axisLabels property that is a Group', () => {
