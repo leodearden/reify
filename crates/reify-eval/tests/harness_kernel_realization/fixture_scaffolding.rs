@@ -42,8 +42,17 @@
 //! The same reasoning covers `assert_bool_cell` / `assert_length_cell`: a
 //! pin's *reading* of a built `BuildResult` cell is as copy-pasteable as its
 //! building, and a message-format tweak in one copy silently desynchronises
-//! the rest. They live here so every pin in this harness reports a failing
+//! the rest. They live here so that any pin adopting them reports a failing
 //! cell identically.
+//!
+//! Adoption is INCREMENTAL — read the paragraph above as the intent, not as a
+//! description of today's harness. As of task #6269 the sole consumer is
+//! `kernel_queries_intersects_smoke`; nine sibling modules still hand-roll an
+//! inline `ValueCellId::new` + `assert_eq!` / `match ... Value::Scalar` at each
+//! call site, the closest being `best_practices_clearance_oracle`. So the drift
+//! these helpers close is still open across the rest of the harness: they are
+//! AVAILABLE to every pin, and migrating one is a mechanical, self-contained
+//! change for whichever task next holds that pin's lock.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
@@ -59,12 +68,14 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 ///
 /// Deliberately builds on the NON-asserting `compile_source_with_stdlib` rather
 /// than its `parse_and_compile_with_stdlib` sibling. The sibling already runs
-/// this same emptiness check internally
-/// (`reify-test-support/src/helpers.rs:463-468`) and panics with an unlabelled
+/// this same emptiness check internally — the
+/// `assert!(errors.is_empty(), "compile errors: {:?}", errors)` in
+/// `reify-test-support/src/helpers.rs` — and panics with an unlabelled
 /// `compile errors: [...]`, which would make the labelled assert below
 /// unreachable dead code and leave a compile regression reported without
 /// naming WHICH fixture or pin broke. Going through the non-asserting entry
 /// point puts `what` back in the failure message.
+#[track_caller]
 fn compile_source_fixture(source: &str, what: &str) -> reify_compiler::CompiledModule {
     // Validate fixture compilation unconditionally — a grammar/compile regression
     // should fail on every runner.
@@ -116,6 +127,7 @@ fn build_compiled_with_occt(
 ///
 /// `what` is the repo-relative fixture label used in failure messages, so an
 /// offender is reported portably rather than as an absolute build-machine path.
+#[track_caller]
 pub(crate) fn read_and_compile_fixture(path: &str, what: &str) -> reify_compiler::CompiledModule {
     // Read the fixture unconditionally so a missing file is caught even on
     // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
@@ -132,6 +144,7 @@ pub(crate) fn read_and_compile_fixture(path: &str, what: &str) -> reify_compiler
 /// Shared so the real-OCCT pin tests in this harness cannot drift against each
 /// other on the skip/build scaffolding — the piece most likely to diverge
 /// silently under copy-paste.
+#[track_caller]
 pub(crate) fn compile_and_build_with_occt(
     path: &str,
     what: &str,
@@ -159,6 +172,7 @@ pub(crate) fn compile_and_build_with_occt(
 /// `what` is the caller-facing label used in the skip and failure messages;
 /// unlike the path-based helpers there is no file to name, so pass something
 /// that identifies the pin (e.g. `"containment pin (inline source)"`).
+#[track_caller]
 pub(crate) fn build_source_with_occt(source: &str, what: &str) -> Option<reify_eval::BuildResult> {
     let compiled = compile_source_fixture(source, what);
     build_compiled_with_occt(&compiled, what)
@@ -171,6 +185,7 @@ pub(crate) fn build_source_with_occt(source: &str, what: &str) -> Option<reify_e
 /// re-deriving the same `ValueCellId::new` + `get` + `assert_eq!` shape — the
 /// same silent-drift risk in the *reading* of a `BuildResult` that this
 /// module's build helpers already close for the *producing* of one.
+#[track_caller]
 pub(crate) fn assert_bool_cell(
     result: &reify_eval::BuildResult,
     struct_name: &str,
@@ -204,6 +219,7 @@ pub(crate) fn assert_bool_cell(
 ///
 /// Both arms name `struct_name.cell_name` and print the delta, so a failure in
 /// any pin in this harness reads identically.
+#[track_caller]
 pub(crate) fn assert_length_cell(
     result: &reify_eval::BuildResult,
     struct_name: &str,
