@@ -4086,27 +4086,29 @@ mod tests {
     /// ω, not in one of the two coupled coefficients.
     ///
     /// That the PRODUCER feeds ω = 2π·f is pinned separately, by
-    /// `trampoline_shapes_modal_result_with_rayleigh_damping`.
+    /// `trampoline_shapes_modal_result_with_rayleigh_damping`. The plain
+    /// concrete-value anchor for the formula itself — α=2, β=0, ω=10 ⇒ ζ=0.1 —
+    /// already lives one crate away in
+    /// `reify-stdlib::modal::free_vibration::tests::rayleigh_damping_ratio_mass_proportional`
+    /// and is deliberately NOT restated here; every arm below carries
+    /// information that anchor does not.
     #[test]
     fn rayleigh_coefficients_are_consumed_on_the_angular_rate_scale() {
-        // ζ = (α + β·ω²)/(2ω). Mass-proportional half at ω = 10 rad/s:
-        // α/(2ω) = 2/20 = 0.1 — α is divided by an ANGULAR rate, so an `alpha:
-        // 2.0Hz` literal is consumed as 2 rad/s (≈ 0.32 cycles/s), not 2 Hz.
-        let zeta_alpha = rayleigh_damping_ratio(2.0, 0.0, 10.0);
-        assert!(
-            (zeta_alpha - 0.1).abs() < 1e-15,
-            "ζ from the mass-proportional term must be α/(2ω) = 0.1; got {zeta_alpha}"
-        );
-
-        // The corpus fixture's stiffness half: β·ω/2 at the transient
-        // fixture's fundamental (f₁ ≈ 44.7 Hz ⇒ ω₁ ≈ 281 rad/s) ⇒ ζ₁ ≈ 0.042,
-        // the value examples/modal/transient_step_response.ri quotes.
+        // CORPUS ANCHOR. examples/modal/transient_step_response.ri:29-31 quotes
+        // ζ₁ ≈ 0.042 for its `beta: 0.0003s` at the fixture's fundamental
+        // f₁ ≈ 44.7 Hz. That number is only reachable on the rad/s scale:
+        // β·ω₁/2 = 0.0003·281/2 ≈ 0.042, where reading ω as cycles/s would give
+        // 0.0003·44.7/2 ≈ 0.0067 — off by 2π and far outside this tolerance.
+        // Asserted against the PROSE's value, not against the implementation's
+        // own formula re-derived (which could not fail).
         let f1 = 44.7_f64;
         let omega1 = 2.0 * std::f64::consts::PI * f1;
         let zeta_beta = rayleigh_damping_ratio(0.0, 0.0003, omega1);
         assert!(
-            (zeta_beta - 0.0003 * omega1 / 2.0).abs() < 1e-15,
-            "ζ from the stiffness-proportional term must be β·ω/2; got {zeta_beta}"
+            (zeta_beta - 0.042).abs() < 5e-4,
+            "ζ₁ must match the ≈ 0.042 that examples/modal/transient_step_response.ri \
+             quotes for β = 0.0003s at f₁ ≈ 44.7 Hz — reachable only if ω is rad/s; \
+             got {zeta_beta}"
         );
 
         // SYMMETRY. Reading ω as cycles/s instead of rad/s would inflate the
