@@ -495,10 +495,20 @@ structure CtorMisspelledLabelProbe {
     //     so a code-set filter alone would miss the promotion this pin exists
     //     to notice. Matched on the SOURCE IDENTIFIER, not on diagnostic
     //     prose.
+    //
+    // The label match is QUOTED (`'bta'` / `` `bta` ``), never a bare
+    // `contains("bta")`: the bare form matches the substring inside ordinary
+    // English words — "o(bta)in" is the obvious one — which would reintroduce
+    // exactly the unrelated-axis false red this narrowing exists to remove.
+    // Both quotings are accepted because the two live emitters disagree:
+    // ArgTypeMismatch says `argument 'alpha'` and the duplicate-named-arg
+    // error says `duplicate named argument 'x'`, while backtick-quoting is
+    // common elsewhere in the diagnostic corpus.
+    let names_typo = |m: &str| m.contains("'bta'") || m.contains("`bta`");
     let judging: Vec<&Diagnostic> = module
         .diagnostics
         .iter()
-        .filter(|d| is_ctor_conformance_code(d.code) || d.message.contains("bta"))
+        .filter(|d| is_ctor_conformance_code(d.code) || names_typo(&d.message))
         .collect();
     assert!(
         judging.is_empty(),
