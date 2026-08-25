@@ -27,56 +27,20 @@ mod common;
 #[path = "common/breadcrumbs.rs"]
 mod breadcrumbs;
 
+/// The `tasks.json` record fixtures, shared with `tests/jcodemunch_live.rs`.
+///
+/// `#[path]` for the same reason as `breadcrumbs` above: two binaries need a
+/// P1-ELIGIBLE record, and a fixture that gets P1's eligibility rules wrong
+/// does not fail — it goes vacuous. Keeping the rules in one module is what
+/// stops the two copies from drifting. See the module's own header.
+#[path = "common/task_json.rs"]
+mod task_json;
+
+use task_json::{done_task_fixture, task_fixture};
+
 // -----------------------------------------------------------------------
 // Fixture helpers
 // -----------------------------------------------------------------------
-
-/// Minimal tasks.json fixture object with all 9 required TaskMetadata fields.
-/// Returns a serde_json::Value so callers can override fields as needed.
-fn task_fixture(
-    task_id: &str,
-    status: &str,
-    kind: Option<&str>,
-    commit: Option<&str>,
-) -> serde_json::Value {
-    let done_provenance = match kind {
-        Some(k) => serde_json::json!({
-            "kind": k,
-            "commit": commit,
-            "note": null
-        }),
-        None => serde_json::Value::Null,
-    };
-    serde_json::json!({
-        "task_id": task_id,
-        "status": status,
-        "files": ["crates/reify-audit/src/lib.rs"],
-        "done_provenance": done_provenance,
-        "title": format!("Task {}", task_id),
-        "prd": null,
-        "consumer_ref": null,
-        "audit_foundation": null,
-        "done_at": null
-    })
-}
-
-/// A [`task_fixture`] that P1 will actually CONSIDER: `status: "done"`, a
-/// `done_provenance.commit`, and a NON-NULL `done_at`.
-///
-/// P1 SKIPS a task whose `done_at` is null (`src/p1_producer_orphan.rs:104`)
-/// or whose `done_provenance.commit` is absent (`:126`), and `task_fixture`
-/// hardcodes `done_at: null` because most callers here are exercising other
-/// detectors. A P1 fixture that inherited that null would make its run vacuous
-/// no matter what the code under test did — the detector would never reach
-/// `get_changed_symbols` at all. Keeping those two eligibility rules in ONE
-/// place, rather than re-spelling the whole 9-field record at each P1 call
-/// site, is what stops a future field from silently making such a fixture
-/// inert again.
-fn done_task_fixture(task_id: &str, commit: &str, done_at: u64) -> serde_json::Value {
-    let mut task = task_fixture(task_id, "done", Some("merged"), Some(commit));
-    task["done_at"] = serde_json::json!(done_at);
-    task
-}
 
 /// Write tasks.json with the given task fixtures to `dir/tasks.json`.
 fn write_tasks_json(dir: &Path, tasks: &[serde_json::Value]) -> std::path::PathBuf {
@@ -3240,7 +3204,8 @@ mod freshness_gate {
     /// `commit`, replacing whatever `scenario()` put there.
     ///
     /// The eligibility rules (`status: "done"`, a `done_provenance.commit`, a
-    /// non-null `done_at`) live in `done_task_fixture`, and the
+    /// non-null `done_at`) live in `task_json::done_task_fixture`, shared with
+    /// `tests/jcodemunch_live.rs`'s `write_synthetic_done_task`, and the
     /// serialize-and-write in `write_tasks_json`; this helper only supplies
     /// what is scenario-specific.
     ///

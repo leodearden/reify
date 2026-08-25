@@ -184,6 +184,15 @@ mod common;
 #[path = "common/breadcrumbs.rs"]
 mod breadcrumbs;
 
+/// The `tasks.json` record fixtures, shared with `tests/cli.rs`.
+///
+/// `#[path]` for the same reason as `breadcrumbs` above. P1's eligibility
+/// rules live in `task_json::done_task_fixture`, not here: a fixture that gets
+/// them wrong does not fail, it makes the P1 leg VACUOUS, and that is exactly
+/// the failure mode this file exists to close. See the module's own header.
+#[path = "common/task_json.rs"]
+mod task_json;
+
 // -----------------------------------------------------------------------
 // Finding-shape predicates (pure; no serve needed)
 // -----------------------------------------------------------------------
@@ -269,10 +278,13 @@ fn write_empty_runs_db(dir: &std::path::Path) -> std::path::PathBuf {
 /// Write a `tasks.json` holding ONE synthetic done task, pointed at `commit`
 /// with `files: [touched_file]`. Returns the path.
 ///
-/// Adapts cli.rs's `task_fixture` + `write_tasks_json`, with one mandatory
-/// difference: `done_at` MUST be set. cli.rs leaves it `null`, and P1 SKIPS a
-/// task whose `done_at` is null — a fixture that inherited that would make the
-/// P1 leg vacuous no matter what the seam did.
+/// P1's eligibility rules (`status: "done"`, a `done_provenance.commit`, a
+/// NON-NULL `done_at`) live in `task_json::done_task_fixture`, shared with
+/// `tests/cli.rs`; this helper only supplies what is capstone-specific. That
+/// split is load-bearing rather than tidy: a fixture that misses one of those
+/// rules does not fail, it makes the P1 leg VACUOUS — the detector skips the
+/// record before it ever reaches `get_changed_symbols` — so the rules must not
+/// be re-spelled per call site where one copy can silently fall behind.
 ///
 /// `commit` and `touched_file` are parameters, not constants. They used to be
 /// a pinned reify SHA (`ff1cb80c31`) and a hardcoded reify path, carrying the
@@ -288,21 +300,15 @@ fn write_synthetic_done_task(
     done_at_epoch: u64,
     touched_file: &str,
 ) -> std::path::PathBuf {
-    let task = serde_json::json!([{
-        "task_id": "synthetic-capstone-p1",
-        "status": "done",
-        "files": [touched_file],
-        "done_provenance": {
-            "kind": "merged",
-            "commit": commit,
-            "note": null
-        },
-        "title": "Synthetic done task for the P1 capstone leg",
-        "prd": null,
-        "consumer_ref": null,
-        "audit_foundation": null,
-        "done_at": done_at_epoch
-    }]);
+    let mut record = task_json::done_task_fixture("synthetic-capstone-p1", commit, done_at_epoch);
+    // The corpus file the second commit genuinely modified, so this record
+    // names a path that EXISTS where the binary is pointed;
+    // `task_fixture`'s default is a reify path with no meaning inside a
+    // throwaway corpus.
+    record["files"] = serde_json::json!([touched_file]);
+    record["title"] = serde_json::json!("Synthetic done task for the P1 capstone leg");
+
+    let task = serde_json::json!([record]);
     let path = dir.join("synthetic_done_task.json");
     let content = serde_json::to_string_pretty(&task).expect("serialize synthetic task");
     std::fs::write(&path, content).expect("write synthetic_done_task.json");
