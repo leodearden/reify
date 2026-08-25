@@ -108,6 +108,32 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
         .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
 }
 
+/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
+/// field-conformance pass (tasks 5302 / 4584 / 4598 / 4622 / 4444).
+///
+/// Severity-agnostic ON PURPOSE: `CTOR_FIELD_CONFORMANCE_SEVERITY`
+/// (`reify-compiler/src/conformance/mod.rs:33`) is `Warning` pre-δ, and the
+/// planned Warning→Error flip must not move any pin that filters through here.
+///
+/// Kept deliberately in sync with the identically-named helpers in
+/// `harness_compilation_surface/examples_smoke.rs` and
+/// `struct_ctor_field_conformance_tests.rs`; integration tests are separate
+/// binaries and cannot share a private helper without a support-crate hop, and
+/// the set is small enough that duplication is cheaper than the indirection.
+#[allow(dead_code)]
+fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
+    matches!(
+        code,
+        Some(
+            DiagnosticCode::ArgTypeMismatch
+                | DiagnosticCode::SelectorKindMismatch
+                | DiagnosticCode::TypeNotConformingToTrait
+                | DiagnosticCode::TypeNotConformingToStructureRef
+                | DiagnosticCode::TypeNotConformingToVector
+        )
+    )
+}
+
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
 
 /// The std/modal/analysis module must load through the production stdlib path
@@ -453,17 +479,40 @@ structure CtorMisspelledLabelProbe {
 "#,
     );
 
-    // (a) no diagnostic at ANY severity — the typo is accepted outright.
-    // Asserted across all severities, not just `errors_only`, because the
-    // ctor field-conformance pass emits at Warning today: a misspelled label
-    // never reaches a declared param, so nothing judges it at all.
+    // (a) nothing JUDGES the typo, at any severity. Deliberately NOT
+    // `module.diagnostics.is_empty()`: that ranges over the probe source AND
+    // the whole stdlib prelude, so any unrelated future lint would turn this
+    // red with a message that actively misdirects. Narrowed to the two
+    // channels that could plausibly judge THIS ctor:
+    //
+    //   * a ctor-conformance CODE (severity-agnostic, so the planned
+    //     Warning→Error flip of `CTOR_FIELD_CONFORMANCE_SEVERITY` is not a
+    //     false red), and
+    //   * any diagnostic naming the typo'd label `bta` — which catches a
+    //     future CODELESS "unknown named argument" emission. Codeless is the
+    //     live shape here: the sibling duplicate-named-arg diagnostic
+    //     (`reify-compiler/src/expr.rs` ~2745) carries no `DiagnosticCode`,
+    //     so a code-set filter alone would miss the promotion this pin exists
+    //     to notice. Matched on the SOURCE IDENTIFIER, not on diagnostic
+    //     prose.
+    let judging: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| is_ctor_conformance_code(d.code) || d.message.contains("bta"))
+        .collect();
     assert!(
-        module.diagnostics.is_empty(),
+        judging.is_empty(),
         "a MISSPELLED ctor label is silently accepted today (only DUPLICATE \
-         labels are diagnosed); if this now diagnoses, the three example-file \
-         comments warning about the silent path are stale. Got {}: {:#?}",
-        module.diagnostics.len(),
-        module.diagnostics
+         labels are diagnosed). Two directions to check before editing this \
+         pin:\n  - if it went red by ACCIDENT, an unrelated axis started \
+         judging this ctor;\n  - if you are DELIBERATELY making an unknown \
+         label diagnose, update this pin AND the binding notes in \
+         examples/modal/printer_gantry_modes.ri, \
+         examples/modal/transient_step_response.ri and \
+         examples/trajectory/printer_print_envelope.ri, which warn about the \
+         silent path in prose.\nGot {}: {:#?}",
+        judging.len(),
+        judging
     );
 
     let template = module
@@ -651,13 +700,21 @@ structure DampingFieldBareProbe {
 "#;
     let bare_module = compile_source_with_stdlib(bare);
     let bare_errors = errors_only(&bare_module);
+    // Filtered on `DiagnosticCode` IDENTITY, not on the message prose:
+    // `DimensionMismatch` is minted with Add/Sub-specific semantics
+    // (`reify-core/src/diagnostics.rs:497`) and is attached by the single
+    // producer `type_compat::format_dimension_mismatch_diagnostic`
+    // (`type_compat.rs:1369`), so a wording touch-up to that message must not
+    // read here as a semantic regression. The messages stay in the failure
+    // output for diagnosability.
     assert!(
         bare_errors
             .iter()
-            .any(|d| d.message.contains("dimension mismatch in addition")),
+            .any(|d| d.code == Some(DiagnosticCode::DimensionMismatch)),
         "adding a bare dimensionless `1.0` to RayleighDamping.beta (declared \
-         `Time`) must raise a dimension-mismatch error. RED while the param \
-         is `Real`, where this snippet compiles clean. Got {}: {:#?}",
+         `Time`) must raise a `DimensionMismatch` error (message shape today: \
+         \"dimension mismatch in addition: Real vs Scalar[s]\"). RED while the \
+         param is `Real`, where this snippet compiles clean. Got {}: {:#?}",
         bare_errors.len(),
         bare_errors
     );
@@ -728,6 +785,62 @@ structure MigratedCtorArgProbe {
         "the migrated unit-literal form must be accepted; got: {:#?}",
         migrated.diagnostics
     );
+}
+
+/// TRANSPOSED units at CORRECT labels — `RayleighDamping(alpha: 0.0003s,
+/// beta: 0.0Hz)` — are rejected with one `ArgTypeMismatch` per slot.
+///
+/// This is the retype's highest-value failure mode, and the one seam that ONLY
+/// the compile-time ctor gate can catch. At the value layer a transposition is
+/// invisible: `read_scalar_si` (`reify-eval/src/modal_ops.rs`) folds
+/// `Value::Scalar` to its bare `si_value` and drops the dimension entirely, so
+/// a swap evaluates to a silently wrong damping curve with no error anywhere
+/// downstream. Gating that reader is a separate seam, owned by
+/// docs/prds/v0_6/dimension-checked-readers.md and deliberately left tolerant
+/// here.
+///
+/// Distinct from [`bare_real_rayleigh_ctor_arg_emits_arg_type_mismatch`]: that
+/// probe pins Real-vs-`Scalar`, i.e. that the slot is dimensioned AT ALL. This
+/// one pins that the conformance walker compares under strict
+/// `DimensionVector` EQUALITY, so two well-formed dimensioned args at the two
+/// correct labels still fail when their dimensions are transposed.
+///
+/// Same all-severities `DiagnosticCode`-identity filter, for the same reason:
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` is `Warning` pre-δ and the planned
+/// Warning→Error flip must not break this pin.
+#[test]
+fn swapped_rayleigh_ctor_unit_dimensions_emit_arg_type_mismatch() {
+    let swapped = compile_source_with_stdlib(
+        r#"
+structure SwappedCtorArgProbe {
+    let damping = RayleighDamping(alpha: 0.0003s, beta: 0.0Hz)
+}
+"#,
+    );
+    let mismatches: Vec<&str> = swapped
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        mismatches.len(),
+        2,
+        "a `Time` literal at the `Frequency` slot and a `Frequency` literal at \
+         the `Time` slot must EACH raise ArgTypeMismatch — strict \
+         DimensionVector equality, not merely dimensioned-vs-Real; got: {:#?}",
+        swapped.diagnostics
+    );
+    for param in ["alpha", "beta"] {
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| m.contains(&format!("argument '{param}'"))),
+            "one ArgTypeMismatch must name `{param}` — a gate that fired only \
+             once would leave half the transposition unreported; got: {:?}",
+            mismatches
+        );
+    }
 }
 
 // ─── step-9: Mode param shape (no constraints, no defaults) ──────────────────
