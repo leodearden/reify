@@ -2,6 +2,7 @@
 //!
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -4043,17 +4044,44 @@ impl<'a> Lowering<'a> {
         ) {
             let left = self.lower_unit_expr(left_node)?;
             let right = self.lower_unit_expr(right_node)?;
-            let op_text = self
-                .source
-                .get(left_node.end_byte()..right_node.start_byte())?;
-            return match classify_unit_op(op_text) {
+            let op_start = left_node.end_byte();
+            let op_end = right_node.start_byte();
+            let op_text = self.source.get(op_start..op_end)?;
+            // Comments are `extras`, so one written between the operands lands
+            // INSIDE that slice, as a named child of THIS node — measured on a
+            // clean parse (`has_error() == false`):
+            //
+            //   5N/*c*/*m   →   unit_expr(left, block_comment, right)
+            //
+            // No parens needed, and the `·` spelling behaves identically.  Cut
+            // the comment spans out before classifying, so a comment-bearing
+            // `Mul`/`Div` lowers to `Mul`/`Div`: the lowered tree must agree with
+            // what the grammar ACCEPTED, and rejecting a clean parse would trade
+            // one INV-SF-7 violation (wrong value) for a spurious error on valid
+            // source.  Children come back in source order, so the spans are
+            // already ascending and non-overlapping.
+            let mut comment_cursor = node.walk();
+            let comment_spans: Vec<(usize, usize)> = node
+                .named_children(&mut comment_cursor)
+                .filter(|child| matches!(child.kind(), "line_comment" | "block_comment"))
+                .map(|child| (child.start_byte(), child.end_byte()))
+                .filter(|&(start, end)| start >= op_start && end <= op_end)
+                .collect();
+            let op_residue = strip_unit_op_comments(op_text, op_start, &comment_spans);
+            return match classify_unit_op(&op_residue) {
                 UnitOp::Mul => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
                 UnitOp::Div => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
                 // Silent BY DESIGN, and not the INV-SF-7 shape: error recovery
                 // spliced the operands together, so the tree already carries the
                 // ERROR/MISSING node `check_and_lower!` reports. The drop is loud
-                // where the user observes it — just not reported twice.
+                // where the user observes it — just not reported twice.  A slice
+                // that held ONLY comments reduces to this same case, and for the
+                // same reason: the operator token is genuinely absent from the
+                // source, so the tree is already in error.
                 UnitOp::Missing => None,
+                // Names the comment-free RESIDUE, which is the operator the user
+                // actually wrote; a comment they deliberately put there is not
+                // part of the complaint.
                 UnitOp::Unrecognized(other) => {
                     self.push_error(
                         format!("unrecognized unit operator `{other}` in unit expression"),
@@ -4612,21 +4640,29 @@ impl<'a> Lowering<'a> {
 /// defensive code whose first observation is in production is exactly the shape
 /// INV-SF-7 warns about.
 ///
-/// [`UnitOp::Unrecognized`] is NOT hypothetical — it is reachable through today's
-/// grammar.  Measured on this branch (task #5784 amendment pass): the external
-/// scanner emits only `*`, `·` and `/` as `_unit_mul_op`/`_unit_div_op`, but
-/// comments are `extras`, so a comment sitting between two parenthesised unit
-/// groups is part of the operator slice — `5(m)/*c*/*(s)` classifies as
-/// `Unrecognized("/*c*/*")` and is rejected with a diagnostic naming it.  Before
-/// #5784 the same input matched the old `op_text.contains('/')` test and lowered
-/// to `Div` — a well-typed WRONG value, which is precisely why the match is now
-/// exact and total.  `unit_expr_lowering_tests::comment_between_unit_operands_*`
-/// drives that path end to end; the `classify_unit_op_*` tests below pin the
-/// classification itself.
+/// [`UnitOp::Unrecognized`] and [`UnitOp::Missing`] are both DEFENSIVE arms: no
+/// probed source reaches either.  They are not therefore removable, and the
+/// history says why the fallthrough must DIAGNOSE rather than return a bare
+/// `None`.
 ///
-/// [`UnitOp::Missing`] has NOT been observed from any source: 50-odd malformed
-/// inputs probed during that pass (instrumented build) never reached it.  Treat
-/// it as defensive, not as proven-unreachable.
+/// Comments are `extras`, so one written between the operands is part of the raw
+/// operator slice: `5N/*c*/*m` parses with no ERROR node and yields `/*c*/*`
+/// (measured, task #5784).  Three successive contracts for that input —
+///   1. before #5784, `op_text.contains('/')` lowered it to `Div`: a well-typed
+///      WRONG value from a clean parse, the INV-SF-7 shape itself;
+///   2. #5784's exact match made it `Unrecognized("/*c*/*")` — loud, but a
+///      spurious error on source the grammar ACCEPTED;
+///   3. today, [`strip_unit_op_comments`] cuts the comment spans out first, so
+///      the residue `*` classifies as the `Mul` the CST plainly shows.
+///
+/// After (3) the residue is always exactly the operator token, because the only
+/// `extras` are whitespace (trimmed), comments (excised), and a sentinel the
+/// scanner never emits.  So `Unrecognized` now guards against a FUTURE operator
+/// token reaching this function unhandled: without the diagnostic, a bare `None`
+/// out of `lower_unit_expr` propagates through `lower_quantity_literal` and
+/// `lower_let` as a DROPPED member with no error at all.  The
+/// `classify_unit_op_*` and `strip_unit_op_comments_*` tests below are the only
+/// observation of both arms; do not delete them as "dead".
 #[derive(Debug, PartialEq, Eq)]
 enum UnitOp<'a> {
     /// `*` or `·` (U+00B7 MIDDLE DOT) — two spellings of ONE operator, both
@@ -4646,10 +4682,11 @@ enum UnitOp<'a> {
 
 /// Classify the operator slice between a `unit_expr`'s two operands.
 ///
-/// In a well-formed parse the trimmed slice is exactly `*`, `·` or `/`, because
-/// unit atoms are contiguous.  It is NOT exactly that in general: comments are
-/// parser `extras`, so `5(m)/*c*/*(s)` hands this function the slice `/*c*/*`
-/// (measured).  Hence the total match — see [`UnitOp`].
+/// The caller passes the residue left by [`strip_unit_op_comments`], so the
+/// trimmed input is exactly `*`, `·` or `/` for every parse the grammar accepts
+/// — unit atoms are contiguous and the only other `extras` are whitespace and a
+/// never-emitted sentinel.  The match is nonetheless TOTAL; see [`UnitOp`] for
+/// why the leftover arms stay.
 ///
 /// Matched EXACTLY rather than by `contains`, and every arm is total, because the
 /// caller cannot afford an unhandled operator: a bare `None` out of
@@ -4666,6 +4703,78 @@ fn classify_unit_op(op_text: &str) -> UnitOp<'_> {
         "/" => UnitOp::Div,
         "" => UnitOp::Missing,
         other => UnitOp::Unrecognized(other),
+    }
+}
+
+/// Cut the comment spans out of a `unit_expr`'s raw operator slice, returning
+/// what [`classify_unit_op`] should see.
+///
+/// Comments are parser `extras`, so one written between the operands sits INSIDE
+/// the slice `lower_unit_expr` cuts from the source — as a named child of the
+/// `unit_expr` node, on a tree with no ERROR node anywhere.  Measured (task
+/// #5784 amendment pass):
+///
+/// ```text
+///   5N/*c*/*m        →  unit_expr(left, block_comment, right)   slice `/*c*/*`
+///   5N/*c*/·m        →  same shape                              slice `/*c*/·`
+///   5N/*c*//m        →  same shape                              slice `/*c*//`
+///   5N/*a*//*b*/*m   →  two block_comment children              slice `/*a*//*b*/*`
+/// ```
+///
+/// `line_comment` is accepted by the caller's filter for symmetry, but was never
+/// observed inside a `unit_expr`: a `//…` comment ends the line, and every probed
+/// spelling (`5N//c⏎*m`, `5(m)//c⏎*(s)`) reparsed as a `binary_expression`
+/// instead.
+///
+/// Classifying those raw slices would reject source the GRAMMAR ACCEPTED, so the
+/// comments come out first and the residue (`*`, `·`, `/`) classifies as the
+/// operator the CST plainly shows.
+///
+/// `slice_start` is `slice`'s byte offset in the source file; `cuts` are ABSOLUTE
+/// `(start, end)` byte ranges which the caller has already filtered to those
+/// lying inside the slice, in ascending source order.  Any entry that does not
+/// translate to an ascending, in-bounds, char-boundary-aligned range inside
+/// `slice` is SKIPPED, and a slice whose tail cannot be taken falls back to the
+/// raw text: a surprising CST then degrades to the loud `Unrecognized`
+/// diagnostic rather than to a panic or a silently wrong operator.
+///
+/// Borrows in the common (comment-free) case — only source that actually puts a
+/// comment inside a unit expression pays an allocation.
+fn strip_unit_op_comments<'a>(
+    slice: &'a str,
+    slice_start: usize,
+    cuts: &[(usize, usize)],
+) -> Cow<'a, str> {
+    if cuts.is_empty() {
+        return Cow::Borrowed(slice);
+    }
+    let mut out = String::with_capacity(slice.len());
+    // Slice-relative offset of the first byte not yet copied into `out`.
+    let mut kept_to = 0usize;
+    for &(start, end) in cuts {
+        let (Some(rel_start), Some(rel_end)) = (
+            start.checked_sub(slice_start),
+            end.checked_sub(slice_start),
+        ) else {
+            continue;
+        };
+        if rel_start < kept_to || rel_end < rel_start || rel_end > slice.len() {
+            continue;
+        }
+        let Some(keep) = slice.get(kept_to..rel_start) else {
+            continue;
+        };
+        out.push_str(keep);
+        kept_to = rel_end;
+    }
+    match slice.get(kept_to..) {
+        Some(tail) => {
+            out.push_str(tail);
+            Cow::Owned(out)
+        }
+        // `kept_to` landed off a char boundary — unreachable for a token-aligned
+        // CST.  Hand back the raw slice so the caller diagnoses loudly.
+        None => Cow::Borrowed(slice),
     }
 }
 
@@ -7060,11 +7169,13 @@ mod tests {
     //
     // Task #5784 (angle-units leaf κ).  These pin the CLASSIFICATION and the
     // verbatim operator text handed to the diagnostic; the message wording itself
-    // is built at the single call site in `lower_unit_expr`, and is covered end
-    // to end by `unit_expr_lowering_tests::comment_between_unit_operands_*`
-    // (`Unrecognized` is reachable from real source — see the [`UnitOp`] doc).
-    // `UnitOp::Missing` has no such end-to-end case: no probed source reached it,
-    // so these unit tests remain its only observation.
+    // is built at the single call site in `lower_unit_expr`.
+    //
+    // Both leftover arms are DEFENSIVE — no probed source reaches `Unrecognized`
+    // or `Missing` now that `strip_unit_op_comments` runs first (see the
+    // [`UnitOp`] doc for why they still must diagnose rather than return a bare
+    // `None`).  These tests are therefore their ONLY observation; deleting them
+    // as "dead code" restores the silent-member-drop hazard unobserved.
 
     #[test]
     fn classify_unit_op_maps_both_mul_spellings_to_one_operator() {
@@ -7094,5 +7205,85 @@ mod tests {
         assert_eq!(classify_unit_op("×"), UnitOp::Unrecognized("×"));
         assert_eq!(classify_unit_op(" ⋅ "), UnitOp::Unrecognized("⋅"));
         assert_eq!(classify_unit_op("**"), UnitOp::Unrecognized("**"));
+    }
+
+    // ── `strip_unit_op_comments` — comments are `extras`, so they land in the
+    //    operator slice.  Offsets here are the real ones for the cited sources
+    //    (the caller passes ABSOLUTE byte ranges plus the slice's own start).
+
+    #[test]
+    fn strip_unit_op_comments_borrows_when_there_is_nothing_to_cut() {
+        // The overwhelmingly common path: no comment, no allocation.
+        let out = strip_unit_op_comments("*", 24, &[]);
+        assert!(matches!(out, Cow::Borrowed("*")));
+        assert_eq!(strip_unit_op_comments("·", 24, &[]).as_ref(), "·");
+    }
+
+    #[test]
+    fn strip_unit_op_comments_leaves_the_bare_operator() {
+        // `structure S { let x = 5N/*c*/*m }` — slice `/*c*/*` starts at byte 24,
+        // the block_comment spans 24..29, so the residue is the trailing `*`.
+        assert_eq!(
+            strip_unit_op_comments("/*c*/*", 24, &[(24, 29)]).as_ref(),
+            "*",
+            "a comment-bearing Mul must classify as Mul, not as an unrecognized \
+             operator — the grammar accepted this source with no ERROR node"
+        );
+        // The `·` and `/` spellings take the identical path.
+        assert_eq!(
+            strip_unit_op_comments("/*c*/·", 24, &[(24, 29)]).as_ref(),
+            "·"
+        );
+        assert_eq!(
+            strip_unit_op_comments("/*c*//", 24, &[(24, 29)]).as_ref(),
+            "/"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_handles_several_comments_before_the_operator() {
+        // `structure def S { let x = 5N/*a*//*b*/*m }` — measured: a clean parse
+        // whose `unit_expr` carries TWO block_comment children, slice
+        // `/*a*//*b*/*` at 28..39 with comments at 28..33 and 33..38.
+        assert_eq!(
+            strip_unit_op_comments("/*a*//*b*/*", 28, &[(28, 33), (33, 38)]).as_ref(),
+            "*",
+            "every comment span must come out, not just the first"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_skips_ranges_it_cannot_apply() {
+        // Defensive: a cut outside the slice, a descending pair, and one running
+        // past the end are each SKIPPED, never panicked on.  The residue then
+        // still carries the comment text and classifies as `Unrecognized` — loud,
+        // which is the correct degradation for a CST shape we did not predict.
+        let slice = "/*c*/*";
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(0, 4)]).as_ref(),
+            slice,
+            "a cut before the slice must not be re-based onto it"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(29, 24)]).as_ref(),
+            slice,
+            "a descending range must be skipped"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(24, 999)]).as_ref(),
+            slice,
+            "a range running past the slice must be skipped"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_only_ever_shrinks_toward_a_real_operator() {
+        // A slice that is NOTHING but a comment reduces to `Missing`, not to a
+        // second diagnostic: the operator token is genuinely absent, so error
+        // recovery already put an ERROR/MISSING node in the tree for
+        // `check_and_lower!` to report.
+        let residue = strip_unit_op_comments("/*c*/", 24, &[(24, 29)]);
+        assert_eq!(residue.as_ref(), "");
+        assert_eq!(classify_unit_op(&residue), UnitOp::Missing);
     }
 }

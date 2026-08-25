@@ -442,65 +442,80 @@ fn digit_after_middot_is_a_parse_error() {
     assert_loud_middot_parse_error("structure def S { let x = 5N·3 }");
 }
 
-// ── The `Unrecognized` operator arm, driven end to end ───────────────────────
+// ── Comments inside a unit expression ────────────────────────────────────────
 //
-// #5784 amendment pass.  `classify_unit_op`'s `Unrecognized` arm is NOT dead
-// defensive code, and the three `classify_unit_op_*` unit tests beside it in
-// `ts_parser.rs` pin only the classifier — they never reach the `push_error` call
-// site, so nothing observed the diagnostic's wording or span.  These two tests do.
+// #5784 amendment pass.  Comments are parser `extras`, so one written between a
+// `unit_expr`'s operands lands INSIDE the source slice `lower_unit_expr` cuts out
+// to recover the operator (the `op` field aliases hidden external tokens, so the
+// slice is the only way to read it).  Measured — every source below parses with
+// `has_error() == false` and yields `unit_expr(left, block_comment…, right)`:
 //
-// The arm is reachable because comments are parser `extras`: one sitting between
-// two PARENTHESISED unit groups is inside the operator slice that
-// `lower_unit_expr` cuts out of the source.  Measured on this branch:
+//   5N/*c*/*m        slice `/*c*/*`         5N/*c*/·m   slice `/*c*/·`
+//   5N/*c*//m        slice `/*c*//`         5N/*a*//*b*/*m   slice `/*a*//*b*/*`
 //
-//   5(m)/*c*/*(s)   slice = "/*c*/*"   →   unrecognized unit operator `/*c*/*`
+// The contract has moved twice.  Before κ, `op_text.contains('/')` lowered
+// `/*c*/*` to `Div` — a well-typed WRONG value from a clean parse, the INV-SF-7
+// `parse-is-value-faithful` shape exactly.  κ's exact match made it
+// `Unrecognized`, which was loud but rejected source the GRAMMAR ACCEPTED.  This
+// pass excises the comment spans first, so the residue classifies as the operator
+// the CST plainly shows and the lowered tree agrees with the parse.
 //
-// Before κ the same input matched the old `op_text.contains('/')` test and
-// lowered to `Div(m, s)` — a well-typed WRONG value carrying no diagnostic at
-// all, the exact INV-SF-7 `parse-is-value-faithful` shape.  Rejecting it loudly
-// is the improvement; accepting it as `Mul` would be a separate change (it needs
-// a decision about which comment forms a unit expression may contain), so what is
-// pinned here is TODAY's contract, not an endorsement of it.
-
-/// A comment inside a unit expression: the operator slice is not an operator.
-const COMMENTED_UNIT_MUL: &str = "structure def S { let x = 5(m)/*c*/*(s) }";
+// A `line_comment` was never observed inside a `unit_expr` (`//…` ends the line,
+// and `5N//c⏎*m` reparses as a `binary_expression`), so it is not pinned here —
+// only `strip_unit_op_comments`' filter accepts the kind, defensively.
 
 #[test]
-fn unrecognized_unit_operator_drops_the_member_loudly() {
-    let (decls, members, errors) = parse_shape_spanned(COMMENTED_UNIT_MUL);
-    assert!(
-        !errors.is_empty(),
-        "`{COMMENTED_UNIT_MUL}` must not lower silently: an unrecognised operator \
-         slice that returns a bare `None` drops the binding with zero diagnostics, \
-         which is the INV-SF-7 failure this arm exists to close"
-    );
-    assert_eq!(decls, 1, "the declaration itself must survive");
-    assert_eq!(
-        members, 0,
-        "measured: the binding is dropped — but LOUDLY, per the diagnostic \
-         asserted above.  Got {members} members with {errors:?}"
-    );
+fn comment_between_unit_operands_lowers_like_its_comment_free_twin() {
+    for (commented, plain) in [
+        ("5N/*c*/*m", "5N*m"),
+        ("5N/*c*/·m", "5N·m"),
+        ("5N/*c*//m", "5N/m"),
+        ("5N/*a*//*b*/*m", "5N*m"),
+        // Left-associative chain with a comment at each operator.
+        ("5N/*c*/*m/*d*/*s", "5N*m*s"),
+        // The right operand may still be a `Pow`.
+        ("5N/*c*/*m^2", "5N*m^2"),
+    ] {
+        assert_eq!(
+            unit_of(commented),
+            unit_of(plain),
+            "`{commented}` parses with no ERROR node, so it must lower to the \
+             same UnitExpr as `{plain}` — a comment is an `extra`, not an operator"
+        );
+    }
 }
 
 #[test]
-fn unrecognized_unit_operator_names_the_offending_slice() {
-    let (_, _, errors) = parse_shape_spanned(COMMENTED_UNIT_MUL);
-    let messages: Vec<&str> = errors.iter().map(|(m, _)| m.as_str()).collect();
-    assert_eq!(
-        messages,
-        vec!["unrecognized unit operator `/*c*/*` in unit expression"],
-        "the diagnostic must quote the operator slice VERBATIM and be the only \
-         one emitted — a second, differently worded diagnostic here means \
-         `check_and_lower!` is also firing on the same node"
-    );
-    // The span must cover the whole unit expression `(m)/*c*/*(s)`, so an editor
-    // underlines the construct that was rejected rather than the file.
-    let unit_start = COMMENTED_UNIT_MUL.find("(m)").expect("`(m)` in source") as u32;
-    let unit_end = (COMMENTED_UNIT_MUL.find("(s)").expect("`(s)` in source") + "(s)".len()) as u32;
-    let (_, span) = errors.first().expect("one diagnostic, asserted above");
-    assert_eq!(
-        (span.start, span.end),
-        (unit_start, unit_end),
-        "the diagnostic must span the unit expression it rejected"
-    );
+fn comment_between_unit_operands_keeps_the_member_and_stays_diagnostic_free() {
+    // The `unit_of` equality above reads the lowered tree through a `param`
+    // default; this pins the other half — that the binding SURVIVES and that
+    // nothing is reported.  A spurious "unrecognized unit operator" here is the
+    // regression this test exists to catch.
+    for source in [
+        "structure def S { let x = 5N/*c*/*m }",
+        "structure def S { let x = 5N/*c*/·m }",
+        "structure def S { let x = 5N/*a*//*b*/*m }",
+    ] {
+        let (decls, members, errors) = parse_shape(source);
+        assert!(
+            errors.is_empty(),
+            "`{source}` parses with zero ERROR nodes, so lowering must not \
+             invent a diagnostic; got {errors:?}"
+        );
+        assert_eq!(decls, 1, "`{source}`: expected exactly one declaration");
+        assert_eq!(
+            members, 1,
+            "`{source}`: the binding must survive lowering — zero members with \
+             zero diagnostics is the silent-drop shape"
+        );
+    }
+}
+
+#[test]
+fn comment_after_a_middot_is_still_a_parse_error() {
+    // The comment excision must not widen what the SCANNER accepts: `·` still
+    // requires a unit-start character immediately after it, and a comment is not
+    // one.  Measured: `5N·/*c*/m` yields `(ERROR … (UNEXPECTED 183))`, so this
+    // never reaches `classify_unit_op` at all.
+    assert_loud_middot_parse_error("structure def S { let x = 5N·/*c*/m }");
 }
