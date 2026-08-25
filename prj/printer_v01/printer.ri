@@ -320,6 +320,52 @@ pub structure FairleadFrame {
     constraint side_y > plate_t / 2
 }
 
+/// ONE winding's fairlead pulley pair + its drum-side lead horizontals, in
+/// that winding's own tangent plane (local frame = the DRUM's frame: origin on
+/// the drum axis at band centre). The unit's OTHER winding is this pair's
+/// exact C2 image: CapstanUnit places pair_w2 with a 180° rotation about the
+/// drum-centre X axis — the 2026-07-23 static-balance "centrosymmetry"
+/// (centrosymmetric in the tangent-plane (y,z) projection; a PROPER rotation
+/// in 3D) expressed as a placement instead of four hand-kept height formulas.
+///
+/// `side` mirrors the in/out pulley LEFT-RIGHT assignment: +1 puts the IN
+/// pulley on local −x (the original unit-A arrangement); −1 is its mirror
+/// twin — BOTH are among the four statically-balanced configurations of the
+/// 64-config enumeration. The swap is a parameter, not a pose, because a
+/// reflection is not expressible as a placement (orientations are unit
+/// quaternions, proper-only — verified against the engine 2026-08-25).
+pub structure FairleadPair {
+    param r_pitch   : Length = 18mm
+    param pulley_x  : Length = 50mm
+    param side      : Real   = 1.0
+    /// Band-top exit (the IN pulley's centre height above the band centre)…
+    param w_in      : Length = 51.13mm
+    /// …and band-bottom exit (the OUT pulley's centre height, negative).
+    param w_out     : Length = 0mm - 6.96mm
+    /// This winding's tangent plane (local y; the C2 placement negates it).
+    param tangent_y : Length = 0mm - 24mm
+
+    let rot_spin_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // leaf +Z (spin) → Y
+    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // leads run along X
+    let in_x   = 0mm - pulley_x * side
+    let out_x  = pulley_x * side
+    // Drum-side horizontals are EXACT: pulley tangent → drum tangent line
+    // (x = 0) at the winding's entry height (pulley centre ∓ r_pitch for
+    // above/below entry), so each lead spans pulley_x, centred at half of it.
+    let in_hx  = 0mm - pulley_x * side / 2
+    let out_hx = pulley_x * side / 2
+
+    sub in_pulley  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(in_x,  tangent_y, w_in))
+    sub out_pulley = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(out_x, tangent_y, w_out))
+    sub lead_in_h  = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(in_hx,  tangent_y, w_in - r_pitch))
+    sub lead_out_h = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(out_hx, tangent_y, w_out + r_pitch))
+
+    constraint side * side > 0.999   // side is exactly ±1 —
+    constraint side * side < 1.001   // any other value scrambles the balance
+    constraint w_in > w_out
+    constraint pulley_x > r_pitch
+}
+
 /// Fairlead-equipped drive unit — ONE capstan + its FOUR fairlead guide
 /// pulleys + the carrier collar (FairleadFrame) + provisional lead segments.
 ///
@@ -358,27 +404,38 @@ pub structure CapstanUnit {
     /// TODO(#6583): replace the L376-style 2D bound with a real posed
     /// distance() constraint once cross-sub geometry reads carry placement.
     param pulley_x : Length = 50mm
+    /// LEFT-RIGHT handedness of the balanced pulley arrangement (threaded
+    /// into both FairleadPair subs): +1 = IN pulleys on local −x (unit A);
+    /// −1 = the mirror-twin balanced config (unit B, 2026-08-25 side-swap).
+    param side     : Real   = 1.0
+    /// #6586 pin: == self.capstan.groove_len (constraints below). The pair
+    /// heights derive from THIS so they can feed FairleadPair constructor
+    /// args — a self.<sub>.<member> read flowing into a constructor arg
+    /// makes the child's geometry silently never realize.
+    param band_len : Length = 88.346249mm
 
     sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
-    // All drum-coupled dimensions DERIVE from the capstan sub's own cells
-    // (parent-reads-child-let verified 2026-07-23; no hand-kept literals —
-    // resize the Capstan and the fairlead follows). The rope centreline rides
-    // AT the capstan's pitch_r (half-round seat, 2026-08-23 re-sync) — the
-    // retired smooth-core model's drum_r + rope_r/2 form is gone.
+    // Drum-coupled dimensions DERIVE from the capstan sub's own cells where
+    // they feed placements and constraints (parent-reads-child-let, verified
+    // 2026-07-23); values feeding CONSTRUCTOR ARGS come from the pinned
+    // band_len / cap_pitch_r_m mirrors instead (#6586, pins below). The rope
+    // centreline rides AT the capstan's pitch_r (half-round seat, 2026-08-23
+    // re-sync).
     let cap_pitch_r = self.capstan.pitch_r
     let flange_r    = self.capstan.flange_r
+    /// #6586 pin: == cap_pitch_r (constraints below); the pairs' tangent_y
+    /// constructor arg reads this, never the sub-derived cell.
+    let cap_pitch_r_m = 24mm
+    let unit_pin_slack = 0.002mm
     /// Upper/lower winding-band centres: the two windings split the groove
     /// band in half, so their centres sit at ± a quarter of it.
-    let winding_z   = self.capstan.groove_len / 4
+    let winding_z   = band_len / 4
     /// Nominal Z split of a winding's two rope-end exits (an eighth of the
     /// band = half the winding: mid-migration positions of the two ends).
-    let lead_split  = self.capstan.groove_len / 8
+    let lead_split  = band_len / 8
 
-    let rot_spin_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // leaf +Z (spin) → Y
-    let neg_x     = 0mm - pulley_x
-    let y_front   = cap_pitch_r          // machine-side tangent plane
-    let y_rear    = 0mm - cap_pitch_r    // outboard tangent plane
+    let y_rear    = 0mm - cap_pitch_r_m  // outboard tangent plane (w1's)
 
     // ── STATIC-BALANCED pulley configuration (agreed 2026-07-23) ────────────
     // Exhaustive force/moment enumeration (64 configs): exactly 4 mirror-image
@@ -403,17 +460,19 @@ pub structure CapstanUnit {
     // pulleys: vertical run drops below the drive block (below-routing to be
     // modelled); wrap = upper quarter → centre r_pitch BELOW the entry.
     // Verticals sit outboard at ±(pulley_x + r_pitch) in both styles.
-    let w1_in  = winding_z + lead_split + r_pitch            // upper winding, band-top, LEFT, from above
-    let w1_out = winding_z - lead_split - r_pitch            // upper winding, band-bottom, RIGHT, from below
-    let w2_in  = 0mm - winding_z + lead_split + r_pitch      // lower winding, band-top, RIGHT, from above
-    let w2_out = 0mm - winding_z - lead_split - r_pitch      // lower winding, band-bottom, LEFT, from below
+    let w1_in  = winding_z + lead_split + r_pitch   // upper winding, band-top, from above
+    let w1_out = winding_z - lead_split - r_pitch   // upper winding, band-bottom, from below
+    let w2_in  = 0mm - w1_out                       // == the C2 image of w1_out
+    let w2_out = 0mm - w1_in                        // == the C2 image of w1_in
 
-    // UPPER winding (w1) — outboard (−y) tangent plane.
-    sub fl_w1_in  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_rear,  w1_in))
-    sub fl_w1_out = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_rear,  w1_out))
-    // LOWER winding (w2) — machine-side (+y) tangent plane.
-    sub fl_w2_in  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_front, w2_in))
-    sub fl_w2_out = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_front, w2_out))
+    // The whole fairlead = ONE pair + its C2 image (2026-08-25, expression
+    // round): the lower winding's pair IS the upper winding's pair rotated
+    // 180° about the drum-centre X axis, so the balance symmetry is enforced
+    // by placement — it cannot be broken by editing one height. (w2_in/w2_out
+    // above are kept as the same image for relays and constraints.)
+    let rot_c2 = orient_axis_angle(vec3(1m, 0mm, 0mm), 180deg)
+    sub pair_w1 = FairleadPair(r_pitch: r_pitch, pulley_x: pulley_x, side: side, w_in: w1_in, w_out: w1_out, tangent_y: y_rear) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub pair_w2 = FairleadPair(r_pitch: r_pitch, pulley_x: pulley_x, side: side, w_in: w1_in, w_out: w1_out, tangent_y: y_rear) at transform3(rot_c2, vec3(0mm, 0mm, 0mm))
 
     // Carrier collar, centred on the drum (translates with the band).
     sub frame = FairleadFrame() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
@@ -428,22 +487,12 @@ pub structure CapstanUnit {
     let frame_half_x   = self.frame.half_x
     let frame_half_z   = self.frame.half_z
 
-    // ── Lead segments (drum-side only) ──────────────────────────────────────
-    // Drum-side horizontals are EXACT: pulley tangent → drum tangent line
-    // (x = 0) at the winding's entry height (pulley centre ∓ r_pitch for
-    // above/below entry). The frame-side verticals + all drive-plane /
-    // below-block routing are modelled at the DriveTendons level (rear
-    // routing v1, 2026-07-23) — they need machine-frame positions this
-    // unit cannot know.
-    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // leaf +Z → +X
-    let px_half    = pulley_x / 2
-    let neg_pxh    = 0mm - px_half
+    // Drum-side lead horizontals live INSIDE FairleadPair (they are part of
+    // each winding's pair and follow the C2 placement). The frame-side
+    // verticals + all drive-plane / below-block routing are modelled at the
+    // DriveTendons level — they need machine-frame positions this unit
+    // cannot know.
     let vert_x     = pulley_x + r_pitch
-
-    sub lead_w1_in_h  = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(neg_pxh, y_rear,  w1_in - r_pitch))
-    sub lead_w1_out_h = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(px_half, y_rear,  w1_out + r_pitch))
-    sub lead_w2_in_h  = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(px_half, y_front, w2_in - r_pitch))
-    sub lead_w2_out_h = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(neg_pxh, y_front, w2_out + r_pitch))
 
     // The flanges pierce the tangent planes for |x| < sqrt(flange_r² −
     // cap_pitch_r²) (≈19mm at the defaults): keep the pulley's inner edge
@@ -452,6 +501,13 @@ pub structure CapstanUnit {
     constraint winding_z > lead_split
     constraint cap_pitch_r > 0mm
     constraint flange_r > cap_pitch_r
+    // #6586 pins: the mirrors feeding FairleadPair constructor args equal the
+    // capstan-derived cells they stand in for — a Capstan resize fails HERE
+    // instead of silently deleting the fairlead pair geometry.
+    constraint band_len < self.capstan.groove_len + unit_pin_slack
+    constraint band_len > self.capstan.groove_len - unit_pin_slack
+    constraint cap_pitch_r_m < cap_pitch_r + unit_pin_slack
+    constraint cap_pitch_r_m > cap_pitch_r - unit_pin_slack
     // Collar clearances (one-level sub reads — probe-verified):
     constraint self.frame.side_y - self.frame.plate_t / 2 > flange_r          // plates clear the drum flanges
     constraint self.frame.half_x - self.frame.web_t > vert_x + 6mm            // webs clear the vertical runs (tendon Ø)
