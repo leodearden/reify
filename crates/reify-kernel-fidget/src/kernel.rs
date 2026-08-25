@@ -380,6 +380,17 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 /// `crates/reify-ir/src/kernel_validation.rs`. Contract:
 /// `docs/prds/v0_6/units-length-gate-completion.md` C4/D5, boundary rows 13-14.
 ///
+/// It is the SECOND, INDEPENDENT detection layer: the first is the closure
+/// guard (leaf ι), which is not yet landed. The closure guard reasons about
+/// where a value came from; this observes what actually arrived at the kernel
+/// boundary. Neither subsumes the other, so this one keeps working if the
+/// first is bypassed or has a hole.
+///
+/// All FOUR fidget numeric-extraction sites are length-semantic
+/// (`Sphere.radius`, `Box.width`/`height`/`depth`), so fidget has no
+/// deliberately-ungated site; the OCCT adapter keeps five (3 dimensionless
+/// unit-normal components, 2 ANGLE), enumerated in `kernel_validation.rs`.
+///
 /// The warn is emitted HERE rather than from `reify-ir` because the house
 /// pattern for a kernel diagnostic is a `tracing::warn!` whose `target:` names
 /// the emitting crate (`reify_kernel_gmsh::repair`,

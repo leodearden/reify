@@ -26,13 +26,31 @@
 //! test can `assert_eq!` against one source rather than substring-matching two
 //! drifting literals.
 //!
-//! **It is a tripwire, not a gate** (PRD D5 / ratified decision 4).  A
-//! violation is *reported*, never rejected: `check_length_field` returns a
-//! message and the caller's accept/reject disposition is unchanged.  A hard
-//! kernel gate is not available, because hundreds of legitimate kernel-side
-//! fixtures pass bare `Value::Real` (occt 546, reify-ir 242, fidget 40) and a
-//! kernel error carries neither a source span nor an argument name, so it
-//! could not produce an actionable diagnostic even when it fired.
+//! ## (a) It is a TRIPWIRE, not a gate
+//!
+//! PRD D5 / ratified decision 4.  A violation is *reported*, never rejected:
+//! [`check_length_field`] returns a message and the caller's accept/reject
+//! disposition is unchanged.  Two independent reasons a hard kernel gate is
+//! not available:
+//!
+//! 1. Hundreds of legitimate kernel-side fixtures pass a bare `Value::Real`.
+//!    Measured at commit `15885c5a1b` (the base of task #5751): **539**
+//!    `Value::Real(` / `Value::Int(` occurrences inside
+//!    `crates/reify-kernel-occt/src/lib.rs`'s own `mod tests`; **39 of the 52**
+//!    `crates/reify-kernel-occt/tests/harness_occt/*.rs` modules; **43** across
+//!    the 17 in-crate `crates/reify-kernel-fidget/src/kernel.rs` tests; and
+//!    **106** `.rs` files workspace-wide mention both `GeometryOp::` and
+//!    `Value::Real(`.  Rejecting those is exactly the breakage D5 forbids.
+//! 2. A kernel error carries neither a source span nor an argument name, so a
+//!    gate could not produce an actionable diagnostic even when it fired.
+//!
+//! ## (b) It is the SECOND, INDEPENDENT detection layer
+//!
+//! The first layer is the closure guard (leaf ι), which is **not yet landed**.
+//! The two are deliberately independent: the closure guard reasons about where
+//! a value came from, this tripwire observes what actually arrived at the
+//! kernel boundary.  Neither subsumes the other, and this one keeps working if
+//! the first is bypassed or has a hole.
 //!
 //! **Emission stays in the kernels.**  This module owns the pure
 //! classifier/formatters/arming state only; each kernel emits its own
@@ -41,7 +59,7 @@
 //! `crates/reify-kernel-manifold/src/kernel.rs:1159-1167`.  That keeps
 //! `reify-ir` — a dependency of 13+ crates — free of a `tracing` edge.
 //!
-//! ## C2 corollary: what this tripwire is actually watching for
+//! ## (c) C2 corollary: what this tripwire is actually watching for
 //!
 //! On `main` today, **no route constructs a [`crate::geometry::GeometryOp`]
 //! outside `compile_geometry_op`**: there is no serde deserialization path
@@ -51,10 +69,38 @@
 //! would be out of contract, and this tripwire is the **runtime detector** if
 //! one ever appears.
 //!
-//! The eval-layer gate that *should* have caught a bare value first is
+//! ## (d) A fired tripwire means an EVAL-LAYER hole, not a kernel bug
+//!
+//! The gate that *should* have caught a bare value first is
 //! `required_length_value` / `required_length_values` at
-//! `crates/reify-eval/src/geometry_ops.rs:482`/`:523`.  A fired tripwire
-//! therefore indicates a hole in the eval-layer gate, **not** a kernel bug.
+//! `crates/reify-eval/src/geometry_ops.rs:482`/`:523`.  Start a diagnosis
+//! there — the kernel is the *detector*, not the defect.
+//!
+//! ## (e) The five deliberately ungated OCCT fields
+//!
+//! `OcctKernel::execute` has 46 numeric-extraction sites, split 46 = 41 + 3 + 2.
+//! The 41 LENGTH-semantic ones go through the kernel's `extract_length_f64`;
+//! these five stay on the context-free `extract_f64`, each marked at its call
+//! site with a `// not length-semantic:` comment:
+//!
+//! - `HalfSpace`'s `nx` / `ny` / `nz` — components of a **dimensionless unit
+//!   normal**, not lengths.  Gating them would fire on every correct call.
+//! - `CircularPattern.angle` and `Draft.angle` — **ANGLE**, which is the
+//!   surface of PRD 3, not this one.
+//!
+//! Fidget's four sites (`Sphere.radius`, `Box.width`/`height`/`depth`) are all
+//! LENGTH-semantic, so it has no ungated site.
+//!
+//! `occt_non_length_fields_stay_ungated` is the anti-over-reach control that
+//! keeps a blanket conversion of all 46 sites from passing, and
+//! `occt_every_length_field_is_gated` is the completeness check over all 41
+//! gated pairs.
+//!
+//! ## Contract
+//!
+//! `docs/prds/v0_6/units-length-gate-completion.md` — C4 (the tripwire itself),
+//! D5 (detector-never-gate), boundary rows 13 (debug assertion names op kind
+//! AND field) and 14 (release build reports without changing accept/reject).
 
 /// Error message emitted when a Sphere `radius` value fails the
 /// finite-and-strictly-positive check.
@@ -165,22 +211,27 @@ impl Drop for LengthTripwireAssertGuard {
 ///
 /// C4's letter asks for an assertion "under `cfg(debug_assertions)`". A
 /// *default-armed* assertion is not implementable: it would panic the exact
-/// fixtures PRD D5 exists to protect. Measured on this branch —
+/// fixtures PRD D5 exists to protect. Measured at commit `15885c5a1b`, the
+/// base of task #5751 —
 ///
-/// - 567 bare `Value::Real` / `Value::Int` occurrences in
-///   `crates/reify-kernel-occt/src/lib.rs`'s own `mod tests` (`:4885+`,
-///   e.g. `make_box_20_10_5` at `:4923`);
-/// - 45 further `crates/reify-kernel-occt/tests/harness_occt/` modules;
-/// - all 17 `crates/reify-kernel-fidget/src/kernel.rs` in-crate tests;
-/// - ~40 more workspace test files
-///   (`reify-eval/tests/harness_kernel_realization/*`,
+/// - **539** `Value::Real(` / `Value::Int(` occurrences inside
+///   `crates/reify-kernel-occt/src/lib.rs`'s own `mod tests` (which begins at
+///   `:4887`; e.g. `make_box_20_10_5`, which feeds three bare `Value::Real`s
+///   straight into `GeometryOp::Box`);
+/// - **39 of the 52** `crates/reify-kernel-occt/tests/harness_occt/*.rs`
+///   modules contain `Value::Real(`;
+/// - **43** occurrences across the **17** in-crate
+///   `crates/reify-kernel-fidget/src/kernel.rs` tests;
+/// - **106** `.rs` files workspace-wide mention both `GeometryOp::` and
+///   `Value::Real(` — among them
+///   `reify-eval/tests/harness_kernel_realization/*`,
 ///   `reify-kernel-conformance`,
-///   `reify-test-support/src/{fixtures,mocks,kernel_assertions}.rs`,
-///   `gui/src-tauri/src/tests/engine_tests.rs`)
+///   `reify-test-support/src/{fixtures,mocks,kernel_assertions}.rs` and
+///   `gui/src-tauri/src/tests/engine_tests.rs`.
 ///
-/// — all feed bare `Value::Real` into length-semantic `GeometryOp` fields. A
-/// default-armed assertion would panic every one of them, which is exactly the
-/// breakage D5 forbids. Keying the default on `cfg(test)` does not help
+/// A default-armed assertion would panic every fixture that feeds a bare
+/// `Value::Real` into a length-semantic `GeometryOp` field, which is exactly
+/// the breakage D5 forbids. Keying the default on `cfg(test)` does not help
 /// either: every external test binary links the kernel libs WITHOUT
 /// `cfg(test)` and would be armed regardless.
 ///
