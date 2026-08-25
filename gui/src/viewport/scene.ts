@@ -29,6 +29,28 @@ export interface SceneContext {
 }
 
 /**
+ * Narrow a three.js helper's `material` to the single material it actually carries.
+ *
+ * GridHelper and AxesHelper each currently construct exactly one LineBasicMaterial,
+ * but their types (and a future three.js version) allow an array. Every depth flag
+ * this module sets is a MUTATION of that material, and a mutation applied to an array
+ * object would silently miss the real material — restoring the #4214 z-fight with no
+ * test failure, because the unit-test mocks hand back a plain object. Fail loudly
+ * instead of drifting.
+ *
+ * @param helper - The helper whose material to narrow.
+ * @param name - Helper class name, used in the error message.
+ */
+function singleMaterial<T>(helper: { material: T | T[] }, name: string): T {
+  if (Array.isArray(helper.material)) {
+    throw new Error(
+      `${name}.material is unexpectedly an array — three.js API changed; update overlay logic in scene.ts.`,
+    );
+  }
+  return helper.material;
+}
+
+/**
  * Creates a Three.js scene with camera, renderer, lights, and helpers.
  * @param canvas - The HTML canvas element to render into.
  * @param width - Initial viewport width.
@@ -105,40 +127,31 @@ export function createScene(
   // still occludes both.
   //
   // ACCEPTED COSMETIC TRADE-OFF of grid depthWrite = false: an object drawn AFTER the grid
-  // that sits BEHIND it will overdraw the grid's 1px lines. Opaque geometry cannot hit this
-  // (the grid is last in the opaque pass at GRID_RENDER_ORDER), so it is limited to the
-  // transparent pass — a hairline artifact along grid lines under a ghosted/low-opacity
-  // part. Strictly smaller than the full-scene depth lie it replaces.
+  // that sits BEHIND it will overdraw the grid's 1px lines. The grid is last among opaque
+  // MODEL geometry, and the only opaque draws after it are the helpers in this tier — which
+  // are depthWrite = false themselves and are MEANT to overdraw it. (A future tier entry
+  // must preserve exactly that: opaque, higher renderOrder, and no depth write.) So the
+  // artifact is confined to the transparent pass — a hairline along grid lines under a
+  // ghosted/low-opacity part. Strictly smaller than the full-scene depth lie it replaces.
   const grid = new GridHelper(20, 20, 0x444466, 0x333344);
   // GridHelper lays in the XZ plane (Y-up default); rotate to lie on the XY plane (the floor under Z-up).
   grid.rotation.x = Math.PI / 2;
-  // GridHelper currently always constructs a single LineBasicMaterial. Guard against a
-  // future three.js version returning a material array: the depthWrite mutation below would
-  // silently write to the array object instead of the material, restoring z-fighting with no
-  // test failure (the unit-test mock uses a plain object, not an array, so it cannot catch
-  // that regression).
-  if (Array.isArray(grid.material)) {
-    throw new Error(
-      'GridHelper.material is unexpectedly an array — three.js API changed; update overlay logic in scene.ts.',
-    );
-  }
+  const gridMaterial = singleMaterial(grid, 'GridHelper');
   grid.renderOrder = GRID_RENDER_ORDER;
-  // depthTest is left at its default (true) — real meshes in front of the grid occlude it.
-  grid.material.depthWrite = false;
+  // Both flags are assigned explicitly rather than left to three.js defaults: they ARE the
+  // helper-tier contract (see ./renderOrder.ts), and an explicit write is what the #6587
+  // regression tests can actually observe — a mock material that starts out untouched
+  // distinguishes "this module set it" from "the default happened to agree".
+  gridMaterial.depthTest = true;
+  gridMaterial.depthWrite = false;
   scene.add(grid);
 
   const axes = new AxesHelper(2);
-  // Same guard for AxesHelper (added by #4214), for the same reason.
-  if (Array.isArray(axes.material)) {
-    throw new Error(
-      'AxesHelper.material is unexpectedly an array — three.js API changed; update overlay logic in scene.ts.',
-    );
-  }
+  const axesMaterial = singleMaterial(axes, 'AxesHelper');
   axes.renderOrder = AXES_RENDER_ORDER;
-  // Set explicitly rather than relying on the default: this line is the direct reversal of
-  // #4214's depthTest = false, and the assignment is what the #6587 regression test pins.
-  axes.material.depthTest = true;
-  axes.material.depthWrite = false;
+  // depthTest = true is the direct reversal of #4214's depthTest = false.
+  axesMaterial.depthTest = true;
+  axesMaterial.depthWrite = false;
   scene.add(axes);
 
   const { group: axisLabels, dispose: disposeAxisLabels } = createAxisLabels();

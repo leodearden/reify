@@ -11,6 +11,9 @@ let lastRendererOpts: any;
 const mockSceneAdd = vi.fn();
 const mockSceneChildren: any[] = [];
 const mockCameraAdd = vi.fn();
+/** Name of the helper class whose `material` should be an array for the next
+ *  createScene() call — drives the singleMaterial() throw path in scene.ts. */
+let mockArrayMaterialFor: string | null = null;
 
 function makeMockVector3() {
   const v = {
@@ -88,12 +91,26 @@ vi.mock('three', async () => {
     }
   }
 
+  // Helper materials start EMPTY, not at three.js's real defaults. scene.ts asserts the
+  // helper-tier depth contract by assigning both flags explicitly, so an untouched flag
+  // reads back `undefined` and any `toBe(true)`/`toBe(false)` assertion below fails. Seeding
+  // the real defaults ({ depthTest: true, depthWrite: true }) would make the depthTest
+  // assertions vacuous — they would pass whether or not scene.ts set anything. Same intent
+  // as `ctorOpts` in threeAxisMocks.ts: assert on the write, never on a default that agrees.
+  type MockHelperMaterial = { depthTest?: boolean; depthWrite?: boolean };
+
+  /** Set to a helper class name to make that helper hand back an ARRAY material,
+   *  exercising scene.ts's singleMaterial() guard. Reset in beforeEach. */
+  function mockHelperMaterialFor(name: string): MockHelperMaterial | MockHelperMaterial[] {
+    return mockArrayMaterialFor === name ? [{}, {}] : {};
+  }
+
   class MockGridHelper {
     type = 'GridHelper';
     visible = true;
     rotation = { x: 0, y: 0, z: 0 };
     renderOrder = 0;
-    material = { depthTest: true, depthWrite: true };
+    material = mockHelperMaterialFor('GridHelper');
     constructor(public size?: number, public divisions?: number) {}
   }
 
@@ -101,7 +118,7 @@ vi.mock('three', async () => {
     type = 'AxesHelper';
     visible = true;
     renderOrder = 0;
-    material = { depthTest: true, depthWrite: true };
+    material = mockHelperMaterialFor('AxesHelper');
     constructor(public size?: number) {}
   }
 
@@ -141,6 +158,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockSceneChildren.length = 0;
   lastRendererOpts = undefined;
+  mockArrayMaterialFor = null;
 });
 
 describe('createScene', () => {
@@ -341,6 +359,8 @@ describe('createScene', () => {
     const ax = result.axes as any;
     // depthTest=false made the axis vectors draw straight through solid parts.
     // They are full-scene-scale world geometry, not a HUD, so they must obey depth.
+    // The mock material starts EMPTY, so this only passes if scene.ts assigns the flag —
+    // it is not satisfied by three.js's default happening to agree.
     expect(ax.material.depthTest).toBe(true);
     // ...but they still write no depth, so they cannot occlude the labels above them.
     expect(ax.material.depthWrite).toBe(false);
@@ -350,6 +370,7 @@ describe('createScene', () => {
     const result = setup();
     const gr = result.grid as any;
     // The grid stays depth-tested: real meshes in front of it still occlude it.
+    // Assigned explicitly by scene.ts (mock material starts empty), so this is a real pin.
     expect(gr.material.depthTest).toBe(true);
     // depthWrite=false is what breaks the coplanar tie. The grid contributes nothing
     // to the depth buffer, so the axes drawn after it can never fail their LEQUAL
@@ -365,6 +386,19 @@ describe('createScene', () => {
     expect(result.grid.renderOrder).toBeLessThan(result.axes.renderOrder);
     // The whole tier sits above the default mesh tier 0.
     expect(result.grid.renderOrder).toBeGreaterThan(0);
+  });
+
+  // The singleMaterial() guard in scene.ts is a hard failure inside viewport init, so its
+  // message wording and its very reachability need at least one execution. Real three.js
+  // hands back a single material today; the mock forges the array case the guard exists for.
+  it.each([
+    ['GridHelper'],
+    ['AxesHelper'],
+  ])('throws if %s.material becomes an array in a future three.js', (helperName) => {
+    mockArrayMaterialFor = helperName;
+    expect(() => setup()).toThrow(
+      `${helperName}.material is unexpectedly an array — three.js API changed; update overlay logic in scene.ts.`,
+    );
   });
 
   it('returns axisLabels property that is a Group', () => {
