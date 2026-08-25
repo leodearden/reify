@@ -124,3 +124,77 @@ fn eval_affine_scale_dimensioned_warns_dimensionless() {
          should appear; got: {stderr}"
     );
 }
+
+// ── units-length ζ (task 5747): the R12 exit-code signal (boundary row 8) ─────
+//
+// THE GENUINE 0 -> 1 FLIP, asserted where the user actually sees it. Unlike ζ's
+// R8 half — whose fixtures already exited 1 pre-ζ, so its e2e suite asserts the
+// DIAGNOSTIC only — this pair measures a real exit-code change: before the gate,
+// `affine_translate(5kg, 0kg, 0kg)` exited 0 and printed
+// `affine_map(…, translation=[5, 0, 0])`, silently discarding the MASS dimension
+// and turning 5 kg into 5 METRES.
+
+/// `reify eval` on a MASS translation exits 1 with the coded units Error on
+/// stderr, via `reify_stdlib::geometry::diagnose`'s post-`Undef` hook.
+#[test]
+fn eval_affine_translate_mass_exits_1_with_a_units_error() {
+    let path = common::fixture_path("affine_translate_mass.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        !status.success(),
+        "a non-LENGTH translation is an Error (not a Warning), so reify eval should \
+         exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // A single CONTIGUOUS anchor: builtin name + arg name + expected + got, in
+    // one span. Unlike the `affine_scale` warnings above, this message IS pinned
+    // byte-for-byte at the unit level (reify-stdlib) and against
+    // `ArgRejection::message` itself (the cross-crate drift guard in
+    // reify-eval), so anchoring the whole span here costs nothing extra.
+    assert!(
+        stderr.contains("affine_translate: dx/dy/dz argument expects Length, got Mass Scalar"),
+        "stderr should carry the ζ units rejection naming the builtin, the gesture \
+         and the offending dimension; got: {stderr}"
+    );
+    // The migration hint is checked SEPARATELY so a drop of just the hint is
+    // distinguishable from a reword of the base message.
+    assert!(
+        stderr.contains("pass a dimensioned length such as `5mm`"),
+        "stderr should carry the migration hint; got: {stderr}"
+    );
+    // Guards the fixture's `module affine_translate_mass` decl: without it,
+    // W_MODULE_DECL_MISSING ("expected `module affine_translate_mass`") re-supplies
+    // the "affine_translate" substring for free and weakens the anchor above
+    // (the trap task 6155 documented for affine_scale_dim.ri).
+    assert!(
+        !stderr.contains("W_MODULE_DECL_MISSING"),
+        "affine_translate_mass.ri declares its module, so no module-decl warning \
+         should appear; got: {stderr}"
+    );
+}
+
+/// The INSEPARABLE control: the same builtin with DIMENSIONED literals still
+/// exits 0 and prints the identity-linear AffineMap with an SI-metre
+/// translation.
+///
+/// Without it, the row above could pass for the wrong reason (the builtin broken
+/// outright rather than gated). The printed form was verified against the real
+/// `target/debug/reify` binary before being pinned — the value printer's number
+/// formatting is the drift-prone part.
+#[test]
+fn eval_affine_translate_length_exits_0_and_prints_si_metres() {
+    let path = common::fixture_path("affine_translate_length.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "a LENGTH translation must still build;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains(
+            "affine_map(linear=[[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation=[0.005, 0, 0])"
+        ),
+        "stdout should print the AffineMap with the translation in SI metres; \
+         got: {stdout}"
+    );
+}
