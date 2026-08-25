@@ -902,10 +902,13 @@ pub structure DriveTendons {
     let in_b2_top   = neg_z_b - r_pitch
 
     // ── OUT feeds: down-turn → descent → low corner → low run → rise ────────
-    // A w1-out and B w2-out take a short drive-plane run outboard of everything
-    // before turning down (their rises sit turn_gap inboard); B w1-out and
-    // A w2-out turn down AT the rail/return line and cross underneath, because
-    // an inboard drive-plane route would cross an IN descent.
+    // The two BELT-A ends take a short drive-plane run and descend OUTBOARD —
+    // a1 outboard of its own unit, a2 outboard of unit B — each turn_gap clear
+    // of the fairlead vertical it descends beside. The two BELT-B ends do not:
+    // b1 turns down immediately AT the rail line (an inboard run at z_b would
+    // cross a1-in's descent, whose top z_a − r_pitch sits above z_b), and b2
+    // runs inboard at −z_b (above the −z down-idler discs, whose tops sit at
+    // −z_a) and dives down the MID corridor at x = 0.
     let out_a1_desc_x = fl_out_x_a + turn_gap        // clear of its own rise at fl_out_x_a
     let out_a1_run_c  = (idler_out_r + out_a1_desc_x + r_pitch) / 2
     let out_a1_run_l  = idler_out_r - out_a1_desc_x - r_pitch
@@ -1009,7 +1012,10 @@ pub structure DriveTendons {
     // 2. Descents that pass a unit do so OUTBOARD of its outer disc edge.
     constraint out_a1_desc_x > fl_out_x_a + r_pitch + rope_r + clear_min
     constraint out_a2_desc_x < fl_in_x_b - r_pitch - rope_r - clear_min
-    // 3. A descent clears its own rise by more than the two turn discs need.
+    // 3. A descent clears the vertical it descends beside by more than the two
+    //    turn discs need (a1: its OWN rise at fl_out_x_a; a2: unit B's inboard
+    //    vertical fl_in_x_b — b2's rise — a2's own rise is 278mm away at
+    //    fl_in_x_a and never binds).
     constraint out_a1_desc_x - fl_out_x_a > turn_gap - 1mm
     constraint fl_in_x_b - out_a2_desc_x > turn_gap - 1mm
     // 4. The two low runs sharing a plane are staggered by more than a disc
