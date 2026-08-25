@@ -1539,8 +1539,7 @@ fn assert_single_quantity_conflict_warning_in(
     let has_quantity = format!("has quantity '{expected_arg_quantity}'");
     let requires_quantity = format!("requires quantity '{expected_param_quantity}'");
     assert!(
-        diags[0].message.contains(&has_quantity)
-            && diags[0].message.contains(&requires_quantity),
+        diags[0].message.contains(&has_quantity) && diags[0].message.contains(&requires_quantity),
         "{label}: the diagnostic must come from the QUANTITY-slot rule, naming the ARG's slot \
          after `has quantity` ({has_quantity:?}) and the PARAM's after `requires quantity` \
          ({requires_quantity:?}) — without this the whole-type emit_arg_type_mismatch would \
