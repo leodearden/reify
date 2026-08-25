@@ -291,10 +291,9 @@ An earlier revision of this branch added the two guard tests described in
 §4 to `language_chunks.rs`; comprehensive review rejected them as
 documentation meta-tests, and they were removed along with the
 `chunk_corpus()`/`CORPUS` infrastructure that backed them, leaving
-`language_chunks.rs` byte-identical to `main` again (the wider
-`crates/reify-mcp/` tree is not, for reasons unrelated to that removal —
-see the drift note further down). The counts below are lower than an
-earlier pass on this branch recorded, on purpose, reflecting that removal.
+`language_chunks.rs` byte-identical to `main` again. The counts below are
+lower than an earlier pass on this branch recorded, on purpose, reflecting
+that removal.
 
 The `Hz`/`rad/s` and PDOCCOVER-name grep instruments still reproduce
 byte-for-byte against the §1 blocks above — re-run fresh for this section,
@@ -318,65 +317,55 @@ $ cargo clippy -p reify-mcp --all-targets -- -D warnings
 BUILD OK | warnings: 0 | errors: 0
 ```
 
-And directly, rather than inferred from instrument output —
-`language_chunks.rs` itself is byte-identical to `main`:
+And directly, rather than inferred from instrument output — every diff
+instrument below is anchored to this branch's **merge base with `main`**,
+not to `main`'s moving tip, and that choice is deliberate rather than
+incidental. The text this replaces anchored the same checks to `main`
+directly (`git diff main -- <path>`, and a whole-directory `git diff
+--stat main -- crates/reify-mcp/src/tools/chunks/`) and, for the
+whole-directory check, pasted a non-empty 2-file hunk with a paragraph
+attributing it to task #6213 having landed on `main` after this branch's
+then-merge-base. Re-run on this tip, that same check is empty: this
+branch has since been rebased onto a newer `main` tip whose ancestry
+already includes #6213, so the divergence the pasted hunk described no
+longer exists relative to the current fork point, and both the pasted
+stdout and the paragraph explaining it are stale in the opposite
+direction. This is the same failure mode this note's own Provenance row
+already documents for branch-tip SHAs, and that §1 already documents for
+the byte census: a check anchored to a moving target — `main`'s tip, a
+branch-tip SHA — cannot survive a rebase, because a rebase is precisely
+the operation that moves the target out from under it.
+
+A merge-base-anchored form does not have that failure mode. It diffs from
+this branch's fixed fork point, so it only ever reports *this task's own*
+commits — a sibling landing unrelated edits on `main` past that point is
+invisible to it by construction, since the check never reads `main`'s tip
+at all, and a rebase simply moves the fork point the next run measures
+from, rather than invalidating a previously-recorded number. `--name-only`
+rather than `--stat`, for the same reason used elsewhere in this note: an
+insertion/deletion count is self-referential — any later edit to this
+section would change the very count it quotes.
 
 ```
-$ git diff main -- crates/reify-mcp/src/tools/language_chunks.rs
+$ git diff --name-only "$(git merge-base HEAD main)" HEAD -- crates/reify-mcp/src/tools/chunks/units.md
+(no output)
+$ git diff --name-only "$(git merge-base HEAD main)" HEAD -- crates/reify-mcp/src/tools/language_chunks.rs
+(no output)
+$ git diff --name-only "$(git merge-base HEAD main)" HEAD -- crates/reify-mcp/src/tools/chunks/
 (no output)
 ```
 
-`units.md` specifically is also byte-identical to `main` — this is the
-per-file check that actually matters for the verdict:
+Neither `units.md`, nor `language_chunks.rs`, nor any other file under
+`chunks/`, appears in this task's own diff from its fork point — this is
+what actually discharges hard constraints 1, 2, 3 and 4, and keeps #5790
+(ξ)'s L1–53 seam untouched. A sibling task landing unrelated chunk edits
+on `main` — the same event that flipped the `main`-anchored version of
+this check from empty to non-empty and back — cannot perturb a
+merge-base-anchored one, so this form needs no follow-up paragraph
+excusing a stale reading.
 
-```
-$ git diff main -- crates/reify-mcp/src/tools/chunks/units.md
-(no output)
-```
-
-A *whole-directory* `git diff --stat main -- crates/reify-mcp/src/tools/chunks/`
-is a weaker check than it looks, for the same reason §1's byte census
-drifts: `main` keeps moving after this branch forked, so the comparison
-also picks up sibling tasks' edits to chunk files this task never touched.
-Run fresh for this pass, it is no longer empty:
-
-```
-$ git diff --stat main -- crates/reify-mcp/src/tools/chunks/
- crates/reify-mcp/src/tools/chunks/constraints.md | 4 ++--
- crates/reify-mcp/src/tools/chunks/traits.md      | 2 +-
- 2 files changed, 3 insertions(+), 3 deletions(-)
-$ git diff --stat main -- crates/reify-mcp/
- crates/reify-mcp/src/tools/chunks/constraints.md | 4 ++--
- crates/reify-mcp/src/tools/chunks/traits.md      | 2 +-
- 2 files changed, 3 insertions(+), 3 deletions(-)
-```
-
-Both hunks are `// pdoccover:allow` annotations `main` gained on
-`constraints.md` and `traits.md` via task #6213 (`1b644bf57e`,
-`f80ad0dc4c`), after this branch's merge-base — neither file is in this
-task's scope or this note's subject matter, and neither touches `units.md`
-or the angle-crossing/field-operator vocabulary. (An earlier pass on this
-branch recorded these two blocks empty; that was accurate at the time and
-stopped being accurate the moment #6213 landed on `main` — the same kind of
-drift §1 already documents for byte counts, showing up on a `git diff`
-instrument instead of `wc` this time.)
-
-The per-file checks above — `units.md` and `language_chunks.rs` both
-byte-identical to `main` — are what actually discharge hard constraints 1,
-3 and 4 and keep #5790 (ξ)'s L1–53 seam untouched; the whole-directory
-`--stat` is included for transparency, not as the load-bearing proof, since
-it is exactly as drift-prone as §1's byte census and for the same reason.
-
-**One honestly-reported wrinkle.** `main` has independently advanced since
-this branch's own base (unrelated merges and docs commits this task did
-not touch — the `constraints.md`/`traits.md` annotations above are one
-example), so an unscoped `git diff --stat main` does not isolate this
-task's own diff, and can drift between passes exactly as shown above; the
-merge-base-anchored, `--name-only` form below is not subject to that
-drift, because it diffs from a fixed historical point (this branch's fork
-point) rather than `main`'s moving tip (path list, not an insertion count,
-because a count would be self-referential — any later edit to this section
-changes the number it would quote):
+The same form with no path filter bounds this task's *entire* diff, not
+only the chunk directory:
 
 ```
 $ git diff --name-only "$(git merge-base HEAD main)" HEAD
@@ -384,7 +373,5 @@ docs/notes/angle-crossing-doctrine-placement-2026-08-19.md
 ```
 
 This task's entire diff, relative to where it actually branched, is this
-note and nothing else — confirmed by the merge-base-anchored form above,
-which lists only this file, and by the two per-file `main`-diffs above
-(`units.md`, `language_chunks.rs`) both being empty. No chunk `.md` file,
-in particular not `units.md`, was ever touched by this task.
+note and nothing else. No chunk `.md` file — in particular not
+`units.md` — and no code file was ever touched by this task.
