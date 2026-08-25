@@ -292,6 +292,16 @@ export interface ResolvedByTestId {
  * element matching both arms of the scoped selector list is counted once — the
  * root, which carries `data-testid` and `data-viewport-id` on the SAME node, is
  * the common case — and `matchCount` stays truthful.
+ *
+ * THAT COMPENSATING CONTROL DOES NOT REACH EVERY CALLER. `paneDiagnostics` makes
+ * the guess visible only to callers that spread it into a payload — the DRIVE
+ * tools. `buildSelectorPredicate` takes `el` and drops the rest, and the two
+ * tools built on it report no viewportId/matchCount by design, so on the OBSERVE
+ * path first-match is a SILENT guess rather than a reported one. How it misleads
+ * is enumerated once in docs/debug-mcp-recipe.md under "wait_for_selector: the
+ * unscoped-wait trap"; widening this resolver to expose the full match list is
+ * tracked by #6564. Any such fix must leave the DRIVE path first-match — that is
+ * #5891's back-compat promise, argued in the divergence note above.
  */
 function resolveByTestId(
   testId: string,
