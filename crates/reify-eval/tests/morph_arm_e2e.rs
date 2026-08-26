@@ -221,10 +221,16 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
          tet_indices must be identical to the source, not a from-scratch remesh"
     );
     // Exactly one successful morph recorded (the morph_stats RPC data source).
+    // Snapshot-bound so a failure names the BUCKET, not just `left: 0, right: 1`.
+    // This blind spot is why the task-6635 Stage A bug survived: the bare form
+    // made a Stage-A over-reject, a Stage-B reject and a quality-gate reject
+    // indistinguishable from the failure output, so diagnosis required
+    // re-instrumenting the test by hand.
+    let snap = reify_mesh_morph::diagnostics::snapshot();
     assert_eq!(
-        reify_mesh_morph::diagnostics::snapshot().morphed,
-        1,
-        "the non-structural tick must record exactly one morphed outcome"
+        snap.morphed, 1,
+        "the non-structural tick must record exactly one morphed outcome; \
+         snapshot: {snap:?}"
     );
 }
 
@@ -409,6 +415,16 @@ structure StructuralMorphBox {
     );
 
     let snap = reify_mesh_morph::diagnostics::snapshot();
+    // Task 6635 regression lock. This is the e2e-level RED→GREEN for the Stage A
+    // classifier fix: MEASURED `ineligible_structural_change: 1` before the fix
+    // and `0` after, in this exact test.
+    assert_eq!(
+        snap.ineligible_structural_change, 0,
+        "task 6635: Stage A must NOT veto a dimensional-leaf tick — the cut_z \
+         Length tick must reach Stage B, which is what rejects it on the topology \
+         change; a non-zero Stage-A bucket means the derived Type::Geometry cell \
+         is vetoing again; snapshot: {snap:?}"
+    );
     let ineligible = snap.ineligible_structural_change
         + snap.ineligible_bijection_failure
         + snap.ineligible_naming_error;
