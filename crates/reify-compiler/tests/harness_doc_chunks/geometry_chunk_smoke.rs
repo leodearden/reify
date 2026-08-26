@@ -51,28 +51,43 @@
 //! `interference_oracle_names_documented_in_geometry_chunk` are what close the
 //! phantom-NAME direction; the fence compile is a parse/shape guard.
 //!
+//! # The one doc-FORMAT pin this file does impose
+//!
+//! Stated here rather than left implicit, because it cuts against the house rule
+//! the coverage check in `interference_oracle_names_documented_in_geometry_chunk`
+//! invokes (that comment declines to require a leading backtick precisely so the
+//! call form may be rewrapped, bolded, or tabulated freely).
+//!
+//! `documented_oracle_arities_are_exercised_by_a_compiling_fence` requires each of
+//! the five oracle names to carry a literal `-> <Type>` immediately after a
+//! balanced call form somewhere in the section. **`-> <Type>` after the call form
+//! is therefore a PINNED notation for those five names, and a markdown table with
+//! the return type in its own column (`| min_clearance(s, id_a, id_b) | Length |`)
+//! is RED even though no capability regressed.** That is a deliberate trade, not
+//! an oversight: the `->` is the ONLY thing separating a documented SIGNATURE from
+//! the traps subsection's prose mentions of unsupported forms
+//! (`min_clearance(a, b)`, `min_clearance(s, id, id)`), which must not be held to
+//! the fences. Widening the scan to accept a table cell would re-admit those. If
+//! the section is ever tabulated, widen `documented_signature_arities` in the same
+//! commit — and re-check that the trap prose still reads as prose.
+//!
 //! # Known duplication
 //!
 //! THREE chunk-scraping scanners now live in this one test binary — this module,
 //! `stdlib_chunk_geometry_ops_smoke.rs`, and `enums_chunk_option_smoke.rs` — and
 //! no two of them agree on what a "section" or a "fence" is. Extracting a shared
 //! `chunk_io` needs edits to `tests/harness_doc_chunks.rs` and to both siblings,
-//! none of which is in task 5389's locked file set; ticket
-//! `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` is the authoritative record. The divergences
-//! are enumerated here so that extraction has ONE reconciled contract to target
-//! instead of a reader having to re-derive them (and so nobody scoping it off the
-//! old two-file note under-counts the copies):
+//! none of which is in task 5389's locked file set.
 //!
-//! | axis | this module | `enums_chunk_option_smoke.rs` |
-//! |---|---|---|
-//! | heading match | case-insensitive SUBSTRING (`heading_matches` is gone as of the marker switch — see `ORACLE_SECTION_MARKER`; the section is now opened by a byte-exact HTML-comment marker) | byte-exact equality on the trimmed line (`l.trim_end() == SECTION_HEADING`) |
-//! | fence delimiter | column 0 only (`line.starts_with("```")`) | indent-tolerant (`line.trim_start().strip_prefix("```")`) |
-//! | fence info string | exactly ```` ```reify ````, opt-in | ANY info string accepted, and discarded |
-//! | section end | FENCE-AWARE: a `## ` inside a fence is content | fence-unaware: the first `## ` ends the section wherever it sits |
-//! | chunk read | `fs::read_to_string` at runtime (loud `expect`) | `include_str!` at build time (moved chunk = build error) |
-//!
-//! `stdlib_chunk_geometry_ops_smoke.rs` is the third copy; its `CHUNK_SECTION`
-//! scan is the one this module's section scoping was modelled on.
+//! Task **#5924** (filed as ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`) owns the
+//! extraction AND the axis-by-axis reconciliation contract — which heading /
+//! fence-delimiter / info-string / section-end / chunk-read behaviour the shared
+//! module should adopt, and which of this file's hand-rolled scanners the
+//! sibling's AST walk subsumes outright. That contract deliberately lives THERE,
+//! where it is the extraction author's working document, and not here: a table
+//! in this file describing two OTHER files' internals is unenforced prose that
+//! goes silently wrong the moment either sibling changes — the same rot mode the
+//! rest of this module spends 200 lines closing for the chunk's SYNC blocks.
 //!
 //! Delete this section when the extraction lands.
 
@@ -350,6 +365,15 @@ fn read_chunk() -> String {
     })
 }
 
+/// Length of the leading run of backticks on `line`, counted from COLUMN 0.
+///
+/// Zero for an indented fence, deliberately: `reify_tagged_fences` below matches
+/// its delimiters at column 0 too, so an indented fence must be invisible to
+/// both scanners rather than to only one of them.
+fn leading_backtick_run(line: &str) -> usize {
+    line.chars().take_while(|&c| c == '`').count()
+}
+
 /// The body of the section opened by `marker`, from the marker line to the next
 /// `## ` heading (exclusive). `### ` subsections stay inside.
 ///
@@ -359,38 +383,70 @@ fn read_chunk() -> String {
 /// section's own ```` ```reify ```` fences are exactly where such a line would
 /// appear, so the fragility is live, not theoretical.
 ///
-/// PANICS if the marker is absent — that is the anti-vacuity guard, and it is
-/// the failure a reader of a gutted section should see, rather than an empty
-/// slice that makes every downstream assertion pass trivially.
+/// FENCES ARE PAIRED BY DELIMITER RUN LENGTH, not toggled. A toggle flips on
+/// every column-0 ```-prefixed line, so a 4-backtick fence that DISPLAYS a
+/// 3-backtick one — a routine shape in docs about markdown — inverts the state
+/// for the rest of the document and makes the marker line unreachable. The
+/// visible symptom would be the anti-vacuity panic below blaming a marker that
+/// is present and untouched, which sends the reader to the wrong line entirely.
+/// CommonMark's rule is used: a fence opened by a run of N closes on a line that
+/// is a bare run of at least N and nothing else.
+///
+/// PANICS in two cases, each naming ITS OWN cause: an unterminated fence (which
+/// swallows the rest of the chunk, so it is reported before the marker is
+/// blamed), and an absent marker — the anti-vacuity guard, and the failure a
+/// reader of a gutted section should see, rather than an empty slice that makes
+/// every downstream assertion pass trivially.
 fn section_body(markdown: &str, marker: &str) -> String {
     let mut body: Vec<&str> = Vec::new();
     let mut in_section = false;
-    let mut in_fence = false;
+    // `Some(n)` while inside a fence opened by a column-0 run of `n` backticks.
+    let mut fence: Option<usize> = None;
 
     for line in markdown.lines() {
-        // Any ```-prefixed line toggles fence state (opening tags carry a
-        // language, closing tags do not — both are just toggles here). Matched at
-        // COLUMN 0, deliberately: `reify_tagged_fences` below matches its
-        // delimiters exactly, so an indented fence must be invisible to both
-        // scanners rather than to only one of them.
-        if line.starts_with("```") {
-            in_fence = !in_fence;
+        let run = leading_backtick_run(line);
+
+        if let Some(open_run) = fence {
+            // Bare run of >= the opening length closes; anything else (a shorter
+            // run, or a run carrying an info string) is fence CONTENT.
+            if run >= open_run && line.trim_end().len() == run {
+                fence = None;
+            }
             if in_section {
                 body.push(line);
             }
             continue;
         }
-        if !in_fence && !in_section && line.trim() == marker {
+        if run >= 3 {
+            fence = Some(run);
+            if in_section {
+                body.push(line);
+            }
+            continue;
+        }
+        if !in_section && line.trim() == marker {
             in_section = true;
             continue;
         }
-        if !in_fence && in_section && line.starts_with("## ") {
+        if in_section && line.starts_with("## ") {
             break;
         }
         if in_section {
             body.push(line);
         }
     }
+
+    // Checked FIRST, and named for what it is. An unterminated fence makes every
+    // later line read as fence content, so the marker assertion below would fire
+    // with a cause that is not the real one.
+    assert!(
+        fence.is_none(),
+        "{CHUNK_PATH} has an unterminated code fence: a column-0 run of {} backtick(s) is never \
+         closed by a bare run of at least that many. Everything after it is being read as fence \
+         content, so the `{marker}` scan cannot reach the section even when the marker line is \
+         present and intact. Close the fence — do not touch the marker.",
+        fence.unwrap_or(0)
+    );
 
     assert!(
         in_section,
@@ -487,7 +543,9 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // TYPOGRAPHY: writing the same call form as `**`min_clearance`**(s, …)`, or
     // moving it into a markdown table cell, would go RED with zero capability
     // regression and a panic claiming the oracle is undocumented. Per the house
-    // rule this file inherits, prose formatting is not the subject. The real
+    // rule this file inherits, prose formatting is not the subject. (The ONE
+    // exception, `-> <Type>`, is stated in the module doc's "The one doc-FORMAT
+    // pin this file does impose" — read it before tabulating this section.) The real
     // weight is carried by (b) below, by `section_body`'s anti-vacuity panic, and
     // by `reify_tagged_fences_in_geometry_chunk_compile`'s per-name sentinels,
     // which require each call form inside a COMPILING fence — a strictly stronger
@@ -1010,6 +1068,17 @@ fn source_files_by_basename() -> std::collections::BTreeMap<String, Vec<std::pat
 /// A run is only a cite if the part before `::` ends in `.rs`/`.ri` — that is what
 /// keeps the chunk's C++ cites (`BRepExtrema_DistShapeShape::InnerSolution()`) out
 /// of the resolution attempt without an exclusion list.
+///
+/// SCOPED TO THE CITE FORMS THE SYNC BLOCKS ACTUALLY USE — a token counts only if
+/// it carries a `::<fn>` half or a `/`-bearing repo-relative path. A BARE basename
+/// in prose is NOT a cite. geometry.md is a designer-facing tutorial whose whole
+/// subject is writing `.ri` files, so it will keep acquiring illustrative
+/// filenames ("save the model as `my_bracket.ri`"); resolving those would make an
+/// ordinary doc edit RED with a panic about SYNC blocks and false PINNED claims,
+/// i.e. a message that names neither the edit nor its cause. Every real cite in
+/// the two SYNC blocks is written in one of the two accepted forms, and
+/// `cited_test_paths_in_the_chunk_resolve`'s floors keep it that way, so nothing
+/// the check exists for is lost by ignoring bare basenames.
 fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
     let mut out: Vec<(String, Option<String>)> = Vec::new();
 
@@ -1023,6 +1092,12 @@ fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
             None => (run, None),
         };
         if !(path.ends_with(".rs") || path.ends_with(".ri")) {
+            continue;
+        }
+        // Tested on the RAW `::` split, before the identifier filter below: a
+        // malformed fn half still marks the token as an intended cite, so its
+        // path half stays subject to resolution.
+        if fn_name.is_none() && !path.contains('/') {
             continue;
         }
         // A cite whose fn half is not a bare identifier is a malformed cite, not
@@ -1087,8 +1162,15 @@ fn cited_test_paths_in_the_chunk_resolve() {
     let index = source_files_by_basename();
     let cites = cited_source_paths(&markdown);
 
-    let mut rs_paths = std::collections::BTreeSet::new();
-    let mut ri_paths = std::collections::BTreeSet::new();
+    // Keyed by the RESOLVED path, not the cite token: the chunk cites several
+    // files two ways (bare basename with a `::fn` half, and again by full
+    // repo-relative path), so token-counting would let one of the four worked
+    // `.ri` examples the panic names disappear while the floor stays satisfied by
+    // its own duplicate — exactly the regression these floors claim to catch.
+    let mut rs_paths: std::collections::BTreeSet<std::path::PathBuf> =
+        std::collections::BTreeSet::new();
+    let mut ri_paths: std::collections::BTreeSet<std::path::PathBuf> =
+        std::collections::BTreeSet::new();
     let mut fn_cites = 0usize;
 
     for (path_token, fn_name) in &cites {
@@ -1102,9 +1184,9 @@ fn cited_test_paths_in_the_chunk_resolve() {
         });
 
         if path_token.ends_with(".ri") {
-            ri_paths.insert(path_token.clone());
+            ri_paths.insert(resolved.clone());
         } else {
-            rs_paths.insert(path_token.clone());
+            rs_paths.insert(resolved.clone());
         }
 
         let Some(fn_name) = fn_name else { continue };
@@ -1132,26 +1214,29 @@ fn cited_test_paths_in_the_chunk_resolve() {
     );
     assert!(
         rs_paths.len() >= 5,
-        "only {} distinct `.rs` path(s) cited in {CHUNK_PATH}, expected at least 5 — the SYNC \
-         inventory lost its file references. Cites seen: {cites:?}",
+        "only {} distinct `.rs` FILE(s) cited in {CHUNK_PATH} (distinct after resolution — the \
+         same file cited two ways counts once), expected at least 5 — the SYNC inventory lost \
+         its file references. Cites seen: {cites:?}",
         rs_paths.len()
     );
     assert!(
         ri_paths.len() >= 4,
-        "only {} distinct `.ri` example(s) cited in {CHUNK_PATH}, expected at least 4 — the \
-         worked-reference examples (clearance_oracle, vc_bolt_pattern_clearance, dock_pickup, \
-         intersects_smoke) are what a designer is sent to next, so losing them is the same \
-         discoverability regression task 5389 closed. Cites seen: {cites:?}",
+        "only {} distinct `.ri` example FILE(s) cited in {CHUNK_PATH} (distinct after resolution \
+         — the same example cited both bare and by full path counts once), expected at least 4 \
+         — the worked-reference examples (clearance_oracle, vc_bolt_pattern_clearance, \
+         dock_pickup, intersects_smoke) are what a designer is sent to next, so losing them is \
+         the same discoverability regression task 5389 closed. Cites seen: {cites:?}",
         ri_paths.len()
     );
 }
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// `call_sites` and `strip_reify_comments` are the only hand-rolled text scanners
-// in this file, and every doc↔fence assertion above is downstream of them, so
-// they are pinned directly here rather than only through the chunk. Mirrors the
-// posture of `stdlib_chunk_geometry_ops_smoke.rs`, whose `documented_geometry_op_forms`
+// `call_sites`, `strip_reify_comments`, `section_body` and `cited_source_paths`
+// are the hand-rolled text scanners in this file, and every doc↔fence assertion
+// above is downstream of one of them, so they are pinned directly here rather
+// than only through the chunk. Mirrors the posture of
+// `stdlib_chunk_geometry_ops_smoke.rs`, whose `documented_geometry_op_forms`
 // scanner carries its own `_extracts_exact_arity` / `_zero_arg_span_is_exact_zero` /
 // `_skips_unbalanced_parens_without_panicking` unit tests.
 
@@ -1278,5 +1363,113 @@ fn strip_reify_comments_removes_a_block_comment_and_preserves_line_count() {
     assert!(
         out.contains("sphere(1mm)"),
         "code after the comment must survive"
+    );
+}
+
+#[test]
+fn section_body_reads_a_shorter_fence_run_as_content_of_a_longer_one() {
+    // A 4-backtick fence displaying a 3-backtick one — the routine shape in a doc
+    // that shows markdown, and the shape a toggle-based scanner desyncs on: the
+    // inner ``` lines would flip fence state twice more, leaving the marker line
+    // "inside a fence" and unreachable.
+    let md = "# Chunk\n\
+              ````markdown\n\
+              ```reify\n\
+              let g = box(1mm, 1mm, 1mm)\n\
+              ```\n\
+              ````\n\
+              <!-- ORACLE-SECTION -->\n\
+              body line\n\
+              ## Next section\n\
+              not in the body\n";
+
+    assert_eq!(
+        section_body(md, ORACLE_SECTION_MARKER),
+        "body line",
+        "the inner ``` run is shorter than the ```` that opened the fence, so it is CONTENT — \
+         only a bare run of >= 4 closes"
+    );
+}
+
+#[test]
+fn section_body_keeps_a_fenced_heading_out_of_the_section_boundary() {
+    // The property the old toggle already had, re-pinned against the rewrite: a
+    // `## ` line inside a fence is content, not the end of the section.
+    let md = "<!-- ORACLE-SECTION -->\n\
+              ```reify\n\
+              // ## not a heading\n\
+              ```\n\
+              tail\n\
+              ## Real heading\n\
+              gone\n";
+
+    let body = section_body(md, ORACLE_SECTION_MARKER);
+    assert!(body.contains("// ## not a heading"), "got {body:?}");
+    assert!(body.contains("tail"), "got {body:?}");
+    assert!(!body.contains("gone"), "got {body:?}");
+}
+
+#[test]
+#[should_panic(expected = "unterminated code fence")]
+fn section_body_blames_an_unterminated_fence_rather_than_the_marker() {
+    // The marker is PRESENT here. Blaming it (which a toggle-based scanner's
+    // anti-vacuity panic does, because the swallowed tail leaves `in_section`
+    // false) sends the reader to a line that is not the defect.
+    let md = "```reify\n\
+              let g = box(1mm, 1mm, 1mm)\n\
+              <!-- ORACLE-SECTION -->\n\
+              body\n";
+    let _ = section_body(md, ORACLE_SECTION_MARKER);
+}
+
+#[test]
+fn cited_source_paths_ignores_a_bare_illustrative_basename() {
+    // geometry.md is a designer-facing tutorial about authoring `.ri` files, so
+    // prose like this is ordinary content — not a claim that a repo file exists.
+    // Resolving it would make an ordinary doc edit RED with a panic about SYNC
+    // blocks and false PINNED claims.
+    let md = "Save the model as `my_bracket.ri` and run `reify build my_bracket.ri`.\n\
+              trap 5 — PINNED by\n\
+              crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs::single_body_self_pair_excluded\n\
+              See `examples/kinematic/dock_pickup.ri`, and `geometry_chunk_smoke.rs`, whose\n\
+              `geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve` resolves them.\n";
+
+    assert_eq!(
+        cited_source_paths(md),
+        vec![
+            (
+                "crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs"
+                    .to_string(),
+                Some("single_body_self_pair_excluded".to_string()),
+            ),
+            ("examples/kinematic/dock_pickup.ri".to_string(), None),
+            (
+                "geometry_chunk_smoke.rs".to_string(),
+                Some("cited_test_paths_in_the_chunk_resolve".to_string()),
+            ),
+        ],
+        "only `/`-bearing paths and `::<fn>`-carrying tokens are cites; `my_bracket.ri` and the \
+         bare `geometry_chunk_smoke.rs` mention are prose"
+    );
+}
+
+#[test]
+fn cited_source_paths_keeps_a_malformed_fn_half_as_a_path_cite() {
+    // `::` marks the token as an INTENDED cite even when the fn half is not a bare
+    // identifier, so the path half stays subject to resolution rather than being
+    // dropped as if it were a prose basename.
+    assert_eq!(
+        cited_source_paths("geometry_chunk_smoke.rs::not-an-ident"),
+        vec![("geometry_chunk_smoke.rs".to_string(), None)]
+    );
+}
+
+#[test]
+fn cited_source_paths_leaves_a_cxx_cite_alone() {
+    // The chunk cites OCCT's C++ API for the containment behaviour; the path half
+    // does not end in `.rs`/`.ri`, so no resolution is attempted.
+    assert!(
+        cited_source_paths("BRepExtrema_DistShapeShape::InnerSolution()").is_empty(),
+        "a C++ `Type::method()` cite is not a source-file cite"
     );
 }
