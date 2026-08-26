@@ -303,34 +303,23 @@ fn e2e_no_producer_engine_remeshes_volume_mesh() {
 /// box (removes nothing → box topology); a tick to `5mm` centres it in the box
 /// (a through-hole → face/edge/vertex counts change → `morph_eligible` returns
 /// Ineligible). `parse_and_compile_with_stdlib` runs at TEST RUNTIME, so this
-/// inline fixture imposes no compile-time cost on the (`#[ignore]`d) binary and
-/// keeps the shared `morph_box.ri` a clean plain box for the live test above.
+/// inline fixture imposes no compile-time cost on the test binary and keeps the
+/// shared `morph_box.ri` a clean plain box for the sibling test above.
 ///
-/// Gated `#[ignore]` on #4876 — same root cause as the morph-success e2e above:
-/// observing an `ineligible` bucket requires a boundary-carrying source mesh (so
-/// `morph_eligible` runs and reports CountMismatch), and the only producer that
-/// threads a `BoundaryAssociation` is the task-4092 attributed gmsh path, which
-/// SIGSEGVs in tetgen boundary recovery on real OCCT surfaces. The
-/// ineligible→remesh fallback itself is validated LIVE by the reify-eval
-/// `morph_producer` decision-helper tests and the reify-mesh-morph `compose_morph`
-/// Stage-B count-mismatch test.
+/// Runs LIVE (un-`#[ignore]`d by task 6635 — MEASURED passing, 16.2s). Post-6635
+/// it rejects at **Stage B**, not Stage A: measured `ineligible_naming_error: 1`
+/// with `ineligible_structural_change: 0`.
+///
+/// That is the outcome this test's own premise always intended — its docstring
+/// above claims `morph_eligible` returns Ineligible *via a topology-count
+/// change*, which is a Stage-B judgement. Before 6635 the test passed only
+/// because Stage A's Rule 4 misclassified the derived `Type::Geometry` cell as
+/// Structural and so over-rejected EVERY tick: it was green for the wrong
+/// reason and proved nothing about Stage B. The
+/// `ineligible_structural_change == 0` assertion in the body is what pins the
+/// difference.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #5116 — the structural-tick ineligible-bucket assertion \
-            requires a boundary-carrying source mesh (so morph_eligible runs and \
-            reports CountMismatch); that source comes only from the task-4092 \
-            attributed gmsh producer (mesh_surface_to_volume_attributed). On real \
-            OCCT-tessellated surfaces that producer used to SIGSEGV in tetgen \
-            boundary recovery (recoveredgebyflips → hxt_boundary_recovery) — the \
-            same crash gating e2e_non_structural_tick_morphs_and_preserves_connectivity \
-            and fea_face_selector_bc_e2e; #4876 hardened it with a watertightness \
-            preflight that returns Err instead of crashing, but the fail-closed Err \
-            degrades to the plain producer (boundary None), still not the boundary- \
-            carrying source this test needs. Only the attribution-preserving repair \
-            tracked by #5116 will produce one. The ineligible→remesh fallback is \
-            otherwise validated by the reify-eval morph_producer decision-helper \
-            tests and the reify-mesh-morph compose_morph Stage-B count-mismatch \
-            test; this real-OCCT e2e un-gates when #5116 hardens the producer."]
 fn e2e_structural_tick_remeshes_and_records_ineligible() {
     use reify_core::ValueCellId;
     use reify_ir::{ExportFormat, Value};
@@ -346,7 +335,7 @@ fn e2e_structural_tick_remeshes_and_records_ineligible() {
     reify_mesh_morph::diagnostics::reset_for_test();
 
     // Inline structural fixture: a box minus a movable Z-cylinder cutter. See the
-    // doc comment — parsed at runtime, so it costs nothing while #[ignore]d.
+    // doc comment — parsed at runtime, so it costs no compile time.
     const STRUCTURAL_FIXTURE: &str = r#"
 @optimized("test::vm-demand-probe")
 fn vm_probe(g: Geometry) -> Int {
@@ -375,7 +364,8 @@ structure StructuralMorphBox {
         morph_probe_capture_fn as reify_eval::ComputeFn,
     );
     // Boundary demand → the source carries a BoundaryAssociation (via the 4092
-    // attributed path — the #4876 crash point that gates this test).
+    // attributed path), which is what lets morph_eligible run far enough to
+    // reach Stage B and report a reject rather than short-circuiting earlier.
     engine.register_volume_mesh_boundary_demand("test::vm-demand-probe");
     assert!(
         engine.ensure_gmsh_kernel(),
