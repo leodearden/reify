@@ -191,8 +191,13 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
-        for err in &parsed.errors {
-            eprintln!("Parse error: {}", err.render(&source));
+        // `render_errors`, not a loop over `render`: a single `render` re-scans the source
+        // from byte 0 to turn one byte offset into a line:col, so rendering in a loop costs
+        // O(errors × len(source)). Since #5392 a single malformed file can carry dozens of
+        // parse errors (up to 8 per `ERROR` node, several nodes per file), which is enough for
+        // that to matter; the batched form builds the newline table once. INV-SF-7.
+        for rendered in parsed.render_errors(&source) {
+            eprintln!("Parse error: {rendered}");
         }
         return Err(ExitCode::FAILURE);
     }
@@ -250,8 +255,13 @@ fn parse_and_compile_with_cfg(
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
-        for err in &parsed.errors {
-            eprintln!("Parse error: {}", err.render(&source));
+        // `render_errors`, not a loop over `render`: a single `render` re-scans the source
+        // from byte 0 to turn one byte offset into a line:col, so rendering in a loop costs
+        // O(errors × len(source)). Since #5392 a single malformed file can carry dozens of
+        // parse errors (up to 8 per `ERROR` node, several nodes per file), which is enough for
+        // that to matter; the batched form builds the newline table once. INV-SF-7.
+        for rendered in parsed.render_errors(&source) {
+            eprintln!("Parse error: {rendered}");
         }
         return Err(ExitCode::FAILURE);
     }

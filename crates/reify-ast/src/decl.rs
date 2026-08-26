@@ -36,6 +36,32 @@ pub struct ParsedModule {
     pub declared_module_path: Option<ModulePath>,
 }
 
+impl ParsedModule {
+    /// Render every parse error against `source` as `line:col: message`, in parse order.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// The three production surfaces that print parse errors — the two loops in
+    /// `reify-cli/src/main.rs` and `CliToolContext::load_file` — all want exactly this, and
+    /// this is where they get it, so no caller has to rebuild the loop or re-derive positions
+    /// its own way.
+    ///
+    /// `source` must be the string the spans index (the one handed to the parser); a different
+    /// string yields wrong positions, never a panic. Batched via
+    /// [`ParseError::render_all`], so the newline table is built once for the whole list
+    /// rather than once per diagnostic.
+    ///
+    /// Exists as a METHOD rather than leaving callers to write
+    /// `reify_ast::ParseError::render_all(&parsed.errors, source)` because `reify-cli` does not
+    /// depend on `reify-ast` and so cannot name that path. The only route that resolves today
+    /// is `reify_syntax::ParseError`, via the `pub use reify_ast::*` block that
+    /// `reify-syntax/src/lib.rs` marks TRANSIENT and slates for removal by the PRD task η
+    /// follow-up — building three new production call sites on a re-export scheduled for
+    /// deletion would hand that sweep a breakage. Method resolution needs no crate path.
+    pub fn render_errors(&self, source: &str) -> Vec<String> {
+        ParseError::render_all(&self.errors, source)
+    }
+}
+
 /// A top-level declaration in a module.
 #[derive(Debug, Clone)]
 pub enum Declaration {
@@ -1565,13 +1591,76 @@ impl ParseError {
     ///   is clamped to `source.len()`, which keeps `byte_offset_to_line_col`'s
     ///   `debug_assert!(offset <= source.len())` from panicking in debug builds.
     pub fn render(&self, source: &str) -> String {
+        self.render_with_offsets(source, &reify_core::build_line_offsets(source))
+    }
+
+    /// Render every error in `errors` against `source`, building the newline table ONCE.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// [`render`](Self::render) is O(len(source)) per call, and every caller renders in a loop
+    /// over `Parsed::errors`, so the naive shape costs O(errors × len(source)). That was
+    /// tolerable when a malformed file produced one or two parse errors; it is not now that
+    /// `diagnose_error_node` emits up to 8 diagnostics per `ERROR` node and a file can carry
+    /// several such nodes (measured on the 24-broken-function corpus: 22 diagnostics from one
+    /// parse), each of which would re-scan the whole source from byte 0.
+    ///
+    /// Same output as mapping [`render`](Self::render), one string per input error, in order.
+    pub fn render_all(errors: &[ParseError], source: &str) -> Vec<String> {
+        // Below two errors the table costs more than it saves — it is itself an O(len(source))
+        // scan, so building it to serve a single lookup just moves the same work.
+        if errors.len() < 2 {
+            return errors.iter().map(|e| e.render(source)).collect();
+        }
+        let line_offsets = reify_core::build_line_offsets(source);
+        errors
+            .iter()
+            .map(|e| e.render_with_offsets(source, &line_offsets))
+            .collect()
+    }
+
+    /// [`render`](Self::render) against a pre-built newline table.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// `line_offsets` must be [`reify_core::build_line_offsets`] of the SAME `source`; passing
+    /// another file's table yields a wrong position, never a panic. O(log M) to find the line
+    /// plus O(column) to count the codepoints on it, against
+    /// [`reify_core::byte_offset_to_line_col`]'s O(len(source)) scan from byte 0.
+    ///
+    /// Deliberately reproduces that function's semantics exactly, including its two degenerate
+    /// inputs, rather than approximating them:
+    ///
+    /// - The prelude sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) short-circuits to
+    ///   `(1, 1)`, the canonical "no user-file location" fallback, before anything indexes
+    ///   `source`.
+    /// - Any other out-of-range offset (a stale span, or one belonging to a different file) is
+    ///   clamped to `source.len()`.
+    ///
+    /// A `line`/`col` pair is derived the same way `byte_offset_to_line_col` derives it: the
+    /// line is one more than the number of `'\n'` strictly before `offset` (a binary search
+    /// here, a full character walk there), and the column is one more than the number of
+    /// codepoints between the start of that line and `offset`. The column walk starts at the
+    /// line start — always a character boundary, since `'\n'` is one byte — and stops at
+    /// `offset` without ever slicing there, so an offset that is not a character boundary
+    /// degrades to a position rather than panicking, exactly as the scanning version does.
+    pub fn render_with_offsets(&self, source: &str, line_offsets: &[usize]) -> String {
         let offset = self.span.start as usize;
-        let offset = if offset == SourceSpan::PRELUDE_SENTINEL_OFFSET {
-            offset
-        } else {
-            offset.min(source.len())
+        if offset == SourceSpan::PRELUDE_SENTINEL_OFFSET {
+            return format!("1:1: {}", self.message);
+        }
+        let offset = offset.min(source.len());
+
+        // Number of newlines strictly before `offset`; `line_offsets` is sorted ascending.
+        let preceding_newlines = line_offsets.partition_point(|&nl| nl < offset);
+        let line = preceding_newlines + 1;
+        let line_start = match preceding_newlines.checked_sub(1) {
+            Some(i) => line_offsets[i] + 1,
+            None => 0,
         };
-        let (line, col) = reify_core::byte_offset_to_line_col(source, offset);
+        let col = source[line_start..]
+            .char_indices()
+            .take_while(|(i, _)| line_start + i < offset)
+            .count()
+            + 1;
         format!("{line}:{col}: {}", self.message)
     }
 }
@@ -1658,6 +1747,93 @@ mod parse_error_render_tests {
             "a prelude-sentinel span must render as the `1:1:` no-user-file-location \
              fallback rather than panicking or reporting an end-of-file position; \
              got {rendered:?}",
+        );
+    }
+
+    /// The batch path must agree with the scanning path at EVERY offset.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// `render_with_offsets` exists only to avoid re-scanning the source once per diagnostic;
+    /// it earns that by reproducing `reify_core::byte_offset_to_line_col` exactly, so the two
+    /// are compared here at every byte offset of a fixture chosen to hit each way they could
+    /// diverge: an offset before any newline (line 1, where the `checked_sub` line-start
+    /// branch is taken), offsets on and immediately after a newline (the off-by-one the binary
+    /// search would get wrong), MULTI-BYTE characters (byte length != codepoint count, so a
+    /// column computed from bytes would drift), consecutive newlines (an empty line, whose
+    /// line start IS its line end), a trailing newline, and `source.len()` itself.
+    ///
+    /// Offsets that fall inside a multi-byte character are included deliberately: a span is
+    /// normally on a character boundary, but the scanning version tolerates one that is not,
+    /// and a slicing implementation would panic there instead.
+    #[test]
+    fn render_with_offsets_agrees_with_the_scanning_render() {
+        let source = "fn f() -> Int {
+  let α = 1
+
+  α + 1
+}
+";
+        let line_offsets = reify_core::build_line_offsets(source);
+
+        for offset in 0..=source.len() {
+            let err = ParseError {
+                message: "m".to_string(),
+                span: SourceSpan::new(offset as u32, offset as u32),
+            };
+            let (line, col) = reify_core::byte_offset_to_line_col(source, offset);
+            assert_eq!(
+                err.render_with_offsets(source, &line_offsets),
+                format!("{line}:{col}: m"),
+                "batch render disagrees with the scanning render at byte offset {offset} of                  {source:?}",
+            );
+        }
+    }
+
+    /// `render_all` is the loop the CLI and MCP call sites run, and must be indistinguishable
+    /// from mapping `render` — including on the degenerate inputs.
+    ///
+    /// INV-SF-7, task #5392. It short-circuits below two errors (the newline table costs an
+    /// O(len(source)) scan, so building it for a single lookup saves nothing), which makes the
+    /// zero- and one-error cases a genuinely different code path from the batched one.
+    #[test]
+    fn render_all_matches_mapping_render_including_degenerate_inputs() {
+        let source = "fn f() -> Int {
+  let x = 1
+  x
+}
+";
+        let sentinel = SourceSpan::PRELUDE_SENTINEL_OFFSET as u32;
+        let mk = |off: u32, msg: &str| ParseError {
+            message: msg.to_string(),
+            span: SourceSpan::new(off, off),
+        };
+
+        let errors = vec![
+            mk(0, "first"),
+            mk(18, "second"),
+            mk(source.len() as u32, "at end"),
+            // Out of range: a stale span, or one belonging to a different file.
+            mk(source.len() as u32 + 500, "past end"),
+            mk(sentinel, "prelude"),
+        ];
+
+        for n in 0..=errors.len() {
+            let slice = &errors[..n];
+            let batched = ParseError::render_all(slice, source);
+            let mapped: Vec<String> = slice.iter().map(|e| e.render(source)).collect();
+            assert_eq!(
+                batched, mapped,
+                "render_all disagrees with mapping render for {n} error(s)",
+            );
+        }
+
+        // The sentinel must still degrade to the no-user-file-location fallback through the
+        // BATCHED path, not just the single-error one.
+        let all = ParseError::render_all(&errors, source);
+        assert!(
+            all[4].starts_with("1:1:"),
+            "a prelude-sentinel span must render as `1:1:` through render_all too; got {:?}",
+            all[4],
         );
     }
 }

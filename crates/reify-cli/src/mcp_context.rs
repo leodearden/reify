@@ -89,9 +89,10 @@ impl CliToolContext {
             reify_compiler::parse_with_stdlib(&source, reify_core::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
-            // Render through `ParseError::render` rather than cloning the bare message, so an
-            // MCP client gets `line:column: message` and can jump to the fault instead of
-            // being handed an unlocatable sentence.  INV-SF-7 `parse-is-value-faithful`
+            // Render through `ParseError::render` — reached here via
+            // `ParsedModule::render_errors` — rather than cloning the bare message, so an MCP
+            // client gets `line:column: message` and can jump to the fault instead of being
+            // handed an unlocatable sentence.  INV-SF-7 `parse-is-value-faithful`
             // (docs/legibility/design-invariants.md), task #5392: this is the third and last
             // caller brought onto the single byte-offset → line:col converter, alongside the
             // two loops in `reify-cli/src/main.rs`, so `render`'s "every caller reports
@@ -102,7 +103,14 @@ impl CliToolContext {
             // and out-of-range-clamp branches apply unchanged.  The `Parse errors: {joined}`
             // envelope and the `"; "` separator are deliberately unchanged so existing MCP
             // consumers keep parsing the response.
-            let msgs: Vec<String> = parsed.errors.iter().map(|e| e.render(&source)).collect();
+            //
+            // `render_errors` BATCHES rather than mapping `render` over the list: each
+            // `render` is an O(len(source)) scan from byte 0 to convert one byte offset, so a
+            // file carrying dozens of parse errors (up to 8 per `ERROR` node, several nodes
+            // per file, since #5392) would re-scan the whole source once per diagnostic.  The
+            // batched form builds the newline table once and binary-searches per error; the
+            // rendered strings are identical, so this is a cost change only.
+            let msgs = parsed.render_errors(&source);
             return Err(format!("Parse errors: {}", msgs.join("; ")));
         }
 
