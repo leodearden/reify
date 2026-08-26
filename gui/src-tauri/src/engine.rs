@@ -2229,7 +2229,30 @@ impl EngineSession {
         // disk first would leave the on-disk `.ri` holding text the engine
         // rejected — the FS-watcher would then reload the broken file into
         // the GUI. Ordering recompile→write makes that state unreachable.
-        let state = self.update_source(path_str, &new_source)?;
+        //
+        // The failure-diagnostic surfaces are snapshotted across that call and
+        // restored if it rejects. `update_source`'s failure path calls
+        // `record_compile_failure`, which stores the text it failed to compile
+        // together with diagnostics indexed into it — load-bearing for the
+        // EDITOR path, where that text IS the buffer the user is looking at.
+        // The write-back is the opposite case: the failed text was synthesized
+        // by this method from a value the caller supplied, was never shown to
+        // anyone, and reached neither disk nor `source_map`. Surfacing
+        // diagnostics against it would point the user at lines of a document
+        // that does not exist. So the restore belongs HERE, at the one call
+        // site with that property — do NOT "fix" this by pushing it down into
+        // `update_source`, which would blind the editor path.
+        //
+        // Error path only: a SUCCESSFUL `update_source` clears both fields via
+        // `commit_state`, which is exactly right.
+        let failure_surface = (self.compile_failure.clone(), self.last_reload_error.clone());
+        let state = match self.update_source(path_str, &new_source) {
+            Ok(state) => state,
+            Err(e) => {
+                (self.compile_failure, self.last_reload_error) = failure_surface;
+                return Err(e);
+            }
+        };
 
         std::fs::write(&path, &new_source)
             .map_err(|e| format!("Error writing {}: {e}", path.display()))?;
