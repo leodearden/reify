@@ -12355,7 +12355,25 @@ pub(crate) fn walk_placed_realizations<V>(
         } else {
             eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics)
         };
-        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
+        // `compose_pose_chain` consumes its slice, so clone `sub_pose` into it and
+        // keep the original alive for the classifier below (task 6099).
+        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose.clone()]);
+        // A failed composition collapses to `Value::Undef`, which the placement
+        // decomposition below cannot distinguish from a genuine identity pose —
+        // so without this the whole child subtree is SILENTLY placed at the
+        // world origin. Diagnose it; deliberately do NOT `continue`, so the
+        // walk's placement/surfacing shape stays byte-identical and only the
+        // diagnostics vector changes (pinned by the e2e
+        // `posed_subtree_still_surfaces_after_diagnostic`).
+        if let Some(d) = diagnose_pose_composition_failure(
+            composed_world,
+            &sub_pose,
+            &child_world,
+            &template.name,
+            &sub.name,
+        ) {
+            diagnostics.push(d);
+        }
 
         // task-4147: for constructor-arg subs, re-realize the child's handles
         // against the per-instance override value scope BEFORE the recursive
