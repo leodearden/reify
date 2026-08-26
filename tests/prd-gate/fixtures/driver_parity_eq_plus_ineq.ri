@@ -14,7 +14,7 @@ module driver_parity_eq_plus_ineq
 // the solver into check/build exposes it on every driver.
 // OWNED BY #6653 (its evidence names this exact probe and residual; its acceptance
 // requires this probe to flip). Not a separate prerequisite. The residual bias the
-// tolerance hides is tracked separately.
+// tolerance hides is a separate concern, outside this probe's scope.
 pub structure Rod {
     param length : Length = 5mm
     let body = cylinder(3mm, length)
