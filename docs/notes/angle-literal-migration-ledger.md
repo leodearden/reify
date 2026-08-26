@@ -308,7 +308,7 @@ that reach `compile_geometry_op` break exactly like bucket 2 does.
 | | **eval total — γ/δ/ε break these** | **9** | |
 | **Compile only** (no `Engine`, no kernel) | `reify-compiler/tests/harness_langcore/let_scope_tests.rs` | 8 | 5 γ / 3 ε |
 | | `reify-compiler/tests/harness_geometry_solver/geometry_profile_precondition_tests.rs` | 2 | γ |
-| | `reify-compiler/tests/compile_api_tests.rs` | 1 | ε |
+| | `reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs` | 1 | ε |
 | | **compile total — ζ's (5782) concern, NOT γ/δ/ε's** | **11** | |
 
 **`geometry_length_args_units_e2e.rs` (6 sites) is the trap in this table.** It
