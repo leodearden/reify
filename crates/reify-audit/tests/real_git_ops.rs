@@ -39,13 +39,13 @@ mod common;
 /// helper's assertion message says so — always diagnose against the clean
 /// parent run first.
 ///
-/// The floor of 9 is today's selection (8 real tests + this one). It exists
+/// The floor of 10 is today's selection (9 real tests + this one). It exists
 /// because libtest exits 0 on a zero-match filter; with an empty filter that
 /// cannot happen today, but the floor also catches a test being deleted or
 /// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&[""], 9);
+    common::git_env::replay_self_under_hook_git_env(&[""], 10);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
@@ -547,5 +547,103 @@ fn changed_paths_in_commit_returns_the_commits_own_delta() {
         unreachable.is_empty(),
         "changed_paths_in_commit on an unreachable SHA must fail safe to empty; got: {:?}",
         unreachable,
+    );
+}
+
+// -----------------------------------------------------------------------
+// Rename detection must be OFF on both path-listing seams (task 6345)
+// -----------------------------------------------------------------------
+
+/// Pin that both `--name-only` path-listing seams report BOTH sides of a
+/// rename — the destination *and* the vanished source.
+///
+/// `diff.renames` has defaulted to true since git 2.9 and this repo sets no
+/// override (`git config --get diff.renames` exits 1). With detection on,
+/// `--name-only` collapses a detected rename to the DESTINATION path alone and
+/// the old path never appears. Measured on a throwaway repo: after
+/// `git mv a/old.rs a/new.rs`, `git diff --name-only HEAD^1..HEAD` prints
+/// `a/new.rs` alone, while `--no-renames` prints both `a/new.rs` and
+/// `a/old.rs`.
+///
+/// That silently breaks the pre-done gate. Both seams feed corroboration legs
+/// that only ever SUBTRACT from the "absent from main" set, so a task that
+/// declares its pre-rename path in `metadata.files` finds that path neither
+/// tracked on main (it was renamed away) nor present in its landing commit's
+/// delta (detection hid it) — and the flip is refused for work that in fact
+/// landed.
+///
+/// Both seams are covered here because both are reachable from
+/// `changed_paths_for_claim`: the ancestor arm calls `changed_paths_in_commit`
+/// (the landed case), the non-ancestor arm calls `diff_changed_paths(main, …)`
+/// (the un-landed D-1 branch-tip case).
+///
+/// `git mv` with content unchanged makes rename detection fire at 100%
+/// similarity, so the defect is deterministic rather than dependent on git's
+/// similarity threshold. And it must be a REAL-git test: a mock returns
+/// whatever the fixture seeded, so it is structurally incapable of catching a
+/// defect in git's argv.
+#[test]
+fn changed_paths_in_commit_reports_both_sides_of_a_rename() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let run = |args: &[&str]| git_run(root, args);
+
+    git_init(root);
+
+    // Base commit on main: the file the landed task will rename, plus a second
+    // file for the un-landed branch-tip leg below.
+    write_file(root, "a/old.rs", "fn task() {}\n");
+    write_file(root, "b/stays.rs", "fn stays() {}\n");
+    git_commit(root, "base commit");
+
+    // --- Seam 1: changed_paths_in_commit, on a landed --no-ff merge. ---
+    run(&["checkout", "-b", "feat"]);
+    run(&["mv", "a/old.rs", "a/new.rs"]);
+    git_commit(root, "feat: move old.rs to new.rs");
+    run(&["checkout", "main"]);
+    run(&["merge", "--no-ff", "-m", "Merge task/feat into main", "feat"]);
+    let merge_sha = rev_parse_head(root);
+
+    let git = RealGitOps::new(root);
+
+    let own = git.changed_paths_in_commit(&merge_sha);
+    assert!(
+        own.contains(&"a/new.rs".to_string()),
+        "changed_paths_in_commit({}) must report the rename DESTINATION; got: {:?}",
+        merge_sha,
+        own,
+    );
+    assert!(
+        own.contains(&"a/old.rs".to_string()),
+        "changed_paths_in_commit({}) must also report the rename SOURCE — a task \
+         declaring its pre-rename path is otherwise refused by the pre-done gate \
+         for work that did land; got: {:?}",
+        merge_sha,
+        own,
+    );
+
+    // --- Seam 2: diff_changed_paths(main, <tip>), on an UN-landed branch. ---
+    // This is the arm `changed_paths_for_claim` takes when the claimed commit
+    // is not yet an ancestor of main, where the two-point tree diff IS the
+    // right question — but it collapses renames identically.
+    run(&["checkout", "-b", "feat2"]);
+    run(&["mv", "b/stays.rs", "b/moved.rs"]);
+    git_commit(root, "feat2: move stays.rs to moved.rs");
+    let tip_sha = rev_parse_head(root);
+    run(&["checkout", "main"]);
+
+    let tip = git.diff_changed_paths("main", &tip_sha);
+    assert!(
+        tip.contains(&"b/moved.rs".to_string()),
+        "diff_changed_paths(main, {}) must report the rename DESTINATION; got: {:?}",
+        tip_sha,
+        tip,
+    );
+    assert!(
+        tip.contains(&"b/stays.rs".to_string()),
+        "diff_changed_paths(main, {}) must also report the rename SOURCE — the \
+         un-landed branch-tip leg has the identical false-refusal defect; got: {:?}",
+        tip_sha,
+        tip,
     );
 }
