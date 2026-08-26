@@ -8880,6 +8880,10 @@ mod tests {
             let bare = kernel.execute(&GeometryOp::Draft {
                 target: target.id,
                 faces: vec![face],
+                // Stays bare deliberately — task 5777. This is the CONTROL arm of
+                // the D2 equivalence pin; retyping it to `Value::angle` collapses
+                // both arms into one and deletes the comparison. δ (5780) owns
+                // `draft`, but not this site.
                 angle: Value::Real(angle_rad),
                 plane: plane.id,
             });
@@ -13834,11 +13838,19 @@ mod tests {
                 axis_origin: [0.0, 0.0, 0.0],
                 axis_dir: [0.0, 0.0, 1.0],
                 count: 2,
+                // Stays bare deliberately — task 5777. ε (5781) migrates
+                // `circular_pattern` angles, but NOT this one: a dimensioned
+                // `Value` emits no `field = "angle"` warn either, so retyping it
+                // makes the assertion below pass VACUOUSLY and silently deletes
+                // this control. See docs/notes/angle-literal-migration-ledger.md
+                // §1.2.1.
                 angle: Value::Real(std::f64::consts::PI),
             });
             let _ = kernel.execute(&GeometryOp::Draft {
                 target,
                 faces: vec![],
+                // Stays bare deliberately — task 5777, same vacuity trap as the
+                // arm above, but δ's (5780): `draft` is δ's migration target.
                 angle: Value::Real(0.05),
                 plane: target,
             });
