@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Independent pairwise clearance sweep for printer_v01 rear routing v3.1.
+"""Independent pairwise clearance sweep for printer_v01 rear routing v3.2.
 
 v3 (2026-08-25, symmetry round): unit B side-swapped (mirror-twin balanced
 config — FL_IN_B is now the INBOARD vertical), b2-in feeds from the right
 RAIL. v3.1 (2026-08-26): ONE OUT scheme ×4 — every OUT feed turns straight
-down at its own strand line. Rail strands (b1/a2) descend at ±rail_x into
-their tangent planes; return strands (a1/b2) descend at ±436 hanging at the
-CAP_Y mid-plane line, and their low runs SLANT in plan to the unchanged rise
-bases (tilted-axis corner/up-turn discs). The v3 all-four-down-turns proof
-assumed axis-aligned in-plane low runs (A3); the slant breaks A3 — this
-sweep caught both bad all-in-plane drafts and stays the oracle for the
-slant's crossings.
+down at its own strand line; b2 descends at −436 hanging at the CAP_Y
+mid-plane line, its low run SLANTING in plan to the unchanged rise base.
+v3.2 (same day): a1 FUSES descent + low run into ONE 3D diagonal between
+virtual corners on its strand and rise lines (compound-axis dnturn, 2
+discs). The v3 all-four-down-turns proof assumed axis-aligned in-plane low
+runs (A3); the slant/fusion breaks A3 — this sweep caught both bad
+all-in-plane drafts AND the fused draft's z_b-level crossing violation
+(run_in_b2 vs run_lo_a1 at FA1_V1Y=-398), and stays the oracle for every
+oblique crossing.
 
 Mirrors the DERIVATIONS in printer.ri's DriveTendons (not its literals), so a
 disagreement means the .ri and this script disagree about the tangency rules.
@@ -43,8 +45,7 @@ PLANE_OUT = PLANE_IN - 2 * PITCH_R               # -448
 MOVED_Y = PLANE_OUT + R_P                        # -430
 CAP_Y = PLANE_IN - PITCH_R                       # -424
 STAGGER = R_P*2 + ROPE + CLEAR + 5
-LOW_HI = -352.0
-LOW_LO = LOW_HI - STAGGER
+LOW_LO = -402.0                       # v3.2: plane_out's single in-plane run (b1)
 LOW_IN_HI = -364.0
 LOW_IN_LO = LOW_IN_HI - STAGGER
 RISE_MIN = R_P*2 + CLEAR
@@ -60,13 +61,31 @@ IN_A1_TOP, IN_B1_TOP = ZA - R_P, ZB - R_P
 IN_A2_TOP, IN_B2_TOP = -ZA - R_P, -ZB - R_P
 # v3.1: EVERY OUT feed descends at its own strand line; the return-strand
 # discs sit on the DNT_Y line so their descents hang at CAP_Y (mid-plane)
-OUT_A1_X = RET_R                  # +436, down-turn on the right return (slant feed)
+OUT_A1_X = RET_R                  # +436, FUSED down-turn on the right return (v3.2)
 OUT_B1_X = RAIL_X                 # +400, down-turn feed
 OUT_A2_X = -RAIL_X                # -400, down-turn feed
 OUT_B2_X = RET_L                  # -436, down-turn on the left return (slant feed)
-DNT_Y = CAP_Y + R_P               # -406, return-strand down-turn disc line
-LO_HI_C, LO_LO_C = LOW_HI + R_P, LOW_LO + R_P
+DNT_Y = CAP_Y + R_P               # -406, b2's down-turn disc line
+LO_LO_C = LOW_LO + R_P
 LO_IN_HI_C, LO_IN_LO_C = LOW_IN_HI + R_P, LOW_IN_LO + R_P
+# v3.2 fused a1 (rule 7): virtual corners V1 on the strand, V2 on the rise;
+# fillet algebra mirrors printer.ri's fa1_* cells exactly.
+FA1_Z2, FA1_V1Y = -405.0, -400.0
+FA1_D = (OUT_A1_X - FL_OUT_A, FA1_V1Y - PLANE_OUT, ZA - FA1_Z2)   # (268, 50, 485)
+FA1_L = math.sqrt(sum(c * c for c in FA1_D))
+FA1_U = tuple(c / FA1_L for c in FA1_D)
+FA1_T1 = R_P * (1 - FA1_U[1]) / math.sqrt(1 - FA1_U[1]**2)
+FA1_T2 = R_P * (1 + FA1_U[2]) / math.sqrt(1 - FA1_U[2]**2)
+FA1_K1 = R_P / math.sqrt(1 - FA1_U[1]**2)
+FA1_K2 = R_P / math.sqrt(1 - FA1_U[2]**2)
+FA1_C1 = (OUT_A1_X - FA1_K1*FA1_U[0], FA1_V1Y + FA1_K1*(1 - FA1_U[1]), ZA - FA1_K1*FA1_U[2])
+FA1_C2 = (FL_OUT_A + FA1_K2*FA1_U[0], PLANE_OUT + FA1_K2*FA1_U[1], FA1_Z2 + FA1_K2*(1 + FA1_U[2]))
+FA1_P1 = (OUT_A1_X - FA1_T1*FA1_U[0], FA1_V1Y - FA1_T1*FA1_U[1], ZA - FA1_T1*FA1_U[2])
+FA1_P2 = (FL_OUT_A + FA1_T2*FA1_U[0], PLANE_OUT + FA1_T2*FA1_U[1], FA1_Z2 + FA1_T2*FA1_U[2])
+_h1 = math.hypot(FA1_U[0], FA1_U[2])
+FA1_AX1 = (-FA1_U[2] / _h1, 0.0, FA1_U[0] / _h1)          # dnturn axis: y-hat x e-hat
+_h2 = math.hypot(FA1_D[0], FA1_D[1])
+FA1_AX2 = (-FA1_D[1] / _h2, FA1_D[0] / _h2, 0.0)          # up-turn axis: e-hat x z-hat
 
 S = []
 def cyl(n, c, ax, r, hl, kind, part=None):
@@ -94,7 +113,7 @@ rope_y('rail_r_bu', -430, 0, RAIL_X, ZB)      # -> b1-OUT down-turn (incl. lead_
 rope_y('rail_r_bl', -400, 0, RAIL_X, -ZB)     # -> b2-IN rear turn (18mm overshoot)
 rope_y('rail_l_au', -430, 0, -RAIL_X, ZA)     # -> a1-IN rear turn (incl. lead_bk_a1)
 rope_y('rail_l_al', -400, 0, -RAIL_X, -ZA)    # -> a2-OUT down-turn (18mm overshoot)
-rope_y('ret_r_u', -406, 400, RET_R, ZA)       # 806mm -> a1-OUT down-turn at DNT_Y (v3.1)
+rope_y('ret_r_u', FA1_V1Y + FA1_T1, 400, RET_R, ZA)   # -> a1-OUT fused down-turn tangent (v3.2)
 rope_y('ret_r_l', -382, 400, RET_R, -ZA)      # 782mm -> a2-IN rear turn (v3 trim)
 rope_y('ret_l_u', -430, 400, RET_L, ZB)       # b1-IN rear turn
 rope_y('ret_l_l', -406, 400, RET_L, -ZB)      # 806mm -> b2-OUT down-turn at DNT_Y (v3.1)
@@ -107,7 +126,7 @@ disc('backidler_r_l', (OUT_R, -CORNER_Y, -ZA), 'Z')      # a2-IN rear turn
 disc('corner_br_l', (IN_R, -CORNER_Y, -ZB), 'Z')         # b2-IN rear turn (v3; was b2-OUT emitter)
 disc('dnturn_b1', (OUT_B1_X, MOVED_Y, IN_B1_TOP), 'X')   # b1-OUT down-turn (v2 corner_br_u)
 disc('dnturn_a2', (OUT_A2_X, -CORNER_Y, IN_A2_TOP), 'X') # a2-OUT down-turn
-disc('dnturn_a1', (OUT_A1_X, DNT_Y, IN_A1_TOP), 'X')     # a1-OUT down-turn (right return, v3.1)
+disc('dnturn_a1', FA1_C1, FA1_AX1)                       # a1-OUT FUSED down-turn (v3.2, compound axis)
 disc('dnturn_b2', (OUT_B2_X, DNT_Y, IN_B2_TOP), 'X')     # b2-OUT down-turn (left return, v3.1)
 
 # ── IN feeds ─────────────────────────────────────────────────────────────────
@@ -134,28 +153,24 @@ rope_z('vert_in_b2', FLZ_IN2, IN_B2_TOP, FL_OUT_B, PLANE_IN)
 def _plan_u(p1, p2):
     L = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
     return ((p2[0] - p1[0]) / L, (p2[1] - p1[1]) / L)
-A1P1, A1P2 = (OUT_A1_X, CAP_Y), (FL_OUT_A, PLANE_OUT)
 B2P1, B2P2 = (OUT_B2_X, CAP_Y), (FL_IN_B, PLANE_IN)
-A1U, B2U = _plan_u(A1P1, A1P2), _plan_u(B2P1, B2P2)
-rope_z('desc_a1', LO_HI_C, IN_A1_TOP, OUT_A1_X, CAP_Y)
+B2U = _plan_u(B2P1, B2P2)
 rope_z('desc_b1', LO_LO_C, IN_B1_TOP, OUT_B1_X, PLANE_OUT)
 rope_z('desc_a2', LO_IN_LO_C, IN_A2_TOP, OUT_A2_X, PLANE_IN)
 rope_z('desc_b2', LO_IN_HI_C, IN_B2_TOP, OUT_B2_X, CAP_Y)
-disc('corner_lo_a1', (A1P1[0] + R_P*A1U[0], A1P1[1] + R_P*A1U[1], LO_HI_C), (-A1U[1], A1U[0], 0.0))
 disc('corner_lo_b1', (OUT_B1_X - R_P, PLANE_OUT, LO_LO_C), 'Y')
 disc('corner_lo_a2', (OUT_A2_X + R_P, PLANE_IN, LO_IN_LO_C), 'Y')
 disc('corner_lo_b2', (B2P1[0] + R_P*B2U[0], B2P1[1] + R_P*B2U[1], LO_IN_HI_C), (-B2U[1], B2U[0], 0.0))
-disc('idler_up_a1', (A1P2[0] - R_P*A1U[0], A1P2[1] - R_P*A1U[1], LO_HI_C), (-A1U[1], A1U[0], 0.0))
+disc('idler_up_a1', FA1_C2, FA1_AX2)                     # v3.2 fused-feed up-turn
 disc('idler_up_b1', (FL_OUT_B + R_P, PLANE_OUT, LO_LO_C), 'Y')
 disc('idler_up_a2', (FL_IN_A - R_P, PLANE_IN, LO_IN_LO_C), 'Y')
 disc('idler_up_b2', (B2P2[0] - R_P*B2U[0], B2P2[1] - R_P*B2U[1], LO_IN_HI_C), (-B2U[1], B2U[0], 0.0))
-rope_seg('run_lo_a1', (A1P1[0] + R_P*A1U[0], A1P1[1] + R_P*A1U[1], LOW_HI),
-                      (A1P2[0] - R_P*A1U[0], A1P2[1] - R_P*A1U[1], LOW_HI))
+rope_seg('run_lo_a1', FA1_P1, FA1_P2)                    # v3.2: the fused 3D diagonal
 rope_x('run_lo_b1', FL_OUT_B + R_P, OUT_B1_X - R_P, PLANE_OUT, LOW_LO)
 rope_x('run_lo_a2', OUT_A2_X + R_P, FL_IN_A - R_P, PLANE_IN, LOW_IN_LO)
 rope_seg('run_lo_b2', (B2P1[0] + R_P*B2U[0], B2P1[1] + R_P*B2U[1], LOW_IN_HI),
                       (B2P2[0] - R_P*B2U[0], B2P2[1] - R_P*B2U[1], LOW_IN_HI))
-rope_z('rise_a1', LO_HI_C, FLZ_OUT1, FL_OUT_A, PLANE_OUT)
+rope_z('rise_a1', FA1_C2[2], FLZ_OUT1, FL_OUT_A, PLANE_OUT)
 rope_z('rise_b1', LO_LO_C, FLZ_OUT1, FL_OUT_B, PLANE_OUT)
 rope_z('rise_a2', LO_IN_LO_C, FLZ_OUT2, FL_IN_A, PLANE_IN)
 rope_z('rise_b2', LO_IN_HI_C, FLZ_OUT2, FL_IN_B, PLANE_IN)
@@ -305,8 +320,9 @@ rows.sort()
 print(f"solids: {len(S)}   pairs: {len(S)*(len(S)-1)//2}")
 print(f"\n=== stations (cap_x={CAP_X:.0f}) ===")
 print(f"  verticals: A in {FL_IN_A:.0f} out {FL_OUT_A:.0f} | B in {FL_IN_B:.0f} out {FL_OUT_B:.0f}   (v3 side-swap: station set mirror-symmetric)")
-print(f"  descents:  a1 {OUT_A1_X:.0f}@{CAP_Y:.0f}  b1 {OUT_B1_X:.0f}  a2 {OUT_A2_X:.0f}  b2 {OUT_B2_X:.0f}@{CAP_Y:.0f}   (v3.1: a1/b2 slant runs {math.degrees(math.atan2(abs(CAP_Y-PLANE_OUT), abs(A1P2[0]-A1P1[0]))):.1f}deg/{math.degrees(math.atan2(abs(PLANE_IN-CAP_Y), abs(B2P2[0]-B2P1[0]))):.1f}deg)")
-print(f"  low runs:  hi {LOW_HI:.0f}  lo {LOW_LO:.0f}   fairlead z: {FLZ_IN1:.1f} {FLZ_OUT1:.1f} {FLZ_IN2:.1f} {FLZ_OUT2:.1f}")
+print(f"  a1 FUSED (v3.2): V1 ({OUT_A1_X:.0f},{FA1_V1Y:.0f},{ZA:.0f}) -> V2 ({FL_OUT_A:.0f},{PLANE_OUT:.0f},{FA1_Z2:.0f}), diag {FA1_L - FA1_T1 - FA1_T2:.1f}mm @ {math.degrees(math.asin(FA1_U[2])):.1f}deg")
+print(f"  descents:  b1 {OUT_B1_X:.0f}  a2 {OUT_A2_X:.0f}  b2 {OUT_B2_X:.0f}@{CAP_Y:.0f}   (b2 slant {math.degrees(math.atan2(abs(PLANE_IN-CAP_Y), abs(B2P2[0]-B2P1[0]))):.1f}deg)")
+print(f"  low runs:  b1 {LOW_LO:.0f}  b2 {LOW_IN_HI:.0f}  a2 {LOW_IN_LO:.0f}   fairlead z: {FLZ_IN1:.1f} {FLZ_OUT1:.1f} {FLZ_IN2:.1f} {FLZ_OUT2:.1f}")
 print(f"\n=== findings < {CLEAR}mm ===")
 if not rows:
     print("  NONE — every non-by-design pair clears >= 6mm")

@@ -913,12 +913,13 @@ pub structure DriveTendons {
     // rear wrap tangent. The two IN-feed returns keep their v3 spans: b1-in's
     // return_l_u reaches the moved_y = −430 rear line (830mm, centred −15mm);
     // a2-in's return_r_l ends at the neg_corn = −382 line (782mm, centred
-    // +9mm — v3 trim). The two CONVERTED OUT strands (v3.1) both end at their
-    // down-turn disc tangent dnt_y = −406 (= neg_corn − cap_pitch): 806mm,
-    // centred −3mm — the converted pair is length-symmetric by construction.
+    // +9mm — v3 trim). b2-out's return_l_l (v3.1) ends at its down-turn disc
+    // tangent dnt_y = −406 (= neg_corn − cap_pitch): 806mm, centred −3mm.
     // (Literals like the rest of this block: dnt_y is defined further down
     // and #6584 turns a forward read into a bogus dimension error.)
-    sub return_r_u = LinearTendon(length: 806mm) at transform3(rot_to_y, vec3(return_x_r, 0mm - 3mm, z_a))
+    // a1-out's return_r_u (v3.2) ends at its FUSED down-turn's strand tangent
+    // fa1_v1y + fa1_t1 — a derived station, so the sub lives DOWN in the rear
+    // section after those cells (#6584 again).
     sub return_r_l = LinearTendon(length: 782mm) at transform3(rot_to_y, vec3(return_x_r, 9mm, neg_z_a))
     sub return_l_u = LinearTendon(length: 830mm) at transform3(rot_to_y, vec3(return_x_l, 0mm - 15mm, z_b))
     sub return_l_l = LinearTendon(length: 806mm) at transform3(rot_to_y, vec3(return_x_l, 0mm - 3mm, neg_z_b))
@@ -967,6 +968,14 @@ pub structure DriveTendons {
     //   tangent plane — and the low run SLANTS in plan (rule 6) from the
     //   descent base straight to the unchanged rise base, re-entering the
     //   tangent plane only AT the rise.
+    //   v3.2 (same day): a1 FUSES its descent + low run into ONE 3D diagonal
+    //   (rule 7) — dnturn on a compound-angle axis straight to the up-turn,
+    //   2 discs, ~160mm less rope on a drive strand. The mirror fusions are
+    //   all INFEASIBLE (rule 7 note): b2's dies on a2's in-plane low run
+    //   (its diagonal must hug plane_in near the rise), the rail feeds' on
+    //   the collar webs' swept band. a1 alone escapes — dnt_y sits 42mm off
+    //   plane_out but only 6mm off plane_in, so the fusion is chirally
+    //   one-sided.
     //   THE THEOREM AND ITS ESCAPE: v3 proved all-four-down-turns infeasible
     //   under A1 (low runs lie in tangent planes) + A2 (rises at the fixed
     //   fairlead verticals) + A3 (single 90° wraps, axis-aligned runs): two
@@ -1039,6 +1048,25 @@ pub structure DriveTendons {
     //     through P1,P2). Both disc AXES are horizontal, yawed to ⊥û — the
     //     wrap planes stay vertical, and descent and rise stay vertical.
     //     Run length = |P2−P1| − 2·r_pitch.
+    //  7. (v3.2) A FUSED feed replaces descent + low run with ONE 3D diagonal
+    //     between two VIRTUAL CORNERS: V1 on the strand line, V2 on the rise
+    //     line (two tangent lines of a disc must be coplanar, and coplanar-
+    //     with-a-line means intersecting it — so the diagonal must MEET both
+    //     lines' extensions). Each corner is a fillet in its own wrap plane:
+    //     interior angle φ with c = cos φ gives rope tangents t = r(1+c)/
+    //     sqrt(1−c²) from the corner along each line and disc centre at
+    //     k = r/sqrt(1−c²) per bisector component (all sqrt-algebra, no trig).
+    //     The dnturn's axis leaves the horizontal (ŷ×ê — a compound-angle
+    //     bracket); the up-turn's wrap plane stays vertical (ê,ẑ). Applied to
+    //     a1 only: b2's mirror fusion is INFEASIBLE — its diagonal must end
+    //     on its rise at plane_in, so near the deep end it hugs y ≈ −400
+    //     and crosses a2's in-plane low-run level within ~1mm laterally, for
+    //     every choice of V1 and depth (a1 escapes because its strand corner
+    //     sits 42–50mm off plane_out where b2's is 6mm off plane_in — the
+    //     down-turn line dnt_y is asymmetrically placed between the planes,
+    //     so fusion is chirally one-sided). The rail feeds can't fuse either:
+    //     their diagonals cross BOTH collar webs' swept z-band with
+    //     contradictory slope requirements.
     // Low runs stagger at low_hi / low_lo wherever their plan spans cross;
     // every low run passes below the collar plates and the below-entry
     // pulley discs.
@@ -1101,8 +1129,10 @@ pub structure DriveTendons {
     // Each plane's upper level is set by whichever bound binds — the rise rule
     // or passing under the collar plates — and the lower level is one stagger
     // below it; all four are pinned by constraints.
-    let low_hi     = 0mm - 352mm     // plane_out upper (bound by the collar's SWEPT envelope)
-    let low_lo     = low_hi - low_stagger
+    // (v3.2) plane_out now holds ONE in-plane low run — b1's, kept at the
+    // level v3.1's stagger assigned it (low_hi and the plane_out stagger pair
+    // are gone; a1's fused diagonal never reaches this depth).
+    let low_lo     = 0mm - 402mm
     let low_in_hi  = 0mm - 364mm     // plane_in upper (rise-bound by flz_out2 AT THE BOTTOM OF TRAVEL)
     let low_in_lo  = low_in_hi - low_stagger
 
@@ -1146,12 +1176,15 @@ pub structure DriveTendons {
     let in_b2_run_l = idler_in_r - in_b2_dn_x
     let in_b2_top   = neg_z_b - r_pitch
 
-    // ── OUT feeds (v3.1): ONE down-turn scheme ×4 (see header). Rail strands
-    // descend at ±rail_x into their tangent planes; return strands descend at
-    // ±return_x with the disc on the dnt_y line, hanging the descent at the
-    // cap_y mid-plane line, and their low runs SLANT (rule 6) to the
-    // unchanged rise bases. The band runs, band down-idlers and the two
-    // backidler rear turns are DELETED (28 pulleys, was 30).
+    // ── OUT feeds (v3.1 + v3.2): ONE down-turn scheme ×4 (see header). Rail
+    // strands descend at ±rail_x into their tangent planes; b2 descends at
+    // return_x_l with the disc on the dnt_y line, hanging at the cap_y
+    // mid-plane line, its low run SLANTING (rule 6) to the unchanged rise
+    // base; a1 (v3.2) goes further and FUSES descent + low run into one 3D
+    // diagonal (rule 7) — 2 discs, ~160mm less rope. b2's mirror fusion and
+    // both rail-feed fusions are geometrically INFEASIBLE (rule 7 note).
+    // The band runs, band down-idlers, the two backidler rear turns, and
+    // a1's corner disc are DELETED (27 pulleys; v3 had 30).
     let dnt_y         = cap_y + r_pitch         // return-strand down-turn disc line (−406)
     let out_a1_desc_x = return_x_r              // a1: down-turn AT the right return line
     let out_b1_desc_x = rail_x                  // b1: down-turn AT the right rail line
@@ -1162,14 +1195,41 @@ pub structure DriveTendons {
     // (a1 machineward of plane_out, b2 rearward of plane_in), so both plan
     // Δy = cap_pitch_m — the pinned literal, because sl_*_len feeds
     // LinearTendon length: args and must not read self.rear_drive (#6586).
-    let sl_a1_dx  = out_a1_desc_x - fl_out_x_a          // 268, run heads −x
     let sl_b2_dx  = fl_in_x_b - out_b2_desc_x           // 404, run heads +x
-    let sl_a1_len = sqrt(sl_a1_dx * sl_a1_dx + cap_pitch_m * cap_pitch_m)
     let sl_b2_len = sqrt(sl_b2_dx * sl_b2_dx + cap_pitch_m * cap_pitch_m)
-    let sl_a1_ux  = sl_a1_dx / sl_a1_len                // plan |unit| components
-    let sl_a1_uy  = cap_pitch_m / sl_a1_len
-    let sl_b2_ux  = sl_b2_dx / sl_b2_len
+    let sl_b2_ux  = sl_b2_dx / sl_b2_len                // plan |unit| components
     let sl_b2_uy  = cap_pitch_m / sl_b2_len
+    // a1 FUSED (v3.2, rule 7): descent + low run merged into ONE 3D diagonal
+    // between virtual corners V1 = (out_a1_desc_x, fa1_v1y, z_a) on the
+    // return strand and V2 = (fl_out_x_a, plane_out, fuse_a1_z2) on the rise
+    // line — dnturn (compound-angle axis) → diagonal → up-turn, 2 discs.
+    // The two literal stations are DESIGN choices bounded by constraints:
+    // fuse_a1_z2 by the collar-web duck-under (12) + the up-turn-under-web
+    // rule (6), fa1_v1y by the diagonal-vs-dnturn_b1 clearance (2c).
+    let fuse_a1_z2 = 0mm - 405mm    // V2 height (up-turn centre lands ~= v3.1's lo_hi_c level)
+    let fa1_v1y    = 0mm - 400mm    // V1 station on the strand (6mm machineward of dnt_y; set by 2c vs 2d)
+    let fa1_dx  = out_a1_desc_x - fl_out_x_a       // 268: V1→V2, heads −x
+    // 50: heads −y. plane_out's PINNED spelling (neg_corn − r_pitch −
+    // 2·cap_pitch_m), because this feeds length: args through fa1_len (#6586).
+    let fa1_dy  = fa1_v1y - neg_corn + r_pitch + cap_pitch_m * 2
+    let fa1_dz  = z_a - fuse_a1_z2                 // 485: heads −z
+    let fa1_len = sqrt(fa1_dx * fa1_dx + fa1_dy * fa1_dy + fa1_dz * fa1_dz)
+    let fa1_ux  = fa1_dx / fa1_len                 // |unit| components
+    let fa1_uy  = fa1_dy / fa1_len
+    let fa1_uz  = fa1_dz / fa1_len
+    // Rule-7 fillet algebra: c1 = cos(strand ŷ, diagonal ê) = −uy, c2 =
+    // cos(−ê, rise ẑ) = +uz; t = r(1+c)/sqrt(1−c²) tangent offsets, k =
+    // r/sqrt(1−c²) the per-bisector-component centre scale.
+    let fa1_t1 = r_pitch * (1 - fa1_uy) / sqrt(1 - fa1_uy * fa1_uy)
+    let fa1_t2 = r_pitch * (1 + fa1_uz) / sqrt(1 - fa1_uz * fa1_uz)
+    let fa1_k1 = r_pitch / sqrt(1 - fa1_uy * fa1_uy)
+    let fa1_k2 = r_pitch / sqrt(1 - fa1_uz * fa1_uz)
+    let fa1_c1x = out_a1_desc_x - fa1_k1 * fa1_ux      // dnturn disc centre
+    let fa1_c1y = fa1_v1y + fa1_k1 * (1 - fa1_uy)
+    let fa1_c1z = z_a - fa1_k1 * fa1_uz
+    let fa1_c2x = fl_out_x_a + fa1_k2 * fa1_ux         // up-turn disc centre
+    let fa1_c2y = plane_out + fa1_k2 * fa1_uy
+    let fa1_c2z = fuse_a1_z2 + fa1_k2 * (1 + fa1_uz)   // == the rise's bottom tangent height
     // Tilted-axis orientations for the slant feeds. A 90° turn about the
     // slant's plan direction d tips the leaf +Z (pulley axis) to the
     // horizontal normal of the vertical wrap plane containing d; a 90° turn
@@ -1177,10 +1237,16 @@ pub structure DriveTendons {
     // rot_to_x / rot_to_y are the axis-aligned specials of the same
     // construction; axis sign only flips disc normal / tendon direction,
     // both symmetric.
-    let rot_disc_a1 = orient_axis_angle(vec3(0mm - sl_a1_dx, 0mm - cap_pitch_m, 0mm), 90deg)
-    let rot_run_a1  = orient_axis_angle(vec3(cap_pitch_m, 0mm - sl_a1_dx, 0mm), 90deg)
     let rot_disc_b2 = orient_axis_angle(vec3(sl_b2_dx, cap_pitch_m, 0mm), 90deg)
     let rot_run_b2  = orient_axis_angle(vec3(0mm - cap_pitch_m, sl_b2_dx, 0mm), 90deg)
+    // v3.2 orientations via orient_look_at (leaf +Z → forward; roll is
+    // irrelevant for tendons and discs, up just breaks the parallel case):
+    // diagonal tendon +Z → ê; dnturn disc axis ŷ×ê ∝ (−dz, 0, dx) (leaves
+    // the horizontal — compound-angle bracket); up-turn disc axis ê×ẑ ∝
+    // (−dy, dx, 0) (horizontal, vertical wrap plane).
+    let rot_diag_a1 = orient_look_at(vec3(0mm - fa1_dx, 0mm - fa1_dy, 0mm - fa1_dz), vec3(0mm, 1m, 0mm))
+    let rot_dnt_a1  = orient_look_at(vec3(0mm - fa1_dz, 0mm, fa1_dx), vec3(0mm, 1m, 0mm))
+    let rot_up_a1   = orient_look_at(vec3(0mm - fa1_dy, fa1_dx, 0mm), vec3(0mm, 0mm, 1m))
     // Low corner + up-turn stations, named ONCE so the placements below and
     // the wrap-sense constraints at the end read the SAME cells (a constraint
     // that re-states the offset instead of reading it cannot catch a flipped
@@ -1189,21 +1255,16 @@ pub structure DriveTendons {
     // their +x side. The slant feeds' corners/up-turns sit r_pitch along the
     // plan direction û from the descent/rise base (rule 6) — their x cells
     // keep the family-10 sign convention, and they gain y cells.
-    let corner_a1_x = out_a1_desc_x - r_pitch * sl_a1_ux
-    let corner_a1_y = cap_y - r_pitch * sl_a1_uy
     let corner_b1_x = out_b1_desc_x - r_pitch
     let corner_a2_x = out_a2_desc_x + r_pitch
     let corner_b2_x = out_b2_desc_x + r_pitch * sl_b2_ux
     let corner_b2_y = cap_y + r_pitch * sl_b2_uy
-    let up_a1_x     = fl_out_x_a + r_pitch * sl_a1_ux
-    let up_a1_y     = plane_out + r_pitch * sl_a1_uy
     let up_b1_x     = fl_out_x_b + r_pitch
     let up_a2_x     = fl_in_x_a  - r_pitch
     let up_b2_x     = fl_in_x_b - r_pitch * sl_b2_ux
     let up_b2_y     = plane_in - r_pitch * sl_b2_uy
     // Low-corner / up-turn centre heights (rule 3).
-    let lo_hi_c = low_hi + r_pitch          // plane_out corner/up-turn centres
-    let lo_lo_c = low_lo + r_pitch
+    let lo_lo_c = low_lo + r_pitch          // plane_out corner/up-turn centres (b1)
     let lo_in_hi_c = low_in_hi + r_pitch    // plane_in corner/up-turn centres
     let lo_in_lo_c = low_in_lo + r_pitch
 
@@ -1227,8 +1288,12 @@ pub structure DriveTendons {
     sub lead_bk_b1 = LinearTendon(length: 30mm) at transform3(rot_to_y, vec3(rail_x,     moved_y + 15mm, z_b))  // right rail upper → dnturn_b1
     sub dnturn_b1 = IdlerPulley() at transform3(rot_to_x, vec3(out_b1_desc_x, moved_y,  in_b1_top))   // b1-OUT down-turn (right rail; the v2 corner_br_u, position unchanged)
     sub dnturn_a2 = IdlerPulley() at transform3(rot_to_x, vec3(out_a2_desc_x, neg_corn, in_a2_top))   // a2-OUT down-turn (left rail)
-    sub dnturn_a1 = IdlerPulley() at transform3(rot_to_x, vec3(out_a1_desc_x, dnt_y, in_a1_top))      // a1-OUT down-turn (right return; v3.1)
+    sub dnturn_a1 = IdlerPulley() at transform3(rot_dnt_a1, vec3(fa1_c1x, fa1_c1y, fa1_c1z))          // a1-OUT FUSED down-turn (right return; v3.2, compound-angle axis)
     sub dnturn_b2 = IdlerPulley() at transform3(rot_to_x, vec3(out_b2_desc_x, dnt_y, in_b2_top))      // b2-OUT down-turn (left return; v3.1)
+    // a1-out's strand, trimmed to the fused dnturn's tangent (v3.2; lives
+    // here rather than in the returns block because fa1_t1 is defined above —
+    // #6584 forbids a forward read from up there).
+    sub return_r_u = LinearTendon(length: rail_half - fa1_v1y - fa1_t1) at transform3(rot_to_y, vec3(return_x_r, (rail_half + fa1_v1y + fa1_t1) / 2, z_a))
 
     // IN X-runs + down-idlers + descents.
     sub run_in_a1  = LinearTendon(length: in_a1_run_l) at transform3(rot_to_x, vec3(in_a1_run_c, plane_out, z_a))
@@ -1245,41 +1310,42 @@ pub structure DriveTendons {
     sub vert_in_b2 = LinearTendon(length: in_b2_top - flz_in2) at transform3(orient_identity(), vec3(fl_out_x_b, plane_in,  (in_b2_top + flz_in2) / 2))
 
     // OUT descents → low corners → low runs → up-turns → rises (from below).
-    // STAGGER ASSIGNMENT (v3 levels kept): per side the SLANT feed (a1 / b2,
-    // return-line descents at cap_y) takes the HIGH level and the in-plane
-    // feed (b1 / a2, rail-line descents) the DEEP one. The in-plane feed's
-    // long low run passes UNDER the slant feed's up-turn disc and rise at
-    // the rise station — the SAME one-stagger relation v3 satisfied (the
-    // slant up-turns land within ~2mm of v3's) — while the slant run
-    // crosses the in-plane feed's descent BESIDE it in plan (constraint 2),
-    // not under it. v3's double-nesting contradiction assumed the a1/b2 runs
-    // were in-plane too; the slant dissolves it (see header).
-    sub desc_a1 = LinearTendon(length: in_a1_top - lo_hi_c) at transform3(orient_identity(), vec3(out_a1_desc_x, cap_y, (in_a1_top + lo_hi_c) / 2))
+    // STAGGER ASSIGNMENT: plane_in keeps v3.1's two-level pair — b2's slant
+    // at low_in_hi over a2's in-plane run at low_in_lo, with b2's slant
+    // crossing a2's descent BESIDE it in plan (constraint 2). plane_out
+    // (v3.2) has ONE in-plane run left — b1's at low_lo — passing UNDER
+    // a1's fused up-turn disc and rise at the rise station (the same
+    // one-stagger relation as v3/v3.1; the fused up-turn lands within ~2mm
+    // of v3.1's spot), while a1's diagonal crosses b1's descent and dnturn
+    // disc BESIDE them in y (constraints 2/2c) and bottoms out ~57mm above
+    // b1's run level. v3's double-nesting contradiction assumed the a1/b2
+    // runs were in-plane too; the slant/fusion dissolves it (see header).
     sub desc_b1 = LinearTendon(length: in_b1_top - lo_lo_c) at transform3(orient_identity(), vec3(out_b1_desc_x, plane_out, (in_b1_top + lo_lo_c) / 2))
     sub desc_a2 = LinearTendon(length: in_a2_top - lo_in_lo_c) at transform3(orient_identity(), vec3(out_a2_desc_x, plane_in,  (in_a2_top + lo_in_lo_c) / 2))
     sub desc_b2 = LinearTendon(length: in_b2_top - lo_in_hi_c) at transform3(orient_identity(), vec3(out_b2_desc_x, cap_y, (in_b2_top + lo_in_hi_c) / 2))
-    sub corner_lo_a1 = IdlerPulley() at transform3(rot_disc_a1, vec3(corner_a1_x, corner_a1_y, lo_hi_c))
     sub corner_lo_b1 = IdlerPulley() at transform3(rot_to_y, vec3(corner_b1_x, plane_out, lo_lo_c))
     sub corner_lo_a2 = IdlerPulley() at transform3(rot_to_y, vec3(corner_a2_x, plane_in,  lo_in_lo_c))
     sub corner_lo_b2 = IdlerPulley() at transform3(rot_disc_b2, vec3(corner_b2_x, corner_b2_y, lo_in_hi_c))
-    sub idler_up_a1 = IdlerPulley() at transform3(rot_disc_a1, vec3(up_a1_x, up_a1_y, lo_hi_c))
+    sub idler_up_a1 = IdlerPulley() at transform3(rot_up_a1, vec3(fa1_c2x, fa1_c2y, fa1_c2z))    // v3.2: fused-feed up-turn (~1.5mm from v3.1's spot)
     sub idler_up_b1 = IdlerPulley() at transform3(rot_to_y, vec3(up_b1_x, plane_out, lo_lo_c))
     sub idler_up_a2 = IdlerPulley() at transform3(rot_to_y, vec3(up_a2_x, plane_in,  lo_in_lo_c))
     sub idler_up_b2 = IdlerPulley() at transform3(rot_disc_b2, vec3(up_b2_x, up_b2_y, lo_in_hi_c))
-    // Slant runs (rule 6): centred at the descent-base/rise-base midpoint,
-    // length |P2−P1| − 2·r_pitch, tilted tendon orientation.
-    sub run_lo_a1 = LinearTendon(length: sl_a1_len - r_pitch * 2) at transform3(rot_run_a1, vec3((out_a1_desc_x + fl_out_x_a) / 2, (cap_y + plane_out) / 2, low_hi))
+    // a1's FUSED diagonal (rule 7): tangent-to-tangent between the two
+    // fillets, centred at the tangent midpoint. b2 keeps its rule-6 slant.
+    sub run_lo_a1 = LinearTendon(length: fa1_len - fa1_t1 - fa1_t2) at transform3(rot_diag_a1, vec3(
+        (out_a1_desc_x - fa1_t1 * fa1_ux + fl_out_x_a + fa1_t2 * fa1_ux) / 2,
+        (fa1_v1y - fa1_t1 * fa1_uy + plane_out + fa1_t2 * fa1_uy) / 2,
+        (z_a - fa1_t1 * fa1_uz + fuse_a1_z2 + fa1_t2 * fa1_uz) / 2))
     sub run_lo_b1 = LinearTendon(length: corner_b1_x - up_b1_x) at transform3(rot_to_x, vec3((corner_b1_x + up_b1_x) / 2, plane_out, low_lo))
     sub run_lo_a2 = LinearTendon(length: up_a2_x - corner_a2_x) at transform3(rot_to_x, vec3((corner_a2_x + up_a2_x) / 2, plane_in, low_in_lo))
     sub run_lo_b2 = LinearTendon(length: sl_b2_len - r_pitch * 2) at transform3(rot_run_b2, vec3((out_b2_desc_x + fl_in_x_b) / 2, (cap_y + plane_in) / 2, low_in_hi))
-    sub rise_a1 = LinearTendon(length: flz_out1 - lo_hi_c) at transform3(orient_identity(), vec3(fl_out_x_a, plane_out, (flz_out1 + lo_hi_c) / 2))
+    sub rise_a1 = LinearTendon(length: flz_out1 - fa1_c2z) at transform3(orient_identity(), vec3(fl_out_x_a, plane_out, (flz_out1 + fa1_c2z) / 2))
     sub rise_b1 = LinearTendon(length: flz_out1 - lo_lo_c) at transform3(orient_identity(), vec3(fl_out_x_b, plane_out, (flz_out1 + lo_lo_c) / 2))
     sub rise_a2 = LinearTendon(length: flz_out2 - lo_in_lo_c) at transform3(orient_identity(), vec3(fl_in_x_a,  plane_in,  (flz_out2 + lo_in_lo_c) / 2))
     sub rise_b2 = LinearTendon(length: flz_out2 - lo_in_hi_c) at transform3(orient_identity(), vec3(fl_in_x_b,  plane_in,  (flz_out2 + lo_in_hi_c) / 2))
 
     constraint rail_x > 0mm
     constraint cap_drop > 0mm
-    constraint low_hi > low_lo
 
     // ── Clearance rules, stated in the design (2026-08-25) ──────────────────
     // These are the pairs the v1 hand-solve got wrong. Each is a real
@@ -1301,15 +1367,29 @@ pub structure DriveTendons {
     //    descent hangs in (same-z rope-vs-rope — the one genuinely NEW
     //    clearance class v3.1 introduces; linear interpolation along the
     //    slant, derived cells fine in constraints).
-    constraint cap_y - cap_pitch_r * ((out_a1_desc_x - out_b1_desc_x) / sl_a1_dx) - plane_out > rope_r * 2 + clear_min
+    constraint fa1_v1y - fa1_dy * ((out_a1_desc_x - out_b1_desc_x) / fa1_dx) - plane_out > rope_r * 2 + clear_min
     constraint plane_in - cap_y - cap_pitch_r * ((out_a2_desc_x - out_b2_desc_x) / sl_b2_dx) > rope_r * 2 + clear_min
-    // 2b. (v3.1) The converted descents share their strand lines with IN
-    //    rear-turn discs one level away. a1's descent (down to lo_hi_c)
-    //    OVERLAPS backidler_r_l in z, so their PLAN separation must clear
-    //    disc + rope + floor; b2's descent starts entirely BELOW
-    //    backidler_l_u — the z gap is the guard there (their 1mm plan rim
-    //    tangency is by-design, like the drum tangencies).
-    constraint sqrt((out_a1_desc_x - idler_out_r) * (out_a1_desc_x - idler_out_r) + (cap_y - neg_corn) * (cap_y - neg_corn)) > r_pitch + rope_r + clear_min
+    // 2c. (v3.2) a1's fused diagonal passes dnturn_b1's disc inside the
+    //    disc's own wrap plane (x = out_b1_desc_x): the in-plane distance
+    //    from the diagonal's crossing point to the disc centre must exceed
+    //    disc + rope + floor. This is the rule that sets fa1_v1y = −398
+    //    (at dnt_y = −406 the margin is 5.4mm — a near-miss the sweep's
+    //    capsule bound understates).
+    constraint sqrt((fa1_v1y - fa1_dy * ((out_a1_desc_x - out_b1_desc_x) / fa1_dx) - moved_y) * (fa1_v1y - fa1_dy * ((out_a1_desc_x - out_b1_desc_x) / fa1_dx) - moved_y) + (z_a - fa1_dz * ((out_a1_desc_x - out_b1_desc_x) / fa1_dx) - in_b1_top) * (z_a - fa1_dz * ((out_a1_desc_x - out_b1_desc_x) / fa1_dx) - in_b1_top)) > r_pitch + rope_r + clear_min
+    // 2d. (v3.2) The diagonal crosses the z_b band level (where b2-in's
+    //    X-run lives at plane_in) while still near the strand: the crossing
+    //    point's y must clear plane_in by a rope pair + floor. This is the
+    //    rule that CAPS fa1_v1y from above (2c caps it from below): at
+    //    fa1_v1y = −398 the margin was 11.9mm — a real floor violation the
+    //    sweep caught (run_in_b2 vs run_lo_a1, 5.85mm surface).
+    constraint plane_in - fa1_v1y + fa1_dy * ((z_a - neg_z_b) / fa1_dz) > rope_r * 2 + clear_min
+    // 2b. The converted feeds share their strand lines with IN rear-turn
+    //    discs one level away. a1's fused diagonal (v3.2) passes OVER
+    //    backidler_r_l's disc while still high — the z gap at the disc's
+    //    x-station is the guard; b2's descent (v3.1) starts entirely BELOW
+    //    backidler_l_u — the z gap is the guard there too (their 1mm plan
+    //    rim tangency is by-design, like the drum tangencies).
+    constraint z_a - fa1_dz * ((out_a1_desc_x - idler_out_r) / fa1_dx) - neg_z_a - 5mm > rope_r + clear_min
     constraint (z_b - 5mm) - (in_b2_top + r_pitch) > clear_min
     // 3. Z-LEVEL SEPARATION: a z_a member crosses z_b hardware only from
     //    ABOVE, and the level gap itself is the clearance — band run over a
@@ -1331,7 +1411,7 @@ pub structure DriveTendons {
     //    deeper than plane_out's (flz_out2 sits ~44mm below flz_out1).
     //    Evaluated at the WORST CASE of the fairlead's travel (the pulley at
     //    the bottom of its migration), not at the nominal band position.
-    constraint flz_out1 - stroke_half - lo_hi_c    > rise_min
+    constraint flz_out1 - stroke_half - fa1_c2z    > rise_min
     constraint flz_out1 - stroke_half - lo_lo_c    > rise_min
     constraint flz_out2 - stroke_half - lo_in_hi_c > rise_min
     constraint flz_out2 - stroke_half - lo_in_lo_c > rise_min
@@ -1341,12 +1421,16 @@ pub structure DriveTendons {
     //    planes, so they pass right over the turn discs, unlike the plates
     //    which sit outboard of every rope. This is the same worst-case-of-
     //    travel class as the rise rule above and was found the same way.
-    constraint neg_drop - fl_web_half - stroke_half - lo_hi_c - r_pitch > clear_min
+    constraint neg_drop - fl_web_half - stroke_half - fa1_c2z - r_pitch > clear_min
     constraint neg_drop - fl_web_half - stroke_half - lo_in_hi_c - r_pitch > clear_min
+    // 6b. (v3.2) The fused diagonal itself must be BELOW the swept web band
+    //    by the time it reaches unit A's outboard web face — the rule that
+    //    bounds fuse_a1_z2 from above (with 6's line 1 bounding the up-turn).
+    constraint z_a - fa1_dz * ((out_a1_desc_x - cap_x_m - fl_frame_x) / fa1_dx) < neg_drop - fl_web_half - stroke_half - rope_r - clear_min
     // 7. Every low run passes below the collar plates AND the below-entry
     //    pulley discs (the lowest hardware on the drive units).
-    constraint flz_out2 - r_pitch - low_hi > rope_r + clear_min
-    constraint neg_drop - fl_frame_z - low_hi > rope_r + clear_min
+    constraint flz_out2 - r_pitch - low_lo > rope_r + clear_min
+    constraint neg_drop - fl_frame_z - low_lo > rope_r + clear_min
     constraint neg_drop - fl_frame_z - low_in_hi > rope_r + clear_min
     // 8. Every fairlead vertical clears its unit's drum-flange strip: all
     //    four verticals sit exactly fl_vert from their own drum axis (rule 4),
@@ -1367,7 +1451,7 @@ pub structure DriveTendons {
     //    idler_up_b1 shipped wrong on 2026-08-25; Leo caught it by eye). The
     //    corner and the up-turn must lie on the SAME side of the rise, so the
     //    two offsets share a sign and their product is positive.
-    constraint (corner_a1_x - fl_out_x_a) * (up_a1_x - fl_out_x_a) > 0mm * 1mm
+    constraint (fa1_c1x - fl_out_x_a) * (fa1_c2x - fl_out_x_a) > 0mm * 1mm
     constraint (corner_b1_x - fl_out_x_b) * (up_b1_x - fl_out_x_b) > 0mm * 1mm
     constraint (corner_a2_x - fl_in_x_a)  * (up_a2_x - fl_in_x_a)  > 0mm * 1mm
     constraint (corner_b2_x - fl_in_x_b)  * (up_b2_x - fl_in_x_b)  > 0mm * 1mm
