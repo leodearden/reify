@@ -878,6 +878,60 @@ fn a_rejected_argument_keeps_its_position_in_the_enclosing_call() {
         vec![None, Some("k".to_string()), None],
         "the rejected argument's LABEL must survive alongside its slot"
     );
+
+    // THE OTHER TWO `callTail($)` SURFACES. The invariant is one claim about
+    // every call surface, not about `function_call` alone: the grammar has four
+    // `callTail($)` consumers — `function_call`, `namespaced_call`,
+    // `ad_hoc_selector` and `trait_method_call` — and only a walk that pushes a
+    // placeholder preserves arity. These two live in the SAME test function on
+    // purpose, so a fifth surface added without the shared walk fails this
+    // named test rather than quietly passing a sibling.
+    //
+    // Neither surface binds named arguments (both discard the labels), so these
+    // assert on `args` alone.
+    let value =
+        only_let_value_ignoring_errors("structure def S { let f = T::fn(1, obj.width(), 3) }");
+    let args = match &value.kind {
+        ExprKind::TraitStaticCall { args, .. } => args.clone(),
+        other => panic!("expected ExprKind::TraitStaticCall, got {other:?}"),
+    };
+    assert_eq!(
+        args.len(),
+        3,
+        "a trait static call must keep its arity through a rejection; got {args:?}"
+    );
+    assert!(
+        matches!(args[1].kind, ExprKind::Undef),
+        "the rejected argument's slot must hold a placeholder; got {:?}",
+        args[1].kind
+    );
+    assert!(
+        matches!(args[2].kind, ExprKind::NumberLiteral { value, .. } if value == 3.0),
+        "the argument AFTER the rejection must keep position 2; got {:?}",
+        args[2].kind
+    );
+
+    let value =
+        only_let_value_ignoring_errors("structure def S { let f = x @ sel(1, obj.width(), 3) }");
+    let args = match &value.kind {
+        ExprKind::AdHocSelector { args, .. } => args.clone(),
+        other => panic!("expected ExprKind::AdHocSelector, got {other:?}"),
+    };
+    assert_eq!(
+        args.len(),
+        3,
+        "an ad-hoc selector must keep its arity through a rejection; got {args:?}"
+    );
+    assert!(
+        matches!(args[1].kind, ExprKind::Undef),
+        "the rejected argument's slot must hold a placeholder; got {:?}",
+        args[1].kind
+    );
+    assert!(
+        matches!(args[2].kind, ExprKind::NumberLiteral { value, .. } if value == 3.0),
+        "the argument AFTER the rejection must keep position 2; got {:?}",
+        args[2].kind
+    );
 }
 
 /// THE CONTROL that keeps the fix from over-firing. A comment inside an
