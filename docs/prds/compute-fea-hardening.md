@@ -32,7 +32,20 @@ Because GUI and CLI each build the underlying `Engine` differently (`Engine::new
 
 Migrate the three hand-rolled bundlers (CLI `register_compute_trampolines`, GUI `EngineSession::from_engine`, test_runner `build_test_engine`) to delegate to it; add a grep-based architecture test that all three (and no fourth undelegated site) call it. GUI's migration fixes its missing morph-producer registration **as a side effect** — the actual esc-2962-66-class bug this PRD closes.
 
-`cmd_check`'s deliberate trampoline-free opt-out (`crates/reify-cli/src/main.rs:450-471`, locked by `check_fea_violated_constraint_is_not_gated`, `crates/reify-cli/tests/harness_cli/cli_build_fea.rs:147`) needs **no change** — it is already documented and already locked. It is the pattern the LSP posture work (§2) copies.
+`cmd_check`'s deliberate trampoline-free opt-out (`crates/reify-cli/src/main.rs:450-471`, locked by `check_fea_violated_constraint_is_not_gated`, `crates/reify-cli/tests/harness_cli/cli_build_fea.rs:147`) needs **no change** *for this PRD's purposes*. It is the pattern the LSP posture work (§2) copies.
+
+> **CORRECTION, 2026-08-26 — this opt-out has since been OVERTURNED.** Leo's ruling 2 in
+> `docs/notes/driver-contract-matrix-draft.md` ("matrix CLOSED") makes `check` acquire the
+> FEA compute trampolines and explicitly retires
+> `check_fea_violated_constraint_is_not_gated`. The inversion is delivered by
+> `docs/prds/v0_6/solver-driver-parity.md` leaf δ, whose §4.5 states that `cmd_check`'s
+> posture rustdoc — which calls that test "an executable contract … changing it requires
+> updating that test intentionally" — *is* the intentional update. The sentence above
+> records this PRD's 2026-07-06 posture and is retained as the historical record; do not
+> read it as a current statement of fact. **The LSP half of §2 is unaffected**: the LSP
+> trampoline-free subtraction is explicitly retained by the same ruling and by
+> `docs/prds/v0_6/driver-contract-implementation.md` §4.3. Correction owed and landed by
+> that PRD's authoring session.
 
 ### 2. LSP posture (INV-FEA-1)
 

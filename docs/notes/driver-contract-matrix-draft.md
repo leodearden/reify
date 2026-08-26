@@ -86,7 +86,16 @@ Special rows, outside the table:
    REVERSES the locked `check_fea_violated_constraint_is_not_gated` contract; retire
    that lock as part of implementation. Remaining subtractions: LSP keystroke-latency
    posture; `doc` compile-only. `explain` prerequisite fix: provenance must survive
-   `build()` (engine_eval.rs:3884 empty-map gap) before it can take the kernel.
+   `build()` before it can take the kernel.
+   **CITE CORRECTED 2026-08-26** (driver-contract-implementation authoring session,
+   re-verified at main `9a992fc2f2`): the `engine_eval.rs:3884` anchor named here is
+   wrong in two ways. That line is inside field elaboration at HEAD, and the empty
+   provenance map it was meant to name lives in the **warm/cached serve path**, not
+   `build()` — which constructs no eval result at all. The real gap is a struct-shape
+   one: `Engine::check()` computes `objective_provenance` via `eval()` and then discards
+   it, because `CheckResult` and `BuildResult` have no such field. That half is owned by
+   `docs/prds/v0_6/solver-legibility-telemetry.md` leaf α; the kernel-routing half is
+   `docs/prds/v0_6/driver-contract-implementation.md` leaf ζ.
 3. **Constraint-verdict contract**: (a) every evaluating driver runs `check()`;
    (b) `eval` and `report` gate exit on violation; **`explain` warns on check failure
    but never gates** (ruled role difference); (c) `@test` Indeterminate ≠ pass — exits
@@ -110,6 +119,13 @@ Special rows, outside the table:
    ~/.claude/spawn-briefs/prd-gui-on-demand-measurement.md).
 7. **LSP cfg**: host-default by default; an optional `cfg` map honored in
    initializationOptions — specified now, wired when RU ζ/5520 lands.
+   **BASELINE CORRECTED 2026-08-26** (same session): "host-default by default" reads as
+   a description of today. It is not — the LSP constructs **no** `CfgSet` anywhere and
+   its compile entry point takes no cfg parameter, so the ruling *introduces* the host
+   default rather than making an existing one configurable. Note also that RU ζ/5520 is
+   the *LSP multi-file diagnostics* leaf, not RU's cfg-surface decision (that is D-4,
+   delivered by γ/5517 + δ/5518); the dependency named here is correct — ζ is what routes
+   the LSP onto the cfg-bearing entry point — only its label is not.
 
 Special rows, ratified: **Lezer ledger** = the sanctioned-divergence mechanism.
 **Warm-edit ≡ full-recompile** differential self-oracle. **Library tier**: fix the
