@@ -620,6 +620,74 @@ fn a_file_of_broken_functions_is_bounded_and_says_so() {
     );
 }
 
+/// A structure MEMBER `let` swept into a collapsed function's `ERROR` node must never be
+/// blamed for a missing `;`.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// The sibling unit test `let_anchors_distinguish_fn_bindings_from_member_declarations` pins
+/// the CLASSIFIER; this pins the user-visible consequence, which is the thing that was
+/// actually wrong: only `fn_let_binding` requires a `;`, so "missing ';' after `let` binding in
+/// function body" pointed at a structure member names a construct that is not a function body
+/// AND advises an edit the grammar rejects — a user who takes the advice gets a second error.
+///
+/// Both fixtures are MEASURED to have teeth, not assumed to. In each, the unterminated `(` in
+/// `let y = (1` collapses the function AND the member `let a` that follows it into ONE `ERROR`
+/// whose children are bare tokens, so neither `let` has a `fn_let_binding` / `let_declaration`
+/// parent to be classified by and both fall to the positional fallback; and the member `let`'s
+/// own line is followed by a further fault on a LATER row, so the `fault.row > let.row` guard
+/// in `diagnose_error_node` does not save it either. Against the latched implementation these
+/// produced, verbatim, `missing ';' after `let` binding in function body` spanning 47..59 and
+/// 47..64 — anchored at `let a`.
+///
+/// That last condition is why a shorter fixture will not do. Most malformed member-`let`
+/// shapes are rescued incidentally by the row guard, so they pass either way and pin nothing;
+/// these two are the ones where the classifier is load-bearing.
+///
+/// Deliberately asserts only the NEGATIVE. Which generic diagnostics this debris produces, and
+/// where, is a recovery detail the test does not control; that a member `let` is not accused of
+/// a missing separator is the contract.
+#[test]
+fn a_member_let_following_a_collapsed_fn_is_never_blamed_for_a_missing_separator() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "bare trailing expression",
+            "structure T {\n  fn g() -> Int { let y = (1 }\n  let a = 3\n  b\n}\n",
+        ),
+        (
+            "call RHS then a binary expression",
+            "structure T {\n  fn g() -> Int { let y = (1 }\n  let a = cos(0)\n  a * 2\n}\n",
+        ),
+    ];
+
+    for (label, src) in cases {
+        let member_let = src.find("let a").expect("fixture must contain `let a`") as u32;
+
+        let m = reify_syntax::parse(src, ModulePath::single("t"));
+        let all = triples(&m);
+
+        // Precondition: the fixture still reaches the lowering with a fault to describe. If
+        // recovery ever starts preserving the member `let_declaration` here, this fixture stops
+        // exercising the positional fallback and must be re-derived rather than quietly kept.
+        assert!(
+            !m.errors.is_empty(),
+            "{label}: precondition failed — this fixture is meant to be malformed, but parsed \
+             with no diagnostics at all.\nsource:\n{src}",
+        );
+
+        for (message, start, end) in &all {
+            assert!(
+                !(message.contains("';'") && *start >= member_let),
+                "{label}: INV-SF-7 violated — a missing-separator diagnostic was anchored at or \
+                 after the structure member `let a` (byte {member_let}): {message:?} spanning \
+                 {start}..{end}. A member `let` is newline-separated and takes no `;`, so this \
+                 names a construct that is not a function body and tells the user to make an \
+                 edit the grammar rejects — take the advice and you get a second \
+                 error.\ndiagnostics: {all:?}\nsource:\n{src}",
+            );
+        }
+    }
+}
+
 /// A GENERIC (un-anchorable) fault must still be reported with a TOKEN-PRECISE span.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
@@ -714,3 +782,4 @@ fn an_unanchorable_fault_is_reported_with_a_token_precise_span() {
         );
     }
 }
+
