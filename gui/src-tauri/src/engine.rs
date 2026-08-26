@@ -2188,13 +2188,97 @@ impl EngineSession {
     }
 
     /// Write `value` back into the session's canonical `.ri` file as the
-    /// source-of-truth edit for `cell_id_str`'s default literal (INV-GUI-3,
-    /// task 5096 γ, PRD `docs/prds/v0_6/ai-native-editing.md` §6.1).
+    /// source-of-truth edit for `cell_id_str`'s default literal.
     ///
-    /// Core happy path — see the rustdoc landed alongside step 10 for the
-    /// full contract (atomicity ledger, phase ordering, non-literal-default
-    /// behaviour); steps 6 and 8 harden the rejection/precondition handling
-    /// around this core splice-recompile-write sequence.
+    /// This is the INV-GUI-3 primitive: **the `.ri` source is the canonical
+    /// truth of the design for all mutations** (task 5096 γ, PRD
+    /// `docs/prds/v0_6/ai-native-editing.md` §6.1, D1/D6/D7). Every durable
+    /// value mutation — the MCP write tools (δ) and the GUI slider once it is
+    /// re-homed (η) — is meant to land here rather than as an ephemeral
+    /// engine-state override, so that a design's on-disk text and the engine's
+    /// idea of it can never diverge.
+    ///
+    /// # Phase order
+    ///
+    /// **resolve → serialize → splice → recompile → write disk.**
+    ///
+    /// 1. **Resolve** the default span this cell may be written through, via
+    ///    [`Self::resolve_rewritable_default_span`].
+    /// 2. **Serialize** `value` with [`reify_ir::value_to_ri_literal_with_unit`],
+    ///    hinted by the unit read off the literal being replaced
+    ///    ([`unit_hint_from_default_literal`]) so `80mm` stays millimetres
+    ///    instead of hopping to the canonical ladder.
+    /// 3. **Splice** by BYTE offset — a minimal replacement of just that span,
+    ///    never a re-serialization of the file, so comments, whitespace and
+    ///    every other declaration survive byte for byte (D6: no round-tripping
+    ///    pretty-printer exists, and inventing one here would silently reformat
+    ///    the user's document on every parameter tweak).
+    /// 4. **Recompile** in process through [`Self::update_source`].
+    /// 5. **Write** the spliced text to disk.
+    ///
+    /// The recompile precedes the write, and that ordering is load-bearing: the
+    /// recompile is the step that can legitimately REJECT the edit (a
+    /// type/dimension-mismatched value, PRD §7 B7). Writing first would leave
+    /// the on-disk `.ri` holding text the engine rejected — and the FS-watcher
+    /// would then reload exactly that text back into the GUI. Ordering
+    /// recompile→write makes that state unreachable.
+    ///
+    /// # Atomicity ledger
+    ///
+    /// Four state surfaces move together or not at all (the §6.1 invariant: on
+    /// success they are mutually consistent, on failure NONE are mutated):
+    ///
+    /// - the on-disk `.ri` file;
+    /// - the parse/compile surface — `source_map`, `parsed_cache`, `compiled`,
+    ///   `last_check` — which [`Self::update_source`] commits as one unit;
+    /// - the failure surfaces `compile_failure` and `last_reload_error`, which
+    ///   drive the diagnostics list and the hot-reload staleness banner;
+    /// - engine eval state, as read back through [`Self::build_gui_state`].
+    ///
+    /// Per failure phase:
+    ///
+    /// - **Resolve** (unknown cell, malformed id, no default, non-literal
+    ///   default) returns before ANY of the four is touched.
+    /// - **Serialize** likewise — nothing has been mutated at that point.
+    /// - **Recompile** rejection restores `compile_failure` and
+    ///   `last_reload_error` from a snapshot taken immediately before the call,
+    ///   so the rejected text leaves no diagnostics behind. See the comment at
+    ///   that call site for why the restore lives HERE and must not be pushed
+    ///   down into [`Self::update_source`], where the same behaviour is
+    ///   load-bearing for the editor path.
+    /// - **Disk-write** failure rolls the engine back by recompiling the
+    ///   pre-edit text through [`Self::update_source`], so the engine is never
+    ///   left ahead of what is on disk.
+    ///
+    /// **One residual**, named rather than glossed: an `fs::write` that fails
+    /// PART-WAY leaves a truncated file on disk. The rollback restores the
+    /// engine, not that file — a second write down the path that just failed is
+    /// as likely to fail again as to repair anything. This method is atomic
+    /// with respect to the four surfaces above, NOT crash-atomic on disk.
+    ///
+    /// # Exactly one emit (D7)
+    ///
+    /// There is deliberately NO second emit path here. The frontend
+    /// notification rides [`Self::update_source`]'s `post_engine_call_telemetry`
+    /// — the one shared gui-state-sync choke-point — including on the
+    /// disk-write rollback, which is routed through `update_source` for
+    /// precisely that reason. The in-process recompile is authoritative and the
+    /// FS-watcher re-fire reloads identical content for an empty delta (D7,
+    /// §7 B5), so a second emit would buy nothing and cost the single-source
+    /// property. δ and η must not add one either; reconcile any further
+    /// divergence at `gui-state-sync`, which owns that seam.
+    ///
+    /// # Why a non-literal default is refused
+    ///
+    /// A default that is a `BinOp`, an `Auto`, a call or an identifier is
+    /// REFUSED rather than spliced over. `param depth = width * 2` encodes a
+    /// user-authored parametric relationship and `param length = auto` encodes
+    /// a solver-determined value; overwriting either with a constant destroys
+    /// it silently, and the user would discover it only when the design stopped
+    /// responding to the parameter it used to follow. Refusing hands the caller
+    /// a structured rejection to surface instead — see
+    /// [`Self::resolve_rewritable_default_span`] for the discriminated taxonomy
+    /// δ maps into its tool results.
     pub fn apply_param_to_source(
         &mut self,
         cell_id_str: &str,
@@ -2342,13 +2426,15 @@ impl EngineSession {
             return Err(format!("Unknown parameter '{cell_id_str}'"));
         }
 
-        let default = self.resolve_param_default_expr(cell_id_str).ok_or_else(|| {
-            format!(
-                "parameter '{cell_id_str}' has no default expression to rewrite in source \
-                 (it may be declared without a default, declared in more than one guarded \
-                 branch, or not addressable by its bare name)"
-            )
-        })?;
+        let default = self
+            .resolve_param_default_expr(cell_id_str)
+            .ok_or_else(|| {
+                format!(
+                    "parameter '{cell_id_str}' has no default expression to rewrite in \
+                     source (it may be declared without a default, declared in more than \
+                     one guarded branch, or not addressable by its bare name)"
+                )
+            })?;
 
         match &default.kind {
             reify_ast::ExprKind::NumberLiteral { .. }
