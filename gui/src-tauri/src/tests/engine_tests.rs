@@ -18114,6 +18114,53 @@ fn update_source_emits_fea_diagnostics() {
     );
 }
 
+/// apply_param_to_source_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4;
+/// task 5096 γ).
+///
+/// Behavioural regression covering the `apply_param_to_source` production
+/// entry point — and, more precisely, the COUNT. `apply_param_to_source`
+/// deliberately has no emit of its own: its emit rides the `update_source`
+/// recompile it already performs, which fires `post_engine_call_telemetry`
+/// after `commit_state`. EXACTLY ONE event is therefore the guard that the
+/// write-back inherits the shared choke-point instead of adding a second emit
+/// path — the hook θ extends when it brings the δ MCP write tools into this
+/// cluster.
+///
+/// Setup mirrors `update_source_emits_fea_diagnostics`: prime the session
+/// first (here with the tempdir-backed `writeback_session`, since the
+/// write-back needs a canonical on-disk `.ri`), THEN install the recorder so
+/// only the write-back's emit is counted.
+#[test]
+fn apply_param_to_source_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let (_dir, _path, mut session) = writeback_session();
+
+    // Install AFTER the initial load_file so only the write-back's emit counts.
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: apply_param_to_source must fire EXACTLY ONE \
+         fea-diagnostics-changed event — one for the update_source recompile it \
+         rides, and none of its own; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
 // ── FeaConvergenceEmitter tests (#5032) ─────────────────────────────────────
 
 /// Mirrors [`RecordingFeaDiagnosticsEmitter`] for the fea-convergence-changed channel.
@@ -20379,6 +20426,175 @@ fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
         (width.value.as_str(), width.unit.as_str()),
         ("80", "mm"),
         "eval state must report the PRE-EDIT value after a failed disk write"
+    );
+}
+
+#[test]
+fn apply_param_to_source_is_idempotent_on_reapply() {
+    // D7: applying the SAME value twice is a no-op, not an error and not a
+    // second textual edit. This is the property that makes the FS-watcher
+    // re-fire safe — the watcher may hand the engine the file it just wrote,
+    // and a write-back that drifted on reapply would turn every save into a
+    // slow accumulation of rewrites. Green on arrival; kept as a regression
+    // guard, not manufactured as a failure.
+    let (_dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("first apply_param_to_source should succeed");
+    let disk_after_first = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let source_map_after_first = {
+        let (_key, text) = session
+            .resolve_source_for_test()
+            .expect("source_map should resolve after the first write-back");
+        text.to_string()
+    };
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("re-applying the same value must succeed, not error");
+
+    let disk_after_second = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_after_second, disk_after_first,
+        "re-applying the same value must leave disk byte-identical (D7)"
+    );
+
+    let (_key, source_map_after_second) = session
+        .resolve_source_for_test()
+        .expect("source_map should resolve after the second write-back");
+    assert_eq!(
+        source_map_after_second, source_map_after_first,
+        "re-applying the same value must leave source_map byte-identical (D7)"
+    );
+}
+
+#[test]
+fn apply_param_to_source_reload_of_the_written_file_is_an_empty_delta() {
+    // The γ-level half of PRD §7 B5: the FS-watcher re-fire that follows a
+    // write-back must be a NO-OP at the wire, so the user never sees the
+    // viewport flicker or a value round-trip through its own edit. Simulated
+    // here by feeding the on-disk text the write-back just produced back
+    // through `update_source` — exactly what the watcher does — and diffing
+    // the resulting GuiState against the one the write-back returned.
+    //
+    // The full ChatPanel-to-viewport assertion stays with ζ; this pins the
+    // engine-level property it depends on.
+    use std::sync::Mutex;
+
+    let (_dir, path, mut session) = writeback_session();
+
+    let after_write = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let path_str = path.to_str().expect("tempdir path should be UTF-8");
+    let after_reload = session
+        .update_source(path_str, &disk_text)
+        .expect("reloading the just-written file must recompile cleanly");
+
+    let tessellation_before = after_write.tessellation_diagnostics.clone();
+    let tessellation_after = after_reload.tessellation_diagnostics.clone();
+
+    let last_state: Mutex<Option<crate::types::GuiState>> = Mutex::new(Some(after_write));
+    let delta = crate::diff::compute_delta(&last_state, &after_reload);
+
+    assert!(
+        delta.changed_meshes.is_empty(),
+        "watcher re-fire must not re-push meshes; got {:?}",
+        delta
+            .changed_meshes
+            .iter()
+            .map(|m| &m.entity_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        delta.changed_values.is_empty(),
+        "watcher re-fire must not re-push values; got {:?}",
+        delta
+            .changed_values
+            .iter()
+            .map(|v| &v.cell_id)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        delta.changed_constraints.is_empty(),
+        "watcher re-fire must not re-push constraints"
+    );
+    assert!(delta.removed_mesh_paths.is_empty(), "nothing was removed");
+    assert!(delta.removed_value_ids.is_empty(), "nothing was removed");
+    assert!(
+        delta.removed_constraint_ids.is_empty(),
+        "nothing was removed"
+    );
+    assert!(
+        delta.changed_compile_diagnostics.is_none(),
+        "watcher re-fire must not re-push compile diagnostics"
+    );
+    assert!(
+        delta.changed_tensegrity_wires.is_none(),
+        "watcher re-fire must not re-push tensegrity wires"
+    );
+    assert!(
+        delta.changed_tensegrity_surfaces.is_none(),
+        "watcher re-fire must not re-push tensegrity surfaces"
+    );
+    assert!(
+        delta.changed_display_panes.is_none(),
+        "watcher re-fire must not re-push display panes"
+    );
+    assert!(
+        delta.changed_display_appearance.is_none(),
+        "watcher re-fire must not re-push display appearance"
+    );
+
+    // `tessellation_diagnostics` is the ONE diffed field this test does not
+    // assert empty, and the exclusion is a TEST-FIXTURE artifact rather than a
+    // property of the write-back — stated here rather than left as a silently
+    // narrower claim than the test's name suggests.
+    //
+    // MEASURED: `MockGeometryKernel` ships no topology-extraction fixture, so
+    // every tessellation emits a warning naming the handle it failed on —
+    // `…no topology extraction fixture for GeometryHandleId(2)` after the
+    // write-back, `…GeometryHandleId(3)` after the reload. The handle counter
+    // advances per tessellation call, so two structurally identical states
+    // cannot produce byte-identical diagnostics here no matter what the engine
+    // does. A real kernel emits no such warning at all, leaving the field empty
+    // on both sides and the delta genuinely empty.
+    //
+    // What IS assertable under the mock is that the diagnostics are equal once
+    // that handle id is normalised away: same count, same severity, same
+    // failure — i.e. the reload did not introduce a NEW class of diagnostic.
+    let without_handle_id = |ds: &[DiagnosticInfo]| -> Vec<(String, String)> {
+        ds.iter()
+            .map(|d| {
+                let message = match d.message.find("GeometryHandleId(") {
+                    Some(i) => d.message[..i].to_string(),
+                    None => d.message.clone(),
+                };
+                (d.severity.clone(), message)
+            })
+            .collect()
+    };
+    assert_eq!(
+        without_handle_id(&tessellation_after),
+        without_handle_id(&tessellation_before),
+        "the watcher re-fire must not introduce a new class of tessellation \
+         diagnostic — only the mock kernel's per-call handle id may differ"
+    );
+
+    // The summary the per-field assertions above decompose into: the re-fire
+    // emits no events at all beyond the mock-kernel artifact just accounted for.
+    let event_names: Vec<String> = crate::diff::delta_to_events(&delta)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name != "tessellation-diagnostics")
+        .collect();
+    assert!(
+        event_names.is_empty(),
+        "the watcher re-fire after a write-back must emit no events beyond the \
+         mock kernel's tessellation-diagnostics artifact; got {event_names:?}"
     );
 }
 
