@@ -221,3 +221,121 @@ fn instance_scope_fea_cells_equal_template_solved_values() {
         );
     }
 }
+
+/// #6662 / S8 item 1: an instance-scope `@optimized` cell that a SOLVER-visible
+/// constraint depends on is not clobbered by the cost loop or reverted by a
+/// reeval-cone pass.
+///
+/// The `@optimized`-cell exclusion sets in `engine_eval.rs`
+/// (`is_optimized_userfn_cell` → `build_dependent_cells`, and the reeval-cone
+/// exclusions) all iterate `template.value_cells`, so they are TEMPLATE-keyed.
+/// Now that an instance cell can hold a real dispatched value, the concern is
+/// that such a cell is not in those exclusion sets and could be overwritten
+/// with `Undef` by the solver's cost loop, or re-evaluated back to the
+/// body-inline sentinel by a reeval pass.
+///
+/// The first e2e in this file cannot surface that: it has no `auto`, so the
+/// solver never engages and `build_dependent_cells` never runs. Here `budget`
+/// is an `auto` whose constraint reads `self.beam.k` — an FEA-derived INSTANCE
+/// cell — which is exactly what pulls the instance cell into the solver's
+/// dependent set.
+///
+/// Deliberately asserts NON-CLOBBERING, not the auto's resolved value: the
+/// point is that the dispatched value survives the solver pass, which holds
+/// regardless of what the solver decides for `budget`.
+#[test]
+fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
+    let source = r#"
+        structure BeamAuto {
+            param span : Length = 1000mm
+            param w    : Length = 100mm
+            param h    : Length = 100mm
+            param load : Real   = 1000.0
+
+            let material = Steel_AISI_1045()
+            let tip      = PointLoad(point: "tip", force: load)
+            let mount    = FixedSupport(target: "root")
+
+            let r_static = solve_elastic_static(
+                material, span, w, h, [tip], [mount], ElasticOptions()
+            )
+            let defl     = max(r_static.displacement)
+            let k        : Stiffness = load * 1N / defl
+        }
+
+        structure AsmAuto {
+            sub beam = BeamAuto()
+            param budget : Stiffness = auto
+            constraint budget <= self.beam.k
+            constraint budget >= 1N / 1m
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let result = engine.check(&compiled);
+
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics with a solver-visible instance-scope \
+         FEA cell, got: {:?}",
+        errors
+    );
+
+    // The instance cell still holds the solved ElasticResult after the solver
+    // pass — not Undef (cost-loop clobber) and not the sentinel shell
+    // (reeval-cone revert).
+    let instance_val = result
+        .values
+        .get(&ValueCellId::new("AsmAuto.beam", "r_static"))
+        .unwrap_or_else(|| panic!("cell AsmAuto.beam.r_static not found in check result"));
+    let instance_disp = extract_field(instance_val, "displacement").unwrap_or_else(|| {
+        panic!(
+            "AsmAuto.beam.r_static has no `displacement` field: {:?}",
+            instance_val
+        )
+    });
+    assert_ne!(
+        instance_disp,
+        Value::Undef,
+        "AsmAuto.beam.r_static.displacement is Undef after the solver pass — the \
+         instance cell was clobbered by the cost loop or reverted to the \
+         body-inline sentinel by a reeval-cone pass"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("BeamAuto", "r_static")),
+        Some(instance_val),
+        "AsmAuto.beam.r_static must still equal the template's BeamAuto.r_static \
+         after constraint solving"
+    );
+
+    // The derived stiffness the constraint actually reads stays determinate.
+    let instance_k = result
+        .values
+        .get(&ValueCellId::new("AsmAuto.beam", "k"))
+        .unwrap_or_else(|| panic!("cell AsmAuto.beam.k not found in check result"));
+    assert_ne!(
+        *instance_k,
+        Value::Undef,
+        "AsmAuto.beam.k must stay determinate through the solver pass — it is \
+         the cell the auto's constraint reads"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("BeamAuto", "k")),
+        Some(instance_k),
+        "AsmAuto.beam.k must still equal the template's BeamAuto.k after solving"
+    );
+
+    // The constraints that read the instance cell were evaluated, not skipped.
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected the budget constraints in constraint_results, got none"
+    );
+}
