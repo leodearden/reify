@@ -13,8 +13,14 @@
 //!   environment to a command.
 //! - [`replay_self_under_hook_git_env`] — the outer harness that proves the
 //!   fix under a real *ambient* environment rather than a per-child one.
-//! - [`in_replay_child`] — the predicate a replayed test uses to tighten an
-//!   otherwise-graceful skip into a hard failure for the replay run only.
+//! - [`replay_self_under_hook_git_env_expecting_envelope`] — the same harness
+//!   for a caller that has already verified, in this environment, that the
+//!   audit produces an envelope. That verified fact is what the child's
+//!   stronger mark carries.
+//! - [`in_replay_child`] — the weak predicate: "am I inside ANY replay
+//!   child?". For a precondition, not for a tightening.
+//! - [`replay_child_expects_envelope`] — the strong one, and the only one a
+//!   test may use to turn an otherwise-graceful skip into a hard failure.
 //! - [`spawn_replay_child_lacking_audit_prereqs`] — the inverse fixture: one
 //!   replay child in an environment that genuinely cannot run the audit, so a
 //!   test can pin which mark may tighten a skip into a failure and which may
@@ -77,19 +83,35 @@ const REPLAY_PLAIN_MARK: &str = "1";
 /// can re-read or re-stamp the marker under its own name.
 const REPLAY_ENVELOPE_MARK: &str = "envelope";
 
-/// True when this process is the poisoned replay child spawned by
-/// [`replay_self_under_hook_git_env`]. Lets a test tighten an
-/// otherwise-graceful skip into a hard failure for the replay run only —
-/// inside the child, "the tool was missing" is not a plausible explanation for
-/// a skip, because the parent just ran the same test successfully before
-/// spawning it.
+/// True when this process is a poisoned replay child, spawned by EITHER
+/// replay variant. It answers exactly one question — "am I inside any replay
+/// child?" — and nothing more.
+///
+/// Its remaining reader is
+/// [`audit_script_stdout_poisoned_and_sanitized`]'s precondition, which needs
+/// that weak question and no other: that helper's `run_orphan_audit` gate
+/// would hit a repo-root mismatch panic inside ANY poisoned child, whatever
+/// its parent verified.
+///
+/// NOT the predicate for tightening a graceful skip into a hard failure — use
+/// [`replay_child_expects_envelope`]. This doc used to claim that inside the
+/// child "the tool was missing" is not a plausible explanation for a skip,
+/// because the parent just ran the same test successfully before spawning it.
+/// That premise was false: the replay only `--list`s the selection in the
+/// parent, so it never runs the target and never learns whether the parent's
+/// own run produced an envelope, and libtest guarantees no ordering between
+/// the two tests. Keyed on mere presence, the tightening turned a supported
+/// environment's clean skip (no `python3`, or a repo root outside any git work
+/// tree) into a red build carrying a diagnosis the child's own stderr
+/// contradicted — measured, and now pinned by
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
 ///
 /// The predicate is exposed rather than [`REPLAY_GUARD`] itself, and this
-/// accessor plus `replay_self_under_hook_git_env`'s own re-entrancy check are
-/// its only two readers. A caller only ever needs to ask "am I the child?";
-/// publishing the const would additionally let a future call site re-read or
-/// re-set the variable under its own name, splitting the single source of
-/// truth this module is built around.
+/// accessor plus the marks' own readers are all there is. A caller only ever
+/// needs to ask about the child's status, never to spell the variable;
+/// publishing the const would let a future call site re-read or re-stamp it
+/// under its own name, splitting the single source of truth this module is
+/// built around.
 #[allow(dead_code)]
 pub fn in_replay_child() -> bool {
     std::env::var_os(REPLAY_GUARD).is_some()

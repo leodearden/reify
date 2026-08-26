@@ -20,6 +20,16 @@
 //! a note to stderr and returns. Mirrors
 //! `crates/reify-kernel-gmsh/tests/rpath_smoke.rs`.
 //! The shared helper is in `reify_test_support::run_orphan_audit`.
+//!
+//! That skip has exactly ONE exception, and it is narrow by construction: a
+//! replay child whose parent verified an envelope in this same environment
+//! moments before spawning it (`common::git_env::replay_child_expects_envelope`).
+//! The three hook-git-env tests below are a set — the replay pins that
+//! production sanitizes, the synthetic witness pins that sanitizing is what
+//! makes the difference, and
+//! `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` pins
+//! that neither tightening may fire in an environment never shown able to run
+//! the audit at all. Retire them together or not at all.
 
 use reify_test_support::run_orphan_audit;
 
@@ -99,15 +109,32 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// CI will never delete such a line — which is why
 /// `hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat`
 /// exists alongside it, pinning the same hazard's potency synthetically on
-/// every run with no dependency on this production call site. The pair is the
+/// every run with no dependency on this production call site. The trio is the
 /// invariant: this test pins that production sanitizes, that one pins that
-/// sanitizing is what makes the difference, and deleting either leaves the
-/// other unable to notice. Retire them together or not at all.
+/// sanitizing is what makes the difference, and
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` pins
+/// that neither tightening may fire in an environment never shown able to run
+/// the audit at all. Deleting any one leaves the others unable to notice.
+/// Retire them together or not at all.
 ///
-/// The graceful skip stays the behaviour everywhere outside the replay child:
-/// `run_orphan_audit`'s skip protocol is a contract with nine callers across
-/// two crates, covering environments where `python3`, `git` or the script is
-/// genuinely absent.
+/// # Where the graceful skip still rules
+///
+/// Everywhere except a child whose parent verified an envelope in this same
+/// environment — and this test spawns no child at all otherwise, which is why
+/// it probes first. `run_orphan_audit`'s skip protocol is a contract with nine
+/// callers across two crates, covering environments where `python3`, `git` or
+/// the script is genuinely absent, and a replay child INHERITS such an
+/// environment rather than escaping it.
+///
+/// An earlier form of this test stated the rule as "everywhere outside the
+/// replay child" and keyed the tightening on mere child-ness. Measured at
+/// branch tip 606e8ca78a: `env PATH=<dir with git but no python3>
+/// ./target/debug/deps/g_allow-* --test-threads=1` exited 101, with
+/// `reify_audit_pub_fns_are_g_allow_marked ... ok` in the parent but
+/// `orphan_audit_survives_ambient_hook_git_env ... FAILED`, the child's stderr
+/// reading `python3 not on PATH; skipping orphan audit`. That rule is now held
+/// by `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`,
+/// which is the live guard — this prose must not re-derive it.
 ///
 /// (The original RED measurement, and the task-5605/5698 history of where the
 /// child dies, are recorded in project memory — search `reify` for
@@ -120,7 +147,10 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// would also drag the synthetic witness into the child, where it poisons and
 /// strips its OWN children's environments — pure cost that dilutes the floor's
 /// meaning, and now a hard failure on that helper's `in_replay_child`
-/// precondition. Naming the target also keeps the selection exact: no other
+/// precondition (the WEAK predicate, which is the right question for a
+/// precondition; the tightening in `reify_audit_pub_fns_are_g_allow_marked`
+/// uses the strong `replay_child_expects_envelope` instead). Naming the target
+/// also keeps the selection exact: no other
 /// test name in this binary contains the substring
 /// `reify_audit_pub_fns_are_g_allow_marked`, so the replay cannot select
 /// itself. The helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard is the second line
@@ -339,9 +369,13 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
 /// So this test re-demonstrates the hazard's potency directly and
 /// synthetically: it spawns the audit script twice, differing ONLY in whether
 /// the hook variables are stripped, with no dependency on the production call
-/// site at all. The pair is the point — the replay test pins that production
-/// sanitizes, this test pins that sanitizing is what makes the difference.
-/// Neither can silently go vacuous while the other still holds.
+/// site at all. The set is the point — the replay test pins that production
+/// sanitizes, this test pins that sanitizing is what makes the difference, and
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` pins
+/// that the replay's hard-failure mode may only fire where an envelope was
+/// actually seen, so the first test cannot buy its teeth by reddening
+/// environments the audit was never able to run in. None can silently go
+/// vacuous while the others still hold; retire them together or not at all.
 ///
 /// # What each half demonstrates
 ///
@@ -504,7 +538,10 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
          resolves its repo root via `git rev-parse --show-toplevel`; then this \
          hazard is genuinely dead, and the right move is to retire this test \
          together with what it guards — `reify_audit_pub_fns_are_g_allow_marked`'s \
-         replay-child panic and reify-test-support's `sanitize()` — rather than to \
+         envelope-marked replay-child panic, the \
+         `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` test \
+         that bounds when that panic may fire, and reify-test-support's \
+         `sanitize()` — rather than to \
          weaken this assertion back into a log line that no passing run ever \
          shows.\n\
          --- poisoned stdout (truncated) ---\n{:.400}\n\
