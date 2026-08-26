@@ -312,6 +312,29 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 /// topological order with the `EvalContext` rebuilt against the RUNNING map
 /// each iteration (PRD §6.3 single-authority-on-order), and the
 /// `is_solver_owned` guard that stops a fold from clobbering a trial auto.
+///
+/// # Split into a reporting sibling (task #5721)
+///
+/// The body proper lives in
+/// [`fold_dependent_cells_skipping_collisions`], which RETURNS the ids it
+/// skipped; this function is a thin wrapper that defers the alarm to that
+/// list.  The split exists because the collision contract has two halves —
+/// the ALARM below, and the SKIP that keeps the solver's value — and before
+/// the split only the alarm was reachable under `cargo test`: the per-cell
+/// `debug_assert!(false, ..)` panicked at the FIRST collision, so every
+/// assertion about what the fold does AFTER skipping was dead code in the
+/// debug profile.  Hoisting the decision out makes the skip semantics
+/// assertable unconditionally, in both profiles.
+///
+/// Two consequences of deferring the assert, both deliberate:
+///
+/// * the alarm now reports EVERY colliding cell rather than only the first,
+///   which is strictly more diagnostic for a membership drift that hits
+///   several cells at once;
+/// * in a debug build the panic therefore fires after the whole list has been
+///   folded rather than at the first collision.  That is unobservable: a
+///   `debug_assert!` unwinds, and `values` is a `&mut` borrow the caller drops
+///   on unwind, so no partially-folded map can escape.
 pub(crate) fn fold_dependent_cells(
     values: &mut ValueMap,
     dependent_cells: &[(ValueCellId, CompiledExpr)],
@@ -319,23 +342,60 @@ pub(crate) fn fold_dependent_cells(
     is_solver_owned: impl Fn(&ValueCellId) -> bool,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
+    let collisions = fold_dependent_cells_skipping_collisions(
+        values,
+        dependent_cells,
+        functions,
+        is_solver_owned,
+        dispatch,
+    );
+    debug_assert!(
+        collisions.is_empty(),
+        "fold_dependent_cells: dependent cell(s) {collisions:?} — each \
+         collides with an auto param — reify-eval's `build_dependent_cells` \
+         excludes autos by construction, so this means upstream membership \
+         drifted. Skipping the entries to keep the solver's value."
+    );
+}
+
+/// [`fold_dependent_cells`]' body, reporting rather than asserting: folds the
+/// list exactly as the wrapper's contract describes and RETURNS, in stored
+/// order, the ids it skipped because `is_solver_owned` claimed them.
+///
+/// Do NOT call this from production code.  It exists so the SKIP half of the
+/// collision contract — "pass the entry over and keep the solver's own value"
+/// — is assertable in every profile, which it is not through the wrapper: in
+/// debug the wrapper's `debug_assert!` unwinds before a caller can inspect the
+/// map.  Every production caller goes through [`fold_dependent_cells`] and
+/// keeps the debug alarm.
+///
+/// An empty returned vector is the ONLY correct steady state; a non-empty one
+/// means reify-eval's `build_dependent_cells` membership drifted.
+///
+/// Cost is unchanged on the Nelder-Mead hot path.  The empty-`dependent_cells`
+/// early return is preserved verbatim (PRD §6.2's byte-identical zero-cost
+/// skip), and `Vec::new()` does not allocate, so a clean fold — the
+/// overwhelmingly common case — still allocates nothing.
+pub(crate) fn fold_dependent_cells_skipping_collisions(
+    values: &mut ValueMap,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+    is_solver_owned: impl Fn(&ValueCellId) -> bool,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Vec<ValueCellId> {
+    let mut collisions = Vec::new();
     if dependent_cells.is_empty() {
-        return;
+        return collisions;
     }
     for (id, expr) in dependent_cells {
         if is_solver_owned(id) {
-            debug_assert!(
-                false,
-                "fold_dependent_cells: dependent cell {id:?} collides with an \
-                 auto param — reify-eval's `build_dependent_cells` excludes \
-                 autos by construction, so this means upstream membership \
-                 drifted. Skipping the entry to keep the solver's value."
-            );
+            collisions.push(id.clone());
             continue;
         }
         let v = reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch));
         values.insert(id.clone(), v);
     }
+    collisions
 }
 
 /// Materialise the ValueMap an objective SCORE is read from: the problem's base
