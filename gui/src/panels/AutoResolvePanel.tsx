@@ -159,7 +159,14 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
   });
 
   return (
-    <div class={styles.panel} data-testid="auto-resolve-panel">
+    <div
+      class={styles.panel}
+      data-testid="auto-resolve-panel"
+      // A completed loop persists on screen, so "Iteration N" alone is
+      // ambiguous between still-running and finished. Say which — and expose it
+      // on the root so the chip below and the panel state cannot drift.
+      data-loop-state={props.state.active ? 'running' : 'complete'}
+    >
       <header class={styles.panelHeader} data-testid="panel-title-auto-resolve">
         <Show
           when={props.state.iterations.length > 0}
@@ -169,6 +176,9 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
             Iteration {props.state.iterations.length}
           </span>
         </Show>
+        <span class={styles.loopState} data-testid="auto-resolve-loop-state">
+          {props.state.active ? 'running' : 'complete'}
+        </span>
       </header>
 
       {/* ── Parameters section ──────────────────────────────────────────── */}
