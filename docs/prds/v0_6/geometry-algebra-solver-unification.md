@@ -175,7 +175,7 @@ No novel grammar. Every surface this PRD touches — `relate`, `constraint`, `at
 | **`docs/prds/v0_6/placement-relations-belt.md` §7.2 clearance family** (#5441–#5443) | Makes `min_clearance` / `self_clearance` **drivable** rather than verdict-only. That PRD owns the query semantics; this one owns their residual lowering. | pending; seam owned per §6 |
 | **`docs/prds/v0_6/material-waste-cost-minimisation.md` (M-WASTE)** | Its stated blocker is *"the solver's objective is evaluated over the param `ValueMap` **only** … so a geometry-dependent cost objective requires an outer candidate-sweep loop"*. Leaf ο's dispatch trait is that loop's inner half. | deferred forward-stub |
 | **`docs/prds/v0_6/geometric-relations.md` θ (#4388)** DOF ledger | Leaf η's QR yields the rank **and the null-space basis** in one factorisation — the twists θ names geometrically. Today rank comes from a *separate* Gram–Schmidt pass. | pending |
-| **P3 multimodality PRD** | The unified core, the autodiff direction, and the interval substrate. P3's brief states it **pauses** until this document is committed. | authoring in parallel |
+| **P3 multimodality PRD** | The unified core and the autodiff direction. (The interval substrate is **#6655's**, not built here — this PRD holds it as a soft edge; corrected 2026-08-26 per P3's §7.1 companion obligation.) P3's brief states it **pauses** until this document is committed. | authoring in parallel |
 | **P4 legibility PRD** | The typed cause vocabulary and the Lagrange multipliers/slack values leaf μ produces. P4 renders; P2 produces. | authoring in parallel |
 | **Any `.ri` author** writing `constraint std::distance(a, b) >= clearance` | Today: whole-resolve death, or a different answer depending on whether the call sits behind a `let`. | — |
 
@@ -472,7 +472,7 @@ Out-of-batch hard edges wired as real dependencies: ζ ← #6653 · γ ← #5540
 
 ## 10. Out of scope for this PRD (named successors)
 
-- **Basin enumeration, multistart policy, global uniqueness, discrete×continuous coupling** → the **P3** PRD, which consumes this core. `#5388`, `#5711`, `#5472`, `#5474` live there.
+- **Basin enumeration, multistart policy, global uniqueness, discrete×continuous coupling** → the **P3** PRD, which consumes this core. `#5388` and `#5711` live there; `#5472`/`#5474` are PRD2's own leaves ζ/θ (discrete-cost-minimisation), which P3 sequences around rather than owning. *(Corrected 2026-08-26 per P3's §7.1 companion obligation — the original line mis-assigned PRD2's leaves.)*
 - **Telemetry and presentation** (GUI badges, reify-debug MCP tools, `reify explain` parity, slack rendering, the DOF badge) → the **P4** PRD. This PRD *produces* the causes, multipliers and slacks; it renders none of them.
 - **Which commands solve** (`cmd_build` / `cmd_check` posture, determinism across cold/warm/edit, cost tiers, LSP and `mcp-server` postures) → the **P1** PRD.
 - **Per-trial geometry re-realization** (a scalar auto feeding a geometry op's parameter; `geo_loop_a`/`geo_loop_b`; M-WASTE's regime; design §12's bounded fixpoint). The existing typed decline stands and gains a better cause. Successor: an outer candidate-sweep PRD gated on the realization-cache input-cone rekey.

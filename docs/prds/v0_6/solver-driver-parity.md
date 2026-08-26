@@ -708,7 +708,7 @@ it is a quality follow-up that #6653 renders non-blocking.
   in GUI/LSP** (★5).
 - **Solver numerics** — multistart quality, `minimize` making no progress from its
   seed (probe-observed: `minimize length` with `length >= 8mm` returns exactly
-  `8mm × 1.1`, the seed nudge), CP-SAT wiring (#5469), interval seeding (#5655).
+  `8mm × 1.1`, the seed nudge), CP-SAT wiring (#5469), interval seeding (#6655).
   P2 and the solver-internals batch.
 - **`reify mcp-server`, entirely.** Its deletion is ratified and owned by #6665.
   This PRD does no work on it — not the solver wiring, not the no-prelude bootstrap
