@@ -1066,3 +1066,93 @@ fn check_does_not_surface_export_only_diagnostics() {
          vacuous.\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D1 — the
+/// EXIT-CODE leg of the routing change.
+///
+/// D1's most user-visible consequence is not a printed line.  Routing a
+/// geometry-bearing module through the realization lets
+/// `merge_post_build_verdicts` upgrade a constraint from `Indeterminate` to
+/// `Violated`, and that verdict flows through `report_constraint_results` →
+/// `finish_check` into the process exit code: a `reify check` that exited 0
+/// now exits 1.  Nothing pinned that direction end to end.  The sibling D1
+/// test (`check_geometry_module_resolves_geometry_query_constraints`) uses a
+/// fixture that resolves to Satisfied, so it asserts `status.success()` and
+/// covers only Indeterminate → OK; `merge_post_build_verdicts_tests::
+/// adopts_a_definite_violated_verdict` stops at the `satisfaction` field and
+/// never reaches the CLI's exit mapping.
+///
+/// `fixtures/geometry_query_violated.ri` is a `: Rigid` body whose only
+/// explicit constraint reads the geometry-derived `mass` cell
+/// (`volume(geometry) * material.density`, stdlib `Physical`) and is FALSE
+/// once that cell resolves: a 100 mm steel cube masses 7.85 kg against a
+/// `mass < 1kg` bound.
+///
+/// Mechanism, not a re-measured baseline for this fixture: before D1 a module
+/// carrying none of {geometric Conforms, RepresentationWithin, DFMRule} took
+/// the lightweight `Engine::new(None) + check()` path, where nothing runs
+/// `run_post_processes`/`post_process_geometry_queries`, so `mass` stayed
+/// `undef` and the constraint degraded to INDETERMINATE at exit 0 — the same
+/// degradation the sibling test measured for the flange's `moi_principal`.
+///
+/// A future refactor that drops the upgrade, or narrows it to `Satisfied`,
+/// fails HERE rather than silently returning `reify check` to reporting a
+/// constraint it cannot evaluate as if it were fine.
+#[test]
+fn check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure() {
+    let (status, stdout, stderr) = common::run_subcommand(
+        "check",
+        &common::fixture_path("geometry_query_violated.ri"),
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Kernel-DEPENDENT in BOTH directions here, unlike the sibling D1 test
+        // whose fixture exits 0 either way: resolving `mass` needs the
+        // realization loop to produce a solid, which a stub build cannot do, so
+        // the constraint stays INDETERMINATE and `check` exits 0 (C1 — a
+        // missing kernel degrades to indeterminate, never to a false
+        // violation).  Same C1 convention as the sibling task-5748 tests: skip
+        // the content assertions rather than guess at the stub-mode wording.
+        assert!(
+            stdout.contains("OverweightBlock#constraint[2]"),
+            "the fixture must still report its mass constraint, else this lock \
+             is vacuous.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+        eprintln!(
+            "skipping verdict-upgrade assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    assert!(
+        !status.success(),
+        "the mass constraint is FALSE once the geometry query resolves, so \
+         `reify check` must exit non-zero — this is D1's exit-code \
+         consequence.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("VIOLATED OverweightBlock#constraint[2]"),
+        "the upgraded verdict must be REPORTED as violated, not merely counted \
+         in the exit code.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE OverweightBlock#constraint[2]"),
+        "the constraint must no longer degrade to INDETERMINATE.\nstdout: \
+         {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Some constraints violated"),
+        "the summary line must agree with the per-constraint verdict.\nstdout: \
+         {stdout}\nstderr: {stderr}"
+    );
+    // The other half of D2's no-self-contradiction property, on the direction
+    // that moves the exit code: stdout says VIOLATED, so no surviving stderr
+    // line may still claim the same constraint is indeterminate.
+    assert!(
+        !stderr.contains("OverweightBlock#constraint[2] indeterminate"),
+        "stdout reports VIOLATED, so a surviving `… indeterminate` line for the \
+         same constraint would be a self-contradiction \
+         (`drop_falsified_indeterminate_diagnostics`).\nstderr: {stderr}"
+    );
+}
