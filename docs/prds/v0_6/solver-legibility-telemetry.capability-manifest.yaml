@@ -454,6 +454,25 @@ tasks:
       paths:
       - crates/reify-cli/src/main.rs
       expect: absent
+  - name: completeness-field-owner-is-p3-zeta
+    binding: 'G7 co-tenancy ruling (PRD section 8.2, written by #6751) — P3 zeta #6711 adds
+      the completeness field to ObjectiveProvenance and renders it in reify explain; xi renders
+      the P4-owned fields only (scope, term_contributions, slack lines, the infeasible-case
+      message, the source token, the stale engine_eval.rs:3884 anchor) and neither adds nor
+      re-renders it. That field set is disjoint from the completeness verdict. NO dependency
+      edge is wired in either direction — the same non-edge ruling section 8.1 item 2 made for
+      ConstraintCheckEntry: neither leaf needs the other''s field, an invented edge would be
+      spurious, and the orchestrator''s file locks already serialise the two cmd_explain edits.
+      The risk is divergence on one function, not ordering. This check pins the ruling on
+      record so xi cannot dispatch without the ownership split being written down; it is GREEN
+      on #6751''s own diff, not a post-delivery assertion.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '#6711'
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present
 - label: ο
   task_id: 6735
   title: 'P4-omicron: docs-truth for the observable legibility surface'
@@ -605,3 +624,26 @@ tasks:
     delivered_check:
       kind: manual
       reason: a scheduler-disposition rule, not a repo pattern.
+  - name: p3-multimodality-slot-cites-live-tasks
+    binding: 'G7 / INV-SF-5 posture — the PRD section 11 multimodality slot must name live P3
+      task ids, #6706 (the Completeness vocabulary carrier) and #6711 (the first leaf that
+      populates it), never "a future PRD". As first landed the section 12.5 G7 row promised the
+      citation was "stamped at decompose" and NO P3 id appeared anywhere in the document; #6751
+      stamped it in section 4.1 (the reserved slot), section 8 (the seam row plus 8.2) and
+      section 11. omega is dep-wired behind #6751 and is the leaf that applies the terminal
+      status stamp, so this check re-verifies the citation immediately before that stamp: a G7
+      justification that defers to a decompose-time action must be re-checked at
+      decompose-close, or the invariant walk certifies its own intention. NON-VACUITY: paths is
+      the single PRD file, and #6706 / #6711 returned ZERO hits in it at baseline HEAD
+      cdc501a3f1 (measured before the fix), so this is a genuine RED-to-GREEN check and grep is
+      the honest kind — unlike gui-on-demand-measurement.capability-manifest.yaml lines 80-85,
+      which had to be demoted to manual because its pattern already matched elsewhere in its
+      search paths. Unlike beta''s verdict token and delta''s mount gate, this binding is GREEN
+      on #6751''s own diff rather than asserting a post-delivery state.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '#6706|#6711'
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present

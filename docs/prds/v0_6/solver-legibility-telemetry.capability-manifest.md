@@ -17,7 +17,7 @@ confirmed to resolve in the asserted direction. Two of them (β's verdict token 
 design — they are delivery assertions, not evidence of the current defect, which the
 `binding` column records in prose instead.
 
-**Gate verdict: PASS.** 17 leaves, 53 capability bindings, no binding resolving to
+**Gate verdict: PASS.** 17 leaves, 55 capability bindings, no binding resolving to
 `declared-only`, `test-only`, `producer-absent`, `producer-downstream`,
 `producer-extent-short`, `fixture-ERROR`, `bound<=floor` or `rejection-absent`.
 No numeric bound is asserted anywhere in this PRD, so the G6 floor check does not
@@ -132,6 +132,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `term-contributions-already-computed` | **PASS** | capability→producer — TermContribution carries sense, weight, realized_value and contribution, computed per scope and Arc-shared; explain currently drops it.<br>`grep:struct TermContribution` → `present` in `crates/reify-ir/src/constraint.rs` |
 | `infeasible-and-no-autos-are-indistinguishable-today` | **PASS** | signal premise (the defect) — explain prints the same no-provenance sentinel for an infeasible model and for a model with no autos; only stderr and the exit code separate them.<br>`grep:No objective provenance recorded` → `present` in `crates/reify-cli/src/main.rs` |
 | `stale-anchor-is-repaired-here` | **PASS** | code-anchor hygiene — cmd_explain's own rustdoc cites engine_eval.rs:3884 for the provenance rationale; that line is now an unrelated field-elaboration arm. xi re-cites by symbol.<br>`grep:engine_eval.rs:3884` → `absent` in `crates/reify-cli/src/main.rs` |
+| `completeness-field-owner-is-p3-zeta` | **PASS** | G7 co-tenancy ruling (§8.2, written by #6751) — P3 ζ #6711 adds the completeness field to ObjectiveProvenance and renders it in reify explain; ξ renders the P4-owned fields only (scope, term_contributions, slack, the infeasible-case message, the source token, the stale anchor) and neither adds nor re-renders it. No dependency edge in either direction — the same non-edge ruling §8.1 item 2 made for ConstraintCheckEntry; file locks serialise the two cmd_explain edits, and the risk is divergence, not ordering.<br>`grep:#6711` → `present` in `docs/prds/v0_6/solver-legibility-telemetry.md` |
 
 ## ο (#6735) — P4-omicron: docs-truth for the observable legibility surface
 
@@ -171,4 +172,5 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 |---|---|---|
 | `terminal-vocabulary-is-closed` | **PASS** | docs-truth / PRD-status contract — the terminal token must be exactly one of SHIPPED, SUPERSEDED or WITHDRAWN, matched case-insensitively as the first token after the Status label, with the landed leaf IDs named on the same line.<br>`grep:SHIPPED|SUPERSEDED|WITHDRAWN` → `present` in `docs/prds/v0_6/solver-legibility-telemetry.md` |
 | `cancelled-sibling-counts-as-satisfied` | **PASS** | dependency disposition — a cancelled sibling leaf satisfies omega's edge; if the scheduler treats it as unmet the decompose steward removes the edge by hand rather than leaving omega permanently blocked.<br>_manual_ — a scheduler-disposition rule, not a repo pattern. |
+| `p3-multimodality-slot-cites-live-tasks` | **PASS** | G7 / INV-SF-5 posture — the §11 multimodality slot must name live P3 task ids, #6706 (the `Completeness` vocabulary carrier) and #6711 (the first leaf that populates it), never "a future PRD". As first landed the §12.5 G7 row promised the citation was "stamped at decompose" and no P3 id appeared anywhere in the document; #6751 stamped it in §4.1, §8 (row + §8.2) and §11. ω is dep-wired behind #6751 and applies the terminal status stamp, so this re-verifies the citation immediately before that stamp — a G7 justification that defers to a decompose-time action must be re-checked at decompose-close. **Non-vacuous:** `paths` is the single PRD file and both ids returned zero hits in it at baseline HEAD `cdc501a3f1`, so this is a genuine RED→GREEN check rather than the vacuous tree-scoped id-grep that forced `gui-on-demand-measurement.capability-manifest.yaml`:80-85 down to `kind: manual`. Unlike β's and δ's, this binding is GREEN on #6751's own diff.<br>`grep:#6706\|#6711` → `present` in `docs/prds/v0_6/solver-legibility-telemetry.md` |
 
