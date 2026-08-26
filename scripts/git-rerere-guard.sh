@@ -4,12 +4,12 @@
 #
 # WHY: `.git/rr-cache` is a git COMMON path — `git rev-parse --git-path rr-cache`
 # resolves to the COMMON git dir from every linked worktree, while `MERGE_RR` and
-# `index` resolve per-worktree.  Reify's ~238 warm lanes therefore share ONE
-# rerere resolution cache, and git takes its only rerere lock on the PER-WORKTREE
-# MERGE_RR — so that lock provides zero cross-worktree mutual exclusion over the
-# shared payload directory.  Git exposes no knob to relocate rr-cache, so per-lane
-# cache isolation is impossible by construction; the only sound fix is to disable
-# rerere entirely.  Two hazards follow from leaving it on:
+# `index` resolve per-worktree.  Every warm lane of reify's shared store therefore
+# shares ONE rerere resolution cache, and git takes its only rerere lock on the
+# PER-WORKTREE MERGE_RR — so that lock provides zero cross-worktree mutual
+# exclusion over the shared payload directory.  Git exposes no knob to relocate
+# rr-cache, so per-lane cache isolation is impossible by construction; the only
+# sound fix is to disable rerere entirely.  Two hazards follow from leaving it on:
 #
 #   1. Silent cross-lane resolution bleed.  Lane A (task X) resolves a conflict
 #      its way; lane B (unrelated task Y) later merges and git prints
@@ -38,7 +38,12 @@
 #                    2 = shared config pinned, but an override this run cannot
 #                        reach still wins (another lane's config.worktree, or
 #                        the user's global gitconfig) — advisory, not fatal;
-#                    1 = a genuine failure of this run.
+#                    ANY OTHER NON-ZERO = a failure of this run.  Normally 1,
+#                        but the script runs under `set -euo pipefail`, so a git
+#                        invocation that aborts outside a guarded `if` (a lost
+#                        race on .git/config.lock, a read-only store) propagates
+#                        git's own status instead.  Branch on `0 | 2 | *`, never
+#                        on a closed set {0,1,2}.
 #   scan-locks  Read-only census of stale MERGE_RR.lock files across the WHOLE
 #               store — the main checkout's own git dir (where git dir == common
 #               dir, so its lock lands at <common>/MERGE_RR.lock rather than
@@ -78,7 +83,8 @@ Subcommands:
               store (read-only).  Exit 0 = safe, 1 = armed.
   arm         Idempotently disable rerere in the shared local config, then
               re-verify.  Never deletes rr-cache.  Exit 0 = disarmed,
-              2 = pinned but an out-of-reach override survives, 1 = failed.
+              2 = pinned but an out-of-reach override survives, any other
+              non-zero = this run failed.  Branch on 0 | 2 | *.
   scan-locks  Read-only census of stale MERGE_RR.lock files across the whole
               store — the main checkout and every linked worktree.
               Exit 0 = clean, 1 = lock(s) found.
@@ -141,7 +147,7 @@ fi
 # .git/worktrees/<name>/ (which holds the per-worktree MERGE_RR), while the
 # shared config and rr-cache both live in the COMMON dir.  Resolving through the
 # common dir is what makes this script behave identically whether it is invoked
-# from the main checkout or from any of the ~238 lanes.
+# from the main checkout or from any lane of the store.
 
 COMMON_DIR="$(git -C "$TARGET" rev-parse --git-common-dir)"
 case "$COMMON_DIR" in
@@ -152,6 +158,9 @@ esac
 RR_CACHE="$COMMON_DIR/rr-cache"
 WORKTREES_DIR="$COMMON_DIR/worktrees"
 
+# A literal newline, for the sweep's fork-free prefilter membership test.
+LF=$'\n'
+
 # ── subcommand implementations ────────────────────────────────────────────────
 
 # cmd_check — report whether rerere is effectively armed for the target store.
@@ -160,6 +169,15 @@ WORKTREES_DIR="$COMMON_DIR/worktrees"
 # the full precedence chain is honoured: a value inherited from the user's global
 # gitconfig, or set in a worktree's config.worktree, is just as armed as one in
 # the shared .git/config, and reading only --local would silently miss it.
+#
+# The effective read ALONE is not sufficient, though, and the gap is the exact
+# mirror image of the main-checkout sweep blind spot below.  $TARGET's own
+# config.worktree beats the shared config, so a lane that disarms ITSELF reads
+# clean while every other lane of the store still inherits an armed shared
+# default.  So the shared (--local) value is read explicitly too, and reported
+# whenever the target's own config merely masks it — that shared value is the
+# fleet-wide default this guard exists to pin, and `arm` (a --local writer) can
+# always clear it, so reporting it is both actionable and self-healing.
 #
 # Exit code is the machine-readable signal (0 = safe, 1 = armed); stdout stays
 # empty so a caller can use this in a pipeline without parsing prose.
@@ -193,6 +211,10 @@ cmd_check() {
             echo "ARMED: rerere.enabled=true for $COMMON_DIR" >&2
             echo "  A resolution recorded by any lane can be replayed into an unrelated lane's merge." >&2
             armed=1
+        elif ! _check_shared_default rerere.enabled; then
+            # Effectively false HERE, but only because $TARGET's own config
+            # masks an armed shared default that every other lane still gets.
+            armed=1
         fi
     fi
 
@@ -203,6 +225,8 @@ cmd_check() {
     if [ "$value" = "true" ]; then
         echo "ARMED: rerere.autoupdate=true for $COMMON_DIR" >&2
         echo "  A replayed resolution is auto-staged, leaving no conflict markers and a clean git status." >&2
+        armed=1
+    elif ! _check_shared_default rerere.autoupdate; then
         armed=1
     fi
 
@@ -215,6 +239,44 @@ cmd_check() {
     fi
 
     return "$armed"
+}
+
+# _check_shared_default KEY — report an armed SHARED (--local) value that
+# $TARGET's own config.worktree masks.  Returns 1 if the fleet-wide default is
+# armed, 0 otherwise.  Called ONLY from the effective-read's not-armed branch, so
+# a store that is armed outright is never reported twice for the same key.
+#
+# --local, deliberately: this asks "what does a lane with NO local override
+# inherit?", which is precisely what the shared write in `arm` controls.  A false
+# verdict here is harmless in the way that matters — `arm` writes --local, so it
+# can always clear whatever this reports, unlike the inert-config.worktree case
+# the sweep below has to gate against.
+_check_shared_default() {
+    local key="$1" shared
+
+    if ! git -C "$TARGET" config --local --get "$key" >/dev/null 2>&1; then
+        # Unset in the shared config.  Only rerere.enabled has a non-false
+        # default: -1 = "enabled iff rr-cache/ exists".  rerere.autoupdate
+        # defaults to false, so an unset shared autoupdate is genuinely safe.
+        if [ "$key" = "rerere.enabled" ] && [ -d "$RR_CACHE" ]; then
+            echo "ARMED: the SHARED config leaves rerere.enabled UNSET and $RR_CACHE exists." >&2
+            echo "  $TARGET reads disarmed only because its own config overrides the shared" >&2
+            echo "  default; every lane WITHOUT such an override inherits git's -1 default" >&2
+            echo "  ('enabled iff rr-cache/ exists') and is armed.  Run 'arm' to pin it." >&2
+            return 1
+        fi
+        return 0
+    fi
+
+    shared="$(git -C "$TARGET" config --local --bool --get "$key" 2>/dev/null || true)"
+    if [ "$shared" = "true" ]; then
+        echo "ARMED: the SHARED config sets $key=true in $COMMON_DIR/config." >&2
+        echo "  $TARGET reads disarmed only because its own config.worktree masks it — every" >&2
+        echo "  other worktree of this store still inherits the armed shared default." >&2
+        return 1
+    fi
+
+    return 0
 }
 
 # _sweep_worktree_configs — report any worktree whose config.worktree sets
@@ -232,11 +294,13 @@ cmd_check() {
 # — which is the same reasoning that makes cmd_scan_locks cover
 # <common>/MERGE_RR.lock.
 #
-# Values are read with `git config --file ... --bool --get`, never grepped:
-# comments, whitespace variations and section-header spellings would all produce
-# a false verdict from a grep, in either direction.
+# Values are read with `git config --file ... --bool --get-regexp`, never
+# grepped: comments, whitespace variations, valueless keys and non-canonical
+# booleans (`yes`, `on`, `1`) would all produce a false verdict from a grep, in
+# either direction.  grep is used only as a PREFILTER — one fork for the whole
+# store, deciding which files are worth parsing, never deciding a value.
 _sweep_worktree_configs() {
-    local armed=0 wt_config wt_name key value
+    local armed=0 wt_config wt_name mentions key value
 
     # config.worktree is DEAD BYTES unless extensions.worktreeConfig is true —
     # git does not read those files at all, so a rerere.enabled=true sitting in
@@ -250,9 +314,27 @@ _sweep_worktree_configs() {
         return 0
     fi
 
+    # COST.  This runs over every config.worktree in the store — 200+ files on the
+    # live pool — so a `git config` fork per key per file was ~450 forks and a
+    # measured 5.4s for a read-only probe.  One `grep -lis rerere` over the whole
+    # set collapses that: on a healthy store NO config.worktree mentions rerere at
+    # all, so the per-file parse below never runs and the sweep costs a single
+    # fork.  The prefilter can only ever cause a file to be SKIPPED when the
+    # string 'rerere' is absent from its bytes — in which case no `git config`
+    # read of a rerere.* key could have returned anything either.  Unreadable
+    # files are still walked and WARNed about below, precisely because grep cannot
+    # see them.
+    #
+    # 'include' is in the pattern alongside 'rerere' because `git config --file`
+    # HONOURS include.path, so a rerere.* key can reach a config.worktree by
+    # indirection without the string 'rerere' appearing in its bytes.  Matching
+    # the indirection keyword too keeps the prefilter a pure cost optimisation
+    # rather than a second, weaker parser.
+    mentions="$(grep -lisE 'rerere|include' -- "$COMMON_DIR/config.worktree" "$WORKTREES_DIR"/*/config.worktree 2>/dev/null || true)"
+
     # The main checkout's own config.worktree is PREPENDED to the linked-worktree
     # glob rather than handled by a duplicate block, so the readability check, the
-    # `git config --file` reads and the two-key loop below are shared by both.
+    # `git config --file` read and the reporting below are shared by both.
     #
     # No `[ -d "$WORKTREES_DIR" ]` guard: a repo with no linked worktrees has no
     # worktrees/ dir at all — normal, not an error — and an early return there
@@ -266,10 +348,16 @@ _sweep_worktree_configs() {
         # The main-dir label is STATED, not derived: basename(dirname) of
         # <common>/config.worktree is the useless '.git'.  '<main checkout>' is the
         # same label _classify_lock already uses for that dir in scan-locks.
+        #
+        # The lane label is derived with parameter expansion, NOT basename/dirname:
+        # those were two forks per file, and on the live pool they — not the
+        # `git config` reads — were the dominant cost of the whole sweep (measured:
+        # ~4-5s of a 5.4s `check`, with the reads' own prefilter already in place).
         if [ "$wt_config" = "$COMMON_DIR/config.worktree" ]; then
             wt_name="<main checkout>"
         else
-            wt_name="$(basename "$(dirname "$wt_config")")"
+            wt_name="${wt_config%/config.worktree}"
+            wt_name="${wt_name##*/}"
         fi
 
         # One unreadable config.worktree must not abort the sweep and mask every
@@ -280,15 +368,26 @@ _sweep_worktree_configs() {
             continue
         fi
 
-        for key in rerere.enabled rerere.autoupdate; do
-            value="$(git config --file "$wt_config" --bool --get "$key" 2>/dev/null || true)"
-            if [ "$value" = "true" ]; then
-                echo "ARMED: worktree '$wt_name' overrides $key=true in its config.worktree." >&2
-                echo "  Path: $wt_config" >&2
-                echo "  git reads config.worktree FIRST, so this beats the shared .git/config." >&2
-                armed=1
-            fi
-        done
+        # Prefilter membership test — a pure-bash substring match on the
+        # newline-delimited grep output, no fork.  Anchored on both sides with
+        # newlines so '/a/config.worktree' cannot match '/xx/a/config.worktree'.
+        case "$LF$mentions$LF" in
+            *"$LF$wt_config$LF"*) ;;
+            *) continue ;;
+        esac
+
+        # ONE fork for BOTH keys.  --bool applies to --get-regexp output, so
+        # valueless keys and `yes`/`on`/`1` still normalise to true — the whole
+        # reason a grep cannot be trusted with the value.
+        while read -r key value; do
+            [ "$value" = "true" ] || continue
+            echo "ARMED: worktree '$wt_name' overrides $key=true in its config.worktree." >&2
+            echo "  Path: $wt_config" >&2
+            echo "  git reads config.worktree FIRST, so this beats the shared .git/config." >&2
+            armed=1
+        done <<EOF
+$(git config --file "$wt_config" --bool --get-regexp '^rerere\.(enabled|autoupdate)$' 2>/dev/null || true)
+EOF
     done
 
     return "$armed"
@@ -297,9 +396,9 @@ _sweep_worktree_configs() {
 # cmd_arm — idempotently pin rerere off in the SHARED local config, then
 # re-verify via the full check logic.
 #
-# --local, NEVER --worktree: the entire point is that all ~238 lanes inherit one
-# shared default with zero per-lane wiring.  A --worktree write would leave every
-# other lane armed while this one reads clean.
+# --local, NEVER --worktree: the entire point is that every lane of the store
+# inherits one shared default with zero per-lane wiring.  A --worktree write would
+# leave every other lane armed while this one reads clean.
 #
 # MUST NOT delete or prune rr-cache.  Deleting an entry another live worktree
 # still holds is precisely the operation that reproduces the segfault + stale
@@ -317,7 +416,18 @@ cmd_arm() {
         if [ "$before" = "false" ]; then
             continue
         fi
-        git -C "$TARGET" config --local "$key" false
+        # Guarded, not bare.  Under `set -euo pipefail` a bare write that loses a
+        # race on .git/config.lock (200+ lanes share one shared config), hits a
+        # read-only store, or trips over a multi-valued key would abort the script
+        # with git's own status — never the documented 1 — and a consumer
+        # branching on `1 => fatal` would read that as success.
+        if ! git -C "$TARGET" config --local "$key" false; then
+            echo "ERROR: failed to write $key=false to $COMMON_DIR/config." >&2
+            echo "  The shared config was NOT pinned, so rerere may still be armed fleet-wide." >&2
+            echo "  Common causes: a lost race on $COMMON_DIR/config.lock (every lane of the" >&2
+            echo "  store writes that one file), a read-only store, or a multi-valued $key." >&2
+            return 1
+        fi
         echo "SET: $key=false (was ${before:-<unset>}) in $COMMON_DIR/config" >&2
         changed=1
     done
@@ -343,7 +453,7 @@ cmd_arm() {
         # Exit 2, NOT 1.  setup-dev.sh runs `arm` under `set -e` on every
         # developer setup, and this branch is dominated by a FOREIGN lane's
         # config.worktree — something `arm` (a --local writer) has no ability to
-        # fix.  One self-armed lane out of ~239 must not abort everything after
+        # fix.  One self-armed lane must not abort everything after
         # this point in setup.  So: 2 = "shared config pinned, an out-of-reach
         # override survives" (advisory, actionable by an operator); 1 stays
         # reserved for a genuine failure of this run.
