@@ -462,7 +462,8 @@ posture verbatim rather than claiming the component.
 | #6659 typed per-constraint refusal | **consumes** | decline-at-recognition vocabulary | #6659 | in progress |
 | #6646 GUI viewport at-auto pose | **sibling** | it explicitly defers "surface the solve failure" to #4388/#5415/#5420 | #6646 owns the pose solve; **this PRD claims the surfacing sliver** for solve outcomes | pending |
 | `constrained-2d-sketch.md` #5509 | **adjacent** | a **second** DOF ledger (sketch), distinct from #4388's relate ledger | that PRD | pending — §11 names which ledger the badge renders |
-| P3 multimodality | **consumes** | found-basins verdicts — a named slot only, with a live task cite (§11) | P3 | chartered |
+| P3 `solution-set-completeness.md` | **consumes** | found-basins verdicts — a **named, reserved slot only** (§4.1), populated by no P4 leaf. Its vocabulary is α **#6706**'s `Completeness` carrier (`Exhaustive \| Partial{reason} \| Refuted{narrowing}`); the first leaf that populates it and makes a solution set reach any surface is ζ **#6711**. Cited by id in §4.1, §11 and §12.5 — not as "a future PRD" (INV-SF-5) | P3 | decomposed `b8a7680bac` (#6706–#6719); slot stamped by **#6751** |
+| P3 ζ **#6711** ↔ P4 ξ **#6733** | **co-tenants on `reify explain`** | both extend `ObjectiveProvenance` and both edit `cmd_explain` in `crates/reify-cli/src/main.rs`. #6711 adds and renders the completeness field; ξ renders the P4-owned fields only. No dependency edge in either direction | jointly; the field is **#6711**'s | resolved here — §8.2 |
 | #5975 "no optimum exists" | **consumes** | open-interval / infimum-not-attained diagnostic | #5975 | pending — render when it lands |
 
 ### §8.1 — The `gui-on-demand-measurement.md` seam, resolved
@@ -496,6 +497,36 @@ here rather than left to discovery at dispatch:
 **Collision noted, not resolved here.** P1 §8 records that #6608 and #5403 hold
 opposing designs for `reify check`'s `Severity::Error` exit gate with no edge
 between them. This PRD depends on neither and does not pick a winner. *(Resolved 2026-08-26: #5403 delivers the gate; #6608 depends on it (edge wired) and contributes only UndefCause + new codes.)*
+
+### §8.2 — The `reify explain` co-tenancy with P3 ζ, resolved
+
+P3 §7.1 left this seam open in terms: *"Which leaf adds the field and which renders it
+is left to **#6751** to decide and write down — neither DAG holds the seam today."* It is
+ruled here, and the ruling is not a coin-flip — it writes down what both sides already
+imply.
+
+1. **Which leaf adds the field: P3 ζ #6711.** Its own DELIVER item 4 is "Extend
+   `ObjectiveProvenance` and render the set + verdict in `reify explain`", and P3 §7's
+   `constraint-solver-completion.md` row already assigns P3 "the added field and its
+   rendering". **P4 does not add it**, and §4.1's slot is reserved precisely so that this
+   PRD can name the field without claiming it.
+
+2. **Which leaf renders it: #6711, on the CLI.** P4 ξ **#6733** renders the P4-owned
+   fields only — `scope`, `term_contributions`, the slack lines, the infeasible-case
+   message, the `source` token, and the stale `engine_eval.rs:3884` anchor fix. That set
+   is **disjoint** from the completeness verdict. ξ must neither add nor re-render the
+   completeness field; if #6711 has landed at ξ's dispatch, ξ leaves its rendering alone.
+
+3. **No dependency edge in either direction** — the same ruling §8.1 item 2 made for
+   `ConstraintCheckEntry`. Neither leaf needs the other's field, so inventing an edge
+   would be spurious, and the orchestrator's file locks already serialise two edits to one
+   function. **The risk is not ordering, it is divergence:** two independent renderings of
+   provenance in one `cmd_explain`. Whichever lands second extends the first's shape rather
+   than adding a parallel channel.
+
+4. **The ruling is echoed on #6733's `details`** so the leaf's own dispatch context
+   carries it — exactly as §8.1 item 2 records a coordination note on #6722's `details`.
+   A ruling that lives only in a PRD is one the dispatching agent never reads.
 
 ---
 
