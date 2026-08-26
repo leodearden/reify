@@ -178,6 +178,10 @@ vi.mock('three', async () => {
 });
 
 import { createScene, CAMERA_FOV_DEG } from '../../viewport/scene';
+// The position the label sprites are CONSTRUCTED at. scene.ts no longer imports it —
+// its reset path derives AXES_BASE_LENGTH * LABEL_TIP_MARGIN instead — so this suite is
+// what holds the two ends together.
+import { DEFAULT_LABEL_OFFSET } from '../../viewport/axisLabels';
 import { GRID_RENDER_ORDER, AXES_RENDER_ORDER } from '../../viewport/renderOrder';
 
 beforeEach(() => {
@@ -492,12 +496,21 @@ describe('fitHelpers (#6588)', () => {
   }
 
   /** Box3-like fake whose getSize writes the given extent. Same shape as the
-   *  adjustClipping fakes above — fitHelpers must not need a real Box3. */
-  function boundsWithSize(x: number, y: number, z: number, isEmpty = false) {
+   *  adjustClipping fakes above — fitHelpers must not need a real Box3.
+   *
+   *  `centre` defaults to the origin but is settable, so the extent-only sizing
+   *  contract can be exercised with a model that is nowhere near (0, 0, 0). */
+  function boundsWithSize(
+    x: number,
+    y: number,
+    z: number,
+    isEmpty = false,
+    centre: [number, number, number] = [0, 0, 0],
+  ) {
     return {
       isEmpty: () => isEmpty,
       getCenter: (target: any) => {
-        target.x = 0; target.y = 0; target.z = 0;
+        target.x = centre[0]; target.y = centre[1]; target.z = centre[2];
         return target;
       },
       getSize: (target: any) => {
@@ -754,15 +767,108 @@ describe('fitHelpers (#6588)', () => {
     }
   });
 
-  it('leaves the ~10 m CAD default scene looking exactly as it does today', () => {
+  it("leaves the ~10 m CAD default scene's GRID at its pre-#6588 size, and grows the triad", () => {
     const result = setup() as any;
     // (6, 8, 0) has length exactly 10, so radius is exactly 5 with no float slack.
     result.fitHelpers(boundsWithSize(6, 8, 0) as any);
 
     // radius / 5 = 1, which is already a round 1 x 10^0, so spacing = 1 m and the
-    // grid stays 20 m at scale 1 — byte-identical to the pre-#6588 default. This
-    // fix must not disturb the scene size the helpers were originally tuned for.
+    // grid stays 20 m at scale 1 — byte-identical to the pre-#6588 default. The
+    // ground plane the helpers were originally tuned against is undisturbed.
     expect(20 * result.grid.scale.x).toBe(20);
     expect(result.grid.scale.x).toBe(1);
+
+    // The TRIAD is NOT unchanged here, and this test refuses to imply that it is:
+    // axesWorldLength = 3 * spacing = 3 m, so the 2 m default grows by 1.5x and the
+    // ring follows it out to 3 * 1.15 = 3.45. That is the intended behaviour (the
+    // triad is sized to read against the model, not to reproduce a historical
+    // length), but it IS a visible change at the default scale, so it is asserted
+    // rather than left to a comment claiming the scene is untouched. Retuning the
+    // axes multiplier to restore the 2 m default would fail HERE, deliberately —
+    // that is a decision to take on purpose, not to slide past.
+    expect(result.axes.scale.x).toBe(1.5);
+    expect(2 * result.axes.scale.x).toBe(3);
+    for (const offset of Object.values(labelOffsets(result))) {
+      expect(offset).toBeCloseTo(3.45, 12);
+    }
+  });
+
+  // ── The reset target is the CONSTRUCTION position ───────────────────────────
+
+  it("restores the ring to axisLabels.ts's DEFAULT_LABEL_OFFSET, not merely to some fixed value", () => {
+    const result = setup() as any;
+
+    // Fit a sub-metre model so the ring is genuinely somewhere else first...
+    result.fitHelpers(boundsWithSize(0.6, 0.6, 0.6) as any);
+    for (const offset of Object.values(labelOffsets(result))) {
+      expect(offset).not.toBe(DEFAULT_LABEL_OFFSET);
+    }
+
+    // ...then clear the document.
+    result.fitHelpers({ isEmpty: () => true, getCenter: vi.fn(), getSize: vi.fn() } as any);
+
+    // scene.ts's reset DERIVES this offset (AXES_BASE_LENGTH * LABEL_TIP_MARGIN)
+    // rather than importing the constant, so the equality is a real cross-module
+    // claim and not a constant compared with itself: retuning LABEL_TIP_MARGIN moves
+    // the reset ring off the sprites' construction position and fails here.
+    // Exact, not approximate — 2 * 1.15 === 2.3 in IEEE-754 double.
+    for (const offset of Object.values(labelOffsets(result))) {
+      expect(offset).toBe(DEFAULT_LABEL_OFFSET);
+    }
+  });
+
+  // ── Extent-only sizing, origin-anchored helpers ─────────────────────────────
+
+  it('sizes from the scene EXTENT alone — a model far from the origin gets the same helpers', () => {
+    const atOrigin = setup() as any;
+    atOrigin.fitHelpers(boundsWithSize(0.6, 0.6, 0.6) as any);
+
+    const farAway = setup() as any;
+    // Same 0.6 m part, modelled 100 m out along X and Y.
+    farAway.fitHelpers(boundsWithSize(0.6, 0.6, 0.6, false, [100, 100, 0]) as any);
+
+    // DOCUMENTED BEHAVIOUR, not an oversight (see fitHelpers' docstring). The grid,
+    // triad and ring are all anchored at the world ORIGIN — the triad marks the datum
+    // the model is dimensioned from — so their SIZE is a function of the model's
+    // extent only. The consequence is real and accepted: this part gets a ~4 m grid
+    // it does not overlap. Folding the 141 m origin-to-model distance into the radius
+    // instead would yield a ~280 m grid whose cells could not measure a 0.6 m part,
+    // i.e. a helper that is useless everywhere rather than one that is elsewhere.
+    // Framing the camera on a far-flung model is fitCamera.ts's job.
+    expect(farAway.grid.scale.x).toBe(atOrigin.grid.scale.x);
+    expect(farAway.axes.scale.x).toBe(atOrigin.axes.scale.x);
+    expect(labelOffsets(farAway)).toEqual(labelOffsets(atOrigin));
+  });
+
+  // ── No hysteresis: sizing is a pure function of the CURRENT bounds ──────────
+
+  it('re-snaps on every call, with no dead band — the recorded no-hysteresis decision', () => {
+    const result = setup() as any;
+
+    // niceSpacing's boundary between the 1 and 2 decade steps sits at radius / 5 === 1,
+    // i.e. radius === 5. A parameter drag walking the model across that line is the
+    // realistic way to hit it: (6, 8, 0) has radius exactly 5, (6.6, 8.8, 0) has 5.5.
+    const small = () => boundsWithSize(6, 8, 0);
+    const large = () => boundsWithSize(6.6, 8.8, 0);
+
+    result.fitHelpers(small() as any);
+    const smallScale = result.grid.scale.x;
+
+    // Idempotent: re-fitting identical bounds must land on the same size, not
+    // accumulate (a multiplyScalar-instead-of-setScalar bug would show up here).
+    result.fitHelpers(small() as any);
+    expect(result.grid.scale.x).toBe(smallScale);
+
+    // One tick past the boundary the helpers DO pop to the next snap step. This is
+    // the accepted cost of memoryless snapping: a dead band would remove the pop but
+    // make helper sizing history-dependent, so the same document could render two
+    // different grids depending on which side the drag arrived from.
+    result.fitHelpers(large() as any);
+    expect(result.grid.scale.x).toBeGreaterThan(smallScale);
+
+    // ...and coming back returns to exactly the original sizing — no retained state
+    // from the excursion. That is the half of "no hysteresis" worth having.
+    result.fitHelpers(small() as any);
+    expect(result.grid.scale.x).toBe(smallScale);
   });
 });

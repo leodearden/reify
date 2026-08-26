@@ -26,7 +26,7 @@ vi.mock('three', async () => {
   };
 });
 
-import { createAxisLabels } from '../../viewport/axisLabels';
+import { createAxisLabels, DEFAULT_LABEL_OFFSET } from '../../viewport/axisLabels';
 // The same sentinel object the vi.mock('three') factory above hands to
 // axisLabels.ts, so `map.minFilter === LinearFilter` is a real identity check.
 import { LinearFilter } from './threeAxisMocks';
@@ -223,53 +223,34 @@ describe('createAxisLabels setOffset (#6588)', () => {
     expectRingAt(result.group, 0.35);
   });
 
-  it('leaves the construction-time offset untouched until setOffset is called', () => {
+  it('places the ring at EXACTLY DEFAULT_LABEL_OFFSET until setOffset is called', () => {
     const result = createAxisLabels() as any;
-    // Same contract the "positioned beyond the axis tip" tests above assert: the
-    // default ring sits beyond the default AxesHelper(2) tip.
-    expect(byAxis(result.group, 'X').position.x).toBeGreaterThan(2);
-    expect(byAxis(result.group, 'Y').position.y).toBeGreaterThan(2);
-    expect(byAxis(result.group, 'Z').position.z).toBeGreaterThan(2);
+    // Deliberately stronger than the "positioned beyond the axis tip" tests above,
+    // which only bound the offset (> 2) and would pass for any value in a wide band.
+    // The EXACT construction position is load-bearing across modules: scene.ts's
+    // fitHelpers resets the ring to its own derived AXES_BASE_LENGTH * LABEL_TIP_MARGIN,
+    // and scene.test.ts requires that to restore precisely this value — so a change
+    // here that merely stayed "beyond the tip" would silently unpair reset from
+    // as-constructed. Pin the number, not the band.
+    expectRingAt(result.group, DEFAULT_LABEL_OFFSET);
   });
 });
 
 // ── Screen-footprint tests (#6588) ───────────────────────────────────────────
 
 describe('axis label screen footprint (#6588)', () => {
-  // The app's PerspectiveCamera is constructed with fov = CAMERA_FOV_DEG (scene.ts).
+  // SCOPE: this suite asserts only what it can genuinely OBSERVE. It mocks 'three'
+  // with the sprite/label classes alone and never builds a camera, so the actual
+  // on-screen fraction — f = s * cot(fov/2) / 2, a JOINT property of this module's
+  // sprite scale and scene.ts's camera fov — is not evaluable here. Restating fov 60
+  // as a local literal to compute it anyway would add drift surface without adding
+  // coverage: a fov change in scene.ts would leave the restated copy green.
   //
-  // Restated as a literal here rather than imported: this suite mocks 'three' with
-  // only the sprite/label classes, so importing scene.ts (which needs Scene,
-  // WebGLRenderer, GridHelper, ...) would fail at module load. That restatement is a
-  // real coupling risk — a fov change in scene.ts would leave every assertion below
-  // green while the on-screen labels grew — so scene.test.ts carries the guard that
-  // evaluates this same formula against the REAL exported CAMERA_FOV_DEG
-  // ("keeps the axis labels under 10% of the viewport height at the fov the camera
-  // actually uses"). Keep the two in step: if that constant moves, this one must too.
-  const FOV_DEG = 60;
-
-  /**
-   * On-screen height of a sprite as a FRACTION of the viewport height, under the
-   * three r183 sprite vertex shader (sprite.glsl.js), for a material with
-   * `sizeAttenuation: false`:
-   *
-   *     vec4 mvPosition = modelViewMatrix[3];
-   *     vec2 scale = vec2(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz));
-   *     #ifndef USE_SIZEATTENUATION
-   *       if (isPerspective) scale *= -mvPosition.z;
-   *     #endif
-   *     vec2 alignedPosition = (position.xy - (center - vec2(0.5))) * scale;
-   *
-   * `position.xy` spans [-0.5, 0.5], and that `scale *= -mvPosition.z` CANCELS the
-   * perspective divide that follows. So the fraction reduces to
-   *
-   *     f = s * cot(fov/2) / 2
-   *
-   * with NO camera-distance term `d` — which is the whole point of the fix.
-   */
-  function screenHeightFraction(s: number): number {
-    return (s * (1 / Math.tan((FOV_DEG * Math.PI) / 180 / 2))) / 2;
-  }
+  // scene.test.ts's "keeps the axis labels under 10% of the viewport height at the
+  // fov the camera actually uses" is the SINGLE owner of that bound — it builds the
+  // real scene and evaluates the formula against the exported CAMERA_FOV_DEG. What
+  // is left here is the module-local half: the material flag that removes the
+  // camera-distance term at all, and the shape of the scale vector.
 
   // REGRESSION REPRO (#6588, dogfood session). With three.js's DEFAULT
   // `sizeAttenuation: true`, the `-mvPosition.z` factor is absent, the perspective
@@ -294,19 +275,16 @@ describe('axis label screen footprint (#6588)', () => {
     }
   });
 
-  it('sprite scale keeps each label under 10% of the viewport height at every camera distance', () => {
+  it('scales the sprite quad squarely, so the square glyph texture is not stretched', () => {
     const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
       expect(child.scale.set).toHaveBeenCalled();
       const [sx, sy] = (child.scale.set as any).mock.calls[0];
-      expect(sx).toBeGreaterThan(0);
-      // Square quad: the glyph texture is square, so a non-square scale would
-      // stretch the letter.
+      // Positivity is already pinned by "all sprites have a non-degenerate positive
+      // scale" above; the property THIS test owns is the x/y equality. A non-square
+      // scale would stretch the letter into the reported #6588 wedge shape even at a
+      // correct overall footprint.
       expect(sy).toBe(sx);
-
-      const frac = screenHeightFraction(sx);
-      expect(frac).toBeGreaterThan(0);
-      expect(frac).toBeLessThanOrEqual(0.1);
     }
   });
 

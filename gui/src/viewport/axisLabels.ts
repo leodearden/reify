@@ -15,11 +15,15 @@ import { AXIS_LABEL_RENDER_ORDER } from './renderOrder';
  * offset in force before any scene bounds have arrived; once they have, scene.ts's
  * `fitHelpers` calls `setOffset` with a scene-scaled distance (see below).
  *
- * Exported because it is also the value scene.ts's `fitHelpers` restores when a
- * scene measurement is degenerate (an emptied document, a zero-extent Box3): the
- * helper sizing there returns to the UNSCALED grid/axes, so the ring must return to
- * the offset that pairs with them. Sharing this constant is what keeps "reset" and
- * "as constructed" the same position rather than two literals that can drift.
+ * Exported so tests can pin this exact position rather than restating 2.3, and so a
+ * reader of scene.ts can find the value its reset path must land back on. scene.ts
+ * deliberately does NOT import it: when a scene measurement is degenerate (an emptied
+ * document, a zero-extent Box3) its `fitHelpers` resets by evaluating its OWN sizing
+ * arithmetic at the identity fit (`AXES_BASE_LENGTH * LABEL_TIP_MARGIN`), so the reset
+ * ring always pairs with the unscaled triad even if that margin is retuned. The two
+ * values must agree — reset and as-constructed are meant to be the same position — and
+ * scene.test.ts is what enforces the agreement, by capturing the construction offsets
+ * before any fit and requiring reset to restore them exactly.
  */
 export const DEFAULT_LABEL_OFFSET = 2.3;
 

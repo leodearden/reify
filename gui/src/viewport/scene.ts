@@ -11,7 +11,7 @@ import {
 } from 'three';
 import type { Box3, Group } from 'three';
 import { THEME_TOKENS } from '../theme';
-import { createAxisLabels, DEFAULT_LABEL_OFFSET } from './axisLabels';
+import { createAxisLabels } from './axisLabels';
 import { GRID_RENDER_ORDER, AXES_RENDER_ORDER } from './renderOrder';
 
 export interface SceneContext {
@@ -92,6 +92,27 @@ const AXES_BASE_LENGTH = 2;
  * model is several times the whole scene.
  */
 const LABEL_TIP_MARGIN = 1.15;
+
+/**
+ * Where the label ring sits when the helpers are at their CONSTRUCTION sizing.
+ *
+ * DERIVED, not restated: this is exactly what `fitHelpers`' good path computes when
+ * the fit is the identity (`axesWorldLength * LABEL_TIP_MARGIN` with
+ * `axesWorldLength === AXES_BASE_LENGTH`), so `resetHelpers` and a real fit share one
+ * definition of "where the ring goes for a triad of length L". Retuning
+ * LABEL_TIP_MARGIN now moves both in lockstep; previously the reset path restated
+ * axisLabels.ts's DEFAULT_LABEL_OFFSET literal and would have silently stopped pairing
+ * with the unscaled triad.
+ *
+ * It must ALSO equal axisLabels.ts's DEFAULT_LABEL_OFFSET — the position the sprites
+ * are constructed at — or "reset" and "as constructed" become two different places.
+ * That equality is deliberately not restated here as a literal: scene.test.ts's
+ * degenerate-bounds tests capture the construction offsets BEFORE any fit and require
+ * reset to restore them exactly, so a divergence fails there. It is exact rather than
+ * approximate arithmetic — `2 * 1.15 === 2.3` is true in IEEE-754 double, because
+ * doubling is exact.
+ */
+const BASE_LABEL_OFFSET = AXES_BASE_LENGTH * LABEL_TIP_MARGIN;
 
 /**
  * Vertical field of view, in degrees, of the viewport camera.
@@ -257,6 +278,27 @@ export function createScene(
    * above and as fitCamera.ts, so helper sizing and camera framing agree on how big
    * the scene is rather than drifting apart under two definitions.
    *
+   * EXTENT-ONLY AND ORIGIN-ANCHORED, by design. Only `getSize` is consulted; the
+   * bounds' CENTRE is deliberately ignored, because the helpers being sized are
+   * themselves anchored at the world origin — the grid straddles it and the triad
+   * marks the datum the model is dimensioned FROM. Folding the origin-to-model
+   * distance into `radius` instead would inflate a 0.5 m part modelled at
+   * (100, 100, 0) into a ~200 m grid whose cells are far too coarse to measure that
+   * part with: it trades a helper that is merely elsewhere for one that is useless
+   * everywhere. So a far-from-origin model gets correctly-scaled helpers it may not
+   * overlap; getting the CAMERA to that model is fitCamera.ts's job, not this one.
+   * Pinned by scene.test.ts's non-origin-centre case.
+   *
+   * NO HYSTERESIS, also by design. `niceSpacing` snaps memorylessly and this runs on
+   * every mesh-sync tick, so a parameter drag that walks the scene radius across a
+   * snap boundary re-sizes the helpers on the tick it crosses (and back again if it
+   * crosses back). A dead band would remove that pop at the cost of making helper
+   * sizing HISTORY-dependent — the same document would render two different grids
+   * depending on which side it arrived from, and a screenshot would stop being a
+   * function of the model alone. Snap boundaries are sparse (one per 1|2|5 step) and
+   * the resulting jump is at most 2.5x, so the pop is rare and self-correcting.
+   * Pinned by scene.test.ts's repeated-call case.
+   *
    * DEGENERATE BOUNDS RESET, they do not preserve. A degenerate measurement — an
    * empty Box3, a zero-extent one, a NaN/Infinity one — is never applied (a 0-unit
    * or NaN-unit grid is strictly worse than an oversized one), but it also must not
@@ -269,13 +311,14 @@ export function createScene(
    * adjustClipping merely returns.
    */
   function resetHelpers(): void {
-    // Scale 1 IS the construction sizing (GRID_BASE_SIZE / AXES_BASE_LENGTH), and
-    // DEFAULT_LABEL_OFFSET is the ring position that pairs with it — it is the same
-    // base case the good path would produce, since AXES_BASE_LENGTH * LABEL_TIP_MARGIN
-    // (2 * 1.15) is exactly DEFAULT_LABEL_OFFSET (2.3).
+    // This IS the good path evaluated at the identity fit: scale 1 is the construction
+    // sizing (GRID_BASE_SIZE / AXES_BASE_LENGTH), and BASE_LABEL_OFFSET is the ring
+    // position fitHelpers' own arithmetic yields for an unscaled triad. Nothing here
+    // restates axisLabels.ts's DEFAULT_LABEL_OFFSET literal, so the reset position
+    // cannot drift away from the triad it is supposed to pair with.
     grid.scale.setScalar(1);
     axes.scale.setScalar(1);
-    setAxisLabelOffset(DEFAULT_LABEL_OFFSET);
+    setAxisLabelOffset(BASE_LABEL_OFFSET);
   }
 
   function fitHelpers(sceneBounds: Box3): void {
@@ -311,8 +354,15 @@ export function createScene(
     //                sitting inside a 20 m grid whose far lines converge into the
     //                reported dark 0x444466 horizon band, and the 2 m triad stops
     //                drawing a hard diagonal across every part in frame.
-    //   r = 5     -> 1 m cells, 20 m grid — IDENTICAL to the pre-#6588 default, so
-    //                the ~10 m CAD scene the helpers were tuned for is undisturbed.
+    //   r = 5     -> 1 m cells, 20 m grid. The GRID alone is byte-identical to the
+    //                pre-#6588 default, so the ~10 m CAD scene the helpers were tuned
+    //                for keeps the ground plane it was tuned against. The TRIAD is
+    //                NOT unchanged there: axesWorldLength = 3 * spacing = 3 m, i.e.
+    //                1.5x the 2 m default, with the ring following it out to 3.45.
+    //                That is intended — the triad is scaled to be readable against
+    //                the model, not to reproduce a historical length — but it is a
+    //                visible change at the default scale, so scene.test.ts asserts
+    //                the grown values rather than claiming the scene is untouched.
     //   r = 0.005 -> 1 mm cells, 20 mm grid.
     grid.scale.setScalar(gridWorldSize / GRID_BASE_SIZE);
     axes.scale.setScalar(axesWorldLength / AXES_BASE_LENGTH);
