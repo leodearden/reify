@@ -20188,9 +20188,15 @@ fn apply_param_to_source_honours_the_replaced_literals_unit() {
 
 /// Rejection-taxonomy fixture for `apply_param_to_source`: one param of every
 /// shape the RESOLVE phase must discriminate between — a rewritable quantity
-/// literal (`width`), a BinOp default (`computed`), a solver-determined `auto`
-/// default (`solved`), a param with NO default (`no_default`), and a Bool
-/// literal default (`flag`) that must stay rewritable.
+/// literal (`width`), a BinOp default (`computed`), a bare-identifier default
+/// (`aliased`), a call default (`scaled`), a solver-determined `auto` default
+/// (`solved`), a param with NO default (`no_default`), and the two remaining
+/// admitted literal kinds, Bool (`flag`) and String (`label`), which must stay
+/// rewritable.
+///
+/// The four REFUSED kinds are the four the `apply_param_to_source` rustdoc
+/// names (`BinOp`, `Ident`, a call, `Auto`), so the doc's enumeration and the
+/// test table cover the same set rather than drifting apart.
 ///
 /// Deliberately SEPARATE from `writeback_source()`: that fixture's
 /// byte-for-byte test (`apply_param_to_source_rewrites_only_the_default_span`)
@@ -20200,9 +20206,12 @@ fn writeback_rejection_source() -> &'static str {
     r#"structure def Part {
     param width: Length = 80mm
     param computed: Length = width * 2
+    param aliased: Length = width
+    param scaled: Length = abs(width)
     param solved: Length = auto
     param no_default: Length
     param flag: Bool = true
+    param label: String = "unset"
 
     let body = box(width, width, computed)
 }"#
@@ -20288,6 +20297,18 @@ fn apply_param_to_source_discriminates_its_resolve_phase_rejections() {
             "Part.solved",
             &["Part.solved", "not a literal", "Auto", "preserved"],
         ),
+        // The other two non-literal shapes the rustdoc names. `aliased = width`
+        // is an alias one param keeps to another and `scaled = abs(width)` is a
+        // computed value; splicing a constant over either destroys the relation
+        // exactly as splicing over `width * 2` would.
+        (
+            "Part.aliased",
+            &["Part.aliased", "not a literal", "Ident", "preserved"],
+        ),
+        (
+            "Part.scaled",
+            &["Part.scaled", "not a literal", "FunctionCall", "preserved"],
+        ),
     ];
 
     for (cell_id, expected_substrings) in cases {
@@ -20340,11 +20361,20 @@ fn apply_param_to_source_leaves_no_trace_when_the_recompile_rejects_the_value() 
             err.contains("width"),
             "the recompile rejection should name the offending param, got: {err}"
         );
-        assert!(
-            err.contains("initializer"),
-            "the recompile rejection should say the initializer is what mismatched, \
-             got: {err}"
-        );
+        // Deliberately NOT asserting the compiler's wording for the mismatch
+        // itself ("declared `Scalar[m]` but its initializer evaluates to …"):
+        // that diagnostic belongs to reify-compiler, and rewording it must not
+        // break a GUI test. What this module owns is WHICH PHASE rejected, so
+        // that is what is discriminated — the message must not read as one of
+        // the resolve-phase refusals, because those would mean the splice never
+        // happened and this test would be asserting the wrong ledger.
+        for resolve_phase_wording in ["not a literal", "Unknown parameter", "no default"] {
+            assert!(
+                !err.contains(resolve_phase_wording),
+                "this rejection must come from the RECOMPILE, not the resolve \
+                 phase — {resolve_phase_wording:?} says otherwise, got: {err}"
+            );
+        }
 
         assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
 
@@ -20652,10 +20682,8 @@ fn apply_param_to_source_refuses_to_clobber_a_file_that_changed_on_disk() {
     // deliberately change a param the write-back would NOT splice, so what is
     // at stake is an edit no splice of `Part.width` could ever preserve.
     let (_dir, path, mut session) = writeback_session();
-    let external_edit = writeback_source().replace(
-        "param depth: Length = 0.5m",
-        "param depth: Length = 0.75m",
-    );
+    let external_edit =
+        writeback_source().replace("param depth: Length = 0.5m", "param depth: Length = 0.75m");
     std::fs::write(&path, &external_edit).expect("the external edit should be writable");
 
     let err = session
@@ -20742,11 +20770,12 @@ fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
     entries.sort();
     assert_eq!(
         entries,
-        vec![path
-            .file_name()
-            .expect("fixture path has a file name")
-            .to_string_lossy()
-            .into_owned()],
+        vec![
+            path.file_name()
+                .expect("fixture path has a file name")
+                .to_string_lossy()
+                .into_owned()
+        ],
         "a successful write-back must leave the design file and nothing else"
     );
 }
@@ -20825,4 +20854,145 @@ fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
     session
         .set_parameter("Helper.x", "20mm")
         .expect("the ephemeral edit path must still accept the same cell id");
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_string_literal_default() {
+    // The fourth admitted literal kind. `Bool` is covered above; `String` is
+    // the one whose splice actually changes the byte LENGTH of the literal
+    // (`"unset"` → `"done"`), so it is the case where an off-by-one in the
+    // byte-offset splice would show up as a mangled neighbour rather than as a
+    // value that merely reads wrong.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.label", &reify_ir::Value::String("done".to_string()))
+        .expect("a String literal default must stay rewritable");
+
+    let disk = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk,
+        writeback_rejection_source().replace(r#""unset""#, r#""done""#),
+        "only the String default span should change"
+    );
+}
+
+#[test]
+fn apply_param_to_source_leaves_no_trace_when_the_value_cannot_be_serialized() {
+    // The SERIALIZE phase's own rejection arm, between the resolve-phase
+    // taxonomy and the recompile: `Part.width` resolves fine (its default IS a
+    // rewritable quantity literal) and the value is refused by
+    // `value_to_ri_literal_with_unit` instead. A non-finite real is the
+    // shortest trigger — there is no `.ri` literal that re-parses to NaN, so
+    // the emitter refuses rather than writing something that would not round-trip.
+    //
+    // The ledger claim being pinned is the rustdoc's "**Serialize** likewise —
+    // nothing has been mutated at that point": the splice has not been computed
+    // yet, so all four surfaces must be exactly as the call found them.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    let err = session
+        .apply_param_to_source("Part.width", &reify_ir::Value::Real(f64::NAN))
+        .expect_err("a value with no `.ri` literal form must be REFUSED");
+    assert!(
+        err.contains("serialize"),
+        "the rejection should say SERIALIZATION is what failed, so it is not \
+         mistaken for a resolve-phase refusal or a compile rejection, got: {err}"
+    );
+    assert!(
+        err.contains("Part.width"),
+        "the rejection should name the cell it could not write, got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+    assert!(
+        !session.is_stale(),
+        "a serialize rejection must not raise the hot-reload staleness banner"
+    );
+}
+
+#[test]
+fn apply_param_to_source_refuses_a_session_with_no_file_on_disk() {
+    // INV-GUI-3 writes the CANONICAL `.ri`, so a session that has no such file
+    // has nothing to be canonical about. `load_from_source` builds exactly that
+    // session — the debug bridge and several GUI entry points use it — and it
+    // must be refused rather than silently degrading to an engine-state-only
+    // edit, which is the ephemeral behaviour INV-GUI-3 exists to replace.
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(writeback_source(), "part")
+        .expect("load_from_source should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a session with no on-disk .ri must be REFUSED");
+    assert!(
+        err.contains("no on-disk"),
+        "the rejection should say the session has no file to write, got: {err}"
+    );
+
+    // Refused before any mutation, exactly like the resolve-phase arms — there
+    // is no disk surface to check here, so the other three are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a refused write-back");
+        assert_eq!(
+            source_map_text,
+            writeback_source(),
+            "source_map must be byte-identical after a refused write-back"
+        );
+    }
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a refused write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a refused write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a refused write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects() {
+    // The `last_reload_error` half of the snapshot/restore taken around the
+    // recompile. The sibling rejection tests assert `!session.is_stale()` on a
+    // session that was never stale, which cannot fail no matter what the
+    // restore does; this one starts the session STALE, so the assertion has a
+    // direction to regress in.
+    //
+    // A prior hot-reload failure is the user's banner, not this write-back's:
+    // a rejected write-back must neither clear it (the reload really did fail
+    // and still has not been retried) nor replace it with its own diagnostics
+    // (nothing on disk changed, so nothing about the reload's status did).
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    session.record_reload_error("boom".to_string());
+    assert!(
+        session.is_stale(),
+        "precondition: the session must start stale for this test to mean anything"
+    );
+
+    session
+        .apply_param_to_source("Part.width", &reify_ir::Value::Bool(true))
+        .expect_err("a Bool into a `Length` param must be REFUSED by the recompile");
+
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "a rejected write-back must leave the pre-existing staleness banner \
+         exactly as it found it — neither cleared nor overwritten"
+    );
+    assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
 }

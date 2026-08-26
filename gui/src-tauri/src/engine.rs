@@ -2287,7 +2287,11 @@ impl EngineSession {
     /// - **Resolve** (unknown cell, malformed id, an entity that is not the
     ///   entry file's, no default, non-literal default) returns before ANY of
     ///   the four is touched.
-    /// - **Serialize** likewise — nothing has been mutated at that point.
+    /// - **Serialize** (no `.ri` literal re-parses to this value — a non-finite
+    ///   real, say) likewise: nothing has been mutated at that point.
+    /// - **No file to write** — a `load_from_source` session has no canonical
+    ///   `.ri` at all, and is refused rather than degraded to the engine-state
+    ///   edit INV-GUI-3 exists to replace — likewise.
     /// - **Disk divergence** (the file no longer holds the text this session
     ///   compiled) likewise: the check runs before the recompile precisely so
     ///   its refusal costs no rollback.
