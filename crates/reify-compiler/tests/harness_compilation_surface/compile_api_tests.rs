@@ -238,6 +238,27 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
     // problem; piling an ArgTypeMismatch on top would bury the real error
     // under a diagnostic about an argument whose position is meaningless in a
     // call that has the wrong shape to begin with.
+    //
+    // Task 5750 (units-length η), PRD boundary row 9b — RESOLUTION RECORDED
+    // HERE because this fixture is the site the row is about.
+    // `docs/prds/v0_6/units-length-gate-completion.md` claimed the arity-6
+    // `linear_pattern_2d(w, 1, 0, 0, 3, 20)` "slips past today's
+    // `arg_count == 11` guard entirely", leaving the bare `20` ungated and
+    // implying η owed either a new arity-6 slot or a migration of this line.
+    //
+    // PROBED on 2026-07-28 and again during η, and the claim is FALSE IN BOTH
+    // DIRECTIONS: this call is neither a legitimate overload nor a malformed
+    // fixture. The arity guard in `geometry.rs` DOES reject it — `reify check`
+    // and `reify eval` both exit 1 with
+    // `linear_pattern_2d() expects 11 arguments, got 6` — so nothing "slips
+    // past" and there is no ungated position to gate.
+    //
+    // Resolution: NO arity-6 LENGTH slot is added, the bare `20` stays bare
+    // under contract C6's deliberate-negative-fixture clause, and this site was
+    // SUBTRACTED from η's migration list. The `arg_type_mismatches.is_empty()`
+    // assertion below IS the pin for all of that — do not weaken it to a
+    // "contains the arity message" check, which would hold even if a future
+    // slot started firing here.
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()

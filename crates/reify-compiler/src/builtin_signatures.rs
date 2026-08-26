@@ -103,6 +103,77 @@
 //!   non-uniform form) is a dimensionless RATIO, so a LENGTH slot would
 //!   reject correct `.ri` outright.
 //!
+//! # Contract C positions this table deliberately does NOT cover (task 5750)
+//!
+//! Task 5750 (units-length η) closed the four families its PRD leaf names —
+//! primitive, profile, modify, sweep — plus the transform row that contract C6
+//! forced into it. What remains OUTSIDE the table is recorded here rather than
+//! left to be rediscovered, and each entry states WHY, so a reader can tell a
+//! decision from an oversight. These are PROSE, not `TODO`s, on purpose: under
+//! the repo's PTODO grammar a `TODO` must cite a live non-terminal task, and
+//! only the `mirror`/`circular_pattern` row above has one (`#5662`). Task 5752
+//! (leaf ι, the Contract C closure guard) is the backstop that will surface any
+//! of these if they are ever forgotten.
+//!
+//! - The task-5623 CURVE row — `line_segment`'s endpoints `x1`…`z2`, `arc`'s
+//!   centre `cx`/`cy`/`cz` plus its `radius`, and `helix`'s
+//!   `radius`/`pitch`/`height`. These ARE index-addressable and ARE Contract C
+//!   gated at eval, so they are eligible in the mechanical sense; they are
+//!   simply not among the families task 5750's leaf scoped, and no fixture
+//!   forced the decision. A later leaf can add them by following the arms
+//!   above verbatim.
+//!
+//! - The ARITY-OPEN variadic route — `polygon`'s 2-D vertex pairs, `interp`
+//!   and `bezier`'s coordinate triples, and `nurbs`' `2 .. 2 + 3·n_points`
+//!   pole span. Gated at eval since tasks 5658/5661 through
+//!   `accept_variadic_length_args`, but NOT expressible as an index-keyed
+//!   [`CheckableArg`] at all: the gated span is computed from an ARGUMENT
+//!   (`n_points`), and the compile-layer names for these positions are the
+//!   inert `c0`…`cN` that `geometry.rs` synthesises — so even a hand-written
+//!   slot would word the mistake differently from the eval layer. This one is
+//!   a structural exclusion, not a deferral.
+//!
+//! - The task-5745 DECODED-VALUE route — `decode_plane` / `decode_axis`
+//!   origins and the `nurbs_surface` control-point grid. Also structural: a
+//!   position on this route arrives already assembled into a composite `Value`
+//!   by a stdlib producer (`plane_yz(10mm)` → `Value::Plane`), so it never
+//!   passes through a positional argument index for this table to key on.
+//!
+//! # Known: a NESTED geometry argument reports its slots twice (task 5750)
+//!
+//! MEASURED with `target/debug/reify check`, task 5750:
+//!
+//! ```text
+//! extrude(circle(4), 12mm)                      → 2 × "circle: radius …"
+//! let c = circle(4); extrude(c, 12mm)           → 1 ×
+//! let c = circle(4)                             → 1 ×
+//! linear_pattern(box(10,10,10), 1,0,0,3,20mm)   → 2 × each box axis
+//! linear_pattern(box(10mm,10mm,10mm), …, 20)    → 1 × "linear_pattern: spacing …"
+//! ```
+//!
+//! So a call whose slots fire duplicates its diagnostics when it appears as a
+//! NESTED geometry ARGUMENT, and reports once when let-bound or top-level. The
+//! OUTER call of a nested expression is unaffected — which is what
+//! `nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic` in
+//! `tests/builtin_arg_signature_tests.rs` already pins.
+//!
+//! This PRE-DATES task 5750 and is not caused by these slots. The same shape is
+//! measurable on a diagnostic family that involves no slot at all:
+//! `extrude(circle(nope), 12mm)` reports `unresolved name: nope` THREE times,
+//! and `box(missing_thing, 20mm, 10mm)` reports it twice. What task 5750
+//! changed is only the VISIBILITY — before it, no primitive or profile had a
+//! slot, so no nested inner call could emit an `ArgTypeMismatch` at all.
+//!
+//! Hypothesis, not measured: a nested geometry argument is walked by
+//! `compile_expr` more than once (once as an argument expression, once through
+//! the nested-geometry hoisting path), so every diagnostic emitted from the
+//! type-inference walk is duplicated while diagnostics emitted from the
+//! LOWERING path are not — consistent with `extrude(circle(4mm, 9mm), 12mm)`
+//! reporting its arity error exactly once. Fixing it means de-duplicating that
+//! walk, which is outside this table's file; filed as follow-up work rather
+//! than pinned here, because a test asserting the current count would enshrine
+//! the duplication as intended.
+//!
 //! # Arity awareness (task 5652)
 //!
 //! [`builtin_arg_slots`] is keyed on `(name, arity)`, not `name` alone, and
