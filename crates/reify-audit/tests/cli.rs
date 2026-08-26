@@ -605,6 +605,111 @@ mod cli {
         );
     }
 
+    /// The pre-done gate must ACCEPT a task whose declared deliverable was
+    /// RENAMED away by its own landing commit.
+    ///
+    /// This is the end-to-end half of
+    /// `changed_paths_in_commit_reports_both_sides_of_a_rename`: that test pins
+    /// the seam's return value, this one pins the GATE's verdict — the thing
+    /// that was actually broken. A seam-only guard would still let a future
+    /// change reintroduce the false refusal somewhere between the seam and
+    /// `check_pre_done_landing`.
+    ///
+    /// The shape mirrors the reported reproduction exactly: `a/old.rs` on main,
+    /// a branch that `git mv`s it to `a/new.rs`, merged `--no-ff`, and a task
+    /// declaring BOTH paths with no `done_provenance`. `a/old.rs` is not tracked
+    /// on main (it was renamed away), so the deletion/rename rescue is the only
+    /// leg that can corroborate it, and with rename detection on the landing
+    /// commit's delta reports `a/new.rs` alone — producing
+    /// `[High] P5PhantomDone task=9911: … neither tracked on main nor covered by
+    /// a task-referencing commit's own delta` with evidence
+    /// `MetadataFiles { entries: ["a/old.rs"] }` and exit 1.
+    ///
+    /// Two fixture details are load-bearing. The merge subject must reference
+    /// the id with non-digit neighbours (`task/9911 ` — a `/` and a space) or
+    /// the digit-boundary filter in `task_referencing_commits` drops the hit and
+    /// the test would go red for the wrong reason. And `--project-root` must be
+    /// the temp repo — a REAL git repo, per `repo_root()`'s doc comment — or
+    /// every `git ls-tree` fails, `path_tracked_on` fail-safes to `false` for
+    /// `a/new.rs` too, and the scenario stops being a rename scenario.
+    #[test]
+    fn pre_done_gate_accepts_rename_task_via_landing_commit() {
+        let repo_tmp = tempfile::tempdir().expect("create repo tempdir");
+        let repo = repo_tmp.path();
+        let run = |args: &[&str]| {
+            let status = common::git_env::git_cmd(repo)
+                .args(args)
+                .status()
+                .expect("git command failed to spawn");
+            assert!(status.success(), "git {:?} exited {:?}", args, status.code());
+        };
+
+        run(&["init", "--initial-branch=main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
+
+        std::fs::create_dir_all(repo.join("a")).expect("create a/");
+        std::fs::write(repo.join("a/old.rs"), "fn task() {}\n").expect("write a/old.rs");
+        run(&["add", "."]);
+        run(&["commit", "-m", "base: add a/old.rs"]);
+
+        run(&["checkout", "-b", "feat"]);
+        run(&["mv", "a/old.rs", "a/new.rs"]);
+        run(&["commit", "-m", "feat: move old.rs to new.rs"]);
+        run(&["checkout", "main"]);
+        run(&["merge", "--no-ff", "-m", "Merge task/9911 into main", "feat"]);
+
+        // tasks.json and runs.db live OUTSIDE the repo so the fixture repo's
+        // tree stays exactly the two commits above.
+        let data_tmp = tempfile::tempdir().expect("create data tempdir");
+        let dir = data_tmp.path();
+        let tasks = vec![task_fixture_with_files(
+            "9911",
+            "in-progress",
+            None,
+            None,
+            &["a/old.rs", "a/new.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9911",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                repo.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 9911 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5 = findings
+            .iter()
+            .find(|f| f["pattern"].as_str() == Some("P5PhantomDone"));
+        assert!(
+            p5.is_none(),
+            "a deliverable renamed away by the task's own landing commit must not be \
+             refused — the rename really did touch both paths; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the rename flip must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+    }
+
     /// `--task <id>` (no `--pre-done`) runs all three detectors; P5 finds the
     /// phantom-done; a pending-status task yields zero findings.
     ///
