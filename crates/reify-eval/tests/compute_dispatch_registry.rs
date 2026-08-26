@@ -1188,3 +1188,186 @@ fn instance_scope_optimized_param_default_equals_template_dispatched_value() {
         eval_result.values.get(&template_cell)
     );
 }
+
+/// Doubling trampoline — makes the reuse gate's INPUT sensitivity observable:
+/// the dispatched result depends on the argument, so a blanket copy of the
+/// template's value is distinguishable from a correct per-instance answer.
+fn double_fn(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let out = match value_inputs.first() {
+        Some(Value::Int(n)) => Value::Int(n * 2),
+        _ => Value::Undef,
+    };
+    ComputeOutcome::Completed {
+        result: out,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// RED (#6662 S5): the reuse gate must DECLINE when the instance's inputs
+/// differ from the template's, and must say so out loud.
+///
+/// This locks the two ways the reuse helper could be wrong:
+///   - copying the template value even when the instance's inputs differ
+///     (silently WRONG — strictly worse than the bug being fixed);
+///   - declining SILENTLY (today's bug, merely relocated).
+///
+/// `Outer3.a` takes the default (inputs equal ⇒ reuse fires); `Outer3.b`
+/// overrides `x` (inputs differ ⇒ the helper must not copy).
+#[test]
+fn instance_scope_optimized_cell_declines_reuse_when_ctor_args_differ() {
+    let source = r#"
+        @optimized("test::double")
+        fn dbl(x : Int) -> Int {
+            0
+        }
+
+        structure Inner2 {
+            param x : Int = 3
+            let r = dbl(x)
+        }
+
+        structure Outer3 {
+            sub a = Inner2()
+            sub b = Inner2(x: 10)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::double", double_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Template scope dispatched: 2 * 3 == 6.
+    let template_cell = ValueCellId::new("Inner2", "r");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        Some(&Value::Int(6)),
+        "template-scope Inner2.r must be the dispatched 2*3 == 6, got {:?}",
+        eval_result.values.get(&template_cell)
+    );
+
+    // (b) No ctor override ⇒ inputs equal ⇒ reuse fires.
+    let a_cell = ValueCellId::new("Outer3.a", "r");
+    assert_eq!(
+        eval_result.values.get(&a_cell),
+        Some(&Value::Int(6)),
+        "Outer3.a.r must reuse the template's dispatched 6 (x defaults to 3, so \
+         the instance's inputs are value-identical), got {:?}",
+        eval_result.values.get(&a_cell)
+    );
+
+    // (c) Ctor override ⇒ inputs DIFFER (x = 10 vs 3) ⇒ the helper must NOT
+    //     copy 6. Pin the exact body-inline sentinel (`dbl`'s body is `0`), not
+    //     merely `!= Int(6)`: a weaker assertion would let a future blanket-copy
+    //     regression through as long as it produced something else.
+    let b_cell = ValueCellId::new("Outer3.b", "r");
+    assert_eq!(
+        eval_result.values.get(&b_cell),
+        Some(&Value::Int(0)),
+        "Outer3.b.r must be the body-inline sentinel Int(0): x is overridden to \
+         10, so the template's 6 is NOT this instance's answer and must not be \
+         copied. (The correct per-instance answer, 20, needs genuine \
+         per-instance dispatch — #6592.) Got {:?}",
+        eval_result.values.get(&b_cell)
+    );
+
+    // (d) The decline must be LOUD — exactly one Warning, naming both the
+    //     @optimized target and the scoped cell that declined, and none for the
+    //     instance that reused successfully.
+    let warnings: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::double"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly ONE Warning naming \"test::double\" (the declining \
+         cell Outer3.b.r). Phase 1.5's scratch arm and phase 2's committing arm \
+         both see the same cell, so more than one means the diagnostic is \
+         emitted from a non-authoritative site too. Got: {:?}",
+        eval_result.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("Outer3.b"),
+        "the Warning must name the scoped cell that declined (Outer3.b), got: {:?}",
+        warnings[0]
+    );
+    assert!(
+        !warnings[0].message.contains("Outer3.a"),
+        "Outer3.a reused successfully and must NOT be named in a decline \
+         warning, got: {:?}",
+        warnings[0]
+    );
+}
+
+/// Guard for the `reify check` path (#6662 S5/S6): when NO trampoline is
+/// registered, template scope body-inlines too, so instance and template agree
+/// and the reuse gate fires SILENTLY. `reify check` deliberately registers no
+/// trampolines, so a diagnostic here would fire on every `check` of every
+/// fixture with an `@optimized` call in an instantiated structure.
+#[test]
+fn instance_scope_optimized_unregistered_target_reuses_silently() {
+    let source = r#"
+        @optimized("test::never_registered")
+        fn unregistered_call() -> Int {
+            42
+        }
+
+        structure InnerU {
+            let result = unregistered_call()
+        }
+
+        structure OuterU {
+            sub inner = InnerU()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // NO register_compute_fn — this is the `reify check` shape.
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // Both scopes body-inline, and they AGREE — which is correct.
+    let template_cell = ValueCellId::new("InnerU", "result");
+    let instance_cell = ValueCellId::new("OuterU.inner", "result");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        Some(&Value::Int(42)),
+        "template-scope InnerU.result body-inlines to 42 with no trampoline registered"
+    );
+    assert_eq!(
+        eval_result.values.get(&instance_cell),
+        Some(&Value::Int(42)),
+        "instance-scope OuterU.inner.result must agree with the template's 42"
+    );
+
+    // The reuse gate must NOT add a decline warning here: inputs compare equal
+    // and the template cell exists, so this is `Reuse`, not `Unreusable`. The
+    // unregistered-target diagnostic that template scope already emits is the
+    // one and only report of this condition.
+    let decline_warnings: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("OuterU.inner"))
+        .collect();
+    assert!(
+        decline_warnings.is_empty(),
+        "an unregistered @optimized target must not produce an instance-scope \
+         decline warning (template and instance agree; `reify check` registers \
+         no trampolines and would otherwise warn on every fixture). Got: {:?}",
+        decline_warnings
+    );
+}
