@@ -1734,6 +1734,42 @@ pub structure JAuxiliary {
 
 // ── Top-level integration ───────────────────────────────────────────────────
 
+// ── DOGFOODING OPENINGS (2026-08-26, post rear-routing-v3.2 survey) ─────────
+// Seven candidate areas for future rounds, ranked by fresh-Reify-surface ×
+// design value (the four rear-web-specific OPEN QUESTIONS live in the
+// DriveTendons header). Prose, deliberately not TODO-cited: unfiled design
+// directions, not tracked work.
+//  O1. AFrame + gantry structural FEA — the largest untouched engine surface
+//      (@optimized elastostatic dispatch, tet/hex/wedge meshing, shell
+//      extraction, buckling/modal, the GUI FEA case/channel views) aimed at
+//      the design's #1 requirement: gantry first mode vs servo bandwidth at
+//      100 m/s² (stretch 1000 with reaction-mass cancellation). The polymer-
+//      concrete/steel sandwich frame will probe multi-material section
+//      limits.
+//  O2. Bracket/axle hardware for the 27 pulleys — constrained 2D sketches →
+//      extrude/booleans (unexercised), and the deliberate parametrization
+//      gauntlet: ~27 near-identical parts incl. v3.2's compound-angle
+//      bracket, with no loops (#5482) and no parametric factoring until the
+//      #6586/#6592 value-flow chain lands. Run AFTER that chain, as its
+//      in-anger consumer (L2-escalation bookmark task filed 2026-08-26).
+//  O3. EZBed lift kinematics — joints + the loop-closure mechanism solver
+//      (unexercised); planarity/straightness constraint families.
+//  O4. Electrical (G) / pneumatic (H) routing as connect graphs — the
+//      connector subsystem has never been used in this project; its auto
+//      semantics also feed the #6631 solver-surface question.
+//  O5. Toolchanger dock (D/I) — needs swept volumes / collision over a
+//      trajectory, a capability class tools/README.md already flags as
+//      missing: high finding yield, slower real geometry.
+//  O6. Drive-stiffness budget in-design — every rope length is now a first-
+//      class cell (v3.1/v3.2), so tendon-compliance → per-axis stiffness /
+//      first-mode estimates are pure cell algebra with units (N/mm, Hz);
+//      values the ~160mm of rope v3.2 removed and produces O1's load cases.
+//  O7. Chamber/thermal (F/H) — the FEA kernel is elastostatic-only, so this
+//      is mostly a deliberate missing-capability probe plus parameter
+//      bookkeeping.
+// Next-round plan (2026-08-26): O6 as warm-up into O1 (spawned); O2 gated on
+// the value-flow chain via the L2-escalation bookmark task.
+
 /// Top-level printer integration. The motion system is modelled about its own
 /// gantry-midplane origin, then placed so the lowest X-rail bearing clears the
 /// build-volume top: motion Z = build_z + clearance + x_rail_offset +
