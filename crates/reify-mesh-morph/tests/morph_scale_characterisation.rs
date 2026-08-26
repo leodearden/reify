@@ -235,3 +235,76 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         mesh.vertices.len() / 3
     );
 }
+
+/// The timed morph helper must run a real, connectivity-preserving morph and
+/// must actually read the clock.
+///
+/// Deliberately at n=4 — the cost point `tests/calibration.rs` already pays.
+/// The 10K and 100K legs belong to the `#[ignore]`d driver, not to the
+/// always-on suite; this test guards the helper's contract, not its speed.
+///
+/// Connectivity preservation is the load-bearing property here: it is what
+/// makes the morph arm comparable to the from-scratch remesh arm at all. A
+/// morph that changed the tet table would be solving a different problem
+/// than the one whose wall-clock this harness reports.
+#[test]
+fn morph_once_times_a_connectivity_preserving_fillet_perturbation() {
+    use std::time::Duration;
+
+    let measurement = morph_once(4);
+
+    // Regenerate the source independently rather than reading it back off the
+    // measurement, so the assertions below compare against the fixture rather
+    // than against whatever `morph_once` happened to build.
+    let (source, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
+    let source_tet_indices = source
+        .tet_indices()
+        .expect("bracket(n=4) must expose tet connectivity")
+        .len();
+
+    let morphed = match &measurement.result {
+        Ok(morphed) => morphed,
+        Err(failure) => panic!(
+            "morph_once(4) must succeed: a +0.01 fillet perturbation at n=4 is \
+             well inside the solver's operating range, so a failure here is a \
+             rig bug, not a tuning concern — got {failure:?}"
+        ),
+    };
+
+    assert_eq!(
+        morphed
+            .tet_indices()
+            .expect("the morphed mesh must expose tet connectivity")
+            .len(),
+        source_tet_indices,
+        "the morph must preserve connectivity — it is a node-position update, \
+         and that is what makes its wall-clock comparable to a remesh's"
+    );
+
+    // Self-consistency of the reported shape: these three fields are what the
+    // driver prints and what any downstream ratio is normalised by, so a
+    // mislabelled scale would silently corrupt every conclusion drawn from
+    // the table.
+    assert_eq!(measurement.n, 4, "the measurement must report its own scale");
+    assert_eq!(
+        measurement.tets,
+        source_tet_indices / 4,
+        "reported tet count must match the fixture"
+    );
+    assert_eq!(
+        measurement.nodes,
+        source.vertices.len() / 3,
+        "reported node count must match the fixture"
+    );
+    assert_eq!(
+        measurement.dof,
+        3 * measurement.nodes,
+        "the elasticity morph carries three displacement DOF per node"
+    );
+
+    assert!(
+        measurement.elapsed > Duration::ZERO,
+        "the clock was never read — `elapsed` is {:?}",
+        measurement.elapsed
+    );
+}
