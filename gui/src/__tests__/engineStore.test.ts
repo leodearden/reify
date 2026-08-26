@@ -1046,6 +1046,108 @@ describe('engineStore autoResolve loop state', () => {
   });
 });
 
+describe('engineStore autoResolve deferred loop reset', () => {
+  const sampleIteration = {
+    iteration: 1,
+    parameters: {
+      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+    },
+    constraints: {
+      max_von_mises: {
+        name: 'max_von_mises',
+        value: 180,
+        unit: 'MPa',
+        target_upper: 200,
+        satisfied: true,
+      },
+    },
+    driving_metric: 'max_von_mises',
+    driving_metric_value: 180,
+  };
+
+  it('(1) beginAutoResolveLoop does NOT open an empty iterations window', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      // A completed loop holding one sample.
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      // The engine re-fires the whole start/iteration/complete trio on EVERY
+      // re-eval. If `begin` cleared eagerly the store would walk
+      // [iter] -> [] -> [iter] and the data-gated panel would unmount, resize
+      // the side-panel grid and lose scroll position on every commit.
+      beginAutoResolveLoop();
+      expect(state.autoResolve.active).toBe(true);
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(2) the first accepted iteration of the new loop REPLACES the previous samples', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+
+      beginAutoResolveLoop();
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 7 });
+      // Deferred clear ran, THEN the push — it must not append to length 2.
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.iterations[0].iteration).toBe(7);
+      dispose();
+    });
+  });
+
+  it('(3) a new loop with a different driving_metric is accepted, not dropped against the stale canonical', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
+
+      beginAutoResolveLoop();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: 'mass', driving_metric_value: 3.1 });
+
+      // The deferred clear MUST run before the canonical-mismatch check. If it
+      // did not, every iteration of the new loop would be dropped against the
+      // previous loop's canonical and the panel would freeze on the old loop.
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('mass');
+      const mismatchWarns = warnSpy.mock.calls.filter(
+        ([msg]) => typeof msg === 'string' && msg.includes('driving_metric mismatch'),
+      );
+      expect(mismatchWarns).toHaveLength(0);
+      warnSpy.mockRestore();
+      dispose();
+    });
+  });
+
+  it('(4) a loop that produces no iteration at all clears the previous loop on end', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      // start -> complete with nothing in between: the deferred clear was never
+      // discharged by an iteration, so `end` must discharge it. Otherwise the
+      // previous loop's samples would be stranded on screen indefinitely.
+      beginAutoResolveLoop();
+      endAutoResolveLoop();
+      expect(state.autoResolve.active).toBe(false);
+      expect(state.autoResolve.iterations).toHaveLength(0);
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      dispose();
+    });
+  });
+});
+
 describe('engineStore autoResolve subscribeToEvents wiring', () => {
   const sampleIteration = {
     iteration: 1,
