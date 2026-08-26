@@ -23433,6 +23433,70 @@
         );
     }
 
+    // ── task 6099: origination guards (fire exactly once per authoring mistake) ─
+    //
+    // An `Undef` `child_world` is written back as the NEXT level's
+    // `composed_world`, and `transform_compose` returns `Undef` whenever EITHER
+    // operand is not a well-formed Transform — so a single bad pose at depth 1
+    // poisons every deeper composition. Without these guards a depth-N subtree
+    // would emit N copies of the same error for one authoring mistake, and the
+    // diagnostic's "name the sub the author must edit" promise would be false.
+
+    #[test]
+    fn pose_composition_silent_when_parent_world_already_undef() {
+        // An `Undef` parent means the failure was already reported at a
+        // shallower level of the walk and has poisoned this composition too;
+        // re-firing here would duplicate that error once per descendant level.
+        let parent = reify_ir::Value::Undef;
+        let pose = transform_of([1.0, 0.0, 0.0, 0.0], [0.005, 0.0, 0.0]);
+        assert!(
+            diagnose_pose_composition_failure(
+                &parent,
+                &pose,
+                &reify_ir::Value::Undef,
+                "Asm",
+                "widget",
+            )
+            .is_none(),
+            "a poisoned parent must not re-report the ancestor's failure"
+        );
+    }
+
+    #[test]
+    fn pose_composition_silent_when_sub_pose_already_undef() {
+        // `eval_sub_pose` already pushed its own `Diagnostic::error`
+        // ("`at` pose expression must evaluate to a Transform or Frame") for
+        // this exact sub, and that `Undef` then composes to an `Undef` child.
+        // Firing again here would double-report one mistake.
+        let parent = identity_transform();
+        assert!(
+            diagnose_pose_composition_failure(
+                &parent,
+                &reify_ir::Value::Undef,
+                &reify_ir::Value::Undef,
+                "Asm",
+                "widget",
+            )
+            .is_none(),
+            "eval_sub_pose already reported this sub's failed pose"
+        );
+    }
+
+    #[test]
+    fn pose_composition_silent_when_both_undef() {
+        assert!(
+            diagnose_pose_composition_failure(
+                &reify_ir::Value::Undef,
+                &reify_ir::Value::Undef,
+                &reify_ir::Value::Undef,
+                "Asm",
+                "widget",
+            )
+            .is_none(),
+            "both origination guards apply; still exactly zero new diagnostics"
+        );
+    }
+
     // ── decoded value-form LENGTH gate (units-length δ, task 5745) ────────────
     //
     // `accept_length_point3` is the THIRD route into β's Contract C chokepoint,
