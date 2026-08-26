@@ -51,6 +51,9 @@
 //!   `extrude_symmetric` arg1 `distance`; `pipe` arg1 `radius`;
 //!   `revolve`/`revolve_full` args1-3 axis origin `ox`/`oy`/`oz` (the ORIGIN
 //!   only — see below)
+//! - TRANSFORM producers → LENGTH ("Length") (task 5750): `translate` args1-3
+//!   displacement `dx`/`dy`/`dz`; `rotate_around` args1-3 pivot `px`/`py`/`pz`
+//!   (the PIVOT only — see below)
 //!
 //! UNCHECKED (would false-positive on valid call sites or is out-of-scope):
 //! - arg0 (geometry handle) — ε=4358's territory
@@ -94,6 +97,11 @@
 //!   the `Value` variant; `arg_acceptance.rs` names it explicitly among the
 //!   deliberately-not-gated set.
 //! - `shell`'s args2.. `face_{i}` — face INDICES, not lengths.
+//! - `rotate_around` args4-6 `ax`/`ay`/`az` and arg7 `angle` — the third
+//!   straddle case (task 5750), on the same terms as `revolve`'s.
+//! - `scale` entirely — its `factor` (and the `factors` vec3 of its
+//!   non-uniform form) is a dimensionless RATIO, so a LENGTH slot would
+//!   reject correct `.ri` outright.
 //!
 //! # Arity awareness (task 5652)
 //!
@@ -535,6 +543,47 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             length_arg(2, "pz"),
         ],
 
+        // ── Transform producers (task 5750) ─────────────────────────────────
+        //
+        // The task-5623 `transform` row of
+        // `crates/reify-eval/src/arg_acceptance.rs`'s family table. Arg names
+        // from `geometry_transform.rs`'s `compile_transform_op`.
+        //
+        // Both names are single-form (`check_arg_count_exact`), so both arms
+        // stay arity-agnostic per the rule stated on this function.
+        //
+        // translate(target, dx, dy, dz)
+        //   arg0:    the geometry handle — permanently unchecked (ε=4358's
+        //            territory), like every other arg0 in this table.
+        //   args1-3: `dx`/`dy`/`dz` → LENGTH ("Length"). A DISPLACEMENT, not a
+        //            direction: its magnitude is the whole point, so a bare
+        //            component is silently read as SI metres.
+        "translate" => vec![
+            length_arg(1, "dx"),
+            length_arg(2, "dy"),
+            length_arg(3, "dz"),
+        ],
+
+        // rotate_around(target, px, py, pz, ax, ay, az, angle)
+        //   The third STRADDLE case, structurally identical to `revolve`'s:
+        //   args1-3: the PIVOT `px`/`py`/`pz` → LENGTH ("Length") — a point in
+        //            space.
+        //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
+        //            vector, legitimately bare in correct `.ri`. UNSLOTTED.
+        //   arg7:    `angle` — owned by
+        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
+        //            binding seam decree; gating it here would be a scope
+        //            violation.
+        //   `scale` is deliberately absent from this block entirely: its
+        //   `factor` (and the `factors` vec3 of its non-uniform form) is a
+        //   dimensionless RATIO, so a LENGTH slot would reject correct code.
+        //   Pinned by `scale_stays_slot_free_because_its_factor_is_dimensionless`.
+        "rotate_around" => vec![
+            length_arg(1, "px"),
+            length_arg(2, "py"),
+            length_arg(3, "pz"),
+        ],
+
         // ── Modify producers (task 5750) ─────────────────────────────────────
         //
         // The compile-layer half of the task-5744 `modify` row of
@@ -921,6 +970,11 @@ mod tests {
     ///   `GEOMETRY_FUNCTION_NAMES`, none is a topology selector, and none may
     ///   be moved into `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset
     ///   assertion.
+    ///
+    /// - The task-5750 TRANSFORM producers — `translate` and `rotate_around`.
+    ///   Same story again: both are registered in `GEOMETRY_FUNCTION_NAMES`,
+    ///   neither is a topology selector, and neither may be moved into the
+    ///   selector slice.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
@@ -957,6 +1011,9 @@ mod tests {
         "pipe",
         "revolve",
         "revolve_full",
+        // Task 5750 — transforms.
+        "translate",
+        "rotate_around",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────

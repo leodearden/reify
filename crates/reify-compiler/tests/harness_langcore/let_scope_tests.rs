@@ -804,8 +804,14 @@ fn rotate_around_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = rotate_around(hole, 0, 0, 0, 0, 0, 1, 90)
+    let result = rotate_around(hole, 0mm, 0mm, 0mm, 0, 0, 1, 90)
 }"#;
+    // C6 MIGRATION (task 5750): only the PIVOT `px`/`py`/`pz` is dimensioned.
+    // The `0, 0, 1` that follows is the axis DIRECTION — a dimensionless unit
+    // vector — and `90` is an ANGLE owned by
+    // docs/prds/v0_6/angle-units-surface-convergence.md. Dimensioning either
+    // would assert a gate this leaf deliberately does not add. Same
+    // origin-vs-direction split as the two `revolve` rows above.
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
     let realization = realization_named(template, &["hole", "result"], "result");
