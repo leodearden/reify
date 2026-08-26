@@ -14,9 +14,9 @@ hand-built `GeometryOp::Draft` fixtures, and published this ledger.
 
 ## Read this first — the numbers below are a snapshot, not the source of truth
 
-**Measured 2026-08-21 at `0675683952`** ("Merge task/6393 into main" —
-`task/5777`'s merge-base, and therefore ON MAIN). **All three buckets share this
-one stamp.** α's own migration is not in it: α sits on top of this commit, and
+**Measured 2026-08-21 at `0675683952`** ("Merge task/6393 into main" — a `main`
+merge commit, and therefore permanently reachable). **All three buckets share
+this one stamp.** α's own migration is not in it: α sits on top of this commit, and
 every "MIGRATED by task 5777" row below marks a change made after it.
 
 One stamp, because an earlier revision used two and they disagreed. §§1–2 were
