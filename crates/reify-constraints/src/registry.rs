@@ -294,12 +294,6 @@ impl SolverRegistry {
                 .filter_map(|id| param_lookup.get(id).map(|ap| (*ap).clone()))
                 .collect();
 
-            // Filter current_values to only this component's params
-            let mut sub_values = ValueMap::new();
-            for (k, v) in problem.current_values.iter() {
-                sub_values.insert(k.clone(), v.clone());
-            }
-
             // Attach objective only to the designated component
             let sub_objective = if objective_component == Some(ci) {
                 problem.objective.clone()
@@ -339,12 +333,19 @@ impl SolverRegistry {
             //
             // # Why `dependent_cells` is FILTERED per component (task #5720)
             //
-            // It used to be passed wholesale, on the rationale that `sub_values`
-            // carries every cell in `problem.current_values` so every dependent
-            // expression stays evaluable.  That is FALSE for an auto owned by
-            // ANOTHER component: such an auto is in neither `sub_auto_params` nor
-            // (necessarily) `current_values`, so the fold evaluates its `ValueRef`
-            // to `Undef`, writes `Undef` into the cell, and an objective reading
+            // It used to be passed wholesale, on the rationale that
+            // `current_values` reaches every component WHOLE — it is inherited
+            // from the `..problem.clone()` spread below, with no per-component
+            // filter of any kind — so every dependent expression stays
+            // evaluable.  That PREMISE still holds, and is pinned by
+            // `every_component_sub_problem_inherits_the_full_current_values`
+            // (tests/registry_tests.rs); a future task that introduces a real
+            // per-component `current_values` filter breaks it and must revisit
+            // this filter's justification.  What was FALSE is the CONCLUSION
+            // drawn from it, for an auto owned by ANOTHER component: such an
+            // auto is in neither `sub_auto_params` nor (necessarily)
+            // `current_values`, so the fold evaluates its `ValueRef` to
+            // `Undef`, writes `Undef` into the cell, and an objective reading
             // that cell reports `NoProgress { reason: "objective expression
             // evaluated to undefined at solution point" }`.
             //
@@ -412,7 +413,6 @@ impl SolverRegistry {
             let sub_problem = ResolutionProblem {
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
-                current_values: sub_values,
                 objective: sub_objective,
                 dependent_cells: sub_dependent_cells,
                 ..problem.clone()
