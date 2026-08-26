@@ -820,7 +820,7 @@ silent-failure INV-SF-1..7, angle-crossing INV-AD-1..4) plus the GUI rows in
 | INV-SF-2 `error-severity-exits-nonzero` | yes (corollary) | A routine solve status is **not** Error-severity. `BestFound`, budget-exhausted and stale-served are Info/Warning; the θ chip's colour, not a severity, carries urgency. The GUI has no exit code; the corollary binds the *severity choice*, which C5 fixes. |
 | INV-SF-3 `declared-intent-consumed-or-diagnosed` | yes | The record carries a "why this did not run" slot for a skipped or declined solve (P1's I5 marks it; this PRD renders it). No renderer may show a blank where a stage was skipped. |
 | INV-SF-4 `indeterminate-attributable-transient` | yes | C2 forbids collapsing the tri-state; the record carries `Satisfaction` **plus** its typed cause, and B8 asserts the cause is visible. Vocabulary comes from #6659/#6649, not re-invented. |
-| INV-SF-5 `placeholders-owned-and-loud` | yes | The P3 multimodality slot (§11) cites a **live task**, not "a future PRD" — the blanket-escape pattern this invariant bans. The citation is stamped at decompose. |
+| INV-SF-5 `placeholders-owned-and-loud` | yes | The P3 multimodality slot cites two **live tasks** by id — α **#6706** (the `Completeness` vocabulary carrier) and ζ **#6711** (the first leaf that populates it) — not "a future PRD", the blanket-escape pattern this invariant bans. Stamped in §4.1 (the reserved slot), §8 (the seam row + §8.2) and §11, and re-checked mechanically by ω #6739's `p3-multimodality-slot-cites-live-tasks` manifest binding before the terminal stamp. The invariant's normative rule (`docs/legibility/design-invariants.md`:145-155) is scoped to placeholders in **tracked source**, so this row applies its *posture* to a PRD-record slot by analogy — the same move `spec-conformance-suite.capability-manifest.yaml`:643 makes for test scaffolding — and is not a literal tracked-source hit. **Corrected #6751 (2026-08-27):** as first landed this row read "the citation is stamped at decompose" while no P3 id appeared anywhere in the document. |
 | INV-SF-6 `diagnostics-carry-codes` | yes | C5: every renderer keys on `DiagnosticCode`, never message text. γ additionally **adds codes** to the two uncoded solver warnings, so the PRD reduces the violation count rather than building on it. |
 | INV-SF-7 `parse-is-value-faithful` | no | No new grammar. D7's default is a special-form call; the probed pragma composes with no adjacency-sensitive rule. |
 | INV-AD-1..4 (angle crossings) | no | Nothing here types a quotient as Angle; slack carries the constraint's own dimension. |
@@ -838,6 +838,19 @@ comments. The cross-crate copy is deliberate: sharing would invert the
 than adding a fifth silent copy, and its diff must touch all members in lockstep.
 This is the `no-lockstep-duplication` shape from dark-factory's family; reify's own
 family does not name it, so it is recorded here as an observation, not a waiver.
+
+**One lesson this walk learned about itself.** The INV-SF-5 row above was, as first
+landed, not a certification but a *promise*: its truth depended on a decompose-time
+action ("the citation is stamped at decompose") that decompose never performed, and no
+P3 id appeared anywhere in this document for it to point at. A promise in a landed
+document reads as a fact — and worse, it reads as a fact that has already been checked,
+because it sits in the column headed *Resolution*. The general rule: **where a G7 row
+defers to a decompose-time action, the decompose-close step must verify the action
+happened**, or the invariant walk certifies its own intention rather than the state of
+the world. The concrete remedy is shipped with this correction — ω **#6739**'s
+capability manifest now re-greps the citation (`#6706|#6711`, scoped to this file)
+immediately before it applies the terminal status, so this specific row cannot rot back
+into a promise without ω's own gate failing.
 
 ---
 
