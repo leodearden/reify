@@ -4,7 +4,7 @@
 #
 # WHY THE GUARD EXISTS: `.git/rr-cache` is a git COMMON path (it resolves to the
 # common git dir from every linked worktree) while `MERGE_RR` is per-worktree, so
-# ~238 warm lanes share ONE unlocked resolution cache. Git takes its only rerere
+# every warm lane shares ONE unlocked resolution cache. Git takes its only rerere
 # lock on the per-worktree MERGE_RR, giving zero cross-worktree exclusion over the
 # shared payload directory, and git exposes no knob to relocate rr-cache. See
 # docs/notes/git-rerere-shared-worktree-hazard.md (task 5870, esc-5785-5).
@@ -24,8 +24,36 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 GUARD="$REPO_ROOT/scripts/git-rerere-guard.sh"
 
+# HERMETIC GIT CONFIG. Every fixture below is a bare `git init`, which inherits
+# the invoking user's ~/.gitconfig and /etc/gitconfig — and `rerere.enabled =
+# true` is a very common developer global. That silently poisons every scenario
+# that depends on the key being UNSET or effectively false: measured, with a
+# global `[rerere] enabled = true / autoupdate = true`, this suite goes from
+# 114 passed / 0 failed to 109 / 5 — (f-a) 'unset is genuinely unset', (f-b),
+# (f-c), (g-d) and (g-e-f) all turn red, with the paired `arm` asserts. The
+# orchestrator host happens to carry no global rerere keys today, so it is green
+# here by luck; any developer with rerere on globally would get a confusing
+# spurious RED from a `pool`-classified merge-gate test.
+#
+# EXPORTED, not just set: the assertions below invoke `bash "$GUARD"` as a child
+# process, and the guard's own `git config` reads must be isolated too, not only
+# the fixture factories'. Same pattern as tests/infra/
+# test_harness_baseline_registration_gate.sh.
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+export GIT_CONFIG_NOSYSTEM=1
+
 _TMPDIRS=()
-cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
+# chmod before rm: (g-g) chmod 000s a config.worktree and (h-g) drops write
+# permission on a whole git dir to force a config-write failure. Both restore
+# permissions inline, but an assert that dies mid-block would otherwise leave a
+# fixture `rm -rf` cannot reclaim — a silent /tmp leak on a disk-pressured host.
+cleanup() {
+    for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do
+        chmod -R u+rwX "$d" 2>/dev/null || true
+        rm -rf "$d"
+    done
+}
 trap cleanup EXIT
 
 # ONE root for every fixture this suite creates, registered here in the PARENT
@@ -214,8 +242,9 @@ assert "(e-c) check stderr names rerere.autoupdate" \
     bash -c "bash '$GUARD' check '$REPO_AU' 2>&1 >/dev/null | grep -q 'rerere.autoupdate'"
 
 # ── (e-d) check is READ-ONLY, including on the failing paths ──────────────────
-# A detector that mutates the state it inspects cannot be run safely across 238
-# live lanes, so this is asserted on the armed repos too, not just the clean one.
+# A detector that mutates the state it inspects cannot be run safely across every
+# live lane of the store, so this is asserted on the armed repos too, not just the
+# clean one.
 echo ""
 echo "--- (e-d) check never writes config ---"
 
@@ -306,7 +335,7 @@ assert "(f-b) unset + no rr-cache/ -> check exits 0" \
     bash "$GUARD" check "$REPO_NORR"
 
 # (f-c) EXPLICIT false + rr-cache/ present -> safe.  This is the load-bearing
-# scenario: it is what lets `arm` leave the residual 241-entry cache in place
+# scenario: it is what lets `arm` leave the residual rr-cache in place
 # instead of pruning it, and pruning is precisely the operation that reproduces
 # the segfault + stale-lock signature across live lanes.
 REPO_EXPLICIT="$(make_repo)"
@@ -622,9 +651,178 @@ assert "(g-e-g) a main-dir plant is reported even with no worktrees/ dir" \
 assert "(g-e-g) ...naming '<main checkout>', proving the sweep ran on this shape" \
     bash -c "bash '$GUARD' check '$GENW_REPO' 2>&1 >/dev/null | grep -q -- '<main checkout>'"
 
+
+# ── (g-f) THE SHARED DEFAULT, masked by the TARGET's own config.worktree ──────
+# The polarity mirror of (g-e), and the same class of silent false-clean. `check`
+# read the master switch as the EFFECTIVE value for $TARGET, and the sweep only
+# ever reports config.worktree values that are TRUE — so a lane that disarms
+# ITSELF read clean while the shared config still armed every OTHER lane of the
+# store.
+#
+# MEASURED against the pre-fix guard on a throwaway store: shared
+# rerere.enabled=true + rerere.autoupdate=true, with one lane setting both false
+# in its own config.worktree, made `git-rerere-guard.sh check <lane>` exit 0
+# printing NOTHING. It matters because the guard's header promises the main
+# checkout and any linked lane are interchangeable as targets, and because
+# setup-dev.sh runs the guard from whatever worktree a developer happens to be
+# in: one self-disarmed lane would report the whole fleet healthy.
+#
+# Unlike the inert config.worktree of (g-d), reporting this is SAFE by
+# construction — `arm` is a --local writer, so the scope it reports is exactly
+# the scope `arm` can clear. (g-f-f) pins that self-healing.
+echo ""
+echo "--- (g-f) check reports an armed SHARED default that the target masks ---"
+
+read -r GF_REPO GF_A GF_B <<< "$(make_wt_repo)"
+
+# (g-f-a) NEGATIVE CONTROL FIRST. make_wt_repo leaves the shared config explicitly
+# false; a lane that redundantly repeats that must stay clean, so nothing below
+# can pass merely because the new shared-scope read fires unconditionally.
+git -C "$GF_A" config --worktree rerere.enabled false
+git -C "$GF_A" config --worktree rerere.autoupdate false
+
+assert "(g-f-a) shared false + lane self-disarm -> check from the lane exits 0" \
+    bash "$GUARD" check "$GF_A"
+
+# Now arm the SHARED config while the lane keeps masking it for itself.
+git -C "$GF_REPO" config rerere.enabled true
+git -C "$GF_REPO" config rerere.autoupdate true
+
+# (g-f-b) Fixture preconditions MEASURED, not assumed.
+assert "(g-f-b) fixture: the SHARED config really reads true" \
+    bash -c "[ \"\$(git -C '$GF_REPO' config --local --bool --get rerere.enabled)\" = true ]"
+
+assert "(g-f-b) fixture: ...while the lane's EFFECTIVE value is false (the mask)" \
+    bash -c "[ \"\$(git -C '$GF_A' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-f-b) fixture: ...and the sweep cannot see it — the mask's value is false" \
+    bash -c "[ \"\$(git -C '$GF_A' config --worktree --bool --get rerere.autoupdate)\" = false ]"
+
+# (g-f-c) The hazard itself.
+assert "(g-f-c) armed shared default masked by the target -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$GF_A' >/dev/null 2>&1"
+
+assert "(g-f-c) check names the SHARED config as the armed scope" \
+    bash -c "bash '$GUARD' check '$GF_A' 2>&1 >/dev/null | grep -qF 'SHARED config sets rerere.enabled=true'"
+
+assert "(g-f-c) ...and reports autoupdate independently, not folded into enabled" \
+    bash -c "bash '$GUARD' check '$GF_A' 2>&1 >/dev/null | grep -qF 'SHARED config sets rerere.autoupdate=true'"
+
+assert "(g-f-c) ...and does not misattribute it to an innocent linked worktree" \
+    bash -c "! bash '$GUARD' check '$GF_A' 2>&1 >/dev/null | grep -q \"worktree '.*wtB'\""
+
+# (g-f-d) Main/lane symmetry — the same header promise (g-e-d) pins from the
+# other side.
+assert "(g-f-d) check from the MAIN checkout reaches the same verdict" \
+    bash -c "! bash '$GUARD' check '$GF_REPO' >/dev/null 2>&1"
+
+# (g-f-e) NO DOUBLE REPORT. On a store armed OUTRIGHT (nothing masking it) the
+# effective read already fires, so the shared-scope read must stay silent — else
+# every ordinary armed store would print each key twice.
+assert "(g-f-e) an outright-armed store reports rerere.enabled exactly once" \
+    bash -c "[ \"\$(bash '$GUARD' check '$GF_REPO' 2>&1 >/dev/null | grep -c '^ARMED:.*rerere\.enabled')\" -eq 1 ]"
+
+# (g-f-f) arm SELF-HEALS this case: it writes --local, which IS the armed scope.
+# Exit 0, not the advisory 2 — nothing out of reach survives here.
+bash "$GUARD" arm "$GF_A" >/dev/null 2>&1 && _gf_status=0 || _gf_status=$?
+
+assert "(g-f-f) arm from the masking lane exits 0 (self-healed, not advisory 2)" \
+    test "$_gf_status" -eq 0
+
+assert "(g-f-f) ...and the shared config now reads false" \
+    bash -c "[ \"\$(git -C '$GF_REPO' config --local --bool --get rerere.enabled)\" = false ]"
+
+unset _gf_status
+
+# ── (g-f-g) the -1 default is a SHARED-scope hazard too ───────────────────────
+# Same masking shape, but with the shared key UNSET rather than true: git's -1
+# default ("enabled iff rr-cache/ exists") arms every lane that does not mask it.
+# This is the (f) hazard reached through the (g-f) blind spot, and it is the case
+# the fleet is actually in — the residual rr-cache is on disk right now.
+echo ""
+echo "--- (g-f-g) an UNSET shared key + residual rr-cache is reported too ---"
+
+read -r GFU_REPO GFU_A GFU_B <<< "$(make_wt_repo)"
+GFU_COMMON="$(common_dir "$GFU_REPO")"
+git -C "$GFU_REPO" config --unset rerere.enabled
+git -C "$GFU_REPO" config --unset rerere.autoupdate
+git -C "$GFU_A" config --worktree rerere.enabled false
+git -C "$GFU_A" config --worktree rerere.autoupdate false
+
+assert "(g-f-g) fixture: the shared key really is unset" \
+    bash -c "! git -C '$GFU_REPO' config --local --get rerere.enabled >/dev/null 2>&1"
+
+# NEGATIVE CONTROL: unset with NO rr-cache/ is genuinely safe — the -1 default
+# resolves to OFF — so the verdict below must be the CACHE, not the unset key.
+assert "(g-f-g) baseline: unset shared key + no rr-cache -> check exits 0" \
+    bash "$GUARD" check "$GFU_A"
+
+mkdir -p "$GFU_COMMON/rr-cache/cccc3333"
+
+assert "(g-f-g) unset shared key + residual rr-cache -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$GFU_A' >/dev/null 2>&1"
+
+assert "(g-f-g) ...and the message names the SHARED scope and the -1 default" \
+    bash -c "bash '$GUARD' check '$GFU_A' 2>&1 >/dev/null | grep -qF 'SHARED config leaves rerere.enabled UNSET'"
+
+# rerere.autoupdate defaults to FALSE, so an unset shared autoupdate is genuinely
+# safe: the -1 default belongs to rerere.enabled alone and must not be applied to
+# both keys by a copy-paste.
+assert "(g-f-g) an unset shared rerere.autoupdate is NOT reported" \
+    bash -c "! bash '$GUARD' check '$GFU_A' 2>&1 >/dev/null | grep -qF 'SHARED config leaves rerere.autoupdate'"
+
+# ── (g-g) an UNREADABLE config.worktree must not mask the rest of the sweep ───
+# The sweep's `[ ! -r ]` WARNING-and-continue arm exists so that one lane whose
+# config.worktree cannot be read does not abort the loop and silently declare
+# every LATER lane clean. It had no test at all.
+#
+# The glob is lexical, so chmod-000ing wtA's file and arming wtB puts the
+# unreadable file strictly BEFORE the armed one: a sweep that aborted on the
+# first would report this store clean. The ordering is asserted on the OUTPUT
+# (WARNING line precedes the ARMED line) rather than on the paths, so it pins the
+# traversal itself rather than restating the filesystem.
+echo ""
+echo "--- (g-g) an unreadable config.worktree WARNs and the sweep continues ---"
+
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: (g-g) running as root — chmod 000 does not deny root reads"
+else
+    read -r GG_REPO GG_A GG_B <<< "$(make_wt_repo)"
+    GG_A_GITDIR="$(git -C "$GG_A" rev-parse --absolute-git-dir)"
+
+    # wtA gets a real config.worktree with NO rerere key at all, so if it were
+    # readable it would contribute nothing — the only thing under test is the
+    # unreadable branch. wtB is genuinely armed and sorts after it.
+    git -C "$GG_A" config --worktree core.hooksPath /dev/null
+    git -C "$GG_B" config --worktree rerere.enabled true
+
+    chmod 000 "$GG_A_GITDIR/config.worktree"
+
+    assert "(g-g) fixture: the planted config.worktree really is unreadable" \
+        bash -c "! head -c1 '$GG_A_GITDIR/config.worktree' >/dev/null 2>&1"
+
+    assert "(g-g) check WARNs, naming the unreadable file" \
+        bash -c "bash '$GUARD' check '$GG_REPO' 2>&1 >/dev/null | grep -qF 'WARNING: cannot read $GG_A_GITDIR/config.worktree'"
+
+    assert "(g-g) ...reporting that lane as UNKNOWN rather than verified safe" \
+        bash -c "bash '$GUARD' check '$GG_REPO' 2>&1 >/dev/null | grep -qF 'UNKNOWN, not verified safe'"
+
+    assert "(g-g) the LATER armed worktree is still reported (the sweep continued)" \
+        bash -c "bash '$GUARD' check '$GG_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtB'\""
+
+    assert "(g-g) ...and the WARNING precedes it, so the skip really was traversed past" \
+        bash -c "bash '$GUARD' check '$GG_REPO' 2>&1 >/dev/null | awk '/WARNING: cannot read/{w=NR} /ARMED: worktree/{a=NR} END{exit !(w && a && w < a)}'"
+
+    assert "(g-g) ...and the verdict is non-zero" \
+        bash -c "! bash '$GUARD' check '$GG_REPO' >/dev/null 2>&1"
+
+    chmod 644 "$GG_A_GITDIR/config.worktree"
+    unset GG_REPO GG_A GG_B GG_A_GITDIR
+fi
+
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
-#     rr-cache.  The whole point is that all ~238 lanes inherit one shared
+#     rr-cache.  The whole point is that every lane inherits one shared
 #     default with zero per-lane wiring, so the write must be --local and must
 #     be visible from a freshly added linked worktree.
 # ==============================================================================
@@ -650,7 +848,7 @@ assert "(h-a) rerere.autoupdate is false in the LOCAL (shared) config afterwards
     bash -c "[ \"\$(git -C '$REPO_ARM' config --local --bool --get rerere.autoupdate)\" = false ]"
 
 # The values must be SHARED, not per-worktree: a --worktree write would leave
-# every one of the other ~238 lanes armed while this one reads clean.  A freshly
+# every other lane of the store armed while this one reads clean.  A freshly
 # added worktree inheriting them is the direct evidence.
 ARM_WT="$REPO_ARM-armwt"; _TMPDIRS+=("$ARM_WT")
 git -C "$REPO_ARM" worktree add -q -b armwt "$ARM_WT" >/dev/null 2>&1
@@ -726,10 +924,11 @@ unset _arm_cd _arm_snap _arm_rr_before _arm_rr_after _arm_wt_gitdir _arm_side
 # — the dominant way its post-write re-verify still reports armed. That case must
 # be distinguishable by exit code from "the shared write itself failed", because
 # setup-dev.sh runs `arm` under `set -e` on every developer setup: one self-armed
-# lane out of ~239 must not abort everything after it. Contract:
+# self-armed lane must not abort everything after it. Contract:
 #   0 = disarmed and verified
 #   2 = shared config pinned, but an override this run cannot reach survives
-#   1 = a genuine failure of this run
+#   any other non-zero = a failure of this run (1, or git's own status if a
+#     config write aborts under `set -e`) — see (h-g)
 # This branch had no test at all, despite deciding whether setup-dev.sh aborts.
 echo ""
 echo "--- (h-f) arm reports a surviving foreign override as exit 2 ---"
@@ -757,6 +956,60 @@ assert "(h-f) arm names the offending worktree so an operator can act" \
 
 unset _af_status
 
+# ── (h-g) A FAILED SHARED WRITE must produce the documented exit 1 ────────────
+# The contract says 0 = disarmed, 2 = advisory, and a failure of THIS RUN is
+# distinguishable from both. It was not producible: the write was a bare
+# `git -C "$TARGET" config --local "$key" false` under `set -euo pipefail`, so a
+# real failure — a lost race on .git/config.lock (every lane of the store writes
+# that ONE file), a read-only store, a multi-valued key — aborted the script with
+# git's own status, never 1. A consumer branching `1 => fatal; 2 => warn;
+# else => ok` would have read a failed write as SUCCESS, and the fleet would stay
+# armed with nothing in the log to say so.
+echo ""
+echo "--- (h-g) a failed shared-config write exits 1, not git's own status ---"
+
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: (h-g) running as root — chmod cannot make the store unwritable"
+else
+    RO_REPO="$(make_repo)"
+    git -C "$RO_REPO" config rerere.enabled true
+    RO_COMMON="$(common_dir "$RO_REPO")"
+    RO_ERR="$_SUITE_TMP/arm-readonly.err"
+
+    # Write permission is dropped on the git DIR, not on config itself: git writes
+    # config through a config.lock sibling and renames, so a read-only file alone
+    # would not reproduce the failure.
+    chmod a-w "$RO_COMMON"
+
+    # Precondition MEASURED, not assumed — if the store were somehow still
+    # writable, every assertion below would be vacuous.
+    _ro_precond=0
+    git -C "$RO_REPO" config --local rerere.autoupdate false >/dev/null 2>&1 || _ro_precond=$?
+
+    bash "$GUARD" arm "$RO_REPO" >/dev/null 2>"$RO_ERR" && _ro_status=0 || _ro_status=$?
+
+    chmod u+w "$RO_COMMON"
+
+    assert "(h-g) fixture: the store really is unwritable (a git config write failed)" \
+        test "$_ro_precond" -ne 0
+
+    assert "(h-g) arm on an unwritable store exits exactly 1, not git's own status" \
+        test "$_ro_status" -eq 1
+
+    assert "(h-g) ...and says the shared config was NOT pinned" \
+        grep -qF "shared config was NOT pinned" "$RO_ERR"
+
+    assert "(h-g) ...naming the config path an operator has to look at" \
+        grep -qF "$RO_COMMON/config" "$RO_ERR"
+
+    # The failure must be reported as a failure, not dressed up as the SET line
+    # a successful write emits.
+    assert "(h-g) ...and does NOT claim it set the key" \
+        bash -c "! grep -qF 'SET: rerere.enabled=false' '$RO_ERR'"
+
+    unset RO_REPO RO_COMMON RO_ERR _ro_status _ro_precond
+fi
+
 # ==============================================================================
 # (i) `scan-locks` — the M3 recurrence detector.  A failed rr-cache preimage
 #     write leaves a stale zero-byte MERGE_RR.lock in .git/worktrees/<lane>/,
@@ -776,8 +1029,8 @@ assert "(i-b) no MERGE_RR.lock anywhere -> scan-locks exits 0" \
     bash "$GUARD" scan-locks "$LK_REPO"
 
 # ── (i-c) NOISE FLOOR ─────────────────────────────────────────────────────────
-# A bare MERGE_RR with no .lock sibling is ORDINARY rerere state, present in 41
-# of the live store's worktrees today.  Reporting it would make the detector
+# A bare MERGE_RR with no .lock sibling is ORDINARY rerere state, present in a
+# large fraction of the live store's worktrees.  Reporting it would make the detector
 # read as "the corruption is fleet-wide" when nothing is wrong at all.
 : > "$LK_B_GITDIR/MERGE_RR"
 
@@ -812,16 +1065,56 @@ assert "(i-d) scan-locks did NOT delete the bare MERGE_RR" \
     test -e "$LK_B_GITDIR/MERGE_RR"
 
 # ── (i-e) OPERATION IN PROGRESS ───────────────────────────────────────────────
-# A lock alongside a real in-flight merge is NOT stale — telling an operator to
-# rm it would destroy a live operation's state.  Classify, do not lump.
+# A lock alongside a real in-flight operation is NOT stale — telling an operator
+# to rm it would destroy that operation's state. Classify, do not lump.
+#
+# PARAMETERISED over every marker _classify_lock checks. Previously only
+# MERGE_HEAD was ever planted, so five of the six could have been typo'd or
+# dropped and this suite would have stayed green while an operator was told to
+# `rm -f` a lock guarding a live rebase, cherry-pick or revert.
+#
+# The old positive assertion was also VACUOUS: it grepped for
+# 'in-progress\|in progress', and the STALE message itself ends "...with no
+# operation in progress." — so LK_A's stale lock satisfied it no matter what
+# _classify_lock did with LK_B. The assertions below match the full
+# "OPERATION-IN-PROGRESS: <label> ... alongside <marker>." line instead, which
+# pins each marker individually.
+_LKB_LABEL="$(basename "$LK_B_GITDIR")"
+
+# NEGATIVE CONTROL FIRST: the same lock with NO marker is STALE and IS offered an
+# rm, so the per-marker negatives below cannot pass by the rm never being offered
+# for this lane at all.
 : > "$LK_B_GITDIR/MERGE_RR.lock"
-git -C "$LK_B" rev-parse HEAD > "$LK_B_GITDIR/MERGE_HEAD"
 
-assert "(i-e) lock + MERGE_HEAD -> reported as operation-in-progress" \
-    bash -c "bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -qi 'in-progress\|in progress'"
+assert "(i-e) baseline: the same lock with no marker is STALE and offered an rm" \
+    bash -c "bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -qF 'rm -f $LK_B_GITDIR/MERGE_RR.lock'"
 
-assert "(i-e) the in-progress lane is NOT offered an rm command" \
-    bash -c "! bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -q 'rm -f $LK_B_GITDIR/MERGE_RR.lock'"
+for _marker in MERGE_HEAD MERGE_MSG CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+    # Exactly one marker present per iteration, so _classify_lock's first-match
+    # break is deterministic and the assertion names the marker it planted.
+    rm -rf "$LK_B_GITDIR/MERGE_HEAD" "$LK_B_GITDIR/MERGE_MSG" \
+           "$LK_B_GITDIR/CHERRY_PICK_HEAD" "$LK_B_GITDIR/REVERT_HEAD" \
+           "$LK_B_GITDIR/rebase-merge" "$LK_B_GITDIR/rebase-apply"
+    case "$_marker" in
+        # git's rebase state is a DIRECTORY, not a file — `[ -e ]` covers both,
+        # and planting the real shape is what keeps that true.
+        rebase-merge|rebase-apply) mkdir -p "$LK_B_GITDIR/$_marker" ;;
+        *)                         git -C "$LK_B" rev-parse HEAD > "$LK_B_GITDIR/$_marker" ;;
+    esac
+
+    assert "(i-e) lock + $_marker -> OPERATION-IN-PROGRESS naming $_marker" \
+        bash -c "bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -qF \"OPERATION-IN-PROGRESS: $_LKB_LABEL holds MERGE_RR.lock alongside $_marker.\""
+
+    assert "(i-e) ...and the $_marker lane is NOT offered an rm command" \
+        bash -c "! bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -qF 'rm -f $LK_B_GITDIR/MERGE_RR.lock'"
+done
+unset _marker
+
+# LK_A's stale lock is untouched throughout, so the STALE arm keeps working while
+# a sibling lane is mid-operation — the two classifications are per-lane, not a
+# whole-census verdict.
+assert "(i-e) the sibling STALE lane is still offered its own rm command" \
+    bash -c "bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -qF 'rm -f $LK_A_GITDIR/MERGE_RR.lock'"
 
 assert "(i-e) scan-locks still exits non-zero when a lock exists at all" \
     bash -c "! bash '$GUARD' scan-locks '$LK_REPO' >/dev/null 2>&1"
@@ -859,7 +1152,7 @@ assert "(i-f) ...and read-only: the lock survives the census" \
 git -C "$MC_REPO" rev-parse HEAD > "$MC_COMMON/MERGE_HEAD"
 
 assert "(i-f) main-checkout lock + MERGE_HEAD -> reported as operation-in-progress" \
-    bash -c "bash '$GUARD' scan-locks '$MC_REPO' 2>&1 | grep -qi 'in-progress\|in progress'"
+    bash -c "bash '$GUARD' scan-locks '$MC_REPO' 2>&1 | grep -qF -- '<main checkout> holds MERGE_RR.lock alongside MERGE_HEAD.'"
 
 assert "(i-f) ...and is NOT offered an rm command" \
     bash -c "! bash '$GUARD' scan-locks '$MC_REPO' 2>&1 | grep -q 'rm -f $MC_COMMON/MERGE_RR.lock'"
