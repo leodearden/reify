@@ -2208,6 +2208,122 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.2 PRD-relative indices — the non-canonical `#N` register
+    //
+    // A PRD-relative `#N` (`PRD task #10`, `invariant #2`, `§7#5`) names an
+    // index INSIDE a PRD document, not a task id.  CLAUDE.md's TODO-citation
+    // convention already rules these out ("PRD-relative indices … resolve to
+    // `malformed-cite`"); these tests pin that the shared cite grammar
+    // implements it.  Measured basis for the population and the digit bound
+    // lives on `prd_relative_cite`.
+    // -------------------------------------------------------------------
+
+    /// Every measured PRD-relative form must be invisible to BOTH halves of the
+    /// cite grammar — `has_canonical_cite` false AND `extract_cites` empty —
+    /// because the two are required to stay lock-step.
+    ///
+    /// The first six are the class-(b) false positives lane δ-B would otherwise
+    /// report at High `orphaned` (all three ids resolve to REAL `done` tasks, so
+    /// each spuriously orphans); they are pinned VERBATIM from the live corpus.
+    /// The remainder are the sibling forms found by the same catalogue sweep.
+    #[test]
+    fn prd_relative_cite_positives() {
+        let lines = [
+            // ---- class (b), verbatim from the live corpus ----
+            // crates/reify-stdlib/src/fea.rs:1270
+            "/// Diagnostic emission is deferred to PRD task #10 (Diagnostic mapping for",
+            // crates/reify-stdlib/src/fea.rs:1308
+            "/// Diagnostic emission is deferred to PRD task #10.",
+            // crates/reify-stdlib/src/fea.rs:1560
+            "///    is deferred to PRD task #10 (Diagnostic mapping for multi-case-",
+            // crates/reify-stdlib/src/fea.rs:1581
+            "// Empty Map → Undef. Diagnostic emission deferred to PRD task #10",
+            // crates/reify-solver-elastic/src/boundary/dirichlet.rs:730
+            "/// a uniaxial-stretch scenario is deferred to the downstream PRD task #12",
+            // crates/reify-eval/src/geometry_ops.rs:8577
+            "//   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:",
+            // ---- sibling forms from the catalogue re-sweep ----
+            // Bare `invariant #N` needs no `PRD` token — all 52 repo-wide
+            // occurrences are single-digit PRD-local (engine_build.rs:6803).
+            "///    `topology_attribute_table` debug_assert (invariant #4) never runs.",
+            "//! …) — all §7 rows #1 pinned end-to-end.",
+            // Glued PRD-artifact namespaces (`§X#N`, `Q#N`, `OQ#N`, `DD#N`, `T#N`).
+            "//! Step 3 tests: §7#5 positive path + all-three-kind parity + non-regression.",
+            "    // Repeatable per PRD §11 Open Q#4: each --purpose occurrence is one",
+            "/// returns a VALUE (Type::Feature), not a Selector — PRD D1 OQ#1.",
+            "/// subprocess (never FFI, PRD DD#4), composes a deterministic settings profile,",
+            "//! consumer (PRD T#11). Output is a [`crate::assembly::ElementStiffness`]",
+            // Spaced PRD-local nouns.
+            "//!   task μ (PRD §10 open-question #2).",
+            "//! lib.rs (see task 2035 design decision #5): both are used only by",
+            "// PRD docs/prds/v0_6/stdlib-namespace.md §7 boundary #3. The observable the PRD",
+            // Plural `tasks` under the ≤ 99 bound.
+            "/// until PRD tasks #10 land the engine",
+        ];
+        for line in lines {
+            assert!(
+                !has_canonical_cite(line),
+                "PRD-relative index must not be a canonical cite: {line}"
+            );
+            assert_eq!(
+                extract_cites(line),
+                Vec::<u32>::new(),
+                "PRD-relative index must extract no ids: {line}"
+            );
+        }
+    }
+
+    /// The mirror image: the rule must not suppress a single GENUINE cite.
+    /// Every line here is verbatim from the live corpus and carries real debt.
+    #[test]
+    fn prd_relative_cite_negatives() {
+        let cases: &[(&str, u32)] = &[
+            // crates/reify-compute-contract/src/elastic_result.rs:592
+            ("/// The `.ri` / gate exposure is deferred to consumer task #3787.", 3787),
+            // crates/reify-core/src/diagnostics.rs:4053
+            ("/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring", 2947),
+            // crates/reify-eval/src/compute_targets/elastic_static.rs:361
+            ("/// resolution (deferred to P2 / task #4092): reads each support's raw", 4092),
+            // crates/reify-eval/src/engine_build.rs:2154
+            ("/// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel", 3437),
+            // crates/reify-eval/src/detectors.rs:671
+            ("// comment for that drift-risk trade-off (deferred to task μ, #5062).", 5062),
+            // crates/reify-eval/src/engine_edit.rs:2887
+            ("//      not yet in any `diff_*` helper (tracked by #4686);", 4686),
+            // The three-digit legacy ids that must survive the `task #N ≤ 99`
+            // guard — the only genuine sub-4-digit `task #N` cites in the repo.
+            // crates/reify-compiler/src/stdlib_loader.rs:257
+            ("        // Reconstruction of lost work from task #333 per PRD §Slice B.", 333),
+            // crates/reify-lsp/tests/incremental_eval_benchmark.rs:2
+            ("//! Re-establishes the deliverable from task #479 that was lost when commit 00a86da53", 479),
+            // crates/reify-expr/tests/field_eval_tests.rs:209
+            ("/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient", 630),
+        ];
+        for (line, id) in cases {
+            assert!(
+                has_canonical_cite(line),
+                "genuine cite must stay canonical: {line}"
+            );
+            assert_eq!(extract_cites(line), vec![*id], "genuine cite id: {line}");
+        }
+    }
+
+    /// Classification is per-`#N`-OCCURRENCE, never per-line: six live lines
+    /// carry BOTH idioms, so a per-line verdict would either lose a real cite or
+    /// resurrect a PRD-relative one.
+    #[test]
+    fn prd_relative_cite_is_per_occurrence_not_per_line() {
+        // crates/reify-mesh-morph/src/eligibility.rs:61
+        let co_cite = "/// visibility scheme (PRD task #11, task #2948) maintain separate counters";
+        assert!(has_canonical_cite(co_cite));
+        assert_eq!(extract_cites(co_cite), vec![2948]);
+        // crates/reify-mesh-morph/tests/chain_degradation.rs:27
+        let provenance = "//! Provenance: task #2951 (PRD task #14).";
+        assert!(has_canonical_cite(provenance));
+        assert_eq!(extract_cites(provenance), vec![2951]);
+    }
+
+    // -------------------------------------------------------------------
     // §8.2/§6.4 malformed citations — Greek / PRD-relative / legacy
     // -------------------------------------------------------------------
 
