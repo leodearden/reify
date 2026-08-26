@@ -120,30 +120,33 @@ fn captured_tet_indices(stage: &str) -> Vec<u32> {
 /// `reify_mesh_morph::diagnostics::snapshot().morphed == 1` (the morph_stats RPC
 /// data source).
 ///
-/// Gated `#[ignore]` on #4876: the morph arm + source-bundle stash are wired
-/// (step-20), but producing the boundary-carrying source requires the 4092
-/// attributed gmsh producer, which SIGSEGVs on real OCCT surfaces (#4876). The
-/// morph logic is otherwise validated by the reify-mesh-morph + reify-eval unit
-/// tests; this end-to-end assertion un-gates when #4876 hardens the producer.
+/// Gated `#[ignore]` on #6637: post-task-6635 the whole eligibility chain now
+/// PASSES (Stage A and Stage B both clear, the boundary projection succeeds and
+/// the morph solve runs), but the morphed mesh hard-fails the quality gate on an
+/// element inversion and falls back to remesh, so `morphed` stays 0. See the
+/// `#[ignore]` reason below for the measured snapshot. The morph logic is
+/// otherwise validated by the reify-mesh-morph + reify-eval unit tests; this
+/// end-to-end assertion un-gates when #6637 fixes the boundary-displacement data
+/// reaching the morph solve.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #5116 — the morph source needs a non-empty \
-            BoundaryAssociation, which only the task-4092 gmsh attributed producer \
-            (mesh_surface_to_volume_attributed) threads. On real OCCT-tessellated \
-            surfaces that producer used to SIGSEGV in tetgen boundary recovery \
-            (recoveredgebyflips → hxt_boundary_recovery); #4876 hardened it with a \
-            Rust-side watertightness preflight, so it now returns Err instead of \
-            crashing (see the sibling \
-            fea_face_selector_bc_e2e::boundary_demand_realization_edge_degrades_gracefully_on_occt_surface). \
-            But the preflight's fail-closed Err degrades to the plain producer \
-            (boundary None), which still cannot satisfy this test's non-empty- \
-            BoundaryAssociation need — only the attribution-preserving repair \
-            tracked by #5116 will produce one from a real OCCT surface. The morph \
-            arm itself is fully wired (engine_build.rs dispatch + source-bundle \
-            stash) and validated by the reify-mesh-morph \
-            compose_morph/register_morph_producer unit tests and the reify-eval \
-            morph_producer decision-helper tests, none of which need the real-OCCT \
-            attributed producer."]
+#[ignore = "blocked on #6637 — task 6635 fixed the Stage A Geometry-cell \
+            misclassification, so Stage A AND Stage B now both PASS, the boundary \
+            projection succeeds and the morph solve runs. The morphed mesh then \
+            fails the quality gate on an element inversion and the arm falls back \
+            to remesh, so `morphed` stays 0. MEASURED snapshot at this assertion: \
+            { morphed: 0, remeshed_quality_hard_fail: 1, \
+            ineligible_structural_change: 0, ineligible_bijection_failure: 0, \
+            ineligible_naming_error: 0, panicked: 0 }. The tick under test is a \
+            uniform single-axis box scale (width 10mm → 10.5mm), so an inverted \
+            element on this input is a real bug, not a degenerate-input artifact. \
+            Un-gates when #6637 fixes the BoundaryAssociation / \
+            boundary-displacement data reaching the morph solve so the morph \
+            survives quality_check. The morph arm itself is fully wired \
+            (engine_build.rs dispatch + source-bundle stash) and validated by the \
+            reify-mesh-morph compose_morph/register_morph_producer unit tests and \
+            the reify-eval morph_producer decision-helper tests, none of which \
+            need the real-OCCT attributed producer."]
 fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     use reify_core::ValueCellId;
     use reify_ir::{ExportFormat, Value};
@@ -170,9 +173,11 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     );
     // Boundary demand (⊇ VolumeMesh demand): the source mesh must carry a
     // BoundaryAssociation for the morph to project boundary nodes onto the new
-    // BRep. Only the 4092 attributed path threads one — gated on #4876 (see the
-    // #[ignore] above). Plain VolumeMesh demand would leave boundary == None and
-    // honestly degrade to remesh (morphed would stay 0).
+    // BRep. Only the 4092 attributed path threads one. Plain VolumeMesh demand
+    // would leave boundary == None and honestly degrade to remesh (morphed would
+    // stay 0) — so this registration is what lets the morph solve run at all.
+    // The solve DOES run today; it is the resulting mesh that hard-fails the
+    // quality gate, which is what gates this test on #6637 (see the #[ignore]).
     engine.register_volume_mesh_boundary_demand("test::vm-demand-probe");
     assert!(
         engine.ensure_gmsh_kernel(),
