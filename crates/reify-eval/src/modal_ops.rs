@@ -4077,20 +4077,42 @@ mod tests {
         )
     }
 
-    /// α AND β are both consumed against an ω in **rad/s**, and the choice of
-    /// ω scale moves them by exactly 2π in OPPOSITE directions.
+    /// ζ = (α + β·ω²)/(2·ω) is HOMOGENEOUS in ω with OPPOSITE exponents for the
+    /// two coefficients: rescaling ω by 2π divides the α term by 2π and
+    /// multiplies the β term by 2π.
     ///
-    /// The claim `modal_analysis.ri`'s ANGULAR-RATE TRAP comment makes, pinned
-    /// so it cannot rot into prose. It is also why `alpha` is declared
-    /// `Frequency` and not `AngularVelocity`: the rad/s convention lives in
-    /// ω, not in one of the two coupled coefficients.
+    /// SCOPE — read before trusting this as the angular-rate guard. This is an
+    /// algebraic property of the closed form ALONE. It calls the pure
+    /// `reify_stdlib::modal::free_vibration::rayleigh_damping_ratio` twice with
+    /// two ω arguments of its own making; it never observes what scale
+    /// `modal_ops` actually FEEDS. Changing `build_modes_list`'s
+    /// `let omega = 2.0 * PI * f` to pass `f` leaves this test GREEN. It was
+    /// previously named `rayleigh_coefficients_are_consumed_on_the_angular_rate_scale`,
+    /// which overstated exactly that, and `modal_analysis.ri` cited it by that
+    /// name as the pin for its ANGULAR-RATE TRAP comment — so a reader was
+    /// being pointed at a guard that is not here. Renamed to what it pins, and
+    /// the `.ri` citation re-pointed at
+    /// [`trampoline_shapes_modal_result_with_rayleigh_damping`], which
+    /// independently recomputes ω = 2π·f from the emitted `Mode.frequency` and
+    /// compares `damping_ratio` against it at 1e-12 — the test that genuinely
+    /// observes the producer's scale.
     ///
-    /// That the PRODUCER feeds ω = 2π·f is pinned separately, by
-    /// `trampoline_shapes_modal_result_with_rayleigh_damping`. The plain
-    /// concrete-value anchor for the formula itself — α=2, β=0, ω=10 ⇒ ζ=0.1 —
-    /// already lives one crate away in
+    /// What it DOES buy: the two exponents move in opposite directions, which is
+    /// why `alpha` is declared `Frequency` and not `AngularVelocity` — the rad/s
+    /// convention lives in ω, and encoding it in ONE of two coupled
+    /// coefficients would be incoherent.
+    ///
+    /// The plain concrete-value anchor for the formula itself — α=2, β=0, ω=10
+    /// ⇒ ζ=0.1 — already lives one crate away in
     /// `reify-stdlib::modal::free_vibration::tests::rayleigh_damping_ratio_mass_proportional`
     /// and is deliberately NOT restated here.
+    ///
+    /// MODULE-BOUNDARY NOTE: this is a unit test of a `reify-stdlib` function
+    /// sitting in `reify-eval`'s `mod tests`, an inversion relative to the four
+    /// `rayleigh_damping_ratio_*` tests that live next to the function. Its home
+    /// is `crates/reify-stdlib/src/modal/free_vibration.rs`; that file is
+    /// outside task #6093's module locks, so the move is filed as follow-up
+    /// rather than done here (#6323's neighbourhood — see the amend commit).
     ///
     /// Deliberately carries NO corpus-derived constant. An earlier arm anchored
     /// on the ζ₁ ≈ 0.042 quoted in the prose of
@@ -4101,7 +4123,7 @@ mod tests {
     /// (red for an unrelated reason) and drifts silently the other way (prose
     /// edited, constant not).
     #[test]
-    fn rayleigh_coefficients_are_consumed_on_the_angular_rate_scale() {
+    fn rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega() {
         // Reading ω as cycles/s instead of rad/s would inflate the α
         // contribution by 2π and deflate the β contribution by 2π. Both
         // coefficients carry the convention, which is what makes typing only

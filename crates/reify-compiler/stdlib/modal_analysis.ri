@@ -139,7 +139,15 @@ structure def NoDamping : DampingDescriptor { }
 // from plain s⁻¹ — that surface is owned by
 // docs/prds/v0_6/angle-units-surface-convergence.md, not by this
 // declaration. Pinned by
-// `modal_ops::tests::rayleigh_coefficients_are_consumed_on_the_angular_rate_scale`.
+// `modal_ops::tests::trampoline_shapes_modal_result_with_rayleigh_damping`,
+// which recomputes ω = 2π·f from the emitted `Mode.frequency` and compares
+// each mode's `damping_ratio` against `rayleigh_damping_ratio(α, β, ω)` — so
+// it is the arm that would go red if `modal_ops` stopped feeding 2π·f. The
+// SYMMETRY half (the two terms scale oppositely in ω, which is why α is not
+// typed `AngularVelocity`) is pinned secondarily by
+// `modal_ops::tests::rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega`
+// — an algebraic property of the closed form only; it does NOT observe the
+// producer's ω scale.
 //
 // Explicitly NOT constrained: alpha / beta are conventionally non-negative
 // but physically meaningful at zero ("stiffness-only" damping with α=0; or
