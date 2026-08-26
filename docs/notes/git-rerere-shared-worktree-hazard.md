@@ -15,8 +15,10 @@ store; the hermetic behavioural oracles live in `tests/infra/test_git_rerere_gua
 
 `rr-cache` is a git **COMMON** path. `git rev-parse --git-path rr-cache` resolves to the *common*
 git dir from every linked worktree, while `MERGE_RR` and `index` resolve to
-`.git/worktrees/<name>/`. Reify has 239 worktrees of one `.git` today, so **all of them share one
-`/home/leo/src/reify/.git/rr-cache`** — 241 entries as of 2026-08-13, still growing.
+`.git/worktrees/<name>/`. Reify's pool is *hundreds* of worktrees of one `.git`, so **every one of
+them shares one `/home/leo/src/reify/.git/rr-cache`**. The exact figure is a moving snapshot and is
+never load-bearing anywhere in this hardening — dated measurement: 239 worktrees / 241 rr-cache
+entries on 2026-08-13; 224 linked worktrees on 2026-08-26.
 
 Git takes its only rerere lockfile on the **per-worktree** `MERGE_RR`. That lock therefore provides
 **zero cross-worktree mutual exclusion** over the shared payload directory: two lanes writing
@@ -24,7 +26,7 @@ Git takes its only rerere lockfile on the **per-worktree** `MERGE_RR`. That lock
 
 Git exposes no configuration knob to relocate `rr-cache`, so **per-lane cache isolation is
 impossible by construction**, and an external lock would have to wrap every `git merge`, `rebase`,
-`cherry-pick`, `revert` and `stash pop` issued by 239 lanes plus the orchestrator and every
+`cherry-pick`, `revert` and `stash pop` issued by every lane plus the orchestrator and every
 interactive shell across two repos — unenforceable, and it would serialise unrelated lanes. The only
 sound fix is to remove the shared mutable state entirely: turn rerere off.
 
@@ -117,7 +119,7 @@ you will wrongly conclude the corruption is fleet-wide. `scan-locks` never match
 
 **NEVER delete `rr-cache/<id>/` while another lane may hold it.** That is precisely the operation
 that reproduces the segfault + stale-lock signature — the "cleanup" would re-cause the disease across
-239 live lanes. It is also unnecessary: an explicit `rerere.enabled=false` neutralises the residual
+every live lane of the store. It is also unnecessary: an explicit `rerere.enabled=false` neutralises the residual
 cache **in place**, which is measured, not assumed (`test_git_rerere_guard.sh` (f-c)/(f-d) runs a
 real conflicted merge against a populated `rr-cache/` and asserts zero new entries).
 
@@ -136,8 +138,8 @@ the main checkout and any lane are interchangeable.
 
 | Subcommand | Effect | Exit 0 | Non-zero |
 |---|---|---|---|
-| `check` | Read-only. Never writes config anywhere. Reads the effective `rerere.enabled` / `rerere.autoupdate`, and sweeps every `config.worktree` in the store — the **main checkout's own** as well as every linked worktree's. | safe | **1** — rerere effectively armed |
-| `arm` | Idempotently writes `rerere.enabled=false` + `rerere.autoupdate=false` to shared local config, then re-verifies via `check`. Never prunes `rr-cache`. | disarmed | **2** — shared config pinned, but an out-of-reach override survives; **1** — genuine failure of this run |
+| `check` | Read-only. Never writes config anywhere. Reads `rerere.enabled` / `rerere.autoupdate` at **two scopes** — the effective value for `target_dir` *and* the shared (`--local`) fleet default it may be masking — then sweeps every `config.worktree` in the store, the **main checkout's own** as well as every linked worktree's. | safe | **1** — rerere effectively armed |
+| `arm` | Idempotently writes `rerere.enabled=false` + `rerere.autoupdate=false` to shared local config, then re-verifies via `check`. Never prunes `rr-cache`. | disarmed | **2** — shared config pinned, but an out-of-reach override survives; **any other non-zero** — a failure of this run |
 | `scan-locks` | Read-only census of `MERGE_RR.lock` across the **main checkout and every linked worktree**, classified STALE vs OPERATION-IN-PROGRESS. Never deletes. | clean | **1** — lock(s) found |
 
 All diagnostics go to **stderr**; stdout stays empty so the exit code is the machine-readable signal.
@@ -147,13 +149,21 @@ at `<common-git-dir>/MERGE_RR.lock` and never under `worktrees/`. The main check
 merge site — `scripts/land.sh` runs a real `git merge --no-ff` there — so a census that only globbed
 `worktrees/*/` would report `clean` while every `git commit` on `main` exits 128.
 
+**Branch on `0 | 2 | *`, never on a closed set `{0,1,2}`.** The failure code is *normally* 1 — the
+shared write is guarded and returns 1 with a diagnostic naming the config path — but the script runs
+under `set -euo pipefail`, so a git invocation that aborts outside a guarded `if` propagates git's own
+status instead. A consumer that treated only 1 as fatal would read such a failure as success and leave
+the fleet armed. `setup-dev.sh` gets this right because its `else` arm is the fatal one; anything new
+must do the same. Pinned by `test_git_rerere_guard.sh` (h-g), which drops write permission on the git
+dir and asserts exit *exactly* 1 rather than git's status.
+
 ### `arm` exit 2 — why it is advisory, not fatal
 
 `arm` writes `--local` only, so it can never clear **another lane's** `config.worktree` — and that is
 the dominant way its post-write re-verify still reports armed. Exit **2** says "the shared write
 succeeded; an override this run cannot reach still wins", and names it. `setup-dev.sh` runs `arm` on
 every invocation (beside the main-gate worktree config block) under `set -e`, and treats only exit 1
-as fatal: one self-armed lane out of ~239 must not abort everything after that point (the
+as fatal: one self-armed lane must not abort everything after that point (the
 build-accelerator systemd units, npm, the smoke test) for every developer, with no remediation the
 script could offer. On exit 2 it warns and points here.
 
@@ -171,7 +181,7 @@ a false ARMED that `arm` could never clear.
 | unset | absent | 0 |
 | explicit `false` | present | 0 |
 
-Because the shared store carries a residual 241-entry `rr-cache/`, **losing the explicit `false`
+Because the shared store carries a residual populated `rr-cache/`, **losing the explicit `false`
 silently re-arms the entire fleet**. `git config --unset rerere.enabled` is a **re-arm, not a
 no-op**. The value must be present, not merely absent — so this ships as a re-runnable guard.
 
@@ -190,7 +200,35 @@ so from any lane a main-checkout self-arm would be invisible to both detection p
 where `scripts/land.sh` runs its sanctioned `git merge --no-ff` — an active merge site, the same
 reasoning that already makes `scan-locks` cover `<common-git-dir>/MERGE_RR.lock`.
 
-`arm` writes with `--local`, never `--worktree`: the point is that all 239 lanes inherit one shared
+### Why `check` reads two scopes
+
+The effective value alone is not enough, and the gap is the exact *mirror* of the main-checkout blind
+spot above. `config.worktree` beats shared config in **both** directions, so a lane that disarms
+*itself* reads clean while the shared config still arms every other lane of the store. Measured
+against an earlier build of the guard: shared `rerere.enabled=true` + `rerere.autoupdate=true`, one
+lane setting both false in its own `config.worktree` — `check <lane>` exited **0 printing nothing**.
+
+So `check` also reads the shared (`--local`) value explicitly and reports it whenever the target's own
+config merely masks it, covering both `shared=true` and *shared-unset-with-`rr-cache`-present* (git's
+`-1` default). It is reported **only** from the not-armed branch of the effective read, so an
+outright-armed store is never listed twice for the same key.
+
+Reporting this is safe by construction, unlike the inert-`config.worktree` case: `arm` is a `--local`
+writer, so the scope reported here is exactly the scope `arm` can clear — it self-heals to exit 0
+rather than the advisory 2. Pinned by `test_git_rerere_guard.sh` (g-f) and (g-f-g).
+
+### Cost
+
+`check` walks every `config.worktree` in the store, so it is O(lanes) by construction. It is kept
+cheap enough to be a startup probe rather than a setup-only one-shot: a single
+`grep -lisE 'rerere|include'` prefilter decides which files are worth parsing (values are still read
+by `git config`, never by grep — comments, valueless keys and `yes`/`on`/`1` all defeat a grep;
+`include` is matched because `git config --file` honours `include.path`), the per-key reads collapse
+into one `--bool --get-regexp`, and labels come from parameter expansion rather than
+`basename`/`dirname`. Measured on the 224-lane store: **5.42s → 0.10s**. The fork pair per file, not
+the `git config` reads, had been the dominant cost.
+
+`arm` writes with `--local`, never `--worktree`: the point is that every lane inherits one shared
 default with zero per-lane wiring.
 
 ## 7. Incident history
