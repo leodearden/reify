@@ -133,8 +133,16 @@ Every one of these builds a `GeometryOp` **by hand** and reaches the kernel via
 Therefore:
 
 - **No bucket-1 site is broken by γ, δ or ε.** Migrating them is
-  *representational* — it keeps fixtures aligned with what production emits —
-  and is never gate-forced.
+  *representational* — it aligns the fixtures with the **post-δ (5780) target**
+  representation, **not** with what production emits today — and is never
+  gate-forced. Be precise about this: production's draft path is still an ungated
+  raw-`Value` passthrough (`let angle = eval_arg("angle")?` in `modify_draft`,
+  `crates/reify-eval/src/geometry_ops.rs`), so a bare `.ri` draft literal still
+  reaches the kernel as `Value::Real` until δ lands. `circular_pattern` is the one
+  exception that already coerces, through `resolve_bare_angle` (§4). The same note
+  is carried at a migrated fixture itself, in the assertion message of
+  `mock_execute_draft_records_op` (`crates/reify-test-support/src/mocks.rs`), so
+  the two statements can be checked against each other.
 - **A green run over bucket 1 is NOT evidence that any gate works.** If you need
   evidence a gate fires, it has to come from bucket 2 or from a `.ri` fixture.
 
@@ -569,11 +577,11 @@ Verified against live task records rather than copied from prose:
 | | Task | Scope |
 |---|---|---|
 | α | 5777 | this ledger; `.ri` corpus site; the 13 Draft fixtures |
-| β | 5778 | |
+| β | 5778 | `angle_spec()` in `crates/reify-eval/src/arg_acceptance.rs`, and routing `resolve_scalar_dim_arg`'s inline ANGLE spec through it — the rejection/hint surface γ/δ/ε/ζ build their diagnostics from. **No literal site in any bucket here**: β changes how a rejection reads, never an angle literal. |
 | γ | 5779 | gate `rotate` / `rotate_around` / `revolve` / `arc` at the eval chokepoint |
 | δ | 5780 | `draft` |
 | ε | 5781 | retire `resolve_bare_angle` (`circular_pattern`) |
 | ζ | 5782 | `builtin_signatures` ANGLE `CheckableArg` slots |
-| ν | 5783 | |
+| ν | 5783 | extends PRD 1 task ι's (5752) closure-guard allowlist/universe with the ANGLE positions — additive entries only, never a harness rewrite. Its `metadata.files` is deliberately EMPTY (the harness path is fixed by 5752 and was not knowable at decompose). **No literal site in any bucket here.** |
 
 γ's other hard edge — PRD 1's task α, 5742 — is already `done`.
