@@ -6,6 +6,20 @@ tasks:
   title: 'solution-set-completeness α: Completeness/SolutionSet carrier in reify-ir (additive; SolveResult
     stays frozen)'
   capabilities:
+  - name: ranked-rs-co-tenancy-with-p2-mu
+    binding: 'seam with P2 leaf mu = 6680, which edits the SAME file (crates/reify-ir/src/ranked.rs) to
+      add BestFoundReason::FirstOrderStationary REPLACING Unreported. Two consequences: (a) alpha must
+      key its default trait lift off ''whatever the trait default reports'', NOT the named Unreported
+      variant, which mu removes — whichever leaf lands second reconciles; (b) FirstOrderStationary is
+      a LOCAL first-order stationarity certificate (norm of the projected gradient) and must NOT be read
+      as satisfying invariant C2, which requires Exhaustive. A stationary point in one basin says nothing
+      about other basins — promoting it to ProvenOptimal would be the false-completeness claim this PRD
+      exists to prevent, arriving from the optimality side.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a cross-PRD reconciliation between two leaves editing one file; no stable grep expresses
+        it.
   - name: ranked-carrier-wired
     binding: capability→producer — RankedSolveResult / RankedCandidate / OptimalityStatus / BestFoundReason
       in crates/reify-ir/src/ranked.rs, wired on the production path via DimensionalSolver::solve_ranked_impl
@@ -90,10 +104,10 @@ tasks:
       linear-in-one-auto shapes. This is why #6655 is a hard prerequisite, not a background assumption.'
     verdict: PASS
   - name: jacobian-source
-    binding: capability→producer — preferred P2 leaf epsilon (forward-mode dual numbers over CompiledExpr),
-      UNSTAMPED so unwireable (P2 committed 2ea72cc5e8 but not yet decomposed); unconditional fallback
-      is local finite differences. Soundness is unaffected either way (C8 — a failed uniqueness test just
-      keeps splitting), so γ does not block on P2.
+    binding: 'capability→producer — preferred P2 leaf epsilon = task 6672 (forward-mode dual numbers over
+      CompiledExpr; no autodiff exists in the workspace today and no external crate is adopted). Unconditional
+      fallback: local finite differences. Soundness is unaffected either way (C8), so the edge is DELIBERATELY
+      LEFT UNWIRED rather than blocking gamma on a sibling PRD for an accuracy gain it does not need.'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -234,14 +248,11 @@ tasks:
       path: crates/reify-constraints/src/solvespace.rs
       expect: absent
   - name: does-not-fix-code-p2-deletes
-    binding: anti-inversion, resolved by re-scoping — P2 leaf xi DELETES SolveSpaceSolver outright and
-      leaf iota routes relate-solve through the unified problem. θ was re-scoped at authoring from 'fix
-      two drivers' to 'C1 conformance over whatever writes the unique flag after P2 iota', and sequenced
-      after it. UNSTAMPED.
+    binding: anti-inversion, resolved by re-scoping and now WIRED — P2 leaf xi = 6682 deletes SolveSpaceSolver,
+      GeometricPattern and recognize_pattern outright; P2 leaf iota = 6677 routes relate-solve through
+      the unified problem. theta was re-scoped from 'fix two drivers' to 'C1 conformance over whatever
+      writes the unique flag after P2 iota', and is dep-wired 6713 -> 6677.
     verdict: PASS
-    delivered_check:
-      kind: manual
-      reason: cross-PRD edge that cannot be wired until P2 decomposes.
   - name: in-progress-collision-sequenced
     binding: 'anti-inversion — #6659 is in-progress with a LIVE CLAIMANT editing registry.rs and solvespace.rs;
       θ is sequenced after it rather than racing it.'
@@ -269,6 +280,16 @@ tasks:
   - name: registry-collision-sequenced
     binding: 'anti-inversion — sequenced after #6659 (in-progress, live claimant, same file).'
     verdict: PASS
+  - name: declined-component-has-a-verdict
+    binding: 'seam with P2 leaf nu = 6681 (capability-based routing, same file registry.rs). Once routing
+      can DECLINE a component, the section-3.5 meet needs a Completeness value for it: Partial carrying
+      P2 leaf delta = 6671''s typed per-constraint refusal reason — never NotAttempted, which theta retires
+      per the INV-SF-4 resolution. Stated so an iota implementer meeting a declined component does not
+      improvise a verdict.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: depends on the refusal vocabulary P2 delta 6671 ships; assertable only once both land.
 - label: λ
   task_id: 6716
   title: 'solution-set-completeness λ: envelope calibration — measure the dimension/node envelope, set
