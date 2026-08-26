@@ -2500,6 +2500,62 @@ mod tests {
         assert!(!has_malformed_cite("// TODO: schedule multitask 5 jobs"));
     }
 
+    /// A PRD-relative index on a REAL marker line is a banned citation form —
+    /// the behaviour CLAUDE.md's TODO-citation convention already mandates
+    /// ("PRD-relative indices … resolve to `malformed-cite`") and which §8.2's
+    /// grammar missed for the `#N` spelling.
+    ///
+    /// **Vacuous on the live corpus today, deliberately.** A sweep of every
+    /// marker-lane line (`#[ignore]`, TODO/FIXME/HACK, stub macro, δ-A) found
+    /// ZERO carrying a PRD-relative-shaped cite, under both a narrow and the
+    /// full rule.  That is why this arm is pinned hermetically here rather than
+    /// by a corpus assertion — and it is also why this change adds no new
+    /// `malformed-cite` finding to the live corpus.
+    #[test]
+    fn malformed_cite_prd_relative() {
+        // Family 3 — `task #N` under the ≤ 99 digit bound.
+        assert!(has_malformed_cite("// TODO(#10): wire the diagnostic per PRD task #10"));
+        // Family 2 — a spaced PRD-local noun.
+        assert!(has_malformed_cite("// FIXME: blocked on PRD invariant #2"));
+        // Family 1 — a glued PRD-artifact namespace.
+        assert!(has_malformed_cite("// HACK: see §7#5"));
+        // Mirror image: a genuine cite is NOT malformed, and neither are the
+        // three-digit legacy ids the digit bound has to let through.
+        assert!(!has_malformed_cite("// TODO(#4092): real task"));
+        assert!(!has_malformed_cite(
+            "        // Reconstruction of lost work from task #333 per PRD §Slice B."
+        ));
+        assert!(!has_malformed_cite(
+            "//! Re-establishes the deliverable from task #479 that was lost when commit 00a86da53"
+        ));
+        assert!(!has_malformed_cite(
+            "/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient"
+        ));
+    }
+
+    /// `scan_file` precedence for the same shape, end to end: a marker line
+    /// whose only cite is PRD-relative must land in the `malformed-cite`
+    /// branch of arm (3) — NOT `Cited` (step-2 removed the canonical anchor)
+    /// and NOT `Untracked`.
+    ///
+    /// The `Untracked` collapse is the one that matters: §8.4 rates a malformed
+    /// cite Medium/advisory while `untracked` is High and hard-fails the merge
+    /// gate, so reporting an author who cited imprecisely as untracked debt
+    /// would over-report at the gate.  Same reasoning task #6087 applied to
+    /// lane δ-A's malformed branch.
+    #[test]
+    fn classify_file_marker_with_prd_relative_cite_is_malformed() {
+        let got = classify_file("// TODO: deferred to PRD task #10", true);
+        assert_eq!(
+            got,
+            vec![(
+                1,
+                Kind::MalformedCite,
+                "// TODO: deferred to PRD task #10".to_string()
+            )]
+        );
+    }
+
     // -------------------------------------------------------------------
     // §8.3 phantom-tracking phrases (case-insensitive)
     // -------------------------------------------------------------------
