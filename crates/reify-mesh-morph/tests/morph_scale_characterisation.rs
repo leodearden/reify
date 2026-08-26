@@ -64,6 +64,8 @@ mod fixtures;
 
 use std::time::{Duration, Instant};
 
+#[cfg(has_gmsh)]
+use reify_ir::GeometryError;
 use reify_ir::VolumeMesh;
 use reify_mesh_morph::{ElasticityFailure, MorphOptions, elasticity_morph};
 
@@ -410,6 +412,118 @@ fn morph_once_times_a_connectivity_preserving_fillet_perturbation() {
 }
 
 // ── the gmsh from-scratch arm ────────────────────────────────────────────────
+
+/// One timed from-scratch tetrahedralisation, reported as data rather than as
+/// a pass/fail — the gmsh-arm counterpart to [`MorphMeasurement`].
+///
+/// `mesh_size` records what was ASKED; `tets`/`nodes` record what was
+/// ACHIEVED. gmsh maps `mesh_size` onto `Mesh.MeshSizeMin`/`MeshSizeMax` as a
+/// target, not a guarantee, so the two are reported side by side and the
+/// driver prints both: a reader never has to trust an a-priori size-to-count
+/// estimate, because the achieved count is right there.
+///
+/// `result` is carried unconverted for the same reason [`MorphMeasurement`]
+/// does: a failed rung is still a data point about where the from-scratch arm
+/// stops working, and `unwrap`ping it here would destroy the rest of the
+/// ladder along with it. On the `Err` path `tets` and `nodes` are zero rather
+/// than absent, so a failed rung still prints in the same columns as a
+/// successful one.
+#[cfg(has_gmsh)]
+#[derive(Debug)]
+struct GmshMeasurement {
+    /// The `mesh_size` this rung requested.
+    mesh_size: f64,
+    /// P1 tet count actually produced (0 when `result` is `Err`).
+    tets: usize,
+    /// Node count actually produced (0 when `result` is `Err`).
+    nodes: usize,
+    /// Wall-clock of the `mesh_to_volume` call ALONE — see
+    /// [`gmsh_tetrahedralise`] for what is deliberately excluded.
+    elapsed: Duration,
+    /// gmsh's own result, uninterpreted.
+    result: Result<VolumeMesh, GeometryError>,
+}
+
+/// Tetrahedralise `surface` from scratch at a requested characteristic edge
+/// length, timing only the mesher.
+///
+/// ## What the timed region covers
+///
+/// Only `mesh_to_volume`. Boundary-surface extraction stays outside it, for
+/// the same reason the morph arm excludes fixture construction: it is input
+/// preparation shared by neither arm's real workload, and folding it in would
+/// bias the ratio this harness exists to report.
+///
+/// ## Why the inherent method rather than the trait
+///
+/// The `mesh_size` knob lives ONLY on `GmshKernel::mesh_to_volume`. The
+/// `&dyn GeometryKernel` trait path (`mesh_surface_to_volume`) hardcodes
+/// `MeshingOptions::default()`, i.e. auto-size derived from the smallest
+/// input triangle edge — on this bracket that is roughly 650K tets with no
+/// way to dial it, which cannot produce a 10K rung at all. And
+/// `refine_volume_with_size_field` is a different algorithm (size-field
+/// refinement of an existing mesh), not the from-scratch tetrahedralisation
+/// this harness is timing.
+///
+/// ## `deterministic: true`
+///
+/// Forces single-threaded HXT. That is what makes rung-to-rung counts
+/// reproducible (`crates/reify-kernel-gmsh/tests/mesh_to_volume_tests.rs:402-419`
+/// records that the multi-threaded variant needed a ±10% count budget where
+/// the single-threaded one needs ±1%), and it is the apples-to-apples
+/// counterpart to the morph arm, which `src/elasticity.rs` hardcodes serial.
+/// Neither arm characterises the parallel path.
+///
+/// ## Three things this deliberately does not do
+///
+/// - It does NOT acquire `reify_kernel_gmsh::init::GMSH_LOCK`.
+///   `mesh_to_volume` takes that lock internally, so holding it at the call
+///   site self-deadlocks — warned about explicitly at
+///   `crates/reify-kernel-gmsh/tests/volume_fill_fraction.rs:143-145` and
+///   `mesh_plane_2d_tests.rs:22-23`.
+/// - It does NOT call `ffi::finalize()`.
+/// - It never deliberately feeds gmsh an open or unmeshable surface.
+///   `mesh_to_volume_tests.rs:540-546` records that a failed HXT
+///   `mesh_generate` leaves thread-local HXT state that SURVIVES
+///   `gmshClear()` and corrupts the *next* call's output — which comes back
+///   as 0 tets rather than as an error. In a binary that sweeps a whole
+///   ladder through one process, one poisoned rung would silently zero every
+///   rung after it, so every surface handed to this function comes from
+///   [`fixtures::boundary_surface`], whose closedness is pinned by an
+///   always-on test.
+#[cfg(has_gmsh)]
+fn gmsh_tetrahedralise(surface: &reify_ir::Mesh, mesh_size: f64) -> GmshMeasurement {
+    use reify_ir::ElementOrderTag;
+    use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
+
+    let kernel = GmshKernel::new();
+    let options = MeshingOptions {
+        mesh_size: Some(mesh_size),
+        deterministic: true,
+        ..Default::default()
+    };
+
+    let started = Instant::now();
+    let result = kernel.mesh_to_volume(surface, &options, ElementOrderTag::P1);
+    let elapsed = started.elapsed();
+
+    let (tets, nodes) = match &result {
+        Ok(volume) => (
+            volume.tet_indices().map_or(0, |t| t.len() / 4),
+            volume.vertices.len() / 3,
+        ),
+        Err(_) => (0, 0),
+    };
+
+    GmshMeasurement {
+        mesh_size,
+        tets,
+        nodes,
+        elapsed,
+        result,
+    }
+}
+
 
 /// One timed from-scratch tetrahedralisation must actually produce a P1 tet
 /// mesh at the resolution it was asked for, and must report counts that match
