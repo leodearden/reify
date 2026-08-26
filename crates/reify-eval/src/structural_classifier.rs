@@ -1089,4 +1089,89 @@ mod tests {
             "structure_controlling must override the Dimensional type dispatch"
         );
     }
+
+    // ── Task 6635: the Type::Geometry relaxation is SUBORDINATE to Rules 2/3 ──
+    //
+    // These three guard the ORDERING, not the relaxation itself. The single
+    // most likely way a future refactor silently reopens the Stage A hole is by
+    // hoisting the Geometry arm to an early
+    // `if node.cell_type == Type::Geometry { return Dimensional }` above the
+    // structural overrides. Mutating in that hoisted form must fail all three.
+
+    #[test]
+    fn classify_cell_geometry_in_structure_controlling_returns_structural() {
+        // Mirrors classify_cell_structure_controlling_overrides_dimensional_type
+        // for Type::Geometry: Rule 2 must still win over Rule 4.
+        let id = ValueCellId::new("Part", "gated_body");
+        let mut g = graph_with_cell(&id, Type::Geometry);
+        g.structure_controlling.insert(id.clone());
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "task 6635: structure_controlling (Rule 2) must override the \
+             Type::Geometry → Dimensional dispatch (Rule 4)"
+        );
+    }
+
+    #[test]
+    fn classify_cell_geometry_as_collection_count_returns_structural() {
+        // Contrived by design: the point is that Rule 3 wins over Rule 4 for
+        // EVERY type, not just Type::Int.
+        let id = ValueCellId::new("Part", "__count_bodies");
+        let mut g = graph_with_cell(&id, Type::Geometry);
+        g.collection_subs.push(CollectionSubInfo {
+            parent_entity: "Part".to_string(),
+            sub_name: "bodies".to_string(),
+            structure_name: "Body".to_string(),
+            count_cell: id.clone(),
+            child_value_cells: vec![],
+        });
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "task 6635: a collection count_cell (Rule 3) must be Structural for \
+             every cell type, including Type::Geometry"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_structure_controlling_geometry_diff_returns_false() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::{GeometryHandleId, Value, ValueMap};
+
+        // Covers `classify_cell_with_count_cache`, the private twin
+        // `stage_a_eligible` actually calls. Without this, a future edit that
+        // relaxes ONLY the twin would pass the two `classify_cell` guards above
+        // and still be broken.
+        let id = ValueCellId::new("Part", "gated_body");
+        let mut g1 = graph_with_cell(&id, Type::Geometry);
+        g1.structure_controlling.insert(id.clone());
+        let g2 = g1.clone();
+
+        let mut v1 = ValueMap::new();
+        v1.insert(
+            id.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Part", 0),
+                upstream_values_hash: [1u8; 32],
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+        let mut v2 = ValueMap::new();
+        v2.insert(
+            id.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Part", 0),
+                upstream_values_hash: [2u8; 32],
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "task 6635: a structure-controlling Type::Geometry cell must still \
+             veto the tick end-to-end through stage_a_eligible — the Rule 2 \
+             override must hold in classify_cell_with_count_cache too"
+        );
+    }
 }
