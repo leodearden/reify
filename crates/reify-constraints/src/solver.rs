@@ -1461,7 +1461,15 @@ struct ConstraintCostFunction<'a> {
 ///
 /// Lexicographic folds as WeightedSum here (degenerate, PRD §6.3); full
 /// ε-band staged solve is task ε.
-fn eval_objective_set(
+///
+/// `pub(crate)` rather than private (task β #5468): `cpsat`'s `solve_ranked`
+/// override scores its enumerated models through THIS function. Both the
+/// discrete and the continuous path therefore fold an objective the same way —
+/// same weight application, same `Maximize` → negation normalisation to
+/// "lower is better" (F-result I2), same non-finite → `None` rejection. A
+/// second, cpsat-local fold would be free to disagree with this one about any
+/// of those, and nothing would catch it (PRD2 §3.9, G7).
+pub(crate) fn eval_objective_set(
     objective: &ObjectiveSet,
     values: &ValueMap,
     functions: &[CompiledFunction],
