@@ -201,8 +201,9 @@ pub structure IdlerPulley {
 
 /// Drive capstan (copied from dev_capstan.ri — single-file, no cross-file
 /// import in v0.1; the sketch's blank_volume/body_volume acceptance cells are
-/// deliberately omitted here — `volume()` is unresolvable on the check/eval
-/// surface and the machining metric belongs to the sketch). Helically-grooved
+/// deliberately omitted here — `volume()` is unresolvable on the CHECK
+/// surface (it works under kernel-backed `reify eval`, post-#4145) and the
+/// machining metric belongs to the sketch). Helically-grooved
 /// dual-anchor winch drum, axis = local +Z, centred. Both ends of each belt
 /// loop anchor to it; rotation reels one end in / pays the other out. Carries
 /// BOTH windings of the belt's ±z moment pair (axially adjacent on one drum).
@@ -1716,11 +1717,13 @@ pub structure CoreXY {
     sub tendons = DriveTendons(rail_x: y_rail_offset, z_a: tendon_outer_z) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
     // ── O6: moving masses + per-axis first-mode estimates (2026-08-26) ──────
-    // Masses are ANALYTIC volume × density: volume(body) is unresolvable on
-    // the value-eval surface (geometry-consumer builtins need a realized
-    // kernel — probed 2026-08-26, loud error), and for cylinders/tubes/boxes
-    // the closed form is exact anyway. Component dims read from the subs
-    // (one-level reads, #5360), so a resize moves the modes.
+    // Masses are ANALYTIC volume × density: volume(body) IS kernel-backed
+    // under `reify eval` (post-#4145), but stays unresolvable on the CHECK
+    // surface (kernel-free check cannot resolve geometry-consumer builtins)
+    // — analytic closed forms keep the mass constraints gateable under
+    // check, and for cylinders/tubes/boxes they are exact anyway. Component
+    // dims read from the subs (one-level reads, #5360), so a resize moves
+    // the modes.
     param rho_alu   : Density = 2700kg/m^3
     /// Rolled/ground CF tube, ~60% fibre fraction: bulk density ≈ 1600 kg/m³.
     param rho_cfrp  : Density = 1600kg/m^3
