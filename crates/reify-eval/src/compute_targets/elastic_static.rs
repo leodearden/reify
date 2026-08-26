@@ -1667,6 +1667,26 @@ pub(crate) fn has_usable_realized_solver_mesh(
 /// ids are unioned and mapped to node indices via
 /// [`super::bc_resolve::boundary_node_set`] against `realized.boundary()`.
 ///
+/// # Multi-support UNION invariant (normative; task 6663)
+///
+/// Every support's resolved face handles are UNIONED into ONE clamp node set,
+/// and all three translational DOFs are applied to all of them. There is no
+/// count-based branch and no degradation: a second support ADDS a face rather
+/// than reinterpreting the model, and a third naming an already-covered face is
+/// a no-op on the union. Pinned that way by
+/// `loads_supports_to_bc_node_sets_unions_multiple_support_faces`.
+///
+/// This is deliberately CONTRASTED with `modal_ops::build_dirichlet_bcs`, which
+/// until task 6663 DID reinterpret: two supports naming both beam-axis end faces
+/// flipped the whole model to the pin-pin realization regardless of support kind,
+/// silently dropping any third support. The static path never had that defect.
+///
+/// Realizing a pinned face as a full clamp is also physically right here: a
+/// solid tet body records `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`
+/// (`reify-solver-elastic/src/shell_boundary.rs:133-140`), i.e. face-pin equals
+/// face-clamp per face. What differs in the modal case is the STRUCTURE two
+/// clamped END FACES describe, not any single face's DOF count.
+///
 /// Returns `(clamp_nodes, load_nodes, diagnostics)`:
 /// - `clamp_nodes` — `Some(sorted node set)` when ≥1 support carried a `target`;
 ///   `None` when NO support carried one (→ the trampoline keeps the coordinate
@@ -1704,8 +1724,15 @@ pub(crate) fn loads_supports_to_bc_node_sets(
 /// set)`; if that set is empty (absent realized boundary, empty handle list, or
 /// no resolved handle matched a boundary face) a `FeaFailure::SelectorNoMatch`
 /// Error is pushed into `diagnostics` — the trampoline turns it into `Failed`
-/// rather than silently applying an empty BC (step-16). `kind` (`"FixedSupport"`
-/// / `"PointLoad"`) names the offending side in the diagnostic.
+/// rather than silently applying an empty BC (step-16).
+///
+/// The diagnostic names the offending item(s) by their own
+/// `StructureInstance.type_name`, so a `PinnedSupport` is reported as a
+/// `PinnedSupport` (task 6663 — it used to be reported as a `FixedSupport`, the
+/// hard-coded `kind` the caller threads in). `kind` (`"FixedSupport"` /
+/// `"PointLoad"`) remains the FALLBACK label for the case where no item carried
+/// a target-bearing type name, which keeps the message byte-identical for
+/// `FixedSupport` / `PointLoad` inputs.
 fn target_node_set(
     list: &Value,
     boundary: Option<&reify_ir::BoundaryAssociation>,
@@ -1718,6 +1745,9 @@ fn target_node_set(
     };
     let mut faces: Vec<reify_ir::GeometryHandleId> = Vec::new();
     let mut any_target = false;
+    // Distinct type names of the items that actually carried a target — the
+    // label the SelectorNoMatch diagnostic names below (task 6663).
+    let mut target_bearing_types: Vec<&str> = Vec::new();
     for item in items {
         let Value::StructureInstance(data) = item else {
             continue;
@@ -1726,6 +1756,9 @@ fn target_node_set(
             continue;
         };
         any_target = true;
+        if !target_bearing_types.contains(&data.type_name.as_str()) {
+            target_bearing_types.push(data.type_name.as_str());
+        }
         for hv in handles {
             if let Some(ghr) = reify_ir::value::GeometryHandleRef::from_geometry_handle(hv)
                 && let Some(id) = ghr.kernel_handle
@@ -1748,8 +1781,19 @@ fn target_node_set(
         // an empty boundary condition (design_decision[6], step-16). The
         // `selector` string names the side and the resolved face handles for
         // debuggability; `nearest` stays None (no nearest-match heuristic here).
+        //
+        // The label comes from the offending item's OWN `type_name` so a
+        // `PinnedSupport` is not reported as a `FixedSupport` (task 6663);
+        // `kind` is the fallback when nothing target-bearing was seen, which
+        // leaves the `FixedSupport` / `PointLoad` messages byte-identical for
+        // `FixedSupport` / `PointLoad` inputs.
+        let label = if target_bearing_types.is_empty() {
+            kind.to_string()
+        } else {
+            target_bearing_types.join("/")
+        };
         let selector = format!(
-            "{kind} target resolved to {} face handle(s) {:?} but matched no boundary node \
+            "{label} target resolved to {} face handle(s) {:?} but matched no boundary node \
              on the realized mesh",
             faces.len(),
             faces,
