@@ -257,10 +257,19 @@ driver-contract suite consumes them is a cross-PRD break.
 
 ## 10. Decomposition plan
 
-Greek labels; real task ids assigned at decompose time and backfilled here. **Leaf** = names a
+Greek labels with their real task ids, backfilled at decompose (2026-08-26).
+
+> **Decompose amendments.** Sixteen binding amendments (A1–A16) were recorded against this plan
+> and written verbatim into the filed tasks — three of them (A5, A11, A13) change what an
+> implementer would otherwise build. Read
+> `gui-on-demand-measurement.capability-manifest.md` → *Binding decompose amendments* before
+> acting on any section below. Notably: Open Question 2 is resolved (A10), §9's BT-1 thickness
+> row is re-homed on ε (A14), and the ζ drift-guard registration list in this section is
+> superseded wholesale (A13).
+ **Leaf** = names a
 user-observable signal. All leaves: no new `.ri` syntax (`grammar_confirmed: true`).
 
-**α — Extract the measurement seam; split capture from refine.** *(Leaf. deps: none)*
+**α — Extract the measurement seam; split capture from refine.** *(Leaf **#6740**. deps: none)*
 C-SEAM + C-FLAGS. Rewire `cmd_check`; introduce `MeasureOptions`/the refine flag (inert until
 γ1 lands the loop).
 *Signal:* existing `reify check` CLI harness suites pass unmodified (they pin today's output);
@@ -268,7 +277,7 @@ a seam-level test drives the GUI-shape invocation (`refine=off`) on a measuremen
 gets check-equal verdicts.
 *Modules:* `crates/reify-eval` (engine surface), `crates/reify-cli/src/main.rs`.
 
-**β — GUI session measurement pass, end-to-end.** *(Leaf. deps: α, #6667)*
+**β — GUI session measurement pass, end-to-end.** *(Leaf **#6741**. deps: α #6740, #6667)*
 C-STATE + C-CANCEL + C-MCP + the C-STATUS backend half: `EngineSession` measurement pass, Tauri
 command, debug-server `measure_constraints`/`measurement_status`, results into the constraint
 payload + events.
@@ -278,14 +287,14 @@ and the constraint-panel state show **measured** verdicts matching `reify check`
 — without leaving the GUI.
 *Modules:* `gui/src-tauri` (engine.rs, invoke handlers, debug_server.rs).
 
-**γ — Staleness epochs.** *(Leaf. deps: β)*
+**γ — Staleness epochs.** *(Leaf **#6742**. deps: β #6741)*
 C-STALE: generation counter, epoch stamping, stale flag through payload + events, re-measure
 retrigger.
 *Signal:* debug-MCP: measure → warm `edit_param` → payload shows the measured verdict retained
 with `stale=true`; re-measure clears it. (BT-5.)
 *Modules:* `gui/src-tauri/src/engine.rs`, payload types.
 
-**δ — Frontend: idle trigger + measure-now + stale rendering + progress.** *(Leaf. deps: β, γ)*
+**δ — Frontend: idle trigger + measure-now + stale rendering + progress.** *(Leaf **#6743**. deps: β #6741, γ #6742)*
 Debounced idle auto-measure (default on, kind-gated), "Measure now" affordance, dimmed stale
 style + re-measure affordance, in-progress state; composes #6667's attribution wording for the
 unmeasured state.
@@ -295,14 +304,14 @@ re-measure affordance appears. Pinned by vitest (`scripts/gui-test.sh`) + a debu
 test.
 *Modules:* `gui/src` (constraint panel, idle scheduling), minimal `gui/src-tauri` glue.
 
-**ε — Thickness-DFM / OpenVDB leg.** *(Leaf. deps: β, #6666)*
+**ε — Thickness-DFM / OpenVDB leg.** *(Leaf **#6744**. deps: β #6741, #6666)*
 The seam's `ensure_openvdb_kernel` arm exercised under the GUI configuration, on an isosurface
 fixture that #6666 makes realizable in the viewport.
 *Signal:* an isosurface design carrying a `min_feature_size` DFM rule shows the same measured
 thickness verdict in the GUI panel (via debug-MCP) that `reify check` reports.
 *Modules:* `gui/src-tauri`, test fixtures.
 
-**ζ — Differential-oracle + no-perturbation gates.** *(Leaf. deps: β, γ)*
+**ζ — Differential-oracle + no-perturbation gates.** *(Leaf **#6745**. deps: β #6741, γ #6742)*
 BT-1..BT-4 + BT-8 as gate-resident tests (BT-5..BT-7 land with their owning leaves).
 **Same-diff drift-guard registrations per the overlay rule**: nextest heavy/smoke partition
 entries for any new heavy integration test; `tests/infra/run-all-classification.manifest` bucket
@@ -313,7 +322,7 @@ deliberate value-cell overlay write from the pass turns BT-3 red).
 *Modules:* `gui/src-tauri` tests, `crates/reify-eval` tests, `.config/nextest.toml` /
 `tests/infra` as applicable.
 
-**η — Docs-truth surface.** *(Leaf. deps: δ, ε)*
+**η — Docs-truth surface.** *(Leaf **#6746**. deps: δ #6743, ε #6744)*
 Doc-chunk update(s) (`crates/reify-mcp/src/tools/chunks/`): the DFM / GD&T / precision topic
 chunks gain the GUI measurement workflow in intent terms ("check manufacturability while
 designing": idle measurement, measure-now, staleness, when `reify check` is still the tool);
@@ -323,7 +332,7 @@ changes).
 *Signal:* discoverability acceptance — an author who knows the goal but not the feature name
 finds the mechanism from the chunks/index.
 
-**θ — Companion corrections (docs + task records; no code).** *(Leaf. deps: α, β)*
+**θ — Companion corrections (docs + task records; no code).** *(Leaf **#6747**. deps: α #6740, β #6741)*
 (1) Precision PRD §4.6: dated correction note on the GUI-viewport row (superseded by this PRD,
 per its own revisit clause) and on the "F's scoping is structural" claim (capture is no longer
 cmd_check-only; byte-identity now rests on C-FLAGS/BT-4) — a note added beside the original text,
@@ -332,13 +341,18 @@ loop on the refine flag, never bare `capture_repr_tol` (D2). (3) Record the #666
 dependency edge. 
 *Signal:* committed docs edit + updated task records readable via `get_task`.
 
-**ι — PRD-close stamp.** *(Leaf. deps: every other leaf)*
+**ι — PRD-close stamp.** *(Leaf **#6748**. deps: every other leaf)*
 Terminal-status obligations per the overlay: backfilled leaf IDs, terminal token, AS-AUTHORED
 freeze + LIVE map, matching capability-manifest header.
 *Signal:* the committed header.
 
 Dependency DAG: α → β → {γ, ε}; {β, γ} → {δ, ζ}; {δ, ε} → η; {α, β} → θ; all → ι.
-Out-of-batch: β ← #6667; ε ← #6666 (real `add_dependency` edges at decompose time).
+19 intra-batch edges wired 2026-08-26.
+Out-of-batch (real `add_dependency` edges, wired at decompose): β ← #6667; ε ← #6666.
+Repair edge wired at decompose (§6's noted filing gap): **#6667 ← #6169** — #6667's text tells its
+implementer to reuse the precision-ζ attribution mechanism, which is #6169, but it carried no
+edge; since β depends on #6667, deferring this to θ would have let #6667 dispatch with nothing to
+reuse.
 
 ## 11. Out of scope
 
