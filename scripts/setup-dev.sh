@@ -359,10 +359,16 @@ ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 # verdict.  `arm` re-verifies with `check`, which sweeps every lane's
 # config.worktree — and `arm` writes --local only, so a FOREIGN lane that armed
 # itself is a condition it can never clear.  Under this script's `set -e`, one
-# self-armed lane out of ~239 would otherwise abort everything after this point
-# (the build-accelerator systemd units, npm, the smoke test) for every
-# developer, with no remediation the script could offer.  Exit 2 is that
-# advisory case; only a genuine failure (1) is fatal.
+# self-armed lane would otherwise abort everything after this point (the
+# build-accelerator systemd units, npm, the smoke test) for every developer, with
+# no remediation the script could offer.  Exit 2 is that advisory case.
+#
+# The branch below is `0 | 2 | *`, NOT a closed set {0,1,2}, and deliberately so:
+# `arm`'s failure code is normally 1, but it runs under its own `set -euo
+# pipefail`, so a git invocation that aborts outside a guarded `if` propagates
+# git's own status (4, 5, 128, 255…) instead.  Treating only 1 as fatal would
+# silently read a failed shared-config write as success and leave the fleet
+# armed.  Contract: scripts/git-rerere-guard.sh header.
 
 info "Disabling git rerere repo-wide (shared rr-cache hazard)..."
 _rerere_arm_rc=0
