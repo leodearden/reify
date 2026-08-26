@@ -66,7 +66,7 @@ Built at decompose, 2026-08-26. Leaf task IDs: α #6706 · β #6707 · γ #6708 
 | fixtures parse | grammar-fixture — `tests/prd-gate/fixtures/{ssc_two_roots_free,ssc_two_roots_strict,ssc_single_root_free}.ri`, each `tree-sitter parse --quiet` exit 0, **0 ERROR nodes**, 2026-08-26. No novel syntax (PRD §2.3). | **PASS** |
 | the asserted baseline is the measured baseline | G6 branch 3 — every "today" claim δ's signal contrasts against is **observed**, with exit codes and verbatim text in PRD §0.2, not inferred from code reading. | **PASS** |
 | the silence assertion is falsifiable | G6 branch 4 (negative assertion) — BT4 asserts the non-uniqueness warning **stops** firing on `ssc_single_root_free.ri`. The warning is **observed firing there today**, so the assertion has an observable before-state and cannot pass vacuously. | **PASS** |
-| δ's signal does not depend on an unstamped edge | anti-inversion — δ's fixtures are single-`auto` by design, so C6's multi-`auto` ordering claim (P1 γ, unstamped) is not on δ's critical path; it is asserted at ζ instead. | **PASS** |
+| δ's signal does not depend on the ordering edge | anti-inversion — δ's fixtures carry ONE `auto` by design, so they have no axis order to permute and C6's multi-`auto` ordering claim (P1 γ **#6691**) is not on δ's critical path; it is asserted at ζ **#6711**, which is dep-wired to #6691. | **PASS** |
 
 ## ε (#6710) — refutation by subdivision
 

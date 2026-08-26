@@ -151,9 +151,10 @@ tasks:
       pattern: W_SOLUTION_NOT_UNIQUE|SolutionNotUnique
       path: crates/reify-core/src/diagnostics.rs
       expect: present
-  - name: no-unstamped-edge-on-critical-path
-    binding: anti-inversion — δ's fixtures are single-auto by design, so C6's multi-auto ordering claim
-      (P1 gamma, unstamped) is not on δ's critical path; it is asserted at ζ instead.
+  - name: ordering-edge-not-on-critical-path
+    binding: anti-inversion — delta's fixtures carry ONE auto by design, so they have no axis order to
+      permute and C6's multi-auto ordering claim (P1 gamma = 6691) is not on delta's critical path; it
+      is asserted at zeta = 6711, which is dep-wired to 6691.
     verdict: PASS
 - label: ε
   task_id: 6710
