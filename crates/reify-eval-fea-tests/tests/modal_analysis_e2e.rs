@@ -30,6 +30,17 @@ fn printer_gantry_source() -> &'static str {
     include_str!("../../../examples/modal/printer_gantry_modes.ri")
 }
 
+/// Load and compile the clamped-clamped vs pinned-pinned BC-kind fixture
+/// (task 6663). Lives in this crate's `tests/fixtures/` rather than
+/// `examples/modal/` because it is purely this crate's test detail (the 4-tier
+/// fixture standard, tests/prd-gate/README.md → "Where fixtures live"), and
+/// because `examples/**` is walked recursively by
+/// `no_stale_undef_invariant_gate.rs::corpus_files` into a 24-shard eval sweep —
+/// a heavy modal example there would add a full modal solve to that sweep.
+fn clamped_clamped_source() -> &'static str {
+    include_str!("fixtures/clamped_clamped_beam_modes.ri")
+}
+
 /// Read a frequency cell (Hz) as `f64`, tolerating the `Real` placeholder
 /// (`Mode.frequency : Real`, modal_analysis.ri) or a dimensioned `Scalar`.
 fn read_frequency(val: &Value) -> f64 {
@@ -72,6 +83,51 @@ const CANTILEVER_P2_REL_TOL: f64 = 0.02;
 /// MEASURED at nx=24, nz=2): P2 clears 2% on all three bending modes, replacing
 /// the prior looser P1 10%/12% bands (task 4066).
 const SS_P2_REL_TOL: f64 = 0.02;
+
+// ── task 6663: support-KIND acceptance bands (clamped-clamped vs pinned-pinned) ─
+//
+// All three constants below are bands over the SAME dogfood section — L = 800 mm,
+// square 44.588 × 44.588 mm, E = 110 GPa, ν = 0.3, ρ = 695.39 kg/m³ — solved at
+// element_order = P2 on the trampoline's own `build_beam_mesh` discretization
+// (nx = round(800/44.588 · 6) = 108, nz = 6).
+//
+// Analytic Euler–Bernoulli fundamentals fₙ = (βL)²/(2π)·√(E·I/(ρ·A·L⁴)):
+//   pinned-pinned   βL = π         → 397.33 Hz
+//   clamped-clamped βL = 4.730041  → 900.699 Hz
+
+/// Analytic pinned-pinned (simply-supported) fundamental, Hz, for the fixture
+/// section above.
+const CC_FIXTURE_PINNED_ANALYTIC_HZ: f64 = 397.33;
+
+/// Analytic clamped-clamped fundamental, Hz, for the fixture section above.
+const CC_FIXTURE_FIXED_ANALYTIC_HZ: f64 = 900.699;
+
+/// Pinned-pinned band. The dogfood round MEASURED 391.049 Hz on exactly this
+/// section and mesh (−1.58% vs analytic), and task 6663 leaves the pin-pin
+/// realization (`simply_supported_pin_pin_bcs`) untouched — so this is a
+/// MEASURED reference with 1.42% of margin, not a guessed tolerance.
+const CC_FIXTURE_PINNED_REL_TOL: f64 = 0.03;
+
+/// Clamped-clamped band — deliberately looser than the pinned one because it is
+/// derived rather than directly measured at this mesh. Bounded ABOVE by 899.98 Hz:
+/// a clamped-clamped probe of this exact section measured 899.978 Hz at nx=16, and
+/// the conforming P2 displacement method is a Rayleigh quotient, so frequencies
+/// bound the exact 3-D value from above and fall monotonically under refinement —
+/// the eval mesh (nx=108/nz=6) is strictly finer, hence f_eval ≤ 899.98. Bounded
+/// BELOW by scaling this section's MEASURED pinned deviation (−1.58%) by the
+/// (βL)² ratio 22.373/9.870 = 2.267 → ≈ −3.6% → ≈ 868 Hz, then DOUBLING that
+/// deviation for safety → ≈ 836 Hz. The 10% band [810.6, 990.8] Hz therefore
+/// contains [836, 900] with margin at both ends, and excludes the defect value
+/// (391.05 Hz, the pinned answer) by a factor of 2.
+const CC_FIXTURE_FIXED_REL_TOL: f64 = 0.10;
+
+/// The headline acceptance signal: clamping both end faces must be a genuinely
+/// DIFFERENT structure from pinning both. The analytic ratio is a pure BC ratio,
+/// (4.730041)²/π² = 22.373/9.870 = 2.267, and the expected measured ratio is in
+/// [2.14, 2.30]. A 2.0 floor is insensitive to every modelling uncertainty in the
+/// two bands above. Under the defect this ratio read exactly 1.0 — the two BC sets
+/// were bit-identical.
+const CC_FIXTURE_MIN_FIXED_PINNED_RATIO: f64 = 2.0;
 
 // ── step-13: RED — trampoline registration + seam pin ────────────────────────
 //
@@ -802,5 +858,167 @@ fn e2e_printer_gantry_prints_five_modes() {
     assert!(
         f1 < f2 && f2 < f3 && f3 < f4 && f4 < f5,
         "gantry frequencies must be strictly ascending: f1={f1} f2={f2} f3={f3} f4={f4} f5={f5}"
+    );
+}
+
+// ── task 6663: support KIND must drive the BC realization ────────────────────
+//
+// The headline acceptance test. One fixture
+// (tests/fixtures/clamped_clamped_beam_modes.ri), one eval, two modal solves over
+// the SAME 800 × 44.588 × 44.588 mm section differing ONLY in support kind:
+//   • `[FixedSupport("x_min"), FixedSupport("x_max")]`   → clamped-clamped
+//   • `[PinnedSupport("x_min"), PinnedSupport("x_max")]` → pinned-pinned
+//
+// Signals asserted:
+//   (a) no Error-severity diagnostics after parse + eval
+//   (b) a ComputeNode with target == "modal::free_vibration" in the graph
+//   (c) f1_pinned within CC_FIXTURE_PINNED_REL_TOL of the SS analytic 397.33 Hz —
+//       the guard that the pin-pin realization is BIT-PRESERVED by this task
+//   (d) f1_fixed within CC_FIXTURE_FIXED_REL_TOL of the CC analytic 900.699 Hz
+//   (e) f1_fixed / f1_pinned ≥ CC_FIXTURE_MIN_FIXED_PINNED_RATIO — the task's
+//       literal "they must DIFFER" acceptance
+//
+// RED before the fix: `build_dirichlet_bcs` discriminated on target face NAMES
+// only and never read the support kind, so both solves returned the bit-identical
+// pinned answer (391.049 Hz measured). (d) missed its band by 2.3×; (e) read 1.0.
+//
+// Release-gated like every other heavy modal e2e in this file.
+
+/// Two `FixedSupport`s must give the clamped-clamped answer, not the
+/// pinned-pinned one (task 6663).
+#[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
+#[test]
+fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
+    let source = clamped_clamped_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) No Error-severity diagnostics.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    // (b) A ComputeNode with target == "modal::free_vibration" must be present.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let has_compute_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .any(|(_, data)| data.target == "modal::free_vibration");
+    assert!(
+        has_compute_node,
+        "expected a ComputeNode with target==\"modal::free_vibration\"; found targets: {:?}",
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .map(|(_, d)| d.target.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // Both `result` cells must hold a non-Undef StructureInstance/Map.
+    for name in ["result_fixed", "result_pinned"] {
+        let val = eval_result
+            .values
+            .get(&ValueCellId::new("ClampedClampedBeamModes", name))
+            .unwrap_or_else(|| {
+                panic!("cell ClampedClampedBeamModes.{name} not found in eval result")
+            });
+        assert!(
+            matches!(val, Value::StructureInstance(_) | Value::Map(_)),
+            "expected {name} to be StructureInstance or Map (NOT Undef), got: {val:?}"
+        );
+    }
+
+    let read_cell = |name: &str| -> f64 {
+        read_frequency(
+            eval_result
+                .values
+                .get(&ValueCellId::new("ClampedClampedBeamModes", name))
+                .unwrap_or_else(|| {
+                    panic!("cell ClampedClampedBeamModes.{name} not found in eval result")
+                }),
+        )
+    };
+    let f1_fixed = read_cell("f1_fixed");
+    let f1_pinned = read_cell("f1_pinned");
+
+    eprintln!(
+        "[modal bc-kind] f1_pinned={:.4} Hz (analytic {:.3}, err {:+.2}%)",
+        f1_pinned,
+        CC_FIXTURE_PINNED_ANALYTIC_HZ,
+        (f1_pinned - CC_FIXTURE_PINNED_ANALYTIC_HZ) / CC_FIXTURE_PINNED_ANALYTIC_HZ * 100.0
+    );
+    eprintln!(
+        "[modal bc-kind] f1_fixed ={:.4} Hz (analytic {:.3}, err {:+.2}%)",
+        f1_fixed,
+        CC_FIXTURE_FIXED_ANALYTIC_HZ,
+        (f1_fixed - CC_FIXTURE_FIXED_ANALYTIC_HZ) / CC_FIXTURE_FIXED_ANALYTIC_HZ * 100.0
+    );
+    eprintln!(
+        "[modal bc-kind] ratio f1_fixed/f1_pinned = {:.4} (analytic 2.267)",
+        f1_fixed / f1_pinned
+    );
+
+    for (name, f) in [("f1_fixed", f1_fixed), ("f1_pinned", f1_pinned)] {
+        assert!(
+            f.is_finite() && f > 0.0,
+            "{name} must be finite and positive, got: {f}"
+        );
+    }
+
+    // (c) Pinned-pinned is unchanged by this task — the bit-preservation guard.
+    let pinned_err =
+        (f1_pinned - CC_FIXTURE_PINNED_ANALYTIC_HZ).abs() / CC_FIXTURE_PINNED_ANALYTIC_HZ;
+    assert!(
+        pinned_err < CC_FIXTURE_PINNED_REL_TOL,
+        "f1_pinned = {:.4} Hz, analytic simply-supported = {:.3} Hz, rel_err = {:.2}% > {:.2}% \
+         — the pinned-pinned realization must be unchanged by the support-kind fix",
+        f1_pinned,
+        CC_FIXTURE_PINNED_ANALYTIC_HZ,
+        pinned_err * 100.0,
+        CC_FIXTURE_PINNED_REL_TOL * 100.0
+    );
+
+    // (d) Clamped-clamped lands on the clamped-clamped analytic, not the pinned one.
+    let fixed_err = (f1_fixed - CC_FIXTURE_FIXED_ANALYTIC_HZ).abs() / CC_FIXTURE_FIXED_ANALYTIC_HZ;
+    assert!(
+        fixed_err < CC_FIXTURE_FIXED_REL_TOL,
+        "f1_fixed = {:.4} Hz, analytic clamped-clamped = {:.3} Hz, rel_err = {:.2}% > {:.2}% \
+         — two FixedSupports must clamp BOTH end faces, not degrade to the pinned-pinned answer \
+         ({:.3} Hz)",
+        f1_fixed,
+        CC_FIXTURE_FIXED_ANALYTIC_HZ,
+        fixed_err * 100.0,
+        CC_FIXTURE_FIXED_REL_TOL * 100.0,
+        CC_FIXTURE_PINNED_ANALYTIC_HZ
+    );
+
+    // (e) The two configurations must genuinely DIFFER — the task's acceptance.
+    let ratio = f1_fixed / f1_pinned;
+    assert!(
+        ratio >= CC_FIXTURE_MIN_FIXED_PINNED_RATIO,
+        "f1_fixed/f1_pinned = {:.4} (f1_fixed={:.4} Hz, f1_pinned={:.4} Hz), expected ≥ {:.2} \
+         (analytic BC ratio 2.267) — a ratio near 1.0 means the support KIND was ignored and \
+         both solves realized the same Dirichlet set",
+        ratio,
+        f1_fixed,
+        f1_pinned,
+        CC_FIXTURE_MIN_FIXED_PINNED_RATIO
     );
 }
