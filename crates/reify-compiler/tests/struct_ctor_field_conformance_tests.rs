@@ -3332,3 +3332,148 @@ fn epsilon_fixtures_remain_error_free_and_exit_code_neutral() {
         offenders.join("\n")
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Step-10 probes (REVIEW REMEDIATION): an `auto`-declared param IS a declared
+// param, so a named argument targeting it is not an unknown field.
+//
+// The binder's `params` vec (`expr.rs`, `StructureInstanceCtor` arm) filters
+// `template.value_cells` to `ValueCellKind::Param` ONLY, but `param x : T = auto`
+// compiles to `ValueCellKind::Auto { free }` (`entity.rs`,
+// `build_param_value_cell_decl`). An auto-declared param is therefore invisible
+// to the ε unknown-field emit site, and its own name reads back as "unknown" —
+// a message that asserts the opposite of the source. Two independent sites
+// already treat `Param | Auto { .. }` as the externally-settable member set
+// (`connect.rs`, `traits.rs`), so this binder is the outlier.
+//
+// Not hypothetical: ~20 corpus structures declare auto params
+// (`examples/auto_binding_sites.ri`, `examples/integration_corner_cases.ri`,
+// `examples/m11_annotations.ri`, …). The corpus gate is green today only
+// because none of them is constructed by name in expression position — and
+// step-6 wired that gate to this very code, so the first example that does
+// fails it; δ then hard-rejects the same valid source.
+//
+// RED today for (a)/(b) (each measured `count=1` against the 89-green
+// baseline). (c)/(d) are guards, green BOTH before and after step-11: (c) pins
+// that the fix must not blanket-suppress the code on any template that merely
+// HAS an `Auto` cell, (d) that the no-auto path is untouched.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_AUTO_PARAM_NAMED_ARG: &str = r#"module test.auto_param_named_arg
+structure def WidgetAuto {
+    param a : Real = auto
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAuto(a: 1.0, b: 2.0)
+}
+"#;
+
+/// (a) A named argument for a strict-`auto` param must emit ZERO
+/// ctor-conformance diagnostics. `WidgetAuto` declares `a`; today the binder
+/// cannot see it and reports `E_CTOR_UNKNOWN_FIELD: … 'WidgetAuto' has no
+/// parameter with that name`, which is false about the source above.
+#[test]
+fn named_argument_for_an_auto_param_is_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_NAMED_ARG);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "`param a : Real = auto` is a DECLARED param — naming it in a ctor call must \
+         emit no ctor-conformance diagnostic. The binder's `params` vec filters to \
+         `ValueCellKind::Param` only, so an `Auto` cell reads back as unknown. Got: \
+         {diags:#?}"
+    );
+}
+
+const SRC_AUTO_FREE_PARAM_NAMED_ARG: &str = r#"module test.auto_free_param_named_arg
+structure def WidgetAutoFree {
+    param a : Real = auto(free)
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoFree(a: 1.0, b: 2.0)
+}
+"#;
+
+/// (b) The same for the `auto(free)` spelling. Both spellings lower to
+/// `ValueCellKind::Auto { free }` — strict is `free: false`, `auto(free)` is
+/// `free: true` — so this pins that the fix matches `Auto { .. }` and not one
+/// `free` polarity, which would leave the other half of the defect live.
+#[test]
+fn named_argument_for_an_auto_free_param_is_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_AUTO_FREE_PARAM_NAMED_ARG);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "`auto(free)` and strict `auto` both lower to `ValueCellKind::Auto {{ free }}`; \
+         the declared-param predicate must match on the VARIANT, not on `free`. Got: \
+         {diags:#?}"
+    );
+}
+
+const SRC_AUTO_PARAM_GENUINE_UNKNOWN: &str = r#"module test.auto_param_genuine_unknown
+structure def WidgetAutoTypo {
+    param a : Real = auto
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoTypo(zz: 1.0, b: 2.0)
+}
+"#;
+
+/// (c) OVER-CORRECTION GUARD — green before AND after. A genuinely unknown name
+/// on a template that ALSO declares an auto param must still emit exactly one
+/// `CtorUnknownField`, naming `zz`. Suppressing the code whenever an `Auto` cell
+/// exists anywhere on the template would pass (a)/(b) while silently deleting
+/// ε's detection power on ~20 corpus structures.
+#[test]
+fn genuine_unknown_name_still_fires_on_a_template_with_an_auto_param() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_GENUINE_UNKNOWN);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a genuinely unknown name must still emit exactly one diagnostic even when the \
+         template declares an auto param, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::CtorUnknownField),
+        "expected CtorUnknownField, got: {:?}",
+        diags[0]
+    );
+    assert!(
+        diags[0].message.contains("zz"),
+        "the diagnostic must name the offending `zz`, not the auto param `a`, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].message.contains("'a'"),
+        "the auto-declared param `a` must not be reported as unknown, got: {:?}",
+        diags[0].message
+    );
+}
+
+/// (d) NO-DRIFT GUARD — green before AND after. The no-auto path is untouched by
+/// the remediation: widening the DIAGNOSTIC's predicate to the declared-param set
+/// must be purely additive, never a rewrite of the base behaviour. Table-driven
+/// over the two pre-existing no-auto fixtures so a step-11 over-reach that
+/// loosened the base predicate is caught here rather than 80 probes downstream.
+#[test]
+fn no_auto_unknown_field_behaviour_is_unchanged_by_the_declared_param_view() {
+    let cases: &[(&str, &str, usize)] = &[
+        ("typo'd name", SRC_UNKNOWN_FIELD, 1),
+        ("correct name", SRC_KNOWN_FIELD, 0),
+    ];
+    for &(label, source, expected) in cases {
+        let module = compile_source_with_stdlib(source);
+        let diags = ctor_conformance_diags(&module);
+        assert_eq!(
+            diags.len(),
+            expected,
+            "[{label}] a template with no `Auto` cell must be wholly unaffected by the \
+             declared-param view (there `declared == params`), got: {diags:#?}"
+        );
+    }
+}
