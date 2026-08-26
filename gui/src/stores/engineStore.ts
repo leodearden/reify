@@ -296,15 +296,20 @@ export function createEngineStore(options?: EngineStoreOptions) {
   }
 
   /**
-   * Mark the loop as finished and reset iteration history.
+   * Mark the loop as finished, PRESERVING its iteration history.
    *
-   * The panel unmounts when `active` flips to false (App.tsx uses
-   * `<Show when={autoResolve.active}>`), so any preserved iterations would be
-   * unreachable until the next `beginAutoResolveLoop` clears them anyway.
-   * Clearing eagerly avoids holding dead state between runs.
+   * A completed loop stays readable: the panel now mounts on
+   * `iterations.length > 0` rather than on `active`, so the samples of the loop
+   * the user just ran remain on screen after it lands instead of vanishing the
+   * instant the last iteration completes. `canonicalDrivingMetric` is preserved
+   * with them — it is what labels the chart's y-axis.
+   *
+   * The samples are dropped later, by whichever comes first: the next loop's
+   * first accepted iteration (the deferred reset), or a full-state
+   * `initFromState` reload.
    */
   function endAutoResolveLoop() {
-    setState('autoResolve', { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
+    setState('autoResolve', 'active', false);
   }
 
   let debounceHandle: ReturnType<typeof setTimeout> | null = null;
