@@ -35,6 +35,7 @@
 //! only diagnosis) rather than anything modal:
 //!   - `structure_ctor_args_bind_by_name_not_positionally`
 //!   - `misspelled_ctor_label_is_silently_appended_not_diagnosed`
+//!
 //! `RayleighDamping` is only their vehicle — they landed here because task
 //! 6093 held this file's lock and not the binder's. Their contract home is
 //! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`; the
