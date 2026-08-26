@@ -781,3 +781,65 @@ fn simply_supported_beam_p2_modal_within_two_percent() {
         m.f_bending[2], m.f_analytic[2], m.rel_err[2] * 100.0, SS_P2_HIGHER_MODE_TOL * 100.0,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Clamped-clamped P2 modal benchmark (task 6663)
+// ---------------------------------------------------------------------------
+
+/// Clamped-clamped (fixed-fixed) P2 modal-frequency accuracy benchmark — the
+/// third member of this file's cantilever / simply-supported family, on the SAME
+/// shared steel fixture.
+///
+/// Slender steel beam: `L = 200 mm` (X span) × `b = 10 mm` (Y width) ×
+/// `h = 2 mm` (Z height, the thin bending axis), `L/r ≈ 346`. AISI 1045
+/// (E = 205 GPa, ν = 0.29, ρ = 7850 kg/m³).
+///
+/// BCs: BOTH the `x ≈ 0` and `x ≈ L` end faces are fully clamped — all 3 DOFs at
+/// every P2 node on either face, selected by x-coordinate so the P2 edge-midpoint
+/// nodes on each face are caught too.
+///
+/// Reference (Euler-Bernoulli clamped-clamped first mode):
+/// `f₁ = (4.730041² / 2π) · √(EI / (ρ A L⁴)) ≈ 262.6 Hz`, with `I = b·h³/12`,
+/// `A = b·h`.
+///
+/// This is the accuracy counterpart to the eval-surface acceptance e2e
+/// (`reify-eval-fea-tests/tests/modal_analysis_e2e.rs::
+/// e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported`): that one
+/// pins that fixed-fixed and pinned-pinned DIFFER on the dogfood section; this
+/// one pins that the clamped-clamped answer is quantitatively RIGHT against the
+/// `βL = 4.730041` reference on this file's validated slender fixture.
+///
+/// Passes when `|f₁ − f₁,analytic| / f₁,analytic < CLAMPED_P2_REL_TOL`.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "heavy (dense modal eigensolve): release-only at the merge gate; debug skips it for per-task speed — task 6663"
+)]
+#[test]
+fn clamped_clamped_beam_p2_modal_within_calibrated_band() {
+    // nx=24 matches the simply-supported benchmark's span mesh — see
+    // CLAMPED_P2_REL_TOL's tuning history for the measured nx sweep and for why
+    // 2% is not the bound here.
+    let grid = BeamFixture { nx: 24, ny: 1, nz: 1, lx: 0.2, ly: 0.01, lz: 0.002 };
+    let m = measure_clamped_clamped(&grid);
+
+    eprintln!(
+        "clamped-clamped P2 (nx={}, ny={}, nz={}, P2 nodes={}, n_free={}): \
+         f1 = {:.4} Hz, analytic = {:.4} Hz, rel_err = {:.4}% (f2 = {:.2} Hz, f3 = {:.2} Hz); \
+         Σ M rel = {:.2e}",
+        grid.nx, grid.ny, grid.nz, m.n_nodes_p2, m.n_free,
+        m.f1, m.f1_analytic, m.rel_err * 100.0, m.f2, m.f3, m.mass_rel,
+    );
+
+    assert!(m.converged, "dense modal eigensolve must converge for the clamped-clamped beam");
+    assert!(m.lambda_min > 0.0, "λ_min = {} must be positive (free vibration)", m.lambda_min);
+    assert!(
+        m.mass_rel < 1e-9,
+        "global consistent-mass total Σ M off by rel {:.2e} from 3ρV",
+        m.mass_rel,
+    );
+    assert!(
+        m.rel_err < CLAMPED_P2_REL_TOL,
+        "clamped-clamped P2: f1 = {:.4} Hz, analytic = {:.4} Hz, rel_err = {:.4}% > {:.2}%",
+        m.f1, m.f1_analytic, m.rel_err * 100.0, CLAMPED_P2_REL_TOL * 100.0,
+    );
+}
