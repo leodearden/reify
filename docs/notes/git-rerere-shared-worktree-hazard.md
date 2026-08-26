@@ -244,11 +244,20 @@ Transcript evidence corrects two facts in the original escalation:
   recurred ~34min after the escalation was filed, and recurrences continued through 2026-08-08
   (`_lane-45`, `_lane-47`, `_lane-9` ×2, `_lane-49` ×2).
 
-**The hazard is live as of 2026-08-13**: the shared store still reads `rerere.enabled=true`,
-`rerere.autoupdate=true`, with 241 rr-cache entries across 239 worktrees. Closing it needs a one-time
-operator run of `scripts/git-rerere-guard.sh arm` against `/home/leo/src/reify` — deliberately **not**
-performed from a task commit, since it mutates host-wide shared state for hundreds of concurrently
-running lanes. Filed as `escalate_info` on task 5870.
+**The hazard was live through 2026-08-26, and is now CLOSED on the live store.** It was measured
+armed twice: `rerere.enabled=true` / `rerere.autoupdate=true` with 241 rr-cache entries on 2026-08-13,
+and again with 266 entries on 2026-08-26 (+25 in 13 days), filed both times as `escalate_info` on task
+5870 (the second as `esc-5870-5`). The steward closed it on **2026-08-26** by running the one-time
+`scripts/git-rerere-guard.sh arm /home/leo/src/reify`, which reported
+`SET: rerere.enabled=false (was true)` and `SET: rerere.autoupdate=false (was true)` and exited 0
+(disarmed and self-verified). Confirmed independently from an unrelated lane: both keys read `false`,
+`check` exits 0, `rr-cache` still holds all 266 entries (never pruned — see §5), and the main
+checkout's tracked files were untouched.
+
+Note the ordering: this write landed *before* the task branch did, so until `setup-dev.sh` is on `main`
+nothing re-asserts the pin. That is still strictly safer than leaving it armed — per `CLAUDE.md`, a
+bare `--unset` is a silent RE-ARM, so what protects the store is the explicit `false` being *present*,
+which it now is. Landing this task restores the durable re-assertion on every subsequent setup run.
 
 ## 8. Open item
 
