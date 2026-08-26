@@ -561,7 +561,7 @@ Four movements, in dependency order:
   (`panels/DofBadge.tsx`, `DofBadge.module.css`, `panels/StatusBar.tsx`,
   `panels/index.ts`, `__tests__/DofBadge.test.tsx`). Renders #4388's ledger. *Leaf.*
   Signal: an under-constrained `at auto` sub shows `spent 5 · free 1` in the badge,
-  agreeing with `reify explain`'s ledger line. Depends on #4388 and on ν.
+  agreeing with `reify explain`'s ledger line. Depends on #4388 (ν already executed).
   **Honesty constraint:** `SystemBuilder::solve`'s empty-constraint early return of
   `dof: 0` is a known lie for sketches (libslvs reports an honest `dof: 4` for two
   free 2D points); the badge must not render that zero as a fact.
@@ -648,10 +648,14 @@ Four movements, in dependency order:
 
 **Phase 6 — corrections and close.**
 
-- **ν — Rewrite #4388's description to drop the GUI badge and point here.** Modules:
-  the task record only (no source diff). *Intermediate* — unlocks ι. Signal: #4388's
-  description no longer lists `gui/src/panels/DofBadge.tsx` in scope and names this
-  PRD's ι as the badge's owner. `task_kind` declares the non-code path.
+- **ν — DONE AT AUTHORING TIME, not filed.** #4388's description was rewritten in
+  the authoring session (Leo's explicit authorisation, 2026-08-26) to drop the GUI
+  badge arm, name this PRD's ι as the badge's owner, and remove the five
+  `DofBadge`/`StatusBar` entries from its `metadata.files` (18 → 13). Readback
+  confirmed. It also carries forward the libslvs `dof: 0` honesty note. **No leaf is
+  filed for this** — doing it at authoring time removes a coordination hop and lets ι
+  depend directly on #4388. Recorded here so the decomposition is not read as
+  incomplete.
 - **ω — PRD close.** Set the terminal `Status` marker, name the landed leaf IDs, add
   the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, and apply the
   matching header to the capability manifest. *Leaf.* Signal: the committed header.
