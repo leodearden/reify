@@ -619,9 +619,23 @@ pub enum DiagnosticCode {
     /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
     /// struct-ctor-conformance ε).
     /// Emitted when a structure-constructor call supplies a NAMED argument whose
-    /// name matches no `Param` cell on the target structure — the site that
+    /// name matches no DECLARED parameter of the target structure — the site that
     /// previously appended the argument leniently as `__arg{i}` with no
     /// diagnostic at all.
+    ///
+    /// The declared-parameter set is the structure's `Param` AND `Auto { .. }`
+    /// value cells, because `param x : T = auto` / `auto(free)` lowers to
+    /// `ValueCellKind::Auto { free }`. A named argument for an `auto`-declared
+    /// param is therefore NOT an unknown field: it names a parameter the author
+    /// visibly wrote. (Counting only `Param` cells made this code assert the
+    /// opposite of the source on every auto-param structure.) It is the same
+    /// externally-settable member-set predicate used by
+    /// `crates/reify-compiler/src/connect.rs` and
+    /// `crates/reify-compiler/src/traits.rs`.
+    ///
+    /// The lenient `__arg{i}` push is deliberately NOT gated by that predicate —
+    /// it keys off the positionally-bindable slot set, as it always did — so the
+    /// emitted IR is byte-for-byte the same whether or not this diagnostic fires.
     ///
     /// Canonical message form:
     /// `"E_CTOR_UNKNOWN_FIELD: unknown named argument '{field}' in call to
@@ -662,14 +676,28 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
     /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
     /// struct-ctor-conformance ε).
-    /// Emitted when a structure-constructor call supplies more POSITIONAL
-    /// arguments than the target structure has unbound `Param` slots — the site
-    /// that previously appended each surplus argument leniently as
-    /// `__arg{call_idx}` with no diagnostic at all.
+    /// Emitted when a structure-constructor call supplies more arguments than the
+    /// target structure DECLARES parameters, and at least one positional argument
+    /// found no slot — the site that previously appended each surplus argument
+    /// leniently as `__arg{call_idx}` with no diagnostic at all.
     ///
     /// Canonical message form:
-    /// `"E_CTOR_ARITY: {Ctor}() expects at most {nparams} {argument|arguments},
+    /// `"E_CTOR_ARITY: {Ctor}() expects at most {ndeclared} {argument|arguments},
     /// got {nargs}"`
+    ///
+    /// `{ndeclared}` is the DECLARED parameter count — `Param` plus `Auto { .. }`
+    /// cells, the same set described on [`Self::CtorUnknownField`] — and the
+    /// singular/plural noun keys off that same count. It is deliberately not the
+    /// count of positionally-bindable slots: reporting the slot count made this
+    /// message state a ceiling the source contradicts (`expects at most 1
+    /// argument` on a structure declaring two, one of them `auto`).
+    ///
+    /// Residual scope: a call whose argument count is WITHIN the declared count
+    /// but which still overflows the positionally-bindable slots — because `auto`
+    /// params are not positionally bindable today — is deliberately NOT diagnosed
+    /// here. That is a binding defect, not an arity one (the surplus argument
+    /// lands in a garbage `__arg{i}` member), and this code cannot state a true
+    /// fact about it. It is owned by #6705.
     ///
     /// The `{argument|arguments}` noun and the `"expects … , got …"` shape are
     /// reused verbatim from `crates/reify-compiler/src/arg_check.rs` so ctor
