@@ -333,6 +333,17 @@ mod tests {
     }
 
     #[test]
+    fn classify_cell_geometry_returns_dimensional() {
+        // Task 6635: a `Type::Geometry` cell is a *derived* reference to a
+        // realization, never an authored leaf parameter. Classifying it
+        // Structural via Rule 4's conservative default vetoed every real
+        // dimensional edit. See `classify_cell`'s "Type::Geometry and Rule 4".
+        let id = ValueCellId::new("Part", "body");
+        let g = graph_with_cell(&id, Type::Geometry);
+        assert_eq!(classify_cell(&g, &id), ParameterClass::Dimensional);
+    }
+
+    #[test]
     fn classify_cell_enum_returns_structural() {
         let id = ValueCellId::new("Part", "mode");
         let g = graph_with_cell(&id, Type::Enum("Mode".to_string()));
@@ -654,6 +665,70 @@ mod tests {
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
             "any structural diff must not be stage-A eligible, even alongside dimensional diffs"
+        );
+    }
+
+    // ── Task 6635: derived Type::Geometry cells must not veto a tick ───────
+
+    #[test]
+    fn stage_a_eligible_dimensional_tick_with_derived_geometry_diff_returns_true() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::{GeometryHandleId, Value, ValueMap};
+
+        // Reproduces the measured production shape from
+        // `reify-eval/tests/morph_arm_e2e.rs`: a dimensional leaf (`width`)
+        // ticks, and the DERIVED `Type::Geometry` cell (`body`) is recomputed
+        // downstream, so its value necessarily differs too. The tick must stay
+        // Stage-A eligible.
+        let width_id = ValueCellId::new("MorphBox", "width");
+        let body_id = ValueCellId::new("MorphBox", "body");
+        let mut g1 = EvaluationGraph::default();
+        for (id, ty) in [
+            (width_id.clone(), Type::length()),
+            (body_id.clone(), Type::Geometry),
+        ] {
+            g1.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: ty,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(&format!("{}", id)),
+                },
+            );
+        }
+        // Clone so the shape hashes match and the shape gate passes.
+        let g2 = g1.clone();
+
+        let mut v1 = ValueMap::new();
+        v1.insert(width_id.clone(), Value::length(0.010));
+        v1.insert(
+            body_id.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("MorphBox", 0),
+                upstream_values_hash: [1u8; 32],
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+
+        let mut v2 = ValueMap::new();
+        v2.insert(width_id.clone(), Value::length(0.0105)); // the dimensional tick
+        v2.insert(
+            body_id.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("MorphBox", 0),
+                upstream_values_hash: [2u8; 32], // recomputed downstream
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+
+        assert!(
+            stage_a_eligible(&g1, &g2, &v1, &v2),
+            "task 6635: a dimensional-only tick must stay Stage-A eligible even \
+             though the derived Type::Geometry cell's value also changed — a \
+             derived geometry cell is a realization reference, never an authored \
+             leaf, and carries no independent structural signal"
         );
     }
 
