@@ -624,3 +624,40 @@ fn reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// STEP text helpers (step-6)
+// ---------------------------------------------------------------------------
+
+/// Export `id` to STEP text via an in-memory buffer:
+/// `kernel.export(id, ExportFormat::Step, &mut buf)` then
+/// `String::from_utf8(buf)`, both unwrapped with a message naming the
+/// handle. Reused by step-7's cross-path entity-count comparison.
+fn step_text(kernel: &OcctKernel, id: GeometryHandleId) -> String {
+    let mut buf = Vec::<u8>::new();
+    kernel
+        .export(id, ExportFormat::Step, &mut buf)
+        .unwrap_or_else(|e| panic!("STEP export of handle {id:?} should succeed: {e:?}"));
+    String::from_utf8(buf)
+        .unwrap_or_else(|e| panic!("STEP export of handle {id:?} should be valid UTF-8: {e}"))
+}
+
+/// Count non-overlapping occurrences of `entity` in `step_text`, scanning the
+/// WHOLE string rather than line-by-line — STEP folds long lines, so a
+/// line-based scan could split a match across a fold boundary.
+///
+/// This is a substring match, not an exact-token match, so a suffixed
+/// spelling (e.g. `CARTESIAN_TRANSFORMATION_OPERATOR_3D`) is still counted.
+/// Two tokens used in this module need care as a result, and are
+/// nonetheless unambiguous:
+///
+///   - `PLANE(` must be spelled WITH the open paren — bare `PLANE` would
+///     also match `PLANE_ANGLE_MEASURE_WITH_UNIT` / `PLANE_ANGLE_UNIT`.
+///     Verified: `PLANE(` yields exactly 2 on a cylinder source (the two
+///     planar caps), 6 on a box.
+///   - `MANIFOLD_SOLID_BREP` does not collide with
+///     `ADVANCED_BREP_SHAPE_REPRESENTATION` (no shared substring spans the
+///     token boundary between them).
+fn step_entity_count(step_text: &str, entity: &str) -> usize {
+    step_text.match_indices(entity).count()
+}
