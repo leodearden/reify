@@ -11,7 +11,7 @@
 // `reify-syntax/tests/common/mod.rs`).
 #![allow(dead_code)]
 
-use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
@@ -220,6 +220,25 @@ pub fn plate_with_hole(
 ///
 /// Only the inner fillet-arc vertices move when `fillet_radius` is varied,
 /// so connectivity is preserved across the calibration sweep.
+///
+/// ## Element count (P1)
+///
+/// Closed-form for `n >= 2` (where `n_r = n_a = n_arm = n_z = n`):
+///
+/// ```text
+/// tets(n) = 18n^3 + 12n^2 - 6n
+/// ```
+///
+/// Derivation: the polar zone contributes `6*n_z*n_a*n_r` (6 tets per hex);
+/// each of the two arm zones contributes `6*(n_z*n_arm*(n_r+1) - n_z)` for
+/// its hexes plus `3*n_z` for its one wedge-bridge cell per z-layer (the
+/// `(i=0, j=n_r)` cell, meshed as a triangular prism because the corner
+/// `(0, n_r+1)` sits in the exclusion zone).
+///
+/// Calibration points used by
+/// `tests/morph_scale_characterisation.rs`: **9,936 at n=8** (the ~10K
+/// band) and **108,756 at n=18** (the ~100K band); n=17 gives 91,800.
+/// Recorded here so those two resolutions are auditable rather than magic.
 pub fn bracket(
     arm_length: f64,
     thickness: f64,
@@ -525,4 +544,145 @@ pub fn bracket(
         boundary: None,
     };
     (mesh, surface_indices)
+}
+
+// ── boundary_surface ─────────────────────────────────────────────────────────
+
+/// Extract the outward-wound boundary triangle surface of a tetrahedral
+/// [`VolumeMesh`], compacted onto only the vertices it references.
+///
+/// A face of a tet mesh is on the boundary exactly when it is shared by no
+/// second tet, so the extractor keys every tet face on its *sorted* vertex
+/// triple, counts occurrences, and keeps the singletons. Each kept face is
+/// then wound so its normal points away from the opposite vertex of the tet
+/// that owns it — i.e. out of the solid. The orientation is computed from
+/// the actual coordinates rather than assumed from index order, so a
+/// negatively-oriented tet in the input still yields an outward face.
+///
+/// Finally the survivors are compacted: an old -> new index remap is built
+/// over exactly the referenced vertices, so the ~interior nodes (the bulk of
+/// the table at the 100K scale) are not carried through. Handing those to a
+/// volume mesher would be pure waste.
+///
+/// The result satisfies [`reify_ir::Mesh::validate`] — finite, index-valid,
+/// non-degenerate, closed and consistently wound — which is exactly the
+/// producer-obligation set a volume mesher's preflight demands.
+///
+/// `normals` is `None`: the consumer is a mesher that derives its own.
+///
+/// ## Panics
+///
+/// Panics if `mesh` does not carry tet connectivity, matching this module's
+/// existing loud-failure style — a non-tet mesh here is a caller bug, not a
+/// recoverable condition.
+pub fn boundary_surface(mesh: &VolumeMesh) -> Mesh {
+    let tets = mesh.tet_indices().unwrap_or_else(|| {
+        panic!(
+            "boundary_surface: mesh has no tet connectivity (got {:?}); only \
+             tetrahedral meshes have a well-defined tet-face boundary",
+            std::mem::discriminant(&mesh.connectivity)
+        )
+    });
+
+    // The four faces of tet [0,1,2,3], each paired with the local index of the
+    // vertex it is opposite to. Winding within a triple is provisional — it is
+    // corrected against the opposite vertex below.
+    const TET_FACES: [([usize; 3], usize); 4] = [
+        ([0, 1, 2], 3),
+        ([0, 1, 3], 2),
+        ([0, 2, 3], 1),
+        ([1, 2, 3], 0),
+    ];
+
+    // sorted key -> (occurrence count, outward-wound triple)
+    let mut faces: HashMap<[u32; 3], (usize, [u32; 3])> = HashMap::new();
+
+    for tet in tets.chunks_exact(4) {
+        for (local, opposite) in TET_FACES {
+            let tri = [tet[local[0]], tet[local[1]], tet[local[2]]];
+            let mut key = tri;
+            key.sort_unstable();
+
+            let entry = faces.entry(key).or_insert((0, tri));
+            entry.0 += 1;
+            // Only a face kept at the end needs a correct winding, and only
+            // the first sighting's winding is retained — recomputing on the
+            // second sighting would be wasted work on an interior face.
+            if entry.0 == 1 {
+                entry.1 = orient_outward(mesh, tri, tet[opposite]);
+            }
+        }
+    }
+
+    // Boundary = the faces no second tet claimed.
+    let mut boundary: Vec<[u32; 3]> = faces
+        .into_values()
+        .filter_map(|(count, tri)| (count == 1).then_some(tri))
+        .collect();
+    // HashMap iteration order is nondeterministic; sort so the emitted
+    // triangle order (and hence anything downstream keyed on it) is stable
+    // run to run.
+    boundary.sort_unstable();
+
+    // Compact: old -> new index over exactly the referenced vertices.
+    let mut remap: HashMap<u32, u32> = HashMap::new();
+    let mut vertices: Vec<f32> = Vec::new();
+    let mut indices: Vec<u32> = Vec::with_capacity(boundary.len() * 3);
+    for tri in &boundary {
+        for &old in tri {
+            let new = *remap.entry(old).or_insert_with(|| {
+                let new = (vertices.len() / 3) as u32;
+                let base = old as usize * 3;
+                vertices.extend_from_slice(&mesh.vertices[base..base + 3]);
+                new
+            });
+            indices.push(new);
+        }
+    }
+
+    Mesh {
+        vertices,
+        indices,
+        normals: None,
+    }
+}
+
+/// Wind `tri` so its normal points away from `opposite` — i.e. out of the
+/// tet that owns the face.
+///
+/// Returns `tri` unchanged when `cross(q-p, r-p)` already points away from
+/// `opposite`, and with its last two vertices swapped otherwise. A
+/// degenerate face (zero cross product, or a coplanar opposite vertex)
+/// leaves the winding untouched: there is no outward direction to point,
+/// and `Mesh::validate`'s non-degeneracy obligation is the right place for
+/// that to surface, not a silent guess here.
+fn orient_outward(mesh: &VolumeMesh, tri: [u32; 3], opposite: u32) -> [u32; 3] {
+    let read = |i: u32| -> [f64; 3] {
+        mesh.vertex_f64(i).unwrap_or_else(|| {
+            panic!(
+                "boundary_surface: tet index {i} out of range for a {}-vertex mesh",
+                mesh.vertices.len() / 3
+            )
+        })
+    };
+    let p = read(tri[0]);
+    let q = read(tri[1]);
+    let r = read(tri[2]);
+    let o = read(opposite);
+
+    let qp = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+    let rp = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
+    let op = [o[0] - p[0], o[1] - p[1], o[2] - p[2]];
+    let n = [
+        qp[1] * rp[2] - qp[2] * rp[1],
+        qp[2] * rp[0] - qp[0] * rp[2],
+        qp[0] * rp[1] - qp[1] * rp[0],
+    ];
+    // > 0 means the provisional normal points *toward* the opposite vertex,
+    // i.e. into the tet — flip it.
+    if n[0] * op[0] + n[1] * op[1] + n[2] * op[2] > 0.0 {
+        [tri[0], tri[2], tri[1]]
+    } else {
+        tri
+    }
 }
