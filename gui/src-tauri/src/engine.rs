@@ -7300,6 +7300,56 @@ pub(crate) fn unit_hint_from_default_literal(default_slice: &str) -> Option<&str
     }
 }
 
+/// Name the `ExprKind` variant `kind` is, as its Rust identifier (`"BinOp"`,
+/// `"Auto"`, `"FunctionCall"`, …), for the rejection message
+/// [`EngineSession::resolve_rewritable_default_span`] returns when a param's
+/// default is not a literal it may splice over (task 5096 γ, INV-GUI-3).
+///
+/// Written as an EXHAUSTIVE match with NO `_` arm ON PURPOSE. A future
+/// `ExprKind` variant must be classified deliberately — is it splice-safe
+/// (another literal form the write-back may overwrite) or not? — and the
+/// missing-arm compile error is what forces that decision. A catch-all would
+/// silently absorb the new variant into a generic label, which reads as an
+/// answered question when it is an unasked one.
+///
+/// The names are the Rust variant identifiers rather than user-facing prose
+/// because the consumer is a diagnostic aimed at someone reading the `.ri`
+/// alongside this code; `resolve_rewritable_default_span`'s taxonomy tests
+/// assert on these substrings.
+fn expr_kind_name(kind: &reify_ast::ExprKind) -> &'static str {
+    use reify_ast::ExprKind as K;
+    match kind {
+        K::NumberLiteral { .. } => "NumberLiteral",
+        K::QuantityLiteral { .. } => "QuantityLiteral",
+        K::StringLiteral(_) => "StringLiteral",
+        K::BoolLiteral(_) => "BoolLiteral",
+        K::Ident(_) => "Ident",
+        K::BinOp { .. } => "BinOp",
+        K::UnOp { .. } => "UnOp",
+        K::FunctionCall { .. } => "FunctionCall",
+        K::MemberAccess { .. } => "MemberAccess",
+        K::EnumAccess { .. } => "EnumAccess",
+        K::Conditional { .. } => "Conditional",
+        K::ListLiteral(_) => "ListLiteral",
+        K::SetLiteral(_) => "SetLiteral",
+        K::MapLiteral(_) => "MapLiteral",
+        K::IndexAccess { .. } => "IndexAccess",
+        K::Match { .. } => "Match",
+        K::Auto { .. } => "Auto",
+        K::Undef => "Undef",
+        K::Lambda { .. } => "Lambda",
+        K::Quantifier { .. } => "Quantifier",
+        K::AdHocSelector { .. } => "AdHocSelector",
+        K::QualifiedAccess { .. } => "QualifiedAccess",
+        K::InstanceQualifiedAccess { .. } => "InstanceQualifiedAccess",
+        K::Range { .. } => "Range",
+        K::TraitMethodCall { .. } => "TraitMethodCall",
+        K::TraitStaticCall { .. } => "TraitStaticCall",
+        K::VariantConstruct { .. } => "VariantConstruct",
+        K::InterpolatedString(_) => "InterpolatedString",
+    }
+}
+
 /// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).
 ///
 /// Used only by `format_expr` to decide how to pretty-print a string-literal

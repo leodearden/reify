@@ -1808,7 +1808,7 @@ mod member_test_fixtures {
 
 #[cfg(test)]
 mod find_param_default_span_tests {
-    use super::find_param_default_span;
+    use super::{find_param_default_expr, find_param_default_span};
     use super::member_test_fixtures::*;
     use reify_core::SourceSpan;
 
@@ -1833,6 +1833,60 @@ mod find_param_default_span_tests {
             SourceSpan::new(0, 30),
             "must return the default EXPRESSION range, never the whole param decl"
         );
+    }
+
+    #[test]
+    fn param_with_default_returns_the_default_expression_itself() {
+        // The `&Expr`-returning primitive `find_param_default_span` delegates to
+        // (task 5096 γ, INV-GUI-3 write-back): `apply_param_to_source` must read
+        // the default's `ExprKind` — to refuse splicing over a `BinOp` or an
+        // `Auto` — from the SAME traversal that produced the span it would
+        // splice into, or the two readings could disagree about which
+        // declaration they describe.
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        let expr = find_param_default_expr(&members, "width").expect("param has a default");
+        assert_eq!(
+            expr.kind,
+            ExprKind::NumberLiteral {
+                value: 80.0,
+                is_real: false,
+            },
+            "must hand back the default EXPRESSION, not merely locate its range"
+        );
+        assert_eq!(
+            expr.span,
+            SourceSpan::new(22, 27),
+            "the borrowed expression's own span is the default range"
+        );
+    }
+
+    #[test]
+    fn span_accessor_is_exactly_the_expression_accessors_span() {
+        // Pins the delegation itself: `find_param_default_span` is
+        // `find_param_default_expr(..).map(|e| e.span)` and nothing more, across
+        // every outcome shape the rest of this module establishes — resolved,
+        // no-default, absent-name, and the multiply-declared refusal. A second
+        // hand-rolled walk behind either accessor would show up here as a
+        // divergence rather than as a silently mismatched splice.
+        let cases: Vec<(&str, Vec<MemberDecl>)> = vec![
+            ("width", vec![param("width", (0, 30), Some((22, 27)))]),
+            ("thickness", vec![param("thickness", (0, 24), None)]),
+            ("height", vec![param("width", (0, 30), Some((22, 27)))]),
+            (
+                "size",
+                vec![guarded(
+                    vec![param("size", (0, 40), Some((10, 14)))],
+                    vec![param("size", (50, 90), Some((30, 34)))],
+                )],
+            ),
+        ];
+        for (name, members) in cases {
+            assert_eq!(
+                find_param_default_span(&members, name),
+                find_param_default_expr(&members, name).map(|e| e.span),
+                "span accessor diverged from the expression accessor for '{name}'"
+            );
+        }
     }
 
     #[test]
