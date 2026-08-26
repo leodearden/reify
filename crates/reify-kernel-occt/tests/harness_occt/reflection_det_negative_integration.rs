@@ -85,3 +85,171 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shared helpers (step-2) — kept PRIVATE to this module: they encode this
+// probe's fixture contract, not a crate-wide idiom. `tests/common/mod.rs` is
+// reserved for helpers duplicated across MANY modules (see its header).
+// ---------------------------------------------------------------------------
+
+/// Build the three convex, primitive-derived fixtures this module's tests
+/// share: a box, a cylinder and a cone, each translated wholly into x>0.
+///
+/// Two constraints future editors must not break:
+///   - **Primitive-derived only, never a boolean result.** `BRepAlgoAPI_Cut`
+///     (and Union/Intersection) return a `COMPOUND`, and `IsWatertight`
+///     (`occt_wrapper.cpp`) hard-returns `false` for any shape that is not
+///     SOLID/COMPSOLID/SHELL — regardless of actual validity. A boolean-
+///     derived fixture would make this module's validity assertions
+///     unsatisfiable.
+///   - **Positioned wholly at x>0.** step-5's baked-geometry STEP assertion
+///     reads a negative leading X coordinate in an exported `CARTESIAN_POINT`
+///     entity as the reflection signal; a fixture straddling or left of x=0
+///     would make that signal ambiguous.
+///
+/// All three are additionally CONVEX, which is what licenses the AABB-centre
+/// reference direction in the outward-winding tessellation check (steps 3-4)
+/// — a concave fixture can legitimately have inward-pointing dot products in
+/// its concave regions (measured: 343 outward / 253 inward on a box-minus-
+/// cylinder-minus-sphere part), which would make that assertion meaningless.
+fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandleId)> {
+    let box_src = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.010),
+            height: Value::Real(0.020),
+            depth: Value::Real(0.030),
+        })
+        .expect("box_10x20x30 should build");
+    let box_id = kernel
+        .execute(&GeometryOp::Translate {
+            target: box_src.id,
+            dx: 0.050,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("box_10x20x30 translate to x>0 should succeed")
+        .id;
+
+    let cyl_src = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(0.006),
+            height: Value::Real(0.020),
+        })
+        .expect("cylinder_r6_h20 should build");
+    let cyl_id = kernel
+        .execute(&GeometryOp::Translate {
+            target: cyl_src.id,
+            dx: 0.030,
+            dy: 0.004,
+            dz: 0.0,
+        })
+        .expect("cylinder_r6_h20 translate to x>0 should succeed")
+        .id;
+
+    let cone_src = kernel
+        .execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(0.008),
+            top_radius: Value::Real(0.004),
+            height: Value::Real(0.015),
+        })
+        .expect("cone_r8_r4_h15 should build");
+    let cone_id = kernel
+        .execute(&GeometryOp::Translate {
+            target: cone_src.id,
+            dx: 0.030,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("cone_r8_r4_h15 translate to x>0 should succeed")
+        .id;
+
+    vec![
+        ("box_10x20x30", box_id),
+        ("cylinder_r6_h20", cyl_id),
+        ("cone_r8_r4_h15", cone_id),
+    ]
+}
+
+/// Mirror `target` across the x=0 (y-z) plane via [`GeometryOp::Mirror`]
+/// (`gp_Trsf::SetMirror`) — the v1 reflective-derivation lowering PRD §3.7
+/// names, and the path this module's probe finds bit-exact and immune to
+/// both GTransform hazards (step-7).
+fn mirror_across_yz(kernel: &mut OcctKernel, target: GeometryHandleId) -> GeometryHandleId {
+    kernel
+        .execute(&GeometryOp::Mirror {
+            target,
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [1.0, 0.0, 0.0],
+        })
+        .expect("Mirror across the x=0 plane should succeed for a det<0 reflection")
+        .id
+}
+
+/// Apply the general dense 3×3 linear map `linear` (zero translation) to
+/// `target` via [`GeometryOp::AffineApply`] (`gp_GTrsf` /
+/// `BRepBuilderAPI_GTransform`). [`affine_reflect_x`] delegates here with
+/// `diag(-1,1,1)`; step-7 reuses this general form directly with the
+/// IDENTITY `diag(1,1,1)` to prove its two GTransform hazards are
+/// determinant-independent rather than reflection artifacts.
+fn affine_linear(
+    kernel: &mut OcctKernel,
+    target: GeometryHandleId,
+    linear: [[f64; 3]; 3],
+) -> GeometryHandleId {
+    kernel
+        .execute(&GeometryOp::AffineApply {
+            target,
+            linear,
+            translation: [0.0, 0.0, 0.0],
+        })
+        .unwrap_or_else(|e| {
+            panic!(
+                "AffineApply({linear:?}) on handle {target:?} should succeed: neither the Rust \
+                 finiteness guard nor the C++ Hadamard singularity guard should reject a \
+                 det<0 (or det=1 identity) linear map, got {e:?}"
+            )
+        })
+        .id
+}
+
+/// Reflect `target` across the x=0 (y-z) plane via [`GeometryOp::AffineApply`]
+/// with `linear = diag(-1,1,1)` (det = -1) — the general `gp_GTrsf` /
+/// `BRepBuilderAPI_GTransform` path, contrasted against [`mirror_across_yz`]'s
+/// dedicated `gp_Trsf::SetMirror` path.
+fn affine_reflect_x(kernel: &mut OcctKernel, target: GeometryHandleId) -> GeometryHandleId {
+    affine_linear(
+        kernel,
+        target,
+        [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    )
+}
+
+/// Query the volume of `id` in m³, panicking (naming the received `Value`
+/// variant) if the kernel returns anything other than a numeric value.
+///
+/// Mirrors the strict `Value`-unwrapping convention of `tests/common/mod.rs`
+/// (`parse_bbox`/`xyz_of`): a mismatched shape panics loudly rather than
+/// silently defaulting, so a malformed kernel response surfaces as a parse
+/// failure rather than a confusing downstream geometry assertion.
+fn volume_of(kernel: &OcctKernel, id: GeometryHandleId) -> f64 {
+    let value = kernel
+        .query(&GeometryQuery::Volume(id))
+        .unwrap_or_else(|e| panic!("Volume query on handle {id:?} should succeed: {e:?}"));
+    value.as_f64().unwrap_or_else(|| {
+        panic!("Volume query on handle {id:?} should be numeric, got {value:?}")
+    })
+}
+
+/// Evaluate a boolean [`GeometryQuery`] (e.g. `IsWatertight`, `IsManifold`),
+/// panicking (naming the received `Value` variant) if the kernel returns
+/// anything other than `Value::Bool`. Mirrors [`volume_of`]'s strictness
+/// convention.
+fn flag_of(kernel: &OcctKernel, query: GeometryQuery) -> bool {
+    let value = kernel
+        .query(&query)
+        .unwrap_or_else(|e| panic!("{query:?} should succeed: {e:?}"));
+    match value {
+        Value::Bool(b) => b,
+        other => panic!("{query:?} should return Value::Bool, got {other:?}"),
+    }
+}
