@@ -219,10 +219,12 @@ fn no_example_emits_ctor_field_conformance_diagnostics() {
     let paths = discover_ri_files();
     let exercised_list = exercised_paths(&paths);
     let exercised = exercised_list.len();
-    for (path, rel_key) in &exercised_list {
-        ctor_conformance_one(path, rel_key, &mut violations);
-    }
 
+    // Fail fast on the discovery floor BEFORE the expensive compile+check
+    // loop below. Otherwise a misconfigured discover_ri_files()/SKIP_SET
+    // would still burn time compiling whatever few files it found before
+    // reporting the regression — matches the eval-side gate in
+    // auto_type_param_determinism_tests.rs::v0_1_example_corpus_compile_and_check_time_is_bounded.
     assert!(
         exercised >= MIN_EXERCISED_RI_FILES,
         "ctor-conformance corpus gate exercised only {} .ri files, below the \
@@ -233,6 +235,10 @@ fn no_example_emits_ctor_field_conformance_diagnostics() {
         MIN_EXERCISED_RI_FILES,
         SKIP_SET.len()
     );
+
+    for (path, rel_key) in &exercised_list {
+        ctor_conformance_one(path, rel_key, &mut violations);
+    }
 
     if !violations.is_empty() {
         let n = violations.len();
@@ -420,17 +426,34 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
 /// calls, so this test can never disagree with the gate it ratchets.
 /// Directory walk only — no compile, no check — so it stays as cheap as the
 /// other sanity guards here.
+///
+/// Also asserts that `exercised_paths` excluded exactly `SKIP_SET.len()`
+/// files: `total - exercised` must equal `SKIP_SET.len()`, or a SKIP_SET key
+/// no longer matches `relative_to_examples_dir()`'s output (e.g. a
+/// path-separator change or a stray prefix) and a skip has silently stopped
+/// taking effect — `skip_set_entries_exist_under_examples_dir` alone cannot
+/// catch this, since it only proves each key *joins* onto a real file, not
+/// that the key string equals the one `exercised_paths` filters on.
 #[test]
 fn discovery_floor_tracks_the_live_corpus() {
     let paths = discover_ri_files();
     let total = paths.len();
     let exercised = exercised_paths(&paths).len();
 
+    assert_eq!(
+        total - exercised,
+        SKIP_SET.len(),
+        "exercised_paths excluded {} of {} SKIP_SET entries — SKIP_SET keys \
+         no longer match relative_to_examples_dir() output",
+        total - exercised,
+        SKIP_SET.len()
+    );
+
     assert!(
-        MIN_EXERCISED_RI_FILES * 3 >= exercised * 2,
+        MIN_EXERCISED_RI_FILES * 2 >= exercised,
         "MIN_EXERCISED_RI_FILES ({}) has drifted stale: the live examples/ \
          corpus now exercises {} .ri files ({} discovered, {} in SKIP_SET), \
-         more than 1.5x the floor. Raise MIN_EXERCISED_RI_FILES to ~{} (its \
+         more than 2x the floor. Raise MIN_EXERCISED_RI_FILES to ~{} (its \
          derived sibling MIN_DISCOVERED_RI_FILES will follow automatically) \
          and re-review both constants' tripwire doc comments.",
         MIN_EXERCISED_RI_FILES,
