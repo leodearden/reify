@@ -236,6 +236,19 @@ fn try_angle_eq(
             // Everything UPSTREAM of this line is SI RADIANS: `extract_scalar_si`
             // yields the SI-coherent magnitude of an Angle scalar, and reify's
             // DSL/IR are radians throughout (rad = 1 by SI coherence).
+            //
+            // Precisely: only ONE of `extract_scalar_si`'s three arms is
+            // dimensioned. A `Value::Real`/`Value::Int` RHS (`angle(a, b) == 0.5`)
+            // carries no `DimensionVector` at all, so nothing about it is
+            // SI-coherent by construction — it is taken verbatim and therefore
+            // INTERPRETED as radians here, which is the same convention the rest
+            // of the tree applies to an undimensioned angular magnitude. Whether
+            // the type checker admits a dimensionless RHS against an
+            // `Angle`-typed `angle(...)` call is deliberately NOT relied on: if
+            // it does, the value is radians by that rule; if it does not, those
+            // two arms are simply unreachable on this path. Either way the
+            // boundary below reads radians.
+            //
             // Everything DOWNSTREAM is DEGREES: libslvs' `SLVS_C_ANGLE` reads
             // its `valA` in degrees, which is the one genuine degree crossing in
             // the tree — every other IO boundary reify has is SI.
