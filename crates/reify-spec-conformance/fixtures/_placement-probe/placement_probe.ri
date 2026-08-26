@@ -1,0 +1,7 @@
+// Placement probe for leaf beta (#6759) — see ../README.md.
+// DELIBERATELY UNPARSEABLE. Not a conformance fixture; it exists so that
+// "an unparseable .ri in this tree is inert to every repo walker" stays a
+// committed, re-runnable observation rather than a claim.
+structure PlacementProbe {
+    @@@ not valid syntax
+}
