@@ -737,3 +737,44 @@ fn statically_invisible_primitive_operand_stays_silent_at_compile_time() {
         compiled.diagnostics
     );
 }
+
+/// MEASURED DIVERGENCE — an ALIAS slot names the SURFACE builtin the author
+/// typed, while the eval layer names the LOWERED KIND.
+///
+/// `box_centered` lowers to `PrimitiveKind::Box`, and the eval-layer gate
+/// renders its `{builtin}` prefix from that kind's `Display`
+/// (`crates/reify-eval/src/geometry_ops.rs`'s `prim_box` passes `kind` as
+/// `kind_label`; `crates/reify-compiler/src/types.rs:1394` writes `"box"`), so
+/// eval says `box:` for a bare `box_centered(20, 20, 10)`. The compile layer is
+/// keyed on the CALL, so it says `box_centered:`.
+///
+/// This is the ONE place decision D9's "byte-identical" wording does NOT hold,
+/// and it holds this way DELIBERATELY: the compile layer knows the name that
+/// actually appears in the author's source, and reporting it is strictly more
+/// useful than reporting a lowering detail they never wrote. D9's substance —
+/// the C1 template and the shared migration hint — is unaffected, and both are
+/// asserted here alongside the prefix.
+///
+/// Pinned because it is exactly the kind of difference a later reader would
+/// "fix" in the wrong direction, by teaching the compile layer to report the
+/// lowered kind.
+#[test]
+fn centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind() {
+    let compiled = compile_struct_body("    let bc = box_centered(20, 20, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "box_centered: width argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "box_centered: height argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "box_centered: depth argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+        ],
+        "the compile slot must name the SURFACE call `box_centered`, not the \
+         lowered `box` kind the eval layer reports.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}

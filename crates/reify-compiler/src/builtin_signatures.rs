@@ -414,6 +414,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // here would make the two layers word one authoring mistake
         // differently, which is exactly what decision D9 exists to prevent.
         //
+        // The ARG names match; the BUILTIN prefix deliberately does not, for
+        // the two `_centered` aliases. See `check_builtin_arg_types`'
+        // "# Message format" section for the measured difference and why this
+        // layer reports the surface name.
+        //
         // ARITY-AGNOSTIC by the rule stated above: none of these names is
         // overloaded (each lowering arm calls `check_arg_count_exact`), so
         // guarding them on their canonical arity would silently weaken
@@ -569,6 +574,18 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
 ///
 /// The ANGLE slots render the un-hinted form, because the eval layer has no
 /// angle hint to mirror; PRD 3 owns closing both halves together.
+///
+/// `{builtin}` is the SURFACE call name — the identifier the author actually
+/// typed. The eval layer instead renders its prefix from the LOWERED kind
+/// (`geometry_ops`' `prim_box` passes `&PrimitiveKind` as its `kind_label`), so
+/// for a name that is an ALIAS of another op the two prefixes differ:
+/// `box_centered(20, 20, 10)` reads `box_centered: …` here and `box: …` at
+/// eval. That is deliberate — reporting the name in the source beats reporting
+/// a lowering detail the author never wrote — and it is the one respect in
+/// which the two renderings are not byte-identical. D9's substance, the C1
+/// template and the shared migration hint, is unaffected. MEASURED and pinned
+/// by `centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind` in
+/// `tests/builtin_arg_signature_tests.rs`.
 pub(crate) fn check_builtin_arg_types(
     name: &str,
     compiled_args: &[CompiledExpr],
