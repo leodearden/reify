@@ -1263,7 +1263,7 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 /// (numbering kept from the original single B9 test, whose (1)/(2) are now the
 /// green sibling's)
 ///
-/// # (4)'s finiteness bar is the PRD's, and must not be tightened
+/// # (4)'s finiteness bar is the PRD's — neither tightened nor weakened
 ///
 /// (4) deliberately does NOT require every component to be finite. The PRD row
 /// this test encodes says so verbatim: `displacement` is "finite at grid points
@@ -1272,27 +1272,45 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 /// and §3's grid rationale calls that out-of-solid `f64::NAN` a load-bearing
 /// sentinel, "skipped uniformly by the reductions' `is_finite()` discipline"
 /// (:82). `compute_targets/elastic_static.rs:143-144` is the producer side of
-/// the same contract.
+/// the same contract. On the REALIZED path the §7a grid spans the tet mesh
+/// AABB, so for a CURVED body most grid points legitimately fall outside the
+/// solid: an `all(is_finite)` bar would measure the sampler's AABB coverage
+/// rather than the solve.
 ///
-/// On the REALIZED path the §7a grid spans the tet mesh AABB, so for a CURVED
-/// body most grid points legitimately fall outside the solid. Measured on this
-/// fixture: `len=336 nonfinite=252 axes=[4,4,7]`. That is exactly the geometric
-/// prediction — of the 16 points in each 4×4 cross-section of the r = 50 mm
-/// cylinder's 100 × 100 AABB, only the 4 inner ones at (±16.7, ±16.7) satisfy
-/// `dx² + dy² < 50²`, so 12/16 × 7 z-levels = 84 outside nodes = 252 sentinel
-/// components. Nothing diverged. An `all(is_finite)` bar would measure the
-/// sampler's AABB coverage rather than the solve, and would fail the GREEN
-/// sibling [`multi_case_body_solve_survives_a_preceding_template`] too (3165 of
-/// 8967 components are the sentinel there, while it passes).
+/// So (4) states the bar the way #6154 built it to be stated — as a
+/// BUCKET SPLIT, via [`assert_cylinder_grid_miss_measurement`], whose closed
+/// form is re-derived at that helper and not restated here. In outline:
+/// `cylinder(50mm, 200mm)` ⇒ [`REALIZED_CYLINDER_GRID_AXES`] `[4, 4, 7]` =
+/// [`REALIZED_CYLINDER_GRID_NODES`] 112 nodes, of which the 12-of-16
+/// cross-section points failing `dx² + dy² < 50²` at all 7 z-levels give
+/// [`CYLINDER_PREDICTED_MISSES`] = 84 out-of-solid nodes (252 of the 336
+/// displacement components). That is strictly stronger than the per-field
+/// `!is_empty()` / `any(is_finite)` / `all(finite || nan)` triple this test
+/// carried before the merge, in three ways: it pins the grid SHAPE the closed
+/// form is derived from, it rejects a MIXED part-NaN grid point (the old
+/// `all(finite || nan)` admitted one), and above all it hard-asserts the
+/// UNDER-firing direction — every one of the 84 predicted-outside nodes must
+/// carry the sentinel, so a later "fix" that widens `tol`, clamps, or asserts
+/// all-finite fails loudly instead of passing. PRD §11 Q2 rejects all three of
+/// those outright; do NOT weaken the sentinel to satisfy a failure here.
 ///
-/// The bar that DOES measure the solve, and is what (4) asserts:
-///   * `!data.is_empty()`;
-///   * `data.iter().any(is_finite)` — real in-solid samples exist, so the solve
-///     actually ran on the realized mesh instead of returning an all-sentinel
-///     field;
-///   * `data.iter().all(|v| v.is_finite() || v.is_nan())` — the sentinel is the
-///     ONLY permitted non-finite value. A ±inf still fails, and that clause is
-///     what catches genuine divergence.
+/// MEASURED on this fixture — which, unlike the single-case capstone
+/// [`non_prismatic_body_solve_runs_on_realized_volume_mesh`] that calls the
+/// same helper, additionally carries the 100 µm `RepresentationWithin` bound —
+/// both cases measure `axes=[4, 4, 7] n_grid=112 n_missed=84 (75.0%) |
+/// interior=0 face=40 edge=36 corner=8 | nonfinite_anomalies=0`, on
+/// `displacement` and `stress` alike. That is the closed form exactly — and the
+/// same split [`realized_cylinder_mesh_covers_its_own_aabb`] pins — so the bound
+/// does not move the realized AABB and nothing here needs re-deriving.
+///
+/// ONE clause of the old triple survives alongside the helper, per field:
+/// `data.iter().any(is_finite)`. It is not redundant. The helper asserts only
+/// that predicted-outside nodes DO miss; the opposite direction is logged, not
+/// asserted, because an EXCESS miss is #6200's mesh-coverage territory and the
+/// gmsh/HXT tetrahedralization is not bit-reproducible. An ALL-sentinel field
+/// therefore passes the helper — and an all-sentinel field is precisely #5951's
+/// silent failure mode. `any(is_finite)` is the weakest live statement of "the
+/// solve actually ran" that no mesh drift can redden.
 ///
 /// # History — this was `#[ignore]`d on a false attribution
 ///
@@ -1380,27 +1398,6 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
             "case \"{case_name}\": displacement must be a 3D Regular grid, got {} axes",
             disp.axis_grids.len()
         );
-        // NOT `all(is_finite)` — see this test's "(4)'s finiteness bar" doc
-        // section. PRD §3 (`fea-result-model.md:100`) specifies `displacement`
-        // as "finite at grid points inside the solid, `NaN` outside", so on the
-        // realized path the out-of-solid grid points of this curved body carry
-        // the sentinel by design (252 of 336 components, measured).
-        assert!(
-            !disp.data.is_empty(),
-            "case \"{case_name}\": displacement data must be non-empty"
-        );
-        assert!(
-            disp.data.iter().any(|v| v.is_finite()),
-            "case \"{case_name}\": displacement must carry at least one finite \
-             in-solid sample — an all-sentinel field means the solve never ran \
-             on the realized curved mesh"
-        );
-        assert!(
-            disp.data.iter().all(|v| v.is_finite() || v.is_nan()),
-            "case \"{case_name}\": displacement may only be finite or the PRD §3 \
-             out-of-solid NaN sentinel; a ±inf means the solve diverged on the \
-             realized curved mesh"
-        );
         assert_ne!(
             disp.data.len() / 3,
             SYNTHETIC_GRID_NODES,
@@ -1408,26 +1405,51 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
              synthetic grid — the shared realized VolumeMesh must drive the §7a grid"
         );
 
-        // `stress` must be a real Sampled field too, not merely present. Same
-        // PRD §3 bar as `displacement` above — it shares the grid, so it shares
-        // the out-of-solid NaN sentinels.
+        // `stress` must be a real Sampled field too, not merely present — it
+        // shares the grid, so it shares the out-of-solid NaN sentinels.
         let stress = sampled_field(case_val, "stress");
-        // ⚠ The `stress` twin of the known-wrong all-finite assertion above —
-        // same #6154 hazard, same resolution when #5951 unblocks this test.
+
+        // ── (4)'s finiteness bar: #6154's normative bucket split ─────────────
+        // Both fields go through `assert_cylinder_grid_miss_measurement`, the
+        // closed form for THIS body: `cylinder(50mm, 200mm)` ⇒ a §7a grid of
+        // `REALIZED_CYLINDER_GRID_AXES` = [4, 4, 7], of whose 112 nodes exactly
+        // `CYLINDER_PREDICTED_MISSES` = 84 lie outside r = 50 mm. It pins that
+        // grid shape, reconciles the report against the raw buffer (where the
+        // "no ±inf" clause now lives, strengthened to also reject a MIXED
+        // part-NaN point that the old `all(finite || nan)` admitted), pins that
+        // `stress` marks the SAME grid points as `displacement`, and
+        // hard-asserts the UNDER-firing direction — every one of the 84 must
+        // carry the normative sentinel, so a future weakening fails loudly.
+        //
+        // MEASURED on this fixture, which unlike the capstone's additionally
+        // carries the 100 µm `RepresentationWithin` bound: axes [4, 4, 7], 84
+        // of 112 nodes missed — the closed form exactly, so the bound does not
+        // move the realized AABB. Run once per case deliberately: B9's claim is
+        // that EACH case's fields come back real off the ONE shared
+        // realization, so each case's pair is measured.
+        let _report = assert_cylinder_grid_miss_measurement(&disp, &stress);
+
+        // Kept ALONGSIDE the helper, not subsumed by it — and not a weakening
+        // of anything. The helper asserts only that predicted-outside nodes DO
+        // carry the sentinel; the opposite direction (a node the geometry puts
+        // INSIDE coming back NaN) it deliberately logs rather than asserts,
+        // that being #6200's non-bit-reproducible mesh-coverage territory. An
+        // ALL-sentinel field therefore walks straight through it — and an
+        // all-sentinel field is exactly #5951's silent failure mode. This is
+        // the weakest live statement of "the solve actually ran" that no mesh
+        // drift can redden: not that any particular node is finite, only that
+        // not every one of them missed.
         assert!(
-            !stress.data.is_empty(),
-            "case \"{case_name}\": stress data must be non-empty"
+            disp.data.iter().any(|v| v.is_finite()),
+            "case \"{case_name}\": displacement must carry at least one finite \
+             in-solid sample — an all-sentinel field means the solve never ran \
+             on the realized curved mesh (the #5951 strand)"
         );
         assert!(
             stress.data.iter().any(|v| v.is_finite()),
             "case \"{case_name}\": stress must carry at least one finite in-solid \
              sample — an all-sentinel field means the solve never ran on the \
-             realized curved mesh"
-        );
-        assert!(
-            stress.data.iter().all(|v| v.is_finite() || v.is_nan()),
-            "case \"{case_name}\": stress may only be finite or the PRD §3 \
-             out-of-solid NaN sentinel; a ±inf means the solve diverged"
+             realized curved mesh (the #5951 strand)"
         );
 
         assert_eq!(
