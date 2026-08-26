@@ -594,3 +594,85 @@ describe('AutoResolvePanel (g) chart honesty for sub-plottable sample counts', (
     expect(screen.queryByTestId('auto-resolve-chart-no-data')).toBeNull();
   });
 });
+
+// ── Test group (h): sparkline honesty for sub-plottable series ─────────────
+
+describe('AutoResolvePanel (h) sparkline honesty for sub-plottable series', () => {
+  it('(h.1) single iteration: no sparkline svg, but the row and its cell-id label survive', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    // An 80x24 frame with no trace in it says "we plotted this" when we did not.
+    expect(screen.queryAllByTestId('auto-resolve-sparkline')).toHaveLength(0);
+    const row = screen.getByTestId('auto-resolve-sparkline-row');
+    expect(within(row).getByText('thickness')).toBeTruthy();
+    expect(within(row).getByTestId('auto-resolve-sparkline-single-sample').textContent).toMatch(/single sample/i);
+  });
+
+  it('(h.2) all-null series: no sparkline svg, and a marker distinct from the single-sample one', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+      makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    expect(screen.queryAllByTestId('auto-resolve-sparkline')).toHaveLength(0);
+    const row = screen.getByTestId('auto-resolve-sparkline-row');
+    expect(within(row).getByText('thickness')).toBeTruthy();
+    // Zero plottable samples is a different statement from one.
+    expect(within(row).queryByTestId('auto-resolve-sparkline-single-sample')).toBeNull();
+    expect(within(row).getByTestId('auto-resolve-sparkline-no-data').textContent).toMatch(/no samples/i);
+  });
+
+  it('(h.3) mixed rows: the plottable parameter still draws while the sub-plottable one does not', () => {
+    // `thickness` has 3 finite values; `area` is finite only in the first
+    // iteration and null-filtered to 1 point. The decision is per-ROW, so a
+    // mixed loop must still draw the real trace it has.
+    const iterations = [
+      makeIteration(1, { parameters: {
+        thickness: { value: 4.2, unit: 'mm', display: '4.2mm' },
+        area: { value: 12, unit: 'mm2', display: '12mm2' },
+      } }),
+      makeIteration(2, { parameters: {
+        thickness: { value: 4.5, unit: 'mm', display: '4.5mm' },
+        area: { value: null, unit: '', display: '<non-scalar>' },
+      } }),
+      makeIteration(3, { parameters: {
+        thickness: { value: 4.8, unit: 'mm', display: '4.8mm' },
+        area: { value: null, unit: '', display: '<non-scalar>' },
+      } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    const sparklines = screen.getAllByTestId('auto-resolve-sparkline');
+    expect(sparklines).toHaveLength(1);
+    const points = (sparklines[0].querySelector('polyline')!.getAttribute('points') ?? '').trim().split(/\s+/);
+    expect(points).toHaveLength(3);
+
+    const markers = screen.getAllByTestId('auto-resolve-sparkline-single-sample');
+    expect(markers).toHaveLength(1);
+    // The marker belongs to `area`, not to the drawn `thickness` row.
+    const markerRow = markers[0].closest('[data-testid="auto-resolve-sparkline-row"]')!;
+    expect(within(markerRow as HTMLElement).getByText('area')).toBeTruthy();
+  });
+
+  it('(h.4) regression guard: 2 finite points still draw the real sparkline, with no marker', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: 4.5, unit: 'mm', display: '4.5mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    const svg = screen.getByTestId('auto-resolve-sparkline');
+    const points = (svg.querySelector('polyline')!.getAttribute('points') ?? '').trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+    expect(screen.queryByTestId('auto-resolve-sparkline-single-sample')).toBeNull();
+    expect(screen.queryByTestId('auto-resolve-sparkline-no-data')).toBeNull();
+  });
+});
