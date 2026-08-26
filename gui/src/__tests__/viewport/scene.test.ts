@@ -177,7 +177,7 @@ vi.mock('three', async () => {
   };
 });
 
-import { createScene } from '../../viewport/scene';
+import { createScene, CAMERA_FOV_DEG } from '../../viewport/scene';
 import { GRID_RENDER_ORDER, AXES_RENDER_ORDER } from '../../viewport/renderOrder';
 
 beforeEach(() => {
@@ -451,6 +451,30 @@ describe('createScene', () => {
     const result = setup();
     expect(typeof result.disposeAxisLabels).toBe('function');
   });
+
+  // The #6588 label-footprint contract is a JOINT property of two modules:
+  // axisLabels.ts's LABEL_SCREEN_SCALE and this module's camera fov. axisLabels.test.ts
+  // can only see the first half — it mocks three and never builds a camera, so it
+  // restates the fov as a local literal. Retuning the camera fov is a plausible,
+  // unrelated change that would silently magnify every label while that suite stayed
+  // green (fov 30 doubles the footprint). This is the test that fails instead.
+  it('keeps the axis labels under 10% of the viewport height at the fov the camera actually uses', () => {
+    const result = setup();
+
+    // Pins the camera to the exported constant: a literal re-introduced at the
+    // construction site would decouple the two again without failing anything else.
+    expect(result.camera.fov).toBe(CAMERA_FOV_DEG);
+
+    for (const sprite of result.axisLabels.children) {
+      // three r183 sprite.glsl.js with sizeAttenuation: false applies
+      // `scale *= -mvPosition.z`, cancelling the perspective divide, so the label's
+      // share of the viewport HEIGHT is f = s * cot(fov/2) / 2 — no distance term.
+      // At s = 0.055 and fov = 60 that is 4.8%; the #6588 dogfood frame showed 69%.
+      const frac = (sprite.scale.x * (1 / Math.tan((CAMERA_FOV_DEG * Math.PI) / 180 / 2))) / 2;
+      expect(frac).toBeGreaterThan(0);
+      expect(frac).toBeLessThanOrEqual(0.1);
+    }
+  });
 });
 
 
@@ -495,16 +519,38 @@ describe('fitHelpers (#6588)', () => {
     return out;
   }
 
-  function expectNoOp(result: any, before: Record<string, number>) {
-    // Neither helper was resized...
-    expect((result.grid as any).scale.setScalar).not.toHaveBeenCalled();
-    expect((result.axes as any).scale.setScalar).not.toHaveBeenCalled();
-    expect((result.grid as any).scale.x).toBe(1);
-    expect((result.axes as any).scale.x).toBe(1);
-    // ...and the label ring stayed where construction put it. A guard that let a
-    // degenerate measurement through would show up here as 0 / NaN / Infinity.
-    expect(labelOffsets(result)).toEqual(before);
+  /**
+   * The post-state EVERY degenerate-bounds path must leave behind: the helpers at
+   * their construction sizing (scale 1) with the label ring at its construction
+   * offset.
+   *
+   * Asserted as STATE, deliberately, rather than as "setScalar was never called":
+   * fitHelpers RESETS on a degenerate measurement instead of preserving the last
+   * good one, so the two orderings below (degenerate-first vs degenerate-after-a-
+   * good-fit) share one expectation. A "was not called" assertion could only ever
+   * describe the pristine ordering, which is not the one that bites in the app.
+   */
+  function expectBaseHelperSizing(result: any, defaults: Record<string, number>) {
+    for (const helper of [result.grid, result.axes]) {
+      expect(helper.scale.x).toBe(1);
+      expect(helper.scale.y).toBe(1);
+      expect(helper.scale.z).toBe(1);
+    }
+    // A guard that let a degenerate measurement through would show up here as
+    // 0 / NaN / Infinity rather than the construction offset.
+    expect(labelOffsets(result)).toEqual(defaults);
   }
+
+  /** The measurements fitHelpers must refuse to apply. Each entry is a FACTORY so
+   *  every case gets its own fresh spies. */
+  const DEGENERATE_CASES: Array<[string, () => any]> = [
+    ['empty', () => ({ isEmpty: () => true, getCenter: vi.fn(), getSize: vi.fn() })],
+    // A single degenerate mesh can produce a non-empty Box3 of zero extent, and a
+    // 0-unit grid is strictly worse than an oversized one.
+    ['zero-size', () => boundsWithSize(0, 0, 0)],
+    ['NaN', () => boundsWithSize(NaN, NaN, NaN)],
+    ['Infinity', () => boundsWithSize(Infinity, Infinity, Infinity)],
+  ];
 
   it('exposes a fitHelpers method', () => {
     const result = setup();
@@ -512,9 +558,41 @@ describe('fitHelpers (#6588)', () => {
     expect(typeof (result as any).fitHelpers).toBe('function');
   });
 
-  it('empty bounds are a no-op', () => {
+  it.each(DEGENERATE_CASES)(
+    '%s bounds leave a pristine scene at the base helper sizing',
+    (_label, makeBounds) => {
+      const result = setup() as any;
+      const defaults = labelOffsets(result);
+      result.fitHelpers(makeBounds() as any);
+      expectBaseHelperSizing(result, defaults);
+    },
+  );
+
+  it.each(DEGENERATE_CASES)(
+    '%s bounds RESTORE the base helper sizing after a good fit',
+    (_label, makeBounds) => {
+      const result = setup() as any;
+      const defaults = labelOffsets(result);
+
+      // Open a sub-metre model — the helpers shrink onto it...
+      result.fitHelpers(boundsWithSize(0.6, 0.6, 0.6) as any);
+      expect(result.grid.scale.x).toBeLessThan(1);
+      expect(result.axes.scale.x).toBeLessThan(1);
+      expect(labelOffsets(result)).not.toEqual(defaults);
+
+      // ...then clear or close the document. props.meshes goes to {}, so
+      // Viewport.tsx's mesh-sync effect hands fitHelpers an empty Box3 (or, for a
+      // stray single-point mesh, a zero/non-finite one). The now-empty viewport
+      // must not keep wearing the closed model's 2 m grid and 0.3 m triad: unlike
+      // adjustClipping's stale near/far planes, a stale helper scale is directly
+      // on screen. THIS ordering is the one that occurs in the app.
+      result.fitHelpers(makeBounds() as any);
+      expectBaseHelperSizing(result, defaults);
+    },
+  );
+
+  it('checks isEmpty() before measuring, mirroring adjustClipping', () => {
     const result = setup() as any;
-    const before = labelOffsets(result);
     const emptyBounds = {
       isEmpty: () => true,
       getCenter: vi.fn(),
@@ -523,29 +601,7 @@ describe('fitHelpers (#6588)', () => {
 
     result.fitHelpers(emptyBounds as any);
 
-    expectNoOp(result, before);
-    // The isEmpty() early return must fire BEFORE any measurement, mirroring
-    // adjustClipping's guard.
     expect(emptyBounds.getSize).not.toHaveBeenCalled();
-  });
-
-  it('zero-size bounds are a no-op', () => {
-    const result = setup() as any;
-    const before = labelOffsets(result);
-    // A single degenerate mesh can produce a non-empty Box3 of zero extent.
-    // radius would be 0, and a 0-unit grid is worse than an oversized one.
-    result.fitHelpers(boundsWithSize(0, 0, 0) as any);
-    expectNoOp(result, before);
-  });
-
-  it.each([
-    ['NaN', NaN],
-    ['Infinity', Infinity],
-  ])('non-finite (%s) bounds are a no-op', (_label, v) => {
-    const result = setup() as any;
-    const before = labelOffsets(result);
-    result.fitHelpers(boundsWithSize(v, v, v) as any);
-    expectNoOp(result, before);
   });
 
   // ── Scene-relative sizing ──────────────────────────────────────────────────

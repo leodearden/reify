@@ -236,7 +236,16 @@ describe('createAxisLabels setOffset (#6588)', () => {
 // ── Screen-footprint tests (#6588) ───────────────────────────────────────────
 
 describe('axis label screen footprint (#6588)', () => {
-  // The app's PerspectiveCamera is constructed with fov = 60 (scene.ts).
+  // The app's PerspectiveCamera is constructed with fov = CAMERA_FOV_DEG (scene.ts).
+  //
+  // Restated as a literal here rather than imported: this suite mocks 'three' with
+  // only the sprite/label classes, so importing scene.ts (which needs Scene,
+  // WebGLRenderer, GridHelper, ...) would fail at module load. That restatement is a
+  // real coupling risk — a fov change in scene.ts would leave every assertion below
+  // green while the on-screen labels grew — so scene.test.ts carries the guard that
+  // evaluates this same formula against the REAL exported CAMERA_FOV_DEG
+  // ("keeps the axis labels under 10% of the viewport height at the fov the camera
+  // actually uses"). Keep the two in step: if that constant moves, this one must too.
   const FOV_DEG = 60;
 
   /**

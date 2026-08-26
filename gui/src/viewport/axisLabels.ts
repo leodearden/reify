@@ -14,8 +14,17 @@ import { AXIS_LABEL_RENDER_ORDER } from './renderOrder';
  * Must be > AxesHelper size (2) so labels sit just beyond the axis tip. This is the
  * offset in force before any scene bounds have arrived; once they have, scene.ts's
  * `fitHelpers` calls `setOffset` with a scene-scaled distance (see below).
+ *
+ * Exported because it is also the value scene.ts's `fitHelpers` restores when a
+ * scene measurement is degenerate (an emptied document, a zero-extent Box3): the
+ * helper sizing there returns to the UNSCALED grid/axes, so the ring must return to
+ * the offset that pairs with them. Sharing this constant is what keeps "reset" and
+ * "as constructed" the same position rather than two literals that can drift.
  */
-const LABEL_OFFSET = 2.3;
+export const DEFAULT_LABEL_OFFSET = 2.3;
+
+/** Module-local alias, kept so the LABELS spec below reads as it always has. */
+const LABEL_OFFSET = DEFAULT_LABEL_OFFSET;
 
 /**
  * On-screen size of a label sprite, as a fraction of the viewport HEIGHT divided

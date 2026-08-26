@@ -11,7 +11,7 @@ import {
 } from 'three';
 import type { Box3, Group } from 'three';
 import { THEME_TOKENS } from '../theme';
-import { createAxisLabels } from './axisLabels';
+import { createAxisLabels, DEFAULT_LABEL_OFFSET } from './axisLabels';
 import { GRID_RENDER_ORDER, AXES_RENDER_ORDER } from './renderOrder';
 
 export interface SceneContext {
@@ -94,6 +94,20 @@ const AXES_BASE_LENGTH = 2;
 const LABEL_TIP_MARGIN = 1.15;
 
 /**
+ * Vertical field of view, in degrees, of the viewport camera.
+ *
+ * Exported because it is NOT a private detail of the camera: axisLabels.ts's
+ * LABEL_SCREEN_SCALE is calibrated against it. Under `sizeAttenuation: false` a
+ * label covers `s * cot(fov/2) / 2` of the viewport height, so narrowing the fov
+ * MAGNIFIES every label (fov 30 would take the current 4.8% to 9.2%) with nothing
+ * in axisLabels.ts changing. Retuning the fov is a plausible unrelated change, so
+ * scene.test.ts evaluates that formula against this constant and the sprites' real
+ * scale — a fov move that pushes the labels back towards the #6588 footprint fails
+ * there instead of silently shipping.
+ */
+export const CAMERA_FOV_DEG = 60;
+
+/**
  * Creates a Three.js scene with camera, renderer, lights, and helpers.
  * @param canvas - The HTML canvas element to render into.
  * @param width - Initial viewport width.
@@ -107,7 +121,7 @@ export function createScene(
   const scene = new Scene();
 
   // Camera
-  const camera = new PerspectiveCamera(60, width / height, 0.1, 10000);
+  const camera = new PerspectiveCamera(CAMERA_FOV_DEG, width / height, 0.1, 10000);
   // Reify kernel is Z-up (XY ground plane, +Z extrusion direction). Set this BEFORE
   // OrbitControls is constructed in Viewport.tsx so its rotation basis is correct.
   camera.up.set(0, 0, 1);
@@ -243,18 +257,41 @@ export function createScene(
    * above and as fitCamera.ts, so helper sizing and camera framing agree on how big
    * the scene is rather than drifting apart under two definitions.
    *
-   * The guard shape intentionally mirrors adjustClipping's isEmpty() early return,
-   * and extends it: a non-empty box can still have zero or non-finite extent, and a
-   * 0-unit (or NaN-unit) grid is strictly worse than an oversized one, so those
-   * measurements are dropped rather than applied.
+   * DEGENERATE BOUNDS RESET, they do not preserve. A degenerate measurement — an
+   * empty Box3, a zero-extent one, a NaN/Infinity one — is never applied (a 0-unit
+   * or NaN-unit grid is strictly worse than an oversized one), but it also must not
+   * leave the PREVIOUS scene's sizing standing. Closing or clearing a document takes
+   * props.meshes to {}, which makes Viewport.tsx's mesh-sync effect hand this an
+   * empty Box3; preserving would leave the now-empty viewport wearing the last
+   * model's helper scale — a 2 m grid and a 0.3 m triad after a sub-metre part,
+   * instead of the defaults an empty scene is tuned for. That is directly visible,
+   * unlike adjustClipping's stale near/far planes, so this guard resets where
+   * adjustClipping merely returns.
    */
+  function resetHelpers(): void {
+    // Scale 1 IS the construction sizing (GRID_BASE_SIZE / AXES_BASE_LENGTH), and
+    // DEFAULT_LABEL_OFFSET is the ring position that pairs with it — it is the same
+    // base case the good path would produce, since AXES_BASE_LENGTH * LABEL_TIP_MARGIN
+    // (2 * 1.15) is exactly DEFAULT_LABEL_OFFSET (2.3).
+    grid.scale.setScalar(1);
+    axes.scale.setScalar(1);
+    setAxisLabelOffset(DEFAULT_LABEL_OFFSET);
+  }
+
   function fitHelpers(sceneBounds: Box3): void {
-    if (sceneBounds.isEmpty()) return;
+    // isEmpty() is checked BEFORE any measurement, mirroring adjustClipping's guard.
+    if (sceneBounds.isEmpty()) {
+      resetHelpers();
+      return;
+    }
 
     const size = new Vector3();
     sceneBounds.getSize(size);
     const radius = size.length() / 2;
-    if (!Number.isFinite(radius) || radius <= 0) return;
+    if (!Number.isFinite(radius) || radius <= 0) {
+      resetHelpers();
+      return;
+    }
 
     // radius / 5 targets ~10 cells across the model's diameter: enough to read the
     // grid as a ruler, few enough that it does not extend far enough to converge
