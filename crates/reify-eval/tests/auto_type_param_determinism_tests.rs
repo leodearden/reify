@@ -71,7 +71,7 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// ratchet, firing once this constant has drifted too far below the live
 /// corpus to still catch a regression, and naming a new value to raise it
 /// to.
-const EXPECTED_MIN_FILES: usize = 200;
+const MIN_EXERCISED_RI_FILES: usize = 200;
 
 /// Classifies *why* a [`SKIP_SET`] entry is excluded from the v0.1
 /// example-corpus perf regression walk
@@ -655,17 +655,17 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     let exercised = exercised_paths(&paths);
 
     assert!(
-        exercised.len() >= EXPECTED_MIN_FILES,
+        exercised.len() >= MIN_EXERCISED_RI_FILES,
         "corpus discovery found only {} .ri file(s) (expected >= {}) — \
          raw discover_ri_files() count: {}, SKIP_SET size: {} — \
          discover_ri_files()/SKIP_SET may be misconfigured (e.g. examples dir \
          moved or most entries skipped), which would silently narrow this \
          perf gate's coverage. If this is instead an intentional corpus \
-         reduction, lower EXPECTED_MIN_FILES to match. The raw/SKIP_SET counts \
+         reduction, lower MIN_EXERCISED_RI_FILES to match. The raw/SKIP_SET counts \
          above distinguish a discovery regression (raw count also low) from an \
          intentional corpus shrink (raw count normal, exercised below floor).",
         exercised.len(),
-        EXPECTED_MIN_FILES,
+        MIN_EXERCISED_RI_FILES,
         paths.len(),
         SKIP_SET.len()
     );
@@ -950,9 +950,9 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
     );
 }
 
-// ─── step-13 ratchet: EXPECTED_MIN_FILES tracks the live corpus ───────────────
+// ─── step-13 ratchet: MIN_EXERCISED_RI_FILES tracks the live corpus ───────────────
 
-/// Freshness ratchet for [`EXPECTED_MIN_FILES`]: a second-order check on the
+/// Freshness ratchet for [`MIN_EXERCISED_RI_FILES`]: a second-order check on the
 /// constant's own value, which never gates
 /// [`v0_1_example_corpus_compile_and_check_time_is_bounded`] itself.
 /// One-directional by construction — a discovery regression only SHRINKS
@@ -966,19 +966,36 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
 /// can never disagree with the gate it tracks. Directory walk only — no
 /// `check_source_with_stdlib` — so it adds no measurable time to this
 /// binary.
+///
+/// Also asserts that `exercised_paths` excluded exactly `SKIP_SET.len()`
+/// files: `total - exercised` must equal `SKIP_SET.len()`, or a SKIP_SET key
+/// no longer matches `relative_to_examples_dir()`'s output (e.g. a
+/// path-separator change or a stray prefix) and a skip has silently stopped
+/// taking effect — `skip_set_entries_exist_under_examples_dir` alone cannot
+/// catch this, since it only proves each key *joins* onto a real file, not
+/// that the key string equals the one `exercised_paths` filters on.
 #[test]
 fn discovery_floor_tracks_the_live_corpus() {
     let paths = discover_ri_files();
     let total = paths.len();
     let exercised = exercised_paths(&paths).len();
 
+    assert_eq!(
+        total - exercised,
+        SKIP_SET.len(),
+        "exercised_paths excluded {} of {} SKIP_SET entries — SKIP_SET keys \
+         no longer match relative_to_examples_dir() output",
+        total - exercised,
+        SKIP_SET.len()
+    );
+
     assert!(
-        EXPECTED_MIN_FILES * 3 >= exercised * 2,
-        "EXPECTED_MIN_FILES ({}) has drifted stale: the live examples/ corpus \
+        MIN_EXERCISED_RI_FILES * 2 >= exercised,
+        "MIN_EXERCISED_RI_FILES ({}) has drifted stale: the live examples/ corpus \
          now yields {} exercised .ri files ({} discovered, {} in SKIP_SET), \
-         more than 1.5x the floor. Raise EXPECTED_MIN_FILES to ~{} and \
+         more than 2x the floor. Raise MIN_EXERCISED_RI_FILES to ~{} and \
          re-review its tripwire doc comment.",
-        EXPECTED_MIN_FILES,
+        MIN_EXERCISED_RI_FILES,
         exercised,
         total,
         SKIP_SET.len(),
