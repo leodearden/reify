@@ -433,8 +433,9 @@ structure def Consumer {
 // implementation that hoisted the `LocalEnumShadowScope` but ALSO widened what
 // enters the shadow set.
 //
-// What each one actually discriminates — stated precisely, because the three do
-// NOT partition `build_local_enum_shadow_set`'s two membership rules one-for-one:
+// What each one actually discriminates. Stated from MEASURED counterfactuals
+// (`build_local_enum_shadow_set` mutated in place, group re-run), not from
+// reasoning — the three do NOT partition its two membership rules one-for-one:
 //
 // * [`payload_field_of_prelude_structure_name_unaffected_without_local_enum`] —
 //   the hoist must not blanket-enum every name: with NO local enum declaring it,
@@ -446,14 +447,33 @@ structure def Consumer {
 // * [`prelude_enum_does_not_shadow_local_structure_in_payload`] — the payload-axis
 //   mirror of [`prelude_enum_does_not_shadow_local_structure`], and the only shape
 //   in this group naming something the PRELUDE declares as an `enum`
-//   (`enum ThreadSystem`, `stdlib/ports_mechanical.ri:35`). It flips to
-//   `Type::Enum` for an implementation that BOTH sources the set from
-//   `ctx.resolution_enums` AND drops the local-structure subtraction — a
-//   combination neither other guard catches, since either change alone still
-//   leaves "ThreadSystem" out of the set.
+//   (`enum ThreadSystem`, `stdlib/ports_mechanical.ri:35`). It pins the
+//   user-visible property directly — no prelude enum name may reach the shadow set
+//   by ANY route, e.g. seeding from the `prelude_enums` slice that
+//   `resolve_enum_variant_payloads` already receives, or re-lowering the install
+//   below `build_resolution_enums_from_cache` with the subtraction dropped.
 // * [`local_structure_wins_over_same_named_local_enum_in_payload`] — the
-//   local-structure subtraction on its own: "Fit" IS a module-local enum there, so
-//   dropping the subtraction alone flips it to `Type::Enum`.
+//   local-structure subtraction, on its own: "Fit" IS a module-local enum there,
+//   so dropping the subtraction alone flips it to `Type::Enum` (measured).
+//
+// A CONSEQUENCE OF #6394'S HOIST, recorded here because it retires a hazard this
+// group was originally written to cover: `ctx.resolution_enums` is assigned ONLY
+// by `enums_phase::build_resolution_enums_from_cache` (enums_phase.rs:286-287),
+// which the hoist now runs AFTER the install site — so it is EMPTY when
+// `build_local_enum_shadow_set` is called. Sourcing the set from it no longer
+// yields an over-broad prelude ++ local set; it yields an EMPTY one, shadowing
+// switches off wholesale, and FIVE tests in this file go red at once
+// (`enum_ctor_param_lowers_to_enum_type`, `enum_ctor_emits_no_structure_ref_mismatch`,
+// `trait_member_typed_by_shadowing_local_enum_conforms`,
+// `fn_param_typed_by_shadowing_local_enum_resolves_call`,
+// `shadow_payload_field_lowers_to_enum_type`). That mutation is now fail-LOUD
+// rather than fail-subtle, which is why no single guard below needs to catch it.
+//
+// Note which test did NOT go red in that measurement:
+// [`shadow_payload_binder_fixture_has_no_errors`] stayed GREEN against an empty
+// shadow set, because with no shadowing at all the payload field and the `fn` param
+// are BOTH `StructureRef` and therefore still agree. That is exactly why the IR pin
+// is a separate test from the leaf `reify check … exits 0` signal.
 //
 // Same `module test.<name>` prologue convention as the group above, so
 // `W_MODULE_DECL_MISSING` never pollutes these modules.
@@ -463,13 +483,15 @@ structure def Consumer {
 /// position, exactly as it does in a param position.
 ///
 /// The payload-axis mirror of [`prelude_enum_does_not_shadow_local_structure`],
-/// and the guard in this group that carries the `ctx.enum_defs`-not-
-/// `ctx.resolution_enums` membership rule: `ThreadSystem` is a PRELUDE enum name,
-/// so an implementation that both sources the set from `ctx.resolution_enums`
-/// (prelude ++ local) and drops the local-structure subtraction pulls it into the
-/// shadow set and retypes the user's own structure to `Type::Enum("ThreadSystem")`
-/// on the phase #6394's hoist newly covers. The two sibling guards cannot see that
-/// combination — see the section comment above.
+/// and the only guard in this group naming something the PRELUDE declares as an
+/// `enum`. It pins the user-visible property that no prelude enum name may reach
+/// the shadow set by ANY route — the nearest live route being the `prelude_enums`
+/// slice [`resolve_enum_variant_payloads`] already receives for its own bare-name
+/// fallback, one `.chain()` away from the shadow set.
+///
+/// It does NOT discriminate a swap of `ctx.enum_defs` for `ctx.resolution_enums`:
+/// post-#6394 that source is EMPTY at set-construction time and the swap is
+/// fail-loud instead. See the section comment above for the measurement.
 #[test]
 fn prelude_enum_does_not_shadow_local_structure_in_payload() {
     const SOURCE: &str = r#"
