@@ -37,7 +37,10 @@
 //!   `#[cfg(not(has_gmsh))]` sibling
 //!   [`gmsh_arm_is_absent_in_a_stub_build`] keeps a stub build honest.
 //! - [`nearest_by_tet_count_selects_the_closest_rung`] — the pure
-//!   count-matching function that joins the two ladders.
+//!   count-matching function that joins the two ladders. Makes no gmsh call
+//!   (it is driven by synthetic values), but carries `#[cfg(has_gmsh)]`
+//!   because the `GmshMeasurement` it selects over does: a stub build has no
+//!   ladder to join.
 //!
 //! Ignored (the driver): [`gmsh_from_scratch_vs_morph_wall_clock_at_10k_and_100k`]
 //! composes those helpers, prints every measurement, and asserts nothing.
@@ -623,6 +626,54 @@ fn gmsh_arm_is_absent_in_a_stub_build() {
          GMSH_AVAILABLE — the two detections have drifted, and the entire gmsh arm \
          of this harness is silently compiled out while gmsh is in fact usable"
     );
+}
+
+/// The `mesh_size` rungs the gmsh arm sweeps.
+///
+/// ONE shared ladder, not one per scale: both scales are read off the same
+/// sweep, so the two paired ratios come from a single monotone sequence and
+/// cannot be accused of having been tuned per band.
+///
+/// Rung placement (an estimate, and only an estimate). The bracket at
+/// `arm_length = 1.0`, `thickness = 0.2`, `fillet_radius = 0.05` has volume
+/// `~= 2*(1.0*0.2*0.2) - 0.2^3 - fillet-cut ~= 0.0719`. A uniform tet mesh at
+/// characteristic length `h` holds `~= 8.49 * V / h^3` tets (a regular tet of
+/// edge `h` has volume `h^3 / (6*sqrt(2))`), so 10K tets is `h ~= 0.039` and
+/// 100K is `h ~= 0.018`. The ladder brackets both with margin either side.
+///
+/// Nothing downstream depends on that estimate being right. Each rung's
+/// ACHIEVED count is measured and printed, and [`nearest_by_tet_count`] pairs
+/// on achieved counts — so if the estimate is off, the printed table shows it
+/// and the pairing still selects correctly. The estimate places the rungs; it
+/// never interprets them.
+#[cfg(has_gmsh)]
+const MESH_SIZE_LADDER: [f64; 7] = [0.060, 0.045, 0.035, 0.028, 0.022, 0.017, 0.014];
+
+/// Select the successful gmsh rung whose achieved tet count is nearest
+/// `target`.
+///
+/// This is the SOLE place the two independently-swept ladders are joined. The
+/// morph arm is swept by `n` and the gmsh arm by `mesh_size`; neither knows
+/// the other's achieved counts, so the two never land on the same number and
+/// a comparison has to nominate a pairing rule. Making that rule one small
+/// pure function — rather than an inline scan inside the driver — is what
+/// lets it be tested at all, and the driver prints the residual count
+/// mismatch alongside every ratio so a reader can see how good the pairing
+/// actually was.
+///
+/// Failed rungs are filtered out before selection: a failed rung reports
+/// `tets == 0` and a wall-clock that measures how long gmsh took to give up,
+/// so pairing against one would fabricate a ratio out of a zero.
+///
+/// Returns `Option` rather than panicking so an empty or wholly-failed ladder
+/// degrades to "no paired ratio available" and the driver still prints both
+/// raw ladders — the run's other measurements survive the loss of the join.
+#[cfg(has_gmsh)]
+fn nearest_by_tet_count(entries: &[GmshMeasurement], target: usize) -> Option<&GmshMeasurement> {
+    entries
+        .iter()
+        .filter(|entry| entry.result.is_ok())
+        .min_by_key(|entry| entry.tets.abs_diff(target))
 }
 
 /// The joiner must select the rung minimising `|tets - target|`, must skip
