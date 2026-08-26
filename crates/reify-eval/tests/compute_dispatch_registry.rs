@@ -974,3 +974,217 @@ fn instance_scope_optimized_cell_equals_template_dispatched_value() {
         instance_val
     );
 }
+
+/// RED (#6662 S3): the fix must reach NESTED instance scope, and phase 1.5's
+/// scratch overlay must agree with what phase 2 commits.
+///
+/// `elaborate_child_instance_nested`'s `Phase15Node::Let` arm computes a
+/// SCRATCH let value into the running `overlay` that nested subs' constructor
+/// args are pre-evaluated against, and its comment pins the invariant "the
+/// scratch value equals the value phase 2 will commit". Fixing only phase 2
+/// BREAKS that invariant for `@optimized` cells: phase 2 would commit 777 while
+/// the overlay still held the body-inline 42 — a new, quieter instance of the
+/// very defect being fixed. `Top.mid.sink.seed` is where a stale scratch value
+/// surfaces and nowhere else.
+#[test]
+fn nested_sub_instance_optimized_cell_and_phase15_scratch_agree() {
+    let source = r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure Leaf {
+            param seed : Int = 0
+            let result = zero_arg_777()
+        }
+
+        structure Mid {
+            sub leaf = Leaf()
+            let echoed = self.leaf.result
+            sub sink = Leaf(seed: self.leaf.result)
+        }
+
+        structure Top {
+            sub mid = Mid()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Two-level nesting: reaches phase 1.5's recursion, not just the
+    //     top-level plain-sub loop.
+    let leaf_cell = ValueCellId::new("Top.mid.leaf", "result");
+    assert_eq!(
+        eval_result.values.get(&leaf_cell),
+        Some(&Value::Int(777)),
+        "nested instance Top.mid.leaf.result must be the dispatched 777 \
+         (Int(42) = body-inlined), got {:?}",
+        eval_result.values.get(&leaf_cell)
+    );
+
+    // (b) The middle template's own let reads the nested sub's member through
+    //     the projection BFS.
+    let echoed_cell = ValueCellId::new("Top.mid", "echoed");
+    assert_eq!(
+        eval_result.values.get(&echoed_cell),
+        Some(&Value::Int(777)),
+        "Top.mid.echoed must read the nested sub's dispatched value, got {:?}",
+        eval_result.values.get(&echoed_cell)
+    );
+
+    // (c) PHASE-1.5 PARITY: `sink`'s ctor arg is pre-evaluated against the
+    //     phase-1.5 overlay, so a stale scratch 42 surfaces HERE.
+    let sink_seed_cell = ValueCellId::new("Top.mid.sink", "seed");
+    assert_eq!(
+        eval_result.values.get(&sink_seed_cell),
+        Some(&Value::Int(777)),
+        "Top.mid.sink.seed must be 777: the nested sub's ctor arg is evaluated \
+         against phase 1.5's scratch overlay, so Int(42) here means the overlay \
+         still holds the body-inlined value while phase 2 commits the dispatched \
+         one — the \"scratch value equals the value phase 2 will commit\" \
+         invariant is broken. Got {:?}",
+        eval_result.values.get(&sink_seed_cell)
+    );
+}
+
+/// RED (#6662 S3): phase 1.5's SCRATCH let arm must resolve `@optimized` the
+/// same way phase 2 does.
+///
+/// Discriminating shape: the phase-1.5 `Phase15Node::Let` node must ITSELF be
+/// the `@optimized` call. (In the nested test above the phase-1.5 let is
+/// `self.leaf.result`, a member projection over already-collapsed nested-sub
+/// values — it never reaches the `@optimized` arm, which is why that test went
+/// green on the phase-2 fix alone.)
+///
+/// Here `Mid.computed` IS the call, and `sub sink`'s ctor arg reads it. Phase
+/// 1.5 evaluates the scratch value into the overlay that ctor args are
+/// pre-evaluated against, while phase 2 separately commits the authoritative
+/// cell — so a phase-2-only fix makes the two disagree: `Top.mid.computed` is
+/// 777 but `Top.mid.sink.seed` is the stale body-inlined 42.
+#[test]
+fn phase15_scratch_let_optimized_value_matches_phase2_commit() {
+    let source = r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure Leaf2 {
+            param seed : Int = 0
+        }
+
+        structure Mid2 {
+            let computed = zero_arg_777()
+            sub sink = Leaf2(seed: computed)
+        }
+
+        structure Top2 {
+            sub mid = Mid2()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Phase 2's authoritative commit — green since the phase-2 wiring.
+    let computed_cell = ValueCellId::new("Top2.mid", "computed");
+    assert_eq!(
+        eval_result.values.get(&computed_cell),
+        Some(&Value::Int(777)),
+        "Top2.mid.computed must be the dispatched 777, got {:?}",
+        eval_result.values.get(&computed_cell)
+    );
+
+    // (b) PHASE-1.5 PARITY — the genuine RED. `sink`'s ctor arg is
+    //     pre-evaluated against the phase-1.5 overlay, so Int(42) here means
+    //     the overlay holds the body-inlined value while phase 2 commits the
+    //     dispatched one, breaking the arm's own documented invariant that
+    //     "the scratch value equals the value phase 2 will commit".
+    let sink_seed_cell = ValueCellId::new("Top2.mid.sink", "seed");
+    assert_eq!(
+        eval_result.values.get(&sink_seed_cell),
+        Some(&Value::Int(777)),
+        "Top2.mid.sink.seed must equal the phase-2 commit of Top2.mid.computed \
+         (777); Int(42) is phase 1.5's stale body-inlined scratch value. Got {:?}",
+        eval_result.values.get(&sink_seed_cell)
+    );
+}
+
+/// RED (#6662 S3): a param whose DEFAULT is an `@optimized` call must carry the
+/// dispatched value at instance scope too.
+///
+/// `elaborate_child_params_only`'s `default_expr` branch is the third
+/// instance-scope eval site. Only the default arm is in scope: an EXPLICIT ctor
+/// arg is by construction an instance-specific input, and it is evaluated in
+/// the PARENT's scope, so the helper's read comparison would be against the
+/// wrong map there.
+#[test]
+fn instance_scope_optimized_param_default_equals_template_dispatched_value() {
+    let source = r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure DefaultedParam {
+            param p : Int = zero_arg_777()
+        }
+
+        structure OuterDp {
+            sub dp = DefaultedParam()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // CHARACTERIZATION, measured on this branch: template scope does NOT lower
+    // an `@optimized` call in a PARAM DEFAULT — only let-cells reach the
+    // ComputeNode lowering — so `DefaultedParam.p` is the body-inlined 42, not
+    // 777. That template-scope gap is a separate defect, filed as a follow-up;
+    // closing it here would be a template-scope change, which this task's scope
+    // (instance cells inheriting the template's dispatched value) excludes.
+    //
+    // Pinning the template value explicitly is what keeps the cross-scope
+    // assertion below honest: without it, `instance == template` would pass
+    // trivially in the world where BOTH scopes body-inline. When the
+    // template-scope param gap is closed, THIS assertion turns RED first and
+    // names exactly what changed — and the instance-scope assertion below
+    // should then follow it to 777 in lockstep, with no production change
+    // needed here, because the reuse helper copies whatever the template holds.
+    let template_cell = ValueCellId::new("DefaultedParam", "p");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        Some(&Value::Int(42)),
+        "characterization: template-scope DefaultedParam.p is the body-inlined \
+         42 today (param defaults are not lowered to ComputeNodes). If this is \
+         now 777, the template-scope param-default gap has been closed — update \
+         the instance assertion below to match. Got {:?}",
+        eval_result.values.get(&template_cell)
+    );
+
+    // The contract this task owns: whatever the template resolved to, the
+    // uninstantiated-arg instance cell must AGREE with it. Agreement holds in
+    // both worlds — it is the reuse helper's invariant, not a value pin.
+    let instance_cell = ValueCellId::new("OuterDp.dp", "p");
+    assert_eq!(
+        eval_result.values.get(&instance_cell),
+        eval_result.values.get(&template_cell),
+        "instance-scope OuterDp.dp.p must equal template-scope DefaultedParam.p \
+         (no ctor override ⇒ inputs are value-identical); got instance {:?} vs \
+         template {:?}",
+        eval_result.values.get(&instance_cell),
+        eval_result.values.get(&template_cell)
+    );
+}
