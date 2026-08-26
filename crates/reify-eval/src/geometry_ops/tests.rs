@@ -23497,6 +23497,85 @@
         );
     }
 
+    // ── task 6099: malformed poses (not a clean two-dimension mismatch) ──────
+    //
+    // `compose_transforms` rejects these BEFORE reaching its `t1_dim != t2_dim`
+    // gate — `decompose_xyz3` refuses a translation whose three components
+    // disagree or are non-finite, and `normalize_quat_input`'s 1e-24
+    // squared-norm gate refuses a degenerate quaternion. The composition still
+    // collapses to `Undef` and the sub still lands at the origin, so the
+    // diagnostic must still fire; it just must not fabricate a two-dimension
+    // mismatch that did not happen.
+
+    #[test]
+    fn pose_composition_non_uniform_translation_dimensions_is_diagnosed() {
+        let parent = identity_transform();
+        // Components disagree: element 0 is LENGTH, elements 1-2 are bare Reals.
+        let pose = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.005),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+            ])),
+        };
+        let child = compose_pose_chain(&[parent.clone(), pose.clone()]);
+        assert_eq!(
+            child,
+            reify_ir::Value::Undef,
+            "a mixed-dimension translation must be rejected by decompose_xyz3"
+        );
+
+        let d = diagnose_pose_composition_failure(&parent, &pose, &child, "Asm", "widget")
+            .expect("a malformed pose must still be diagnosed, never silently dropped");
+        assert_eq!(d.severity, reify_core::Severity::Error);
+        let msg = d.message.to_lowercase();
+        assert!(
+            msg.contains("widget"),
+            "message must name the offending sub: {}",
+            d.message
+        );
+        assert!(
+            msg.contains("asm"),
+            "message must name the enclosing structure: {}",
+            d.message
+        );
+        assert!(
+            !msg.contains("dimensionless"),
+            "element 0 is LENGTH, so reporting a length-vs-dimensionless \
+             mismatch would be a fabricated diagnosis: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn pose_composition_degenerate_rotation_is_diagnosed() {
+        let parent = identity_transform();
+        // Zero quaternion: rejected by `normalize_quat_input`'s 1e-24
+        // squared-norm gate, AFTER the dimension gate has already passed.
+        let pose = transform_of([0.0, 0.0, 0.0, 0.0], [0.005, 0.0, 0.0]);
+        let child = compose_pose_chain(&[parent.clone(), pose.clone()]);
+        assert_eq!(
+            child,
+            reify_ir::Value::Undef,
+            "a degenerate rotation quaternion must be rejected"
+        );
+
+        let d = diagnose_pose_composition_failure(&parent, &pose, &child, "Asm", "widget")
+            .expect("a degenerate rotation must still be diagnosed, never silently dropped");
+        assert_eq!(d.severity, reify_core::Severity::Error);
+        assert!(
+            d.message.to_lowercase().contains("widget"),
+            "message must name the offending sub: {}",
+            d.message
+        );
+    }
+
     // ── decoded value-form LENGTH gate (units-length δ, task 5745) ────────────
     //
     // `accept_length_point3` is the THIRD route into β's Contract C chokepoint,
