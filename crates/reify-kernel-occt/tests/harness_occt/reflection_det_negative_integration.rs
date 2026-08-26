@@ -1,7 +1,77 @@
-//! A-ε probe (task #6619, PRD `docs/prds/v0_6/assembly-derivation-toolbox.md`
-//! leaf A-ε, boundary test T17): placeholder header. Replaced with the full
-//! finding write-up in the doc-only step that lands last in this module's
-//! plan.
+//! A-ε probe: OCCT `det<0` output-orientation consistency, both reflection
+//! paths.
+//!
+//! **1. Provenance.** PRD `docs/prds/v0_6/assembly-derivation-toolbox.md`
+//! leaf A-ε (task #6619), boundary test T17. Answers §4's open kernel
+//! question: whether OCCT 7.8's `det<0` `BRepBuilderAPI_GTransform` output is
+//! consistently oriented.
+//!
+//! **2. OCCT version this module reasons from.** System OCCT **7.8.1**
+//! (`OCC_VERSION_COMPLETE` in `/usr/include/opencascade/Standard_Version.hxx`;
+//! `libTKBRep.so.7.8.1`). Per this repo's native-deps invariant, reify links
+//! system 7.8 DIRECTLY — the `/opt/reify-deps` 7.9 tree is a gmsh-transitive
+//! dependency only — so 7.8 is the correct reference. There is no OCCT
+//! version pin anywhere in this workspace, so a future distro upgrade can
+//! move this behaviour; that is precisely what makes this module a
+//! regression guard rather than a one-time answer.
+//!
+//! **3. The answer.** `det<0` output IS consistently oriented, on BOTH
+//! reflection paths. [`GeometryOp::Mirror`] (`gp_Trsf::SetMirror` →
+//! `BRepBuilderAPI_Transform`) and [`GeometryOp::AffineApply`] with
+//! `linear = diag(-1,1,1)` (`gp_GTrsf` → `BRepBuilderAPI_GTransform`) both
+//! yield solids that are BRepCheck-valid, closed, manifold, orientable,
+//! positive-volume (test 1), tessellate to an outward-wound closed orientable
+//! manifold whose supplied normals agree with that winding (test 2), and
+//! export to STEP as a baked `MANIFOLD_SOLID_BREP` carrying zero
+//! `CARTESIAN_TRANSFORMATION_OPERATOR` entities (test 3). The mechanism: the
+//! reflection SWAPS each face's orientation flag (measured 3 FORWARD / 5
+//! REVERSED on a box source → 5 FORWARD / 3 REVERSED on its reflection),
+//! which is exactly what keeps normals outward. **The FreeCAD
+//! mirrored-bodies-vanish defect does not reproduce** — `MANIFOLD_SOLID_BREP`
+//! count is >=1 in every reflected export measured.
+//!
+//! **4. Why the outward-winding check is load-bearing, not `mesh.validate`
+//! alone.** `Mesh::validate`'s Closed + ConsistentWinding obligations are a
+//! directed-edge invariant on the position-welded quotient topology, which a
+//! CONSISTENTLY INWARD mesh satisfies exactly as well as an outward one. If
+//! OCCT ever stopped reversing face orientation flags under a `det<0`
+//! transform, every triangle of the reflected solid would flip to inward
+//! winding and `validate()` would still pass silently — exactly the defect
+//! T17 exists to catch. Only the per-triangle dot product of the winding
+//! normal against the AABB-centre reference direction
+//! ([`assert_outward_wound_closed_manifold`]) actually observes it.
+//!
+//! **5. Two real GTransform hazards, orthogonal to determinant sign** (test
+//! 4). `BRepBuilderAPI_GTransform` rewrites every analytic surface as a
+//! B-spline approximation: measured relative volume error vs source is
+//! +8.615e-3 (cylinder), +8.250e-3 (cone), +1.553e-3 (torus), -4.373e-4
+//! (sphere), 0 (box), and STEP loses analytic entity types (e.g. a cylinder's
+//! `CYLINDRICAL_SURFACE`/`PLANE(` counts drop to 0, replaced by
+//! `B_SPLINE_SURFACE`). Separately, `BRepTools_GTrsfModification` carries the
+//! source's `Poly_Triangulation` across a `GTransform` UNCHANGED: if the
+//! source was tessellated before the transform, that stale triangulation no
+//! longer matches the rewritten B-spline geometry and
+//! `BRepCheck_Analyzer::IsValid()` (`GeometryQuery::IsWatertight`) reports
+//! `false` (test 4 half (b), a pinned characterization of a known defect —
+//! follow-up ticket `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`). BOTH hazards reproduce
+//! identically under the IDENTITY linear map `diag(1,1,1)` (det = +1,
+//! geometrically a no-op), which is the proof that they belong to
+//! `BRepBuilderAPI_GTransform` itself and are NOT a `det<0` orientation
+//! defect. [`GeometryOp::Mirror`] is immune to both: bit-exact volume,
+//! preserves analytic surface types, and stays `IsWatertight` regardless of
+//! tessellation ordering.
+//!
+//! **6. Conclusion for A-δ (#6618).** Lower reflective derivation via
+//! [`GeometryOp::Mirror`] (`SetMirror`), never `AffineApply` with a `det<0`
+//! linear map — `Mirror` is bit-exact, preserves analytic surface types, and
+//! is immune to the pre-tessellation hazard. This corroborates PRD §3.7's
+//! already-chosen v1 lowering with measured evidence rather than assumption.
+//!
+//! **7. Fixture contract.** Every fixture in this module is a primitive-
+//! derived convex solid positioned wholly at x>0, never a boolean result — a
+//! boolean op returns a `COMPOUND`, and `IsWatertight` hard-returns `false`
+//! for any non-SOLID/COMPSOLID/SHELL shape regardless of actual validity
+//! (see [`convex_fixtures`] for the full fixture-contract doc).
 
 #![cfg(has_occt)]
 
