@@ -247,8 +247,9 @@ struct LetAnchor {
     /// "missing ';' after `let` binding in function body" to one would advise an edit the
     /// grammar rejects, about a construct that is not a function body. Recovery flattens both
     /// kinds to bare tokens under an `ERROR`, so the classification is: parent kind when the
-    /// binding survived intact, otherwise whether an `fn` keyword precedes this `let` within
-    /// the same debris — a `let` in the wreckage of a function header is a fn-body `let`.
+    /// binding survived intact, otherwise whether this `let` sits inside the still-open braces
+    /// of a preceding `fn` keyword within the same debris — see [`collect_let_anchors`], which
+    /// tracks that scope rather than latching a "an `fn` appeared somewhere earlier" flag.
     in_fn_body: bool,
 }
 
@@ -271,27 +272,54 @@ struct LetAnchor {
 /// The search is confined to `node`'s subtree, so an unrelated well-formed `let` elsewhere in
 /// the file can never be blamed for a fault it does not enclose. Pre-order DFS visits nodes in
 /// source order, so the result is sorted by `start_byte` and binary-searchable.
+///
+/// The [`LetAnchor::in_fn_body`] fallback is BRACE-SCOPED, not latched. Recovery routinely
+/// collapses a function AND the structure members that follow it into one `ERROR`; measured on
+/// `structure T {\n  fn g() -> Int { let y = (1 }\n  let a = 3\n}`, tree-sitter emits a single
+/// `ERROR` holding `fn … { let y … }` followed by the member `let a` as bare tokens. A
+/// monotonic "an `fn` keyword was seen" flag classifies that member `let` as a function-body
+/// binding, which is exactly the misclassification `in_fn_body` exists to prevent — and the
+/// `fault.row > let.row` guard in [`Lowering::diagnose_error_node`] does not close it, because
+/// a member `let` whose RHS ran onto the next line satisfies that too. So the walk tracks `{`
+/// / `}` nesting and treats a `let` as a function-body binding only while the braces opened
+/// after the most recent `fn` keyword are still open.
 fn collect_let_anchors(node: tree_sitter::Node<'_>) -> Vec<LetAnchor> {
     let mut out: Vec<LetAnchor> = Vec::new();
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
         return out;
     }
-    // Set by any `fn` keyword seen so far in source order; the fallback evidence for a `let`
-    // whose own binding node recovery destroyed.
-    let mut seen_fn_keyword = false;
+    // Brace nesting relative to `node`, and the depth at which the most recent `fn` keyword
+    // appeared. Together they answer "is this `let` inside a function body?" for a `let` whose
+    // own binding node recovery destroyed: `fn_scope` is armed by an `fn` keyword and DISARMED
+    // by the `}` that closes the body it opened, so a member `let` following a collapsed
+    // function is not swept up by it.
+    let mut brace_depth: usize = 0;
+    let mut fn_scope: Option<usize> = None;
     loop {
         let cur = cursor.node();
         if !cur.is_named() {
             match cur.kind() {
-                "fn" => seen_fn_keyword = true,
+                "fn" => fn_scope = Some(brace_depth),
+                "{" => brace_depth += 1,
+                "}" => {
+                    // Saturating: an `ERROR` can begin mid-body, so the first `}` in the
+                    // subtree may have no `{` to match.
+                    brace_depth = brace_depth.saturating_sub(1);
+                    if fn_scope.is_some_and(|d| brace_depth <= d) {
+                        fn_scope = None;
+                    }
+                }
                 "let" => {
                     let in_fn_body = match cur.parent().map(|p| p.kind()) {
                         // The binding survived recovery intact: its kind is decisive.
                         Some("fn_let_binding") => true,
                         Some("let_declaration") => false,
-                        // Recovery debris — fall back to positional evidence.
-                        _ => seen_fn_keyword,
+                        // Recovery debris — fall back to positional evidence. The `let` must be
+                        // strictly INSIDE the braces opened after the `fn` keyword: a header so
+                        // mangled that no `{` survived (`fn g(` followed by member `let`s) is
+                        // not evidence of a function body.
+                        _ => fn_scope.is_some_and(|d| brace_depth > d),
                     };
                     out.push(LetAnchor {
                         start_byte: cur.start_byte(),
@@ -8741,7 +8769,7 @@ mod tests {
         );
 
         // Recovery debris: the collapse destroys `fn_let_binding`, so the classification falls
-        // back to "an `fn` keyword precedes this `let` in the same wreckage".
+        // back to "this `let` is inside the still-open braces of a preceding `fn` keyword".
         with_root(
             "fn g(i: Int) -> Real {\n  let a = 2\n  a * b\n}\n",
             |root| {
@@ -8750,6 +8778,39 @@ mod tests {
                 assert!(
                     anchors[0].in_fn_body,
                     "a `let` inside the wreckage of a function header is a function-body binding",
+                );
+            },
+        );
+
+        // The only genuinely risky combination, and the one the fallback used to get wrong: a
+        // MEMBER `let` in debris that FOLLOWS an `fn` keyword. A latched "an `fn` was seen"
+        // flag classifies it as a function-body binding and advises a `;` the grammar rejects.
+        //
+        // Fixture measured on tree-sitter-reify: the unterminated `(` in `let y = (1` collapses
+        // the function AND the member `let a` that follows it into ONE `ERROR` whose children
+        // are bare tokens — `fn` `g` `(` `)` `->` Int `{` `let` `y` `=` `(` 1 `}` `let` `a` `=`
+        // 3 — so neither `let` has a `fn_let_binding` / `let_declaration` parent to be decided
+        // by, and both fall to the fallback. Only the brace scope separates them: `let y` is
+        // inside the `{`, `let a` is after the `}` that closed it.
+        with_root(
+            "structure T {\n  fn g() -> Int { let y = (1 }\n  let a = 3\n}\n",
+            |root| {
+                let anchors = collect_let_anchors(root);
+                assert_eq!(
+                    anchors.len(),
+                    2,
+                    "fixture has exactly two `let`s (one fn-body, one structure member)",
+                );
+                assert!(
+                    anchors[0].in_fn_body,
+                    "`let y` sits inside the function's braces and IS a function-body binding",
+                );
+                assert!(
+                    !anchors[1].in_fn_body,
+                    "`let a` is a structure member that merely FOLLOWS a collapsed function; \
+                     classifying it as a function-body binding would emit \"missing ';' after \
+                     `let` binding in function body\" against a construct that is not a \
+                     function body, advising an edit the grammar rejects",
                 );
             },
         );
