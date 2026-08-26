@@ -24,16 +24,20 @@
 // Geometry is a parametric rectangular mounting plate.  Loads attach to opaque
 // string selectors — accepted as selector-target placeholders per
 // `validate_selector_target`; the runtime FEA solver maps them to the actual
-// geometry once topology-kind validation lands (PRD task 16).  The full
-// `param thickness=auto` auto-resolve design loop -- `let mass = volume(bracket)
-// * material.density`, then `constraint peak_stress < yield` and a bare
-// `minimize mass` -- and the body.face()-load bracket-geometry variant are
-// deferred to task 2930 (FEA-in-the-loop optimization + P1=4091/P2=4092
-// arbitrary-geometry producers not yet wired).  Two spellings to avoid when
-// that lands, both of which earlier drafts of this comment used: `minimize
-// <expr> where <cond>` parses but the compiler DISCARDS the guard silently, so
-// the objective runs unopposed (task 6575, ruled reject 2026-08-25 -- objectives
-// take no guard, in either form); and `mass(body)` is not a callable at all.
+// geometry once topology-kind validation lands (PRD task 16).
+//
+// This example keeps `thickness` a FIXED param: it demonstrates the multi-case
+// envelope, not the design loop.  For the `auto` thickness + `minimize mass` +
+// FEA-stress-constraint auto-resolve loop, see
+// `examples/fea_bracket_minimize_mass.ri` (task 2930), which converges a real
+// thickness through the solver's cost loop.  Two spellings to avoid when
+// reaching for that shape, both of which earlier drafts of this comment used:
+// `minimize <expr> where <cond>` parses but the compiler DISCARDS the guard
+// silently, so the objective runs unopposed (task 6575, ruled reject
+// 2026-08-25 -- objectives take no guard, in either form); and `mass(body)` is
+// not a callable at all.  The landed example therefore spells it
+// `let mass = volume(bracket) * material.density`, a separate
+// `constraint peak_stress < yield`, and a bare `minimize mass`.
 //
 // After SIR-α (task 3540) stdlib struct constructors evaluate to
 // `Value::StructureInstance`.  The `let operating = LoadCase(...)`,
@@ -126,16 +130,22 @@ structure MultiLoadBracket {
     // has no precedent in the stdlib .ri files, so keeping the literal avoids
     // a zero-Error-diagnostics risk.
     //
-    // The full `param thickness=auto` auto-resolve design loop --
-    // `let mass = volume(bracket) * material.density`, then
-    // `constraint max(envelope_von_mises(results)) < material.yield_stress`
-    // and a bare `minimize mass` -- is deferred to task 2930 (FEA-in-the-loop
-    // optimization is not wired: the dimensional solver evaluates @optimized
-    // ComputeNodes as Value::Undef inside the constraint-cost loop — see PRD
-    // §6 decision #5, whose 2026-08-25 correction also covers the two fictions
-    // this comment used to carry).  Do NOT collapse the predicate back into
-    // `minimize ... where ...`: that guard parses and is then silently
-    // discarded (task 6575).
+    // `peak_stress` here is a REPORTED quantity, computed once at the fixed
+    // `thickness` above.  To make it DRIVE the design instead, the predicate has
+    // to become a `constraint` member alongside an `auto` param and a `minimize`
+    // objective — the shape `examples/fea_bracket_minimize_mass.ri` demonstrates
+    // (task 2930), wired by task 4880's compute-dispatch hook, which lets the
+    // dimensional solver evaluate @optimized ComputeNodes for real inside the
+    // constraint-cost loop rather than as Value::Undef.
+    //
+    // Note the predicate must be a separate `constraint` MEMBER.  The tempting
+    // one-liner `minimize mass(bracket) where <predicate>` does not work: the
+    // parser accepts the guard but the compiler's Minimize lowering arm never
+    // reads it, so the predicate is silently discarded and the optimiser runs
+    // unopposed (task 6575, ruled reject 2026-08-25 — objectives take no guard,
+    // in either form).  (`mass(...)` is likewise not a function — mass is a
+    // derived `let`; and `material.yield_stress` is an `Option<Pressure>`,
+    // which is why the `yield_limit` literal below exists.)
     let peak_stress  = max(envelope)
     let yield_limit  = 310MPa
     let within_yield = peak_stress < yield_limit

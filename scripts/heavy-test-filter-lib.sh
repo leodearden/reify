@@ -43,7 +43,9 @@ _REIFY_HEAVY_TEST_FILTER_LIB_SOURCED=1
 # The `heavy` set (PRD §3): reify-solver-elastic {determinism,
 # analytical_validation, modal_benchmarks} + reify-eval {tensegrity_t0a} +
 # reify-eval-fea-tests {buckling_smoke, fea_diagnostics_e2e} + reify-eval
-# {harness_fea_solver_e2e::fea_in_the_loop_producer, test-scoped -- task 6368}.
+# {harness_fea_solver_e2e::fea_in_the_loop_producer, test-scoped -- task 6368}
+# + reify-eval {harness_fea_solver_e2e::fea_bracket_minimize_mass_e2e,
+# test-scoped -- task 2930}.
 # Positive expression only — the gate view derives
 # `not ($REIFY_HEAVY_NEXTEST_FILTER)` at the A4 consumer, so this is the one
 # place membership can ever change.
@@ -77,4 +79,21 @@ _REIFY_HEAVY_TEST_FILTER_LIB_SOURCED=1
 # kLOC-cap split (harness_process_dfm.rs) deliberately moved the process_dfm_*
 # group out of harness_fea_solver_e2e rather than this submodule, for that
 # reason.
-export REIFY_HEAVY_NEXTEST_FILTER='(package(reify-solver-elastic) & binary(determinism)) | (package(reify-solver-elastic) & binary(analytical_validation)) | (package(reify-solver-elastic) & binary(modal_benchmarks)) | (package(reify-eval-fea-tests) & binary(buckling_smoke)) | (package(reify-eval) & binary(tensegrity_t0a)) | (package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)) | (package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/))'
+#
+# The 8th atom (task 2930) is the same shape and lands for the same reason: the
+# fea_bracket_minimize_mass_e2e submodule drives the shipped
+# examples/fea_bracket_minimize_mass.ri through a real Nelder-Mead-over-FEA
+# design loop. It is TEST-scoped for the identical esc-6368-2 reason -- it
+# shares the harness_fea_solver_e2e binary with the same ~246 fast siblings, and
+# a whole-binary atom would evict all of them to relieve one.
+#
+# MEASURED COST, stated plainly because it is smaller than the 7th atom's and
+# the difference matters: 66s / 93s / 105s across three runs on a contended
+# 32-core host -- roughly 5x cheaper than the producer's ~490s, but still ~30x
+# the harness's 2.25s per-test mean and consistently at or above nextest's 60s
+# SLOW threshold. It is the slowest test in the binary after the producer. The
+# cost is irreducible rather than incidental: the assertion that earns the
+# runtime is that the auto thickness converges STRICTLY INTERIOR to its bounds,
+# which is what distinguishes a binding FEA stress constraint from a silent
+# no-op, and there is no cheaper way to observe it than running the loop.
+export REIFY_HEAVY_NEXTEST_FILTER='(package(reify-solver-elastic) & binary(determinism)) | (package(reify-solver-elastic) & binary(analytical_validation)) | (package(reify-solver-elastic) & binary(modal_benchmarks)) | (package(reify-eval-fea-tests) & binary(buckling_smoke)) | (package(reify-eval) & binary(tensegrity_t0a)) | (package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)) | (package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/)) | (package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_bracket_minimize_mass_e2e::/))'

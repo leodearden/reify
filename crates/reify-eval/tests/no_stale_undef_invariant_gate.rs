@@ -1568,6 +1568,27 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
         "25.7ms — dynamics::inverse_dynamics, covered by \
          flexures/printer_z_compliant_mount (17.1ms)",
     ),
+    (
+        "fea_bracket_minimize_mass",
+        "5.19ms — solver::elastic_static, covered by fea_shell_too_thick_annotated \
+         (15ms). The ONE entry here that is NOT a cost drop, and the one place the \
+         \"cheapest measured file wins\" rule in the selection method above is \
+         deliberately NOT applied: this file is ~3x CHEAPER than the member it \
+         defers to, and it is cheap for exactly the reason that disqualifies it. \
+         Its `solve_elastic_static` call is INLINED in a `constraint` expression \
+         rather than bound to a `let` (see the example's own comment for why that \
+         is forced), and `gate_engine` wires NO constraint solver — so the cost \
+         loop that would evaluate that expression never runs on this surface. \
+         MEASURED by building it through `build_surface_violations`: \
+         `dispatched_targets` comes back EMPTY, against \
+         [\"shell-extract::extract\", \"solver::elastic_static\"] for the covering \
+         member. Promoting it would fail assertion (3) outright — credited with a \
+         target it reaches zero times — so its 4ms buys no coverage at all. It \
+         would need no BUILD_SURFACE_KNOWN_RESIDUALS entry either: measured \
+         violations come back empty too. The eval surface, where the FEA loop does \
+         run and does converge, is where this example is pinned instead: \
+         crates/reify-eval/tests/harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs.",
+    ),
     ("fea_cantilever_smoke", "410ms — solver::elastic_static"),
     ("fea_multi_case_smoke", "294ms — solver::elastic_static"),
     ("fea_pressure_smoke", "286ms — solver::elastic_static"),
