@@ -511,9 +511,31 @@ fn well_formed_fn_bodies_produce_no_diagnostics() {
 /// OTHER declaration contributes a distinct anchoring `let` (measured: 12 broken functions
 /// yield 5 separator diagnostics from the first node). 24 is the smallest round count that
 /// pushes one node past the cap of 8.
+///
+/// The assertions below are deliberately NOT `suppressed.len() == 1` / `separator <= 8`.
+/// `MAX_DIAGNOSTICS` is a PER-ERROR-NODE cap and those are file-global counts, so they pinned
+/// a recovery-shape accident rather than the property they named. Measured on this fixture the
+/// parse already yields FOUR distinct generic diagnostics — i.e. at least four contributing
+/// `ERROR` nodes — and the global count stayed under 8 only because the nodes after the capped
+/// one happened to contribute no separator diagnostics at all. Let recovery redistribute those
+/// 24 breaks across two capped nodes and the implementation would still be behaving exactly as
+/// documented (<=8 per node, one note per capped node) while both assertions failed.
+///
+/// So this pins what is observable from outside a node boundary, under ANY split:
+///
+/// - the cap is reached and ANNOUNCED (at least one suppression note);
+/// - every note is emitted only AFTER its node actually hit the cap — diagnostics are pushed
+///   in walk order, so a note preceded by fewer than `MAX_DIAGNOSTICS` reports means the cap
+///   fired early;
+/// - the report stays BOUNDED — strictly fewer separator diagnostics than broken functions,
+///   which is what removing the cap would blow through (it would emit one per function);
+/// - and the cap BOUNDS the report rather than REPLACING it (at least two located reports).
 #[test]
 fn a_file_of_broken_functions_is_bounded_and_says_so() {
     const FNS: usize = 24;
+    /// Mirrors `diagnose_error_node`'s private `MAX_DIAGNOSTICS`. Kept as a named constant so
+    /// the assertions below read as the per-node cap they are, not as bare magic numbers.
+    const MAX_DIAGNOSTICS: usize = 8;
 
     let mut source = String::new();
     for n in 0..FNS {
@@ -526,20 +548,37 @@ fn a_file_of_broken_functions_is_bounded_and_says_so() {
 
     let m = reify_syntax::parse(&source, ModulePath::single("t"));
     let all = triples(&m);
-
-    let suppressed: Vec<_> = m
+    // Carries each note's INDEX in emission order alongside the note: the per-node cap check
+    // below needs the position, and recovering it afterwards by identity comparison is both
+    // fussier and less obvious than collecting it here.
+    let suppressed: Vec<(usize, &reify_ast::ParseError)> = m
         .errors
         .iter()
-        .filter(|e| e.message.contains("further errors suppressed"))
+        .enumerate()
+        .filter(|(_, e)| e.message.contains("further errors suppressed"))
         .collect();
-    assert_eq!(
-        suppressed.len(),
-        1,
-        "{FNS} independently broken functions must trip the per-ERROR-node diagnostic cap \
-         on at least one node, so the truncation is announced rather than silent; got {}.\n\
+    assert!(
+        !suppressed.is_empty(),
+        "{FNS} independently broken functions must trip the per-ERROR-node diagnostic cap on \
+         at least one node, so the truncation is announced rather than silent; got none. If \
+         this fires because recovery started splitting the file into smaller `ERROR` nodes \
+         (none of which reaches {MAX_DIAGNOSTICS} anchoring `let`s), the fixture — not the \
+         cap — is what needs to grow: raise FNS until one node caps again.\n\
          diagnostics: {all:?}",
-        suppressed.len(),
     );
+
+    // Diagnostics are pushed in walk order and a node's suppression note is the LAST report it
+    // emits, so a note appearing before `MAX_DIAGNOSTICS` reports have been pushed means the
+    // cap fired early. This is the per-node bound restated in the only terms a caller outside
+    // `diagnose_error_node` can actually observe.
+    for &(idx, _) in &suppressed {
+        assert!(
+            idx >= MAX_DIAGNOSTICS,
+            "a `(further errors suppressed)` note was emitted at index {idx}, before its node \
+             could have reached the cap of {MAX_DIAGNOSTICS} — truncation must announce a cap \
+             that was actually hit.\ndiagnostics: {all:?}",
+        );
+    }
 
     let separator = m
         .errors
@@ -547,9 +586,10 @@ fn a_file_of_broken_functions_is_bounded_and_says_so() {
         .filter(|e| e.message.contains("';'"))
         .count();
     assert!(
-        separator <= 8,
-        "the per-ERROR-node cap is 8, but {separator} separator diagnostics were emitted — a \
-         badly broken file buries its first fault.\ndiagnostics: {all:?}",
+        separator < FNS,
+        "the cap must BOUND the report: {FNS} broken functions produced {separator} separator \
+         diagnostics, i.e. roughly one per function, so a badly broken file buries its first \
+         fault under recovery noise.\ndiagnostics: {all:?}",
     );
     assert!(
         separator >= 2,
@@ -559,7 +599,7 @@ fn a_file_of_broken_functions_is_bounded_and_says_so() {
 
     // The suppression note must be LOCATED, not a whole-file blob. It is anchored at the first
     // fault it declined to report, so it sits strictly inside the source and is short.
-    let note = suppressed[0];
+    let note = suppressed[0].1;
     assert!(
         note.span.start > 0 && (note.span.end as usize) < source.len(),
         "the suppression note spans the whole collapsed node ({}..{} of {} bytes) — that is \
