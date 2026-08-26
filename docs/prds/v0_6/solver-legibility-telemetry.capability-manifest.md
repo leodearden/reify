@@ -12,7 +12,10 @@ Machine-readable twin: `solver-legibility-telemetry.capability-manifest.yaml`.
 Its `delivered_check` bindings are the **post-delivery** state (pattern-anchored ERE,
 never `file:line`); `kind: manual` entries are recorded but excluded from the
 dispatch gate. Every `grep` check in the sidecar was executed at authoring time and
-confirmed to resolve in the asserted direction.
+confirmed to resolve in the asserted direction. Two of them (β's verdict token and
+δ's mount gate) assert the **post-delivery** state and therefore fail *today* by
+design — they are delivery assertions, not evidence of the current defect, which the
+`binding` column records in prose instead.
 
 **Gate verdict: PASS.** 17 leaves, 53 capability bindings, no binding resolving to
 `declared-only`, `test-only`, `producer-absent`, `producer-downstream`,
@@ -28,9 +31,10 @@ leaf** — λ's `pub(crate)` observational accessor for `last_check()`. That is 
 gate failure: the leaf that needs it is the leaf that adds it, precedented by
 `EngineSession::engine()`.
 
+
 ---
 
-## α — P4-alpha: carry objective_provenance through CheckResult and BuildResult
+## α (#6721) — P4-alpha: carry objective_provenance through CheckResult and BuildResult
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -38,7 +42,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `narrowing-site-is-real` | **PASS** | signal premise (the defect alpha closes) — Engine::check builds CheckResult from five fields and objective_provenance is not among them, so the field is computed by the inner eval() and dropped at the EvalResult->CheckResult boundary. Verified by reading the CheckResult construction 2026-08-26 (git grep for objective_provenance in engine_constraints.rs returns nothing today). The delivered_check is the POST-delivery state: after alpha the symbol must be present at that seam.<br>`grep:objective_provenance` → `present` in `crates/reify-eval/src/engine_constraints.rs` |
 | `buildresult-lacks-field` | **PASS** | signal premise — BuildResult declares values/constraint_results/geometry_output/diagnostics/resolved_params only.<br>_manual_ — a struct-field-absence property across a definition alpha itself edits; asserting absence post-alpha would be wrong, and asserting presence pre-alpha would fail. Pinned by alpha's own Rust test instead. |
 
-## ε — P4-epsilon: key per-inequality slack by ConstraintNodeId and carry margin on ConstraintCheckEntry
+## ε (#6722) — P4-epsilon: key per-inequality slack by ConstraintNodeId and carry margin on ConstraintCheckEntry
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -47,15 +51,15 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `equality-has-no-signed-slack` | **PASS** | G6 branch 4 (honest absence) — Eq/Ne/Or are explicitly skipped by the decomposition, so margin is None for an equality. epsilon's signal asserts n/a, never 0. Verified by reading the collect_slack_terms doc contract.<br>_manual_ — a negative semantic property of a match arm; the assertion is that epsilon's fixture reports n/a for an equality row, which is a test postcondition rather than a repo pattern. |
 | `tolerance-upstream` | **PASS** | capability→producer via dependency closure — toleranced Scalar equality verdicts are delivered by task 6653, wired UPSTREAM of epsilon. Without it a correctly-solved model reports false-VIOLATED and the slack column would decorate a wrong verdict.<br>_manual_ — upstream task delivery, verified by the wired dependency edge to 6653, not by a repo pattern. |
 
-## β — P4-beta: verdict wire contract — fix the status casing and pin it with a two-way boundary test
+## β (#6723) — P4-beta: verdict wire contract — fix the status casing and pin it with a two-way boundary test
 
 | Capability | Verdict | Evidence |
 |---|---|---|
-| `backend-emits-titlecase` | **PASS** | signal premise (the defect) — build_constraints maps Satisfaction to "Satisfied"/"Violated"/"Indeterminate" at two sites, and build_constraints is the production feed for GuiState.constraints.<br>`grep:"Satisfied"` → `present` in `gui/src-tauri/src/engine.rs` |
+| `backend-emits-lowercase-after-fix` | **PASS** | signal premise + delivery assertion — build_constraints maps Satisfaction to TitleCase tokens at two sites TODAY (verified 2026-08-26; that is the defect), and build_constraints is the production feed for GuiState.constraints. The delivered_check is the POST-delivery state: after beta the lower-case token the six frontend consumers already compare must be what the backend emits.<br>`grep:"satisfied"` → `present` in `gui/src-tauri/src/engine.rs` |
 | `frontend-compares-lowercase` | **PASS** | signal premise (the other half) — StatusBar and ConstraintPanel both switch on lower-case tokens.<br>`grep:'satisfied'` → `present` in `gui/src/panels/StatusBar.tsx`, `gui/src/panels/ConstraintPanel.tsx` |
 | `no-normaliser-exists` | **PASS** | rejection-mechanism (anti-silent-accept) — there is no case normalisation on the path between them; the only toUpperCase in the frontend formats a file extension. Observed absence is what makes the badge dead rather than merely inconsistent.<br>`grep:toLowerCase` → `absent` in `gui/src/stores/engineStore.ts`, `gui/src/bridge.ts`, `gui/src/panels/ConstraintPanel.tsx`, `gui/src/panels/StatusBar.tsx` |
 
-## γ — P4-gamma: eval-time diagnostics reach the GUI under a solve source tag
+## γ (#6724) — P4-gamma: eval-time diagnostics reach the GUI under a solve source tag
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -64,21 +68,21 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `wire-type-already-carries-code` | **PASS** | capability→producer (anti-orphan) — DiagnosticInfo carries an Option<String> code across the IPC boundary and DiagnosticsPanel already filters by source, so gamma adds a source tag, not a wire format.<br>`grep:code` → `present` in `gui/src-tauri/src/types.rs` |
 | `optimality-warning-is-coded` | **PASS** | capability→producer — W_SOLVER_OPTIMALITY_UNPROVEN is emitted with DiagnosticCode::SolverOptimalityUnproven, so gamma's renderer can key on the code rather than message text (INV-SF-6).<br>`grep:SolverOptimalityUnproven` → `present` in `crates/reify-eval/src/engine_eval.rs`, `crates/reify-core/src/diagnostics.rs` |
 
-## δ — P4-delta: AutoResolvePanel lifecycle — mount on data, render a single sample honestly
+## δ (#6725) — P4-delta: AutoResolvePanel lifecycle — mount on data, render a single sample honestly
 
 | Capability | Verdict | Evidence |
 |---|---|---|
-| `active-gated-mount-exists` | **PASS** | signal premise (the defect) — the panel is mounted under a Show gated on autoResolve.active, while the backend fires start/iteration/complete synchronously in one call and endAutoResolveLoop clears iterations.<br>`grep:autoResolve.active` → `present` in `gui/src/App.tsx` |
+| `mount-no-longer-gated-on-active` | **PASS** | signal premise + delivery assertion — the panel is mounted under a Show gated on autoResolve.active TODAY, while the backend fires start/iteration/complete synchronously in one call and endAutoResolveLoop clears iterations, so the gate can never be observed true (that is the defect). The delivered_check is the POST-delivery state: after delta the mount no longer keys on that flag.<br>`grep:autoResolve\.active` → `absent` in `gui/src/App.tsx` |
 | `emitter-fires-single-synchronous-trio` | **PASS** | signal premise — emit_auto_resolve_if_any builds one AutoResolveIteration with iteration 0 and calls start, iteration, complete back to back.<br>`grep:fn emit_auto_resolve_if_any` → `present` in `gui/src-tauri/src/engine.rs` |
 
-## ζ — P4-zeta: ConstraintPanel — true verdicts plus a slack column
+## ζ (#6726) — P4-zeta: ConstraintPanel — true verdicts plus a slack column
 
 | Capability | Verdict | Evidence |
 |---|---|---|
 | `margin-upstream` | **PASS** | DAG-direction (anti-inversion) — the margin field is delivered by epsilon, wired UPSTREAM of zeta; the verdict fix is delivered by beta, also upstream.<br>_manual_ — upstream task delivery, verified by wired dependency edges to epsilon and beta. |
 | `panel-renders-constraint-rows-today` | **PASS** | capability→producer (anti-orphan) — ConstraintPanel already renders a row per constraint with a status badge, so zeta adds a column to a live surface.<br>`grep:ConstraintPanel` → `present` in `gui/src/panels/index.ts` |
 
-## η — P4-eta: PropertyEditor per-auto provenance chip
+## η (#6727) — P4-eta: PropertyEditor per-auto provenance chip
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -86,7 +90,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `provenance-reaches-the-gui-load-path` | **PASS** | DAG-direction (anti-inversion) — alpha, upstream, carries provenance onto CheckResult, which is what the GUI load path returns.<br>_manual_ — upstream task delivery, verified by the wired edge to alpha. |
 | `edit-path-parity-is-upstream-not-here` | **PASS** | G6 branch 3 (capability in the dependency set) — the warm/edit half requires P1 kappa (task 6699), wired UPSTREAM. eta must not assert edit-path provenance without it; before 6699 the warm map is structurally empty.<br>_manual_ — upstream cross-PRD task delivery, verified by the wired edge to 6699. |
 
-## θ — P4-theta: StatusBar solve-summary chip
+## θ (#6728) — P4-theta: StatusBar solve-summary chip
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -94,7 +98,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `resolution-profile-is-upstream` | **PASS** | G6 branch 3 — the budget and staleness axes the chip renders are delivered by P1 alpha (task 6689), wired UPSTREAM. theta must not assert a staleness marker before it.<br>_manual_ — upstream cross-PRD task delivery, verified by the wired edge to 6689. |
 | `never-asserts-proven-optimal` | **PASS** | G6 branch 1/3 (false-premise guard) — SolverRegistry::production leaves the Logical slot None and CP-SAT is unregistered, so every production objective solve returns BestFound. The chip must never render ProvenOptimal.<br>`grep:ProvenOptimal` → `absent` in `gui/src/panels/StatusBar.tsx` |
 
-## ι — P4-iota: DOF badge in StatusBar rendering task 4388's ledger
+## ι (#6730) — P4-iota: DOF badge in StatusBar rendering task 4388's ledger
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -102,7 +106,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `residual-dof-data-already-computed` | **PASS** | capability→producer — RelateSolution carries spent/free/driving/redundant, populated on the relate-solve path today; it currently has no reader, which is the orphan 4388 plus this leaf close.<br>`grep:pub free` → `present` in `crates/reify-eval/src/relate_solve.rs` |
 | `dof-zero-is-not-a-fact` | **PASS** | G6 branch 1 (numeric honesty) — SystemBuilder::solve's empty-constraint early return of dof 0 is a known lie for sketches; libslvs reports an honest dof 4 for two free 2D points. The badge must not render that zero as measured.<br>_manual_ — a negative rendering obligation; asserted by iota's own test that a constraint-free sketch does not display a measured zero. |
 
-## κ — P4-kappa: constraint-solver producer on SolverProgressSink plus overlay visibility
+## κ (#6731) — P4-kappa: constraint-solver producer on SolverProgressSink plus overlay visibility
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -110,7 +114,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `only-fea-cg-produces-today` | **PASS** | signal premise (the gap) — the only solver_kind in the tree is "cg", emitted by the FEA elastic-static CG loop. The constraint solver emits nothing on this channel.<br>`grep:solver_kind: "cg"` → `present` in `crates/reify-eval/src/compute_targets/elastic_static.rs` |
 | `no-iteration-count-is-asserted` | **PASS** | G6 branch 1 (false-premise guard) — no iteration count, wall-clock or exit residual escapes reify-constraints; SolveMeta is private and one bit wide. kappa's signal is a residual TRACE from the per-iteration sink, never a count read off a result type.<br>_manual_ — a scoping obligation on the signal wording; verified by kappa's test asserting a trace of samples rather than a terminal count. |
 
-## λ — P4-lambda: solve_report debug-MCP tool
+## λ (#6732) — P4-lambda: solve_report debug-MCP tool
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -120,7 +124,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `last-check-accessor-must-be-added` | **PASS** | capability→producer (producer-absent TODAY, delivered BY this leaf) — EngineSession exposes last_check only under cfg(test); reaching CheckResult needs a new pub(crate) observational accessor, precedented by EngineSession::engine.<br>_manual_ — the capability is absent today and is delivered by lambda itself; asserting presence pre-lambda would fail and post-lambda is lambda's own test. |
 | `signal-is-not-ci-gated` | **PASS** | G6 branch 3 (honest signal scope) — scripts/verify.sh references no test:e2e, test:visual, test:smoke, REIFY_DEBUG or 3939, so the debug-MCP e2e harness is not CI-gated. lambda's signal says green via npm --prefix gui run test:e2e against a live reify-gui, never green in CI.<br>`grep:test:e2e|test:visual|REIFY_DEBUG` → `absent` in `scripts/verify.sh` |
 
-## ξ — P4-xi: reify explain — the dropped fields, slack, and a failure vocabulary
+## ξ (#6733) — P4-xi: reify explain — the dropped fields, slack, and a failure vocabulary
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -129,7 +133,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `infeasible-and-no-autos-are-indistinguishable-today` | **PASS** | signal premise (the defect) — explain prints the same no-provenance sentinel for an infeasible model and for a model with no autos; only stderr and the exit code separate them.<br>`grep:No objective provenance recorded` → `present` in `crates/reify-cli/src/main.rs` |
 | `stale-anchor-is-repaired-here` | **PASS** | code-anchor hygiene — cmd_explain's own rustdoc cites engine_eval.rs:3884 for the provenance rationale; that line is now an unrelated field-elaboration arm. xi re-cites by symbol.<br>`grep:engine_eval.rs:3884` → `absent` in `crates/reify-cli/src/main.rs` |
 
-## ο — P4-omicron: docs-truth for the observable legibility surface
+## ο (#6735) — P4-omicron: docs-truth for the observable legibility surface
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -137,14 +141,14 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `documented-signatures-verified-against-registries` | **PASS** | docs-truth gate — every documented signature must compile as written and be checked against the compiler arms and unit registries, not against prose.<br>_manual_ — a per-signature verification obligation discharged by omicron's smoke .ri compiling as written. |
 | `discoverability-acceptance` | **PASS** | docs-truth gate item 4 — an author who knows the goal but not the feature name must reach slack and provenance from the chunks or the corpus index.<br>_manual_ — an intent-level findability judgement; not mechanically expressible. |
 
-## φ — P4-phi: two-way solve-record parity gate (INTEGRATION GATE)
+## φ (#6736) — P4-phi: two-way solve-record parity gate (INTEGRATION GATE)
 
 | Capability | Verdict | Evidence |
 |---|---|---|
 | `names-the-boundary-sketch` | **PASS** | G5 B+H closure — phi's signal is the PRD section 5 boundary-test table in full, facing both the producer and the consumer side of every seam this PRD touches.<br>_manual_ — the signal is a committed test target enumerating the ten sketch rows; verified by the target existing and passing. |
 | `upstream-leaves-deliver-every-row` | **PASS** | DAG-direction (anti-inversion) — every row's capability is delivered by a leaf wired UPSTREAM of phi (beta, gamma, zeta, eta, theta, kappa, lambda, xi), plus P1 6689 and 6699 for the two cross-PRD rows.<br>_manual_ — upstream task delivery, verified by the wired dependency edges. |
 
-## μ — P4-mu: author opt-in to the robustness floor for non-Money objectives
+## μ (#6737) — P4-mu: author opt-in to the robustness floor for non-Money objectives
 
 | Capability | Verdict | Evidence |
 |---|---|---|
@@ -154,14 +158,14 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `eval-side-twin-must-move-in-lockstep` | **PASS** | G7 no-lockstep-duplication — objective_is_money is duplicated in reify-eval to gate the Info diagnostic, deliberately, to preserve dependency inversion. mu must edit both.<br>`grep:objective_is_money` → `present` in `crates/reify-eval/src/engine_eval.rs`, `crates/reify-constraints/src/solver.rs` |
 | `clamp-box-coupling-is-upstream` | **PASS** | G6 branch 3 — un-gating the floor also un-gates the constraint-derived clamp box, which is blocked on the uniqueness-contract ruling owned by task 5711, wired UPSTREAM.<br>_manual_ — upstream task delivery, verified by the wired edge to 5711. |
 
-## π — P4-pi: docs-truth for the robustness opt-in
+## π (#6738) — P4-pi: docs-truth for the robustness opt-in
 
 | Capability | Verdict | Evidence |
 |---|---|---|
 | `exemplar-corpus-is-compile-gated` | **PASS** | capability→producer (anti-orphan) — examples under the best-practices corpus are auto-compile-gated by the examples smoke test, so a worked example cannot silently rot.<br>`grep:examples_smoke` → `present` in `crates/reify-compiler/tests/` |
 | `discoverability-acceptance` | **PASS** | docs-truth gate item 4 — an author who knows the goal, stop my optimum parking on the clearance bound, but not the feature name must reach it from the chunks or the corpus index.<br>_manual_ — an intent-level findability judgement; not mechanically expressible. |
 
-## ω — P4-omega: PRD close — terminal status stamp and the AS-AUTHORED freeze
+## ω (#6739) — P4-omega: PRD close — terminal status stamp and the AS-AUTHORED freeze
 
 | Capability | Verdict | Evidence |
 |---|---|---|
