@@ -981,14 +981,22 @@ describe('engineStore autoResolve loop state', () => {
     });
   });
 
-  it('(b) beginAutoResolveLoop sets active=true and clears iterations', () => {
+  it('(b) beginAutoResolveLoop sets active=true; the new loop\'s first iteration is what drops the old samples', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
       applyAutoResolveIteration(sampleIteration);
       expect(state.autoResolve.iterations).toHaveLength(1);
+
       beginAutoResolveLoop();
       expect(state.autoResolve.active).toBe(true);
-      expect(state.autoResolve.iterations).toHaveLength(0);
+      // The clear is deferred, not skipped: the previous samples stay visible
+      // until this loop actually has something to show.
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 9 });
+      // A new loop must not show the previous loop's samples.
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.iterations[0].iteration).toBe(9);
       dispose();
     });
   });
@@ -1179,7 +1187,7 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
     });
   });
 
-  it('(b) auto-resolve-start callback flips active=true and clears iterations', async () => {
+  it('(b) auto-resolve-start callback flips active=true and defers the clear', async () => {
     await createRoot(async (dispose) => {
       let startCb: (() => void) | undefined;
       mockOnMeshUpdate.mockResolvedValue(vi.fn());
@@ -1197,7 +1205,8 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
 
       startCb!();
       expect(store.state.autoResolve.active).toBe(true);
-      expect(store.state.autoResolve.iterations).toHaveLength(0);
+      // Deferred: the previous loop's sample survives until this loop emits one.
+      expect(store.state.autoResolve.iterations).toHaveLength(1);
       dispose();
     });
   });
@@ -1410,7 +1419,10 @@ describe('engineStore autoResolve driving_metric invariance', () => {
 
       endAutoResolveLoop();
       beginAutoResolveLoop();
-      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      // The reset is deferred to the new loop's first iteration, so the stale
+      // canonical is still readable here — what matters is that it does not
+      // survive that iteration, nor cause it to be dropped as a mismatch.
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('A');
 
       const iterB = { ...sampleIteration, driving_metric: 'B', driving_metric_value: 1 };
       applyAutoResolveIteration(iterB);
@@ -1421,7 +1433,7 @@ describe('engineStore autoResolve driving_metric invariance', () => {
     });
   });
 
-  it('(7) a second beginAutoResolveLoop without endAutoResolveLoop in between still clears canonical', () => {
+  it('(7) a second beginAutoResolveLoop without endAutoResolveLoop in between still resets canonical on its first iteration', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
       beginAutoResolveLoop();
@@ -1429,10 +1441,10 @@ describe('engineStore autoResolve driving_metric invariance', () => {
       applyAutoResolveIteration(iterA);
       expect(state.autoResolve.canonicalDrivingMetric).toBe('A');
 
-      // Fresh begin without an explicit end — must still clear canonical.
+      // Fresh begin without an explicit end — the reset is owed, not yet done.
       beginAutoResolveLoop();
-      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
-      expect(state.autoResolve.iterations).toHaveLength(0);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('A');
+      expect(state.autoResolve.iterations).toHaveLength(1);
 
       const iterB = { ...sampleIteration, driving_metric: 'B', driving_metric_value: 1 };
       applyAutoResolveIteration(iterB);

@@ -59,17 +59,38 @@ export interface AutoResolveLoopState {
   /**
    * Canonical driving metric for the current loop — cached on first acceptance of
    * an iteration that declares one. Read by `applyAutoResolveIteration` in O(1)
-   * rather than scanning `iterations`. Cleared by `beginAutoResolveLoop` and
-   * `endAutoResolveLoop` so each loop starts with a fresh canonical.
+   * rather than scanning `iterations`. Cleared by the deferred loop reset (see
+   * `pendingReset`) so each loop that produces data starts with a fresh canonical.
    */
   canonicalDrivingMetric?: string;
   /**
    * Whether an empty-string `driving_metric` warning has already been emitted
    * for the current loop. Used to rate-limit the warn to once-per-loop so a
    * misconfigured producer that floods empty-string iterations does not flood
-   * the dev console. Cleared by `beginAutoResolveLoop` and `endAutoResolveLoop`.
+   * the dev console. Cleared by the deferred loop reset (see `pendingReset`).
    */
   warnedEmptyMetric?: boolean;
+  /**
+   * A new loop has started but has not yet produced an iteration, so the
+   * PREVIOUS loop's samples are still on screen and its clear is still owed.
+   *
+   * The engine re-fires the whole start/iteration/complete trio on every
+   * re-eval that has resolved parameters — there is no engine-side dedup. If
+   * `beginAutoResolveLoop` cleared eagerly, the store would walk
+   * `[iter] -> [] -> [iter]` on every commit, and the data-gated panel would
+   * unmount and remount: the side-panel grid track count changes, scroll
+   * position is lost, and a blank frame can paint. Deferring the clear to the
+   * first accepted iteration closes that window.
+   *
+   * Discharged by whichever comes first: `applyAutoResolveIteration` (the loop
+   * produced data — replace) or `endAutoResolveLoop` (the loop produced
+   * nothing — clear, so an empty loop cannot strand stale samples).
+   *
+   * Initialised to `undefined` rather than `false` deliberately: the initial
+   * -state test asserts `toEqual({ active: false, iterations: [] })`, which
+   * holds only because Vitest's `toEqual` ignores `undefined`-valued keys.
+   */
+  pendingReset?: boolean;
 }
 
 export interface EngineState {
@@ -121,7 +142,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tessellationDiagnostics: [],
     compileDiagnostics: [],
     kernelStatus: null,
-    autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined },
+    autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined, pendingReset: undefined },
     tensegrityWires: [],
     tensegritySurfaces: [],
     displayPanes: [],
@@ -248,9 +269,15 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('kernelStatus', status);
   }
 
-  /** Start a new auto-resolve loop: flip active=true and clear previous iterations. */
+  /**
+   * Start a new auto-resolve loop: flip `active` true and OWE the clear.
+   *
+   * The previous loop's samples are deliberately left in place until this loop
+   * produces its first iteration (or ends without one) — see `pendingReset`.
+   * Clearing here would blink the data-gated panel on every re-eval.
+   */
   function beginAutoResolveLoop() {
-    setState('autoResolve', { active: true, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
+    setState('autoResolve', { active: true, pendingReset: true });
   }
 
   /**
@@ -267,6 +294,19 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * AutoResolveIteration invariant in types.ts).
    */
   function applyAutoResolveIteration(iter: AutoResolveIteration) {
+    // Discharge the clear owed by `beginAutoResolveLoop`. This MUST run before
+    // the empty-metric warn and before the canonical-mismatch check below:
+    // `canonicalDrivingMetric` and `warnedEmptyMetric` still belong to the
+    // PREVIOUS loop, so checking first would drop every iteration of a new loop
+    // whose driving metric differs, freezing the panel on the old loop forever.
+    if (state.autoResolve.pendingReset) {
+      setState('autoResolve', {
+        iterations: [],
+        canonicalDrivingMetric: undefined,
+        warnedEmptyMetric: undefined,
+        pendingReset: undefined,
+      });
+    }
     // Empty-string driving_metric is treated as "no metric declared" — same as
     // undefined — but emits a console.warn (once per loop) so the upstream
     // malformation (the wire schema permits omission, not empty-string) is
@@ -309,6 +349,17 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * `initFromState` reload.
    */
   function endAutoResolveLoop() {
+    // A loop that produced no iteration never discharged its owed clear — do it
+    // here, so a start/complete pair with no data cannot strand the previous
+    // loop's samples on screen indefinitely.
+    if (state.autoResolve.pendingReset) {
+      setState('autoResolve', {
+        iterations: [],
+        canonicalDrivingMetric: undefined,
+        warnedEmptyMetric: undefined,
+        pendingReset: undefined,
+      });
+    }
     setState('autoResolve', 'active', false);
   }
 
