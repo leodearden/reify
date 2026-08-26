@@ -1280,9 +1280,6 @@ enum OptimizedInstanceResolution {
     /// An `@optimized` call whose template-scope value CANNOT be proven to
     /// apply to this instance. The caller falls back to body-inlining (today's
     /// behaviour) and reports `reason`.
-    // The two fields are read by the unreusable-case diagnostic wired at the
-    // phase-2 commit site; the allow covers the interval before that lands.
-    #[allow(dead_code)]
     Unreusable { target: String, reason: String },
 }
 
@@ -1739,17 +1736,44 @@ fn elaborate_child_lets_only<'t>(
         // template's already-dispatched value instead of body-inlining the
         // `.ri` function's sentinel. This is the AUTHORITATIVE instance-scope
         // let commit, so it is the site that decides the committed value.
-        let val = match resolve_optimized_instance_cell(
+        let resolution = resolve_optimized_instance_cell(
             expr,
             functions,
             child_template,
             member,
             &child_values,
             values,
-        ) {
+        );
+
+        // The decline is LOUD but not fatal. The VALUE is byte-identical to
+        // pre-#6662 behaviour, so no fixture changes outcome and no exit code
+        // moves — the warning removes only the silence, which is the actual
+        // defect class here. Escalating it to a hard failure is #6608's
+        // declared scope, and genuine per-instance dispatch under constructor
+        // overrides is #6592's.
+        //
+        // Emitted from THIS site only. Phase 1.5's scratch arm sees the same
+        // cell, so reporting from both would double every warning; phase 2 is
+        // the authoritative committing site, so it owns the report.
+        //
+        // Note this stays silent for a merely UNREGISTERED target (`reify
+        // check` registers none): there template scope body-inlines too, the
+        // inputs compare equal, and the helper returns `Reuse(sentinel)` — the
+        // two scopes agree, which is correct. Do not "fix" that into a
+        // duplicate of template scope's own unregistered-target diagnostic.
+        if let OptimizedInstanceResolution::Unreusable { target, reason } = &resolution {
+            diagnostics.push(Diagnostic::warning(format!(
+                "@optimized target {:?} at instance scope {}.{}: {} — falling back \
+                 to body-inlining (per-instance dispatch under constructor \
+                 overrides is tracked by #6592)",
+                target, scoped_entity, member, reason,
+            )));
+        }
+
+        let val = match resolution {
             OptimizedInstanceResolution::Reuse(v) => v,
             // Unreusable falls through to body-inlining, unchanged from
-            // pre-#6662 behaviour; the diagnostic for it lands separately.
+            // pre-#6662 behaviour — only the silence is removed.
             OptimizedInstanceResolution::NotOptimized
             | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
                 &child_values,
