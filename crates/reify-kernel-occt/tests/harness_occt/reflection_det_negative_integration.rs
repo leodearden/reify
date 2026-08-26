@@ -253,3 +253,61 @@ fn flag_of(kernel: &OcctKernel, query: GeometryQuery) -> bool {
         other => panic!("{query:?} should return Value::Bool, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test 2 (steps 3-4) — det<0 reflection tessellates to an outward-wound,
+// closed, orientable manifold. THE CORE of T17: this is the assertion that
+// actually observes det<0 output orientation.
+// ---------------------------------------------------------------------------
+
+/// For each convex fixture and each of the two reflection paths, tessellate
+/// at 1e-4 m (0.1 mm) deflection and assert the result is a closed,
+/// consistently OUTWARD-wound manifold whose supplied normals agree with
+/// that winding.
+///
+/// RED: `assert_outward_wound_closed_manifold` does not exist yet, so this
+/// fails to COMPILE until step-4 adds it.
+///
+/// **Why the outward-winding check (obligation (b) on
+/// [`assert_outward_wound_closed_manifold`]) is load-bearing, and
+/// `mesh.validate(0.0)` (obligation (a)) is NOT sufficient on its own:**
+/// `Mesh::validate`'s Closed + ConsistentWinding obligations are a directed-
+/// edge invariant on the position-welded quotient topology, which a
+/// CONSISTENTLY INWARD mesh satisfies exactly as well as an outward one. If
+/// OCCT ever stopped reversing face orientation flags under a det<0
+/// transform (measured today: a 3 FORWARD/5 REVERSED box flips to 5
+/// FORWARD/3 REVERSED under reflection), every triangle of the reflected
+/// solid would flip to inward winding and `validate()` would still pass —
+/// exactly the defect T17 exists to catch would slip through silently. Only
+/// the per-triangle dot product against the AABB-centre reference direction
+/// actually observes it, which is exactly what would fail loudly if that
+/// regression ever happened.
+///
+/// **Convexity precondition**: all three fixtures are convex (documented on
+/// [`convex_fixtures`]), which is what licenses using the AABB centre as the
+/// "outward" reference direction. A non-convex fixture can legitimately
+/// produce inward-pointing dot products in its concave regions — measured
+/// 343 outward / 253 inward triangles on a box-minus-cylinder-minus-sphere
+/// part, which is correct behaviour for a concave part, not a defect. Do NOT
+/// add a non-convex fixture to this test; it would make the assertion
+/// meaningless rather than stricter.
+#[test]
+fn both_reflection_paths_tessellate_to_outward_wound_closed_manifold() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernel::new();
+
+    for (name, source) in convex_fixtures(&mut kernel) {
+        let mirrored = mirror_across_yz(&mut kernel, source);
+        let affine = affine_reflect_x(&mut kernel, source);
+
+        for (path, target) in [("Mirror", mirrored), ("AffineApply", affine)] {
+            let mesh = kernel.tessellate(target, 1e-4).unwrap_or_else(|e| {
+                panic!("{name} via {path}: tessellate(1e-4) should succeed: {e:?}")
+            });
+            assert_outward_wound_closed_manifold(&mesh, &format!("{name} via {path}"));
+        }
+    }
+}
