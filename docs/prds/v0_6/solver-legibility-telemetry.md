@@ -477,7 +477,7 @@ here rather than left to discovery at dispatch:
 
 **Collision noted, not resolved here.** P1 §8 records that #6608 and #5403 hold
 opposing designs for `reify check`'s `Severity::Error` exit gate with no edge
-between them. This PRD depends on neither and does not pick a winner.
+between them. This PRD depends on neither and does not pick a winner. *(Resolved 2026-08-26: #5403 delivers the gate; #6608 depends on it (edge wired) and contributes only UndefCause + new codes.)*
 
 ---
 
@@ -706,7 +706,7 @@ Four movements, in dependency order:
 - **Toleranced verdicts** — #6653. A hard prerequisite, not absorbed.
 - **Budget hygiene** (dim-scaled budgets, stagnation stop/restart) — #6654. This PRD
   renders exhaustion; #6654 fixes the budgets.
-- **`reify check`'s Error-severity exit gate** — #5403 / #6608, and they collide (§8).
+- **`reify check`'s Error-severity exit gate** — #5403 delivers it; #6608 layers its new codes on it (ruled 2026-08-26, §8).
 - **Kernel-measured verdicts** (ReprWithin, GD&T `Conforms`, DFM) —
   `gui-on-demand-measurement.md`. This PRD owns the verdict *wire contract* they
   ride on; it does not measure anything.

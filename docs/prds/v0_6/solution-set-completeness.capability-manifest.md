@@ -19,7 +19,7 @@ Built at decompose, 2026-08-26. Leaf task IDs: α #6706 · β #6707 · γ #6708 
 | θ (#6713) | **P2 ι = #6677** — relate-solve through the unified problem | **WIRED.** P2 ξ #6682 deletes `SolveSpaceSolver`; fixing it here would be work P2 removes |
 | γ (#6708) | **P2 ε = #6672** — forward-mode AD | **SOFT, deliberately UNWIRED.** Preferred Jacobian source; finite differences are an unconditional sound fallback (C8), so a hard edge would only delay γ |
 
-**No steward obligation remains outstanding on this axis.** The two corrections this PRD's §7.1 recorded as owed to P2 were executed by P2's steward in `9e5662ad51`.
+**No steward obligation remains outstanding on this axis.** The two corrections this PRD's §7.1 recorded as owed to P2 were executed by the P3 session (prd-reify-135745) in `9e5662ad51`.
 
 **Three further P2 seams carry no edge but must not be lost** (full statements in PRD §7.1):
 

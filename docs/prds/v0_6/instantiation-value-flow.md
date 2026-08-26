@@ -220,6 +220,7 @@ mechanism the dogfood duplicates prove works end-to-end).
 | sub-placement-and-surfacing.md | corrects | the one-level scope-cut prose + rustdoc + test claims | this PRD (leaf ε) | queued |
 | placement-relations-belt.md | boundary | per-instance `at auto` solve (out of scope here) | that PRD (joint seam, per its charter) | declared v1 boundary |
 | #6598 / #5868 | siblings | geometry-handle axis / recursion node budget | those tasks | out of scope, wired as related context |
+| solver-driver-parity.md (P1, landed 2026-08-26) | it consumes | solved-value realization at the child boundary — P1 B2's geometry half rides β #6592 + κ #6657; P1 owns whether the solve runs, this PRD owns the value flow. P1 §8 also names γ #6608 as adjacent (check exit-gate seam; #5403 ruling 2026-08-26) | this PRD (β, κ) | row added 2026-08-26; mirrors P1 §8 |
 
 ## 8. Decomposition plan (task IDs assigned at decompose, 2026-08-26)
 
@@ -235,10 +236,10 @@ mechanism the dogfood duplicates prove works end-to-end).
   rustdoc scope-cut banner (retired in the same diff). Signals: B1–B4, B10,
   B13, B16. (B5 — the pair fixture — is ζ's observable: the fixture does not
   exist until ζ builds it; D3-adversary finding, accepted.)
-- **γ = #6608 — loud-failure convergence** [high, deps α]: `UndefCause` variant +
+- **γ = #6608 — loud-failure convergence** [high, deps α, #5403]: `UndefCause` variant +
   Error-severity `DiagnosticCode`s + `reify check` severity-exit convergence;
   re-baseline the `cli_check.rs` indeterminate-exits-0 pins where the new class
-  fires. Signals: B7, B8.
+  fires. Signals: B7, B8. *(Delta, 2026-08-26 ruling: the check severity-exit gate is #5403's deliverable — allowlist as bounded migration, burned to zero by #5404 — and γ now depends on #5403 (edge wired). γ delivers the UndefCause variant + coded Errors and re-baselines pins/fixtures against #5403's gate; it does not implement the gate, and its new codes must never enter CHECK_ERROR_EXIT_ALLOWLIST. C4/§6.3's "no per-code escalation list" stands as the end-state reached via #5404, not as a prohibition on #5403's waivered migration ratchet.)*
 - **δ = #6609 — instance-scoped constraint checking** [high, deps β]: enumerate
   materialized instances; clone child-template constraints with rescoped
   `ValueRef`s; dispatch through the existing machinery; per-instance

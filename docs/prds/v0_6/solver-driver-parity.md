@@ -480,13 +480,14 @@ regression if absent, because it is what stops correctly-solved models going
 | spec-conformance program | **produces for** | cross-driver agreement as a conformance surface (decision 8); this PRD resolves matrix row 8 and ruling question ★1 | this PRD owns the solver row; the program owns the matrix | see note below |
 | `check-diagnostic-truthfulness.md` (#5748 β, #5403 γ) | **adjacent** | `reify check` Error-severity exit gating | that PRD | **not absorbed** — see the collision note below |
 | `declared-intent-consumption-accounting.md` (#5415–#5421) | **adjacent** | typed `IndeterminateReason`, the check consumption ledger | DIC | not absorbed; §4.6's causes must use DIC's typed vocabulary once #5418 lands |
-| IVF γ #6608 | **adjacent** | `reify check` severity-exit convergence | #6608 | not absorbed |
+| IVF γ #6608 | **adjacent** | UndefCause + new coded diagnostics layered on #5403's exit gate *(ruled 2026-08-26; see collision note below)* | #5403 (gate) / #6608 (codes) | not absorbed |
 | #6659 registry typed per-constraint refusal | **sibling** | decline-at-recognition vs numeric `NoProgress` | #6659 (in progress) | this PRD's diagnostics must not re-implement it |
 | #6646 GUI viewport at-auto pose | **sibling** | pose solve on the GUI load/edit path | #6646 | §4.6 case 3 covers the `check` half only |
 | `constraint-solver-completion.md` | **adjacent** | the Chebyshev-centre synthetic objective (its η leaf) | that PRD owns the objective | this PRD owns refusing the one-sided case, not redesigning centrality |
 | #6665 delete `reify mcp-server` | **depends on** | removes a construction site α would otherwise migrate | #6665 | ratified; ordering prereq, edge wired |
 | `ranked-solve-result.md` | **consumes** | `solve_ranked` / `OptimalityStatus` (I5 back-compat freeze) | that PRD | T2's entry-point convergence relies on its I5 default-method fidelity |
 | `docs/prds/v0_6/geometry-algebra-solver-unification.md` (P2) | **parallel** | solver internals, the classifier trap, the lowering table | P2 | landed + decomposed 2026-08-26; disjoint — P1 is wiring, P2 is numerics |
+| `docs/prds/v0_6/solution-set-completeness.md` (P3) | **produces for** | γ #6691 (deterministic axis order, I4/T1) is a hard prerequisite of P3 ζ #6711, and κ #6699 (entry-point parity) of P3 η #6712 — real edges, wired 2026-08-26. P1 owns parity; P3 owns basin identity + `W_BASIN_CHANGED` (P3 §7.1) | P3 | landed + decomposed 2026-08-26 *(row added 2026-08-26, discharging P3 §7.1's mirror obligation)* |
 | `docs/prds/v0_6/solver-legibility-telemetry.md` (P4) | **produces for** | this committed PRD is P4's stated precondition — P4 surfaces what these drivers report | P4 | landed 2026-08-26 |
 | `docs/prds/v0_6/gui-on-demand-measurement.md` | **adjacent** | GUI kernel measurement for ReprWithin / GD&T / DFM (matrix ★6) | that PRD | not absorbed; §11 |
 
@@ -504,7 +505,7 @@ per-code escalation list ("demote/recode rather than exempt"), while #5403 seeds
 it. Neither task names the other and there is no edge between them; whichever
 lands second inherits a contradiction. This PRD depends on neither and must not
 pick a winner — but §4.6's "fails plain check" requirement lands on top of
-whichever wins, so the collision is worth resolving before either dispatches.
+whichever wins, so the collision is worth resolving before either dispatches. *(Resolved 2026-08-26, ruled by Leo: #5403 delivers the gate — its CHECK_ERROR_EXIT_ALLOWLIST is a bounded migration ratchet burned to zero by #5404, converging on the no-per-code-list end-state — and #6608 now depends on #5403 (edge wired), contributing only its new UndefCause variant + coded diagnostics. §4.6's requirement layers on #5403's gate. Mirror records in both tasks' details.)*
 
 ---
 
@@ -697,7 +698,7 @@ it is a quality follow-up that #6653 renders non-blocking.
   be read by anything at all (it is a dead flag today). Named, not silently ignored.
 - **Redesigning the Chebyshev-centre objective.** This PRD refuses the one-sided
   case; the objective itself belongs to `constraint-solver-completion.md`'s η leaf.
-- **`reify check`'s Error-severity exit gate.** Owned by #5403 / #6608 (§8).
+- **`reify check`'s Error-severity exit gate.** Owned by #5403; #6608 layers its new codes on it (ruled 2026-08-26, §8).
 - **The kernel and cache reach of `report` / `explain` / `build`** — matrix rows
   10–14, ★2. Solver row only here.
 - **Constraint-verdict contract per driver** (matrix ★3) — `eval`'s

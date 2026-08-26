@@ -54,8 +54,8 @@ tasks:
         no stable grep expresses it.
 - label: γ
   task_id: 6608
-  title: 'instantiation-value-flow γ: UndefCause variant + Error-severity DiagnosticCodes
-    + reify check severity-exit convergence'
+  title: 'instantiation-value-flow γ: UndefCause variant + Error-severity DiagnosticCodes,
+    layered on #5403 check exit gate (ruled 2026-08-26)'
   capabilities:
   - name: diagnostic-code-registry
     binding: capability→producer — DiagnosticCode registry (crates/reify-core/src/diagnostics.rs),
@@ -63,7 +63,8 @@ tasks:
     verdict: PASS
   - name: severity-exit-house-pattern
     binding: 'capability→producer — task 4458 (done): cmd_eval/cmd_build Severity::Error
-      exit gates; γ converges reify check on the same rule (INV-SF-2 house pattern).'
+      exit gates; the check gate itself is delivered upstream by #5403 (γ depends
+      on it, ruled 2026-08-26); γ layers its codes on it.'
     verdict: PASS
   - name: check-fails-on-unrealized-rejection
     binding: G6 branch 4 — silent-accept OBSERVED today by D3 probe (reify check exits

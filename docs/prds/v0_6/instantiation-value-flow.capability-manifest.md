@@ -53,8 +53,9 @@ B9: "OK Bar#constraint[0]", exit 0). Machine-readable twin:
 - `diagnostic-code-registry` — `DiagnosticCode` registry
   (`crates/reify-core/src/diagnostics.rs`) with typed-code test precedent. PASS.
 - `severity-exit-house-pattern` — producer: task 4458 (done) — `cmd_eval` /
-  `cmd_build` Severity::Error exit gates; γ converges `reify check` on the same
-  rule (INV-SF-2 house pattern). PASS.
+  `cmd_build` Severity::Error exit gates; the `reify check` convergence is
+  delivered upstream by #5403 (γ depends on it; ruled 2026-08-26) and γ layers
+  its new codes on that gate. PASS.
 - `check-fails-on-unrealized-rejection` — G6 branch 4: silent-accept OBSERVED
   today (D3: `reify check` on the probe fixture exits 0, "All constraints
   satisfied.", while the geometry plane is default-shaped); producer = this
