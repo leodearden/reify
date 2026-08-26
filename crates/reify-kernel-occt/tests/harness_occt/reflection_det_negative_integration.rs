@@ -497,3 +497,130 @@ fn assert_outward_wound_closed_manifold(mesh: &reify_ir::Mesh, what: &str) {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test 3 (steps 5-6) — reflected B-rep STEP export: baked geometry, no
+// det<0 placement.
+// ---------------------------------------------------------------------------
+
+/// The STEP-writer half of T17: for each convex fixture, export the SOURCE
+/// and BOTH reflections and assert the writer emits a valid det=+1 assembly
+/// from a reflected B-rep, with the impropriety BAKED into geometry rather
+/// than placed (PRD §3.8: "baked reflected B-reps + det=+1 placements are
+/// AP242-conformant by construction"). The FreeCAD mirrored-bodies-vanish
+/// defect is the cautionary tale this test rules out.
+///
+/// RED: `step_entity_count` does not exist yet, so this fails to COMPILE
+/// until step-6 adds it.
+///
+/// `src/lib.rs`'s existing `new_ops_export_step` unit test already exports a
+/// mirrored box, but asserts only that the file contains `ISO-10303-21` —
+/// cited here as the shallow precedent this module deepens, not duplicated.
+///
+/// The workspace has NO STEP reader anywhere (no `STEPControl_Reader` /
+/// `STEPCAFControl_Reader`), so textual assertion over the exported content
+/// is the only verification available — and, per the five obligations below,
+/// sufficient.
+#[test]
+fn reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernel::new();
+
+    // Local export-to-text helper (not a module-level fn: `kernel.export` and
+    // `String::from_utf8` are real, already-compiling APIs, so wrapping them
+    // in a closure here doesn't change what makes this step RED).
+    let export_step_text = |kernel: &OcctKernel, id: GeometryHandleId| -> String {
+        let mut buf = Vec::<u8>::new();
+        kernel
+            .export(id, ExportFormat::Step, &mut buf)
+            .unwrap_or_else(|e| panic!("STEP export of handle {id:?} should succeed: {e:?}"));
+        String::from_utf8(buf)
+            .unwrap_or_else(|e| panic!("STEP export of handle {id:?} should be valid UTF-8: {e}"))
+    };
+
+    for (name, source) in convex_fixtures(&mut kernel) {
+        let mirrored = mirror_across_yz(&mut kernel, source);
+        let affine = affine_reflect_x(&mut kernel, source);
+
+        let source_text = export_step_text(&kernel, source);
+
+        // (a) well-formed STEP framing on the source export.
+        assert!(
+            source_text.contains("ISO-10303-21") && source_text.contains("END-ISO-10303-21"),
+            "{name} source: STEP export should contain ISO-10303-21/END-ISO-10303-21 framing"
+        );
+        // Baseline for (c): the source's own ADVANCED_FACE count.
+        let source_faces = step_entity_count(&source_text, "ADVANCED_FACE");
+        // (e) baked-geometry negative control: the source lives wholly at x>0,
+        // so it must carry no negative-leading-X CARTESIAN_POINT entity.
+        assert_eq!(
+            step_entity_count(&source_text, "CARTESIAN_POINT('',(-"),
+            0,
+            "{name} source: wholly-x>0 fixture should export NO negative-leading-X \
+             CARTESIAN_POINT entities"
+        );
+        // (d) det=+1 by construction on the source too.
+        assert_eq!(
+            step_entity_count(&source_text, "CARTESIAN_TRANSFORMATION_OPERATOR"),
+            0,
+            "{name} source: writer should emit zero CARTESIAN_TRANSFORMATION_OPERATOR \
+             entities — every placement is an AXIS2_PLACEMENT_3D (y derived as z×x, \
+             right-handed by construction), so counting zero is equivalent to det=+1"
+        );
+
+        for (path, target) in [("Mirror", mirrored), ("AffineApply", affine)] {
+            let text = export_step_text(&kernel, target);
+
+            // (a) well-formed STEP framing; a truncated/failed write is not
+            // silently accepted.
+            assert!(
+                text.contains("ISO-10303-21") && text.contains("END-ISO-10303-21"),
+                "{name} via {path}: STEP export should contain ISO-10303-21/END-ISO-10303-21 \
+                 framing"
+            );
+
+            // (b) the mirrored solid did NOT vanish (the FreeCAD cautionary tale).
+            assert!(
+                step_entity_count(&text, "MANIFOLD_SOLID_BREP") >= 1,
+                "{name} via {path}: reflected export should contain >=1 MANIFOLD_SOLID_BREP \
+                 — the mirrored solid must not vanish"
+            );
+
+            // (c) no face dropped by the reflection.
+            assert_eq!(
+                step_entity_count(&text, "ADVANCED_FACE"),
+                source_faces,
+                "{name} via {path}: reflected ADVANCED_FACE count should equal the source's \
+                 ({source_faces}) — no face should be dropped by the reflection"
+            );
+
+            // (d) det=+1 assertion: the writer emits no transformation operator at
+            // all, so every placement is an AXIS2_PLACEMENT_3D, whose y-axis is
+            // DERIVED as z×x and therefore cannot encode a left-handed frame —
+            // det=+1 holds by construction, not by numeric check. Substring-match
+            // (not an exact-token match) so the `_3D`-suffixed spelling is covered.
+            assert_eq!(
+                step_entity_count(&text, "CARTESIAN_TRANSFORMATION_OPERATOR"),
+                0,
+                "{name} via {path}: writer should emit zero CARTESIAN_TRANSFORMATION_OPERATOR \
+                 entities — every placement is an AXIS2_PLACEMENT_3D (y derived as z×x, \
+                 right-handed by construction and therefore unable to encode a left-handed \
+                 frame), so counting zero is equivalent to asserting every placement has \
+                 det=+1, with no float comparison"
+            );
+
+            // (e) geometry is BAKED, not placed: the reflected export carries >=1
+            // negative-leading-X CARTESIAN_POINT while the wholly-x>0 source
+            // carries exactly 0 — so a negative leading coordinate can only come
+            // from baked mirrored geometry.
+            assert!(
+                step_entity_count(&text, "CARTESIAN_POINT('',(-") >= 1,
+                "{name} via {path}: reflected export should contain >=1 negative-leading-X \
+                 CARTESIAN_POINT entity (baked mirrored geometry)"
+            );
+        }
+    }
+}
