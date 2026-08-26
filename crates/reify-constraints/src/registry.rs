@@ -1023,3 +1023,61 @@ fn build_band_constraints(
         ),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ResolutionProblem;
+
+    /// COMPILE-TIME DRIFT TRIPWIRE for the three `ResolutionProblem` spread
+    /// sites in this file (task #5721 item 2).
+    ///
+    /// Three sub-problems in this module are built with functional-update
+    /// syntax, inheriting every field the literal does not name:
+    ///
+    /// 1. `solve_inner`'s per-component `sub_problem` — `..problem.clone()`,
+    ///    overriding `auto_params`, `constraints`, `objective` and
+    ///    `dependent_cells`, inheriting `current_values` and `functions`.
+    /// 2. `solve_lexicographic`'s per-rank `stage_problem` — `..base.clone()`,
+    ///    overriding `auto_params`, `constraints`, `current_values` and
+    ///    `objective`, inheriting `functions` and `dependent_cells`.
+    /// 3. `solve_lexicographic`'s degenerate single-priority `ws_problem` —
+    ///    `..base.clone()`, overriding only `objective`.
+    ///
+    /// The spread is deliberately KEPT (see the β/#5189 comments at each site):
+    /// it is the runtime drift guard that stops a newly-added field from being
+    /// silently DROPPED, which is how `dependent_cells` got zeroed in the first
+    /// place. But it buys that at the cost of the opposite failure mode — a new
+    /// field is inherited WHOLESALE at every site, with no one forced to decide
+    /// whether wholesale is right. That is exactly what #5720 had to fix for
+    /// `dependent_cells`, which needed a per-component FILTER rather than a
+    /// blanket pass-through.
+    ///
+    /// This test is the compile-time signal for that second mode. The
+    /// exhaustive destructure carries NO `..` rest pattern, so adding a seventh
+    /// field to `ResolutionProblem` fails to COMPILE here (E0027) and the
+    /// author has to come read the list above and make a per-site decision.
+    ///
+    /// It is ADDITIVE to the runtime drift guard, NOT a replacement for it:
+    /// removing a spread in favour of this test would restore the
+    /// silently-dropped-field mode the spreads exist to prevent.
+    ///
+    /// Destructuring a REFERENCE keeps this free — no `ResolutionProblem` is
+    /// constructed, and binding every field to `_` raises no unused warning.
+    #[test]
+    fn resolution_problem_field_set_is_pinned_at_the_registry_spread_sites() {
+        fn pin(p: &ResolutionProblem) {
+            let ResolutionProblem {
+                auto_params: _,
+                constraints: _,
+                current_values: _,
+                objective: _,
+                functions: _,
+                dependent_cells: _,
+            } = p;
+        }
+
+        // Reference `pin` so it is not dead code; calling it would need a
+        // constructed problem, which the tripwire deliberately does not need.
+        let _ = pin as fn(&ResolutionProblem);
+    }
+}
