@@ -2794,14 +2794,15 @@ fn compile_expr_guarded_with_expected_inner(
                 }
                 // Unknown named args (no matching param): diagnose, then keep the
                 // pre-existing lenient __arg{i} fallback so the IR shape is
-                // unchanged (task 5303, ε — PRD §7 row 11).
+                // unchanged. This site's staging and severity schedule live in
+                // `docs/prds/struct-ctor-field-type-conformance.md` §7 (row 11) —
+                // not restated here, so a later stage flip cannot leave a stale
+                // claim behind. The severity itself is read from the knob below.
                 //
-                // ε is a DIAGNOSTICS-ONLY stage: the `__arg{i}` push below is
-                // deliberately preserved byte-for-byte. The warnings feed the β
-                // corpus survey, γ fixes the corpus, and δ flips the severity —
-                // at which point these sites fail compilation and the IR question
-                // is moot. Changing the IR here would make β measure behaviour
-                // drift instead of diagnostics.
+                // The unknown arg is diagnosed but NOT bound to a param slot: pass
+                // 2 above already let a following positional take the slot the
+                // typo'd name failed to claim. Pinned by
+                // `unknown_named_argument_does_not_consume_a_param_slot`.
                 //
                 // One diagnostic per unknown named arg: a typo'd field name is a
                 // per-argument author error and each needs its own span to be
@@ -2835,22 +2836,27 @@ fn compile_expr_guarded_with_expected_inner(
                     }
                 }
                 // Over-arity positional args: diagnose once for the call, then keep
-                // the pre-existing lenient __arg{call_idx} fallback (task 5303, ε —
-                // PRD §7 row 12). Same diagnostics-only posture as the unknown-named
-                // arg site above: the pushes below are unchanged, and the `defaults`
-                // computation that follows is untouched (under-arity covered by
-                // param defaults stays legal — ε tightens the surplus direction only).
+                // the pre-existing lenient __arg{call_idx} fallback. The `defaults`
+                // computation that follows is untouched: under-arity covered by param
+                // defaults stays legal, and only the SURPLUS direction is diagnosed.
+                // Staging and severity schedule: PRD §7 (row 12), as above.
                 //
                 // Exactly ONE diagnostic per call site, not one per surplus arg:
                 // arity is a call-LEVEL fact (`W("a","b","c")` against a 1-param def
                 // is one mistake), matching arg_check.rs, which emits one arity
                 // diagnostic per call. Anchored at the FIRST surplus arg.
                 //
+                // The reported `got` count is `args.len()` — the WHOLE call's arg
+                // count, including any unknown named arg diagnosed above, even though
+                // the fact being reported concerns surplus POSITIONALS. That is the
+                // number the author can match against their own source. Pinned by
+                // `unknown_named_argument_is_still_counted_in_the_arity_got_total`.
+                //
                 // Wording and the label text are lifted from arg_check.rs — including
                 // its singular/plural rule, keyed on the EXPECTED count — so ctor
                 // arity reads identically to builtin arity. Its helper fns cannot be
-                // called here: all three hard-code `Diagnostic::error`, and ε must
-                // emit at the ctor-conformance knob.
+                // called here: all three hard-code `Diagnostic::error`, and this site
+                // must emit at the ctor-conformance knob.
                 if let Some(&first_extra) = extra_positional_idxs.first() {
                     let noun = if nparams == 1 { "argument" } else { "arguments" };
                     diagnostics.push(
