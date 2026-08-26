@@ -1,0 +1,26 @@
+module driver_parity_eq_plus_ineq
+// PRD evidence: docs/prds/v0_6/solver-driver-parity.md §7 prerequisite 2.
+// An equality AND an inequality on the same `auto`. 10mm satisfies both trivially,
+// yet the solve is reported infeasible: the synthetic max-min-slack objective is
+// added alongside the equality's penalty, and minimising PENALTY_WEIGHT*d^2 - x
+// with PENALTY_WEIGHT = 1e6 is stationary at d = 5.0e-7 exactly — five orders
+// above FEASIBILITY_THRESHOLD = 1e-12.
+//
+// Baseline measured on main 2128c3692c (2026-08-26), reproduced twice:
+//   reify eval -> "constraints could not be satisfied (max absolute residual:
+//                  5.00e-7)", EqPlusIneq.rod.length = undef
+// Scale-, direction-, order- and strictness-invariant across six controls.
+// This is the most natural way to write a real engineering constraint, so wiring
+// the solver into check/build exposes it on every driver.
+// OWNED BY #6653 (its evidence names this exact probe and residual; its acceptance
+// requires this probe to flip). Not a separate prerequisite. The residual bias the
+// tolerance hides is tracked separately.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = cylinder(3mm, length)
+}
+pub structure EqPlusIneq {
+    sub rod = Rod(length: auto)
+    constraint self.rod.length >= 8mm
+    constraint self.rod.length == 10mm
+}
