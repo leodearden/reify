@@ -261,23 +261,16 @@ fn solve_elastic_static_dispatches_real_result_inside_minimize_where_loop() {
 // not separately tested).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Shared prelude + BEFORE tail for the edit-path fixture pair. Byte-identical
-/// with [`EDIT_PATH_SOURCE_AFTER`] through the `param span : Length = 50mm`
-/// line — the only diff between the two sources is AFTER inserting one param
-/// and one constraint before the closing brace.
-///
-/// Deliberately does NOT declare `thickness`. An Auto cell's `content_hash`
-/// is `id_hash.combine(None)` — a pure function of the cell id — so
-/// `edit_source`'s generic carry-over branch (`engine_edit.rs` L3033-3037)
-/// restores a cell's PRIOR value across any edit that does not rename or
-/// remove it. Had `thickness` already existed here, that carry-over would
-/// mask the RED signal in `values` on the `edit_source` leg (see
-/// `edit_source_dispatches_optimized_compute_into_solver_cost_loop` below).
-/// Because it is instead a brand-new cell in the AFTER graph, it is seeded
-/// `(Undef, DeterminacyState::Auto)` by `Snapshot::from_compiled_module`, so
-/// `values` genuinely reads `Undef` on RED too — belt and braces alongside
-/// the `resolved_params` primary assertion.
-const EDIT_PATH_SOURCE_BEFORE: &str = r#"
+/// Shared prelude for the edit-path fixture pair: the `EditProbeReading`
+/// contract structure, its RED-mechanism comment, the `@optimized`
+/// trampoline declaration, and the start of `EditPathOptimizedProbe` through
+/// its `param span : Length = 50mm` line. [`edit_path_source`] appends
+/// either an empty tail (BEFORE) or [`EDIT_PATH_THICKNESS_TAIL`] (AFTER)
+/// plus the closing brace, so the "BEFORE and AFTER are byte-identical
+/// through `param span`" claim is structural (one shared `const`) rather
+/// than a copy-pasted-and-hopefully-kept-in-sync claim across two `const`
+/// literals (task #5025 amendment).
+const EDIT_PATH_PRELUDE: &str = r#"
 structure def EditProbeReading {
     param level : Length
 }
@@ -300,44 +293,73 @@ fn edit_path_half_span(span : Length) -> Length {
 
 structure EditPathOptimizedProbe {
     param span : Length = 50mm
-}
 "#;
 
-/// Shared prelude + AFTER tail for the edit-path fixture pair. See
-/// [`EDIT_PATH_SOURCE_BEFORE`] for the shared-prelude / byte-identical-diff
-/// contract and the RED-mechanism rationale.
-const EDIT_PATH_SOURCE_AFTER: &str = r#"
-structure def EditProbeReading {
-    param level : Length
-}
-
-// This inline contract body is the RED mechanism this whole fixture pair
-// exists to exercise: `EditProbeReading()` default-constructs a `structure
-// def` whose `level` param has NO default, so it evaluates to `Undef`.
-// Without a registered compute-dispatch hook, `try_compute_dispatch`
-// (crates/reify-expr/src/lib.rs:1990-1992) returns `None` for the call
-// below, the call falls through to ordinary body-eval, and the whole
-// expression evaluates to Undef -- mirroring
-// `crates/reify-compiler/stdlib/solver_elastic.ri:734-745`'s
-// `{ ElasticResult() }` discipline one-for-one. DO NOT replace this body
-// with a real expression (e.g. `span * 0.5`): that would make the RED path
-// produce a satisfiable value and silently destroy the test.
-@optimized("test::edit_path_half_span")
-fn edit_path_half_span(span : Length) -> Length {
-    EditProbeReading().level
-}
-
-structure EditPathOptimizedProbe {
-    param span : Length = 50mm
-    param thickness : Length = auto
+/// Tail [`edit_path_source`] appends after [`EDIT_PATH_PRELUDE`] to build
+/// the AFTER fixture: the `thickness` auto param and the constraint that
+/// dispatches `edit_path_half_span` through the solver cost loop. The
+/// BEFORE fixture appends no tail at all (`edit_path_source("")`).
+///
+/// BEFORE deliberately does NOT declare `thickness`. An Auto cell's
+/// `content_hash` is `id_hash.combine(None)` — a pure function of the cell
+/// id — so `edit_source`'s generic carry-over branch (`engine_edit.rs`
+/// L3033-3037) restores a cell's PRIOR value across any edit that does not
+/// rename or remove it. Had `thickness` already existed in BEFORE, that
+/// carry-over would mask the RED signal in `values` on the `edit_source` leg
+/// (see `edit_source_dispatches_optimized_compute_into_solver_cost_loop`
+/// below). Because it is instead a brand-new cell in the AFTER graph, it is
+/// seeded `(Undef, DeterminacyState::Auto)` by `Snapshot::from_compiled_module`,
+/// so `values` genuinely reads `Undef` on RED too — belt and braces
+/// alongside the `resolved_params` primary assertion.
+const EDIT_PATH_THICKNESS_TAIL: &str = r#"    param thickness : Length = auto
     // The @optimized call is inlined directly into the constraint
     // expression, NOT bound to a top-level `let` -- same hazard already
     // documented on `SOURCE` above: a `let`-bound `@optimized` call is
     // evaluated eagerly by the engine's own top-level ComputeNode dispatch,
     // before the solver has assigned `thickness` a resolved numeric value.
     constraint thickness == edit_path_half_span(span)
-}
 "#;
+
+/// Builds one of the two edit-path fixture sources: `edit_path_source("")`
+/// is BEFORE, `edit_path_source(EDIT_PATH_THICKNESS_TAIL)` is AFTER. Both
+/// share [`EDIT_PATH_PRELUDE`] verbatim and close with the same `}`, so the
+/// only possible diff between the two rendered sources is `tail` itself —
+/// the byte-identity claim is structural, not aspirational.
+fn edit_path_source(tail: &str) -> String {
+    let mut source = String::from(EDIT_PATH_PRELUDE);
+    source.push_str(tail);
+    source.push_str("}\n");
+    source
+}
+
+/// Compiles both edit-path fixture sources and asserts each compiles
+/// without errors, returning `(before, after)`. Shared by both edit-path
+/// tests so a fixture-breaking grammar/stdlib change is reported at its own
+/// compile step instead of misdirecting a downstream assertion failure to
+/// blame the wrong leg (task #5025 amendment: `edit_param_dispatches_optimized_compute_into_solver_cost_loop`
+/// previously compiled both sources without checking diagnostics on either).
+fn compile_edit_path_sources() -> (
+    reify_compiler::CompiledModule,
+    reify_compiler::CompiledModule,
+) {
+    let before = compile_source_with_stdlib(&edit_path_source(""));
+    let before_errors = collect_errors(&before.diagnostics);
+    assert!(
+        before_errors.is_empty(),
+        "edit_path_source(\"\") (BEFORE) should compile without errors: {:#?}",
+        before_errors
+    );
+
+    let after = compile_source_with_stdlib(&edit_path_source(EDIT_PATH_THICKNESS_TAIL));
+    let after_errors = collect_errors(&after.diagnostics);
+    assert!(
+        after_errors.is_empty(),
+        "edit_path_source(EDIT_PATH_THICKNESS_TAIL) (AFTER) should compile without errors: {:#?}",
+        after_errors
+    );
+
+    (before, after)
+}
 
 /// O(1) `@optimized` trampoline for the edit-path regression tests: returns
 /// `span / 2` as a same-dimension `Value::Scalar`, standing in for
@@ -394,35 +416,124 @@ fn build_edit_path_engine() -> Engine {
     engine
 }
 
+/// Asserts the shared edit-path contract for one leg (`edit_source` or
+/// `edit_param`): `resolved_params[thickness_id]` is present and a
+/// `Value::Scalar`, `values[thickness_id]` is the identical, non-`Undef`,
+/// finite Scalar, its SI value matches `expected_si` within a derived 1e-9 m
+/// tolerance, and the edit produced no `Severity::Error` diagnostics. Shared
+/// by both edit-path tests (task #5025 amendment) to collapse what was a
+/// ~55-line copy-pasted assertion tail into one call each.
+///
+/// `path_label` names the `Engine` method under test (`"edit_source"` or
+/// `"edit_param"`) and doubles as the symbol cited in the PRIMARY panic
+/// message below (`Engine::{path_label}`) -- deliberately a symbol, not a
+/// source line number, so the message stays accurate across future edits to
+/// `engine_edit.rs`. The call sites are still cited, with line numbers, in
+/// the module doc and in each test's own doc comment, where drift is
+/// cosmetic rather than actively misleading a debugger at panic time.
+///
+/// # Why the PRIMARY assertion is on `resolved_params`, not just `values`
+///
+/// This is the single most likely thing a future reader "simplifies" away
+/// and silently defeats the guard. `edit_param`'s `SolveResult::Infeasible`
+/// arm (engine_edit.rs ~L1593) and `edit_source`'s (~L3751) only do
+/// `diagnostics.extend(solver_diags)` -- neither writes anything back nor
+/// resets anything. `values` is cloned wholesale from the prior snapshot
+/// (edit_param L1010-1015); the main eval loop skips auto cells (gated on
+/// `default_expr.is_some()`, and auto cells compile with `default_expr:
+/// None`); and `deactivate_if_not_auto` is explicitly auto-safe. So on RED
+/// the `thickness` cell would still hold whatever value the LAST successful
+/// solve wrote to it -- a `values`-only "is it non-Undef" assertion could
+/// PASS on RED by construction. `resolved_params` is a fresh per-call
+/// `HashMap` written only in the `Solved` arm and plumbed into the returned
+/// `EvalResult` (L2655 for edit_param, L4236 for edit_source), so its
+/// absence is an unambiguous "this call's solve produced nothing". (The
+/// positive `expected_si` equality below is a second, independent
+/// discriminator for the same reason.)
+fn assert_edit_path_thickness_resolved(
+    result: &reify_eval::EvalResult,
+    thickness_id: &ValueCellId,
+    expected_si: f64,
+    path_label: &str,
+) {
+    // PRIMARY assertion -- the one that goes RED.
+    let resolved = result.resolved_params.get(thickness_id).unwrap_or_else(|| {
+        panic!(
+            "thickness missing from resolved_params after {path_label} -- the edit-path \
+                 solve returned Infeasible because the @optimized node body-evaluated to Undef, \
+                 i.e. the Some(&dispatcher) argument to solve_with_dispatch in \
+                 Engine::{path_label} was dropped"
+        )
+    });
+    assert!(
+        matches!(resolved, Value::Scalar { .. }),
+        "expected resolved_params[thickness] to be a Value::Scalar after {path_label}, got {:?}",
+        resolved
+    );
+
+    // SECONDARY assertions, all on `values` -- the task's literal acceptance
+    // signal ("non-Undef after the edit") is framed in terms of `values`.
+    let thickness_value = result
+        .values
+        .get(thickness_id)
+        .unwrap_or_else(|| panic!("thickness must be in values after {path_label}'s solve"));
+    assert_eq!(
+        thickness_value, resolved,
+        "values[thickness] must be the same Scalar {path_label}'s solve wrote to resolved_params",
+    );
+    assert!(
+        !matches!(thickness_value, Value::Undef),
+        "thickness must not be Undef after {path_label}'s solve (task #5025 acceptance signal), \
+         got {:?}",
+        thickness_value
+    );
+    let thickness_si = match thickness_value {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!(
+            "expected values[thickness] to be a resolved Scalar after {path_label}, got {:?}",
+            other
+        ),
+    };
+    assert!(
+        thickness_si.is_finite(),
+        "resolved thickness must be finite after {path_label}, got {:?}",
+        thickness_si
+    );
+    // Tolerance basis (derived, not tuned): `solve_core` only returns
+    // `SolveResult::Solved` when `final_max_residual <= FEASIBILITY_THRESHOLD`
+    // (crates/reify-constraints/src/solver.rs:20 = 1e-12, gated at :1989);
+    // the measured absolute error on this exact fixture shape was ~5.5e-16 m.
+    // 1e-9 m sits 6 orders above the measured error and 7 orders below the
+    // smallest expected-value signal (15mm, the edit_param leg).
+    assert!(
+        (thickness_si - expected_si).abs() < 1e-9,
+        "expected thickness == {expected_si:.6e} m after {path_label}, got {thickness_si:.6e} m",
+    );
+
+    // No Severity::Error diagnostics on GREEN (RED emits exactly one:
+    // "constraints could not be satisfied (max absolute residual: 1.00e0)").
+    let error_diagnostics: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diagnostics.is_empty(),
+        "expected no Severity::Error diagnostics after a successful {path_label} solve, got {:#?}",
+        error_diagnostics
+    );
+}
+
 /// task #5025: `Engine::edit_source` dispatches `@optimized` ComputeNodes
 /// through the real `OptimizedComputeDispatcher` inside the `DimensionalSolver`
 /// cost loop, exactly as the cold `eval()` path does. Pins `engine_edit.rs:3628`
 /// (dispatcher construction) / `:3708` (`solve_with_dispatch(&problem, Some(&dispatcher))`).
 ///
-/// See the module doc's "Edit-path coverage" section for the full RED/GREEN
-/// mechanics. In short: `resolved_params` (not `values`) is the primary
-/// assertion target because it is a fresh per-call `HashMap` written ONLY in
-/// the `Solved` arm, so an absent entry unambiguously means THIS call's
-/// solve did not produce a value — whereas a failed edit-path solve does
-/// NOT reset `values` (the `Infeasible` arm only extends diagnostics), so a
-/// `values`-only assertion could pass on RED by construction.
+/// See [`assert_edit_path_thickness_resolved`]'s doc for the full RED/GREEN
+/// assertion rationale (why `resolved_params`, not just `values`).
 #[test]
 fn edit_source_dispatches_optimized_compute_into_solver_cost_loop() {
-    let before = compile_source_with_stdlib(EDIT_PATH_SOURCE_BEFORE);
-    let before_errors = collect_errors(&before.diagnostics);
-    assert!(
-        before_errors.is_empty(),
-        "EDIT_PATH_SOURCE_BEFORE should compile without errors: {:#?}",
-        before_errors
-    );
-
-    let after = compile_source_with_stdlib(EDIT_PATH_SOURCE_AFTER);
-    let after_errors = collect_errors(&after.diagnostics);
-    assert!(
-        after_errors.is_empty(),
-        "EDIT_PATH_SOURCE_AFTER should compile without errors: {:#?}",
-        after_errors
-    );
+    let (before, after) = compile_edit_path_sources();
 
     let mut engine = build_edit_path_engine();
     let thickness_id = ValueCellId::new("EditPathOptimizedProbe", "thickness");
@@ -433,7 +544,7 @@ fn edit_source_dispatches_optimized_compute_into_solver_cost_loop() {
     assert!(
         cold.values.get(&thickness_id).is_none(),
         "thickness must not exist before the edit_source swap introduces it \
-         (EDIT_PATH_SOURCE_BEFORE never declares it); got {:?}",
+         (the BEFORE fixture never declares it); got {:?}",
         cold.values.get(&thickness_id)
     );
 
@@ -441,78 +552,8 @@ fn edit_source_dispatches_optimized_compute_into_solver_cost_loop() {
         .edit_source(&after)
         .expect("edit_source must succeed after a cold eval");
 
-    // PRIMARY assertion -- the one that goes RED. An absent entry means THIS
-    // edit's solve returned Infeasible because the @optimized node
-    // body-evaluated to Undef, i.e. the `Some(&dispatcher)` argument at
-    // engine_edit.rs:3708 was dropped.
-    let resolved = edited
-        .resolved_params
-        .get(&thickness_id)
-        .unwrap_or_else(|| {
-            panic!(
-                "thickness missing from resolved_params after edit_source -- the edit-path solve \
-             returned Infeasible because the @optimized node body-evaluated to Undef, i.e. the \
-             Some(&dispatcher) argument at engine_edit.rs:3708 was dropped"
-            )
-        });
-    assert!(
-        matches!(resolved, Value::Scalar { .. }),
-        "expected resolved_params[thickness] to be a Value::Scalar, got {:?}",
-        resolved
-    );
-
-    // SECONDARY assertions, all on `values` -- the task's literal acceptance
-    // signal ("non-Undef after the edit") is framed in terms of `values`.
-    let thickness_value = edited
-        .values
-        .get(&thickness_id)
-        .expect("thickness must be in values after edit_source's solve");
-    assert_eq!(
-        thickness_value, resolved,
-        "values[thickness] must be the same Scalar edit_source's solve wrote to resolved_params",
-    );
-    assert!(
-        !matches!(thickness_value, Value::Undef),
-        "thickness must not be Undef after edit_source's solve (task #5025 acceptance signal), \
-         got {:?}",
-        thickness_value
-    );
-    let thickness_si = match thickness_value {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "expected values[thickness] to be a resolved Scalar, got {:?}",
-            other
-        ),
-    };
-    assert!(
-        thickness_si.is_finite(),
-        "resolved thickness must be finite, got {:?}",
-        thickness_si
-    );
-    // Tolerance basis (derived, not tuned): `solve_core` only returns
-    // `SolveResult::Solved` when `final_max_residual <= FEASIBILITY_THRESHOLD`
-    // (crates/reify-constraints/src/solver.rs:20 = 1e-12, gated at :1989);
-    // the measured absolute error on this exact fixture shape was ~5.5e-16 m.
-    // 1e-9 m sits 6 orders above the measured error and 7 orders below the
-    // 25mm signal.
-    assert!(
-        (thickness_si - 0.025).abs() < 1e-9,
-        "expected thickness == span/2 == 0.025 m (25mm), got {:.6e} m",
-        thickness_si
-    );
-
-    // No Severity::Error diagnostics on GREEN (RED emits exactly one:
-    // "constraints could not be satisfied (max absolute residual: 1.00e0)").
-    let error_diagnostics: Vec<_> = edited
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        error_diagnostics.is_empty(),
-        "expected no Severity::Error diagnostics after a successful edit_source solve, got {:#?}",
-        error_diagnostics
-    );
+    // span/2 for the fixture's unedited `span = 50mm`.
+    assert_edit_path_thickness_resolved(&edited, &thickness_id, 0.025, "edit_source");
 }
 
 /// task #5025: `Engine::edit_param` dispatches `@optimized` ComputeNodes
@@ -523,33 +564,18 @@ fn edit_source_dispatches_optimized_compute_into_solver_cost_loop() {
 /// above; the RED probe for this test cross-checks that the two sites are
 /// independently guarded (removing one leaves the other test green).
 ///
-/// # Why the assertion MUST be on `resolved_params`, not just on `values`
-///
-/// This is the single most likely thing a future reader "simplifies" away
-/// and silently defeats the guard, so it is spelled out here rather than
-/// just in the module doc. `edit_param`'s `SolveResult::Infeasible` arm
-/// (engine_edit.rs ~L1593) only does `diagnostics.extend(solver_diags)` --
-/// it writes nothing back and resets nothing. `values` is cloned wholesale
-/// from the prior snapshot (L1010-1015); the main eval loop skips auto
-/// cells (gated on `default_expr.is_some()`, and auto cells compile with
-/// `default_expr: None`); and `deactivate_if_not_auto` is explicitly
-/// auto-safe. So on RED the `thickness` cell would still hold the value
-/// THIS TEST's own `edit_source` setup call resolved (0.025) -- a
-/// `values`-only "is it non-Undef" assertion would PASS on RED.
-/// `resolved_params` is a fresh per-call `HashMap` written only in the
-/// `Solved` arm and plumbed into the returned `EvalResult` at L2655, so its
-/// absence is an unambiguous "this edit's solve produced nothing". (The
-/// 25mm-setup-vs-15mm-edited positive equality below is a second,
-/// independent discriminator for the same reason.)
+/// See [`assert_edit_path_thickness_resolved`]'s doc for the full RED/GREEN
+/// assertion rationale (why `resolved_params`, not just `values`).
 #[test]
 fn edit_param_dispatches_optimized_compute_into_solver_cost_loop() {
+    let (before, after) = compile_edit_path_sources();
+
     let mut engine = build_edit_path_engine();
     let thickness_id = ValueCellId::new("EditPathOptimizedProbe", "thickness");
     let span_id = ValueCellId::new("EditPathOptimizedProbe", "span");
 
     // Cheap baseline: edit_param requires a prior eval() to establish the
     // eval_state/demand registry it needs.
-    let before = compile_source_with_stdlib(EDIT_PATH_SOURCE_BEFORE);
     engine.eval(&before);
 
     // SETUP ONLY: introduce the `thickness` auto cell via edit_source, as
@@ -557,7 +583,6 @@ fn edit_param_dispatches_optimized_compute_into_solver_cost_loop() {
     // One precondition only -- a failure here means THAT test's leg has
     // regressed and this test's own result is meaningless until it is
     // fixed; this test does not re-assert that leg's full contract.
-    let after = compile_source_with_stdlib(EDIT_PATH_SOURCE_AFTER);
     let setup = engine
         .edit_source(&after)
         .expect("edit_source setup must succeed after a cold eval");
@@ -579,70 +604,6 @@ fn edit_param_dispatches_optimized_compute_into_solver_cost_loop() {
         .edit_param(span_id, mm(30.0))
         .expect("edit_param must succeed after a cold eval");
 
-    // PRIMARY assertion -- the one that goes RED. An absent entry means
-    // THIS edit's solve returned Infeasible because the @optimized node
-    // body-evaluated to Undef, i.e. the `Some(&dispatcher)` argument at
-    // engine_edit.rs:1546 was dropped.
-    let resolved = edited
-        .resolved_params
-        .get(&thickness_id)
-        .unwrap_or_else(|| {
-            panic!(
-                "thickness missing from resolved_params after edit_param -- the edit-path solve \
-             returned Infeasible because the @optimized node body-evaluated to Undef, i.e. the \
-             Some(&dispatcher) argument at engine_edit.rs:1546 was dropped"
-            )
-        });
-    assert!(
-        matches!(resolved, Value::Scalar { .. }),
-        "expected resolved_params[thickness] to be a Value::Scalar, got {:?}",
-        resolved
-    );
-
-    // SECONDARY assertions, all on `values`.
-    let thickness_value = edited
-        .values
-        .get(&thickness_id)
-        .expect("thickness must be in values after edit_param's solve");
-    assert_eq!(
-        thickness_value, resolved,
-        "values[thickness] must be the same Scalar edit_param's solve wrote to resolved_params",
-    );
-    assert!(
-        !matches!(thickness_value, Value::Undef),
-        "thickness must not be Undef after edit_param's solve (task #5025 acceptance signal), \
-         got {:?}",
-        thickness_value
-    );
-    let thickness_si = match thickness_value {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "expected values[thickness] to be a resolved Scalar, got {:?}",
-            other
-        ),
-    };
-    assert!(
-        thickness_si.is_finite(),
-        "resolved thickness must be finite, got {:?}",
-        thickness_si
-    );
-    // Same tolerance basis as the edit_source leg above: 1e-9 m sits 6
-    // orders above the ~5.5e-16 m measured solver error and 7 orders below
-    // the 15mm signal (span/2 for the edited span = 30mm).
-    assert!(
-        (thickness_si - 0.015).abs() < 1e-9,
-        "expected thickness == span/2 == 0.015 m (15mm) after editing span to 30mm, got {:.6e} m",
-        thickness_si
-    );
-
-    let error_diagnostics: Vec<_> = edited
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        error_diagnostics.is_empty(),
-        "expected no Severity::Error diagnostics after a successful edit_param solve, got {:#?}",
-        error_diagnostics
-    );
+    // span/2 for the edited `span = 30mm`.
+    assert_edit_path_thickness_resolved(&edited, &thickness_id, 0.015, "edit_param");
 }
