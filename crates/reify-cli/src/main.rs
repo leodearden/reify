@@ -3158,7 +3158,7 @@ fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
 /// though the realization ran first — lead position signals authority and makes
 /// "check()'s list verbatim, in order" a property a reader can rely on.
 /// Sub-path (c) seeds with the realization's list, because there the seed must
-/// first absorb its own internal duplicates via [`dedup_diagnostics`].  The
+/// first absorb its own internal UNCODED duplicates via [`dedup_diagnostics`].  The
 /// asymmetry is stderr ordering only — membership is a union under the same
 /// key either way, so no invariant depends on it and no exit code can move.
 /// γ/#5403 unifies both arms and is the natural point to pick one ordering.

@@ -11,10 +11,12 @@ module geometry_query_violated
 //   volume = 0.1m * 0.1m * 0.1m = 1e-3 m^3
 //   mass   = 7850 kg/m^3 * 1e-3 m^3 = 7.85 kg   →  `mass < 1kg` is FALSE
 //
-// Before D1's routing change `reify check` took the lightweight
-// `Engine::new(None) + check()` path, `mass` stayed `undef`, the constraint
-// degraded to INDETERMINATE and the command exited 0.  With the geometry
-// routing it resolves and the constraint is VIOLATED — exit 1.
+// Mechanism, not a re-measured baseline for this fixture: before D1's routing
+// change a module carrying none of {geometric Conforms, RepresentationWithin,
+// DFMRule} took the lightweight `Engine::new(None) + check()` path, where
+// neither post-process runs, so `mass` stayed `undef` and the constraint
+// degraded to INDETERMINATE at exit 0.  MEASURED on this tree with the routing
+// in place: `VIOLATED OverweightBlock#constraint[2]`, exit 1.
 //
 // Pinning test: crates/reify-cli/tests/harness_cli/cli_check.rs::
 //   check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure
