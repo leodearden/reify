@@ -89,7 +89,16 @@ function buildPolylinePoints(
 
 // ---------------------------------------------------------------------------
 // AutoResolvePanel — surfaces `param x = auto` loop iteration progress
-// (Task 2967). Conditionally mounted by App.tsx when autoResolve.active.
+// (Task 2967). Mounted by App.tsx on DATA — `autoResolve.iterations.length > 0`
+// — not on `autoResolve.active`, so a completed loop stays readable instead of
+// vanishing the instant it lands. The panel therefore renders for both a running
+// and a finished loop, and says which via `data-loop-state` on its root.
+//
+// Everything it draws is gated on having enough samples to draw honestly: with
+// fewer than 2 plottable points it renders a note saying what is known rather
+// than an empty axis frame. That is not a corner case — it is what production
+// emits today (`emit_auto_resolve_if_any` sends one iteration per check, with
+// no `driving_metric_value` at all).
 // ---------------------------------------------------------------------------
 
 export interface AutoResolvePanelProps {
@@ -251,6 +260,30 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
 
         {/* ── Line chart section ───────────────────────────────────────── */}
         <section class={styles.chartSection}>
+          {/* A 300×200 axis frame with nothing plotted on it is a lie about the
+              data. Draw the chart only when there are 2+ finite samples; below
+              that, say what is actually known. */}
+          <Show
+            when={chartPoints().length >= 2}
+            fallback={
+              <Show
+                when={chartPoints().length === 1}
+                fallback={
+                  <div class={styles.emptyNote} data-testid="auto-resolve-chart-no-data">
+                    No driving-metric samples reported.
+                  </div>
+                }
+              >
+                <div
+                  class={styles.singleSampleNote}
+                  data-testid="auto-resolve-chart-single-sample"
+                >
+                  {chartMetricName() ?? 'driving metric'}: {chartPoints()[0]?.y} — single
+                  sample, no trend to plot yet.
+                </div>
+              </Show>
+            }
+          >
           <svg
             class={styles.chart}
             width={CHART_W}
@@ -278,22 +311,21 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
                 {chartMetricName()}
               </text>
             </Show>
-            {/* Polyline — only when 2+ data points */}
-            <Show when={chartPoints().length >= 2}>
-              <polyline
-                class={styles.chartLine}
-                fill="none"
-                points={buildPolylinePoints(
-                  chartPoints().map((p) => p.x),
-                  chartPoints().map((p) => p.y),
-                  PLOT_X1,
-                  PLOT_X2,
-                  PLOT_Y1,
-                  PLOT_Y2,
-                )}
-              />
-            </Show>
+            {/* Polyline — the enclosing Show already guarantees 2+ data points */}
+            <polyline
+              class={styles.chartLine}
+              fill="none"
+              points={buildPolylinePoints(
+                chartPoints().map((p) => p.x),
+                chartPoints().map((p) => p.y),
+                PLOT_X1,
+                PLOT_X2,
+                PLOT_Y1,
+                PLOT_Y2,
+              )}
+            />
           </svg>
+          </Show>
         </section>
       </Show>
     </div>

@@ -274,15 +274,17 @@ describe('AutoResolvePanel (c) line chart', () => {
     expect(within(svg).queryByText('max_von_mises')).toBeNull();
   });
 
-  it('(c.4) no polyline rendered when fewer than 2 iterations carry driving_metric_value', () => {
+  it('(c.4) fewer than 2 iterations carrying driving_metric_value: no chart svg and no polyline anywhere', () => {
     const iterations = [
       makeIteration(1, { driving_metric: 'max_von_mises', driving_metric_value: 180 }),
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
-    render(() => <AutoResolvePanel state={state} />);
-    const svg = screen.getByTestId('auto-resolve-chart');
-    const polyline = svg.querySelector('polyline');
-    expect(polyline).toBeNull();
+    const { container } = render(() => <AutoResolvePanel state={state} />);
+    // The chart is data-gated now: below 2 plottable points there is no axis
+    // frame at all, so there is nothing for a stray polyline to hide inside.
+    // (g.2) pins what replaces it.
+    expect(screen.queryByTestId('auto-resolve-chart')).toBeNull();
+    expect(container.querySelector('polyline')).toBeNull();
   });
 });
 

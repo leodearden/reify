@@ -140,6 +140,20 @@
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
 }
 
+/* ── Honest fallbacks for sub-plottable sample counts ───────────────── */
+
+.emptyNote,
+.singleSampleNote {
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  padding: 2px 0;
+  font-style: italic;
+}
+
+.singleSampleNote {
+  font-size: 11px;
+}
+
 /* ── Sparkline rows ─────────────────────────────────────────────────── */
 
 .sparklineRow {
