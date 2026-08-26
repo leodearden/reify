@@ -9,8 +9,11 @@
 //!   then `head_matches` / `heads_unifiable`), classified into
 //!   `Resolved` / `NoMatch` / `Ambiguous`.
 //! - **eval side**: `find_matching_compiled_function`
-//!   (`crates/reify-expr/src/lib.rs:1533`) — an exact first-match-wins pass
-//!   followed by a wildcard pass, yielding `Option<&CompiledFunction>`.
+//!   (`crates/reify-expr/src/lib.rs:1533`) — the same three tiers in the same
+//!   priority order (exact, then head, then wildcard), resolved first-match-
+//!   wins within each and yielding `Option<&CompiledFunction>`. The head tier
+//!   is the newest of the three (#5685); before it landed, this file's
+//!   exemption ledger carried a `"head-tier"` row for its absence.
 //!
 //! ## Contract
 //!
@@ -262,10 +265,10 @@ fn classify_accept_reject_parity(row: &Row) -> Result<(), String> {
 /// authoring this file, each confirmed to panic, then reverted:
 ///
 /// (a) UNLEDGERED fires: flip a ledgered row (e.g. the `"D4"` row
-///     `D4 bare: f(Int) <- TypeParam(T)`, or the `"head-tier"` selection row)
-///     to `Expect::Agree` and re-run. Its table driver goes RED with
-///     "UNLEDGERED ... divergence", proving a NEW drift cannot slip in
-///     undocumented.
+///     `D4 bare: f(Int) <- TypeParam(T)`, or the `"ambiguity-model"`
+///     selection row) to `Expect::Agree` and re-run. Its table driver goes
+///     RED with "UNLEDGERED ... divergence", proving a NEW drift cannot slip
+///     in undocumented.
 ///
 /// (b) STALE fires: flip a clean row (e.g. `concrete exact: f(Int) <- Int`,
 ///     or the `exact-wins (concrete first)` selection row) to
@@ -274,9 +277,14 @@ fn classify_accept_reject_parity(row: &Row) -> Result<(), String> {
 ///     proving a ledger entry cannot outlive the drift it documents.
 ///
 /// (b) is what makes this file self-cleaning: when #5686 lands the two `"D4"`
-/// rows start agreeing and go RED as STALE, and when #5685 lands the
-/// `"head-tier"` row does the same — so each ledger entry is removed by the
-/// test failing, not by anyone remembering.
+/// rows start agreeing and go RED as STALE, so the ledger entry is removed by
+/// the test failing, not by anyone remembering.
+///
+/// That is not a prediction — it has already happened once here. #5685 landed
+/// the eval-side head-narrowing tier while this file was in flight; the
+/// `"head-tier"` row started agreeing, `multi_candidate_selection_parity` went
+/// RED as STALE, and the entry was retired (see the RETIRED note in the
+/// exemption ledger). Recipe (b) is the mechanism that caught it.
 fn assert_accept_reject_parity(row: &Row) {
     if let Err(msg) = classify_accept_reject_parity(row) {
         panic!("{msg}");
@@ -322,28 +330,26 @@ fn assert_accept_reject_parity(row: &Row) {
 // TODO(#5686): remove this ledger row and reclassify the two D4 rows to
 // Expect::Agree once the eval-side D4 disjunct lands.
 //
-// ── "head-tier" — compile's second tie-break tier has no eval counterpart ───
+// ── RETIRED: "head-tier" — the ledger's self-cleaning half, demonstrated ────
 //
-// Compile-side `resolve_function_overload` narrows `matches` twice: first by
-// `exact_matches`, then by `head_matches` / `heads_unifiable`
-// (type_compat.rs:1019 and 1245-1290), which discriminates two GENERIC
-// overloads that differ only by constructor head. Eval-side
-// `find_matching_compiled_function` has an exact pass and a wildcard pass and
-// nothing else — no head tier exists anywhere in `crates/reify-expr/`.
+// This block once carried a second temporary entry. Compile-side
+// `resolve_function_overload` narrows `matches` twice — by `exact_matches`,
+// then by `head_matches` / `heads_unifiable` — which discriminates two
+// GENERIC overloads differing only by constructor head; eval-side
+// `find_matching_compiled_function` had an exact pass and a wildcard pass and
+// nothing else, so `Option<T>` vs `Result<T,E>` selected DIFFERENT functions
+// on the two sides. Task #5685 (now landed) added the missing eval-side
+// head-narrowing tier, and the entry was retired.
 //
-// So two generic overloads differing only by head (`Option<T>` vs
-// `Result<T,E>`) resolve to DIFFERENT functions on the two sides: compile
-// picks the head-compatible one, eval picks whichever was declared first.
-// Note this divergence is invisible to the accept/reject axis — both sides
-// accept. Only selection identity catches it, which is why axis 2 exists.
-//
-// This one IS owned and IS temporary, with a DIFFERENT owner from D4: task
-// #5685 adds the missing eval-side head-narrowing tier. #5686 does NOT close
-// this row — it adds only the D4 disjunct to the wildcard pass — so the two
-// ledger entries must be retired independently.
-//
-// TODO(#5685): remove this ledger row and reclassify the head-tier row to
-// Expect::Agree once the eval-side head-narrowing tier lands.
+// It is recorded here rather than deleted outright because of HOW it was
+// retired: not by anyone remembering, but by the STALE arm. #5685 landed
+// while this file was in flight, the head-tier row started agreeing, and
+// `multi_candidate_selection_parity` plus its anti-vacuity companion went RED
+// with a message naming the exact remedy. That is the self-cleaning property
+// working end-to-end on a real landing, and it is the reason the four-arm
+// engine is worth its extra arm. The row itself is KEPT (reclassified to
+// `Expect::Agree`) and its companion repurposed into a positive parity pin,
+// so retiring the entry cost no coverage.
 //
 // ── "ambiguity-model" — architecturally PERMANENT, not a bug ────────────────
 //
@@ -546,10 +552,10 @@ fn classify_selection_parity(row: &SelectionRow) -> Result<(), String> {
 /// authoring this file, each confirmed to panic, then reverted:
 ///
 /// (a) UNLEDGERED fires: flip a ledgered row (e.g. the `"D4"` row
-///     `D4 bare: f(Int) <- TypeParam(T)`, or the `"head-tier"` selection row)
-///     to `Expect::Agree` and re-run. Its table driver goes RED with
-///     "UNLEDGERED ... divergence", proving a NEW drift cannot slip in
-///     undocumented.
+///     `D4 bare: f(Int) <- TypeParam(T)`, or the `"ambiguity-model"`
+///     selection row) to `Expect::Agree` and re-run. Its table driver goes
+///     RED with "UNLEDGERED ... divergence", proving a NEW drift cannot slip
+///     in undocumented.
 ///
 /// (b) STALE fires: flip a clean row (e.g. `concrete exact: f(Int) <- Int`,
 ///     or the `exact-wins (concrete first)` selection row) to
@@ -558,9 +564,14 @@ fn classify_selection_parity(row: &SelectionRow) -> Result<(), String> {
 ///     proving a ledger entry cannot outlive the drift it documents.
 ///
 /// (b) is what makes this file self-cleaning: when #5686 lands the two `"D4"`
-/// rows start agreeing and go RED as STALE, and when #5685 lands the
-/// `"head-tier"` row does the same — so each ledger entry is removed by the
-/// test failing, not by anyone remembering.
+/// rows start agreeing and go RED as STALE, so the ledger entry is removed by
+/// the test failing, not by anyone remembering.
+///
+/// That is not a prediction — it has already happened once here. #5685 landed
+/// the eval-side head-narrowing tier while this file was in flight; the
+/// `"head-tier"` row started agreeing, `multi_candidate_selection_parity` went
+/// RED as STALE, and the entry was retired (see the RETIRED note in the
+/// exemption ledger). Recipe (b) is the mechanism that caught it.
 fn assert_selection_parity(row: &SelectionRow) {
     if let Err(msg) = classify_selection_parity(row) {
         panic!("{msg}");
@@ -606,25 +617,27 @@ fn selection_rows() -> Vec<SelectionRow> {
             expect: Expect::Agree,
         },
 
-        // ── Head tier (the #5685 shape) ──────────────────────────────────────
-        // Declaration order is LOAD-BEARING: the Option overload MUST be first,
-        // or eval's first-match-wins would coincidentally pick the Result one
-        // and mask the divergence.
+        // ── Head tier (the #5685 shape, now AGREEING) ────────────────────────
+        // Declaration order is LOAD-BEARING and stays so even though this row
+        // is now clean: the Option overload MUST be listed first, or eval's
+        // first-match-wins would pick the Result one for the wrong reason and
+        // the row would agree vacuously, pinning nothing.
         //
         // Compile: both enter `matches`; `exact` is empty; `head_matches` keeps
         // ONLY the Result candidate — `heads_unifiable(Option<T>, Result<..>)`
         // is false via its catch-all, while
         // `heads_unifiable(Result<T,E>, Result<Int,String>)` is true by
         // same-name/same-arity recursion over `(TypeParam(_), _) => true`
-        // leaves. Eval has no head tier at all, so its wildcard pass takes the
-        // first candidate.
+        // leaves. Eval now runs the same discrimination in its own `head` tier
+        // (#5685), selected via `first_head.or(first_wildcard)`, so it reaches
+        // index 1 too rather than falling back on table order.
         SelectionRow {
             label: "head-tier: [unwrap_or<T>(Option<T>,T), unwrap_or<T,E>(Result<T,E>,T)] <- (Result<Int,String>, Int)",
             fns: vec![make_fn("unwrap_or", vec![("o", option_of(tp("T"))), ("d", tp("T"))], vec!["T"]),
                       make_fn("unwrap_or", vec![("r", result_of(vec![tp("T"), tp("E")])), ("d", tp("T"))], vec!["T", "E"])],
             call_name: "unwrap_or",
             arg_types: vec![result_of(vec![Type::Int, Type::String]), Type::Int],
-            expect: Expect::Diverge { ledger: "head-tier" },
+            expect: Expect::Agree,
         },
 
         // ── Ambiguity model ──────────────────────────────────────────────────
@@ -659,12 +672,28 @@ fn multi_candidate_selection_parity() {
     );
 }
 
-/// Anti-vacuity guard for the "head-tier" ledger row (see
-/// `d4_arg_side_type_param_divergence_is_genuine_and_ledgered` for the same
-/// pattern on axis 1): assert the divergence is REAL right now, first-hand,
-/// before asserting that the engine accepts the row as ledgered.
+/// Positive parity pin for the head tier — the strongest row in this file,
+/// because it is the one that has already caught a real divergence.
+///
+/// Formerly the anti-vacuity guard for a `"head-tier"` ledger row: compile
+/// discriminated `Option<T>` from `Result<T,E>` by constructor head while
+/// eval had no head tier and fell back on declaration order, so both sides
+/// "accepted" and ran DIFFERENT function bodies. Task #5685 landed the
+/// eval-side head-narrowing tier, this test went RED on its own premise
+/// assert, and the ledger entry was retired.
+///
+/// It is REPURPOSED rather than deleted, so the coverage survives the fix:
+/// the shape that used to diverge is now pinned as an explicit AGREEMENT,
+/// both sides asserted first-hand to select index 1. Deleting it would have
+/// left the very shape #5685 fixed unguarded against re-divergence.
+///
+/// The `Option`-first declaration order remains load-bearing (see
+/// `selection_rows`): with `Result` first, eval's first-match-wins would
+/// reach index 0... but so would a head tier, so the row could pass without
+/// the head tier existing at all. Option-first is what makes index 1 provable
+/// ONLY via head narrowing.
 #[test]
-fn head_tier_selection_divergence_is_genuine_and_ledgered() {
+fn head_tier_selection_agrees_both_sides_select_result_overload() {
     let tp = |n: &str| Type::TypeParam(n.to_string());
     let result_of = |args: Vec<Type>| Type::Applied {
         name: "Result".to_string(),
@@ -691,32 +720,31 @@ fn head_tier_selection_divergence_is_genuine_and_ledgered() {
     assert_eq!(
         verdict,
         ParityOverloadVerdict::Resolved { index: 1 },
-        "head-tier premise: compile side must still select the Result overload \
-         via heads_unifiable"
+        "head-tier: compile side must select the Result overload via heads_unifiable"
     );
 
-    // Eval side picks the FIRST candidate — the Option overload — because it
-    // has no head tier. Both sides "accept"; only the index differs.
+    // Eval side reaches the SAME overload, and can only do so through its own
+    // head tier: the Option candidate is declared first and passes `wildcard`,
+    // so a wildcard-only resolver would stop at index 0.
     let args: Vec<CompiledExpr> = arg_types.iter().cloned().map(arg).collect();
     let selected = find_matching_compiled_function(&fns, "unwrap_or", &args)
-        .expect("head-tier premise: eval side accepts (it just picks the wrong one)");
+        .expect("head-tier: eval side must resolve the call");
     assert_eq!(
         index_of(&fns, selected),
-        0,
-        "head-tier premise: eval side must still select the FIRST (Option) \
-         overload — if this is now 1, #5685 has landed: delete the head-tier \
-         ledger row and reclassify the row to Expect::Agree"
+        1,
+        "head-tier: eval side must select the Result overload (index 1), not the \
+         first-declared Option one — if this is 0, the eval-side head-narrowing \
+         tier landed by #5685 has regressed and compile/eval now run DIFFERENT \
+         function bodies for the same call"
     );
 
-    // ...and only then: the engine classifies the ledgered row as OK.
+    // ...and only then: the engine classifies the row as agreeing.
     assert_selection_parity(&SelectionRow {
         label: "head-tier (companion)",
         fns,
         call_name: "unwrap_or",
         arg_types,
-        expect: Expect::Diverge {
-            ledger: "head-tier",
-        },
+        expect: Expect::Agree,
     });
 }
 
