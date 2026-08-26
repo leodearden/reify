@@ -18,90 +18,81 @@
 //! a misnomer.  The module structure mirrors `math_signatures.rs`: a public-to-
 //! crate name-keyed match function + a small set of supporting types.
 //!
-//! # Checked vs. unchecked slots (decision-4 gradualism)
+//! # What the table covers, and the rules that decide it (decision-4 gradualism)
 //!
-//! CHECKED (definite dimension mismatch, zero false positives):
-//! - `center_of_mass` / `moment_of_inertia` arg1 `density` → MASS_DENSITY ("Density")
-//! - `faces_by_normal` / `edges_parallel_to` arg2 `tol` → ANGLE ("Angle")
-//! - `faces_perpendicular_to` / `edges_perpendicular_to` arg2 `tol` → ANGLE ("Angle")
-//! - `edges_at_height` arg1 `h` → LENGTH ("Length"), arg2 `tol` → LENGTH ("Length")
-//! - `extremal_by_bbox` / `extremal_by_centroid` arg3 `tol` → LENGTH ("Length")
-//! - `generate` arg0 `n` → `Int` (task 3994; the lone non-geometry, non-`Scalar`
-//!   slot — uses the generic name-keyed mechanism via `ExpectedArg::Int`)
-//! - `linear_pattern` (arity 6) arg5 `spacing` → LENGTH ("Length") (task 5652)
-//! - `linear_pattern_2d` (arity 11) arg5 `spacing1` and arg10 `spacing2` →
-//!   LENGTH ("Length") (task 5652)
-//! - PRIMITIVE producers, every dimension → LENGTH ("Length") (task 5750):
-//!   `box`/`box_centered` `width`/`height`/`depth`; `cylinder`/
-//!   `cylinder_centered` `radius`/`height`; `sphere` `radius`; `tube`
-//!   `outer_r`/`inner_r`/`height`; `cone` `bottom_radius`/`top_radius`/
-//!   `height`; `wedge` `width`/`depth`/`height`/`top_width`; `torus`
-//!   `major_radius`/`minor_radius`; `half_space` `px`/`py`/`pz` (the POINT
-//!   only — its normal is excluded below)
-//! - PROFILE producers → LENGTH ("Length") (task 5750): `rectangle`
-//!   `width`/`height`; `circle` `radius`; `ellipse` `semi_major`/`semi_minor`
-//! - MODIFY producers → LENGTH ("Length") (task 5750): `fillet` (arity 2)
-//!   arg1 `radius` and (arity 3) arg2 `radius`; `chamfer` (arity 2) arg1
-//!   `distance` and (arity 3) arg2 `distance` — both GENUINELY OVERLOADED, so
-//!   both are arity-keyed; `chamfer_asymmetric` arg2 `d1` + arg3 `d2`;
-//!   `shell`/`shell_open` arg1 `thickness`; `thicken` arg1 `offset`;
-//!   `fillet_all` arg1 `radius`; `zone_slab` arg1 `width`;
-//!   `offset_solid`/`offset_curve` arg1 `distance`
-//! - SWEEP producers → LENGTH ("Length") (task 5750): `extrude`/
-//!   `extrude_symmetric` arg1 `distance`; `pipe` arg1 `radius`;
-//!   `revolve`/`revolve_full` args1-3 axis origin `ox`/`oy`/`oz` (the ORIGIN
-//!   only — see below)
-//! - TRANSFORM producers → LENGTH ("Length") (task 5750): `translate` args1-3
-//!   displacement `dx`/`dy`/`dz`; `rotate_around` args1-3 pivot `px`/`py`/`pz`
-//!   (the PIVOT only — see below)
+//! The AUTHORITATIVE per-slot statement — index, argument name, dimension, and
+//! why each neighbouring position is or is not gated — lives on the match arms
+//! of [`builtin_arg_slots`], beside the code it describes. This section states
+//! only the RULES that decide membership: restating the slots here as well
+//! would be a second copy that nothing machine-checks, and it would drift the
+//! first time a leaf adds or renames one. Read the arms for the slots.
 //!
-//! UNCHECKED (would false-positive on valid call sites or is out-of-scope):
-//! - arg0 (geometry handle) — ε=4358's territory
-//! - `dir` Vec3 slot — accepts list literals `[0,0,1]` that coerce
-//! - Range slots (`edges_by_length` / `faces_by_area`)
-//! - Names without dimensioned-scalar args (`split`, `face`, `edge`, `solid_body`, …)
-//! - Pattern DIRECTION components and COUNTS (`linear_pattern` args1-4;
-//!   `linear_pattern_2d` args1-4 and 6-9) — why each is exempt is on the
-//!   `linear_pattern` arm of [`builtin_arg_slots`].
-//! - `mirror` (arity 7) / `circular_pattern` (arity 9) origin triples
-//!   `ox`/`oy`/`oz` — length-semantic and eligible, but deliberately DEFERRED by
-//!   task 5652: LENGTH slots there turn at least six existing valid-today call
-//!   sites into hard compile errors, spanning `reify-eval` tests and
-//!   `examples/` — a separable breaking-surface migration outside 5652's scope.
-//!   TODO(#5662): add the ox/oy/oz LENGTH slots and migrate those call sites.
-//! - `half_space` args3-5 `nx`/`ny`/`nz` — the STRADDLE case (task 5750). Its
-//!   boundary POINT is checked (above) while its outward NORMAL is not: a
-//!   normal is a dimensionless unit vector whose components are legitimately
-//!   bare in correct `.ri`, so a LENGTH slot there would reject valid code.
-//!   Same ORIGIN-vs-DIRECTION split the circular pattern draws for
-//!   `ox`/`oy`/`oz` vs `ax`/`ay`/`az`.
-//! - `rounded_box` / `rounded_rect` / `zone_cylinder` / `zone_annulus` /
-//!   `zone_profile` — gated only INDIRECTLY (task 5750). Each DESUGARS into
-//!   Box/Cylinder/Rectangle/Circle/Pipe/Thicken ops, so its own surface
-//!   arguments never reach a gated position under these names; a slot here
+//! COVERED families:
+//! - The geometry TOPOLOGY SELECTORS this table was built for (task 4493) —
+//!   the mass-properties `density`, and the directional / height / extremal
+//!   `tol` arguments.
+//! - `generate`'s Int count (task 3994) — the lone non-geometry, non-`Scalar`
+//!   slot. It hosts here only because the mechanism is generic (name-keyed),
+//!   which avoids standing up a parallel checker for one slot.
+//! - Pattern SPACING (task 5652) — `linear_pattern` / `linear_pattern_2d`.
+//! - The Contract C LENGTH families of PRD
+//!   `docs/prds/v0_6/units-length-gate-completion.md` leaf η (task 5750):
+//!   PRIMITIVE and PROFILE producers, MODIFY, SWEEP, and the TRANSFORM row
+//!   that contract C6 forced in alongside them. These mirror, at the compile
+//!   layer, the family table in `crates/reify-eval/src/arg_acceptance.rs` —
+//!   the canonical enumeration of every position routed through the eval-layer
+//!   LENGTH chokepoint.
+//!
+//! The RULES that decide whether a position inside a covered family gets a
+//! slot — each one is why some argument sitting right next to a slotted one is
+//! deliberately bare:
+//!
+//! - **arg0 is never checked.** A geometry handle is ε=4358's territory.
+//! - **ORIGIN vs DIRECTION.** A point in space (`half_space`'s `px`/`py`/`pz`,
+//!   `revolve`'s `ox`/`oy`/`oz`, `rotate_around`'s pivot, `translate`'s
+//!   displacement) IS a LENGTH — a bare component is silently read as SI
+//!   metres, the 1000×-too-big hazard this whole gate exists to close. A
+//!   unit-vector DIRECTION (`nx`/`ny`/`nz`, `ax`/`ay`/`az`, a pattern's or
+//!   `extrude_infinite`'s `dx`/`dy`/`dz`) is dimensionless and legitimately
+//!   bare in correct `.ri`, so a slot there would reject valid code. Stated
+//!   binding at `crates/reify-eval/src/arg_acceptance.rs`'s "unit-vector
+//!   DIRECTIONS" paragraph. The three builtins whose arguments STRADDLE this
+//!   line carry the split on their own arm.
+//! - **COUNTS, face INDICES and dimensionless RATIOS are never slots.** A
+//!   wrong `count`, `face_{i}` or `scale` factor is an arity or semantic
+//!   error, not a dimension one, and a LENGTH slot on a ratio would reject
+//!   correct `.ri` outright.
+//! - **Every ANGLE belongs to
+//!   `docs/prds/v0_6/angle-units-surface-convergence.md`** by binding seam
+//!   decree — `revolve`'s and `rotate_around`'s `angle`, `draft`'s `angle`.
+//!   The pre-existing ANGLE `tol` slots are that PRD's inheritance, not a
+//!   precedent to extend; adding a new one here would be a scope violation.
+//!   It is also why those slots carry no migration hint: the eval layer has
+//!   none to mirror, and PRD 3 owns closing both halves together.
+//! - **Polymorphic and coercing slots stay out.** Math args (no fixed
+//!   dimension), the `dir` Vec3 slot (accepts list literals like `[0,0,1]`
+//!   that coerce), and Range slots (`edges_by_length` / `faces_by_area`).
+//! - **Indirect gating is not gating.** `rounded_box` / `rounded_rect` /
+//!   `zone_cylinder` / `zone_annulus` / `zone_profile` DESUGAR into
+//!   Box/Cylinder/Rectangle/Circle/Pipe/Thicken ops, so their own surface
+//!   arguments never reach a gated position under these names. A slot here
 //!   would be NEW coverage whose arg name disagrees with whatever the eval
-//!   layer reports for the desugared op, breaking the same-wording premise the
-//!   migration hint depends on (PRD
-//!   `docs/prds/v0_6/units-length-gate-completion.md` decision D9).
-//! - `polygon` — Contract-C gated at eval through the task-5661 VARIADIC
-//!   route, but its positions are arity-OPEN and its compile-layer arg names
-//!   are the inert `c0`…`cN` that `geometry.rs` synthesises, so there is no
-//!   index-keyed `CheckableArg` to write for it at all.
-//! - `revolve`/`revolve_full` args4-6 `ax`/`ay`/`az` and `revolve` arg7
-//!   `angle` — the second straddle case (task 5750). The axis DIRECTION is a
-//!   dimensionless unit vector, and every ANGLE belongs to
-//!   `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
-//!   decree, so gating one here would be a scope violation.
-//! - `draft`'s `angle`, and `offset_curve`'s 3rd argument — the latter is a
-//!   reference Surface handle OR a direction vec3, disambiguated at eval on
-//!   the `Value` variant; `arg_acceptance.rs` names it explicitly among the
-//!   deliberately-not-gated set.
-//! - `shell`'s args2.. `face_{i}` — face INDICES, not lengths.
-//! - `rotate_around` args4-6 `ax`/`ay`/`az` and arg7 `angle` — the third
-//!   straddle case (task 5750), on the same terms as `revolve`'s.
-//! - `scale` entirely — its `factor` (and the `factors` vec3 of its
-//!   non-uniform form) is a dimensionless RATIO, so a LENGTH slot would
-//!   reject correct `.ri` outright.
+//!   layer reports for the desugared op — breaking the same-wording premise
+//!   the migration hint depends on (PRD decision D9). (`zone_annulus`' arg3
+//!   `length` is additionally DEAD: `geometry.rs` binds it to `_l`.)
+//! - **Names with no dimensioned-scalar argument have no arm at all**
+//!   (`split`, `face`, `edge`, `solid_body`, `volume`, `edges`, `faces`, …).
+//!
+//! One position is eligible under every rule above and still absent, on a
+//! recorded decision rather than by omission:
+//!
+//! - `mirror` (arity 7) / `circular_pattern` (arity 9) origin triples
+//!   `ox`/`oy`/`oz` — length-semantic and eligible, but deliberately DEFERRED
+//!   by task 5652: LENGTH slots there turn at least six existing valid-today
+//!   call sites into hard compile errors, spanning `reify-eval` tests and
+//!   `examples/` — a separable breaking-surface migration outside 5652's
+//!   scope. TODO(#5662): add the ox/oy/oz LENGTH slots and migrate those call
+//!   sites.
 //!
 //! # Contract C positions this table deliberately does NOT cover (task 5750)
 //!
@@ -139,9 +130,20 @@
 //!   by a stdlib producer (`plane_yz(10mm)` → `Value::Plane`), so it never
 //!   passes through a positional argument index for this table to key on.
 //!
-//! # Known: a NESTED geometry argument reports its slots twice (task 5750)
+//! - `extrude_infinite` — a SWEEP-family producer with NO arm here at all,
+//!   which is why it is easy to read as an oversight. It is not: its signature
+//!   is `(profile, dx, dy, dz, direction)`, i.e. a geometry handle, a
+//!   unit-vector DIRECTION triple, and a `"positive"`/`"negative"`/`"both"`
+//!   string. Not one of its arguments is a magnitude, so there is no LENGTH
+//!   position to gate — the eval layer likewise reads `dx`/`dy`/`dz` with a
+//!   plain `f64_arg` rather than through the Contract C chokepoint
+//!   (`crates/reify-eval/src/geometry_ops.rs`). Recorded because it is absent,
+//!   not because it is deferred.
 //!
-//! MEASURED with `target/debug/reify check`, task 5750:
+//! # Known: a NESTED geometry argument is WALKED twice (task 5750)
+//!
+//! MEASURED with `target/debug/reify check`, task 5750, BEFORE the duplicate
+//! drop described below:
 //!
 //! ```text
 //! extrude(circle(4), 12mm)                      → 2 × "circle: radius …"
@@ -169,10 +171,18 @@
 //! the nested-geometry hoisting path), so every diagnostic emitted from the
 //! type-inference walk is duplicated while diagnostics emitted from the
 //! LOWERING path are not — consistent with `extrude(circle(4mm, 9mm), 12mm)`
-//! reporting its arity error exactly once. Fixing it means de-duplicating that
-//! walk, which is outside this table's file; filed as follow-up work rather
-//! than pinned here, because a test asserting the current count would enshrine
-//! the duplication as intended.
+//! reporting its arity error exactly once.
+//!
+//! CONTAINED, not fixed: [`emit_mismatch`] drops a pushed diagnostic whose
+//! (code, span, message) triple is already present, so THIS family reports
+//! once per position again. `extrude(circle(4), 12mm)` — the dominant shape a
+//! nested profile takes in real `.ri` — was the case that made containment
+//! worth doing here rather than waiting. The MEASURED probe table above is
+//! kept verbatim because it is the evidence the underlying walk is still
+//! doubled: `unresolved name` and every other diagnostic family emitted from
+//! that walk is untouched by a drop scoped to `ArgTypeMismatch`. De-duplicating
+//! the walk itself belongs in `expr.rs`, outside this file, and is filed as
+//! follow-up work.
 //!
 //! # Arity awareness (task 5652)
 //!
@@ -257,17 +267,16 @@ pub(crate) enum ExpectedArg {
     /// Distinct from `Scalar { DIMENSIONLESS }` (a dimensionless `Real`): a count
     /// must be a true `Int`, so `generate(2.5, …)` and `generate(3mm, …)` are both
     /// rejected while `generate(3, …)` passes.
+    ///
+    /// Carries NO counterpart to the `Scalar` variant's `migration_hint`, and
+    /// deliberately so: a wrong count is an arity / semantic error, not a
+    /// dimension migration, so there is nothing to migrate TO. The two arms
+    /// still share one message shape without a per-variant field —
+    /// [`emit_mismatch`] takes `Option<&'static str>` and this arm passes
+    /// `None` literally.
     Int {
         /// Human-readable type name for diagnostic messages (always `"Int"`).
         type_name: &'static str,
-        /// Optional migration hint appended to the rejection message; see the
-        /// `Scalar` variant's field of the same name.
-        ///
-        /// Expected to stay `None` for counts: a wrong count is an arity /
-        /// semantic error, not a dimension migration, so there is nothing to
-        /// migrate TO. The field exists on this variant only so the two arms
-        /// share one message shape.
-        migration_hint: Option<&'static str>,
     },
 }
 
@@ -282,7 +291,7 @@ pub(crate) enum ExpectedArg {
 /// The seven pre-5750 LENGTH slots above keep their longhand form deliberately
 /// — rewriting them would churn already-reviewed arms for no behavioural gain,
 /// and this function is byte-for-byte the same construction they perform.
-fn length_arg(index: usize, name: &'static str) -> CheckableArg {
+const fn length_arg(index: usize, name: &'static str) -> CheckableArg {
     CheckableArg {
         index,
         name,
@@ -297,16 +306,29 @@ fn length_arg(index: usize, name: &'static str) -> CheckableArg {
 /// Return the checkable dimensioned-scalar argument slots for a named builtin
 /// call of a given arity.
 ///
-/// Returns an empty `Vec` for:
+/// Returns an empty slice for:
 /// - Unrecognized names.
 /// - Names with no checked dimensioned-scalar arg (e.g. `split`, `face`, `edge`,
 ///   `solid_body`, `volume`, `edges`, `faces`, …).
 /// - A recognized *overloaded* name called at an arity whose positional layout
 ///   has no checked slot (see "Arity awareness" below).
 ///
-/// The returned slots correspond exactly to the CHECKED arg positions listed
-/// in the module-level docs.  Mirrors the name-keyed structure of
-/// `math_fn_result_type` (task 4182 result-type precedent).
+/// The arms below are the AUTHORITATIVE per-slot statement — index, argument
+/// name, dimension, and why each neighbouring position is or is not gated. The
+/// module docs carry the rules only, so the two cannot drift.  Mirrors the
+/// name-keyed structure of `math_fn_result_type` (task 4182 result-type
+/// precedent).
+///
+/// # Shape: `const { &[…] }`, not `vec![…]`
+///
+/// Every arm is a compile-time constant table returned by reference, so a call
+/// costs a match and a pointer rather than a heap allocation.  That matters
+/// because [`check_builtin_arg_types`] runs on EVERY builtin call in a module,
+/// and since task 5750 the common producers (`box`, `circle`, `translate`,
+/// `extrude`, `fillet`, …) all have slots — before it they fell through to the
+/// non-allocating empty arm.  The inline `const` block is what gives the
+/// borrowed array `'static`: [`length_arg`] is a `const fn`, and a const-fn
+/// call is not promotable on its own.
 ///
 /// # Arity awareness (task 5652)
 ///
@@ -327,12 +349,12 @@ fn length_arg(index: usize, name: &'static str) -> CheckableArg {
 /// `h` that IS present.  Short-arg calls are already handled downstream by
 /// `check_builtin_arg_types`'s `compiled_args.get(index)` bounds check; arity
 /// errors are a separate diagnostic family.
-pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableArg> {
+pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [CheckableArg] {
     match name {
         // ── Mass-properties topology selectors ───────────────────────────────
         // arg0: geometry handle (unchecked — ε=4358's territory)
         // arg1: density → MASS_DENSITY ("Density")
-        "center_of_mass" | "moment_of_inertia" => vec![CheckableArg {
+        "center_of_mass" | "moment_of_inertia" => const { &[CheckableArg {
             index: 1,
             name: "density",
             expected: ExpectedArg::Scalar {
@@ -340,7 +362,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                 type_name: "Density",
                 migration_hint: Some(DENSITY_MIGRATION_HINT),
             },
-        }],
+        }] },
 
         // ── Directional topology selectors ───────────────────────────────────
         // arg0: geometry handle (unchecked)
@@ -351,7 +373,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         "faces_by_normal"
         | "edges_parallel_to"
         | "faces_perpendicular_to"
-        | "edges_perpendicular_to" => vec![CheckableArg {
+        | "edges_perpendicular_to" => const { &[CheckableArg {
             index: 2,
             name: "tol",
             expected: ExpectedArg::Scalar {
@@ -368,13 +390,13 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                 // task under the PTODO grammar, and PRD 3 has no task id yet.
                 migration_hint: None,
             },
-        }],
+        }] },
 
         // ── Height-based topology selectors ──────────────────────────────────
         // arg0: geometry handle (unchecked)
         // arg1: h → LENGTH ("Length")
         // arg2: tol → LENGTH ("Length")
-        "edges_at_height" => vec![
+        "edges_at_height" => const { &[
             CheckableArg {
                 index: 1,
                 name: "h",
@@ -393,7 +415,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                     migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
-        ],
+        ] },
 
         // ── Extremal topology selectors (task 3523) ──────────────────────────
         // arg0: geometry handle (unchecked)
@@ -402,7 +424,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // arg3: tol → LENGTH ("Length"). A distance tolerance, like edges_at_height's
         // LENGTH tol — so an ANGLE tol (e.g. faces_by_normal's 1deg) is rejected at
         // compile time rather than only warned-about at eval (resolve_length_scalar_arg).
-        "extremal_by_bbox" | "extremal_by_centroid" => vec![CheckableArg {
+        "extremal_by_bbox" | "extremal_by_centroid" => const { &[CheckableArg {
             index: 3,
             name: "tol",
             expected: ExpectedArg::Scalar {
@@ -410,7 +432,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                 type_name: "Length",
                 migration_hint: Some(LENGTH_MIGRATION_HINT),
             },
-        }],
+        }] },
 
         // ── List combinator: generate(n, |i| …) (task 3994, structural-query ζ) ──
         // arg0: n → Int (count). NOT a geometry selector — the only non-geometry
@@ -420,16 +442,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // rejected; a negative literal (`-1`) types as Int and PASSES here — it is
         // caught at eval (DiagnosticCode::GenerateNegativeCount, task 3994 step-10).
         // arg1: |i| … lambda (unchecked — typed via the list-helper return ladder).
-        "generate" => vec![CheckableArg {
+        "generate" => const { &[CheckableArg {
             index: 0,
             name: "n",
-            expected: ExpectedArg::Int {
-                type_name: "Int",
-                // A count is not a dimension migration — there is no
-                // dimensioned form to point the author at.
-                migration_hint: None,
-            },
-        }],
+            expected: ExpectedArg::Int { type_name: "Int" },
+        }] },
 
         // ── Pattern CSG producers: spacing is a Length (task 5652) ───────────
         // linear_pattern(target, dx, dy, dz, count, spacing)
@@ -451,7 +468,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // nothing there — the slot would be semantically lying, and the only
         // thing keeping it quiet would be the downstream `compiled_args.get(5)`
         // bounds check, i.e. luck rather than intent.
-        "linear_pattern" if arg_count == 6 => vec![CheckableArg {
+        "linear_pattern" if arg_count == 6 => const { &[CheckableArg {
             index: 5,
             name: "spacing",
             expected: ExpectedArg::Scalar {
@@ -459,7 +476,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                 type_name: "Length",
                 migration_hint: Some(LENGTH_MIGRATION_HINT),
             },
-        }],
+        }] },
 
         // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1,
         //                           dx2, dy2, dz2, count2, spacing2)
@@ -477,7 +494,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // index 5 at all, so the `compiled_args.get(index)` bounds check
         // happens to shield it), a 7-arg call DOES have an index 5 holding a
         // different parameter — only this guard prevents the false positive.
-        "linear_pattern_2d" if arg_count == 11 => vec![
+        "linear_pattern_2d" if arg_count == 11 => const { &[
             CheckableArg {
                 index: 5,
                 name: "spacing1",
@@ -496,7 +513,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                     migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
-        ],
+        ] },
 
         // ── Primitive CSG producers: every dimension is a Length (task 5750) ──
         //
@@ -541,11 +558,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         //
         // box(width, height, depth) / box_centered(width, height, depth)
         //   NOTE index 1 is `height` — the Y extent — NOT `depth`.
-        "box" | "box_centered" => vec![
+        "box" | "box_centered" => const { &[
             length_arg(0, "width"),
             length_arg(1, "height"),
             length_arg(2, "depth"),
-        ],
+        ] },
 
         // cylinder(radius, height) / cylinder_centered(radius, height)
         //
@@ -558,42 +575,42 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // the INVARIANT note on `geometry.rs`'s `cylinder_centered` arm), and a
         // slot cannot reach it to break that.
         "cylinder" | "cylinder_centered" => {
-            vec![length_arg(0, "radius"), length_arg(1, "height")]
+            const { &[length_arg(0, "radius"), length_arg(1, "height")] }
         }
 
         // sphere(radius)
-        "sphere" => vec![length_arg(0, "radius")],
+        "sphere" => const { &[length_arg(0, "radius")] },
 
         // tube(outer_r, inner_r, height)
-        "tube" => vec![
+        "tube" => const { &[
             length_arg(0, "outer_r"),
             length_arg(1, "inner_r"),
             length_arg(2, "height"),
-        ],
+        ] },
 
         // cone(bottom_radius, top_radius, height)
-        "cone" => vec![
+        "cone" => const { &[
             length_arg(0, "bottom_radius"),
             length_arg(1, "top_radius"),
             length_arg(2, "height"),
-        ],
+        ] },
 
         // wedge(width, depth, height, top_width)
         //   NOTE this orders its triple width/DEPTH/height — the opposite of
         //   `box`'s width/height/depth. Both orders are copied from their own
         //   lowering site rather than shared, which is why they can differ.
-        "wedge" => vec![
+        "wedge" => const { &[
             length_arg(0, "width"),
             length_arg(1, "depth"),
             length_arg(2, "height"),
             length_arg(3, "top_width"),
-        ],
+        ] },
 
         // torus(major_radius, minor_radius)
-        "torus" => vec![
+        "torus" => const { &[
             length_arg(0, "major_radius"),
             length_arg(1, "minor_radius"),
-        ],
+        ] },
 
         // half_space(px, py, pz, nx, ny, nz)
         //   args0-2: the boundary-plane POINT → LENGTH ("Length").
@@ -608,11 +625,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         //            binding at `crates/reify-eval/src/arg_acceptance.rs`'s
         //            "unit-vector DIRECTIONS" paragraph. Pinned by
         //            `half_space_slots_the_point_but_never_the_normal`.
-        "half_space" => vec![
+        "half_space" => const { &[
             length_arg(0, "px"),
             length_arg(1, "py"),
             length_arg(2, "pz"),
-        ],
+        ] },
 
         // ── Transform producers (task 5750) ─────────────────────────────────
         //
@@ -629,11 +646,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         //   args1-3: `dx`/`dy`/`dz` → LENGTH ("Length"). A DISPLACEMENT, not a
         //            direction: its magnitude is the whole point, so a bare
         //            component is silently read as SI metres.
-        "translate" => vec![
+        "translate" => const { &[
             length_arg(1, "dx"),
             length_arg(2, "dy"),
             length_arg(3, "dz"),
-        ],
+        ] },
 
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         //   The third STRADDLE case, structurally identical to `revolve`'s:
@@ -649,11 +666,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         //   `factor` (and the `factors` vec3 of its non-uniform form) is a
         //   dimensionless RATIO, so a LENGTH slot would reject correct code.
         //   Pinned by `scale_stays_slot_free_because_its_factor_is_dimensionless`.
-        "rotate_around" => vec![
+        "rotate_around" => const { &[
             length_arg(1, "px"),
             length_arg(2, "py"),
             length_arg(3, "pz"),
-        ],
+        ] },
 
         // ── Modify producers (task 5750) ─────────────────────────────────────
         //
@@ -689,19 +706,19 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // - `chamfer` / `fillet` arg1 in the CURATED form — the edge selector.
 
         // fillet(target, radius) / fillet(target, edges, radius)
-        "fillet" if arg_count == 2 => vec![length_arg(1, "radius")],
-        "fillet" if arg_count == 3 => vec![length_arg(2, "radius")],
+        "fillet" if arg_count == 2 => const { &[length_arg(1, "radius")] },
+        "fillet" if arg_count == 3 => const { &[length_arg(2, "radius")] },
 
         // chamfer(target, distance) / chamfer(target, edges, distance)
-        "chamfer" if arg_count == 2 => vec![length_arg(1, "distance")],
-        "chamfer" if arg_count == 3 => vec![length_arg(2, "distance")],
+        "chamfer" if arg_count == 2 => const { &[length_arg(1, "distance")] },
+        "chamfer" if arg_count == 3 => const { &[length_arg(2, "distance")] },
 
         // chamfer_asymmetric(target, edges, d1, d2)
         //   Single-form (`check_arg_count_exact(4)`). BOTH setbacks are
         //   slotted: the eval layer reads the pair in one grouped call so an
         //   author fixes the line in a single edit, and reporting only `d1`
         //   here would degrade that to two edit-build cycles.
-        "chamfer_asymmetric" => vec![length_arg(2, "d1"), length_arg(3, "d2")],
+        "chamfer_asymmetric" => const { &[length_arg(2, "d1"), length_arg(3, "d2")] },
 
         // The single-magnitude modify family — magnitude at index 1, stable.
         //   shell(target, thickness, face_0, …) — `check_arg_count_at_least(2)`,
@@ -714,11 +731,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         //     guard.
         //   The rest are single-form; a guard would deny them nothing and buy
         //     nothing.
-        "shell" | "shell_open" => vec![length_arg(1, "thickness")],
-        "thicken" => vec![length_arg(1, "offset")],
-        "fillet_all" => vec![length_arg(1, "radius")],
-        "zone_slab" => vec![length_arg(1, "width")],
-        "offset_solid" | "offset_curve" => vec![length_arg(1, "distance")],
+        "shell" | "shell_open" => const { &[length_arg(1, "thickness")] },
+        "thicken" => const { &[length_arg(1, "offset")] },
+        "fillet_all" => const { &[length_arg(1, "radius")] },
+        "zone_slab" => const { &[length_arg(1, "width")] },
+        "offset_solid" | "offset_curve" => const { &[length_arg(1, "distance")] },
 
         // ── Sweep producers (task 5750) ──────────────────────────────────────
         //
@@ -731,8 +748,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // pipe(path, radius)
         //   All exact-2 single-form. Index 0 is the profile / path — a geometry
         //   handle, permanently unchecked (ε=4358's territory).
-        "extrude" | "extrude_symmetric" => vec![length_arg(1, "distance")],
-        "pipe" => vec![length_arg(1, "radius")],
+        "extrude" | "extrude_symmetric" => const { &[length_arg(1, "distance")] },
+        "pipe" => const { &[length_arg(1, "radius")] },
 
         // revolve(profile, ox, oy, oz, ax, ay, az, angle)
         // revolve_full(profile, ox, oy, oz, ax, ay, az)
@@ -751,11 +768,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         //            direction that PRD has to close together.
         //   Both are single-form, so both stay arity-agnostic. Pinned by
         //   `revolve_slots_the_origin_but_never_the_axis_or_the_angle`.
-        "revolve" | "revolve_full" => vec![
+        "revolve" | "revolve_full" => const { &[
             length_arg(1, "ox"),
             length_arg(2, "oy"),
             length_arg(3, "oz"),
-        ],
+        ] },
 
         // ── 2-D profile producers (task 5750) ────────────────────────────────
         //
@@ -764,19 +781,19 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
         // for the reason recorded there.
         //
         // rectangle(width, height)
-        "rectangle" => vec![length_arg(0, "width"), length_arg(1, "height")],
+        "rectangle" => const { &[length_arg(0, "width"), length_arg(1, "height")] },
 
         // circle(radius)
-        "circle" => vec![length_arg(0, "radius")],
+        "circle" => const { &[length_arg(0, "radius")] },
 
         // ellipse(semi_major, semi_minor)
-        "ellipse" => vec![
+        "ellipse" => const { &[
             length_arg(0, "semi_major"),
             length_arg(1, "semi_minor"),
-        ],
+        ] },
 
         // All other names: empty (no dimensioned-scalar arg to check).
-        _ => vec![],
+        _ => &[],
     }
 }
 
@@ -839,7 +856,7 @@ pub(crate) fn check_builtin_arg_types(
     // slots per call arity, so the checker must tell the table how many args
     // this call site actually passed.
     let slots = builtin_arg_slots(name, compiled_args.len());
-    for slot in &slots {
+    for slot in slots {
         let Some(arg) = compiled_args.get(slot.index) else {
             // Arg absent (call is short) — skip. Arity errors are handled
             // elsewhere; a short-arg call is not a type-mismatch.
@@ -887,10 +904,7 @@ pub(crate) fn check_builtin_arg_types(
                 }
             },
 
-            ExpectedArg::Int {
-                type_name,
-                migration_hint,
-            } => match &arg.result_type {
+            ExpectedArg::Int { type_name } => match &arg.result_type {
                 // Gradualism: poison + unresolved pass silently.
                 Type::Error | Type::TypeParam(_) => continue,
 
@@ -906,7 +920,10 @@ pub(crate) fn check_builtin_arg_types(
                         slot.name,
                         type_name,
                         other,
-                        *migration_hint,
+                        // No migration hint, always: a count is not a
+                        // dimension migration, so there is nothing to point
+                        // the author at. See `ExpectedArg::Int`.
+                        None,
                         call_span,
                         diagnostics,
                     );
@@ -924,6 +941,27 @@ pub(crate) fn check_builtin_arg_types(
 /// are byte-identical (PRD decision D9). The LABEL is deliberately left
 /// un-hinted: it is the short inline caret annotation, and the hint belongs on
 /// the message where the eval layer puts it.
+///
+/// # Idempotent per (code, span, message) — the nested-argument double-walk
+///
+/// An EXACT duplicate — same [`DiagnosticCode::ArgTypeMismatch`], same call
+/// span, same rendered message — is dropped rather than pushed a second time.
+/// This is not defensive decoration: a call appearing as a NESTED geometry
+/// ARGUMENT is walked by `compile_expr` more than once, so without this guard
+/// `extrude(circle(4), 12mm)` renders `circle: radius …` twice. See the
+/// module docs' "a NESTED geometry argument" section for the measured probe
+/// table and why the fix belongs here rather than being pinned as intended.
+///
+/// The triple is the whole key, and each third of it is load-bearing: the three
+/// axes of `box(1, 2, 3)` share one call span and one code, and differ only in
+/// their message, so a span- or code-keyed drop would silently collapse three
+/// real errors into one. Pinned by
+/// `nested_primitive_keeps_one_diagnostic_per_axis` in
+/// `tests/builtin_arg_signature_tests.rs`.
+///
+/// Cost is a linear scan of `diagnostics` per emitted mismatch — paid only on
+/// the ERROR path, where the module is already failing to compile and the
+/// diagnostic count is small. The happy path never reaches this function.
 fn emit_mismatch(
     builtin: &str,
     arg_name: &str,
@@ -938,6 +976,20 @@ fn emit_mismatch(
         Some(hint) => format!("{base}; {hint}"),
         None => base,
     };
+
+    // Already reported for this exact position, by an earlier walk of the same
+    // nested argument expression. Two diagnostics identical in code, span AND
+    // message are indistinguishable in any renderer, so the second carries no
+    // information — dropping it is a pure UX win.
+    let already_reported = diagnostics.iter().any(|existing| {
+        existing.code == Some(DiagnosticCode::ArgTypeMismatch)
+            && existing.message == msg
+            && existing.labels.first().map(|label| label.span) == Some(call_span)
+    });
+    if already_reported {
+        return;
+    }
+
     let label_msg = format!("expected {type_name}, got {actual}");
     diagnostics.push(
         Diagnostic::error(msg)
@@ -2276,12 +2328,7 @@ mod tests {
         CheckableArg {
             index,
             name,
-            expected: ExpectedArg::Int {
-                type_name: "Int",
-                // A count is not a dimension migration — there is no
-                // dimensioned form to point the author at.
-                migration_hint: None,
-            },
+            expected: ExpectedArg::Int { type_name: "Int" },
         }
     }
 

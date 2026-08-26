@@ -892,3 +892,118 @@ fn fillet_curated_form_does_not_reject_its_edge_selector() {
         errors
     );
 }
+
+// ── Task 5750 amendment: the nested-argument double-walk ─────────────────────
+
+/// SIGNAL — a bare-argument call NESTED as a geometry argument reports each of
+/// its slots exactly ONCE.
+///
+/// `extrude(circle(4), 12mm)` is the single most common authoring shape a
+/// nested primitive/profile takes, and before this amendment it rendered
+/// `circle: radius …` TWICE: a nested geometry argument is walked by
+/// `compile_expr` more than once, so every diagnostic emitted from the
+/// type-inference walk was duplicated. That double-walk PRE-DATES task 5750
+/// (`extrude(circle(nope), 12mm)` still reports `unresolved name` three
+/// times), but before this leaf no primitive or profile had a slot, so no
+/// nested inner call could emit an `ArgTypeMismatch` at all — landing the
+/// slots made a latent defect user-visible on the dominant shape.
+///
+/// `emit_mismatch` therefore drops an exact (code, span, message) duplicate.
+/// This test is the pin: it must NOT be relaxed to "at least 1".
+#[test]
+fn nested_profile_in_a_sweep_reports_its_bare_radius_exactly_once() {
+    let compiled = compile_struct_body("    let e = extrude(circle(4), 12mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "a nested `circle(4)` must report its bare radius exactly once, not \
+         once per compile-walk.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "circle: radius argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// BOUNDARY ok — the dedup drops only EXACT duplicates, never a distinct
+/// sibling diagnostic.
+///
+/// `box(1, 2, 3)` nested as a sweep target shares one call span across all
+/// three of its slots, so a dedup keyed on the span alone (or on the code
+/// alone) would collapse three real errors into one. Each message names a
+/// different axis, so all three must survive.
+#[test]
+fn nested_primitive_keeps_one_diagnostic_per_axis() {
+    let compiled = compile_struct_body("    let f = fillet(box(1, 2, 3), 1mm)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "box: height argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "box: depth argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "all three axes must survive the duplicate drop.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+// ── Task 5750 amendment: message-level pins for the ORIGIN/PIVOT rows ────────
+
+/// SIGNAL — a bare `revolve` axis ORIGIN is rejected, naming `ox`/`oy`/`oz`.
+///
+/// The straddle row: the origin is a point in space (gated), while the axis
+/// DIRECTION `0, 0, 1` and the `90` angle in this same call are legitimately
+/// bare and must stay silent. Three errors, not six or seven.
+#[test]
+fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
+    let compiled = compile_struct_body(
+        "    let profile = rectangle(10mm, 10mm)\n\
+         \x20   let r = revolve(profile, 0, 0, 0, 0, 0, 1, 90)\n",
+    );
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "revolve: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "revolve: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "revolve: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the axis ORIGIN is gated — the direction and the angle must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare `rotate_around` PIVOT is rejected, naming `px`/`py`/`pz`.
+///
+/// Same straddle shape as `revolve`'s, on the TRANSFORM row: the pivot is
+/// gated, the axis direction and the angle are not.
+#[test]
+fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
+    let compiled = compile_struct_body("    let r = rotate_around(b, 0, 0, 0, 0, 0, 1, 90)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "rotate_around: px argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "rotate_around: py argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "rotate_around: pz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the PIVOT is gated — the axis direction and the angle must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
