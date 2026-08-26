@@ -93,6 +93,29 @@ pub structure BearingRod {
     constraint length > 0mm
 }
 
+/// Surface-ground CFRP tube — the X-GANTRY rails (Leo, 2026-08-26 O6 round:
+/// the gantry rails are carbon-fibre tubes, not steel rods — the gantry is
+/// the Y-axis moving mass, and a 60×800 solid steel rod is ~17.8kg where
+/// this tube is ~1.1kg). Annular sleeve along local +Z, centred, same OD as
+/// BearingRod so the air-bearing interface is unchanged. The fixed Y rails
+/// stay solid steel (BearingRod): their mass is structural, not moving.
+pub structure BearingTube {
+    param outer_diameter : Length = 60mm
+    param wall           : Length = 5mm
+    param length         : Length = 800mm
+
+    let inner_diameter = outer_diameter - wall * 2
+
+    let body = difference(
+        translate(cylinder(outer_diameter / 2, length), 0mm, 0mm, 0mm - length / 2),
+        translate(cylinder(inner_diameter / 2, length * 1.2), 0mm, 0mm, 0mm - length * 0.6)
+    )
+
+    constraint wall > 0mm
+    constraint inner_diameter > 0mm
+    constraint length > 0mm
+}
+
 /// Single Vectran tendon (6 mm braid, on-rail straight span): slender cylinder
 /// along local +Z, centred. Closed-loop routing through capstans is out of
 /// scope for v0.1.
@@ -1376,6 +1399,95 @@ pub structure DriveTendons {
     sub rise_a2 = LinearTendon(length: flz_out2 - lo_in_lo_c) at transform3(orient_identity(), vec3(fl_in_x_a,  plane_in,  (flz_out2 + lo_in_lo_c) / 2))
     sub rise_b2 = LinearTendon(length: flz_out2 - lo_in_hi_c) at transform3(orient_identity(), vec3(fl_in_x_b,  plane_in,  (flz_out2 + lo_in_hi_c) / 2))
 
+    // ── O6: drive-stiffness budget (2026-08-26 round) ───────────────────────
+    // Rope: New England Ropes V-12 Vectran 12-strand single braid, 6mm.
+    // Published data (westmarine.com V-12 listing, read 2026-08-26): average
+    // tensile strength 6400lbf ≈ 28.4kN; stretch 0.71% at 20% of break.
+    // EA_secant = 0.20·28.4kN / 0.0071 ≈ 800kN. Braid EA is construction- and
+    // bed-in-dependent (±30% is normal): MEASURE on the bench (dead weight +
+    // extension over a known free length) before trusting the margins below
+    // to better than that.
+    param tendon_ea  : Force = 800kN
+    /// V-12 6mm average tensile strength; the working-load ceiling used by
+    /// the Printer-level budget is 20% of this (Vectran creep is negligible
+    /// there, and the capstan D/d=8 already derates bend fatigue).
+    param tendon_mbl : Force = 28.4kN
+    /// Static pre-tension per loop (each of the four loops is an independent
+    /// rope, both ends anchored on its own drum winding). Sized to exceed
+    /// the worst peak-accel ΔT with ×1.5 margin (constraints at Printer
+    /// level); the STRETCH target needs ~10× this — see the report cells
+    /// there. Static balance is unaffected (residuals scale with ΔT only).
+    param tendon_pretension : Force = 400N
+    /// Wound-rope compliance: tension decays exponentially into a friction-
+    /// locked wrap, so about ONE wrap per anchored end participates as
+    /// effective free length (capstan decay; agreed 2026-08-26).
+    param drum_wrap_allow : Real = 1.0
+
+    // Wrap-arc lengths at the idler pitch radius. Quarter (90°) and half
+    // (180°, front-corner U-turns) wraps cover every disc except a1's two
+    // fused-diagonal corners (v3.2), whose deviation angles come from the
+    // diagonal's direction cosines (acos → Angle; /1rad → arc length).
+    let wrap_q      = r_pitch * pi / 2
+    let wrap_h      = r_pitch * pi
+    let wrap_a1_dnt = r_pitch * acos(fa1_uy) / 1rad        // strand → diagonal (~84.8°)
+    let wrap_a1_up  = r_pitch * acos(0.0 - fa1_uz) / 1rad  // diagonal → rise (~150.7°)
+    let drum_allow  = drum_wrap_allow * 2 * pi * cap_pitch_m * 2   // both anchored ends
+
+    // Tangent-to-tangent free-length inventory per loop, summed at the
+    // nominal head pose. HEAD-POSITION INVARIANCE: with the drum locked a
+    // loop's total free length is constant over travel — the head-dependent
+    // terms come in equal-and-opposite pairs (cross left+right; rail
+    // front+back), so these totals hold at every (x_head, y_head) and the
+    // position dependence lives entirely in the SPLIT about the head clamp.
+    // (This is also the first rope-length accounting the drive has ever had
+    // — tools/README.md lists it as not computable from the solids.)
+    let cross_span   = idler_in_r - idler_in_l
+    let rail_pair_hi = (corner_y - r_pitch) + (0mm - moved_y  - r_pitch)  // +z loops: back strands end at moved_y
+    let rail_pair_lo = (corner_y - r_pitch) + (0mm - neg_corn - r_pitch)  // −z loops: back strands end at neg_corn
+    // Return spans, front-corner U-turn tangent (corner_y) → rear tangent.
+    let ret_a1 = corner_y - fa1_v1y - fa1_t1               // fused dnturn tangent (v3.2)
+    let ret_b1 = corner_y - moved_y                        // backidler_l_u rear turn
+    let ret_a2 = corner_y - neg_corn                       // backidler_r_l rear turn
+    let ret_b2 = corner_y - dnt_y                          // dnturn_b2 (v3.1 slant feed)
+    // IN verticals (down-idler top → fairlead centre height, rule 4) and
+    // OUT chains (descent + low run + rise), reading the same station cells
+    // the placements use.
+    let vin_a1 = in_a1_top - flz_in1
+    let vin_b1 = in_b1_top - flz_in1
+    let vin_a2 = in_a2_top - flz_in2
+    let vin_b2 = in_b2_top - flz_in2
+    let out_a1_chain = (fa1_len - fa1_t1 - fa1_t2) + (flz_out1 - fa1_c2z)
+    let out_b1_chain = (in_b1_top - lo_lo_c)    + (corner_b1_x - up_b1_x)   + (flz_out1 - lo_lo_c)
+    let out_a2_chain = (in_a2_top - lo_in_lo_c) + (up_a2_x - corner_a2_x)   + (flz_out2 - lo_in_lo_c)
+    let out_b2_chain = (in_b2_top - lo_in_hi_c) + (sl_b2_len - r_pitch * 2) + (flz_out2 - lo_in_hi_c)
+    // Per-loop wrap totals: a1 = 6 quarters + 1 half + its two fused-corner
+    // arcs; b1/a2/b2 = 9 quarters + 1 half each.
+    let wraps_a1 = wrap_q * 6 + wrap_h + wrap_a1_dnt + wrap_a1_up
+    let wraps_9q = wrap_q * 9 + wrap_h
+    // Loop totals: cross + rail pair + return + rear X-run + IN vertical +
+    // OUT chain + the two drum-side fairlead leads + wraps + drum allowance.
+    let loop_a1 = cross_span + rail_pair_hi + ret_a1 + in_a1_run_l + vin_a1 + out_a1_chain + fl_pulley_x * 2 + wraps_a1 + drum_allow
+    let loop_b1 = cross_span + rail_pair_hi + ret_b1 + in_b1_run_l + vin_b1 + out_b1_chain + fl_pulley_x * 2 + wraps_9q + drum_allow
+    let loop_a2 = cross_span + rail_pair_lo + ret_a2 + in_a2_run_l + vin_a2 + out_a2_chain + fl_pulley_x * 2 + wraps_9q + drum_allow
+    let loop_b2 = cross_span + rail_pair_lo + ret_b2 + in_b2_run_l + vin_b2 + out_b2_chain + fl_pulley_x * 2 + wraps_9q + drum_allow
+
+    // Worst-case loop stiffness. The head clamp splits a loop into two
+    // springs in PARALLEL: k = EA·(1/L1 + 1/L2) with L1+L2 = loop_* fixed
+    // (invariance above), minimised at the equal split: k_min = 4·EA/L.
+    // The equal split is reachable inside the travel for every loop (side
+    // lengths shift 1:1 with the belt DOF a = x+y / b = x−y, range ±650mm),
+    // so 4EA/L is the exact travel minimum, not just a bound.
+    let k_a1 : Stiffness = 4 * tendon_ea / loop_a1
+    let k_b1 : Stiffness = 4 * tendon_ea / loop_b1
+    let k_a2 : Stiffness = 4 * tendon_ea / loop_a2
+    let k_b2 : Stiffness = 4 * tendon_ea / loop_b2
+    // CoreXY axis stiffness (a = x+y, b = x−y ⇒ k_x = k_y = Σ k_loop) and
+    // the cross-coupling from belt-A/belt-B loop-length asymmetry
+    // (k_xy = k_A − k_B: a pure-X force deflects the head in Y by
+    // k_xy/k_axis of the X deflection — ~4% here).
+    let k_axis_min : Stiffness = k_a1 + k_b1 + k_a2 + k_b2
+    let k_xy_asym  : Stiffness = (k_a1 + k_a2) - (k_b1 + k_b2)
+
     constraint rail_x > 0mm
     constraint cap_drop > 0mm
 
@@ -1505,6 +1617,21 @@ pub structure DriveTendons {
     constraint flz_in2  > flz_in2_d  - pin_slack
     constraint flz_out2 < flz_out2_d + pin_slack
     constraint flz_out2 > flz_out2_d - pin_slack
+    // 12. O6 sanity: every loop inventory term net positive (a sign error in
+    //    a tangent-true span would silently deflate the stiffness) and the
+    //    rope inputs physical. The accel-coupled budget constraints live at
+    //    Printer level — they need the moving masses and Envelope targets.
+    constraint loop_a1 > cross_span + rail_pair_hi   // each loop exceeds its two biggest terms
+    constraint loop_b1 > cross_span + rail_pair_hi
+    constraint loop_a2 > cross_span + rail_pair_lo
+    constraint loop_b2 > cross_span + rail_pair_lo
+    constraint ret_a1 > 0mm
+    constraint ret_b2 > 0mm
+    constraint out_a1_chain > 0mm
+    constraint out_b2_chain > 0mm
+    constraint tendon_ea > 0N
+    constraint tendon_pretension > 0N
+    constraint tendon_mbl > tendon_ea * 0.01   // strength/stiffness plausibility tie
 }
 
 // ── CoreXY motion system (directly composed) ─────────────────────────────────
@@ -1573,9 +1700,10 @@ pub structure CoreXY {
     sub y_carriage_r_blk = CarriageBlock() at transform3(orient_identity(), vec3(y_rail_offset, y_head, 0mm))
 
     // X gantry: two stacked rails along +X, straddling the Y-rail plane in Z,
-    // ends meeting the two Y carriages.
-    sub x_rail_lower = BearingRod(length: x_rail_len) at transform3(rot_to_x, vec3(0mm, y_head, neg_x_rail))
-    sub x_rail_upper = BearingRod(length: x_rail_len) at transform3(rot_to_x, vec3(0mm, y_head, x_rail_offset))
+    // ends meeting the two Y carriages. CFRP tubes (BearingTube), not steel
+    // rods — the gantry is the Y-axis moving mass (O6 round, 2026-08-26).
+    sub x_rail_lower = BearingTube(length: x_rail_len) at transform3(rot_to_x, vec3(0mm, y_head, neg_x_rail))
+    sub x_rail_upper = BearingTube(length: x_rail_len) at transform3(rot_to_x, vec3(0mm, y_head, x_rail_offset))
 
     // Toolhead carriage riding the gantry at x_head: a bearing on each gantry
     // rail plus a bridging block.
@@ -1586,6 +1714,47 @@ pub structure CoreXY {
     // CoreXY drive tendons (twelve spans: doubled A/B on both rails + crosses).
     // z_a/rail_x threaded down so tendon_outer_z + y_rail_offset are the single source.
     sub tendons = DriveTendons(rail_x: y_rail_offset, z_a: tendon_outer_z) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    // ── O6: moving masses + per-axis first-mode estimates (2026-08-26) ──────
+    // Masses are ANALYTIC volume × density: volume(body) is unresolvable on
+    // the value-eval surface (geometry-consumer builtins need a realized
+    // kernel — probed 2026-08-26, loud error), and for cylinders/tubes/boxes
+    // the closed form is exact anyway. Component dims read from the subs
+    // (one-level reads, #5360), so a resize moves the modes.
+    param rho_alu   : Density = 2700kg/m^3
+    /// Rolled/ground CF tube, ~60% fibre fraction: bulk density ≈ 1600 kg/m³.
+    param rho_cfrp  : Density = 1600kg/m^3
+    /// Toolhead payload the head carriage drags (hotend + extruder + probe).
+    param head_payload : Mass = 2kg
+    /// The 90×90×300 carriage blocks are placeholder solids; a machined
+    /// carriage is mostly void — modelled as a fill fraction of the block.
+    param block_fill : Real = 0.4
+
+    let brg_id_r  = self.head_brg_lower.rod_diameter / 2
+    let brg_len   = self.head_brg_lower.length
+    let m_bearing = pi * (x_brg_radius * x_brg_radius - brg_id_r * brg_id_r) * brg_len * rho_alu
+    let m_block   = self.head_block.width * self.head_block.depth * self.head_block.height * rho_alu * block_fill
+    let tube_or   = self.x_rail_upper.outer_diameter / 2
+    let tube_ir   = self.x_rail_upper.inner_diameter / 2
+    let m_x_rail  = pi * (tube_or * tube_or - tube_ir * tube_ir) * x_rail_len * rho_cfrp
+    /// X-axis moving mass: head block + its two gantry bearings + payload.
+    let m_head   : Mass = m_block + m_bearing * 2 + head_payload
+    /// Y-axis moving mass: the whole gantry — head + both CFRP rails + both
+    /// Y carriages (block + bearing each).
+    let m_gantry : Mass = m_head + m_x_rail * 2 + m_block * 2 + m_bearing * 2
+
+    // Drive-stiffness relays (#5360) + per-axis first-mode estimates of the
+    // head-on-tendons / gantry-on-tendons spring-mass systems. The moving
+    // body is RIGID here — structural modes of frame and gantry are O1's.
+    let k_axis = self.tendons.k_axis_min
+    let k_a1_r = self.tendons.k_a1
+    let k_b1_r = self.tendons.k_b1
+    let k_a2_r = self.tendons.k_a2
+    let k_b2_r = self.tendons.k_b2
+    let pretension_r = self.tendons.tendon_pretension
+    let tendon_mbl_r = self.tendons.tendon_mbl
+    let f1_x : Frequency = sqrt(k_axis / m_head)   / (2 * pi)
+    let f1_y : Frequency = sqrt(k_axis / m_gantry) / (2 * pi)
 
     constraint y_rail_offset > 0mm
     constraint tendon_outer_z > 0mm
@@ -1616,6 +1785,12 @@ pub structure Envelope {
     param peak_accel    : Acceleration = 100  * 1m / (1s * 1s)
     /// Stretch goal — mandates reaction-mass cancellation.
     param stretch_accel : Acceleration = 1000 * 1m / (1s * 1s)
+    /// O6 drive budgets (2026-08-26): worst-case quasi-static following
+    /// error m·a/k under peak_accel…
+    param drive_defl_budget : Length = 0.8mm
+    /// …and the floor under each axis' drive first mode (head/gantry on the
+    /// tendon spring — servo-bandwidth headroom).
+    param drive_f1_min : Frequency = 40Hz
 
     // Thermal targets
     param chamber_temp_target : Temperature = 80degC
@@ -1795,4 +1970,41 @@ pub structure Printer {
     sub h_air         = HAir()
     sub i_mmu         = IMmu()
     sub j_auxiliary   = JAuxiliary()
+
+    // ── O6: drive-stiffness budget vs the Envelope accel targets ────────────
+    // The worst axis is Y (same k, the whole gantry's mass): under accel a
+    // the head lags δ = m·a/k_axis, and each loop's taut/slack sides swing
+    // ±ΔT_i = (k_i/2)·δ. Two budgets per loop: no strand goes slack
+    // (pretension > 1.5·ΔT) and no strand exceeds the 20%-MBL working
+    // ceiling. Deflection and first-mode floors close the set.
+    let defl_head_peak   = self.motion.m_head   * self.env.peak_accel / self.motion.k_axis
+    let defl_gantry_peak = self.motion.m_gantry * self.env.peak_accel / self.motion.k_axis
+    let dT_a1 = self.motion.k_a1_r / 2 * defl_gantry_peak
+    let dT_b1 = self.motion.k_b1_r / 2 * defl_gantry_peak
+    let dT_a2 = self.motion.k_a2_r / 2 * defl_gantry_peak
+    let dT_b2 = self.motion.k_b2_r / 2 * defl_gantry_peak
+    // STRETCH-accel report cells (deliberately unconstrained): reaction-mass
+    // cancellation removes the FRAME reaction, not the rope ΔT — reaching
+    // 1000 m/s² needs the pre-tension raised to ~3.5kN, and worst strand
+    // tension then sits AT the 20%-MBL ceiling (≈5.7kN): the 6mm braid has
+    // no margin left at stretch. Bigger rope or accepted derate — a future
+    // design call, recorded here as live cells instead of a constraint.
+    let defl_gantry_stretch = self.motion.m_gantry * self.env.stretch_accel / self.motion.k_axis
+    let dT_stretch_worst    = self.motion.k_a2_r / 2 * defl_gantry_stretch
+    let pretension_stretch_needed = dT_stretch_worst * 1.5
+
+    constraint self.motion.f1_x > self.env.drive_f1_min
+    constraint self.motion.f1_y > self.env.drive_f1_min
+    constraint defl_head_peak   < self.env.drive_defl_budget
+    constraint defl_gantry_peak < self.env.drive_defl_budget
+    // No-slack floor, ×1.5 margin, per loop:
+    constraint self.motion.pretension_r > dT_a1 * 1.5
+    constraint self.motion.pretension_r > dT_b1 * 1.5
+    constraint self.motion.pretension_r > dT_a2 * 1.5
+    constraint self.motion.pretension_r > dT_b2 * 1.5
+    // Working-load ceiling (20% MBL), worst strand = pretension + ΔT:
+    constraint self.motion.pretension_r + dT_a1 < self.motion.tendon_mbl_r * 0.2
+    constraint self.motion.pretension_r + dT_b1 < self.motion.tendon_mbl_r * 0.2
+    constraint self.motion.pretension_r + dT_a2 < self.motion.tendon_mbl_r * 0.2
+    constraint self.motion.pretension_r + dT_b2 < self.motion.tendon_mbl_r * 0.2
 }
