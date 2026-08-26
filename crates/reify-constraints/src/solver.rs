@@ -9264,6 +9264,112 @@ mod tests {
         );
     }
 
+    /// BT-2 never-overwrite-auto INVARIANT — the half that is assertable in
+    /// EVERY profile (task #5721 item 3).
+    ///
+    /// The collision contract has two halves: an ALARM (debug trips a
+    /// `debug_assert!` so a reify-eval membership regression cannot reach
+    /// production quietly) and a SKIP (the entry is passed over and the
+    /// solver's own value survives, so a drifted list degrades rather than
+    /// silently corrupting the point Nelder-Mead thinks it is evaluating).
+    ///
+    /// Before #5721 only the alarm was reachable under `cargo test`: the
+    /// per-cell `debug_assert!(false, ...)` panicked at the FIRST collision, so
+    /// every assertion about the skip lived downstream of an unconditional
+    /// panic and was dead code in the debug profile — which is the profile a
+    /// bare `cargo test -p reify-constraints` and every `DF_VERIFY_ROLE=task`
+    /// verify run. The skip half was therefore only exercised at merge, where
+    /// verify.sh's `--profile both` reaches release.
+    ///
+    /// [`super::fold_dependent_cells_skipping_collisions`] hoists the collision
+    /// DECISION out from behind that assert and returns the skipped ids, so
+    /// both halves become assertable here with NO cfg gate and NO
+    /// `should_panic`:
+    ///
+    /// * the returned list is exactly the colliding id — this is where "the
+    ///   alarm NAMES the offending cell" is actually pinned, in every profile.
+    ///   (The `should_panic` substring never contained the cell name; only the
+    ///   formatted message it is a substring of does.)
+    /// * the map still holds the trial scalar, not the folded expression's
+    ///   value — the release-side skip-and-preserve contract.
+    ///
+    /// The end-to-end wiring through the real `build_trial_values` call site
+    /// stays pinned by the two cfg-gated siblings below; this test deliberately
+    /// exercises the extracted helper instead, because that is the only way to
+    /// observe the fold BODY running past a collision in a debug build.
+    #[test]
+    fn fold_skips_a_colliding_cell_and_keeps_the_solver_value_in_either_profile() {
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
+
+        let q_id = ValueCellId::new("Rivet", "quantity_produced");
+        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+
+        // HOSTILE: a dependent cell keyed on the AUTO's own id. Evaluating it
+        // would yield 0.5 * 0.5 = 0.25, which is neither trial point — so a
+        // clobber is unmistakable.
+        let money = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+        let hostile = vec![(
+            q_id.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(unit_cost_id.clone(), money.clone()),
+                CompiledExpr::value_ref(unit_cost_id.clone(), money),
+                Type::dimensionless_scalar(),
+            ),
+        )];
+
+        for trial in [2.0_f64, 8.0_f64] {
+            // Mirror the state `build_trial_values` hands the fold: the base
+            // cells, plus the trial auto already inserted.
+            let mut values = ValueMap::new();
+            values.insert(
+                unit_cost_id.clone(),
+                Value::Scalar {
+                    si_value: 0.5,
+                    dimension: DimensionVector::MONEY,
+                },
+            );
+            values.insert(
+                q_id.clone(),
+                Value::Scalar {
+                    si_value: trial,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+
+            let skipped = super::fold_dependent_cells_skipping_collisions(
+                &mut values,
+                &hostile,
+                &[],
+                |id| id == &q_id,
+                None,
+            );
+
+            assert_eq!(
+                skipped,
+                vec![q_id.clone()],
+                "the fold must REPORT the colliding cell by id, so the debug \
+                 alarm has something to name and a release build still has a \
+                 seam a caller could observe; got {skipped:?}"
+            );
+
+            match values.get(&q_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - trial).abs() < 1e-12,
+                    "the fold must NEVER overwrite an auto param's trial \
+                     scalar: expected {trial}, got {si_value}. A dependent-cell \
+                     id colliding with an auto id means upstream membership \
+                     drifted; the trial point must still win (0.25 here would \
+                     be the folded expression clobbering it)."
+                ),
+                other => panic!("expected a Scalar at the auto id, got {other:?}"),
+            }
+        }
+    }
+
     /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT).
     ///
     /// Hands the fold a hostile/malformed `dependent_cells` list whose entry id
