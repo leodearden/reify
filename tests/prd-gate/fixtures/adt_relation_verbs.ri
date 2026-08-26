@@ -1,0 +1,15 @@
+// PRD evidence fixture: docs/prds/v0_6/assembly-derivation-toolbox.md (G3 grammar gate).
+// POSITIVE evidence for leaf A-zeta (Layer-2 verbs): relation verbs are ordinary calls;
+// this relate block parses TODAY. Probe-verified 2026-08-26 @ main 96041f850b:
+//   tree-sitter parse --quiet -> exit 0, no ERROR nodes.
+// (The image_placed verb itself resolves only after A-zeta lands its vocabulary entry.)
+module adt_relation_verbs
+pub structure Unit { param z : Length = 80mm
+    let body = box(10mm, 10mm, z) }
+pub structure Pair {
+    sub a = Unit() at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+    sub b = Unit() at transform3(orient_identity(), vec3(0mm - 100mm, 0mm, 0mm))
+    relate {
+        image_placed(a, b, transform3(orient_axis_angle(vec3(0mm, 0mm, 1m), 180deg), vec3(0mm, 0mm, 0mm)))
+    }
+}
