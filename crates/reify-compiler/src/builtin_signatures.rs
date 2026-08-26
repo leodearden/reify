@@ -1173,6 +1173,196 @@ mod tests {
         assert_slots_at_every_arity("polygon", &[]);
     }
 
+    // ── Task 5750 (units-length η): MODIFY + SWEEP LENGTH slots ──────────────
+    //
+    // The compile-layer half of the two task-5744 rows in
+    // `crates/reify-eval/src/arg_acceptance.rs`'s family table. Same
+    // name-copied-from-the-lowering-site discipline as the primitive block
+    // above; sources are `geometry_modify.rs` and `geometry.rs`'s Sweep arms.
+    //
+    // UNLIKE the primitives, this family contains the table's first genuinely
+    // OVERLOADED names. `fillet` and `chamfer` each accept a 2-arg all-edges
+    // form and a 3-arg curated-edges form, and the magnitude MOVES between
+    // them: `fillet(target, radius)` vs `fillet(target, edges, radius)`. An
+    // arity-agnostic `radius@1` slot would therefore fire on the 3-arg form's
+    // `edges` SELECTOR — a false positive on correct code, which is exactly the
+    // failure `linear_pattern_2d`'s guard was introduced to prevent. Both arms
+    // must be arity-keyed, and the tests below assert the negative half (no
+    // slot at the other form's index) as well as the positive.
+
+    /// fillet / chamfer are OVERLOADED: the magnitude moves with the arity.
+    ///
+    /// Asserts both forms AND that neither form leaks a slot at the other's
+    /// index — the arity-keying is only load-bearing if the wrong index is
+    /// genuinely empty, and an `assert_eq!` on the expected vec alone would
+    /// pass for an arm that returned both slots at every arity.
+    #[test]
+    fn fillet_and_chamfer_slots_are_arity_keyed() {
+        for (name, arg) in [("fillet", "radius"), ("chamfer", "distance")] {
+            // 2-arg all-edges form: (target, magnitude).
+            assert_eq!(
+                builtin_arg_slots(name, 2),
+                vec![length_slot(1, arg)],
+                "{name}(target, {arg}) must expose its magnitude at index 1"
+            );
+            // 3-arg curated form: (target, edges, magnitude).
+            assert_eq!(
+                builtin_arg_slots(name, 3),
+                vec![length_slot(2, arg)],
+                "{name}(target, edges, {arg}) must expose its magnitude at \
+                 index 2 — index 1 holds the edge SELECTOR there, and slotting \
+                 it would emit a false ArgTypeMismatch on correct code"
+            );
+            // Every other arity is an arity ERROR at lowering, not an overload,
+            // so the table must not invent a layout for it.
+            for arg_count in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 2 && *n != 3) {
+                assert!(
+                    builtin_arg_slots(name, arg_count).is_empty(),
+                    "{name} accepts only 2 or 3 args; arity {arg_count} must \
+                     yield no slots, got {:?}",
+                    builtin_arg_slots(name, arg_count)
+                );
+            }
+        }
+    }
+
+    /// chamfer_asymmetric(target, edges, d1, d2) → [d1@2, d2@3].
+    ///
+    /// Single-form (`check_arg_count_exact(4)`), so arity-agnostic. BOTH
+    /// magnitudes are slotted: the eval layer diagnoses `d1` and `d2` in one
+    /// build, and a compile layer that reported only the first would degrade
+    /// that to two edit-build cycles for one line.
+    #[test]
+    fn chamfer_asymmetric_has_both_distance_slots() {
+        assert_slots_at_every_arity(
+            "chamfer_asymmetric",
+            &[length_slot(2, "d1"), length_slot(3, "d2")],
+        );
+    }
+
+    /// The single-magnitude modify family → the magnitude at index 1.
+    ///
+    /// Every one of these holds its magnitude at index 1 REGARDLESS of arity,
+    /// so all stay arity-agnostic per the table's rule:
+    /// * `shell` uses `check_arg_count_at_least(2)` — args 2.. are face
+    ///   indices, so index 1 is `thickness` at every accepted arity. Guarding
+    ///   it on one arity would hollow out coverage for the curated forms.
+    /// * `shell_open` is exact-3 and `fillet_all` / `thicken` / `zone_slab` /
+    ///   `offset_solid` are exact-2, but a guard would buy nothing: index 1
+    ///   denotes the same parameter in the only form each accepts.
+    /// * `offset_curve` accepts 2 OR 3 args and is the interesting case — it is
+    ///   overloaded in ARITY but not in LAYOUT, because `distance` stays at
+    ///   index 1 in both forms and only the optional third argument differs.
+    ///   That is precisely the situation the table's rule says NOT to guard.
+    #[test]
+    fn single_magnitude_modify_slots_are_arity_agnostic() {
+        for (name, arg) in [
+            ("shell", "thickness"),
+            ("shell_open", "thickness"),
+            ("thicken", "offset"),
+            ("fillet_all", "radius"),
+            ("zone_slab", "width"),
+            ("offset_solid", "distance"),
+            ("offset_curve", "distance"),
+        ] {
+            assert_slots_at_every_arity(name, &[length_slot(1, arg)]);
+        }
+    }
+
+    /// offset_curve's THIRD argument is never slotted.
+    ///
+    /// At arity 3 it is either a reference Surface handle or a direction vec3 —
+    /// `geometry_modify.rs` stashes it under the neutral name `"third"` and
+    /// defers the disambiguation to eval. A direction's components are
+    /// legitimately bare, and `arg_acceptance.rs` names this position
+    /// explicitly as deliberately-not-gated ("its own production diagnostic
+    /// already calls it a direction vec3"), so a LENGTH slot here would reject
+    /// correct `.ri`. Stated positively rather than left to the vec assertion
+    /// above, because it is a DECISION, not an omission.
+    #[test]
+    fn offset_curve_third_argument_is_never_slotted() {
+        let slotted: Vec<usize> = builtin_arg_slots("offset_curve", 3)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        assert!(
+            !slotted.contains(&2),
+            "offset_curve's 3rd argument is a reference Surface OR a direction \
+             vec3 and must stay slot-free; got slots at {slotted:?}"
+        );
+    }
+
+    /// extrude / extrude_symmetric / pipe → the magnitude at index 1.
+    ///
+    /// All exact-2 single-form, so arity-agnostic. `pipe`'s index 0 is its
+    /// PATH (a geometry handle resolved through `profiles[0]`), and `extrude`'s
+    /// is its profile — both arg0, both permanently unchecked.
+    #[test]
+    fn two_arg_sweep_slots_are_arity_agnostic() {
+        for (name, arg) in [
+            ("extrude", "distance"),
+            ("extrude_symmetric", "distance"),
+            ("pipe", "radius"),
+        ] {
+            assert_slots_at_every_arity(name, &[length_slot(1, arg)]);
+        }
+    }
+
+    /// revolve / revolve_full → the axis ORIGIN triple only.
+    ///
+    /// The second STRADDLE case, after `half_space`. `revolve(profile, ox, oy,
+    /// oz, ax, ay, az, angle)` carries a gated ORIGIN, an un-gated dimensionless
+    /// axis DIRECTION and an ANGLE in one argument list:
+    /// * `ox`/`oy`/`oz` are a point in space — bare components silently read as
+    ///   SI metres, so they are slotted;
+    /// * `ax`/`ay`/`az` are a unit vector, legitimately bare;
+    /// * `angle` belongs to `docs/prds/v0_6/angle-units-surface-convergence.md`
+    ///   by binding seam decree. Gating it HERE would be a scope violation, not
+    ///   an improvement, and would make the two layers disagree in the
+    ///   direction PRD 3 has to close together.
+    ///
+    /// `revolve_full` is the same layout minus the angle (the compiler injects
+    /// a literal 2π), so the origin sits at the same indices and both are
+    /// arity-agnostic single forms.
+    #[test]
+    fn revolve_slots_the_origin_but_never_the_axis_or_the_angle() {
+        for name in ["revolve", "revolve_full"] {
+            assert_slots_at_every_arity(
+                name,
+                &[
+                    length_slot(1, "ox"),
+                    length_slot(2, "oy"),
+                    length_slot(3, "oz"),
+                ],
+            );
+
+            // The exclusions stated positively: axis at 4/5/6, angle at 7
+            // (present only on `revolve`).
+            let slotted: Vec<usize> = builtin_arg_slots(name, 8)
+                .iter()
+                .map(|slot| slot.index)
+                .collect();
+            for excluded in [4usize, 5, 6, 7] {
+                assert!(
+                    !slotted.contains(&excluded),
+                    "{name} arg{excluded} is an axis DIRECTION component or the \
+                     ANGLE, neither of which this leaf may gate; got slots at \
+                     {slotted:?}"
+                );
+            }
+        }
+    }
+
+    /// `draft` stays wholly slot-free — its only scalar is an ANGLE.
+    ///
+    /// A control for the seam: `draft` sits in the same `compile_modify_op`
+    /// match as every name slotted above, so "the modify family is gated" must
+    /// not be read as "every modify argument is gated".
+    #[test]
+    fn draft_stays_slot_free_because_its_only_scalar_is_an_angle() {
+        assert_slots_at_every_arity("draft", &[]);
+    }
+
     /// Task 5652 (step-1 RED). Pins the guard-only-overloaded-names half of
     /// [`builtin_arg_slots`]'s contract (rule and rationale documented there):
     /// the `arg_count` parameter is *available* to every arm but *used* only by

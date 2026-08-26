@@ -778,3 +778,117 @@ fn centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind() {
         compiled.diagnostics
     );
 }
+
+// ── Task 5750 (units-length η): MODIFY + SWEEP LENGTH slots, end to end ──────
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md` boundary row 4.
+
+/// SIGNAL — a bare `fillet` radius is rejected, naming `radius` with the hint.
+///
+/// The target is fully dimensioned so the only thing that can fire is the
+/// fillet slot: without that, a `box` rejection from the primitive slots would
+/// satisfy a loose count assertion and this row would never actually exercise
+/// the modify family.
+#[test]
+fn fillet_bare_radius_is_rejected_naming_radius() {
+    let compiled = compile_struct_body("    let f = fillet(box(10mm, 10mm, 10mm), 1)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare fillet radius.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "fillet: radius argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// SIGNAL — `chamfer_asymmetric` is rejected once per MAGNITUDE.
+///
+/// Both `d1` and `d2`, for the same reason `box` is diagnosed on all three
+/// axes: the eval layer reads the pair in one grouped call so the author fixes
+/// the line in a single edit, and the compile layer must not degrade that.
+#[test]
+fn chamfer_asymmetric_bare_distances_are_rejected_once_each() {
+    let compiled = compile_struct_body(
+        "    let sel = edges(b)\n    let c = chamfer_asymmetric(b, sel, 1, 2)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "chamfer_asymmetric: d1 argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "chamfer_asymmetric: d2 argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+        ],
+        "both asymmetric setbacks must be diagnosed in one compile.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare `extrude` distance is rejected, from the SWEEP family.
+#[test]
+fn extrude_bare_distance_is_rejected_naming_distance() {
+    let compiled = compile_struct_body("    let e = extrude(rectangle(10mm, 10mm), 20)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare extrude distance.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "extrude: distance argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// BOUNDARY ok — the dimensioned controls for both families emit nothing.
+///
+/// Paired with the three signals above for the same reason every bare fixture
+/// in the eval-layer e2e files carries a control: without it, a slot that fired
+/// unconditionally would satisfy all three.
+#[test]
+fn dimensioned_modify_and_sweep_args_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let f = fillet(box(10mm, 10mm, 10mm), 1mm)\n\
+         \x20   let e = extrude(rectangle(10mm, 10mm), 20mm)\n\
+         \x20   let s = shell(b, 2mm)\n\
+         \x20   let p = pipe(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm), 1mm)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "fully dimensioned modify/sweep calls must emit no ArgTypeMismatch, got: {:#?}",
+        errors
+    );
+}
+
+/// BOUNDARY ok — `fillet`'s 3-arg curated form does NOT slot its edge SELECTOR.
+///
+/// The concrete false positive the arity guard exists to prevent: `radius`
+/// moves from index 1 to index 2 between the two overloads, so an
+/// arity-agnostic `radius@1` slot would demand a Length of the `edges`
+/// selector — an ArgTypeMismatch on correct code. The magnitude here is
+/// dimensioned, so the ONLY thing that could fire is that false positive.
+#[test]
+fn fillet_curated_form_does_not_reject_its_edge_selector() {
+    let compiled =
+        compile_struct_body("    let sel = edges(b)\n    let f = fillet(b, sel, 2mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "fillet(target, edges, radius) must not slot its edge selector — that is \
+         the false positive the arity guard exists to prevent; got: {:#?}",
+        errors
+    );
+}

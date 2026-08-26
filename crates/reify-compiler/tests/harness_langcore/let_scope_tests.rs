@@ -1780,25 +1780,55 @@ fn loft_non_geometry_profiles_uses_fallback() {
     );
 }
 
+/// The geom_ref fallback survives, and the arg-1 LENGTH rejection now FIRES.
+///
+/// FLIPPED by task 5750 (units-length η), contract C6 of
+/// `docs/prds/v0_6/units-length-gate-completion.md`. This test used to assert
+/// `extrude(42, 10)` produced NO errors at all. That is no longer true and
+/// flipping it IS THE FIX, not a regression to suppress: `10` sits at
+/// `extrude`'s `distance` position, and η's whole point is that a bare
+/// magnitude there is a compile-time Error rather than a silent 10-SI-METRE
+/// extrusion.
+///
+/// The half this test was ORIGINALLY written for is untouched and still pinned
+/// below. `42` sits at arg 0 — the geometry-handle position, permanently
+/// unchecked (ε=4358's territory) — so the geom_ref closure still falls back
+/// silently to `GeomRef::Step(step_offset)`, and the op is STILL LOWERED
+/// despite the arg-1 diagnostic. That second fact is not incidental:
+/// `check_builtin_arg_types` is anti-cascade, touching only `diagnostics` and
+/// never lowering or result-type inference, and the surviving op-sequence
+/// assertion is what pins it.
 #[test]
 fn extrude_non_geometry_target_uses_fallback() {
-    // extrude(42, 10): arg 0 is a literal number, not a geometry expression.
-    // extrude() uses the same geom_ref fallback path as translate() and other
-    // single-geom-arg functions — it silently falls back to GeomRef::Step(step_offset).
-    // This verifies the silent-fallback behavior is consistent across the category,
-    // not just for transform functions.
     let source = r#"structure S {
     let result = extrude(42, 10)
 }"#;
     let compiled = compile_with_diagnostics(source);
     let errors = error_diagnostics(&compiled);
-    // No error expected — the geom_ref closure falls back silently.
-    assert!(
-        errors.is_empty(),
-        "extrude() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+
+    // Exactly one error, and it is the LENGTH rejection on arg 1 — NOT a
+    // geometry-handle complaint about arg 0.
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly the arg-1 LENGTH rejection; arg 0 must still fall \
+         back silently. Got: {:?}",
         errors
     );
-    // Should still produce a realization with an Extrude (Sweep) op.
+    assert_eq!(
+        errors[0].code,
+        Some(reify_core::DiagnosticCode::ArgTypeMismatch),
+        "the rejection must carry the COMPILE-layer code, not the eval layer's \
+         DimensionedArgRejected (PRD decision D2)"
+    );
+    assert_eq!(
+        errors[0].message,
+        "extrude: distance argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+
+    // ANTI-CASCADE: the diagnostic did not stop lowering. The realization is
+    // still produced, with the Extrude op still targeting the fallback step.
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(
