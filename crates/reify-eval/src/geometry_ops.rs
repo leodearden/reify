@@ -11987,9 +11987,22 @@ fn pose_translation_dimension(v: &reify_ir::Value) -> Option<reify_core::Dimensi
 /// # Contract
 ///
 /// - `None` when `child_world` is not `Undef` (the composition succeeded).
-/// - Otherwise `Some(Diagnostic::error(..))` naming `sub_name`, `scope`, and —
-///   when both sides yield a translation dimension and those dimensions differ —
-///   both dimension labels plus a remedy hint.
+/// - `None` when either origination guard fires (see their inline rationale).
+/// - Otherwise ALWAYS `Some(Diagnostic::error(..))` naming `sub_name` and
+///   `scope` — with both dimension labels and a remedy hint when the failure
+///   really was a two-dimension mismatch, and a generically-worded message
+///   otherwise.
+///
+/// **Invariant.** There is NO path from an `Undef` `child_world` back to `None`
+/// once both guards have been cleared. That is what makes "a failed pose is
+/// never silently swallowed into an identity fallback" structurally true rather
+/// than incidental: `compose_transforms` has several rejection paths that never
+/// reach its dimension gate (a mixed-dimension or non-finite translation via
+/// `decompose_xyz3`, a degenerate quaternion via `normalize_quat_input`), and a
+/// classifier that only recognised the dimension mismatch would re-open the
+/// exact silent drop this function exists to close. Pinned by
+/// `pose_composition_non_uniform_translation_dimensions_is_diagnosed` and
+/// `pose_composition_degenerate_rotation_is_diagnosed`.
 pub(crate) fn diagnose_pose_composition_failure(
     parent_world: &reify_ir::Value,
     sub_pose: &reify_ir::Value,
@@ -12043,7 +12056,19 @@ pub(crate) fn diagnose_pose_composition_failure(
         )));
     }
 
-    None
+    // Generic arm — the composition failed for a reason that is NOT a clean
+    // two-dimension mismatch, so say so without fabricating one. Reached when a
+    // translation vector's components disagree or are non-finite, or when a
+    // rotation quaternion is degenerate; see the invariant above for why this
+    // must never become a `None`.
+    Some(Diagnostic::error(format!(
+        "sub `{sub_name}` in structure `{scope}`: its `at` pose could not be \
+         composed with the enclosing world pose, so `{sub_name}` would be \
+         placed at the origin. Check that the pose's translation components \
+         are finite and share one dimension (e.g. \
+         `vec3(5.0mm, 0.0mm, 0.0mm)`) and that its rotation is a non-degenerate \
+         quaternion."
+    )))
 }
 
 /// Indices into `module.templates` of the *root* templates for surfacing: those
