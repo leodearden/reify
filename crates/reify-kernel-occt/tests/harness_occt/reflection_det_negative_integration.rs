@@ -114,18 +114,37 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
 /// — a concave fixture can legitimately have inward-pointing dot products in
 /// its concave regions (measured: 343 outward / 253 inward on a box-minus-
 /// cylinder-minus-sphere part), which would make that assertion meaningless.
+// Fixture dimensions — single source of truth shared by `convex_fixtures`
+// (steps 1-2) and `fresh_pretessellated_cylinder` (steps 7-8), so the two can
+// never silently drift apart: step-8 must build the exact same
+// `cylinder_r6_h20` that `convex_fixtures` does.
+const BOX_WIDTH: f64 = 0.010;
+const BOX_HEIGHT: f64 = 0.020;
+const BOX_DEPTH: f64 = 0.030;
+const BOX_DX: f64 = 0.050;
+
+const CYLINDER_RADIUS: f64 = 0.006;
+const CYLINDER_HEIGHT: f64 = 0.020;
+const CYLINDER_DX: f64 = 0.030;
+const CYLINDER_DY: f64 = 0.004;
+
+const CONE_BOTTOM_RADIUS: f64 = 0.008;
+const CONE_TOP_RADIUS: f64 = 0.004;
+const CONE_HEIGHT: f64 = 0.015;
+const CONE_DX: f64 = 0.030;
+
 fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandleId)> {
     let box_src = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.010),
-            height: Value::Real(0.020),
-            depth: Value::Real(0.030),
+            width: Value::Real(BOX_WIDTH),
+            height: Value::Real(BOX_HEIGHT),
+            depth: Value::Real(BOX_DEPTH),
         })
         .expect("box_10x20x30 should build");
     let box_id = kernel
         .execute(&GeometryOp::Translate {
             target: box_src.id,
-            dx: 0.050,
+            dx: BOX_DX,
             dy: 0.0,
             dz: 0.0,
         })
@@ -134,15 +153,15 @@ fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandle
 
     let cyl_src = kernel
         .execute(&GeometryOp::Cylinder {
-            radius: Value::Real(0.006),
-            height: Value::Real(0.020),
+            radius: Value::Real(CYLINDER_RADIUS),
+            height: Value::Real(CYLINDER_HEIGHT),
         })
         .expect("cylinder_r6_h20 should build");
     let cyl_id = kernel
         .execute(&GeometryOp::Translate {
             target: cyl_src.id,
-            dx: 0.030,
-            dy: 0.004,
+            dx: CYLINDER_DX,
+            dy: CYLINDER_DY,
             dz: 0.0,
         })
         .expect("cylinder_r6_h20 translate to x>0 should succeed")
@@ -150,15 +169,15 @@ fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandle
 
     let cone_src = kernel
         .execute(&GeometryOp::Cone {
-            bottom_radius: Value::Real(0.008),
-            top_radius: Value::Real(0.004),
-            height: Value::Real(0.015),
+            bottom_radius: Value::Real(CONE_BOTTOM_RADIUS),
+            top_radius: Value::Real(CONE_TOP_RADIUS),
+            height: Value::Real(CONE_HEIGHT),
         })
         .expect("cone_r8_r4_h15 should build");
     let cone_id = kernel
         .execute(&GeometryOp::Translate {
             target: cone_src.id,
-            dx: 0.030,
+            dx: CONE_DX,
             dy: 0.0,
             dz: 0.0,
         })
@@ -874,4 +893,55 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
          delete this characterization pin, update this module's doc, and close ticket \
          tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC."
     );
+}
+
+// ---------------------------------------------------------------------------
+// Pre-tessellation fragility helper (step-8)
+// ---------------------------------------------------------------------------
+
+/// Build a FRESH `OcctKernel` containing only a fresh, untransformed
+/// `cylinder_r6_h20` fixture (same dimensions as [`convex_fixtures`], via the
+/// shared `CYLINDER_*` consts so the two can never drift apart), tessellate
+/// it ONCE at `deflection`, and return the kernel plus the still-untransformed
+/// handle.
+///
+/// The fresh kernel and the tessellate-before-reflect ordering are both
+/// load-bearing:
+///
+///   - **Fresh kernel.** The pre-tessellation must apply to THIS test's
+///     source handle only. Reusing a shared kernel/fixture would silently
+///     contaminate steps 1/3/5's assertions, which all require an
+///     UNTESSELLATED source — tessellating a fixture before reflecting it is
+///     exactly the hazard test 4 half (b) is characterizing.
+///   - **Tessellate-then-reflect ordering.** Verified 3-way in the probe:
+///     (A) no pre-tessellation → both `Mirror` and `AffineApply` (det<0 and
+///     identity) report `IsWatertight=true`; (B) pre-tessellate the SOURCE
+///     (this helper's case) → `AffineApply` det<0 AND identity both report
+///     `IsWatertight=false` while `Mirror` stays `true`; (C) tessellating the
+///     RESULT after the transform is harmless. Only ordering (B) exposes the
+///     `BRepTools_GTrsfModification` stale-`Poly_Triangulation` hazard that
+///     test 4 half (b) pins.
+fn fresh_pretessellated_cylinder(deflection: f64) -> (OcctKernel, GeometryHandleId) {
+    let mut kernel = OcctKernel::new();
+    let cyl_src = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(CYLINDER_RADIUS),
+            height: Value::Real(CYLINDER_HEIGHT),
+        })
+        .expect("cylinder_r6_h20 should build");
+    let base = kernel
+        .execute(&GeometryOp::Translate {
+            target: cyl_src.id,
+            dx: CYLINDER_DX,
+            dy: CYLINDER_DY,
+            dz: 0.0,
+        })
+        .expect("cylinder_r6_h20 translate to x>0 should succeed")
+        .id;
+
+    kernel.tessellate(base, deflection).unwrap_or_else(|e| {
+        panic!("pre-tessellation of cylinder_r6_h20 at {deflection:e} should succeed: {e:?}")
+    });
+
+    (kernel, base)
 }
