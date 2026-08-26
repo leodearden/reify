@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Mesh morphing classifier and engine for Reify"
+build = "build.rs"
 
 [features]
 # Enables `stats::reset_for_test()` in the compiled artifact (not just in the
@@ -11,6 +12,11 @@ description = "Mesh morphing classifier and engine for Reify"
 # `[dev-dependencies]` to reset the process-global stats between cross-crate
 # test cases once engine wiring (PRD #2947-#2949) lands.
 testing = []
+
+[build-dependencies]
+# Powers `build.rs`'s per-crate `has_gmsh` detection + test-binary RUNPATH
+# emission. See `build.rs` for why both are required here.
+reify-build-utils.workspace = true
 
 [dependencies]
 reify-core.workspace = true
@@ -24,4 +30,10 @@ tracing.workspace = true
 reify-ir.workspace = true
 reify-compiler.workspace = true
 reify-test-support.workspace = true
+# `tests/morph_scale_characterisation.rs` calls `GmshKernel::mesh_to_volume`
+# directly for the from-scratch tetrahedralisation arm. Deliberately NO
+# feature flags: plain tetrahedralisation needs neither `mesh-morph` nor
+# `stub_register` (the latter would register the gmsh kernel in the
+# inventory and perturb other binaries' registry assertions).
+reify-kernel-gmsh.workspace = true
 serde_json = { workspace = true }
