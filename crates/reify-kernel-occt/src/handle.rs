@@ -2320,10 +2320,28 @@ mod tests {
         (min, max, n_points)
     }
 
-    /// Audit a STEP file's PLANE-ANGLE unit declarations.
-    ///
-    /// Returns `(n_plane_angle_unit, n_global_unit_assigned_context,
-    /// n_conversion_based_unit, plane_angle_unit_records)`.
+    /// One `GLOBAL_UNIT_ASSIGNED_CONTEXT` entity, with its unit-reference list
+    /// already resolved against the file's instance table.
+    struct UnitContext {
+        /// The context instance's own `#N` id, for failure messages.
+        id: String,
+        /// The whole instance record, for failure messages.
+        record: String,
+        /// The subset of the context's referenced unit instances that declare a
+        /// `PLANE_ANGLE_UNIT()`, as `(#N, whole record)` pairs.
+        plane_angle_units: Vec<(String, String)>,
+    }
+
+    /// The result of walking a STEP file's plane-angle unit declarations.
+    struct PlaneAngleAudit {
+        /// EVERY instance record in the file that declares a
+        /// `PLANE_ANGLE_UNIT()`, whether or not a context references it.
+        records: Vec<String>,
+        /// One entry per `GLOBAL_UNIT_ASSIGNED_CONTEXT`, in file order.
+        contexts: Vec<UnitContext>,
+    }
+
+    /// Audit a STEP file's PLANE-ANGLE unit declarations BY ASSOCIATION.
     ///
     /// STEP wraps long lines at ~72 chars, so every `contains`/parse here runs
     /// over the whitespace-stripped text — the same idiom the sibling
@@ -2332,26 +2350,75 @@ mod tests {
     /// `;` yields one string per entity instance, which is what makes a
     /// per-record ("EVERY declaration is radians") assertion possible rather
     /// than a file-wide substring grep.
-    fn plane_angle_unit_audit(step_text: &str) -> (usize, usize, usize, Vec<String>) {
+    ///
+    /// Beyond that, this RESOLVES each `GLOBAL_UNIT_ASSIGNED_CONTEXT`'s unit
+    /// reference list (`GLOBAL_UNIT_ASSIGNED_CONTEXT((#13,#17,#18))`) against
+    /// the `#N =` instance table, so a caller can ask the sound question — does
+    /// THIS context reference a radian plane-angle unit? — rather than the
+    /// count proxy `n_plane_angle_unit == n_global_unit_assigned_context`.
+    /// The proxy was measured-true against system OCCT 7.8 (each context gets
+    /// its own unit entities) but STEP explicitly permits several contexts to
+    /// share one unit instance, so an OCCT bump that deduped unit entities
+    /// would have failed the proxy on a perfectly correct file. Walking the
+    /// association is the form task #6344's runtime guard also plans to use.
+    fn plane_angle_unit_audit(step_text: &str) -> PlaneAngleAudit {
         let stripped: String = step_text
             .chars()
             .filter(|c| !c.is_ascii_whitespace())
             .collect();
-        let n_plane_angle_unit = stripped.matches("PLANE_ANGLE_UNIT()").count();
-        let n_global_unit_assigned_context =
-            stripped.matches("GLOBAL_UNIT_ASSIGNED_CONTEXT(").count();
-        let n_conversion_based_unit = stripped.matches("CONVERSION_BASED_UNIT").count();
+
+        // Instance table: `#N` -> whole record (`#N=(...)`), for every Part-21
+        // instance in the file. HEADER-section records carry no `#N =` and are
+        // skipped by the `starts_with('#')` filter.
+        let mut instances: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for rec in stripped.split(';') {
+            if !rec.starts_with('#') {
+                continue;
+            }
+            let Some(eq) = rec.find('=') else { continue };
+            let id = rec[..eq].to_owned();
+            if id[1..].chars().all(|c| c.is_ascii_digit()) && id.len() > 1 {
+                instances.insert(id, rec.to_owned());
+            }
+        }
+
         let records: Vec<String> = stripped
             .split(';')
             .filter(|rec| rec.contains("PLANE_ANGLE_UNIT()"))
             .map(str::to_owned)
             .collect();
-        (
-            n_plane_angle_unit,
-            n_global_unit_assigned_context,
-            n_conversion_based_unit,
-            records,
-        )
+
+        let mut contexts: Vec<UnitContext> = Vec::new();
+        for rec in stripped.split(';') {
+            let Some(marker) = rec.find("GLOBAL_UNIT_ASSIGNED_CONTEXT(") else {
+                continue;
+            };
+            let id = rec
+                .find('=')
+                .map_or_else(String::new, |eq| rec[..eq].to_owned());
+            // The list is a flat `(#a,#b,#c)` — no nesting — so the first `)`
+            // after the opening paren closes it.
+            let tail = &rec[marker + "GLOBAL_UNIT_ASSIGNED_CONTEXT(".len()..];
+            let refs = tail
+                .strip_prefix('(')
+                .and_then(|inner| inner.find(')').map(|close| &inner[..close]))
+                .unwrap_or("");
+            let plane_angle_units = refs
+                .split(',')
+                .map(str::trim)
+                .filter(|r| r.starts_with('#'))
+                .filter_map(|r| instances.get(r).map(|body| (r.to_owned(), body.clone())))
+                .filter(|(_, body)| body.contains("PLANE_ANGLE_UNIT()"))
+                .collect();
+            contexts.push(UnitContext {
+                id,
+                record: rec.to_owned(),
+                plane_angle_units,
+            });
+        }
+
+        PlaneAngleAudit { records, contexts }
     }
 
     /// STEP export must declare SI RADIANS for plane angles in **every** unit
@@ -2374,14 +2441,19 @@ mod tests {
     /// freedom for every compound. Measured on this branch against the linked
     /// system OCCT 7.8, the two-cone union below emits **three**
     /// `GLOBAL_UNIT_ASSIGNED_CONTEXT` entities, each carrying its **own**
-    /// `PLANE_ANGLE_UNIT` (n_pau == n_guac == 3, `CONVERSION_BASED_UNIT` count
-    /// 0, `CONICAL_SURFACE` count 2) — units are *not* shared across contexts.
-    /// A substring grep is therefore satisfied by any one of N contexts and
-    /// stays green through a *partial* flip, and it cannot detect a context
-    /// that declares no plane-angle unit at all. The count equality closes
-    /// that second hole, and is sound without walking entity associations
-    /// because STEP requires every geometric representation context to assign
-    /// a plane-angle unit.
+    /// `PLANE_ANGLE_UNIT` (`CONICAL_SURFACE` count 2). A substring grep is
+    /// therefore satisfied by any one of N contexts and stays green through a
+    /// *partial* flip, and it cannot detect a context that declares no
+    /// plane-angle unit at all.
+    ///
+    /// The second hole is closed by ASSOCIATION, not by a count: the helper
+    /// resolves each context's unit reference list and this test asserts every
+    /// context reaches a radian plane-angle unit. An earlier draft compared
+    /// `n_plane_angle_unit == n_global_unit_assigned_context`, which was
+    /// measured-true here but is not a property STEP guarantees — several
+    /// contexts may legally share ONE unit instance, so an OCCT bump that
+    /// deduped unit entities would have reddened this pin on a correct file
+    /// and pointed the reader at the export rather than at the proxy.
     ///
     /// Token detail a naive pin gets wrong: the emitted form is
     /// `SI_UNIT($,.RADIAN.)` — `$` is the *null SI prefix*. The `*` in the
@@ -2429,50 +2501,58 @@ mod tests {
             .filter(|c| !c.is_ascii_whitespace())
             .collect();
 
-        let (n_plane_angle_unit, n_global_unit_assigned_context, n_conversion_based_unit, records) =
-            plane_angle_unit_audit(&content);
+        let audit = plane_angle_unit_audit(&content);
 
         // (a) EVERY plane-angle declaration is the SI radian.
         assert!(
-            n_plane_angle_unit > 0,
+            !audit.records.is_empty(),
             "STEP export declared no PLANE_ANGLE_UNIT at all — the angular boundary convention \
              INV-AD-4 requires is missing from the file entirely"
         );
-        for rec in &records {
+        for rec in &audit.records {
             assert!(
                 rec.contains("SI_UNIT($,.RADIAN.)"),
                 "every PLANE_ANGLE_UNIT record must declare SI radians as `SI_UNIT($,.RADIAN.)` \
                  (`$` is the null SI prefix; the `*` in the sibling `NAMED_UNIT(*)` is the \
                  redeclared marker, NOT a prefix), but this record does not: {rec}"
             );
+
+            // (b) No degree/grad CONVERSION_BASED_UNIT chain around a
+            // PLANE-ANGLE unit — the shape a flipped angle unit must take.
+            // Scoped to the plane-angle records deliberately: a file-wide count
+            // would also see the LENGTH regime's chain the moment
+            // `write.step.unit` moves off millimetres (OCCT spells inch/foot
+            // that way), reddening an ANGLE pin for a LENGTH-side change.
+            assert!(
+                !rec.contains("CONVERSION_BASED_UNIT"),
+                "a PLANE_ANGLE_UNIT must not be wrapped in a CONVERSION_BASED_UNIT chain (that is \
+                 how a degree or grad plane-angle unit would be spelled), but this record is: \
+                 {rec}"
+            );
         }
 
-        // (b) No degree/grad CONVERSION_BASED_UNIT chain — the shape the LENGTH
-        // unit takes when `write.step.unit` is non-mm, and the shape a flipped
-        // angle unit would have to take.
-        assert_eq!(
-            n_conversion_based_unit, 0,
-            "STEP export must not wrap any unit in a CONVERSION_BASED_UNIT chain (that is how a \
-             degree or grad plane-angle unit would be spelled), but found {n_conversion_based_unit}"
-        );
-
-        // (c) Count equality — the assertion that makes this pin sound. A
-        // context that declares NO plane-angle unit fails here even though
-        // every record it does declare is radians.
+        // (c) ASSOCIATION — every unit context must actually REACH a
+        // plane-angle unit. A context that declares none fails here even
+        // though every record the file does declare is radians. Resolving the
+        // reference list (rather than comparing counts) keeps this green if a
+        // future OCCT shares one radian unit instance across all contexts,
+        // which STEP permits.
         assert!(
-            n_global_unit_assigned_context >= 2,
-            "this pin exists to exercise the MULTI-context case, but the file carries only \
-             {n_global_unit_assigned_context} GLOBAL_UNIT_ASSIGNED_CONTEXT entity/entities — the \
-             two-cone union fixture no longer produces a compound, so the pin has silently \
-             degraded into the single-context case"
+            audit.contexts.len() >= 2,
+            "this pin exists to exercise the MULTI-context case, but the file carries only {} \
+             GLOBAL_UNIT_ASSIGNED_CONTEXT entity/entities — the two-cone union fixture no longer \
+             produces a compound, so the pin has silently degraded into the single-context case",
+            audit.contexts.len()
         );
-        assert_eq!(
-            n_plane_angle_unit, n_global_unit_assigned_context,
-            "every unit context must assign a plane-angle unit, but the file has \
-             {n_plane_angle_unit} PLANE_ANGLE_UNIT declaration(s) across \
-             {n_global_unit_assigned_context} GLOBAL_UNIT_ASSIGNED_CONTEXT entities — some \
-             context crosses the boundary with no declared angular convention"
-        );
+        for ctx in &audit.contexts {
+            assert!(
+                !ctx.plane_angle_units.is_empty(),
+                "unit context {} references no PLANE_ANGLE_UNIT — it crosses the boundary with no \
+                 declared angular convention. Context record: {}",
+                ctx.id,
+                ctx.record
+            );
+        }
 
         // (d) Branch-reached witness: the BRep angle path (GeomToStep_Make-
         // ConicalSurface writes a semi-angle) was actually exercised, so the
@@ -2551,48 +2631,52 @@ mod tests {
             .filter(|c| !c.is_ascii_whitespace())
             .collect();
 
-        let (n_plane_angle_unit, n_global_unit_assigned_context, n_conversion_based_unit, records) =
-            plane_angle_unit_audit(&content);
+        let audit = plane_angle_unit_audit(&content);
 
         // (a) EVERY plane-angle declaration is the SI radian. Same universal
         // quantifier the BRep pin applies, so neither write path can drift.
         assert!(
-            n_plane_angle_unit > 0,
+            !audit.records.is_empty(),
             "wireframe STEP export declared no PLANE_ANGLE_UNIT at all — the angular boundary \
              convention INV-AD-4 requires is missing from the file entirely"
         );
-        for rec in &records {
+        for rec in &audit.records {
             assert!(
                 rec.contains("SI_UNIT($,.RADIAN.)"),
                 "every PLANE_ANGLE_UNIT record must declare SI radians as `SI_UNIT($,.RADIAN.)` \
                  (`$` is the null SI prefix; the `*` in the sibling `NAMED_UNIT(*)` is the \
                  redeclared marker, NOT a prefix), but this record does not: {rec}"
             );
+
+            // (b) No degree/grad CONVERSION_BASED_UNIT chain around a
+            // PLANE-ANGLE unit. Scoped to the plane-angle records for the same
+            // reason the BRep pin gives: a file-wide count would redden this
+            // ANGLE pin the moment the LENGTH regime moves off millimetres.
+            assert!(
+                !rec.contains("CONVERSION_BASED_UNIT"),
+                "a PLANE_ANGLE_UNIT must not be wrapped in a CONVERSION_BASED_UNIT chain (that is \
+                 how a degree or grad plane-angle unit would be spelled), but this record is: \
+                 {rec}"
+            );
         }
 
-        // (b) No degree/grad CONVERSION_BASED_UNIT chain.
-        assert_eq!(
-            n_conversion_based_unit, 0,
-            "wireframe STEP export must not wrap any unit in a CONVERSION_BASED_UNIT chain (that \
-             is how a degree or grad plane-angle unit would be spelled), but found \
-             {n_conversion_based_unit}"
-        );
-
-        // (c) Count equality — a context that declares NO plane-angle unit
-        // fails here. A single-context wireframe file legitimately has 1, so
-        // unlike the BRep pin this asserts `>= 1`, not `>= 2`.
+        // (c) ASSOCIATION — every unit context must actually REACH a
+        // plane-angle unit. A single-context wireframe file legitimately has
+        // one context, so unlike the BRep pin this only requires `>= 1`.
         assert!(
-            n_global_unit_assigned_context >= 1,
+            !audit.contexts.is_empty(),
             "expected at least one GLOBAL_UNIT_ASSIGNED_CONTEXT in the wireframe export, found \
              none — the file carries no unit context to declare anything in"
         );
-        assert_eq!(
-            n_plane_angle_unit, n_global_unit_assigned_context,
-            "every unit context must assign a plane-angle unit, but the wireframe file has \
-             {n_plane_angle_unit} PLANE_ANGLE_UNIT declaration(s) across \
-             {n_global_unit_assigned_context} GLOBAL_UNIT_ASSIGNED_CONTEXT entities — some \
-             context crosses the boundary with no declared angular convention"
-        );
+        for ctx in &audit.contexts {
+            assert!(
+                !ctx.plane_angle_units.is_empty(),
+                "unit context {} references no PLANE_ANGLE_UNIT — it crosses the boundary with no \
+                 declared angular convention. Context record: {}",
+                ctx.id,
+                ctx.record
+            );
+        }
 
         // (d) DECLARATION-vs-PAYLOAD agreement. Locate the TRIMMED_CURVE
         // instance; a missing one would make everything below vacuous, so this
