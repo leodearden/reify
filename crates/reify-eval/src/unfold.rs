@@ -192,6 +192,14 @@ pub(crate) fn unfold_recursive_sub<'t>(
 
     // Pre-evaluate args in the local context (so child uses current level's param values, not top-level).
     // Use the arg expression's declared result_type for the literal wrapper.
+    //
+    // task #6662 deliberately does NOT apply `resolve_optimized_instance_cell`
+    // here or to the guard eval above: both are ctor-ARG / guard pre-evaluation
+    // in the PARENT's scope, not cell evaluation in the child's, so the
+    // helper's read comparison (which assumes both maps are keyed in the child
+    // template's scope) would compare the wrong maps. The cells these args feed
+    // reach the authoritative `@optimized` resolution downstream, via
+    // `elaborate_child_lets_only`.
     let concrete_args: Vec<(String, reify_ir::CompiledExpr)> = sub
         .args
         .iter()
@@ -668,15 +676,41 @@ fn elaborate_child_instance_nested<'t>(
             // let-eval scope, so the scratch value equals the value phase 2
             // will commit.
             Phase15Node::Let { key, expr } => {
-                let v = eval_child_expr(
-                    &overlay,
+                // task #6662: the invariant above covers `@optimized` cells
+                // too, and ONLY because this arm resolves them the same way
+                // phase 2 does. Phase 2 commits the template's dispatched value
+                // for a reusable `@optimized` cell; if this arm body-inlined
+                // instead, the overlay would hold the `.ri` sentinel while the
+                // committed cell held the real value — and since the overlay is
+                // exactly what nested subs' ctor args are pre-evaluated
+                // against, a `sub sink = Leaf(seed: computed)` would silently
+                // receive the stale sentinel. That is a quieter instance of the
+                // defect #6662 exists to fix, which is why it routes through
+                // the SAME helper rather than a second copy of the rule.
+                //
+                // No diagnostic is emitted here: phase 2 is the authoritative
+                // site and sees the same cell, so reporting from both would
+                // double every warning.
+                let v = match resolve_optimized_instance_cell(
                     expr,
                     functions,
-                    meta_map,
-                    &snapshot.values,
-                    &arg_runtime_sink,
-                    &arg_containment,
-                );
+                    child_template,
+                    &key.member,
+                    &overlay,
+                    values,
+                ) {
+                    OptimizedInstanceResolution::Reuse(v) => v,
+                    OptimizedInstanceResolution::NotOptimized
+                    | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
+                        &overlay,
+                        expr,
+                        functions,
+                        meta_map,
+                        &snapshot.values,
+                        &arg_runtime_sink,
+                        &arg_containment,
+                    ),
+                };
                 overlay.insert(key.clone(), v);
             }
             // Pre-evaluate the nested sub's constructor args HERE, in this
@@ -1419,15 +1453,41 @@ fn elaborate_child_params_only(
                 &containment,
             )
         } else if let Some(ref default_expr) = cell.default_expr {
-            eval_child_expr(
-                &child_values,
+            // task #6662: same `@optimized` resolution as the two let sites,
+            // applied to a param whose DEFAULT is the call. Deliberately NOT
+            // applied to the explicit-arg arm above: an explicit ctor arg is by
+            // construction an instance-specific input, and it is evaluated in
+            // the PARENT's scope (`values`), so the helper's read comparison —
+            // which assumes both maps are keyed in the CHILD template's scope —
+            // would be comparing the wrong maps there.
+            //
+            // Measured on this branch: template scope does not lower an
+            // `@optimized` param default to a ComputeNode either (only
+            // let-cells are lowered), so the template cell holds the same
+            // body-inlined sentinel and the helper returns `Reuse(sentinel)` —
+            // instance and template agree, silently and correctly. Wiring it
+            // here is what makes instance scope inherit a future template-scope
+            // param fix with no further change.
+            match resolve_optimized_instance_cell(
                 default_expr,
                 functions,
-                meta_map,
-                &snapshot.values,
-                &runtime_sink,
-                &containment,
-            )
+                child_template,
+                member,
+                &child_values,
+                values,
+            ) {
+                OptimizedInstanceResolution::Reuse(v) => v,
+                OptimizedInstanceResolution::NotOptimized
+                | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
+                    &child_values,
+                    default_expr,
+                    functions,
+                    meta_map,
+                    &snapshot.values,
+                    &runtime_sink,
+                    &containment,
+                ),
+            }
         } else {
             Value::Undef
         };
