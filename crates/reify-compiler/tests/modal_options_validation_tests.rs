@@ -413,32 +413,73 @@ fn rayleigh_damping_param_shape() {
 /// by-name binder in `expr.rs` had already made false. A prose-only correction
 /// would rot the same way, so it is pinned here.
 ///
-/// Compiles `RayleighDamping(beta: …, alpha: …)` — labels in REVERSE
-/// declaration order — and asserts the lowered `ordered_args` re-key the args
-/// to `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`. A positional binder would
-/// instead produce alpha = 0.0003 s and beta = 0.0 s⁻¹, i.e. the same two
-/// names carrying each other's value.
+/// Compiles a `RayleighDamping` ctor in each argument FORM the prose claims
+/// about and asserts the lowered `ordered_args` always re-key to
+/// `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`. A positional binder would instead
+/// produce alpha = 0.0003 s and beta = 0.0 s⁻¹ for the reverse-labelled form,
+/// i.e. the same two names carrying each other's value.
+///
+/// Five arms, because the prose makes a TWO-clause claim and an all-labelled
+/// probe only exercises the first:
+///   (a) all-labelled, in REVERSE declaration order — the by-name clause;
+///   (b) MIXED, `beta` labelled, positional first (`0.0Hz, beta: 0.0003s`);
+///   (c) MIXED, `beta` labelled, positional last (`beta: 0.0003s, 0.0Hz`);
+///   (d) MIXED, `alpha` labelled, positional last (`alpha: 0.0Hz, 0.0003s`);
+///   (e) MIXED, `alpha` labelled, positional first (`0.0003s, alpha: 0.0Hz`).
+///
+/// (d) and (e) are the two that carry the second clause — "only UNLABELLED args
+/// fill the REMAINING slots in declaration order" — because they are the only
+/// forms whose result CHANGES if the binder's positional pass stops skipping
+/// already-named-bound slots (`reify-compiler/src/expr.rs`, pass 2's
+/// `while … param_arg[next_slot].is_some() { next_slot += 1 }`). With the skip
+/// removed, both bind the unlabelled `0.0003s` at slot 0, clobbering `alpha`
+/// and leaving `beta` unbound — so `ordered_args` becomes `[("alpha", 0.0003 s)]`
+/// and the key-list assertion goes red.
+///
+/// (b) and (c) do NOT discriminate that: `beta` occupies slot 1, so the
+/// positional pass lands on slot 0 either way. They are kept as the
+/// mixed-form PARSE + by-name coverage the prose also claims, not as skip
+/// pins — recorded here so a later reader does not mistake them for the guard.
 #[test]
 fn structure_ctor_args_bind_by_name_not_positionally() {
-    let module = compile_source_with_stdlib(
-        r#"
-structure CtorBindByNameProbe {
-    let damping = RayleighDamping(beta: 0.0003s, alpha: 0.0Hz)
+    // (a) all-labelled, reverse declaration order.
+    assert_rayleigh_ctor_binds_canonically("CtorBindByNameProbe", "beta: 0.0003s, alpha: 0.0Hz");
+    // (b)/(c) mixed with `beta` labelled — the unlabelled arg fills slot 0.
+    assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelLastProbe", "0.0Hz, beta: 0.0003s");
+    assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelFirstProbe", "beta: 0.0003s, 0.0Hz");
+    // (d)/(e) mixed with `alpha` labelled — the unlabelled arg must SKIP the
+    //     named-bound slot 0 and land on slot 1 (`beta`). The skip pins.
+    assert_rayleigh_ctor_binds_canonically("CtorMixedAlphaLabelFirstProbe", "alpha: 0.0Hz, 0.0003s");
+    assert_rayleigh_ctor_binds_canonically("CtorMixedAlphaLabelLastProbe", "0.0003s, alpha: 0.0Hz");
 }
-"#,
+
+/// Compile `structure {probe} { let damping = RayleighDamping({ctor_args}) }`
+/// and assert the ctor lowers to exactly `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`
+/// — the canonical binding, whatever the argument FORM.
+///
+/// Shared by every arm of [`structure_ctor_args_bind_by_name_not_positionally`]
+/// so a new form is one call, not a copied block.
+fn assert_rayleigh_ctor_binds_canonically(probe: &str, ctor_args: &str) {
+    let source = format!(
+        r#"
+structure {probe} {{
+    let damping = RayleighDamping({ctor_args})
+}}
+"#
     );
+    let module = compile_source_with_stdlib(&source);
     let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
-        "reverse-labelled ctor must compile clean, got: {:?}",
+        "`RayleighDamping({ctor_args})` must compile clean, got: {:?}",
         errors
     );
 
     let template = module
         .templates
         .iter()
-        .find(|t| t.name == "CtorBindByNameProbe")
-        .expect("CtorBindByNameProbe template should be compiled");
+        .find(|t| t.name == probe)
+        .unwrap_or_else(|| panic!("{probe} template should be compiled"));
     let damping_expr = template
         .value_cells
         .iter()
@@ -469,8 +510,10 @@ structure CtorBindByNameProbe {
     assert_eq!(
         bound.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
         vec!["alpha", "beta"],
-        "ordered_args must be re-keyed into template declaration order, \
-         with each label routed to its OWN param; got: {:?}",
+        "`RayleighDamping({ctor_args})`: ordered_args must be re-keyed into \
+         template declaration order, with each label routed to its OWN param \
+         and each UNLABELLED arg filling the next REMAINING slot (never a \
+         synthetic `__arg{{i}}`); got: {:?}",
         bound
     );
 
@@ -487,13 +530,16 @@ structure CtorBindByNameProbe {
                 assert_eq!(
                     (*si_value, *dimension),
                     (*si, *dim),
-                    "`{}` must carry the value written against ITS OWN label \
-                     (a positional binder would swap the two)",
+                    "`RayleighDamping({ctor_args})`: `{}` must carry the value \
+                     written against ITS OWN label (a positional binder that \
+                     ignored labels, or one whose positional pass did not skip \
+                     named-bound slots, would swap the two)",
                     name
                 );
             }
             other => panic!(
-                "`{}` should bind a dimensioned Scalar literal, got {:?}",
+                "`RayleighDamping({ctor_args})`: `{}` should bind a dimensioned \
+                 Scalar literal, got {:?}",
                 name, other
             ),
         }

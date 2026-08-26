@@ -610,8 +610,56 @@ fn rayleigh_ctor_arg_diagnostics(module: &reify_compiler::CompiledModule) -> Vec
 /// The fixture is a NEGATIVE fixture — it must still raise "no matching
 /// overload for displacement_at" — so this judges the ctor-arg axis ONLY, never
 /// `errors_only(..).is_empty()`.
+///
+/// Opens with a POSITIVE CONTROL, because both site assertions below are
+/// emptiness assertions over a PROSE-matched helper: [`rayleigh_ctor_arg_diagnostics`]
+/// is deliberately code-agnostic, so it keys on the literal
+/// [`CTOR_DIAGNOSTIC_ARG_PREFIX`] wording of `emit_arg_type_mismatch`
+/// (`reify-compiler/src/conformance/mod.rs`). Reword that emitter — backtick
+/// quoting, `arg 'x'`, a structured label — and the helper returns an empty Vec
+/// for EVERY input, both assertions pass vacuously forever, and a reverted
+/// `alpha: 0.0` site goes unnoticed. Unlike the sibling in
+/// `modal_options_validation_tests.rs`, this crate has no other test asserting a
+/// NON-empty result on the same const, so the control has to live right here.
 #[test]
 fn migrated_rayleigh_ctor_sites_emit_no_ctor_arg_diagnostics() {
+    // (0) POSITIVE CONTROL — a deliberately UN-migrated ctor must produce
+    // exactly one hit per dimensioned slot. Proves the matcher is live before
+    // either emptiness assertion below is trusted; goes red on a wording drift
+    // in `emit_arg_type_mismatch` instead of going quietly green.
+    let unmigrated = compile_source_with_stdlib(
+        r#"
+structure R3bUnmigratedRayleighCtorControl {
+    let damping = RayleighDamping(alpha: 0.0, beta: 0.0003)
+}
+"#,
+    );
+    let control_hits = rayleigh_ctor_arg_diagnostics(&unmigrated);
+    assert_eq!(
+        control_hits.len(),
+        RAYLEIGH_PARAMS.len(),
+        "POSITIVE CONTROL: a bare-Real arg at each of the two dimensioned \
+         RayleighDamping slots must raise exactly one ctor-arg diagnostic \
+         naming that slot. Zero hits means `rayleigh_ctor_arg_diagnostics` has \
+         gone blind — most likely `emit_arg_type_mismatch` no longer words the \
+         `{CTOR_DIAGNOSTIC_ARG_PREFIX}<param>'` prefix this helper matches on — \
+         and the two emptiness assertions below are now VACUOUS. Fix the \
+         helper, do not delete this arm. Got {:#?} out of module diagnostics \
+         {:#?}",
+        control_hits,
+        unmigrated.diagnostics
+    );
+    for param in RAYLEIGH_PARAMS {
+        assert!(
+            control_hits
+                .iter()
+                .any(|m| m.contains(&format!("{CTOR_DIAGNOSTIC_ARG_PREFIX}{param}'"))),
+            "POSITIVE CONTROL: one ctor-arg diagnostic must name `{param}`; \
+             got: {:#?}",
+            control_hits
+        );
+    }
+
     let probe = compile_displacement_at_probe("tip_face");
     let probe_hits = rayleigh_ctor_arg_diagnostics(&probe);
     assert!(
