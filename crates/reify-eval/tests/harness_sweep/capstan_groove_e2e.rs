@@ -371,7 +371,10 @@ const VOLUME_UNRESOLVED_CELLS: [&str; 2] = ["Capstan.blank_volume", "Capstan.bod
 /// builtin only resolvable on the build()/tessellate() path, so this surface
 /// reports one `EvalUnresolved` error naming `volume` per cell in
 /// [`VOLUME_UNRESOLVED_CELLS`] by construction. Those are the OCCT fixture's
-/// business. Every other Error is a real evaluation regression and fails here.
+/// business. `DiagnosticCode::ConstraintViolated` is routed out too — a
+/// violated constraint is a design failure, not an evaluation one, and the
+/// satisfaction gates own it (see the comment at the partition). Every other
+/// Error is a real evaluation regression and fails here.
 ///
 /// Enumerating them rather than dropping all diagnostics is what keeps the
 /// OCCT-less path — the one this fixture exists to serve — covered at all. The
@@ -391,7 +394,7 @@ fn check_dev_capstan() -> CheckResult {
     let result = engine.check(compiled);
 
     {
-        let (volume_errors, unexpected): (Vec<_>, Vec<_>) = result
+        let (volume_errors, rest): (Vec<_>, Vec<_>) = result
             .diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
@@ -399,14 +402,34 @@ fn check_dev_capstan() -> CheckResult {
                 d.code == Some(DiagnosticCode::EvalUnresolved)
                     && d.message.starts_with(VOLUME_UNRESOLVED_PREFIX)
             });
+        // The OTHER Error a healthy design file can raise here is a constraint
+        // VIOLATION: `SimpleConstraintChecker` co-emits a
+        // `DiagnosticCode::ConstraintViolated` `Diagnostic::error` alongside every
+        // `Satisfaction::Violated` result (`crates/reify-constraints/src/lib.rs`).
+        // Those belong to the satisfaction gates —
+        // `capstan_design_file_checks_clean_without_a_kernel` file-wide, and the
+        // entity-scoped [`assert_constraints_ok`] calls in the other two tests —
+        // which read `constraint_results` directly and can say WHICH relation
+        // broke and what that means mechanically. Leaving them in `unexpected`
+        // makes this shared fixture panic FIRST, in every test at once, under a
+        // message ("a cell of the design stopped evaluating") that is simply false
+        // for that failure, shadowing the diagnosis every kernel-free gate this
+        // module carries was written to give. So they are routed out here and
+        // deliberately not asserted about: this fixture's claim is evaluation
+        // Error-freedom, nothing more.
+        let unexpected: Vec<_> = rest
+            .into_iter()
+            .filter(|d| d.code != Some(DiagnosticCode::ConstraintViolated))
+            .collect();
         assert!(
             unexpected.is_empty(),
             "unexpected evaluation errors on the kernel-free surface of \
              {DEV_CAPSTAN}: only the `volume()` geometry-consumer cells may fail \
-             to resolve here. Anything else means a cell of the design stopped \
-             evaluating — the design-level gates below read just a few cells each, \
-             so this is the only place such a regression is caught when OCCT is \
-             absent: {unexpected:#?}"
+             to resolve here (constraint violations are routed to the satisfaction \
+             gates and are not this fixture's business). Anything else means a cell \
+             of the design stopped evaluating — the design-level gates below read \
+             just a few cells each, so this is the only place such a regression is \
+             caught when OCCT is absent: {unexpected:#?}"
         );
         // WHICH cells raised them, not merely how many. The emission names only
         // the builtin in its message and carries the offending cell's `span` as
@@ -480,6 +503,94 @@ fn tessellate_dev_capstan() -> TessellateResult {
         "unexpected geometry errors tessellating {DEV_CAPSTAN}: {geom_errors:#?}"
     );
     result
+}
+
+/// How strictly [`assert_constraints_ok`] reads a set of constraint results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Strictness {
+    /// Every result must be `Satisfied` — `Indeterminate` fails too.
+    ///
+    /// `Indeterminate` is what a constraint whose inputs failed to EVALUATE
+    /// reports: an undef leaf, or a cross-`sub` field reference that did not
+    /// resolve. It is therefore the failure mode a `Violated`-only filter is
+    /// blindest to — the constraint is still declared, still reported, and
+    /// checking nothing — and `SimpleConstraintChecker` reports it as a
+    /// `Diagnostic::warning` (`DiagnosticCode::ConstraintIndeterminate`,
+    /// `crates/reify-constraints/src/lib.rs`), so [`check_dev_capstan`]'s
+    /// `Severity::Error` filter cannot see it either. This is the only claim in
+    /// the module that catches it.
+    AllSatisfied,
+    /// Only `Violated` fails — the weaker statement `reify check` itself makes.
+    NoneViolated,
+}
+
+/// Assert a `constraint_results` set is non-empty and holds at the strictness
+/// asked for, optionally scoped to one entity; returns the entries examined.
+///
+/// One helper rather than a copy per site because all three of this module's
+/// constraint claims — `capstan_surfaces_only_the_finished_drum` (scoped
+/// `Capstan`, plus its file-wide mirror), the `CapstanDrive` scope of
+/// `capstan_drive_constrains_the_shuttle_to_cover_the_band`, and the file-wide
+/// `capstan_design_file_checks_clean_without_a_kernel` — are the same two-step
+/// statement, and the first step is the one that silently rots when copied:
+///
+///   * **Non-emptiness first.** A satisfaction filter over an empty set is
+///     vacuously green, and an empty `constraint_results` emits NO diagnostic,
+///     so nothing else in the module can see it. That guard has to hold at every
+///     site or the site that lost it stops asserting anything at all.
+///   * **Then the satisfaction filter**, at [`Strictness`] — the axis that
+///     genuinely differs between the sites, so it is a parameter rather than
+///     three hand-written filters that could drift apart.
+///
+/// `surface` names which evaluation surface the entries came from and `note`
+/// carries the site's own mechanical reading of a failure; both are only ever
+/// message text.
+fn assert_constraints_ok<'a>(
+    entries: &'a [ConstraintCheckEntry],
+    scope: Option<&str>,
+    strictness: Strictness,
+    surface: &str,
+    note: &str,
+) -> Vec<&'a ConstraintCheckEntry> {
+    let scoped: Vec<&ConstraintCheckEntry> = match scope {
+        Some(entity) => entries.iter().filter(|c| c.id.entity == entity).collect(),
+        None => entries.iter().collect(),
+    };
+    let what = match scope {
+        Some(entity) => format!("`{entity}` constraint results"),
+        None => "constraint results".to_string(),
+    };
+
+    assert!(
+        !scoped.is_empty(),
+        "no {what} at all on {surface} of {DEV_CAPSTAN} — every structure in the \
+         file declares constraints, so an empty set means the check never ran, or \
+         stopped covering this scope, and the satisfaction filter would then pass \
+         vacuously. {note} Entities checked: {:?}",
+        entries.iter().map(|c| &c.id.entity).collect::<Vec<_>>()
+    );
+
+    let bad: Vec<_> = scoped
+        .iter()
+        .filter(|c| match strictness {
+            Strictness::AllSatisfied => c.satisfaction != Satisfaction::Satisfied,
+            Strictness::NoneViolated => c.satisfaction == Satisfaction::Violated,
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{DEV_CAPSTAN} must satisfy {what} at its defaults on {surface} — {} of {} \
+         did not, at {strictness:?} strictness. `Violated` means the design broke \
+         the relation; `Indeterminate` means an input cell failed to EVALUATE, so \
+         the constraint is present but checking nothing (caught only at \
+         `AllSatisfied`). Read off `constraint_results` directly, so this holds \
+         however the checker chooses to report a failure as a diagnostic. {note} \
+         Results: {bad:#?}",
+        bad.len(),
+        scoped.len()
+    );
+
+    scoped
 }
 
 /// Read a `Value::Scalar` cell of `entity` out of a value map, asserting its
