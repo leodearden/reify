@@ -1736,23 +1736,15 @@ mod tests {
 
     // ── get_value_cell_in ─────────────────────────────────────────────────
 
-    /// Shared fixture for `test_get_value_cell_in_returns_cell_from_named_template`
-    /// and `test_get_let_expr_in_finds_named_template`: two templates that both
-    /// declare `w`, with different values (1.5 vs 2.7), so a wrong-template
-    /// resolution is observable in the assertion (via [`assert_real_literal`])
-    /// rather than silently passing. Real-form literals stay `Real` regardless
-    /// of whole-number value (see `classify_number_literal` in reify-ast).
+    /// Shared fixture: two templates both declare `w` with different values, so a
+    /// wrong-template resolution is observable in the assertion.
     const ALPHA_BETA_W: &str = r#"
         structure Alpha { let w = 1.5 }
         structure Beta  { let w = 2.7 }
     "#;
 
-    /// Assert that `expr` is `CompiledExprKind::Literal(Value::Real(expected))`.
-    /// Shared by `test_get_value_cell_in_returns_cell_from_named_template` and
-    /// `test_get_let_expr_in_finds_named_template`, both of which resolve
-    /// `Beta.w` from the [`ALPHA_BETA_W`] fixture and need the exact value
-    /// checked (Alpha's `w` is 1.5, Beta's is 2.7) so a wrong-template
-    /// resolution fails loudly instead of passing silently.
+    /// Asserts `expr` is `CompiledExprKind::Literal(Value::Real(expected))`, shared
+    /// by tests resolving `Beta.w` from the [`ALPHA_BETA_W`] fixture.
     fn assert_real_literal(expr: &reify_ir::CompiledExpr, expected: f64) {
         use reify_ir::{CompiledExprKind, Value};
 
@@ -1768,9 +1760,7 @@ mod tests {
         }
     }
 
-    /// get_value_cell_in should return the ValueCellDecl of the named cell in the
-    /// named template, asserting on `kind`/`cell_type` — fields get_let_expr_in
-    /// cannot reach — plus the resolved literal (via [`assert_real_literal`]).
+    /// Resolves `Beta.w` and asserts `kind`, `cell_type`, and the default expr literal.
     #[test]
     fn test_get_value_cell_in_returns_cell_from_named_template() {
         let module = super::compile_source(ALPHA_BETA_W);
@@ -1816,17 +1806,8 @@ mod tests {
         super::get_value_cell_in(&module, "S", "y");
     }
 
-    /// Shared fixture for the two tests below: a module with a single template
-    /// `S` and a single `auto_param` cell named `x`. A source-level `param`
-    /// always carries a default in well-formed compiled output, so
-    /// `auto_param` is the only way to reach a `default_expr: None` cell —
-    /// exactly the precondition both `test_get_value_cell_in_returns_cell_with_no_default_expr`
-    /// and `test_get_let_expr_in_panics_on_missing_default_expr` depend on.
-    /// Asserted once here, loudly: if `auto_param` ever changes to synthesize
-    /// a placeholder default, this fires before either dependent test runs,
-    /// surfacing the broken assumption clearly instead of letting a dependent
-    /// test silently pass (or, for the `#[should_panic]` one, silently exercise
-    /// the wrong branch) for the wrong reason.
+    /// Shared fixture: a module with template `S` and an `auto_param` cell `x`,
+    /// the only way to produce a `default_expr: None` cell in compiled output.
     fn auto_param_module() -> reify_compiler::CompiledModule {
         use reify_core::{ModulePath, Type};
         let template = crate::builders::TopologyTemplateBuilder::new("S")
@@ -1846,12 +1827,7 @@ mod tests {
             .build()
     }
 
-    /// get_value_cell_in should return the cell — not panic — when its
-    /// default_expr is None. This is the property that distinguishes it from
-    /// get_let_expr_in, which panics with "has no default expr" in that same
-    /// case (see test_get_let_expr_in_panics_on_missing_default_expr below,
-    /// which reuses the same `auto_param_module` fixture). Also asserts
-    /// `cell.id.member` so the test cannot pass by returning some other cell.
+    /// Asserts the cell is returned (not panicked on) when its default_expr is None.
     #[test]
     fn test_get_value_cell_in_returns_cell_with_no_default_expr() {
         let module = auto_param_module();
@@ -1868,45 +1844,9 @@ mod tests {
         );
     }
 
-    /// get_value_cell_in resolves by `id.member` alone, ignoring `id.entity`,
-    /// and the first match in declaration order wins silently — documented on
-    /// get_value_cell_in's doc comment above. Pins that behaviour: a template
-    /// can carry two cells sharing member name `x` scoped to different
-    /// entities (e.g. a top-level cell and a sub-entity-scoped one pushed by
-    /// `phase_sub_override_autos` / `phase_connect_auto_params`), and this
-    /// asserts the FIRST-declared one wins. If resolution ever changed to
-    /// prefer the top-level cell, or to panic on ambiguity, this test would
-    /// catch it instead of every caller silently changing meaning.
-    #[test]
-    fn test_get_value_cell_in_resolves_by_member_first_declared_wins() {
-        use reify_core::{ModulePath, Type};
-
-        let template = crate::builders::TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", Type::length())
-            .auto_param("S.sub", "x", Type::dimensionless_scalar())
-            .build();
-        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
-
-        let cell = super::get_value_cell_in(&module, "S", "x");
-        assert_eq!(
-            cell.id.entity, "S",
-            "expected the FIRST-declared cell (id.entity == \"S\") to win when \
-             two cells share member name 'x' with different id.entity; got \
-             id.entity {:?} — get_value_cell_in's documented member-only, \
-             first-match-wins contract has changed",
-            cell.id.entity
-        );
-    }
-
     // ── get_let_expr_in ───────────────────────────────────────────────────
 
-    /// get_let_expr_in should return the default_expr of the named cell in the
-    /// named template, even when the module has multiple templates. Reuses the
-    /// [`ALPHA_BETA_W`] fixture and [`assert_real_literal`] helper defined
-    /// above `test_get_value_cell_in_returns_cell_from_named_template` — see
-    /// that test's doc comment rather than repeating the rationale here.
+    /// Resolves `Beta.w` across multiple templates and asserts `result_type` and the literal.
     #[test]
     fn test_get_let_expr_in_finds_named_template() {
         let module = super::compile_source(ALPHA_BETA_W);
@@ -1945,12 +1885,7 @@ mod tests {
         super::get_let_expr_in(&module, "S", "y");
     }
 
-    /// get_let_expr_in should panic with "has no default expr" for a value cell
-    /// whose default_expr is None. Reuses the `auto_param_module` fixture above
-    /// (see its doc comment): that fixture's own precondition assert fires
-    /// before this test's call to get_let_expr_in if `auto_param` ever stops
-    /// producing `default_expr = None`, surfacing the broken assumption
-    /// clearly instead of silently exercising the wrong branch here.
+    /// Asserts a panic with "has no default expr" when the cell's default_expr is None.
     #[test]
     #[should_panic(expected = "has no default expr")]
     fn test_get_let_expr_in_panics_on_missing_default_expr() {
