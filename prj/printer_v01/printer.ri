@@ -1842,12 +1842,302 @@ pub structure Envelope {
     constraint frame_mass_max  >= frame_mass_min
 }
 
+// ── O1: structural FEA (2026-08-26 round) ───────────────────────────────────
+//
+// ENGINE SURFACE NOTES (dogfood, this round):
+//  - The body-arg solve_elastic_static overload is UNREACHABLE from every
+//    author binary: reify-kernel-gmsh is a dev-dep of reify-eval only — CLI
+//    and GUI link occt/manifold/openvdb but never gmsh, so the VolumeMesh
+//    demand falls back and the trampoline returns a hollow ElasticResult
+//    that still claims Converged. All solves below use the DIMS overloads
+//    (synthetic box, meshed internally) — the gantry tube is therefore an
+//    EQUIVALENT-EI box (same E, same I ⇒ same bending k; density retuned so
+//    modal masses match).
+//  - Passing the SAME cell to two dims args panics compute_cache_key
+//    (duplicate ValueCellId) — hence the `* 1.0` clone cells.
+//  - result_for/envelope_* multi-case accessors have no compile-time
+//    signature (eval-dispatch only), so per-case algebra reads come from
+//    separate typed solve_elastic_static calls; solve_load_cases exists in
+//    AFrame purely to feed the GUI FEA case/channel views.
+//  - Modal BC fidelity: a single FixedSupport face clamp is EXACT
+//    (cantilever f1 matches Euler-Bernoulli to 0.02%), but a SECOND
+//    FixedSupport silently degrades to pinned (fixed-fixed returns
+//    bit-identical values to pinned-pinned, ~0.43× the analytic
+//    clamped-clamped f1) — so the SS bound below comes from FEA and the FF
+//    bound is the analytic ×4 on it.
+
+/// Rolled/ground CFRP tube stock — ISOTROPIC-EQUIVALENT at the axial
+/// modulus (bending of a rolled tube is E_axial-governed; anisotropy is
+/// unrepresentable in a single-material solve — the AnisotropicMaterial
+/// field path is a future probe). Supplier datasheet TODO before trusting
+/// margins tighter than ±20%.
+structure def CFRP_Rolled_Tube : ElasticMaterial + Visual {
+    param youngs_modulus : Pressure = 110GPa
+    param poisson_ratio : Real = 0.3
+    param density : Density = 1600kg/m^3
+    param yield_stress : Option<Pressure> = some(600MPa)
+    param appearance : Appearance = Appearance(
+        color: Color(r: 0.15, g: 0.15, b: 0.17),
+        finish: Finish.Satin,
+        metalness: 0.1,
+        roughness: 0.6
+    )
+}
+
+/// Homogenised sandwich-panel material for the AFrame walls: flexural-
+/// equivalent isotropic solid (skins-dominant bending rigidity), densities
+/// mass-true. Instantiated with DERIVED ctor args from AFrame's own lets —
+/// own-scope lets into ctor args are safe (#6586 poisons only
+/// self.<sub>.<member> reads).
+structure def HomogenisedPanel : ElasticMaterial + Visual {
+    param youngs_modulus : Pressure = 52GPa
+    param poisson_ratio : Real = 0.28
+    param density : Density = 2805kg/m^3
+    param yield_stress : Option<Pressure> = none
+    param appearance : Appearance = Appearance(
+        color: Color(r: 0.45, g: 0.44, b: 0.42),
+        finish: Finish.Matte,
+        metalness: 0.3,
+        roughness: 0.7
+    )
+}
+
+/// O1 gantry-tube structural study: bending stiffness + first modes of the
+/// CFRP X-rail pair, answering requirement #1 (gantry mode vs servo band).
+/// Params MIRROR CoreXY's BearingTube rails (pinned at Printer level).
+///
+/// MODEL: half-span cantilever equivalence — clamp one end face, shear the
+/// far face. δ_cant(L/2, F/2) = δ_SS(L, F) exactly, so k_SS(mid-load, full
+/// span) = 2·k_cant; the tube PAIR is 2 more ×: k_pair_ss = 4·k_cant. The
+/// clamped-clamped bound (Y-carriage blocks grip the tube ends) is the
+/// analytic ×4 on SS — unobtainable from FEA per the BC-fidelity note above.
+pub structure GantryFea {
+    param tube_od   : Length = 60mm
+    param wall      : Length = 5mm
+    param span      : Length = 800mm
+    param rho_cfrp  : Density = 1600kg/m^3
+    param test_load : Real = 1000.0   // N (PointLoad.force is Real today)
+    // Drive-side chain inputs, PINNED LITERALS (Printer pins them against
+    // the O6 derived cells): @optimized dispatch does NOT fire for cells
+    // re-evaluated in sub-INSTANCE scope (found 2026-08-26 — the instance
+    // gets the inline-fallback ElasticResult()/ModalResult() shells), so
+    // every FEA-consuming derivation must live HERE at template level, fed
+    // by params rather than cross-sub reads.
+    param k_drive  : Stiffness = 2937577N / 1m   // == CoreXY k_axis (O6)
+    param m_head_m : Mass = 7.487176kg           // == CoreXY m_head
+    param m_rest_m : Mass = 10.323258kg          // == CoreXY m_gantry − m_head
+    param f1_floor : Frequency = 40Hz            // == Envelope drive_f1_min
+
+    let tube_id = tube_od - wall * 2
+    let ixx = pi / 64 * (tube_od * tube_od * tube_od * tube_od
+        - tube_id * tube_id * tube_id * tube_id)
+    /// Equivalent-EI square box: h⁴ = 12·I (same E ⇒ same bending k).
+    let h_eq  = sqrt(sqrt(12 * ixx))
+    let h_eq2 = h_eq * 1.0   // duplicate-ValueCellId panic workaround
+    let a_eq  = h_eq * h_eq2
+    let m_tube : Mass = pi / 4 * (tube_od * tube_od - tube_id * tube_id) * span * rho_cfrp
+    /// Density retuned so the equivalent box carries the tube's real mass
+    /// (statics don't care; the modal solves do).
+    let rho_eq : Density = m_tube / (a_eq * span)
+
+    let material_static = CFRP_Rolled_Tube()
+    let material_modal  = CFRP_Rolled_Tube(density: rho_eq)
+    let mi = FEAMaterialInput(material: material_modal)
+
+    // Static: half-span cantilever, lateral end shear.
+    let half_span = span / 2
+    let mount = FixedSupport(target: "root")
+    let tip   = PointLoad(point: "tip", force: test_load)
+    let r_static = solve_elastic_static(
+        material_static, half_span, h_eq, h_eq2, [tip], [mount],
+        ElasticOptions(element_order: ElementOrder.P2))
+    let defl_cant = max(r_static.displacement)
+    let k_cant    : Stiffness = test_load * 1N / defl_cant
+    let k_pair_ss : Stiffness = k_cant * 4        // SS bound, both tubes, mid-load
+    let k_pair_ff : Stiffness = k_pair_ss * 4     // clamped-clamped analytic bound
+    // Euler-Bernoulli cross-check: FEA/beam-theory ratio, constrained to a
+    // credibility band (1.13 measured — face-spread tip load + stubby L/h).
+    let k_eb : Stiffness = 3 * material_static.youngs_modulus * ixx
+        / (half_span * half_span * half_span)
+    let fea_vs_eb = k_cant / k_eb
+
+    // Modal: bare-tube pair bounds + solver validation. SS from FEA (pinned
+    // both ends); cantilever validates the solver against Euler-Bernoulli.
+    let fix_a = FixedSupport(target: "x_min")
+    let pin_a = PinnedSupport(target: "x_min")
+    let pin_b = PinnedSupport(target: "x_max")
+    let opts_cant = ModalOptions(
+        n_modes: 2, boundary_conditions: [fix_a], damping: NoDamping(),
+        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
+    let opts_ss = ModalOptions(
+        n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
+        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
+    let span_b = span * 1.0
+    let r_modal_cant = modal_analysis(mi.material, span,   h_eq, h_eq2, opts_cant)
+    let r_modal_ss   = modal_analysis(mi.material, span_b, h_eq, h_eq2, opts_ss)
+    let f1_tube_cant : Frequency = first_frequency(r_modal_cant)
+    let f1_tube_ss   : Frequency = first_frequency(r_modal_ss)
+    /// Euler-Bernoulli cantilever f1 = (λ₁²/2π)·√(EI/μL⁴), λ₁² = 3.5160.
+    let f1_cant_analytic : Frequency = 3.5160 / (2 * pi)
+        * sqrt(material_static.youngs_modulus * ixx / (rho_eq * a_eq * span * span * span * span))
+    let modal_vs_analytic = f1_tube_cant / f1_cant_analytic
+
+    // ── Y-axis 2-DOF chain (the requirement-#1 answer) ──────────────────────
+    // Belts (k_drive) drive the head (m_head_m); the head drives the rest of
+    // the gantry (m_rest_m) through the tube pair's bending (k2, SS bound
+    // from FEA / clamped bound analytic). First mode = lower root of
+    // m1·m2·ω⁴ − (m2(k1+k2) + m1·k2)·ω² + k1·k2 = 0.
+    let dof2_a    = m_head_m * m_rest_m
+    let dof2_b_ss = m_rest_m * (k_drive + k_pair_ss) + m_head_m * k_pair_ss
+    let dof2_c_ss = k_drive * k_pair_ss
+    let dof2_b_ff = m_rest_m * (k_drive + k_pair_ff) + m_head_m * k_pair_ff
+    let dof2_c_ff = k_drive * k_pair_ff
+    let f1_y_chain_ss : Frequency = sqrt((dof2_b_ss
+        - sqrt(dof2_b_ss * dof2_b_ss - 4 * dof2_a * dof2_c_ss)) / (2 * dof2_a)) / (2 * pi)
+    let f1_y_chain_ff : Frequency = sqrt((dof2_b_ff
+        - sqrt(dof2_b_ff * dof2_b_ff - 4 * dof2_a * dof2_c_ff)) / (2 * dof2_a)) / (2 * pi)
+
+    constraint tube_id > 0mm
+    constraint defl_cant > 0mm
+    constraint fea_vs_eb > 0.8
+    constraint fea_vs_eb < 1.35
+    // Solver-validation band: modal cantilever within 5% of beam theory.
+    constraint modal_vs_analytic > 0.95
+    constraint modal_vs_analytic < 1.05
+    // The chain's worst-case (SS-bound) first mode clears the servo floor.
+    constraint f1_y_chain_ss > f1_floor
+}
+
 // ── Sub-assemblies (A, D–J) ─────────────────────────────────────────────────
 
 /// Assembly A — Frame: polymer-concrete-filled steel sandwich (structural
-/// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy granite.
+/// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy
+/// granite; the fill's job is DAMPING (5-10× steel) as much as stiffness.
+///
+/// O1 v0 GEOMETRY (2026-08-26; was a one-param stub): two sandwich SIDE
+/// WALLS (YZ planes) flanking the machine in X — the primary structure the
+/// Y rails will mount on. Each wall = steel skin | epoxy-granite core |
+/// steel skin, modelled as three boxes. NOT YET MODELLED: the rail-carrier
+/// deck spanning wall-top to the rails (rails sit ~100mm inboard of the
+/// wall inner faces), the base tie, chamber openings, and the tab-and-slot
+/// skeleton inside the pour — future rounds.
+///
+/// FEA: the wall as a HOMOGENISED flexural-equivalent panel (single-body
+/// solves only — a true two-material bonded sandwich is unrepresentable;
+/// the heterogeneous-field path is a parked probe). Out-of-plane rail-mount
+/// receptance k_wall + base-clamped panel modes; skin stress ≈ homogenised
+/// surface stress × (E_skin/E_eq).
 pub structure AFrame {
-    param wall_thickness : Length = 100mm
+    /// TOTAL sandwich thickness (core + both skins). 100 → 66 in the O1
+    /// massing round: two 100mm-core full walls weigh ~520kg, blowing the
+    /// Envelope's 400kg frame ceiling; 60mm core lands the frame at ~366kg.
+    param wall_thickness : Length = 66mm
+    param skin_t   : Length = 3mm
+    param wall_len : Length = 1100mm   // Y extent (build_y 800 + rail overtravel margin)
+    param wall_h   : Length = 900mm    // Z extent (rail axis at 805 + margin)
+    /// Inner-face-to-inner-face clearance across X. Rails sit at machine
+    /// x = −150/650 (motion centre 250 ± 400): inner faces at −250/+750
+    /// leave 100mm of rail-carrier reach (clearance pinned at Printer).
+    param wall_gap : Length = 1000mm
+    param centre_x : Length = 250mm    // == env.build_x/2 (pinned at Printer)
+    param centre_y : Length = 400mm    // == env.build_y/2 (pinned at Printer)
+    param steel_e   : Pressure = 210GPa
+    param rho_steel : Density = 7850kg/m^3
+    param rho_core  : Density = 2300kg/m^3   // epoxy granite / mineral cast
+    param test_load : Real = 1000.0    // N — unit receptance probe at the wall top
+    /// Rail-mount load cases for the GUI multi-case view: X-reaction of the
+    /// head at peak accel (≈ m_head·100 m/s²) and at stretch (×10).
+    param rail_load_peak    : Real = 750.0
+    param rail_load_stretch : Real = 7500.0
+    param f1_floor : Frequency = 40Hz  // == Envelope drive_f1_min (pinned at Printer)
+
+    let core_t   = wall_thickness - skin_t * 2
+    let wall_off = (wall_gap + wall_thickness) / 2
+    let wall_rx  = centre_x + wall_off
+    let wall_lx  = centre_x - wall_off
+    let wall_cz  = wall_h / 2
+    let skin_off = (core_t + skin_t) / 2
+
+    // Two walls, each core + two skins — ONE inlined union tree so operands
+    // don't auto-surface (IdlerPulley convention).
+    let body = union(
+        union(
+            translate(box(core_t, wall_len, wall_h), wall_rx, centre_y, wall_cz),
+            union(
+                translate(box(skin_t, wall_len, wall_h), wall_rx - skin_off, centre_y, wall_cz),
+                translate(box(skin_t, wall_len, wall_h), wall_rx + skin_off, centre_y, wall_cz)
+            )
+        ),
+        union(
+            translate(box(core_t, wall_len, wall_h), wall_lx, centre_y, wall_cz),
+            union(
+                translate(box(skin_t, wall_len, wall_h), wall_lx - skin_off, centre_y, wall_cz),
+                translate(box(skin_t, wall_len, wall_h), wall_lx + skin_off, centre_y, wall_cz)
+            )
+        )
+    )
+
+    // Massing vs the Envelope frame budget (constraint at Printer level).
+    let m_skin  : Mass = skin_t * wall_len * wall_h * rho_steel
+    let m_core  : Mass = core_t * wall_len * wall_h * rho_core
+    let m_wall  : Mass = m_core + m_skin * 2
+    let m_frame : Mass = m_wall * 2
+
+    // Homogenisation: flexural-equivalent E (skins about the mid-plane
+    // dominate; core bending neglected) and mass-true density.
+    let d_sep  = core_t + skin_t
+    let e_eq   : Pressure = 12 * (steel_e * skin_t * d_sep * d_sep / 2)
+        / (wall_thickness * wall_thickness * wall_thickness)
+    let rho_eq : Density = (skin_t * 2 * rho_steel + core_t * rho_core) / wall_thickness
+    /// Peak SKIN stress ≈ homogenised surface stress × this factor.
+    let skin_stress_factor = steel_e / e_eq
+    let material = HomogenisedPanel(youngs_modulus: e_eq, density: rho_eq)
+    let mi = FEAMaterialInput(material: material)
+
+    // Statics: wall as a base-clamped cantilever plate, out-of-plane unit
+    // load at the top (dims solve: beam axis = wall_h, height axis = the
+    // sandwich thickness, so the default -z PointLoad is out-of-plane).
+    let mount = FixedSupport(target: "root")
+    // shell_force Off: the wall auto-classifies as a shell (t/extent 0.06 <
+    // 0.2), and SHELL results carry stress channels but displacement: undef
+    // (found 2026-08-26) — the k readback needs the solid path.
+    let r_static = solve_elastic_static(
+        material, wall_h, wall_len, wall_thickness,
+        [PointLoad(point: "tip", force: test_load)], [mount],
+        ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
+    let defl_top = max(r_static.displacement)
+    let k_wall : Stiffness = test_load * 1N / defl_top
+
+    // Panel modes, base clamp (the FEA-exact single-clamp case).
+    let fix_base = FixedSupport(target: "x_min")
+    let opts_wall = ModalOptions(
+        n_modes: 3, boundary_conditions: [fix_base], damping: NoDamping(),
+        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
+    let wall_h2 = wall_h * 1.0
+    let r_modal = modal_analysis(mi.material, wall_h2, wall_len, wall_thickness, opts_wall)
+    let f1_wall : Frequency = first_frequency(r_modal)
+
+    // GUI FEA case view: the same wall under the two rail-reaction cases
+    // (per-case ALGEBRA must use typed single solves — see the O1 header).
+    let case_peak = LoadCase(name: "rail_x_peak",
+        loads: [PointLoad(point: "tip", force: rail_load_peak)], supports: [mount])
+    let case_stretch = LoadCase(name: "rail_x_stretch",
+        loads: [PointLoad(point: "tip", force: rail_load_stretch)], supports: [mount])
+    let wall_h3 = wall_h * 1.0
+    let mc = solve_load_cases(
+        material, wall_h3, wall_len, wall_thickness, [case_peak, case_stretch],
+        ElasticOptions(element_order: ElementOrder.P2))
+
+    constraint core_t > 0mm
+    constraint wall_gap > 0mm
+    constraint defl_top > 0mm
+    constraint k_wall > 0N / 1m
+    // The wall's first panel mode clears the servo floor (in-template: FEA
+    // cells are undef at instance scope — see the O1 header note).
+    constraint f1_wall > f1_floor
 }
 
 /// Assembly D — Toolhead: 4-tool kinematic dock on the frame (the carriage that
@@ -1954,6 +2244,10 @@ pub structure Printer {
 
     sub a_frame = AFrame()
 
+    /// O1 gantry structural study (analysis-only; params mirror the CoreXY
+    /// BearingTube rails — pinned below, family-11 style).
+    sub gantry_fea = GantryFea()
+
     sub motion = CoreXY()
         at transform3(orient_identity(), vec3(250mm, 400mm, 805mm))
 
@@ -2007,4 +2301,40 @@ pub structure Printer {
     constraint self.motion.pretension_r + dT_b1 < self.motion.tendon_mbl_r * 0.2
     constraint self.motion.pretension_r + dT_a2 < self.motion.tendon_mbl_r * 0.2
     constraint self.motion.pretension_r + dT_b2 < self.motion.tendon_mbl_r * 0.2
+
+    // ── O1: gantry-chain + frame budget PINS ────────────────────────────────
+    // The 2-DOF Y-chain mode and both f1-floor constraints live INSIDE
+    // GantryFea/AFrame (FEA cells are undef at instance scope — dispatch
+    // does not fire there; see the O1 header). This level pins those
+    // structures' literal chain-input params to the O6 derived truth, so a
+    // drive or mass change fails HERE instead of silently going stale.
+    let m2_rest = self.motion.m_gantry - self.motion.m_head
+    constraint self.gantry_fea.k_drive  < self.motion.k_axis * 1.005
+    constraint self.gantry_fea.k_drive  > self.motion.k_axis * 0.995
+    constraint self.gantry_fea.m_head_m < self.motion.m_head * 1.005
+    constraint self.gantry_fea.m_head_m > self.motion.m_head * 0.995
+    constraint self.gantry_fea.m_rest_m < m2_rest * 1.005
+    constraint self.gantry_fea.m_rest_m > m2_rest * 0.995
+    constraint self.gantry_fea.f1_floor < self.env.drive_f1_min * 1.001
+    constraint self.gantry_fea.f1_floor > self.env.drive_f1_min * 0.999
+    constraint self.a_frame.f1_floor    < self.env.drive_f1_min * 1.001
+    constraint self.a_frame.f1_floor    > self.env.drive_f1_min * 0.999
+    // Frame mass inside the Envelope band.
+    constraint self.a_frame.m_frame > self.env.frame_mass_min
+    constraint self.a_frame.m_frame < self.env.frame_mass_max
+    // GantryFea mirrors the real rails (family-11-style pins via relays).
+    let o1_pin_slack = 0.002mm
+    constraint self.gantry_fea.tube_od < self.motion.tube_or * 2 + o1_pin_slack
+    constraint self.gantry_fea.tube_od > self.motion.tube_or * 2 - o1_pin_slack
+    constraint self.gantry_fea.wall < self.motion.tube_or - self.motion.tube_ir + o1_pin_slack
+    constraint self.gantry_fea.wall > self.motion.tube_or - self.motion.tube_ir - o1_pin_slack
+    constraint self.gantry_fea.span < self.motion.x_rail_len + o1_pin_slack
+    constraint self.gantry_fea.span > self.motion.x_rail_len - o1_pin_slack
+    // AFrame geometry pinned to the envelope/motion it wraps: walls centred
+    // on the build, inner faces clear of the Y-rail bearings.
+    constraint self.a_frame.centre_x < self.env.build_x / 2 + o1_pin_slack
+    constraint self.a_frame.centre_x > self.env.build_x / 2 - o1_pin_slack
+    constraint self.a_frame.centre_y < self.env.build_y / 2 + o1_pin_slack
+    constraint self.a_frame.centre_y > self.env.build_y / 2 - o1_pin_slack
+    constraint self.a_frame.wall_gap / 2 > self.motion.y_rail_offset + self.motion.x_brg_radius + 6mm
 }
