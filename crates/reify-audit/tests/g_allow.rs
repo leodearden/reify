@@ -132,6 +132,160 @@ fn orphan_audit_survives_ambient_hook_git_env() {
     common::git_env::replay_self_under_hook_git_env(&["reify_audit_pub_fns_are_g_allow_marked"], 1);
 }
 
+/// The replay child's hard failure must fire ONLY where the parent has
+/// established that this environment can produce an audit envelope — never on
+/// a mere "am I a replay child?".
+///
+/// # The regression this pins
+///
+/// Measured at branch tip 606e8ca78a, before the tightening below existed:
+/// `env PATH=<dir with git but no python3> ./target/debug/deps/g_allow-* \
+/// --test-threads=1` exited 101, with `reify_audit_pub_fns_are_g_allow_marked
+/// ... ok` in the parent (a clean, designed skip) but
+/// `orphan_audit_survives_ambient_hook_git_env ... FAILED` — because inside
+/// the replay child that same test panicked. The child's own stderr, one line
+/// above the panic, read `python3 not on PATH; skipping orphan audit`, while
+/// the panic asserted the opposite ("the parent process just ran this same
+/// test successfully before spawning this child"): a self-contradicting
+/// diagnosis handed to an operator on an environment the nine-caller skip
+/// protocol exists to support.
+///
+/// The premise was false, not merely unlucky.
+/// `replay_self_under_hook_git_env` only `--list`s the selection in the parent
+/// — it never runs the target, so it never learns whether the parent's own run
+/// produced an envelope — and libtest guarantees no ordering between the two
+/// tests. The same false RED is reachable without touching `PATH` at all, via
+/// `EnvUnavailable("repo root is not a git work tree")`: a non-git export or a
+/// `cargo package` staging dir, which was a clean skip before this branch.
+///
+/// # The two halves
+///
+/// Both spawn the SAME target test in the SAME deprived environment (an empty
+/// `PATH`, so `run_orphan_audit`'s python3 probe takes its skip path) via
+/// [`common::git_env::spawn_replay_child_lacking_audit_prereqs`], and differ
+/// ONLY in the value stamped into the replay guard:
+///
+/// - PLAIN mark — what a caller that verified nothing stamps. The graceful
+///   skip must SURVIVE: child exits 0, summary reports 1 passed.
+/// - ENVELOPE mark — what a caller stamps only after seeing an envelope in
+///   this same environment. The tightening must keep its teeth: child exits
+///   non-zero, summary reports 1 failed.
+///
+/// So this test pins a discrimination, not a direction: it fails both if the
+/// tightening over-fires on a supported environment and if it is loosened into
+/// never firing at all.
+///
+/// Each half asserts the child's stderr carries `python3 not on PATH` FIRST.
+/// That marker string lives in this repo
+/// (`crates/reify-test-support/src/orphan_audit.rs`), so keying on it adds no
+/// cross-tool coupling, and it is what ATTRIBUTES each half to the deprived
+/// fixture: without it, half A could pass green-for-the-wrong-reason on a
+/// machine where python3 was found anyway and the audit genuinely succeeded.
+///
+/// The counts come from libtest's summary rather than from the tightening
+/// panic's prose, so rewording that panic does not fail this test.
+#[test]
+fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
+    // The two marks, as the child sees them in REIFY_AUDIT_HOOK_ENV_REPLAY.
+    // The envelope mark's single source of truth is `common::git_env`; this
+    // literal is checked against it there, so a drift fails on that check
+    // rather than by silently turning half B into a second copy of half A.
+    const PLAIN_MARK: &str = "1";
+    const ENVELOPE_MARK: &str = "envelope";
+
+    // `reify_test_support`'s own skip note — see the doc above on why each
+    // half keys on it.
+    const PY_MISSING: &str = "python3 not on PATH";
+
+    // The same filter the replay harness uses, for the same reason: this test
+    // must not select itself, and no other test name in this binary contains
+    // that substring.
+    const TARGET: [&str; 1] = ["reify_audit_pub_fns_are_g_allow_marked"];
+
+    // --- Half A: an unverified mark must leave the graceful skip intact ---
+    let plain = common::git_env::spawn_replay_child_lacking_audit_prereqs(&TARGET, PLAIN_MARK);
+    let plain_stdout = String::from_utf8_lossy(&plain.stdout);
+    let plain_stderr = String::from_utf8_lossy(&plain.stderr);
+
+    assert!(
+        plain_stderr.contains(PY_MISSING),
+        "the deprived child did not report {PY_MISSING:?}, so this half is not \
+         exercising the environment it claims: either the fixture's empty PATH \
+         no longer reaches `run_orphan_audit`'s python3 probe, or that probe's \
+         note was reworded (update PY_MISSING). Whatever this child did assert \
+         below, it was not about a python3-less environment.\n\
+         --- child stderr (truncated) ---\n{:.600}",
+        plain_stderr,
+    );
+    assert!(
+        plain.status.success(),
+        "a replay child stamped with the PLAIN mark {PLAIN_MARK:?} FAILED (exit \
+         {:?}) in an environment that simply lacks python3. Nothing established \
+         that this environment can run the audit, so `run_orphan_audit`'s \
+         graceful skip is the contract — a tightening that fires here turns a \
+         supported environment into a red build and hands the operator a \
+         diagnosis its own stderr contradicts.\n\
+         --- child stdout (truncated) ---\n{:.800}\n\
+         --- child stderr (truncated) ---\n{:.800}",
+        plain.status.code(),
+        plain_stdout,
+        plain_stderr,
+    );
+    assert_eq!(
+        common::git_env::libtest_summary_count(&plain_stdout, "passed"),
+        Some(1),
+        "the PLAIN-mark child exited 0, but its libtest summary does not report \
+         exactly 1 passing test — so the skip was not what made it green. \
+         libtest exits 0 on a zero-match filter, so a renamed or relocated \
+         {:?} would look identical here.\n\
+         --- child stdout (truncated) ---\n{:.800}",
+        TARGET,
+        plain_stdout,
+    );
+
+    // --- Half B: the earned mark must keep the tightening's teeth ---
+    let envelope =
+        common::git_env::spawn_replay_child_lacking_audit_prereqs(&TARGET, ENVELOPE_MARK);
+    let envelope_stdout = String::from_utf8_lossy(&envelope.stdout);
+    let envelope_stderr = String::from_utf8_lossy(&envelope.stderr);
+
+    assert!(
+        envelope_stderr.contains(PY_MISSING),
+        "the deprived child did not report {PY_MISSING:?} — same diagnosis as \
+         half A: this half is not exercising a python3-less environment, so \
+         whatever it proves is not what it claims.\n\
+         --- child stderr (truncated) ---\n{:.600}",
+        envelope_stderr,
+    );
+    assert!(
+        !envelope.status.success(),
+        "a replay child stamped with the ENVELOPE mark {ENVELOPE_MARK:?} exited \
+         0 despite skipping the audit. That mark is stamped only after the \
+         parent has SEEN an envelope for this scope in this environment, so a \
+         skip here means the environment changed underfoot or the sanitizer \
+         stopped working — exactly the condition \
+         `reify_audit_pub_fns_are_g_allow_marked`'s tightening exists to \
+         catch. \
+         It has lost its teeth: half A's fix has been over-applied.\n\
+         --- child stdout (truncated) ---\n{:.800}\n\
+         --- child stderr (truncated) ---\n{:.800}",
+        envelope_stdout,
+        envelope_stderr,
+    );
+    assert_eq!(
+        common::git_env::libtest_summary_count(&envelope_stdout, "failed"),
+        Some(1),
+        "the ENVELOPE-mark child exited non-zero, but its libtest summary does \
+         not report exactly 1 FAILING test — so the tightening is not what made \
+         it red. A child that died before libtest ran (a bad spawn, an aborted \
+         process) exits non-zero too, and would prove nothing about the mark.\n\
+         --- child stdout (truncated) ---\n{:.800}\n\
+         --- child stderr (truncated) ---\n{:.800}",
+        envelope_stdout,
+        envelope_stderr,
+    );
+}
+
 /// An ambient hook git environment really does defeat
 /// `scripts/audit-orphan-producers.sh`, and stripping exactly those variables
 /// really does cure it.

@@ -15,6 +15,10 @@
 //!   fix under a real *ambient* environment rather than a per-child one.
 //! - [`in_replay_child`] — the predicate a replayed test uses to tighten an
 //!   otherwise-graceful skip into a hard failure for the replay run only.
+//! - [`spawn_replay_child_lacking_audit_prereqs`] — the inverse fixture: one
+//!   replay child in an environment that genuinely cannot run the audit, so a
+//!   test can pin which mark may tighten a skip into a failure and which may
+//!   not.
 //! - [`audit_script_stdout_poisoned_and_sanitized`] — spawn the orphan-audit
 //!   script exactly twice (poisoned, then stripped), so the hazard's potency
 //!   stays demonstrable independently of any production call site. It borrows
@@ -476,6 +480,54 @@ pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
     );
 }
 
+/// Spawn ONE replay child in an environment that genuinely CANNOT run the
+/// orphan audit, stamping `mark` as the replay guard's value.
+///
+/// The fixture behind
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`. Its
+/// whole purpose is to hold everything fixed except `mark`, so the caller's
+/// two children differ only in what the mark claims — one body, so the two
+/// spawns cannot drift, the same discipline
+/// [`audit_script_stdout_poisoned_and_sanitized`] uses for its
+/// poisoned-vs-sanitized pair.
+///
+/// `PATH` is an EMPTY [`tempfile::tempdir`], which makes
+/// `reify_test_support::run_orphan_audit`'s FIRST probe —
+/// `Command::new("python3")` — fail with `NotFound` and take its documented
+/// skip path (measured: the child's stderr reads `python3 not on PATH;
+/// skipping orphan audit for scope "crates/reify-audit/src"`). That is a
+/// SUPPORTED environment, not a broken one: the skip protocol exists, with
+/// nine callers across two crates, precisely because `python3`, `git` or the
+/// script can be genuinely absent.
+///
+/// Deliberately NOT poisoned with the hook git environment. With `PATH`
+/// deprived the child skips long before it reaches the audit script, so a
+/// decoy would add a tempdir and no signal — the discrimination this fixture
+/// buys is the MARK's meaning, not the poison's.
+///
+/// Spawn failures are hard failures: `current_exe()` is this very binary, so
+/// a failure to exec it is a broken harness rather than an environmental
+/// condition the caller could sensibly skip on.
+#[allow(dead_code)]
+pub fn spawn_replay_child_lacking_audit_prereqs(
+    filters: &[&str],
+    mark: &str,
+) -> std::process::Output {
+    let exe = std::env::current_exe().expect("current_exe");
+
+    // Held until after `output()` returns, so the child sees a PATH that
+    // exists and is empty rather than one pointing at a deleted directory.
+    let empty_path = tempfile::tempdir().expect("create empty PATH dir for the deprived child");
+
+    Command::new(&exe)
+        .args(filters)
+        .args(["--test-threads=1", "--nocapture"])
+        .env(REPLAY_GUARD, mark)
+        .env("PATH", empty_path.path())
+        .output()
+        .expect("re-exec self with the orphan audit's prerequisites removed")
+}
+
 /// The test names `filters` select in `exe`, via libtest's `--list`.
 ///
 /// `--list` prints one `<name>: test` line per selected test (benchmarks get
@@ -502,24 +554,38 @@ fn list_matching_tests(exe: &Path, filters: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Extract `(passed, ignored)` from libtest's summary line, e.g.
-/// `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out`.
+/// Extract one count from libtest's summary line — e.g. `5` for `"passed"`
+/// given `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out`.
 ///
 /// Takes the LAST such line, since `--nocapture` interleaves test output that
-/// could in principle contain the same prefix.
-fn parse_passed_and_ignored(stdout: &str) -> Option<(usize, usize)> {
+/// could in principle contain the same prefix. Parses the count as a NUMBER
+/// rather than substring-matching `"1 passed"`, which would also match
+/// `"21 passed"`.
+///
+/// Public because a caller that spawns its own child (see
+/// [`spawn_replay_child_lacking_audit_prereqs`]) must read the same summary
+/// this module reads, and one parser with two readers cannot drift the way two
+/// parsers would.
+#[allow(dead_code)]
+pub fn libtest_summary_count(stdout: &str, field: &str) -> Option<usize> {
     let line = stdout
         .lines()
         .rev()
         .find(|l| l.trim_start().starts_with("test result:"))?;
 
-    let field = |suffix: &str| -> Option<usize> {
-        line.split(';')
-            .map(str::trim)
-            .find_map(|seg| seg.strip_suffix(suffix))
-            .and_then(|prefix| prefix.split_whitespace().next_back())
-            .and_then(|n| n.parse().ok())
-    };
+    let suffix = format!(" {field}");
+    line.split(';')
+        .map(str::trim)
+        .find_map(|seg| seg.strip_suffix(suffix.as_str()))
+        .and_then(|prefix| prefix.split_whitespace().next_back())
+        .and_then(|n| n.parse().ok())
+}
 
-    Some((field(" passed")?, field(" ignored")?))
+/// `(passed, ignored)` from libtest's summary line — the pair
+/// [`replay_self_under_hook_git_env`]'s two non-vacuity checks need.
+fn parse_passed_and_ignored(stdout: &str) -> Option<(usize, usize)> {
+    Some((
+        libtest_summary_count(stdout, "passed")?,
+        libtest_summary_count(stdout, "ignored")?,
+    ))
 }
