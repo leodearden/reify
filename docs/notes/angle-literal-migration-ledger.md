@@ -14,20 +14,33 @@ hand-built `GeometryOp::Draft` fixtures, and published this ledger.
 
 ## Read this first — the numbers below are a snapshot, not the source of truth
 
-**Measured 2026-08-21 at `0675683952`** ("Merge task/6393 into main" — a `main`
-merge commit, and therefore permanently reachable). **All three buckets share
-this one stamp.** α's own migration is not in it: α sits on top of this commit, and
-every "MIGRATED by task 5777" row below marks a change made after it.
+**Measured 2026-08-26 at `181d1ec24c`** ("Merge task/2930 into main" — a `main`
+merge commit, and therefore permanently reachable). **All four measured sections
+— §§1, 2, 3 and 5 — share this one stamp.** α's own migration is not in it: α
+sits on top of this commit, and every "MIGRATED by task 5777" row below marks a
+change made after it.
 
 One stamp, because an earlier revision used two and they disagreed. §§1–2 were
 stamped at `50bc85d168` (2026-08-01) and §3 at `975cbfc301`, and task 5623's
 LENGTH-gate leaf landed in between — moving bucket 2 from 31 to 36 (§2.4) *and*
 bucket 3 from 14 to 20, two of those six being bare `arc` angle slots (§3). Every
 one of the five new bucket-2 sites is γ's, so a reader sizing γ off the old §2.1
-table under-scoped it by five. Bucket 1 (§1) and the `.ri` corpus (§5) reproduce
-identically at `50bc85d168` and at this stamp — same per-file counts, same call
-sites on the same lines. Only buckets 2 and 3 moved, and both moved for the same
-reason.
+table under-scoped it by five.
+
+That was not a one-off, and the case for a single stamp is now measured rather
+than argued. This file's previous whole-file stamp was `0675683952` (2026-08-21),
+five days before this one. **Every one of the four measured sections moved across
+those five days:**
+
+| Section | at `0675683952` | at `181d1ec24c` | What moved |
+|---|---|---|---|
+| §1 bucket 1 | 21 | **23** | `occt_non_length_fields_stay_ungated` landed in `reify-kernel-occt/src/lib.rs`, adding one `CircularPattern` **and** one `Draft` angle |
+| §2 bucket 2 | 36 | **37** | one new δ site in `reify-eval/src/geometry_ops/tests.rs` — and it is an *inverting* test, not a retype (§2.4) |
+| §3 bucket 3 | 20 sites, 22 raw hits | 20 sites, **23** raw hits | one new raw hit, a false positive (§3.4); the site total held |
+| §5 `.ri` corpus | 21 | **22** | one new already-dimensioned `rotate` in `prj/printer_v01/printer.ri` |
+
+Three of the four totals changed and the fourth's arithmetic did. Re-stamping any
+one section alone would have left this file internally inconsistent again.
 
 ### Stamp measurements onto a commit that is ON MAIN, never a branch-local one
 
@@ -106,7 +119,10 @@ rg -n -g '*.ri' '\b(revolve|rotate|rotate_around|circular_pattern|arc)\s*\(' .
 
 ## 1. Bucket 1 — GATE-INERT (hand-built `GeometryOp`)
 
-**21 sites: 19 literal `angle: Value::Real(..)` + 2 `angle: r(..)` closure forms.**
+**23 sites at the stamp: 21 literal `angle: Value::Real(..)` + 2 `angle: r(..)`
+closure forms.** That is the *pre-α* total — α's migration sits on top of the
+stamp, so re-running the grep at a tip that contains α returns different numbers.
+§1.2.1 reconciles the two.
 
 ### 1.1 The finding that matters
 
@@ -124,20 +140,21 @@ Therefore:
 
 ### 1.2 Status
 
-| Consumer | Sites | Status |
+| Consumer | Sites at the stamp | Status |
 |---|---|---|
-| `GeometryOp::Draft` | 13 | **MIGRATED by task 5777** → `Value::angle(..)` |
-| `GeometryOp::CircularPattern` | 8 | Out of α's scope — still bare |
+| `GeometryOp::Draft` | 14 | 13 **MIGRATED by task 5777** → `Value::angle(..)`; 1 deliberately left bare (§1.2.1) |
+| `GeometryOp::CircularPattern` | 9 | Out of α's scope — still bare |
 
-The 13 Draft sites: 6 in `reify-kernel-occt/src/lib.rs`, 3 in
-`reify-ir/src/geometry.rs`, 3 in `reify-eval/src/engine_build/tests.rs`, 1 in
-`reify-test-support/src/mocks.rs`.
+The 13 migrated Draft sites: 6 in `reify-kernel-occt/src/lib.rs`, 3 in
+`reify-ir/src/geometry.rs`, 3 in `reify-eval/src/engine_build/tests.rs` (2
+literal + the one closure form of §1.3), 1 in `reify-test-support/src/mocks.rs`.
 
-The 8 that remain bare — **every one a `CircularPattern`**:
-`reify-ir/src/geometry.rs` (1), `reify-kernel-occt/src/lib.rs` (1),
+The 9 that remain bare — **every one a `CircularPattern`**:
+`reify-ir/src/geometry.rs` (1), `reify-kernel-occt/src/lib.rs` (**2**),
 `reify-kernel-occt/tests/harness_occt/pattern_single_pass_counter.rs` (1),
-`reify-eval/src/engine_build/tests.rs` (3), `reify-eval/src/primitive_attribute_seed.rs`
-(1), `reify-test-support/src/mocks.rs` (1).
+`reify-eval/src/engine_build/tests.rs` (3 — 2 literal + 1 closure),
+`reify-eval/src/primitive_attribute_seed.rs` (1),
+`reify-test-support/src/mocks.rs` (1).
 
 Draft and CircularPattern are in fact the **only** two bucket-1 consumers there
 can be. `GeometryOp::Revolve` and `GeometryOp::Rotate` declare their angle as a
@@ -145,36 +162,49 @@ bare `angle_rad: f64` field, not a `Value` at all (`crates/reify-ir/src/geometry
 so they are structurally outside this question — do not go looking for hand-built
 Revolve/Rotate angles to migrate.
 
-#### 1.2.1 The two eights are DIFFERENT sets
+#### 1.2.1 Grep hits and migration targets are DIFFERENT sets
 
-Two post-α counts both come to 8. They are **not** the same 8, and conflating
-them is the easiest way to mis-derive this table:
+Post-α the two counts a reader naturally reaches for are **10** and **9**, and
+conflating them is the easiest way to mis-derive this table:
 
-| Which 8 | Composition |
+| Which count | Composition |
 |---|---|
-| hits of `rg 'angle: Value::Real' crates/` | 7 grep-visible bare CircularPattern **+ 1** deliberate `Draft` control arm (below) |
-| bare fixture sites (the §1.2 table row) | *those same* 7 **+ 1** `r(1.57)` closure-form CircularPattern, which that grep cannot see (§1.3) |
+| **10** hits of `rg 'angle: Value::Real' crates/` | 8 grep-visible bare `CircularPattern` **+ 2** deliberate bare `Draft` controls (below) |
+| **9** migration targets still outstanding | *those same* 8 **+ 1** `r(1.57)` closure-form `CircularPattern`, which that grep cannot see (§1.3) |
 
-The two sets overlap in 7 and differ only in the 8th member. So the migration
-work still outstanding in bucket 1 is **8 CircularPattern sites**, not 8 grep
-hits — the control arm is not a migration target, and the closure form does not
-show up in the grep you would naturally reach for.
+The two sets overlap in 8 and differ at both ends. So the work still outstanding
+in bucket 1 is **9 `CircularPattern` sites**, all ε's (5781) — not 10 grep hits.
+Neither control arm is a migration target, and the closure form does not show up
+in the grep you would naturally reach for.
 
-Pre-α the bucket-1 total was 21 = 13 Draft + 8 CircularPattern; α migrated the
-13, which is why §1's header counts 19 literal + 2 closure forms while the grep
-now returns 8.
+Reconciling with §1's pre-α header: 23 = 14 `Draft` + 9 `CircularPattern`; α
+migrated 13 of the 14 `Draft` and added one further bare `Draft` control of its
+own (the first bullet below), which is why the literal grep falls 21 → 10 while
+the `CircularPattern` work is unchanged at 9.
 
-The one remaining `Draft` grep hit is **deliberate**: it is the bare control arm
-of α's own equivalence pin, `draft_angle_dimensioned_matches_bare_real_volume` in
-`reify-kernel-occt/src/lib.rs`, which executes the same draft twice — once with
-`Value::Real`, once with `Value::angle` — and asserts the volumes match. Retyping
-it would delete the comparison. Every Draft *fixture* is migrated.
+**Both remaining `Draft` grep hits are deliberate, and they fall to DIFFERENT
+leaves — warn off both, not just δ:**
+
+- **`draft_angle_dimensioned_matches_bare_real_volume`**
+  (`reify-kernel-occt/src/lib.rs`) — α's own equivalence pin. It executes the
+  same draft twice, once with `Value::Real` and once with `Value::angle`, and
+  asserts the volumes match. Retyping the bare arm deletes the comparison.
+  **δ's (5780).**
+- **`occt_non_length_fields_stay_ungated`** (`reify-kernel-occt/src/lib.rs`) —
+  the `Draft` arm. Its bareness *is* the experiment: the test asserts that **no**
+  `field = "angle"` warn is emitted, and a dimensioned `Value` emits no warn
+  either — so retyping it makes the assertion pass **vacuously** and silently
+  guts the ungated-`extract_f64` regression control, with a green run to hide it.
+  **δ's (5780)** — but its sibling `CircularPattern` arm in the *same* test is
+  **ε's (5781)**, and carries exactly the same trap.
+
+Every Draft *fixture* is migrated; what is left is two controls.
 
 ### 1.3 The closure form the literal grep misses
 
 `crates/reify-eval/src/engine_build/tests.rs` has a local
 `let r = |v| Value::Real(v);` whose call sites include one Draft angle (migrated
-by α) and one CircularPattern angle (still bare — it is the 8th site of §1.2).
+by α) and one CircularPattern angle (still bare — it is the 9th site of §1.2).
 `rg 'angle: Value::Real'` cannot see either; `rg 'angle: r\('` is the grep that
 does. This is why the PRD's original Draft count was 8 rather than 13.
 
@@ -186,14 +216,14 @@ not retype, generalise or redefine `r` — change individual call sites only.
 
 ## 2. Bucket 2 — GATE-REJECTED (`("angle", <bare literal>)` via `compile_geometry_op`)
 
-**36 sites.** These are the hand-written `CompiledExpr` args that break when a
+**37 sites.** These are the hand-written `CompiledExpr` args that break when a
 gate lands.
 
 > **Scope caveat — bucket 2 is not the whole blast radius.** It covers only
 > angles written as Rust `CompiledExpr` literals. Rust tests that embed bare
 > `.ri` SOURCE TEXT and compile it through the same chokepoint break too, and
 > they are counted separately in [§3](#3-bucket-3--bare-angles-in-ri-source-text-embedded-in-rust-tests).
-> Sizing a leaf off the 6-file / 36-site table below alone will under-scope it.
+> Sizing a leaf off the 6-file / 37-site table below alone will under-scope it.
 
 ### 2.1 Split by consuming leaf
 
@@ -204,17 +234,17 @@ gate lands.
 | | `rotate` | 1 |
 | | `arc` (`start_angle` + `end_angle`) | 4 |
 | | **γ total** | **27** |
-| **δ (5780)** | `draft` | 2 |
+| **δ (5780)** | `draft` | 3 |
 | **ε (5781)** | `circular_pattern` | 7 |
 
-Per file: `reify-eval/src/geometry_ops/tests.rs` 17,
+Per file: `reify-eval/src/geometry_ops/tests.rs` 18,
 `reify-eval/tests/compile_geometry_op_characterization.rs` 8,
 `reify-eval/tests/harness_geometry/geometry_error_handling.rs` 7,
 `reify-eval/tests/harness_fea_solver_e2e/stress_sweep_degenerate.rs` 2,
 `reify-eval/tests/harness_sweep/swept_kind_classifier_e2e.rs` 1,
 `reify-eval/tests/harness_topology_selector/topology_attribute_extrude_revolve_e2e.rs` 1.
 
-Both splits total 36. The per-file column is the cheap one to re-derive — it is
+Both splits total 37. The per-file column is the cheap one to re-derive — it is
 a direct `rg -c` of the §"Derivation commands" bucket-2 regex plus the single
 `Int` site of §2.2. The per-leaf column is not: it needs every match attributed
 to its enclosing `SweepKind` / `TransformKind` / `PatternKind` / `CurveKind` /
@@ -230,8 +260,8 @@ trust the per-file one.
   `reify-eval/src/geometry_ops/tests.rs`, the `circular_pattern` bare-integer test
   binds `CompiledExpr::literal(Value::Int(360), Type::Int)` to a local and passes
   the local, so no `lit(..)` / `literal_f64(..)` helper appears at the call site.
-  It belongs to ε, and it is the reason the helper-shaped regex above returns 35
-  rather than 36.
+  It belongs to ε, and it is the reason the helper-shaped regex above returns 36
+  rather than 37.
 
 ### 2.3 Which helper makes a literal "bare"
 
@@ -251,12 +281,28 @@ Already dimensioned — these are **NOT** bucket 2, do not "migrate" them:
   definition)
 - `rad_literal` — `reify-eval/tests/curve_constructors_e2e.rs` (2 arc call sites)
 
-### 2.4 Why this is 36 and an earlier revision said 31
+### 2.4 Why this is 37, and earlier revisions said 36 and 31
 
-If you are holding a copy of this table that reads **31**, it was measured at
-`50bc85d168`. Task 5623's LENGTH-gate leaf landed between that commit and the
-current stamp, and it added five bucket-2 sites — all five in
-`reify-eval/src/geometry_ops/tests.rs`, which goes 12 → 17:
+Two landings moved this number, in that order.
+
+**36 → 37 (`0675683952` → `181d1ec24c`).** One site, in
+`reify-eval/src/geometry_ops/tests.rs`, which goes 17 → 18:
+`compile_geometry_op_draft_angle_stays_on_the_bare_path`, whose args are
+`vec![("angle".to_string(), literal_f64(0.1))]`.
+
+> **This one is δ's, and it INVERTS — it is not a retype.** Its own doc comment
+> calls itself a "NEGATIVE SCOPE LOCK": it asserts that a bare `Real` draft angle
+> still compiles to `Ok` *and* is stored as the bare `Real` it was written as,
+> and says in as many words that "re-wrapping it as an ANGLE `Scalar` would be
+> just as wrong as rejecting it". It was written to hold the angle surface open
+> for *this* PRD. When δ (5780) lands its gate, this test must be inverted the
+> way §3.2's two eval-side tests must be — a migrator working uniformly down the
+> table would silently retype away the assertion that guards δ's own boundary.
+
+**31 → 36 (`50bc85d168` → `0675683952`).** If you are holding a copy of this
+table that reads **31**, it was measured at `50bc85d168`. Task 5623's LENGTH-gate
+leaf landed between that commit and the next stamp, and it added five bucket-2
+sites — all five in `reify-eval/src/geometry_ops/tests.rs`, which went 12 → 17:
 
 | Added by 5623 | Leaf | Why it is bucket 2 |
 |---|---|---|
@@ -266,21 +312,23 @@ current stamp, and it added five bucket-2 sites — all five in
 | `arc_with_center_radius` (`start_angle`) | γ | arc's angle pair, §2.2's first sub-form |
 | `arc_with_center_radius` (`end_angle`) | γ | " |
 
-So the delta is γ-only: revolve 16 → 18, `rotate_around` 3 → 4, `arc` 2 → 4,
-γ total 22 → 27. δ and ε are untouched at 2 and 7.
+So that delta was γ-only: revolve 16 → 18, `rotate_around` 3 → 4, `arc` 2 → 4,
+γ total 22 → 27. ε was untouched at 7, and δ stood at 2 until the 36 → 37
+landing above took it to 3.
 
 These are all **deliberately** bare, not oversights — 5623's own comments say
 the angle stays bare because it is *this* PRD's to gate. They are still γ's
 work: a gate at `compile_geometry_op` does not read comments.
 
 The same 5623 landing moved bucket 3 from 14 to 20 (§3). One commit, both
-buckets — which is precisely why this file now carries a single stamp.
+buckets — which is one half of why this file carries a single stamp; the other
+half is the four-way move tabulated in the header.
 
 ---
 
 ## 3. Bucket 3 — bare angles in `.ri` source text embedded in Rust tests
 
-**20 sites across 7 files.** *(At the file-wide stamp `0675683952` — the same
+**20 sites across 7 files.** *(At the file-wide stamp `181d1ec24c` — the same
 commit as §§1–2 and §5. Re-derive before acting.)*
 
 An earlier revision of this section reported **14 across 6**, measured on a tree
@@ -288,8 +336,10 @@ predating task 5623's LENGTH-gate leaf signal — the same bucket-3 content
 `50bc85d168` still carries, where the §"Derivation commands" greps return 18 raw
 `let … = builtin(…)` hits and 0 `arc` hits, i.e. (18 − 5) + 0 + 1 = 14. The
 current stamp is later and includes that file, which adds 6 eval-chokepoint
-sites and the 2 bare `arc` slots, giving 22 + 2 and hence 20 (§3.4). That same
-landing is what moved bucket 2 from 31 to 36 (§2.4).
+sites and the 2 bare `arc` slots, giving 23 + 2 and hence 20 (§3.4). That same
+landing is what moved bucket 2 from 31 to 36 (§2.4). The raw `let`-form hit count
+has since gone 22 → 23 without the *site* total moving at all — the extra hit is
+a false positive (§3.4), which is exactly why §3.4 exists.
 
 Buckets 1 and 2 are both about angles written as **Rust values**. This third
 class is angles written as **DSL text** inside a Rust string literal, which the
@@ -366,15 +416,19 @@ converts `360deg` to radians as part of unit resolution, so writing the suffix
 and must not be carried into a `.ri` string, where `Value::angle(PI/2.0)` is not
 even expressible.
 
-### 3.4 Reproducing 20 from 22 + 2 raw hits
+### 3.4 Reproducing 20 from 23 + 2 raw hits
 
-The §"Derivation commands" `let … = builtin(…)` regex returns 22 and the `arc`
-regex returns 2. Of the 22, five are false positives; one true site is invisible
+The §"Derivation commands" `let … = builtin(…)` regex returns 23 and the `arc`
+regex returns 2. Of the 23, six are false positives; one true site is invisible
 to both:
 
 - **2 in `rotate_e2e.rs`** — the trailing unsuffixed numeric belongs to
   `vec3(0.0, 0.0, 1.0)` nested inside `orient_axis_angle(…, 90deg)`. The angle
   itself is dimensioned.
+- **1 in `mirror_circular_value_forms_e2e.rs`** — same shape, different nest:
+  `circular_pattern(b, axis_z(point3(12, 0, 0)), 6, 60deg)`. The regex matched
+  `point3(12, 0, 0)`'s closing paren, not the angle, which is already `60deg`.
+  This is the hit that took the raw count 22 → 23 without moving the site total.
 - **1 in `let_scope_tests.rs`** — a commented-out line.
 - **2 in `geometry_arg_count_span_tests.rs`** — deliberate arg-COUNT-error
   fixtures (`circular_pattern(box(...), 1.0)`, `rotate(box(...), 0.0, 0.0)`).
@@ -382,7 +436,7 @@ to both:
   angle gate could fire. Not migration targets.
 - **+1 invisible**, the `format!`-built `circular_pattern_angle.rs` site (§3.2).
 
-(22 − 5) + 2 + 1 = **20**.
+(23 − 6) + 2 + 1 = **20**.
 
 ---
 
@@ -412,7 +466,7 @@ falls through its `_ => raw` arm for anything that is not `Real` or `Int` — so
 *radians* into a slot that used to receive π/2. Nothing in the current suite
 catches this: the re-baselined goldens would simply absorb the wrong value.
 
-A migrator working uniformly down the 36-site table would make this error in
+A migrator working uniformly down the 37-site table would make this error in
 seven places at once.
 
 **This rule is bucket-2-only — do not carry it into bucket 1.** Bucket 1 also
@@ -429,13 +483,11 @@ prevent, just in the other direction.
 
 ## 5. The `.ri` corpus
 
-A sweep of every tracked `.ri` file (`git ls-files '*.ri'`) finds **21**
+A sweep of every tracked `.ri` file (`git ls-files '*.ri'`) finds **22**
 executable angle-consuming builtin call sites (`revolve` / `rotate` /
-`rotate_around` / `circular_pattern` / `arc`) at the file-wide stamp — the same
-21, on the same lines, as at `50bc85d168`. Unlike buckets 2 and 3, the corpus did
-not move.
+`rotate_around` / `circular_pattern` / `arc`) at the file-wide stamp.
 
-Reproducing 21 from the raw sweep, which returns **33 matches**:
+Reproducing 22 from the raw sweep, which returns **34 matches**:
 
 - **−7 comment-only lines** — the regex matches commented-out call sites and the
   word "arc" in prose.
@@ -445,13 +497,21 @@ Reproducing 21 from the raw sweep, which returns **33 matches**:
   twice on ONE line and `rg -o` counts it twice. Count distinct `file:line`
   pairs, not matches.
 
-33 − 7 − 5 = **21**.
+34 − 7 − 5 = **22**.
+
+The corpus was flat at **21** across `50bc85d168` and `0675683952` — same
+per-file counts, same call sites on the same lines — and moved by exactly one
+between `0675683952` and this stamp: `prj/printer_v01/printer.ri` gained a
+`rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg)`. That site is **already
+dimensioned**, so it is not a migration target for anyone; it moves the sweep
+total and nothing else. Do not read a flat corpus total as a promise that the
+corpus is static.
 
 No absolute count of tracked `.ri` files is given here on purpose: it rots on the
 next example that lands, exactly the way a line number does. Measured, it went
-595 → 631 between `50bc85d168` and the current stamp — 36 new files in three
-weeks — while the 21 angle sites above did not change at all. That gap is the
-whole argument for counting sites rather than files.
+595 → 639 between `50bc85d168` and the current stamp — 44 new files in under four
+weeks — while the angle sites above went 21 → 22. That gap is the whole argument
+for counting sites rather than files.
 
 Before α, exactly **three** carried a bare angle. After α, **two** — and both are
 deliberate:
