@@ -31,6 +31,15 @@
 //! - `linear_pattern` (arity 6) arg5 `spacing` → LENGTH ("Length") (task 5652)
 //! - `linear_pattern_2d` (arity 11) arg5 `spacing1` and arg10 `spacing2` →
 //!   LENGTH ("Length") (task 5652)
+//! - PRIMITIVE producers, every dimension → LENGTH ("Length") (task 5750):
+//!   `box`/`box_centered` `width`/`height`/`depth`; `cylinder`/
+//!   `cylinder_centered` `radius`/`height`; `sphere` `radius`; `tube`
+//!   `outer_r`/`inner_r`/`height`; `cone` `bottom_radius`/`top_radius`/
+//!   `height`; `wedge` `width`/`depth`/`height`/`top_width`; `torus`
+//!   `major_radius`/`minor_radius`; `half_space` `px`/`py`/`pz` (the POINT
+//!   only — its normal is excluded below)
+//! - PROFILE producers → LENGTH ("Length") (task 5750): `rectangle`
+//!   `width`/`height`; `circle` `radius`; `ellipse` `semi_major`/`semi_minor`
 //!
 //! UNCHECKED (would false-positive on valid call sites or is out-of-scope):
 //! - arg0 (geometry handle) — ε=4358's territory
@@ -46,6 +55,24 @@
 //!   sites into hard compile errors, spanning `reify-eval` tests and
 //!   `examples/` — a separable breaking-surface migration outside 5652's scope.
 //!   TODO(#5662): add the ox/oy/oz LENGTH slots and migrate those call sites.
+//! - `half_space` args3-5 `nx`/`ny`/`nz` — the STRADDLE case (task 5750). Its
+//!   boundary POINT is checked (above) while its outward NORMAL is not: a
+//!   normal is a dimensionless unit vector whose components are legitimately
+//!   bare in correct `.ri`, so a LENGTH slot there would reject valid code.
+//!   Same ORIGIN-vs-DIRECTION split the circular pattern draws for
+//!   `ox`/`oy`/`oz` vs `ax`/`ay`/`az`.
+//! - `rounded_box` / `rounded_rect` / `zone_cylinder` / `zone_annulus` /
+//!   `zone_profile` — gated only INDIRECTLY (task 5750). Each DESUGARS into
+//!   Box/Cylinder/Rectangle/Circle/Pipe/Thicken ops, so its own surface
+//!   arguments never reach a gated position under these names; a slot here
+//!   would be NEW coverage whose arg name disagrees with whatever the eval
+//!   layer reports for the desugared op, breaking the same-wording premise the
+//!   migration hint depends on (PRD
+//!   `docs/prds/v0_6/units-length-gate-completion.md` decision D9).
+//! - `polygon` — Contract-C gated at eval through the task-5661 VARIADIC
+//!   route, but its positions are arity-OPEN and its compile-layer arg names
+//!   are the inert `c0`…`cN` that `geometry.rs` synthesises, so there is no
+//!   index-keyed `CheckableArg` to write for it at all.
 //!
 //! # Arity awareness (task 5652)
 //!
@@ -142,6 +169,29 @@ pub(crate) enum ExpectedArg {
         /// share one message shape.
         migration_hint: Option<&'static str>,
     },
+}
+
+/// Build one LENGTH slot — the shape every Contract C length position shares.
+///
+/// Hoisted out of the arms below because task 5750 lands 26 of them across the
+/// primitive and profile families at once, and spelling the
+/// `ExpectedArg::Scalar { dimension, type_name, migration_hint }` literal out
+/// longhand 26 times would bury the only two things that actually vary per
+/// slot: the index and the argument NAME.
+///
+/// The seven pre-5750 LENGTH slots above keep their longhand form deliberately
+/// — rewriting them would churn already-reviewed arms for no behavioural gain,
+/// and this function is byte-for-byte the same construction they perform.
+fn length_arg(index: usize, name: &'static str) -> CheckableArg {
+    CheckableArg {
+        index,
+        name,
+        expected: ExpectedArg::Scalar {
+            dimension: DimensionVector::LENGTH,
+            type_name: "Length",
+            migration_hint: Some(LENGTH_MIGRATION_HINT),
+        },
+    }
 }
 
 /// Return the checkable dimensioned-scalar argument slots for a named builtin
@@ -346,6 +396,135 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
                     migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
+        ],
+
+        // ── Primitive CSG producers: every dimension is a Length (task 5750) ──
+        //
+        // PRD `docs/prds/v0_6/units-length-gate-completion.md` leaf η, work
+        // item 1. These mirror, at the compile layer, the task-5743 `primitive`
+        // row of `crates/reify-eval/src/arg_acceptance.rs`'s family table: the
+        // positions `geometry_ops`' `required_length_values` already gates at
+        // eval. The hazard they close is the silent one — `Value::as_f64` reads
+        // a bare `20` as 20 SI METRES, so `box(20, 20, 10)` built a 20-metre
+        // part with no diagnostic at all before task 5743.
+        //
+        // Arg NAMES are copied from the lowering sites in `geometry.rs` (the
+        // `("width".to_string(), …)` pairs each arm builds), because the eval
+        // layer renders its rejection from those same strings. A name invented
+        // here would make the two layers word one authoring mistake
+        // differently, which is exactly what decision D9 exists to prevent.
+        //
+        // ARITY-AGNOSTIC by the rule stated above: none of these names is
+        // overloaded (each lowering arm calls `check_arg_count_exact`), so
+        // guarding them on their canonical arity would silently weaken
+        // coverage for short calls without buying anything. Pinned by the
+        // `assert_slots_at_every_arity` sweeps in `tests`.
+        //
+        // NOT slotted here, each for a stated reason rather than by omission:
+        // - `rounded_box` / `zone_cylinder` / `zone_annulus` / `zone_profile` —
+        //   gated only INDIRECTLY. They DESUGAR into Box/Cylinder/Rectangle/
+        //   Circle/Pipe/Thicken ops, so their own surface arguments never reach
+        //   a gated position under these names. A slot here would therefore be
+        //   NEW coverage whose arg name disagrees with whatever the eval layer
+        //   reports for the desugared op — breaking D9's same-wording premise.
+        //   (`zone_annulus`' arg3 `length` is additionally DEAD: `geometry.rs`
+        //   binds it to `_l`.)
+        // - `polygon` — Contract-C gated at eval via the task-5661 VARIADIC
+        //   route, but its positions are arity-OPEN and its compile-layer names
+        //   are the inert `c0`…`cN` that `geometry.rs` synthesises. There is no
+        //   index-keyed `CheckableArg` to write.
+        //
+        // box(width, height, depth) / box_centered(width, height, depth)
+        //   NOTE index 1 is `height` — the Y extent — NOT `depth`.
+        "box" | "box_centered" => vec![
+            length_arg(0, "width"),
+            length_arg(1, "height"),
+            length_arg(2, "depth"),
+        ],
+
+        // cylinder(radius, height) / cylinder_centered(radius, height)
+        //
+        // `cylinder_centered` lowers to TWO ops — the Cylinder plus a
+        // compensating `Translate(dz = -height/2)` — but the table is keyed on
+        // the CALL, whose two arguments are the same radius/height pair. The
+        // desugaring's `× -0.5` multiplier is a synthesised `CompiledExpr` that
+        // is never a call-site argument, so this check never sees it. That
+        // matters: the multiplier MUST stay a bare dimensionless `Real` (see
+        // the INVARIANT note on `geometry.rs`'s `cylinder_centered` arm), and a
+        // slot cannot reach it to break that.
+        "cylinder" | "cylinder_centered" => {
+            vec![length_arg(0, "radius"), length_arg(1, "height")]
+        }
+
+        // sphere(radius)
+        "sphere" => vec![length_arg(0, "radius")],
+
+        // tube(outer_r, inner_r, height)
+        "tube" => vec![
+            length_arg(0, "outer_r"),
+            length_arg(1, "inner_r"),
+            length_arg(2, "height"),
+        ],
+
+        // cone(bottom_radius, top_radius, height)
+        "cone" => vec![
+            length_arg(0, "bottom_radius"),
+            length_arg(1, "top_radius"),
+            length_arg(2, "height"),
+        ],
+
+        // wedge(width, depth, height, top_width)
+        //   NOTE this orders its triple width/DEPTH/height — the opposite of
+        //   `box`'s width/height/depth. Both orders are copied from their own
+        //   lowering site rather than shared, which is why they can differ.
+        "wedge" => vec![
+            length_arg(0, "width"),
+            length_arg(1, "depth"),
+            length_arg(2, "height"),
+            length_arg(3, "top_width"),
+        ],
+
+        // torus(major_radius, minor_radius)
+        "torus" => vec![
+            length_arg(0, "major_radius"),
+            length_arg(1, "minor_radius"),
+        ],
+
+        // half_space(px, py, pz, nx, ny, nz)
+        //   args0-2: the boundary-plane POINT → LENGTH ("Length").
+        //   args3-5: the outward NORMAL `nx`/`ny`/`nz` — a DIMENSIONLESS unit
+        //            vector, deliberately UNSLOTTED. Its components are
+        //            legitimately bare in correct `.ri` (a normal's scale is
+        //            irrelevant to the plane it defines), so a LENGTH slot here
+        //            would reject valid code. This is the one builtin whose
+        //            args STRADDLE the boundary, and it draws the same
+        //            ORIGIN-vs-DIRECTION split the circular pattern already
+        //            draws for `ox`/`oy`/`oz` vs `ax`/`ay`/`az` — stated
+        //            binding at `crates/reify-eval/src/arg_acceptance.rs`'s
+        //            "unit-vector DIRECTIONS" paragraph. Pinned by
+        //            `half_space_slots_the_point_but_never_the_normal`.
+        "half_space" => vec![
+            length_arg(0, "px"),
+            length_arg(1, "py"),
+            length_arg(2, "pz"),
+        ],
+
+        // ── 2-D profile producers (task 5750) ────────────────────────────────
+        //
+        // The task-5743 `profile` row of the same family table. Same rules as
+        // the primitives above; `polygon`'s variadic vertex stream is excluded
+        // for the reason recorded there.
+        //
+        // rectangle(width, height)
+        "rectangle" => vec![length_arg(0, "width"), length_arg(1, "height")],
+
+        // circle(radius)
+        "circle" => vec![length_arg(0, "radius")],
+
+        // ellipse(semi_major, semi_minor)
+        "ellipse" => vec![
+            length_arg(0, "semi_major"),
+            length_arg(1, "semi_minor"),
         ],
 
         // All other names: empty (no dimensioned-scalar arg to check).
@@ -579,8 +758,40 @@ mod tests {
     ///   `GEOMETRY_FUNCTION_NAMES` or `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, so
     ///   assertion (b) of [`arg_slot_keys_are_registered_builtin_names`] is what
     ///   holds this line.
-    pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] =
-        &["generate", "linear_pattern", "linear_pattern_2d"];
+    /// - The task-5750 PRIMITIVE and PROFILE producers — `box`, `box_centered`,
+    ///   `cylinder`, `cylinder_centered`, `sphere`, `tube`, `cone`, `wedge`,
+    ///   `torus`, `half_space`, `rectangle`, `circle`, `ellipse`. Every one is a
+    ///   CSG/profile producer registered in `GEOMETRY_FUNCTION_NAMES`, gaining
+    ///   its LENGTH dimension slots in task 5750 (PRD
+    ///   `docs/prds/v0_6/units-length-gate-completion.md` leaf η). They are
+    ///   exempted here for EXACTLY the reason `linear_pattern` is, and the
+    ///   consequence of getting it wrong is identical: moving any of them into
+    ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset assertion
+    ///   would route every `box(…)` call through the selector arm at
+    ///   expr.rs:3243, whose
+    ///   `topology_selector_result_type(name).expect(…)` has no entry for them
+    ///   — turning the most common call in the language into a panic. The
+    ///   exemption list is the correct lever; the slice is not.
+    pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
+        "generate",
+        "linear_pattern",
+        "linear_pattern_2d",
+        // Task 5750 — primitives.
+        "box",
+        "box_centered",
+        "cylinder",
+        "cylinder_centered",
+        "sphere",
+        "tube",
+        "cone",
+        "wedge",
+        "torus",
+        "half_space",
+        // Task 5750 — profiles.
+        "rectangle",
+        "circle",
+        "ellipse",
+    ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
 
