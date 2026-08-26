@@ -4763,18 +4763,13 @@ impl<'a> Lowering<'a> {
         let base = self.lower_expr(base_node)?;
         let selector = self.node_text(selector_node).to_string();
 
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        args.push(expr);
-                    }
-                }
-            }
-        }
+        // The shared `callTail($)` argument walk — same helper `function_call`,
+        // `namespaced_call` and `trait_method_call` use, so all four call
+        // surfaces inherit its slot-preservation invariant: a rejected argument
+        // leaves an `Undef` placeholder rather than shifting this call's arity.
+        // Ad-hoc selectors don't bind named arguments, so the labels are
+        // discarded (unchanged behaviour); only `args`' arity and indexing.
+        let (args, _) = self.lower_call_arguments(node);
 
         Some(Expr {
             kind: ExprKind::AdHocSelector {
@@ -4861,24 +4856,19 @@ impl<'a> Lowering<'a> {
     fn lower_trait_method_call(&self, node: tree_sitter::Node) -> Option<Expr> {
         let callee_node = node.child_by_field_name("callee")?;
 
-        // Collect positional args from the `argument_list` child (same logic as
-        // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        // Collect positional args through the SHARED `callTail($)` walk
+        // `lower_call_arguments` — the one implementation `function_call`,
+        // `namespaced_call` and `ad_hoc_selector` also use, so no call surface
+        // can drift from the others. The invariant this inherits: a rejected
+        // argument leaves an `ExprKind::Undef` placeholder in its own slot
+        // rather than being dropped, because dropping it would shift this
+        // call's arity and slide every later argument down a position (task
+        // 5495 μ, amendment).
         // Trait method calls don't use named-arg binding, so any named-arg label is
         // silently dropped — only the value expression is retained.  Named-arg syntax
         // is grammatically permitted at call sites (e.g. `Trait::method(x: value)`),
         // so dropping the label here is correct and expected.
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        args.push(expr);
-                    }
-                }
-            }
-        }
+        let (args, _) = self.lower_call_arguments(node);
 
         match callee_node.kind() {
             "qualified_access" => {
