@@ -735,6 +735,216 @@ mod tests {
         }
     }
 
+    // ── Task 5750 (units-length η): PRIMITIVE + PROFILE LENGTH slots ─────────
+    //
+    // PRD `docs/prds/v0_6/units-length-gate-completion.md` leaf η, work item 1
+    // (boundary row 9). These pin the compile-layer half of the two task-5743
+    // rows in `crates/reify-eval/src/arg_acceptance.rs`'s family table — the
+    // 21 primitive fields and the 5 profile fields.
+    //
+    // The arg NAMES are copied from the lowering sites in `geometry.rs` (the
+    // `("width".to_string(), …)` pairs), not invented here: the eval layer
+    // renders its rejection from those same strings, so a name that drifted
+    // would silently break decision D9's premise that both layers word one
+    // authoring mistake identically.
+    //
+    // None of these names is overloaded, so per [`builtin_arg_slots`]' stated
+    // "guard only genuinely overloaded names" rule every arm stays
+    // ARITY-AGNOSTIC. The helper below therefore sweeps `0..=MAX_PROBED_ARITY`
+    // rather than probing the canonical arity alone: an arm that later grew a
+    // stray `if arg_count == N` guard would still satisfy a single-arity probe
+    // while having quietly dropped coverage for short and long calls.
+
+    /// Assert `name` exposes exactly `expected` at EVERY arity in
+    /// `0..=MAX_PROBED_ARITY`.
+    ///
+    /// Bundles the two halves of a non-overloaded arm's contract: WHICH slots
+    /// it exposes (the table contract) and that the answer does not vary with
+    /// arity (the no-stray-guard contract).
+    fn assert_slots_at_every_arity(name: &str, expected: &[CheckableArg]) {
+        for arg_count in 0usize..=MAX_PROBED_ARITY {
+            assert_eq!(
+                builtin_arg_slots(name, arg_count),
+                expected,
+                "builtin_arg_slots({name:?}, {arg_count}) must expose exactly the \
+                 expected LENGTH slots; {name} is not an overloaded name, so its \
+                 arm must carry no `if arg_count ==` guard"
+            );
+        }
+    }
+
+    /// box / box_centered → [width@0, height@1, depth@2].
+    ///
+    /// NOTE index 1 is `height`, NOT `depth`: `geometry.rs`'s shared Box arm
+    /// orders the triple width/height/depth, so `height` is the Y extent. A
+    /// transposed pair here would still type-check but would misname the
+    /// offending argument in every diagnostic the slot emits.
+    #[test]
+    fn box_primitives_have_three_length_slots() {
+        for name in ["box", "box_centered"] {
+            assert_slots_at_every_arity(
+                name,
+                &[
+                    length_slot(0, "width"),
+                    length_slot(1, "height"),
+                    length_slot(2, "depth"),
+                ],
+            );
+        }
+    }
+
+    /// cylinder / cylinder_centered → [radius@0, height@1].
+    ///
+    /// `cylinder_centered` lowers to TWO ops (a Cylinder plus a compensating
+    /// Translate), but the slot table is keyed on the CALL, whose two args are
+    /// the same radius/height pair — the desugaring's internal `× -0.5`
+    /// multiplier is a synthesised `CompiledExpr`, never a call-site argument,
+    /// so `check_builtin_arg_types` never sees it.
+    #[test]
+    fn cylinder_primitives_have_radius_and_height_slots() {
+        for name in ["cylinder", "cylinder_centered"] {
+            assert_slots_at_every_arity(name, &[length_slot(0, "radius"), length_slot(1, "height")]);
+        }
+    }
+
+    /// sphere → [radius@0].
+    #[test]
+    fn sphere_has_radius_slot() {
+        assert_slots_at_every_arity("sphere", &[length_slot(0, "radius")]);
+    }
+
+    /// tube → [outer_r@0, inner_r@1, height@2].
+    #[test]
+    fn tube_has_three_length_slots() {
+        assert_slots_at_every_arity(
+            "tube",
+            &[
+                length_slot(0, "outer_r"),
+                length_slot(1, "inner_r"),
+                length_slot(2, "height"),
+            ],
+        );
+    }
+
+    /// cone → [bottom_radius@0, top_radius@1, height@2].
+    #[test]
+    fn cone_has_three_length_slots() {
+        assert_slots_at_every_arity(
+            "cone",
+            &[
+                length_slot(0, "bottom_radius"),
+                length_slot(1, "top_radius"),
+                length_slot(2, "height"),
+            ],
+        );
+    }
+
+    /// wedge → [width@0, depth@1, height@2, top_width@3].
+    ///
+    /// NOTE the wedge orders its triple width/DEPTH/height — the opposite of
+    /// `box`'s width/height/depth. Both orders are copied from their own
+    /// lowering site rather than shared, which is why they can differ.
+    #[test]
+    fn wedge_has_four_length_slots() {
+        assert_slots_at_every_arity(
+            "wedge",
+            &[
+                length_slot(0, "width"),
+                length_slot(1, "depth"),
+                length_slot(2, "height"),
+                length_slot(3, "top_width"),
+            ],
+        );
+    }
+
+    /// torus → [major_radius@0, minor_radius@1].
+    #[test]
+    fn torus_has_two_radius_slots() {
+        assert_slots_at_every_arity(
+            "torus",
+            &[
+                length_slot(0, "major_radius"),
+                length_slot(1, "minor_radius"),
+            ],
+        );
+    }
+
+    /// half_space → the boundary POINT `px`/`py`/`pz` only.
+    ///
+    /// The STRADDLE case: `half_space(px, py, pz, nx, ny, nz)` mixes a gated
+    /// POINT with an un-gated outward NORMAL in one argument list. The normal is
+    /// a dimensionless unit vector whose components are legitimately bare in
+    /// correct `.ri`, so slotting indices 3-5 would reject valid code — the same
+    /// ORIGIN-vs-DIRECTION split already drawn for the circular pattern
+    /// (`crates/reify-eval/src/arg_acceptance.rs:116-119`).
+    #[test]
+    fn half_space_slots_the_point_but_never_the_normal() {
+        assert_slots_at_every_arity(
+            "half_space",
+            &[
+                length_slot(0, "px"),
+                length_slot(1, "py"),
+                length_slot(2, "pz"),
+            ],
+        );
+
+        // The exclusion stated POSITIVELY as well as by the list above, so a
+        // reader sees the straddle drawn rather than having to infer it from an
+        // absence — and so the reason travels with the assertion.
+        let slotted: Vec<usize> = builtin_arg_slots("half_space", 6)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        for normal_index in [3usize, 4, 5] {
+            assert!(
+                !slotted.contains(&normal_index),
+                "half_space arg{normal_index} is an outward-NORMAL component — a \
+                 dimensionless unit vector — and must stay slot-free; got slots at \
+                 {slotted:?}"
+            );
+        }
+    }
+
+    /// rectangle → [width@0, height@1].
+    #[test]
+    fn rectangle_has_width_and_height_slots() {
+        assert_slots_at_every_arity(
+            "rectangle",
+            &[length_slot(0, "width"), length_slot(1, "height")],
+        );
+    }
+
+    /// circle → [radius@0].
+    #[test]
+    fn circle_has_radius_slot() {
+        assert_slots_at_every_arity("circle", &[length_slot(0, "radius")]);
+    }
+
+    /// ellipse → [semi_major@0, semi_minor@1].
+    #[test]
+    fn ellipse_has_two_semi_axis_slots() {
+        assert_slots_at_every_arity(
+            "ellipse",
+            &[
+                length_slot(0, "semi_major"),
+                length_slot(1, "semi_minor"),
+            ],
+        );
+    }
+
+    /// The PROFILE family's variadic sibling stays wholly slot-free.
+    ///
+    /// `polygon(x1, y1, x2, y2, …)` IS Contract-C gated at eval (task 5661, via
+    /// the variadic route), but its positions are arity-OPEN and its compile-
+    /// layer arg names are the inert `c0`…`cN` that `geometry.rs`'s arm
+    /// synthesises — so there is no index-keyed `CheckableArg` to write, and a
+    /// `c0`-named diagnostic would not word the mistake the way the eval layer
+    /// does. Pinned so the omission reads as a decision rather than an oversight.
+    #[test]
+    fn polygon_stays_slot_free_because_its_positions_are_arity_open() {
+        assert_slots_at_every_arity("polygon", &[]);
+    }
+
     /// Task 5652 (step-1 RED). Pins the guard-only-overloaded-names half of
     /// [`builtin_arg_slots`]'s contract (rule and rationale documented there):
     /// the `arg_count` parameter is *available* to every arm but *used* only by
@@ -790,7 +1000,12 @@ mod tests {
             "edge",
             "solid_body",
             "volume",
-            "box",
+            // `"box"` used to sit here. Task 5750 (units-length η) gave it
+            // width/height/depth LENGTH slots, so it is no longer an unchecked
+            // name; `box_primitives_have_three_length_slots` is now its pin.
+            // `union` replaces it as a still-unslotted CSG producer so this
+            // list keeps covering that shape.
+            "union",
             "",
             "closest_point",
             "is_on",
@@ -847,9 +1062,16 @@ mod tests {
         let non_family_keys: &[&str] = &["generate"];
 
         // Extra non-selector names that must never map to non-empty slots.
+        // `"box"` and `"cylinder"` used to head this list. Task 5750
+        // (units-length η) gave both LENGTH slots, so they must move out of a
+        // must-stay-empty list; they are exempted via NON_SELECTOR_ARG_SLOT_KEYS
+        // instead. `union` / `difference` replace them so the list still NAMES a
+        // registered CSG producer that carries no dimensioned arg — both are
+        // additionally reached by the BUILTIN_NAME_FAMILIES sweep, so the
+        // replacement preserves the list's readability, not its reach.
         let extra_non_selector: &[&str] = &[
-            "box",
-            "cylinder",
+            "union",
+            "difference",
             "vec3",
             "cross",
             "dot",
@@ -865,6 +1087,16 @@ mod tests {
             // Typos of the new task-5652 pattern keys.
             "linear_patern",
             "linear_pattern_3d",
+            // Typos / near-misses of the new task-5750 primitive + profile keys.
+            // Unlike the family-slice names above, these are reachable ONLY by
+            // being listed here, and they are the failure mode the arms invite:
+            // a `"box" | "boxx" =>` fat-finger would hand slots to a name that
+            // does not exist.
+            "boxes",
+            "cylindar",
+            "rectangel",
+            "elipse",
+            "half_spce",
         ];
 
         let mut any_nonempty = false;

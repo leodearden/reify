@@ -598,3 +598,142 @@ fn builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different() {
          ctor: {ctor:?}"
     );
 }
+
+// ── Task 5750 (units-length η): PRIMITIVE + PROFILE LENGTH slots, end to end ──
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md` boundary row 9. The unit
+// tests in `builtin_signatures.rs::tests` pin the TABLE; these pin what an
+// author actually sees — that the slots are reached through the real compile
+// pipeline and render the eval layer's C1 template verbatim.
+
+/// SIGNAL — a bare `box(20, 20, 10)` is rejected once PER AXIS.
+///
+/// All three, not just the first: the eval layer reads a multi-slot builtin's
+/// whole set in ONE `required_length_values` call precisely so an author fixes
+/// `width`, `height` and `depth` in a single edit rather than one per rebuild
+/// (`crates/reify-eval/src/arg_acceptance.rs`'s "all-at-once discipline"). The
+/// compile layer must not degrade that to a one-at-a-time drip, so the count is
+/// asserted, not just non-emptiness.
+///
+/// The full message is asserted for every axis — the C1 template INCLUDING the
+/// D9 migration hint — because that byte-identity with the eval layer is the
+/// whole point of hoisting the hint into `reify-core`.
+#[test]
+fn box_bare_dimensions_are_rejected_once_per_axis() {
+    let compiled = compile_struct_body("    let bad = box(20, 20, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "box: width argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "box: height argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "box: depth argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+        ],
+        "a bare box(20, 20, 10) must be diagnosed at width, height AND depth, \
+         each rendering the full C1 template.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// BOUNDARY ok — the dimensioned control emits nothing.
+///
+/// The migration this leaf performs is only safe if `box(20mm, 20mm, 10mm)` —
+/// the form every `examples/**/*.ri` file already uses — stays clean. Without
+/// this, `box_bare_dimensions_are_rejected_once_per_axis` could be satisfied by
+/// a slot that fires unconditionally.
+#[test]
+fn box_dimensioned_gives_no_arg_type_mismatch() {
+    let compiled = compile_struct_body("    let good = box(20mm, 20mm, 10mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "a fully dimensioned box must emit no ArgTypeMismatch, got: {:#?}",
+        errors
+    );
+}
+
+/// SIGNAL — the PROFILE family is gated too, and names its own argument.
+///
+/// `circle`'s sole argument is `radius`, so the message must say `radius` and
+/// not borrow a neighbouring family's name.
+#[test]
+fn circle_bare_radius_is_rejected_naming_radius() {
+    let compiled = compile_struct_body("    let c = circle(4)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare circle radius.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "circle: radius argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// SIGNAL — a dimensionless REAL renders `got Real`, not `got Scalar[dimensionless]`.
+///
+/// A bare `4.0` types as `Type::Scalar { DIMENSIONLESS }`, whose `Display`
+/// special-cases the dimensionless case to `Real`
+/// (`crates/reify-core/src/ty.rs`). Worth pinning separately from the bare-Int
+/// case: the two travel DIFFERENT arms of `check_builtin_arg_types` (the
+/// `Type::Scalar { .. }` dimension comparison vs the catch-all kind mismatch),
+/// and an author who wrote `4.0` must not be told about a type name the
+/// language does not surface.
+#[test]
+fn sphere_dimensionless_real_radius_renders_got_real() {
+    let compiled = compile_struct_body("    let s = sphere(4.0)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a dimensionless-Real sphere radius.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "sphere: radius argument expects Length, got Real; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// GRADUALISM CONTROL (contract C3) — a statically-invisible operand stays
+/// SILENT at compile time, so the eval gate is never redundant.
+///
+/// `missing_thing` is unresolved, so its `CompiledExpr` carries `Type::Error`
+/// and `check_builtin_arg_types` skips the slot by design. This is what makes
+/// the compile slot a COMPLEMENT to `required_length_values` rather than a
+/// replacement: removing the eval gate on the strength of this leaf would leave
+/// exactly this shape ungated.
+///
+/// The unresolved-name error itself is asserted present, so the test cannot
+/// pass because compilation quietly did nothing.
+#[test]
+fn statically_invisible_primitive_operand_stays_silent_at_compile_time() {
+    let compiled = compile_struct_body("    let bad = box(missing_thing, 20mm, 10mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "a Type::Error operand must be skipped by the LENGTH slot (PRD decision-6 \
+         gradualism), leaving the eval-layer gate to catch it; got: {:#?}",
+        errors
+    );
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("missing_thing")),
+        "the fixture must actually reach the slot with an unresolved operand — \
+         expected an unresolved-name Error naming `missing_thing`.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
