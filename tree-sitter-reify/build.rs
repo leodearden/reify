@@ -260,6 +260,21 @@ fn try_hasher(bin: &str, args: &[&str], path: &str) -> Result<Option<String>, ()
 
 /// SHA-256 of a file, via `sha256sum` or `shasum -a 256`.
 ///
+/// THREE outcomes, and the caller depends on telling them apart (`#5629`
+/// amendment pass) — collapsing the last two into one `None` is what let a
+/// per-file failure mint the permanent `UNAVAILABLE` sentinel:
+///   `Ok(Some(hash))` hashed;
+///   `Ok(None)`       NO hasher on this host — neither binary is on PATH. A
+///                    permanent, host-wide fact, and the ONLY thing
+///                    `UNAVAILABLE` is allowed to mean;
+///   `Err(())`        a hasher IS on PATH but would not hash THIS file after
+///                    the retries (an unreadable mode, or sustained fork/EMFILE
+///                    pressure). Scoped to one file, and NOT a statement about
+///                    the host — so the caller writes no stamp rather than the
+///                    sentinel. This mirrors the shell half exactly:
+///                    `ts_hash_file`/`ts_fingerprint` hard-fail naming the file
+///                    instead of emitting a degraded manifest.
+///
 /// TWO hashers, and a bounded retry, for two distinct reasons (`#5629` review):
 ///
 /// 1. The shell side of this contract —
@@ -277,9 +292,8 @@ fn try_hasher(bin: &str, args: &[&str], path: &str) -> Result<Option<String>, ()
 ///    for that dir indefinitely, then propagates into every lane CoW-seeded
 ///    from that base.
 ///
-/// Returns `None` only when neither binary produced a hash after the retries;
-/// the loop exits immediately (no sleeps) when neither is on PATH at all.
-fn sha256_of(path: &str) -> Option<String> {
+/// The loop exits immediately (no sleeps) when neither binary is on PATH at all.
+fn sha256_of(path: &str) -> Result<Option<String>, ()> {
     const HASHERS: [(&str, &[&str]); 2] = [("sha256sum", &[]), ("shasum", &["-a", "256"])];
     const ATTEMPTS: u32 = 3;
 
@@ -287,7 +301,7 @@ fn sha256_of(path: &str) -> Option<String> {
         let mut retryable = false;
         for (bin, args) in HASHERS {
             match try_hasher(bin, args, path) {
-                Ok(Some(hash)) => return Some(hash),
+                Ok(Some(hash)) => return Ok(Some(hash)),
                 Ok(None) => {} // not on PATH — fall through to the next binary
                 Err(()) => retryable = true, // present but failed — a retry may win
             }
@@ -295,7 +309,7 @@ fn sha256_of(path: &str) -> Option<String> {
         // Nothing failed transiently, so nothing can change on a retry: the
         // host simply has no hasher. Return now rather than sleeping twice.
         if !retryable {
-            return None;
+            return Ok(None);
         }
         if attempt + 1 < ATTEMPTS {
             std::thread::sleep(std::time::Duration::from_millis(
@@ -303,7 +317,9 @@ fn sha256_of(path: &str) -> Option<String> {
             ));
         }
     }
-    None
+    // A hasher exists and kept failing on THIS file. Deliberately NOT Ok(None):
+    // that would claim a host-wide property from one file's evidence.
+    Err(())
 }
 
 /// Attest what was just compiled.
@@ -320,37 +336,70 @@ fn sha256_of(path: &str) -> Option<String> {
 /// nothing useful there. Only these hashes distinguish "built from these bytes"
 /// from "merely newer".
 ///
-/// On a host with no usable hasher, writes the literal `UNAVAILABLE` rather than
-/// omitting the stamp: an ABSENT stamp means "unproven", which would make
-/// `scripts/tree-sitter-freshness.sh ensure` force a rebuild on every single run.
-/// `UNAVAILABLE` instead maps to a clean skip. A write failure warns but never
-/// fails the build.
+/// TWO failure shapes, and they get OPPOSITE treatments (`#5629` amendment pass):
 ///
-/// The sentinel is DELIBERATELY expensive to reach: it permanently disables
-/// attestation for this fingerprint dir (cargo never rebuilds a dormant dir, so
-/// the stamp is never rewritten) and propagates through CoW lane seeding. That is
-/// why `sha256_of` retries a transient subprocess failure and tries both hashers
-/// before conceding — reaching here should mean the host genuinely has neither
-/// `sha256sum` nor `shasum`, matching the freshness script's FAIL POLICY.
+///   NO HASHER ON THIS HOST (`sha256_of` -> `Ok(None)`) writes the literal
+///   `UNAVAILABLE` rather than omitting the stamp. Nothing on this host can ever
+///   attest anything, so an ABSENT stamp — which reads as "unproven", i.e. stale —
+///   would make `scripts/tree-sitter-freshness.sh ensure` force a rebuild on every
+///   single run, forever. `UNAVAILABLE` instead maps to a clean per-dir skip.
+///
+///   THIS FILE WOULD NOT HASH (`sha256_of` -> `Err(())`) writes NO stamp, and
+///   removes any stamp already there. The sentinel must NOT be reachable this way:
+///   it permanently disables attestation for this fingerprint dir (cargo never
+///   rebuilds a dormant dir, so the stamp is never rewritten) and propagates
+///   through CoW lane seeding — a silent, permanent hole from one unreadable file
+///   or one fork-pressure spike. An absent stamp is the honest state: UNPROVEN,
+///   hence stale, which `ensure` self-heals on the next run. A stale stamp left in
+///   place beside a NEWER archive would be worse still — an active mis-attestation.
+///   The condition is announced via `cargo:warning=` naming the file, because a
+///   silently unattestable archive is exactly what this whole guard exists to
+///   prevent. This is the same call the shell half makes: `ts_fingerprint` refuses
+///   to emit a partial manifest and hard-fails naming the path.
+///
+/// A write failure warns but never fails the build.
 fn write_inputs_stamp(out_dir: &str) {
     let stamp_path = std::path::Path::new(out_dir).join("tree_sitter_inputs.stamp");
 
     let mut manifest = String::new();
-    let mut hashed_all = true;
+    let mut no_hasher = false;
     for rel in compilation_inputs() {
         match sha256_of(&rel) {
-            Some(hash) => manifest.push_str(&format!("{}  {}\n", hash, rel)),
-            None => {
-                hashed_all = false;
+            Ok(Some(hash)) => manifest.push_str(&format!("{}  {}\n", hash, rel)),
+            // Host-wide: no hasher exists, so no later input can fare better.
+            Ok(None) => {
+                no_hasher = true;
                 break;
+            }
+            // File-scoped: leave the archive UNPROVEN rather than minting the
+            // permanent sentinel, and clear any prior stamp so nothing here
+            // attests bytes this build did not compile.
+            Err(()) => {
+                println!(
+                    "cargo:warning=tree-sitter-reify: could not hash {} (sha256sum/shasum is \
+                     on PATH but failed on it); writing no {} — the archive stays UNPROVEN and \
+                     scripts/tree-sitter-freshness.sh ensure will force a rebuild next run",
+                    rel,
+                    stamp_path.display()
+                );
+                match std::fs::remove_file(&stamp_path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => eprintln!(
+                        "warning: failed to remove stale {}: {}",
+                        stamp_path.display(),
+                        e
+                    ),
+                }
+                return;
             }
         }
     }
 
-    let content = if hashed_all {
-        manifest
-    } else {
+    let content = if no_hasher {
         "UNAVAILABLE\n".to_string()
+    } else {
+        manifest
     };
 
     if let Err(e) = std::fs::write(&stamp_path, content) {
