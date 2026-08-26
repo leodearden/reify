@@ -572,11 +572,24 @@ pub fn compile_with_prelude_context_checked_with_config(
     // ("no matching overload for use_fit(Fit), candidates: use_fit(Enum(Fit))").
     // Oracles: `enum_ctor_param_binding_tests::{shadow_payload_field_lowers_to_enum_type,
     // shadow_payload_binder_fixture_has_no_errors}`. The phases this newly covers
-    // besides `resolve_enum_variant_payloads` are inert with respect to the override:
-    // `phase_units` does no type resolution, `phase_aliases` hard-codes empty name
-    // sets and never enters `resolve_type_expr_with_aliases_kinded` where the override
-    // lives, `build_resolution_names` only builds name sets, and
-    // `build_resolution_enums_from_cache` is a clone.
+    // besides `resolve_enum_variant_payloads` are inert with respect to the override,
+    // but NOT all for the same reason:
+    // • `phase_units` does no type resolution, `build_resolution_names` only builds
+    //   name sets, and `build_resolution_enums_from_cache` is a clone — none of the
+    //   three reaches a resolver at all.
+    // • `phase_aliases` DOES reach `resolve_type_expr_with_aliases_kinded`, via
+    //   `resolve_alias_dfs` → `type_resolution::resolve_type_alias_expr` →
+    //   `resolve_parameterized_builtin_type`, whose `List`/`Set`/`Option`/`Map`/… arms
+    //   recurse into it for every inner type arg — so `type Fits = List<Fit>` in a
+    //   module with a local `enum Fit` now walks the override site. It is inert only
+    //   because that DFS passes EMPTY structure/trait/type-param sets: the structure
+    //   arm the override replaces cannot fire, so the `matches!(ty,
+    //   Type::StructureRef(_))` conjunct is unreachable (nor can the alias-registry
+    //   arm yield a `StructureRef` during DFS, since it resolves with the same empty
+    //   structure set). That is a narrow margin, not a structural one — IF REAL
+    //   STRUCTURE NAMES ARE EVER THREADED INTO THE ALIAS DFS, THIS INSTALL SITE MUST
+    //   BE RE-EXAMINED, because the override would silently activate for alias bodies
+    //   (a case PRD §5 C1 routes to #6259, not to this task).
     //
     // The set-construction rules (local-only, minus local structure names) live in ONE
     // place — see `enums_phase::build_local_enum_shadow_set`.

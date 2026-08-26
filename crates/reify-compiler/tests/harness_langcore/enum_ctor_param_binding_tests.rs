@@ -38,11 +38,14 @@
 //!   `Fit` structure must stay reachable from a module with no local `enum Fit`,
 //!   and a same-module `structure def N` must still beat a same-module `enum N`.
 //! * **Payload-axis no-overreach guards (green on main AND after, #6394)** —
+//!   [`prelude_enum_does_not_shadow_local_structure_in_payload`],
 //!   [`payload_field_of_prelude_structure_name_unaffected_without_local_enum`] and
-//!   [`local_structure_wins_over_same_named_local_enum_in_payload`]. The last two
-//!   rules above, re-pinned on the phase the #6394 hoist newly covers. They fail
+//!   [`local_structure_wins_over_same_named_local_enum_in_payload`]: the group
+//!   above, mirrored 1:1 on the phase the #6394 hoist newly covers. They fail
 //!   against an implementation that hoisted the scope but ALSO widened what enters
-//!   the shadow set.
+//!   the shadow set. Which over-broadening each one actually catches — they do not
+//!   partition the two membership rules one-for-one — is recorded on that group's
+//!   section comment.
 //!
 //! A failure in the last three groups is a BEHAVIOUR CHANGE, not an unimplemented
 //! feature.
@@ -424,24 +427,78 @@ structure def Consumer {
 
 // ── Payload-axis no-overreach guards (green on main AND after) ───────────────
 //
-// NOT red pins — these two are green BEFORE and AFTER #6394's scope hoist, in the
-// same spirit as the `No-overreach guards` group above. They do not drive the
-// fix; they fail against an implementation that hoisted the `LocalEnumShadowScope`
-// but ALSO widened what enters the shadow set — building it from
-// `ctx.resolution_enums` (prelude ++ local) instead of `ctx.enum_defs`, or
-// dropping the local-structure subtraction. Each re-pins one of
-// `build_local_enum_shadow_set`'s two membership rules on the newly-covered phase,
-// enum-variant payload resolution.
+// NOT red pins — all three are green BEFORE and AFTER #6394's scope hoist. They
+// mirror the `No-overreach guards` group above 1:1 on the newly-covered phase
+// (enum-variant payload resolution) and do not drive the fix; they fail against an
+// implementation that hoisted the `LocalEnumShadowScope` but ALSO widened what
+// enters the shadow set.
+//
+// What each one actually discriminates — stated precisely, because the three do
+// NOT partition `build_local_enum_shadow_set`'s two membership rules one-for-one:
+//
+// * [`payload_field_of_prelude_structure_name_unaffected_without_local_enum`] —
+//   the hoist must not blanket-enum every name: with NO local enum declaring it,
+//   a payload field typed by a prelude structure name stays a `StructureRef`.
+//   It does NOT discriminate the `ctx.enum_defs`-not-`ctx.resolution_enums` rule,
+//   because the prelude declares no `enum Fit` (only `enum FitCategory`,
+//   `stdlib/tolerancing.ri:22`) — swapping the membership source leaves "Fit" out
+//   of the set either way and this test stays green.
+// * [`prelude_enum_does_not_shadow_local_structure_in_payload`] — the payload-axis
+//   mirror of [`prelude_enum_does_not_shadow_local_structure`], and the only shape
+//   in this group naming something the PRELUDE declares as an `enum`
+//   (`enum ThreadSystem`, `stdlib/ports_mechanical.ri:35`). It flips to
+//   `Type::Enum` for an implementation that BOTH sources the set from
+//   `ctx.resolution_enums` AND drops the local-structure subtraction — a
+//   combination neither other guard catches, since either change alone still
+//   leaves "ThreadSystem" out of the set.
+// * [`local_structure_wins_over_same_named_local_enum_in_payload`] — the
+//   local-structure subtraction on its own: "Fit" IS a module-local enum there, so
+//   dropping the subtraction alone flips it to `Type::Enum`.
 //
 // Same `module test.<name>` prologue convention as the group above, so
 // `W_MODULE_DECL_MISSING` never pollutes these modules.
+
+/// A LOCAL `structure def ThreadSystem` must win over the PRELUDE
+/// `enum ThreadSystem` (`stdlib/ports_mechanical.ri:35`) in a variant-payload
+/// position, exactly as it does in a param position.
+///
+/// The payload-axis mirror of [`prelude_enum_does_not_shadow_local_structure`],
+/// and the guard in this group that carries the `ctx.enum_defs`-not-
+/// `ctx.resolution_enums` membership rule: `ThreadSystem` is a PRELUDE enum name,
+/// so an implementation that both sources the set from `ctx.resolution_enums`
+/// (prelude ++ local) and drops the local-structure subtraction pulls it into the
+/// shadow set and retypes the user's own structure to `Type::Enum("ThreadSystem")`
+/// on the phase #6394's hoist newly covers. The two sibling guards cannot see that
+/// combination — see the section comment above.
+#[test]
+fn prelude_enum_does_not_shadow_local_structure_in_payload() {
+    const SOURCE: &str = r#"
+module test.payload_prelude_enum_vs_local_structure
+
+structure def ThreadSystem {
+    param x: Length = 1mm
+}
+
+enum Boxed { B { t: ThreadSystem } }
+"#;
+    let module = compile_source_with_stdlib(SOURCE);
+    let t = variant_payload_field_type(&module, "Boxed", "B", "t");
+    assert_eq!(
+        t,
+        Type::StructureRef("ThreadSystem".to_string()),
+        "a local `structure def ThreadSystem` must win over the PRELUDE \
+         `enum ThreadSystem` in a variant payload position; got {t:?}"
+    );
+}
 
 /// With no local `enum Fit` in scope, a payload field `f: Fit` must still reach
 /// the stdlib `std.tolerancing.Fit` STRUCTURE (`tolerancing.ri:268`).
 ///
 /// The payload-axis mirror of
 /// [`stdlib_fit_structure_param_unaffected_without_local_enum`]: the hoist must
-/// not make every `Fit` an enum.
+/// not make every `Fit` an enum. Note this shape does NOT discriminate the
+/// membership-SOURCE rule (there is no prelude `enum Fit`) — that is
+/// [`prelude_enum_does_not_shadow_local_structure_in_payload`]'s job.
 #[test]
 fn payload_field_of_prelude_structure_name_unaffected_without_local_enum() {
     const SOURCE: &str = r#"
