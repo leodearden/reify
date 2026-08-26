@@ -41,8 +41,11 @@ use crate::graph::EvaluationGraph;
 pub enum ParameterClass {
     /// The cell holds a dimensioned or numeric quantity whose change cannot
     /// affect feature topology. Includes `Type::Scalar { .. }`, `Type::dimensionless_scalar()`,
-    /// and `Type::Int` (subject to the `structure_controlling` and
-    /// `collection_subs` overrides in [`classify_cell`]).
+    /// and `Type::Int` — and, since task 6635, derived `Type::Geometry`
+    /// realization references, which carry no independent structural signal
+    /// (see the `## Type::Geometry and Rule 4` note on [`classify_cell`]).
+    /// All of these remain subject to the `structure_controlling` and
+    /// `collection_subs` overrides in [`classify_cell`].
     Dimensional,
     /// The cell controls topology — feature suppression toggles, pattern
     /// counts, enum-typed mode selectors, or any type not whitelisted as
@@ -98,7 +101,53 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    because entity.rs does not backfill `count_cell` for keyed subs. Correct
 ///    by construction and unit-tested; wiring the backfill path activates it.
 /// 4. **Type dispatch** — `Type::Scalar { .. } | Type::dimensionless_scalar() | Type::Int`
-///    → `Dimensional`; everything else → `Structural`.
+///    → `Dimensional`; `Type::Geometry` → `Dimensional` (task 6635, see below);
+///    everything else → `Structural`.
+///
+/// ## Type::Geometry and Rule 4
+///
+/// A `Type::Geometry` cell is a *computed reference to a realization*, never an
+/// authored leaf parameter. Its value therefore necessarily changes whenever
+/// **any** upstream cell changes — a dimensional leaf tick recomputes it just as
+/// surely as a topology-changing one does. Classifying it `Structural` via Rule
+/// 4's conservative `_` default meant [`stage_a_eligible`]'s union-walk hit the
+/// derived geometry cell on *every* real edit and rejected, so the engine's
+/// morph arm was 100% dormant in production — measured as
+/// `ineligible_structural_change: 1` on every tick, with the morph arm never
+/// once reaching Stage B.
+///
+/// This contradicted the PRD. `docs/prds/v0_3/mesh-morphing.md` line 33 scopes
+/// Stage A to **leaf** parameters ("classify each leaf parameter ... the only
+/// differing leaves are dimensional"), and line 34 makes Stage B the gate for
+/// value-driven topology changes ("Even when Stage A passes, continuous
+/// parameter changes can cross topology-changing thresholds").
+///
+/// Nothing is lost by the relaxation:
+///
+/// (i)   [`stage_a_eligible`]'s shape-hash gate still catches every feature
+///       added, removed, or reordered — that is a graph-shape change, not a
+///       value change, and it short-circuits before any per-cell work.
+/// (ii)  Any structure-controlling, collection-count, or keyed-count leaf
+///       feeding the geometry is still classified `Structural`, either by Rules
+///       2/3/3b above or by Rule 4 on its OWN cell (an `Enum` mode selector, a
+///       `Bool` suppression toggle). The relaxation widens the whitelist by
+///       exactly one type; it does not make the cells *behind* the geometry
+///       invisible.
+/// (iii) Stage B's persistent-naming bijection check remains the safety net for
+///       a dimensional tick that crosses a topology threshold. MEASURED
+///       confirmation that (iii) holds: the `cut_z` structural fixture in
+///       `reify-eval/tests/morph_arm_e2e.rs` still rejects after this change —
+///       just at Stage B (`ineligible_naming_error: 1`) rather than at Stage A
+///       (`ineligible_structural_change: 0`).
+///
+/// Placement is load-bearing: the `Type::Geometry` arm lives inside Rule 4,
+/// *after* the Rule 1/2/3/3b early-returns, so a structure-controlling or
+/// count-cell Geometry cell still classifies `Structural`. Do not hoist it to
+/// an early `if node.cell_type == Type::Geometry { return Dimensional }` — the
+/// mutation guards `classify_cell_geometry_in_structure_controlling_returns_structural`,
+/// `classify_cell_geometry_as_collection_count_returns_structural` and
+/// `stage_a_eligible_structure_controlling_geometry_diff_returns_false` exist to
+/// catch exactly that.
 pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
     // Rule 1: missing cell → Structural.
     let Some(node) = graph.value_cells.get(cell_id) else {
@@ -147,9 +196,13 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
         return ParameterClass::Structural;
     }
 
-    // Rule 4: type-based dispatch.
+    // Rule 4: type-based dispatch. Type::Geometry joins the Dimensional
+    // whitelist (task 6635) — a derived realization reference recomputes on
+    // every upstream change and carries no independent structural signal. See
+    // the "## Type::Geometry and Rule 4" note on this fn's doc-comment. The
+    // `_ => Structural` conservative default is unchanged.
     match &node.cell_type {
-        Type::Scalar { .. } | Type::Int => ParameterClass::Dimensional,
+        Type::Scalar { .. } | Type::Int | Type::Geometry => ParameterClass::Dimensional,
         _ => ParameterClass::Structural,
     }
 }
@@ -181,9 +234,12 @@ fn classify_cell_with_count_cache(
         return ParameterClass::Structural;
     }
 
-    // Rule 4: type-based dispatch.
+    // Rule 4: type-based dispatch. Kept in sync with `classify_cell`'s Rule 4 —
+    // see the `## Type::Geometry and Rule 4` note there for why Type::Geometry
+    // is Dimensional (task 6635). This private twin is what `stage_a_eligible`'s
+    // hot loop actually calls, so the two arms must not drift.
     match &node.cell_type {
-        Type::Scalar { .. } | Type::Int => ParameterClass::Dimensional,
+        Type::Scalar { .. } | Type::Int | Type::Geometry => ParameterClass::Dimensional,
         _ => ParameterClass::Structural,
     }
 }
