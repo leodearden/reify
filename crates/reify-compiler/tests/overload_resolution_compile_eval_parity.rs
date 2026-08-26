@@ -4,12 +4,12 @@
 //! predicate — "which user function does this call select?" — so they cannot
 //! silently drift:
 //! - **compile side**: `resolve_function_overload`
-//!   (`crates/reify-compiler/src/type_compat.rs:1155`) — a `matches` tier of
+//!   (`crates/reify-compiler/src/type_compat.rs:1162`) — a `matches` tier of
 //!   per-param disjuncts, narrowed by two tie-break tiers (`exact_matches`,
 //!   then `head_matches` / `heads_unifiable`), classified into
 //!   `Resolved` / `NoMatch` / `Ambiguous`.
 //! - **eval side**: `find_matching_compiled_function`
-//!   (`crates/reify-expr/src/lib.rs:1533`) — the same three tiers in the same
+//!   (`crates/reify-expr/src/lib.rs:1809`) — the same three tiers in the same
 //!   priority order (exact, then head, then wildcard), resolved first-match-
 //!   wins within each and yielding `Option<&CompiledFunction>`. The head tier
 //!   is the newest of the three (#5685); before it landed, this file's
@@ -38,9 +38,9 @@
 //! `docs/invariants.md` is already `enforced(test)` for a different subject.)
 //! When the two resolvers drift in the accept direction, the failure is
 //! SILENT rather than diagnosed: the compiler resolves the call fine, then
-//! `eval_user_function_call` (`crates/reify-expr/src/lib.rs:1625`) fails to
+//! `eval_user_function_call` (`crates/reify-expr/src/lib.rs:1943`) fails to
 //! find the same function and returns a bare `Value::Undef` carrying NO
-//! `UndefCause` — an undiagnosed hole, not an error message.
+//! `UndefCause` (`:1963`) — an undiagnosed hole, not an error message.
 //!
 //! This has already happened once for real: esc-4093-152, where the
 //! compile-side trait-object wildcard applied to every candidate but the
@@ -54,7 +54,7 @@
 //! `pub(crate)`, unreachable from an integration test (a separate external
 //! crate). This test reaches the resolver through the `test-support`-gated
 //! `reify_compiler::__resolve_function_overload_for_parity_test` shim, which
-//! mirrors `__infer_mul_div_result_for_parity_test` (`lib.rs:178`); the
+//! mirrors `__infer_mul_div_result_for_parity_test` (`lib.rs:180`); the
 //! self-pull dev-dependency that activates `feature = "test-support"` for
 //! this integration-test target already exists (`Cargo.toml`), so no
 //! manifest change was needed. The eval-side
@@ -74,9 +74,11 @@
 //! `type_carries_trait_object` / `type_carries_type_param` /
 //! `type_carries_dim_param` are today independently duplicated across the two
 //! crates as well — `type_compat.rs:417/459/647` vs
-//! `reify-expr/src/lib.rs:1306/1346/1439`). Introducing that seam is a
+//! `reify-expr/src/lib.rs:1332/1372/1465`). Introducing that seam is a
 //! scope-level decision rather than a bug fix, and is a candidate for the
-//! Wave-3 scope discussion in `docs/prds/v0_6/builtin-signature-registry.md`.
+//! Wave-3 scope discussion in `docs/prds/v0_6/builtin-signature-registry.md`;
+//! task #5689 is the filed hoist-to-reify-core follow-up, and eval's own
+//! resolver says the same at `reify-expr/src/lib.rs:1887`.
 //! Until such a seam exists, driving BOTH resolvers over one table is what
 //! catches predicate drift and resolver drift alike, with no new machinery.
 
@@ -102,7 +104,7 @@ fn stub_body() -> CompiledFnBody {
 
 /// Build a minimal `CompiledFunction`.
 ///
-/// Mirrors `type_compat.rs:2333`'s in-crate `make_fn` plus a `type_params`
+/// Mirrors `type_compat.rs:2340`'s in-crate `make_fn` plus a `type_params`
 /// argument, because genericity is load-bearing on BOTH sides here: the
 /// type-param and dim-param wildcards are gated on `!type_params.is_empty()`,
 /// while the trait-object wildcard is not. Only EMPTINESS of `type_params` is
@@ -302,11 +304,11 @@ fn assert_accept_reject_parity(row: &Row) {
 // ── "D4" — type-param-carrying ARG as a compile-only wildcard ───────────────
 //
 // Compile-side `resolve_function_overload`'s `matches` tier applies FOUR
-// per-param disjuncts (type_compat.rs:1195-1202); the fourth,
+// per-param disjuncts (type_compat.rs:1203-1208); the fourth,
 // `type_carries_type_param(arg_ty)` (task-4232 γ), lets a generic fn body pass
 // a `TypeParam`-typed value to a concrete-param callee without a spurious
 // NoMatch. Eval-side `find_matching_compiled_function`'s wildcard pass
-// (reify-expr/src/lib.rs:1566-1573) has only THREE disjuncts — there is no
+// (reify-expr/src/lib.rs:1834-1845) has only THREE disjuncts — there is no
 // arg-side counterpart at all.
 //
 // So `P_compile == P_eval || type_carries_type_param(arg_ty)`: for a
@@ -314,7 +316,7 @@ fn assert_accept_reject_parity(row: &Row) {
 // class, which is why the other 14 rows in the table below are clean.
 //
 // Consequence when it fires: the compiler resolves the call, then
-// `eval_user_function_call` (reify-expr/src/lib.rs:1625) finds nothing and
+// `eval_user_function_call` (reify-expr/src/lib.rs:1963) finds nothing and
 // returns a bare `Value::Undef` carrying NO `UndefCause` — the silent
 // INV-SF-1 miss path, not a diagnostic.
 //
