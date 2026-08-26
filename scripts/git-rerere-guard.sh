@@ -214,8 +214,20 @@ cmd_check() {
     return "$armed"
 }
 
-# _sweep_worktree_configs — report any linked worktree whose config.worktree sets
+# _sweep_worktree_configs — report any worktree whose config.worktree sets
 # rerere.enabled or rerere.autoupdate to true.  Returns 1 if any is armed.
+#
+# Sweeps the MAIN CHECKOUT as well as every linked worktree.  For the main
+# checkout git dir == common dir, so its per-worktree config lands at
+# <common>/config.worktree — beside the shared config, NEVER under worktrees/ —
+# and a glob over the linked worktrees alone is blind to it.  That blind spot is
+# doubly silent, because the effective-value read in cmd_check only ever sees
+# $TARGET's OWN config.worktree: from any lane, a main-checkout self-arm would be
+# invisible to both paths at once, and `arm` would report "disarmed and verified"
+# while main stayed armed.  The main checkout is also an ACTIVE merge site — the
+# sanctioned landing path (scripts/land.sh) runs a real `git merge --no-ff` there
+# — which is the same reasoning that makes cmd_scan_locks cover
+# <common>/MERGE_RR.lock.
 #
 # Values are read with `git config --file ... --bool --get`, never grepped:
 # comments, whitespace variations and section-header spellings would all produce
@@ -235,14 +247,27 @@ _sweep_worktree_configs() {
         return 0
     fi
 
-    # A repo with no linked worktrees has no worktrees/ dir at all — normal, not
-    # an error.
-    [ -d "$WORKTREES_DIR" ] || return 0
-
-    for wt_config in "$WORKTREES_DIR"/*/config.worktree; do
-        # Unmatched glob under a worktrees/ dir with no config.worktree files.
+    # The main checkout's own config.worktree is PREPENDED to the linked-worktree
+    # glob rather than handled by a duplicate block, so the readability check, the
+    # `git config --file` reads and the two-key loop below are shared by both.
+    #
+    # No `[ -d "$WORKTREES_DIR" ]` guard: a repo with no linked worktrees has no
+    # worktrees/ dir at all — normal, not an error — and an early return there
+    # would skip the main-dir entry too.  The unmatched glob is already handled by
+    # the per-entry existence check.
+    for wt_config in "$COMMON_DIR/config.worktree" "$WORKTREES_DIR"/*/config.worktree; do
+        # Absent main-dir config.worktree, or an unmatched glob under a store with
+        # no worktrees/ dir or no config.worktree files in it.
         [ -e "$wt_config" ] || continue
-        wt_name="$(basename "$(dirname "$wt_config")")"
+
+        # The main-dir label is STATED, not derived: basename(dirname) of
+        # <common>/config.worktree is the useless '.git'.  '<main checkout>' is the
+        # same label _classify_lock already uses for that dir in scan-locks.
+        if [ "$wt_config" = "$COMMON_DIR/config.worktree" ]; then
+            wt_name="<main checkout>"
+        else
+            wt_name="$(basename "$(dirname "$wt_config")")"
+        fi
 
         # One unreadable config.worktree must not abort the sweep and mask every
         # other lane — report it and keep going.
