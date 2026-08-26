@@ -120,6 +120,27 @@ B9: "OK Bar#constraint[0]", exit 0). Machine-readable twin:
   instance cell. Verified by the fix-shape groundwork read. PASS (gap named,
   producer = this leaf).
 
+## κ — solved-value-auto consumption in the per-instance overlay
+
+Added 2026-08-26 (approved by Leo, solver-integration session; evidence bound
+by the IVF-sequencing study against main `181d1ec24c`/`62a47674fd` — memo in
+#6631/#6592 details).
+
+- `scoped-auto-cell-substrate` — auto ctor args are filtered out of
+  `compiled_args` (`extract_auto_free` filter arm) and minted as parent-scoped
+  Auto cells (bare-args + spec-body arms, `crates/reify-compiler/src/entity.rs`).
+  Trace-verified. PASS.
+- `solver-scoped-write-back` — the dimensional solver writes solved autos back
+  under the scoped instance keys (Solved-arm write-back,
+  `crates/reify-eval/src/engine_eval.rs`). Trace-verified. PASS.
+- `own-scope-post-solve-rail` — own-scope let/param autos already realize
+  post-solve under eval (solved template let-cone re-run); probe-verified
+  (auto_let.ri realizes at the solved 10mm). PASS.
+- `silent-default-baseline` — G6 rejection baseline: a solved ctor-arg auto
+  realizes the child DEFAULT today (auto_ctl.ri: eval solves 0.01 m, `reify
+  build` STEP z-extent −5, exit 0). Probe-verified; κ + the #6631 posture
+  flip retire it. PASS.
+
 ## η — PRD close
 
 - No capabilities: docs stamp per overlay decompose-close obligations

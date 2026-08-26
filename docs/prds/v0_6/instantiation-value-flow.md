@@ -262,6 +262,24 @@ mechanism the dogfood duplicates prove works end-to-end).
   parent cell into a ctor-arg instance cell; record traces at commit. Signal:
   GUI edit of a threaded param updates child geometry without a full rebuild
   (mesh_stats delta), B14.
+- **κ = #6657 — solved-value-auto consumption in the per-instance overlay**
+  [high, deps β γ; added 2026-08-26, approved by Leo (solver-integration
+  session; trace memo in #6631/#6592 details)]: β's differ-trigger meets
+  scoped Auto cells in BOTH their states — the compiler filters auto ctor
+  args out of `compiled_args` and mints parent-scoped Auto cells
+  (`extract_auto_free` filter arm; spec-body arm identical), so an auto
+  sub's effective valuation always differs from template defaults, whether
+  Undef (pre-solve / solver-free drivers) or solved. This leaf owns that
+  interaction: Undef effective cell ⇒ coded-diagnostic skip (γ's codes,
+  C4 — never a silent default realization, never an uncoded error; verdicts
+  stay never-false-Violated); solved effective cell ⇒ the child re-realizes
+  at the solved value through the β overlay (the dimensional solver writes
+  back exactly this scoped key namespace). Signals: solver-wired
+  `Engine::build` realizes the #6631 auto_ctl shape at the solved 10mm
+  (STEP z-extent −10, not the 5mm default); solver-free build/check of the
+  same fixture emits the coded diagnostic. Consumers: #6631 (author-surface
+  composite, dep-wired on β) and the printer_v01 pin retirement; #5617
+  stays the value-plane sibling.
 - **η = #6614 — PRD close** [low, deps all; docs edit, normal/simple]: backfill real
   IDs into this section, terminal stamp + AS-AUTHORED freeze + LIVE map, same
   header on the capability manifest.

@@ -171,6 +171,36 @@ tasks:
       cone (crates/reify-eval/src/engine_edit.rs) has no edge from a parent cell into
       a ctor-arg instance cell. Named gap; ι is the producer.
     verdict: PASS
+- label: κ
+  task_id: 6657
+  title: 'instantiation-value-flow κ: solved-value-auto consumption in the per-instance
+    overlay (Undef = coded-diagnostic skip; solved = re-realize at the solved value)'
+  capabilities:
+  - name: scoped-auto-cell-substrate
+    binding: capability→producer — auto ctor args are filtered out of compiled_args
+      (extract_auto_free filter arm) and minted as parent-scoped Auto cells (bare-args
+      + spec-body arms, crates/reify-compiler/src/entity.rs). Trace-verified 2026-08-26
+      (IVF-sequencing study; memo in #6631 details).
+    verdict: PASS
+  - name: solver-scoped-write-back
+    binding: capability→producer — the dimensional solver writes solved autos back
+      under the scoped instance keys (Solved-arm write-back, crates/reify-eval/src/engine_eval.rs).
+      Trace-verified 2026-08-26.
+    verdict: PASS
+  - name: own-scope-post-solve-rail
+    binding: signal premise — own-scope let/param autos already realize post-solve
+      under eval (solved template let-cone re-run, crates/reify-eval/src/engine_eval.rs);
+      probe-verified 2026-08-26 (auto_let.ri realizes at the solved 10mm).
+    verdict: PASS
+  - name: silent-default-baseline
+    binding: 'G6 rejection baseline — a solved ctor-arg auto realizes the child DEFAULT
+      today (auto_ctl.ri: eval solves 0.01 m, build STEP z-extent -5, exit 0). Probe-verified
+      2026-08-26 on main 181d1ec24c; κ + the #6631 posture flip retire it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: "κ's delivery is geometric + diagnostic (STEP assertion / coded diagnostic
+        in its own harness tests); no stable grep expresses it."
 - label: η
   task_id: 6614
   title: 'instantiation-value-flow η: PRD close — ID backfill + terminal stamp + AS-AUTHORED
