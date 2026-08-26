@@ -319,16 +319,21 @@ const fn length_arg(index: usize, name: &'static str) -> CheckableArg {
 /// name-keyed structure of `math_fn_result_type` (task 4182 result-type
 /// precedent).
 ///
-/// # Shape: `const { &[…] }`, not `vec![…]`
+/// # Shape: a borrowed constant table, not `vec![…]`
 ///
 /// Every arm is a compile-time constant table returned by reference, so a call
 /// costs a match and a pointer rather than a heap allocation.  That matters
 /// because [`check_builtin_arg_types`] runs on EVERY builtin call in a module,
 /// and since task 5750 the common producers (`box`, `circle`, `translate`,
 /// `extrude`, `fillet`, …) all have slots — before it they fell through to the
-/// non-allocating empty arm.  The inline `const` block is what gives the
-/// borrowed array `'static`: [`length_arg`] is a `const fn`, and a const-fn
-/// call is not promotable on its own.
+/// non-allocating empty arm.
+///
+/// Two spellings appear below, and the difference is mechanical rather than
+/// stylistic.  An arm written out longhand is a plain `&[…]`: a struct literal
+/// over constants promotes to `'static` on its own.  An arm built from
+/// [`length_arg`] needs the inline `const { &[…] }` block, because a const-fn
+/// CALL is not promotable — the const block supplies the const context that
+/// gives the borrowed array `'static`.  Both PROBED before being committed to.
 ///
 /// # Arity awareness (task 5652)
 ///
@@ -354,7 +359,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // ── Mass-properties topology selectors ───────────────────────────────
         // arg0: geometry handle (unchecked — ε=4358's territory)
         // arg1: density → MASS_DENSITY ("Density")
-        "center_of_mass" | "moment_of_inertia" => const { &[CheckableArg {
+        "center_of_mass" | "moment_of_inertia" => &[CheckableArg {
             index: 1,
             name: "density",
             expected: ExpectedArg::Scalar {
@@ -362,7 +367,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 type_name: "Density",
                 migration_hint: Some(DENSITY_MIGRATION_HINT),
             },
-        }] },
+        }],
 
         // ── Directional topology selectors ───────────────────────────────────
         // arg0: geometry handle (unchecked)
@@ -373,7 +378,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         "faces_by_normal"
         | "edges_parallel_to"
         | "faces_perpendicular_to"
-        | "edges_perpendicular_to" => const { &[CheckableArg {
+        | "edges_perpendicular_to" => &[CheckableArg {
             index: 2,
             name: "tol",
             expected: ExpectedArg::Scalar {
@@ -390,13 +395,13 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 // task under the PTODO grammar, and PRD 3 has no task id yet.
                 migration_hint: None,
             },
-        }] },
+        }],
 
         // ── Height-based topology selectors ──────────────────────────────────
         // arg0: geometry handle (unchecked)
         // arg1: h → LENGTH ("Length")
         // arg2: tol → LENGTH ("Length")
-        "edges_at_height" => const { &[
+        "edges_at_height" => &[
             CheckableArg {
                 index: 1,
                 name: "h",
@@ -415,7 +420,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                     migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
-        ] },
+        ],
 
         // ── Extremal topology selectors (task 3523) ──────────────────────────
         // arg0: geometry handle (unchecked)
@@ -424,7 +429,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // arg3: tol → LENGTH ("Length"). A distance tolerance, like edges_at_height's
         // LENGTH tol — so an ANGLE tol (e.g. faces_by_normal's 1deg) is rejected at
         // compile time rather than only warned-about at eval (resolve_length_scalar_arg).
-        "extremal_by_bbox" | "extremal_by_centroid" => const { &[CheckableArg {
+        "extremal_by_bbox" | "extremal_by_centroid" => &[CheckableArg {
             index: 3,
             name: "tol",
             expected: ExpectedArg::Scalar {
@@ -432,7 +437,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 type_name: "Length",
                 migration_hint: Some(LENGTH_MIGRATION_HINT),
             },
-        }] },
+        }],
 
         // ── List combinator: generate(n, |i| …) (task 3994, structural-query ζ) ──
         // arg0: n → Int (count). NOT a geometry selector — the only non-geometry
@@ -442,11 +447,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // rejected; a negative literal (`-1`) types as Int and PASSES here — it is
         // caught at eval (DiagnosticCode::GenerateNegativeCount, task 3994 step-10).
         // arg1: |i| … lambda (unchecked — typed via the list-helper return ladder).
-        "generate" => const { &[CheckableArg {
+        "generate" => &[CheckableArg {
             index: 0,
             name: "n",
             expected: ExpectedArg::Int { type_name: "Int" },
-        }] },
+        }],
 
         // ── Pattern CSG producers: spacing is a Length (task 5652) ───────────
         // linear_pattern(target, dx, dy, dz, count, spacing)
@@ -468,7 +473,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // nothing there — the slot would be semantically lying, and the only
         // thing keeping it quiet would be the downstream `compiled_args.get(5)`
         // bounds check, i.e. luck rather than intent.
-        "linear_pattern" if arg_count == 6 => const { &[CheckableArg {
+        "linear_pattern" if arg_count == 6 => &[CheckableArg {
             index: 5,
             name: "spacing",
             expected: ExpectedArg::Scalar {
@@ -476,7 +481,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 type_name: "Length",
                 migration_hint: Some(LENGTH_MIGRATION_HINT),
             },
-        }] },
+        }],
 
         // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1,
         //                           dx2, dy2, dz2, count2, spacing2)
@@ -494,7 +499,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // index 5 at all, so the `compiled_args.get(index)` bounds check
         // happens to shield it), a 7-arg call DOES have an index 5 holding a
         // different parameter — only this guard prevents the false positive.
-        "linear_pattern_2d" if arg_count == 11 => const { &[
+        "linear_pattern_2d" if arg_count == 11 => &[
             CheckableArg {
                 index: 5,
                 name: "spacing1",
@@ -513,7 +518,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                     migration_hint: Some(LENGTH_MIGRATION_HINT),
                 },
             },
-        ] },
+        ],
 
         // ── Primitive CSG producers: every dimension is a Length (task 5750) ──
         //
