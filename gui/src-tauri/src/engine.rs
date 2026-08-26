@@ -2215,6 +2215,11 @@ impl EngineSession {
         new_source.push_str(&literal);
         new_source.push_str(&source[span.end as usize..]);
 
+        // The PRE-EDIT buffer, owned. It is the rollback text for a failed disk
+        // write below, and it has to be owned in any case: `source` borrows
+        // `&self`, while the recompile that follows needs `&mut self`.
+        let original = source.to_owned();
+
         let path = self
             .core
             .file_path()
@@ -2254,8 +2259,37 @@ impl EngineSession {
             }
         };
 
-        std::fs::write(&path, &new_source)
-            .map_err(|e| format!("Error writing {}: {e}", path.display()))?;
+        if let Err(e) = std::fs::write(&path, &new_source) {
+            let write_err = format!("Error writing {}: {e}", path.display());
+            // The engine committed and disk did not, so the engine is now AHEAD
+            // of the canonical `.ri` — the exact inconsistency INV-GUI-3 exists
+            // to forbid. Roll it back to the pre-edit text.
+            //
+            // Routed through `update_source`, NOT a hand-rolled `commit_state`,
+            // so the restored state reaches the frontend through the ONE shared
+            // choke-point (`post_engine_call_telemetry`) exactly as the forward
+            // commit did. A failed write therefore fires two emits, both down
+            // the same path, and the LAST one the frontend sees is the pre-edit
+            // state.
+            //
+            // The rollback recompile cannot fail on well-formed input — this is
+            // text that compiled moments ago — but its `Err` is still handled
+            // rather than ignored: a session left silently inconsistent is
+            // worse than a loud combined error.
+            //
+            // RESIDUAL, stated rather than papered over: an `fs::write` that
+            // fails PART-WAY leaves a truncated file on disk. The rollback
+            // restores the ENGINE, not that file — it deliberately does not
+            // rewrite disk, because a second write down the path that just
+            // failed is as likely to fail again as to repair anything.
+            return match self.update_source(path_str, &original) {
+                Ok(_) => Err(write_err),
+                Err(restore_err) => Err(format!(
+                    "{write_err}; the engine could not be rolled back to the pre-edit \
+                     source either: {restore_err}"
+                )),
+            };
+        }
 
         Ok(state)
     }
