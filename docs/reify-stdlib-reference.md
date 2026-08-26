@@ -356,10 +356,21 @@ zero exponent vector — not a wildcard, so admitting it as a tolerant alias
 would re-open the hole PRD #5747 decision D11 closed for this family.
 
 **Migration.** `Dimensionless` rotation vectors used to be the accepted
-spelling, so this is a breaking change. Spell a bare radian value as a
-dimensioned literal instead — `1.5708rad`, or `90deg`. Because the rejection is
-an error diagnostic that names the offending dimension (rather than a silent
-`Undef`), an unmigrated call site fails loudly and self-describes the fix.
+spelling, so this is a breaking change. Dimension **every** component of the
+rotation vector, not just the non-zero ones — `vec3(0rad, 0rad, 1.5708rad)`, or
+`vec3(0deg, 0deg, 90deg)`. Because the rejection is an error diagnostic that
+names the offending dimension (rather than a silent `Undef`), an unmigrated call
+site fails loudly and self-describes the fix.
+
+Migrate a **whole** vector at a time: a partial migration is the one case that
+does *not* fail loudly. `vec3(0, 0, 1.5708rad)` mixes `Dimensionless` and
+`Angle` components, and a mixed-dimension `vec3` collapses to `undef` at its own
+construction site — *before* `orient_exp` / `transform_exp` is ever called. The
+rotation-vector diagnostic classifies that builtin's argument, so it never sees
+the offending vector and cannot fire; the call fails the old silent way (a bare
+`undef` plus an `OpContractViolation` note, `reify eval` exit 0). Diagnosing a
+mixed-dimension container at its construction site is a separate, general
+concern and is tracked as follow-up work.
 
 **Linear-component dimension convention.** Unchanged by the rotation-vector
 ruling above, and deliberately still polymorphic: `transform_log` preserves the

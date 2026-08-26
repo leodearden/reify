@@ -1,0 +1,23 @@
+// orient_exp_migrated_spelling.ri — CLI fixture pinning that the fix the
+// #6080 `E_RotationVectorDimension` diagnostic RECOMMENDS actually works.
+//
+// The diagnostic tells the user to "spell every component as a dimensioned
+// literal: `vec3(0rad, 0rad, 1.5708rad)` / `vec3(0deg, 0deg, 90deg)`". This
+// fixture is those two spellings verbatim, so the advice is executable rather
+// than merely plausible: `reify eval` must exit 0 and print two quaternions,
+// not `undef`.
+//
+// It guards the amendment to the earlier advice, which named a lone component
+// (`1.5708rad` / `90deg`). Followed literally on a rotation vector that gives
+// `vec3(0, 0, 1.5708rad)` — a MIXED-dimension vec3 that collapses to `undef`
+// before `orient_exp` runs, reproducing the exact silent failure #6080 set out
+// to remove. See orient_exp_partial_migration.ri for that case.
+//
+// Unlike its sibling fixtures this one is CLEAN (no diagnostic, exit 0).
+
+module orient_exp_migrated_spelling
+
+structure def OrientExpMigratedSpelling {
+    let q = orient_exp(vec3(0rad, 0rad, 1.5708rad))
+    let p = orient_exp(vec3(0deg, 0deg, 90deg))
+}

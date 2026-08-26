@@ -1460,6 +1460,10 @@ fn eval_frame_at(args: &[Value]) -> Value {
 
 // Quaternion helpers used by frame_to_frame — re-imported from orientation module.
 use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
+// The `E_RotationVectorDimension` message is built by ONE shared constructor
+// (#6080 amendment) so this arm and `orientation::diagnose`'s `orient_exp` arm
+// cannot drift apart in token, severity or recommended fix.
+use crate::orientation::rotation_vector_dimension_error;
 
 /// Pure classifier (post-`Value::Undef` hook) for affine-constructor and
 /// `transform_exp` calls, mirroring `stackup::diagnose` / `fea::diagnose`.
@@ -1486,7 +1490,11 @@ use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate}
 /// migration mechanism for that breaking change. Severity is `Error` (so
 /// `reify eval` exits 1), per #6126's 2026-08-19 amendment via esc-6080-6, with
 /// the `E_` token carried in the message text rather than as a `DiagnosticCode`
-/// variant. This arm inspects ONLY the `angular` key: the `linear` convention is
+/// variant. The message is built by `orientation::rotation_vector_dimension_error`,
+/// shared with that module's `orient_exp` arm so the token, the severity and the
+/// recommended fix cannot drift between the two.
+///
+/// This arm inspects ONLY the `angular` key: the `linear` convention is
 /// owned by #6126, so a linear-half failure falls through as `None` rather than
 /// being poached by a competing angular message.
 ///
@@ -1528,12 +1536,11 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             if ang_dim == DimensionVector::ANGLE {
                 return None;
             }
-            Some(reify_core::Diagnostic::error(format!(
-                "E_RotationVectorDimension: transform_exp expects a Twist whose \
-                 `angular` half carries ANGLE dimension (rad); got {ang_dim}. A \
-                 rotation vector is axis * angle, so spell a bare radian value \
-                 `1.5708rad` / `90deg`"
-            )))
+            Some(rotation_vector_dimension_error(
+                "transform_exp",
+                Some("angular"),
+                ang_dim,
+            ))
         }
         _ => None,
     }

@@ -709,6 +709,46 @@ fn normalize_vec3_arr(v: [f64; 3]) -> Option<[f64; 3]> {
     normalize_vec3(v[0], v[1], v[2])
 }
 
+/// Shared constructor for the `E_RotationVectorDimension` diagnostic.
+///
+/// The token, the severity and the migration advice are stated ONCE here and
+/// reused by BOTH arms that reject a wrong-dimension rotation vector —
+/// `orientation::diagnose`'s `orient_exp` arm and `geometry::diagnose`'s
+/// `transform_exp` arm. They previously carried independently written string
+/// literals whose only cross-module pin was the CLI tests' bare
+/// `contains("E_RotationVectorDimension")`, which would have stayed green while
+/// the two drifted apart in wording or recommended fix.
+///
+/// `field` selects the noun phrase: `None` for a bare rotation-vector argument
+/// (`orient_exp`), `Some("angular")` for a `Twist` half (`transform_exp`).
+///
+/// The advice deliberately shows a WHOLE rotation vector with EVERY component
+/// dimensioned, rather than a lone `1.5708rad`. Following the lone-component
+/// form literally yields the half-migrated `vec3(0, 0, 1.5708rad)` — a
+/// MIXED-dimension container that `construct::eval_vec` collapses to
+/// `Value::Undef` *before* `orient_exp` / `transform_exp` is ever called, so
+/// this classifier never sees it and the call fails the old silent way (bare
+/// `undef`, `reify eval` exit 0). That is the exact failure mode this
+/// diagnostic exists to remove, so the advice must not steer users into it.
+/// Pinned end-to-end by `cli_orientation_rotvec_dimension`'s
+/// `eval_recommended_migration_spelling_succeeds`.
+pub(crate) fn rotation_vector_dimension_error(
+    builtin: &str,
+    field: Option<&str>,
+    got: DimensionVector,
+) -> reify_core::Diagnostic {
+    let subject = match field {
+        Some(f) => format!("a Twist whose `{f}` half carries"),
+        None => "a rotation vector with".to_string(),
+    };
+    reify_core::Diagnostic::error(format!(
+        "E_RotationVectorDimension: {builtin} expects {subject} ANGLE dimension \
+         (rad); got {got}. A rotation vector is axis * angle, so spell every \
+         component as a dimensioned literal: `vec3(0rad, 0rad, 1.5708rad)` / \
+         `vec3(0deg, 0deg, 90deg)`"
+    ))
+}
+
 /// Pure classifier (post-`Value::Undef` hook) for orientation-builtin calls,
 /// mirroring `tolerancing::diagnose` / `geometry::diagnose` / `stackup::diagnose`.
 /// `reify-expr`'s `FunctionCall` arm calls this (re-exported as
@@ -731,6 +771,10 @@ fn normalize_vec3_arr(v: [f64; 3]) -> Option<[f64; 3]> {
 /// `tolerancing::diagnose` documents, since a new variant would pull
 /// `reify-core` and its exhaustive code-enumeration tests into scope.
 ///
+/// The message itself is built by `rotation_vector_dimension_error`, shared
+/// with `geometry::diagnose`'s `transform_exp` arm so the token, the severity
+/// and the recommended fix cannot drift between the two.
+///
 /// Returns `None` for any other name, and for a shape error (wrong arity,
 /// non-container argument, non-3d vector, mixed component dimensions), which
 /// keeps its existing silent-`Undef` behaviour so a shape error is never
@@ -742,15 +786,19 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             if args.len() != 1 {
                 return None;
             }
+            // `tensor_components_f64` returns `None` for every shape error —
+            // including a MIXED-dimension container, and including the
+            // already-collapsed `Value::Undef` a half-migrated
+            // `vec3(0, 0, 1.5708rad)` arrives as. Those stay silent on purpose:
+            // an arbitrary upstream `Undef` must never be misattributed to a
+            // rotation-vector dimension error. See
+            // `rotation_vector_dimension_error`'s note on why the advice text
+            // steers users away from producing one.
             let (comps, dim) = tensor_components_f64(&args[0])?;
             if comps.len() != 3 || dim == DimensionVector::ANGLE {
                 return None;
             }
-            Some(reify_core::Diagnostic::error(format!(
-                "E_RotationVectorDimension: orient_exp expects a rotation vector \
-                 with ANGLE dimension (rad); got {dim}. A rotation vector is \
-                 axis * angle, so spell a bare radian value `1.5708rad` / `90deg`"
-            )))
+            Some(rotation_vector_dimension_error("orient_exp", None, dim))
         }
         _ => None,
     }
@@ -3554,6 +3602,80 @@ mod tests {
         assert!(
             super::diagnose("transform_exp", std::slice::from_ref(&arg)).is_none(),
             "transform_exp belongs to geometry::diagnose, not orientation::diagnose"
+        );
+    }
+
+    // ── shared-message guards (#6080 amendment) ───────────────────────────────
+
+    /// The migration advice names a WHOLE rotation vector, every component
+    /// dimensioned — never a lone `1.5708rad`.
+    ///
+    /// A lone component is what a user actually types into ONE slot, leaving
+    /// `vec3(0, 0, 1.5708rad)`: a MIXED-dimension container that collapses to
+    /// `Value::Undef` at its own construction site, before `orient_exp` runs.
+    /// The classifier then never sees it and the call fails silently (exit 0) —
+    /// the exact failure mode this diagnostic exists to remove. The advice must
+    /// therefore not steer users into it. Pinned end-to-end by
+    /// `cli_orientation_rotvec_dimension`'s
+    /// `eval_recommended_migration_spelling_succeeds` /
+    /// `eval_partially_migrated_rotation_vector_stays_silently_undef`.
+    #[test]
+    fn diagnose_advice_recommends_a_fully_dimensioned_vector() {
+        let d = super::rotation_vector_dimension_error(
+            "orient_exp",
+            None,
+            DimensionVector::DIMENSIONLESS,
+        );
+        assert!(
+            d.message.contains("vec3(0rad, 0rad, 1.5708rad)")
+                && d.message.contains("vec3(0deg, 0deg, 90deg)"),
+            "advice must show a whole rotation vector with every component \
+             dimensioned; got: {}",
+            d.message
+        );
+    }
+
+    /// `orient_exp` and `transform_exp` state the token, the severity and the
+    /// recommended fix ONCE, via the shared constructor.
+    ///
+    /// Before the amendment these were independently written string literals in
+    /// two different modules, and the only cross-module pin was the CLI tests'
+    /// bare `contains("E_RotationVectorDimension")` — which would have stayed
+    /// green while the two drifted apart in wording or recommended fix.
+    #[test]
+    fn diagnose_shares_one_message_with_the_transform_exp_arm() {
+        let bare = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        ]);
+        let mut twist = std::collections::BTreeMap::new();
+        twist.insert(Value::String("angular".to_string()), bare.clone());
+        twist.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+
+        let here = super::diagnose("orient_exp", &[bare])
+            .expect("a dimensionless rotation vector must produce a diagnostic");
+        let there = crate::geometry::diagnose("transform_exp", &[Value::Map(twist)])
+            .expect("a dimensionless angular half must produce a diagnostic");
+
+        assert_eq!(
+            here.severity, there.severity,
+            "both arms must carry the same severity"
+        );
+        // The shared TAIL — everything from the offending dimension onward — is
+        // byte-identical; only the leading noun phrase differs by builtin.
+        let tail = |m: &str| {
+            m.split_once("; got ")
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_else(|| panic!("message must carry a `; got <dim>` clause; got: {m}"))
+        };
+        assert_eq!(
+            tail(&here.message),
+            tail(&there.message),
+            "both arms must state the same token, dimension clause and fix advice"
         );
     }
 }
