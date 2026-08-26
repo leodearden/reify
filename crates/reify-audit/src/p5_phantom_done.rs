@@ -718,6 +718,13 @@ fn check_pre_done_landing(
     // the commit's OWN delta shows a deletion, which is why this leg depends on
     // `changed_paths_for_claim` — `main..<merge>` can never show it, since a
     // path absent from both trees is not in a two-point diff at all.
+    //
+    // The RENAME half of this rescue is not separable from the seam: git's
+    // default rename detection collapses a rename to the destination path, so
+    // the vanished source never reaches this loop and the entry declaring it is
+    // refused. Both `GitOps` path-listing seams therefore pass `--no-renames`.
+    // If that flag is ever dropped, this leg silently degrades to
+    // deletion-only and the rename case regresses without a compile error.
     let mut still_absent = absent.clone();
     let siblings = task_referencing_commits(ctx, &meta.task_id);
     let mut contributing: Vec<&GitCommit> = Vec::new();

@@ -261,7 +261,10 @@ delta (`<commit>^1..<commit>`).
   (nothing corroboratable — research/ops/escalation tasks must flip freely);
 - every declared entry tracked on `main` (the healthy flip);
 - an entry DELETED or renamed away by the task's own landing commit (only that
-  commit's own delta can show a removal).
+  commit's own delta can show a removal). The rename half depends on the seam
+  running `git diff --name-only --no-renames`: with git's default detection on,
+  a rename lists only the destination path and an entry declaring the
+  pre-rename path would be refused for work that did land.
 
 The emitted summary, verbatim from `check_pre_done_landing`:
 

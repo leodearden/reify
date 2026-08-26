@@ -368,16 +368,23 @@ pub trait GitOps {
     /// explicitly.
     fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit>;
 
-    /// `git diff --name-only <from>..<to>`. Returns the set of paths
-    /// changed between the two refs.
+    /// `git diff --name-only --no-renames <from>..<to>`. Returns the set of
+    /// paths changed between the two refs. Renames are reported as
+    /// delete + add (both sides), for the reason given on
+    /// [`GitOps::changed_paths_in_commit`].
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String>;
 
     /// Returns the paths changed by commit `commit` itself, i.e.
     /// `git diff --name-only <commit>^1..<commit>`. For a standard `--no-ff`
     /// merge commit M (first parent M^1 = pre-merge main tip, result = M) this
     /// is exactly the task's net delta. Deletions are reported like any other
-    /// change. Fail-safe: returns an empty vec on any git error — unreachable
-    /// or recycled SHA, a root commit with no `^1`, or a non-repo.
+    /// change, and renames are reported as delete + add — the diff runs
+    /// `--no-renames`, so BOTH the old and the new path appear rather than
+    /// git's default of collapsing a detected rename to the destination alone.
+    /// That is load-bearing: a corroboration leg must be able to see the old
+    /// path, or a task declaring its pre-rename deliverable is refused for work
+    /// that did land. Fail-safe: returns an empty vec on any git error —
+    /// unreachable or recycled SHA, a root commit with no `^1`, or a non-repo.
     ///
     /// The `--name-only` sibling of [`GitOps::diff_added_lines_in_commit`], and
     /// it exists for the same reason. `diff_changed_paths(main, X)` is
@@ -743,9 +750,17 @@ impl GitOps for RealGitOps {
     }
 
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
+        // `--no-renames`: see `changed_paths_in_commit` below for the full
+        // rationale. This seam has the identical exposure — it is the arm
+        // `changed_paths_for_claim` takes for the un-landed branch-tip case.
         let Some(stdout) = self.run_or_warn(
             "diff --name-only",
-            &["diff", "--name-only", &format!("{}..{}", from, to)],
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                &format!("{}..{}", from, to),
+            ],
         ) else {
             return vec![];
         };
@@ -759,9 +774,28 @@ impl GitOps for RealGitOps {
     fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
         // Goes through run_or_warn (not Command::output directly) so the
         // single-RealGitOps-instance breadcrumb dedup stays intact.
+        //
+        // `--no-renames` is load-bearing, not cosmetic. `diff.renames` has
+        // defaulted to true since git 2.9 and this repo sets no override, so a
+        // detected rename collapses to the DESTINATION path alone and the
+        // source vanishes from the listing. The consumers of this seam only
+        // ever SUBTRACT from the pre-done gate's "absent from main" set, so a
+        // task declaring its pre-rename path would find that path neither
+        // tracked on main (renamed away) nor in its landing commit's delta
+        // (detection hid it) — a refused flip for work that did land. Widening
+        // a rename back to both paths cannot manufacture a refusal, and it
+        // cannot over-accept either: the rename really did touch both.
+        //
+        // Scope boundary: `diff_added_lines_in_commit` deliberately does NOT
+        // take this flag — see its own comment.
         let Some(stdout) = self.run_or_warn(
             "diff --name-only",
-            &["diff", "--name-only", &format!("{}^1..{}", commit, commit)],
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                &format!("{}^1..{}", commit, commit),
+            ],
         ) else {
             return vec![];
         };
@@ -885,6 +919,12 @@ impl GitOps for RealGitOps {
         //   - M^1 = pre-merge main tip
         //   - M   = merged result
         // This yields exactly the task's net delta on `path`.
+        //
+        // Deliberately NOT `--no-renames`, unlike the two `--name-only` path
+        // listing seams above. This is a pathspec-scoped CONTENT diff on P2's
+        // provenance path, not on the pre-done gate path, and `--no-renames`
+        // here would re-render a pure move as a whole-file add — a behaviour
+        // change with no defect behind it. Do not "finish the job".
         let range = format!("{}^1..{}", commit, commit);
         let Some(stdout) = self.run_or_warn(
             "diff (commit)",
