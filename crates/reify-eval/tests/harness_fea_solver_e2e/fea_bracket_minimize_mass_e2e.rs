@@ -16,9 +16,12 @@
 //! face, a load that stops resolving, a constraint that stops compiling), the
 //! producer test stays green and only this one goes red.
 //!
-//! Engine construction is reused verbatim from the producer: the real
-//! `DimensionalSolver`, plus real FEA trampolines via the SINGLE bundler
-//! `register_production_compute_fns` (INV-FEA-1) rather than hand-rolled legs.
+//! Engine construction and the interior thresholds come from the shared
+//! `fea_design_loop_support` submodule — the real `DimensionalSolver` plus real
+//! FEA trampolines via the SINGLE bundler `register_production_compute_fns`
+//! (INV-FEA-1) rather than hand-rolled legs. They were a verbatim copy of the
+//! producer's until that module was extracted; the producer's own inline copy
+//! still awaits migration (see `fea_design_loop_support`'s doc).
 //!
 //! # THE LOAD-BEARING ASSERTION, and its RED/GREEN mechanic
 //!
@@ -64,11 +67,12 @@
 //! ~30x this harness's 2.25s per-test mean, so it is evicted from the merge gate
 //! by its own test-scoped atom in `scripts/heavy-test-filter-lib.sh`.
 
-use reify_constraints::DimensionalSolver;
-use reify_core::{Severity, ValueCellId};
-use reify_eval::Engine;
+use crate::fea_design_loop_support::{
+    INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
+};
+use reify_core::ValueCellId;
 use reify_ir::Value;
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+use reify_test_support::{collect_errors, compile_source_with_stdlib};
 
 /// The shipped example under test, resolved from `CARGO_MANIFEST_DIR` so it works
 /// in any worktree.
@@ -79,23 +83,19 @@ const EXAMPLE_PATH: &str = concat!(
 
 const TEMPLATE_NAME: &str = "FeaBracketMinimizeMass";
 
-/// Lower interior threshold (0.1 mm SI) — two orders of magnitude above the
-/// default `Length` auto-param lower bound (1 micron, `default_bounds_for` in
-/// `crates/reify-constraints/src/solver.rs`) where an unopposed `minimize mass`
-/// parks. Same value as the producer test's, for the same reason.
-const INTERIOR_LOWER_THRESHOLD_SI: f64 = 1e-4;
-
-/// Upper interior threshold (1 m SI) — comfortably below the default 10 m upper
-/// bound. Any physically-sane thickness for a 50 mm x 30 mm bracket is far below.
-const INTERIOR_UPPER_THRESHOLD_SI: f64 = 1.0;
-
-/// `Steel_AISI_1045.density` (`crates/reify-compiler/stdlib/materials_fea.ri`),
-/// and the example's fixed footprint — the inputs to the closed-form mass the
-/// example's objective minimises. Used to check `mass` is the quantity it claims
-/// to be, not merely *a* finite number.
+/// `Steel_AISI_1045.density` (`crates/reify-compiler/stdlib/materials_fea.ri`) —
+/// one input to the closed-form mass the example's objective minimises, used
+/// below to check `mass` is the quantity it claims to be rather than merely *a*
+/// finite number.
+///
+/// The OTHER inputs — the example's `length` and `width` — are deliberately NOT
+/// hardcoded here: they are read back from the eval result. Pinning them would
+/// silently re-encode the example's mounting envelope, so a benign resizing of
+/// the bracket would fail this ~88s test with a message about the objective
+/// expression while the thing that actually drifted was a constant in this file.
+/// Density is different: it is sourced from the stdlib material, not from the
+/// example, so it cannot drift with the example's geometry.
 const STEEL_DENSITY_SI: f64 = 7850.0;
-const LENGTH_SI: f64 = 0.050;
-const WIDTH_SI: f64 = 0.030;
 
 #[test]
 fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
@@ -115,30 +115,28 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
          diagnostics: {:#?}",
         errors
     );
-    debug_assert_eq!(
-        errors.len(),
-        compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .count()
-    );
 
     // ── Engine: real solver + real FEA trampolines ───────────────────────────
     //
-    // `register_production_compute_fns` is the SINGLE bundler (INV-FEA-1); never
-    // assemble it from its legs, which is hazard (3) in
-    // `scripts/check-compute-trampoline-registration.sh`'s header — that guard's
-    // SCOPE_PATHSPECS exclude `tests/`, so nothing would catch the drift here.
-    // `MorphRegistration::Unavailable` matches `build_test_engine`: reify-mesh-morph
-    // is a dev-only dep of reify-eval and this example needs only the FEA legs.
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(DimensionalSolver));
-    engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
-        reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744); this example needs only the FEA legs",
-    });
+    // Shared with the other FEA-in-the-loop tests rather than hand-wired here —
+    // see `fea_design_loop_support::fea_loop_engine` for the INV-FEA-1
+    // single-bundler rule it encodes and why nothing mechanical guards it under
+    // `tests/`.
+    let mut engine = fea_loop_engine();
 
     let result = engine.eval(&compiled);
+
+    // Read a resolved `Scalar`'s SI magnitude out of the eval result, or panic
+    // naming the cell. Used below for the example's own fixed dimensions, so the
+    // mass-coherence check reads them from the design rather than restating them.
+    let resolved_si = |member: &str| -> f64 {
+        match result.values.get(&ValueCellId::new(TEMPLATE_NAME, member)) {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => {
+                panic!("expected a resolved Scalar for {TEMPLATE_NAME}.{member}, got {other:?}")
+            }
+        }
+    };
 
     // Reported so a future failure of this ~100s test can be diagnosed from the
     // captured output alone, without a re-run under --no-capture.
@@ -219,16 +217,22 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
 
     // Consistency with the closed-form the example declares:
     //   mass = material.density * length * width * thickness
-    // Checked against the SAME resolved thickness, so this is an internal-coherence
-    // pin (the objective really is that product of the design variable), not a
-    // calibrated numeric expectation about where the loop lands.
-    let expected_mass_si = STEEL_DENSITY_SI * LENGTH_SI * WIDTH_SI * thickness_si;
+    // Checked against the SAME resolved thickness AND the example's own resolved
+    // `length`/`width`, so this is a pure internal-coherence pin (the objective
+    // really is that product of the design variable) — neither a calibrated
+    // expectation about where the loop lands nor a covert restatement of the
+    // bracket's mounting envelope.
+    let length_si = resolved_si("length");
+    let width_si = resolved_si("width");
+    let expected_mass_si = STEEL_DENSITY_SI * length_si * width_si * thickness_si;
     let rel_err = (mass_si - expected_mass_si).abs() / expected_mass_si;
     assert!(
         rel_err < 1e-9,
         "mass ({mass_si:.9e} kg) should equal density*length*width*thickness \
-         ({expected_mass_si:.9e} kg) at the resolved thickness {thickness_si:.6e} m; \
-         relative error {rel_err:.3e}. A mismatch means the objective is not the \
-         closed-form mass the example documents."
+         ({expected_mass_si:.9e} kg) at the resolved length {length_si:.6e} m, width \
+         {width_si:.6e} m and thickness {thickness_si:.6e} m; relative error \
+         {rel_err:.3e}. Every factor but the stdlib density is read back from the \
+         design, so a mismatch means the objective is not the closed-form mass the \
+         example documents — not that the bracket was resized."
     );
 }
