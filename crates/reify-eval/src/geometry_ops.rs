@@ -11915,6 +11915,112 @@ pub(crate) fn compose_pose_chain(poses: &[reify_ir::Value]) -> reify_ir::Value {
     })
 }
 
+/// Human-readable label for a [`reify_core::DimensionVector`], suitable for a
+/// user-facing diagnostic.
+///
+/// [`reify_core::DimensionVector::canonical_name`] deliberately excludes
+/// `DIMENSIONLESS` from its named-singleton table and returns `None` for it —
+/// which is precisely the case task 6099 is about — so the dimensionless check
+/// comes FIRST and yields the literal `"dimensionless"`. Unnamed composite
+/// dimensions (e.g. `MONEY/MASS`) fall through to the `Display` exponent form.
+fn dimension_label(d: reify_core::DimensionVector) -> String {
+    if d.is_dimensionless() {
+        return "dimensionless".to_string();
+    }
+    match d.canonical_name() {
+        Some(name) => name.to_string(),
+        None => format!("{d}"),
+    }
+}
+
+/// The translation dimension of a pose [`reify_ir::Value::Transform`], if it has one.
+///
+/// Goes through the `translation` field on purpose: `Value::dimension()` called
+/// on a `Transform` itself falls into that method's catch-all arm and reports
+/// `DIMENSIONLESS` for EVERY transform, which would make a genuine LENGTH pose
+/// indistinguishable from the dimensionless one this diagnostic exists to catch.
+/// `Value::Vector(items).dimension()` correctly derives from item 0.
+///
+/// Returns `None` for a non-`Transform`, and for a translation whose three
+/// components do not agree on a single dimension — the latter is a MALFORMED
+/// pose that `decompose_xyz3` rejects before `compose_transforms`' dimension
+/// gate is ever reached, so claiming a clean two-dimension mismatch for it
+/// would be a fabricated diagnosis.
+fn pose_translation_dimension(v: &reify_ir::Value) -> Option<reify_core::DimensionVector> {
+    let reify_ir::Value::Transform { translation, .. } = v else {
+        return None;
+    };
+    let reify_ir::Value::Vector(items) = translation.as_ref() else {
+        return None;
+    };
+    if items.len() != 3 {
+        return None;
+    }
+    let dim = items[0].dimension();
+    if items[1].dimension() != dim || items[2].dimension() != dim {
+        return None;
+    }
+    Some(dim)
+}
+
+/// Classify a failed sub-pose composition into a build-failing [`Diagnostic`],
+/// or `None` when nothing went wrong here.
+///
+/// # Why this exists
+///
+/// `compose_pose_chain` folds through `reify_stdlib::eval_builtin`'s
+/// `transform_compose`, whose `compose_transforms` implementation returns a bare
+/// `Value::Undef` when the two operands' translation dimensions differ — and
+/// `eval_builtin` has no diagnostic channel to report that. The `Undef` then
+/// falls into `decompose_transform_to_arrays`' `None` arm at the placement site,
+/// which is indistinguishable from a genuine identity pose, so no
+/// `ApplyTransform` op is issued and the whole child subtree is SILENTLY placed
+/// at the world origin. A `.ri` source with `at transform3(orient_identity(),
+/// vec3(5.0, 0.0, 0.0))` — a legal but dimensionless pose, since `transform3`
+/// performs no dimension validation — therefore passed `reify check` clean and
+/// exported a wrong STEP file with zero diagnostics (task 6099).
+///
+/// This is a pure function so it can be unit-tested directly: its call site,
+/// `walk_placed_realizations`, takes 16 arguments including a
+/// `&mut BTreeMap<String, Box<dyn GeometryKernel>>`.
+///
+/// # Contract
+///
+/// - `None` when `child_world` is not `Undef` (the composition succeeded).
+/// - Otherwise `Some(Diagnostic::error(..))` naming `sub_name`, `scope`, and —
+///   when both sides yield a translation dimension and those dimensions differ —
+///   both dimension labels plus a remedy hint.
+pub(crate) fn diagnose_pose_composition_failure(
+    parent_world: &reify_ir::Value,
+    sub_pose: &reify_ir::Value,
+    child_world: &reify_ir::Value,
+    scope: &str,
+    sub_name: &str,
+) -> Option<Diagnostic> {
+    if !matches!(child_world, reify_ir::Value::Undef) {
+        return None;
+    }
+
+    let parent_dim = pose_translation_dimension(parent_world);
+    let sub_dim = pose_translation_dimension(sub_pose);
+
+    if let (Some(pd), Some(sd)) = (parent_dim, sub_dim)
+        && pd != sd
+    {
+        return Some(Diagnostic::error(format!(
+            "sub `{sub_name}` in structure `{scope}`: its `at` pose has a \
+             {} translation, but the enclosing world pose is {} — the two \
+             cannot be composed, so `{sub_name}` would be placed at the origin. \
+             Give the pose length-dimensioned components, e.g. \
+             `vec3(5.0mm, 0.0mm, 0.0mm)`.",
+            dimension_label(sd),
+            dimension_label(pd),
+        )));
+    }
+
+    None
+}
+
 /// Indices into `module.templates` of the *root* templates for surfacing: those
 /// whose `name` is NOT the `structure_name` of any NON-collection sub anywhere
 /// in the module (T5 step-4).
