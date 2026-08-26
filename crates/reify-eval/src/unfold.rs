@@ -1234,6 +1234,124 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
+/// Outcome of probing an instance-scope cell for `@optimized` reuse
+/// ([`resolve_optimized_instance_cell`]).
+enum OptimizedInstanceResolution {
+    /// Not an `@optimized` `UserFunctionCall` — evaluate normally.
+    NotOptimized,
+    /// The template-scope cell's dispatched value, safe to commit verbatim at
+    /// instance scope because every input this call reads compares equal
+    /// between the two scopes.
+    Reuse(Value),
+    /// An `@optimized` call whose template-scope value CANNOT be proven to
+    /// apply to this instance. The caller falls back to body-inlining (today's
+    /// behaviour) and reports `reason`.
+    // The two fields are read by the unreusable-case diagnostic wired at the
+    // phase-2 commit site; the allow covers the interval before that lands.
+    #[allow(dead_code)]
+    Unreusable { target: String, reason: String },
+}
+
+/// Decide whether an instance-scope cell may carry the template-scope cell's
+/// already-dispatched `@optimized` value (task #6662).
+///
+/// WHY REUSE RATHER THAN RE-DISPATCH. `@optimized` → ComputeNode lowering
+/// exists only at template scope (`engine_eval.rs::evaluate_params_and_lets_unified`
+/// and `::evaluate_let_bindings`, both keyed on `for template in
+/// &module.templates`). Instance cells are elaborated here, through
+/// `cell_eval_ctx`, which carries no compute dispatch — so
+/// `reify_expr::try_compute_dispatch` returns `None` and the `.ri` function
+/// BODY runs. Every solver stdlib body is a bare sentinel constructor
+/// (`{ ElasticResult() }`), so an instantiated `sub` silently gets an empty
+/// shell where the template got the real solved value.
+///
+/// Re-dispatching here through the `ComputeDispatch` trait hook would be
+/// WORSE, not better: `OptimizedComputeDispatcher::dispatch` calls
+/// `f(args, &[], &Value::Undef, None, &cancellation)` — EMPTY realization
+/// inputs, `Undef` options, no warm state — whereas the template-scope
+/// lowering builds `realization_read_handles` via
+/// `build_compute_realization_inputs`, runs `insert_shell_extract_upstream`,
+/// and threads a persistent cache key plus warm state through
+/// `run_compute_dispatch`. That would trade a visibly-empty sentinel for an
+/// invisibly-wrong number on every realization-bearing / shell-route target,
+/// and would double every FEA solve. Reusing the template-scope value is
+/// bit-exact with the full lowering at zero extra solve cost.
+///
+/// SOUNDNESS. The arg expressions are literally the same `CompiledExpr`s at
+/// both scopes (compiled once, in the child template's scope), so the call's
+/// result is a pure function of the values its reads resolve to. Comparing the
+/// DIRECT read set is therefore sufficient — transitive dependencies are
+/// already folded into the direct reads' values. The comparison is conservative
+/// in the right direction: present-in-one-map vs absent-in-the-other compares
+/// unequal, so the helper declines rather than guesses.
+///
+/// SHAPE-EXACTNESS is inherited from template scope, not re-invented: the probe
+/// is the identical `find_matching_compiled_function(..).optimized_target` used
+/// at `engine_eval.rs`'s two lowering sites and wrapped as
+/// `is_optimized_userfn_cell`. So a cell that merely WRAPS an `@optimized` call
+/// (`let m = limit - solve(..).x`) is left alone at BOTH scopes, and a future
+/// change to overload resolution moves both together.
+///
+/// `instance_values` is this instance's map (`child_values` in phase 2, the
+/// running `overlay` in phase 1.5); `global_values` is the global map holding
+/// the template-scope pass's results. Both are keyed template-scoped, so the
+/// same `ValueCellId` addresses the two scopes' copies of one cell.
+fn resolve_optimized_instance_cell(
+    expr: &reify_ir::CompiledExpr,
+    functions: &[CompiledFunction],
+    child_template: &TopologyTemplate,
+    member: &str,
+    instance_values: &ValueMap,
+    global_values: &ValueMap,
+) -> OptimizedInstanceResolution {
+    let reify_ir::CompiledExprKind::UserFunctionCall {
+        function_name,
+        args,
+    } = &expr.kind
+    else {
+        return OptimizedInstanceResolution::NotOptimized;
+    };
+    let Some(target) = reify_expr::find_matching_compiled_function(functions, function_name, args)
+        .and_then(|f| f.optimized_target.clone())
+    else {
+        return OptimizedInstanceResolution::NotOptimized;
+    };
+
+    // Input equality over the DIRECT read set. `extract_dependency_trace` is
+    // the same function that builds phase 2's topological-sort edges, so the
+    // reuse gate and the evaluation order can never disagree about what a cell
+    // depends on.
+    for read in extract_dependency_trace(expr).reads {
+        let instance_val = instance_values.get(&read);
+        let global_val = global_values.get(&read);
+        if instance_val != global_val {
+            return OptimizedInstanceResolution::Unreusable {
+                target,
+                reason: format!(
+                    "input {}.{} differs from the template's ({:?} vs {:?})",
+                    read.entity, read.member, instance_val, global_val
+                ),
+            };
+        }
+    }
+
+    // The template-scope output cell. Absent when the owning structure never
+    // got a template-scope pass at all — e.g. a prelude/stdlib structure, which
+    // is not in `module.templates`.
+    let template_cell = ValueCellId::new(&child_template.name, member);
+    match global_values.get(&template_cell) {
+        Some(value) => OptimizedInstanceResolution::Reuse(value.clone()),
+        None => OptimizedInstanceResolution::Unreusable {
+            target,
+            reason: format!(
+                "template-scope cell {}.{} was never evaluated (structure not in \
+                 module.templates — e.g. a prelude/stdlib structure)",
+                child_template.name, member
+            ),
+        },
+    }
+}
+
 /// Phase 1: Evaluate and store only the param cells for a child instance.
 ///
 /// Returns the template-scoped child_values map (params only) for use in phase 2.
@@ -1555,15 +1673,34 @@ fn elaborate_child_lets_only<'t>(
         };
         let member = &child_cell_id.member;
 
-        let val = eval_child_expr(
-            &child_values,
+        // task #6662: an `@optimized` cell's value comes from the compute
+        // dispatch registry, which only template scope has. When this
+        // instance's inputs are value-identical to the template's, reuse the
+        // template's already-dispatched value instead of body-inlining the
+        // `.ri` function's sentinel. This is the AUTHORITATIVE instance-scope
+        // let commit, so it is the site that decides the committed value.
+        let val = match resolve_optimized_instance_cell(
             expr,
             functions,
-            meta_map,
-            &snapshot.values,
-            &runtime_sink,
-            &containment,
-        );
+            child_template,
+            member,
+            &child_values,
+            values,
+        ) {
+            OptimizedInstanceResolution::Reuse(v) => v,
+            // Unreusable falls through to body-inlining, unchanged from
+            // pre-#6662 behaviour; the diagnostic for it lands separately.
+            OptimizedInstanceResolution::NotOptimized
+            | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
+                &child_values,
+                expr,
+                functions,
+                meta_map,
+                &snapshot.values,
+                &runtime_sink,
+                &containment,
+            ),
+        };
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
