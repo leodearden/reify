@@ -879,3 +879,98 @@ fn e2e_optimized_non_valueref_arg_yields_empty_value_inputs() {
         data.value_inputs
     );
 }
+
+// ── task #6662: @optimized dispatch at sub-INSTANCE scope ────────────────────
+//
+// Defect: `@optimized` → ComputeNode lowering happens ONLY at template scope
+// (`engine_eval.rs::evaluate_params_and_lets_unified` /
+// `evaluate_let_bindings`, both keyed on `for template in &module.templates`).
+// Instance-scope cells — the ones a `sub` produces, keyed
+// `ValueCellId::new("Parent.sub", member)` — are elaborated in
+// `unfold.rs` through `cell_eval_ctx`, which carries no compute dispatch, so
+// `reify_expr::try_compute_dispatch` returns None and the `.ri` function BODY
+// runs instead. For every solver stdlib target the body is a bare sentinel
+// constructor, so an instantiated sub silently gets an empty shell where the
+// template got the real solved value.
+//
+// The trampoline/body discriminator below is the same trick the zero-arg test
+// above uses: the trampoline returns 777, the `.ri` body returns 42, so the
+// observed value names which path ran.
+
+/// Trampoline returning a fixed sentinel (777) that can never be confused with
+/// the `.ri` body literal (42) — the instance-vs-template discriminator.
+fn const777_fn(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: Value::Int(777),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// RED (#6662 S1): an `@optimized` cell reached through a `sub` instantiation
+/// must carry the template's DISPATCHED value, not the body-inlined fallback.
+///
+/// `Outer` instantiates `Inner` with no constructor overrides, so the instance
+/// cell's inputs are value-identical to the template's and the two scopes must
+/// agree. The template-scope assertion is kept deliberately: it is already
+/// green today, and pinning it keeps the test honest about which scope changed.
+#[test]
+fn instance_scope_optimized_cell_equals_template_dispatched_value() {
+    let source = r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure Inner {
+            let result = zero_arg_777()
+        }
+
+        structure Outer {
+            sub inner = Inner()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Template scope — already green; dispatch fires in `module.templates`.
+    let template_cell = ValueCellId::new("Inner", "result");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        Some(&Value::Int(777)),
+        "template-scope Inner.result must be the dispatched 777, got {:?}",
+        eval_result.values.get(&template_cell)
+    );
+
+    // (b) Instance scope — the defect. Int(42) here means the `.ri` function
+    //     BODY was inlined instead of the registered trampoline's result.
+    let instance_cell = ValueCellId::new("Outer.inner", "result");
+    let instance_val = eval_result.values.get(&instance_cell);
+    assert_ne!(
+        instance_val,
+        Some(&Value::Int(42)),
+        "Outer.inner.result is the body-inline sentinel Int(42): @optimized \
+         dispatch did not reach instance scope (unfold.rs elaborates instance \
+         cells without compute dispatch, so try_compute_dispatch returned None \
+         and the .ri body ran)"
+    );
+    assert_eq!(
+        instance_val,
+        Some(&Value::Int(777)),
+        "instance-scope Outer.inner.result must equal the template's dispatched \
+         value Int(777) (no ctor overrides ⇒ inputs are value-identical), got {:?}",
+        instance_val
+    );
+}
