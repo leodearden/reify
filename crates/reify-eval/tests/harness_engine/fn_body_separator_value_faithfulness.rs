@@ -190,6 +190,18 @@ fn values_agree(a: &Value, b: &Value) -> bool {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::String(x), Value::String(y)) => x == y,
+        // `Undef` is a VALUE here, not an error channel, so two of them agree. Without this
+        // arm the `_ => false` catch-all below swallows the pairing and the caller reports an
+        // INV-SF-7 violation — "omitting ';' changed the value" — for two values that are
+        // identical. That would be a false positive on the first run of a path that, as of
+        // #5392, no variant reaches yet (see the `refused` tally in
+        // `adjacent_token_variation_cannot_silently_change_a_value`), which is precisely when
+        // an unsound fallback is hardest to recognise as a test bug rather than a real
+        // regression. This does NOT weaken the corpus: `separated_twins_are_all_clean`
+        // independently requires every intended twin to evaluate to a non-`Undef` value, so a
+        // twin that silently degraded to undef is still caught — by the test whose job that
+        // is.
+        (Value::Undef, Value::Undef) => true,
         // Any other pairing (including a discriminant mismatch such as Real vs Undef) is a
         // disagreement; the failure message prints both, so a new variant showing up here is
         // self-describing.
