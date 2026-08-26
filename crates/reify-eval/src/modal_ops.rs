@@ -2859,8 +2859,16 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 /// (no half-populated `BeamMesh` sentinel needed for the P2 path). The DOF indices
 /// line up with the solve's mesh because both index the same node set.
 /// `length`/`width`/`height` still parameterize the face-coordinate thresholds.
-/// Duplicate DOFs (a corner shared by two named faces) are harmless —
-/// `solve_modal_core` records constraints idempotently.
+///
+/// The returned vector is **sorted by `dof` and deduplicated**. A corner node
+/// shared by two named faces is visited once per face, so the raw union repeats
+/// that node's DOFs. That is harmless for the modal solve itself
+/// (`solve_modal_core` records constraints idempotently via `is_constrained`),
+/// but the same shape debug-PANICS in `apply_dirichlet_row_elimination`
+/// (`reify-solver-elastic/src/boundary/dirichlet.rs:175-188`, "duplicate
+/// DirichletBc dof"), so the uniqueness is part of this function's contract
+/// rather than a downstream consumer's problem. Every BC here is homogeneous
+/// (`value: 0.0`), so deduplicating by `dof` alone loses nothing.
 fn build_dirichlet_bcs(
     options: &Value,
     nodes: &[[f64; 3]],
@@ -2880,11 +2888,16 @@ fn build_dirichlet_bcs(
         .filter(|(_, t)| t == "x_min" || t == "x_max")
         .all(|(kind, _)| *kind == SupportKind::Pinned);
     if names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned {
-        return simply_supported_pin_pin_bcs(nodes, length, height);
+        return normalize_bcs(simply_supported_pin_pin_bcs(nodes, length, height));
     }
 
     // Per-face realization: every named face is realized independently, so a
     // third support ADDS a face rather than reinterpreting the whole model.
+    // (The pre-6663 discriminator did the opposite: a set like
+    // `[x_min, x_max, y_min]` silently DROPPED y_min and flipped the whole model
+    // to pin-pin, with no diagnostic. A target outside the six recognized face
+    // names still selects nothing — that gap is unchanged here — but it can no
+    // longer cause the rest of the model to be reinterpreted.)
     let eps = 1e-9_f64;
     let mut bcs = Vec::new();
     for (kind, target) in &targets {
@@ -2913,6 +2926,17 @@ fn build_dirichlet_bcs(
                 }
                 // Simple support: the transverse (Z) DOF only, so the bending
                 // rotation at the support stays free.
+                //
+                // NOTE the deliberate ASYMMETRY with the pin-pin branch above,
+                // which adds three minimal neutral-axis anchors on top of its
+                // Z pins: it needs them precisely because NEITHER end face is
+                // clamped there, so the X translation, the Y translation and the
+                // in-plane Z-rotation would survive and leave `K_free` singular.
+                // On this path at least one face is Fixed whenever a Pinned face
+                // could leak a rigid-body mode — e.g. the propped cantilever
+                // `[Fixed(x_min), Pinned(x_max)]`, whose x_min full-face clamp
+                // already removes all six. So the absence of anchors here is a
+                // consequence of the per-face rule, not an oversight.
                 SupportKind::Pinned => bcs.push(DirichletBc {
                     dof: 3 * n + 2,
                     value: 0.0,
@@ -2920,6 +2944,19 @@ fn build_dirichlet_bcs(
             }
         }
     }
+    normalize_bcs(bcs)
+}
+
+/// Sort a homogeneous Dirichlet set by `dof` and drop repeats.
+///
+/// Required by `apply_dirichlet_row_elimination`'s debug assertion
+/// (`reify-solver-elastic/src/boundary/dirichlet.rs:175-188`), which panics on a
+/// duplicate `dof`, even though `solve_modal_core`'s own `is_constrained` map is
+/// idempotent. Every BC [`build_dirichlet_bcs`] emits carries `value: 0.0`, so
+/// collapsing by `dof` alone can never discard a distinct prescribed value.
+fn normalize_bcs(mut bcs: Vec<DirichletBc>) -> Vec<DirichletBc> {
+    bcs.sort_by_key(|b| b.dof);
+    bcs.dedup_by_key(|b| b.dof);
     bcs
 }
 
