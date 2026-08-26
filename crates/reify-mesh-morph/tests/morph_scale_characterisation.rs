@@ -62,6 +62,11 @@
 #[path = "calibration/fixtures.rs"]
 mod fixtures;
 
+use std::time::{Duration, Instant};
+
+use reify_ir::VolumeMesh;
+use reify_mesh_morph::{ElasticityFailure, MorphOptions, elasticity_morph};
+
 // ── Shared geometry ──────────────────────────────────────────────────────────
 //
 // One bracket, swept only in `fillet_radius`. Connectivity is invariant under
@@ -236,6 +241,98 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
     );
 }
 
+// ── Morph arm ────────────────────────────────────────────────────────────────
+
+/// One timed `elasticity_morph` call, reported as data rather than as a
+/// pass/fail.
+///
+/// `result` is carried unconverted on purpose. At the 100K scale the serial
+/// Jacobi-CG (`max_iter` 1000, tol 1e-8, ~54K DOF) may legitimately return
+/// [`ElasticityFailure::SolverNotConverged`], and the time taken to reach
+/// `max_iter` is itself characterisation data — arguably the headline
+/// finding, since a non-converging serial CG makes the morph arm *slower*
+/// than a remesh rather than faster. Unwrapping here would destroy the run
+/// that produced the most interesting number in it.
+#[derive(Debug)]
+struct MorphMeasurement {
+    /// The `bracket` resolution this measurement was taken at.
+    n: usize,
+    /// P1 tet count of the source mesh (equal to the morphed mesh's, since
+    /// the morph is a node-position update).
+    tets: usize,
+    /// Node count of the source mesh.
+    nodes: usize,
+    /// Displacement degrees of freedom: `3 * nodes`.
+    dof: usize,
+    /// Wall-clock of the `elasticity_morph` call ALONE — see [`morph_once`]
+    /// for what is deliberately excluded.
+    elapsed: Duration,
+    /// The morph's own result, uninterpreted.
+    result: Result<VolumeMesh, ElasticityFailure>,
+}
+
+/// Time a single connectivity-preserving fillet perturbation
+/// (`FILLET_BASE` -> `FILLET_TARGET`) on `bracket` at resolution `n`.
+///
+/// ## What the timed region covers
+///
+/// Only the `elasticity_morph` call. Both fixture constructions and the
+/// prescribed-position build stay outside it: they are procedural mesh
+/// generation, not morph work, and at n=18 they are far from negligible —
+/// folding them in would inflate the morph arm against the gmsh arm and
+/// bias the very ratio this harness exists to report.
+///
+/// ## Why not `sweep::run_sweep`
+///
+/// `tests/calibration/sweep.rs::run_sweep` drives the identical
+/// correspondence, but wraps the morph in three additional `quality_check`
+/// passes and `unwrap`s the result. Both are disqualifying here: the first
+/// contaminates the wall-clock, the second turns a `SolverNotConverged` at
+/// 100K into a panic that would lose the whole run. The correspondence
+/// *pattern* is reused; the function deliberately is not.
+///
+/// The identity surface correspondence is legal because `bracket`'s
+/// connectivity is invariant under `fillet_radius` — only the inner
+/// fillet-arc vertices move — so the source's surface-index list indexes
+/// the target's vertex table as well.
+fn morph_once(n: usize) -> MorphMeasurement {
+    let (source, surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, n);
+    let (target, _target_surface_indices) =
+        fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_TARGET, n);
+
+    let prescribed_positions: Vec<(u32, [f64; 3])> = surface_indices
+        .iter()
+        .map(|&i| {
+            let pos = target.vertex_f64(i).unwrap_or_else(|| {
+                panic!(
+                    "morph_once(n={n}): surface index {i} is out of range for the \
+                     target mesh ({} vertices) — the two fixture evaluations \
+                     disagree on connectivity, which would invalidate the entire \
+                     comparison rather than merely perturb it",
+                    target.vertices.len() / 3
+                )
+            });
+            (i, pos)
+        })
+        .collect();
+
+    let tets = source.tet_indices().map_or(0, |t| t.len() / 4);
+    let nodes = source.vertices.len() / 3;
+
+    let started = Instant::now();
+    let result = elasticity_morph(&source, &prescribed_positions, &MorphOptions::default());
+    let elapsed = started.elapsed();
+
+    MorphMeasurement {
+        n,
+        tets,
+        nodes,
+        dof: 3 * nodes,
+        elapsed,
+        result,
+    }
+}
+
 /// The timed morph helper must run a real, connectivity-preserving morph and
 /// must actually read the clock.
 ///
@@ -285,7 +382,10 @@ fn morph_once_times_a_connectivity_preserving_fillet_perturbation() {
     // driver prints and what any downstream ratio is normalised by, so a
     // mislabelled scale would silently corrupt every conclusion drawn from
     // the table.
-    assert_eq!(measurement.n, 4, "the measurement must report its own scale");
+    assert_eq!(
+        measurement.n, 4,
+        "the measurement must report its own scale"
+    );
     assert_eq!(
         measurement.tets,
         source_tet_indices / 4,
