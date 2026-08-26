@@ -434,7 +434,7 @@ posture verbatim rather than claiming the component.
 |---|---|---|---|---|
 | `solver-driver-parity.md` (P1) | **consumes** | `ResolutionProfile`; warm/edit solve-entry convergence (κ); the one-sided-underdetermined coded diagnostic (ε) | P1 owns the drivers; **this PRD owns every renderer** | committed; edges wired at decompose |
 | `constraint-solver-completion.md` | **consumes** | `ObjectiveProvenance`; its §10 names "a future surface PRD" as the declared consumer | **this PRD** discharges it | shipped producer |
-| `gui-on-demand-measurement.md` | **produces for** | its measured verdicts route through the same `build_constraints` payload and break on the same casing defect; it also ships sibling debug-MCP tools | **this PRD owns the casing fix + the verdict wire contract**; it owns measurement semantics | active — edge to be wired |
+| `gui-on-demand-measurement.md` | **produces for** | its measured verdicts route through the same `build_constraints` payload and break on the same casing defect; it also ships sibling debug-MCP tools; and its β independently widens `ConstraintCheckEntry` alongside this PRD's ε | **this PRD owns the casing fix + the verdict wire contract**; it owns measurement semantics | active — **edge wired**: its β #6741 depends on β #6723. See §8.1 |
 | #4388 geometric-relations θ | **consumes** | DOF ledger + conflict sets | **split (D3)**: #4388 keeps ledger + `reify explain`; this PRD takes the GUI badge; ν rewrites #4388 | pending, degenerate branch |
 | `ai-native-editing.md` / #5097 | **shares files** | `tool_defs()`, `dispatch_tool`, `debug-mcp-contract.md`, the parity tests | co-owned hub files; the PRD serialises under file locks by design | pending — declare, don't contest |
 | `debug-server-gating-boundary.md` (#6351/#6352) | **adjacent** | relocation of `tool_defs()` into an ungated `debug_protocol.rs`; post-relocation clause C2 forbids inline `#[test]` in `debug_server.rs` | that PRD | pending; λ states which layout it targets (§13 Q2) |
@@ -446,6 +446,30 @@ posture verbatim rather than claiming the component.
 | `constrained-2d-sketch.md` #5509 | **adjacent** | a **second** DOF ledger (sketch), distinct from #4388's relate ledger | that PRD | pending — §11 names which ledger the badge renders |
 | P3 multimodality | **consumes** | found-basins verdicts — a named slot only, with a live task cite (§11) | P3 | chartered |
 | #5975 "no optimum exists" | **consumes** | open-interval / infimum-not-attained diagnostic | #5975 | pending — render when it lands |
+
+### §8.1 — The `gui-on-demand-measurement.md` seam, resolved
+
+That PRD decomposed on 2026-08-26 (tasks #6740–#6748). Two concrete couplings, resolved
+here rather than left to discovery at dispatch:
+
+1. **The verdict wire contract — a real dependency, edge wired.** Its β (#6741) delivers
+   "measured verdicts … riding the existing `build_gui_state`-shaped constraint payload",
+   and its signal is that "the constraint-panel state show **measured** verdicts matching
+   `reify check`". That signal is unachievable while every badge renders `?`, so **#6741
+   now depends on β #6723**. Its own A8 amendment is devoted to `build_constraints`' two
+   construction paths — the same function — but did not notice the casing defect, which is
+   precisely why the edge is worth stating rather than assuming.
+
+2. **`ConstraintCheckEntry` — a collision, deliberately NOT an edge.** Its A5 amendment
+   (which it calls "the largest unplanned-work risk in the batch") needs a structured
+   measured-value channel on `ConstraintCheckEntry`; this PRD's ε (#6722) adds `margin`
+   to the same struct. Neither needs the other's field, so **no dependency is wired in
+   either direction** — inventing one would be a spurious edge, and the orchestrator's
+   file locks already serialise the edits. The risk is not ordering, it is *divergence*:
+   two independent per-constraint value channels on one struct. A coordination note is
+   recorded on #6722's `details` asking whichever lands second to extend the first's shape.
+   Both are bound by the same constraint: a sibling field on `ConstraintCheckEntry`, never
+   a payload on `Satisfaction`, whose `content_hash` feeds the incremental cache key.
 
 **No new contested-ownership pair is introduced.** The three known pairs
 (`persistent-naming-v2 ↔ multi-kernel`, `imported-field-source ↔ multi-kernel`,
