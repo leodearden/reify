@@ -899,8 +899,13 @@ fn revolve_let_bound_profile_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let profile = cylinder(r, h)
-    let result = revolve(profile, 0, 0, 0, 0, 0, 1, 90)
+    let result = revolve(profile, 0mm, 0mm, 0mm, 0, 0, 1, 90)
 }"#;
+    // C6 MIGRATION (task 5750): only the axis ORIGIN `ox`/`oy`/`oz` is
+    // dimensioned. The `0, 0, 1` that follows is the axis DIRECTION — a
+    // dimensionless unit vector — and `90` is an ANGLE owned by
+    // docs/prds/v0_6/angle-units-surface-convergence.md. Dimensioning either
+    // would assert a gate this leaf deliberately does not add.
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
     let realization = realization_named(template, &["profile", "result"], "result");
@@ -919,8 +924,15 @@ fn revolve_full_let_bound_profile_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let profile = cylinder(r, h)
-    let result = revolve_full(profile, 0, 0, 0, 0, 0, 1)
+    let result = revolve_full(profile, 0mm, 0mm, 0mm, 0, 0, 1)
 }"#;
+    // C6 MIGRATION (task 5750), same origin-vs-direction split as
+    // `revolve_let_bound_profile_ops` above. NOT in this leaf's plan-time
+    // measured migration list — surfaced by re-running the full
+    // `cargo test -p reify-compiler` suite after landing the sweep slots,
+    // which is why step-7 mandates that rerun rather than trusting the list.
+    // `revolve_full` takes no angle argument at all: the compiler injects a
+    // literal 2π at lowering.
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
     let realization = realization_named(template, &["profile", "result"], "result");

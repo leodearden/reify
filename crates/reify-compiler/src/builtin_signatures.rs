@@ -40,6 +40,17 @@
 //!   only — its normal is excluded below)
 //! - PROFILE producers → LENGTH ("Length") (task 5750): `rectangle`
 //!   `width`/`height`; `circle` `radius`; `ellipse` `semi_major`/`semi_minor`
+//! - MODIFY producers → LENGTH ("Length") (task 5750): `fillet` (arity 2)
+//!   arg1 `radius` and (arity 3) arg2 `radius`; `chamfer` (arity 2) arg1
+//!   `distance` and (arity 3) arg2 `distance` — both GENUINELY OVERLOADED, so
+//!   both are arity-keyed; `chamfer_asymmetric` arg2 `d1` + arg3 `d2`;
+//!   `shell`/`shell_open` arg1 `thickness`; `thicken` arg1 `offset`;
+//!   `fillet_all` arg1 `radius`; `zone_slab` arg1 `width`;
+//!   `offset_solid`/`offset_curve` arg1 `distance`
+//! - SWEEP producers → LENGTH ("Length") (task 5750): `extrude`/
+//!   `extrude_symmetric` arg1 `distance`; `pipe` arg1 `radius`;
+//!   `revolve`/`revolve_full` args1-3 axis origin `ox`/`oy`/`oz` (the ORIGIN
+//!   only — see below)
 //!
 //! UNCHECKED (would false-positive on valid call sites or is out-of-scope):
 //! - arg0 (geometry handle) — ε=4358's territory
@@ -73,6 +84,16 @@
 //!   route, but its positions are arity-OPEN and its compile-layer arg names
 //!   are the inert `c0`…`cN` that `geometry.rs` synthesises, so there is no
 //!   index-keyed `CheckableArg` to write for it at all.
+//! - `revolve`/`revolve_full` args4-6 `ax`/`ay`/`az` and `revolve` arg7
+//!   `angle` — the second straddle case (task 5750). The axis DIRECTION is a
+//!   dimensionless unit vector, and every ANGLE belongs to
+//!   `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
+//!   decree, so gating one here would be a scope violation.
+//! - `draft`'s `angle`, and `offset_curve`'s 3rd argument — the latter is a
+//!   reference Surface handle OR a direction vec3, disambiguated at eval on
+//!   the `Value` variant; `arg_acceptance.rs` names it explicitly among the
+//!   deliberately-not-gated set.
+//! - `shell`'s args2.. `face_{i}` — face INDICES, not lengths.
 //!
 //! # Arity awareness (task 5652)
 //!
@@ -514,6 +535,108 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             length_arg(2, "pz"),
         ],
 
+        // ── Modify producers (task 5750) ─────────────────────────────────────
+        //
+        // The compile-layer half of the task-5744 `modify` row of
+        // `crates/reify-eval/src/arg_acceptance.rs`'s family table. Arg names
+        // are copied from `geometry_modify.rs`'s `compile_modify_op` arms and
+        // its shared `compile_modify_2arg` helper.
+        //
+        // This is where the table's first genuinely OVERLOADED names appear.
+        // `fillet` and `chamfer` each accept a 2-arg all-edges form and a 3-arg
+        // curated-edges form, and the MAGNITUDE MOVES between them:
+        //   fillet(target, radius)          — radius at index 1
+        //   fillet(target, edges, radius)   — radius at index 2, index 1 is the
+        //                                     edge SELECTOR
+        // An arity-agnostic `radius@1` slot would therefore demand a Length of
+        // a Selector on correct code — the same class of false positive the
+        // `linear_pattern_2d` arm's guard exists to prevent, and the reason
+        // these two are the only modify arms that carry an `arg_count` guard.
+        // Every OTHER name below holds its magnitude at a STABLE index across
+        // every arity it accepts, so per the rule stated on this function they
+        // stay unguarded.
+        //
+        // NOT slotted here, each for a stated reason:
+        // - `draft`'s `angle` — `docs/prds/v0_6/angle-units-surface-convergence.md`
+        //   owns every ANGLE by binding seam decree; gating one here would be a
+        //   scope violation, not an improvement.
+        // - `offset_curve`'s 3rd argument (`"third"`) — a reference Surface
+        //   handle OR a direction vec3, disambiguated at eval on the Value
+        //   variant. A direction's components are legitimately bare, and
+        //   `arg_acceptance.rs` names this position explicitly among the
+        //   deliberately-not-gated set.
+        // - `shell`'s args 2.. (`face_{i}`) — face INDICES, not lengths.
+        // - `chamfer` / `fillet` arg1 in the CURATED form — the edge selector.
+
+        // fillet(target, radius) / fillet(target, edges, radius)
+        "fillet" if arg_count == 2 => vec![length_arg(1, "radius")],
+        "fillet" if arg_count == 3 => vec![length_arg(2, "radius")],
+
+        // chamfer(target, distance) / chamfer(target, edges, distance)
+        "chamfer" if arg_count == 2 => vec![length_arg(1, "distance")],
+        "chamfer" if arg_count == 3 => vec![length_arg(2, "distance")],
+
+        // chamfer_asymmetric(target, edges, d1, d2)
+        //   Single-form (`check_arg_count_exact(4)`). BOTH setbacks are
+        //   slotted: the eval layer reads the pair in one grouped call so an
+        //   author fixes the line in a single edit, and reporting only `d1`
+        //   here would degrade that to two edit-build cycles.
+        "chamfer_asymmetric" => vec![length_arg(2, "d1"), length_arg(3, "d2")],
+
+        // The single-magnitude modify family — magnitude at index 1, stable.
+        //   shell(target, thickness, face_0, …) — `check_arg_count_at_least(2)`,
+        //     so args 2.. are face indices and index 1 is `thickness` at EVERY
+        //     accepted arity. Guarding it on one arity would silently hollow
+        //     out the curated forms.
+        //   offset_curve(curve, distance) / (curve, distance, third) — overloaded
+        //     in ARITY but not in LAYOUT: `distance` stays at index 1 in both
+        //     forms, which is precisely the case the guard rule says NOT to
+        //     guard.
+        //   The rest are single-form; a guard would deny them nothing and buy
+        //     nothing.
+        "shell" | "shell_open" => vec![length_arg(1, "thickness")],
+        "thicken" => vec![length_arg(1, "offset")],
+        "fillet_all" => vec![length_arg(1, "radius")],
+        "zone_slab" => vec![length_arg(1, "width")],
+        "offset_solid" | "offset_curve" => vec![length_arg(1, "distance")],
+
+        // ── Sweep producers (task 5750) ──────────────────────────────────────
+        //
+        // The task-5744 `sweep` row, joined by the axis ORIGIN of `revolve` /
+        // `revolve_full` — a task-5623 position that contract C6 forces into
+        // this leaf through its named fixtures. Arg names from `geometry.rs`'s
+        // Sweep arms.
+        //
+        // extrude(profile, distance) / extrude_symmetric(profile, distance)
+        // pipe(path, radius)
+        //   All exact-2 single-form. Index 0 is the profile / path — a geometry
+        //   handle, permanently unchecked (ε=4358's territory).
+        "extrude" | "extrude_symmetric" => vec![length_arg(1, "distance")],
+        "pipe" => vec![length_arg(1, "radius")],
+
+        // revolve(profile, ox, oy, oz, ax, ay, az, angle)
+        // revolve_full(profile, ox, oy, oz, ax, ay, az)
+        //   The second STRADDLE case, after `half_space` — three kinds of
+        //   argument in one list, and only one of them gated:
+        //   args1-3: the axis ORIGIN `ox`/`oy`/`oz` → LENGTH ("Length"). A
+        //            point in space; a bare component is read as SI metres.
+        //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
+        //            vector, legitimately bare in correct `.ri`. UNSLOTTED, for
+        //            the same reason `half_space`'s normal is.
+        //   arg7:    `angle` (present only on `revolve`; `revolve_full` injects
+        //            a literal 2π at lowering) — owned by
+        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
+        //            binding seam decree. Gating it here would be a scope
+        //            violation AND would make the two layers disagree in the
+        //            direction that PRD has to close together.
+        //   Both are single-form, so both stay arity-agnostic. Pinned by
+        //   `revolve_slots_the_origin_but_never_the_axis_or_the_angle`.
+        "revolve" | "revolve_full" => vec![
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+        ],
+
         // ── 2-D profile producers (task 5750) ────────────────────────────────
         //
         // The task-5743 `profile` row of the same family table. Same rules as
@@ -789,6 +912,15 @@ mod tests {
     ///   `topology_selector_result_type(name).expect(…)` has no entry for them
     ///   — turning the most common call in the language into a panic. The
     ///   exemption list is the correct lever; the slice is not.
+    ///
+    /// - The task-5750 MODIFY and SWEEP producers — `fillet`, `fillet_all`,
+    ///   `chamfer`, `chamfer_asymmetric`, `shell`, `shell_open`, `thicken`,
+    ///   `zone_slab`, `offset_solid`, `offset_curve`, `extrude`,
+    ///   `extrude_symmetric`, `pipe`, `revolve`, `revolve_full`. Same story as
+    ///   the primitives above: all fifteen are registered in
+    ///   `GEOMETRY_FUNCTION_NAMES`, none is a topology selector, and none may
+    ///   be moved into `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset
+    ///   assertion.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
@@ -808,6 +940,23 @@ mod tests {
         "rectangle",
         "circle",
         "ellipse",
+        // Task 5750 — modify.
+        "fillet",
+        "fillet_all",
+        "chamfer",
+        "chamfer_asymmetric",
+        "shell",
+        "shell_open",
+        "thicken",
+        "zone_slab",
+        "offset_solid",
+        "offset_curve",
+        // Task 5750 — sweep.
+        "extrude",
+        "extrude_symmetric",
+        "pipe",
+        "revolve",
+        "revolve_full",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
