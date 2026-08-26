@@ -395,7 +395,8 @@ fn e2e_mode_frequency_is_dimensioned_scalar() {
 // ── step-17 / step-11: simply-supported first-mode + higher modes (P2 2%) ─────
 //
 // The simply-supported fixture (examples/modal/simply_supported_beam_modes.ri)
-// PINS BOTH end faces (x_min and x_max). Five observable signals:
+// PINS BOTH end faces (x_min and x_max) with two `PinnedSupport`s. Five
+// observable signals:
 //   (a) no Error-severity diagnostics after parse + eval
 //   (b) a ComputeNode with target == "modal::free_vibration" in the graph
 //   (c) the `result` cell is a non-Undef StructureInstance/Map
@@ -413,14 +414,22 @@ fn e2e_mode_frequency_is_dimensioned_scalar() {
 //
 // ── step-11 RED → step-12 GREEN ──────────────────────────────────────────────
 //
-// BC realization (build_dirichlet_bcs → simply_supported_pin_pin_bcs): the two
-// FixedSupports targeting x_min AND x_max select the pin-pin branch — pin ONLY
-// the transverse Z DOF on both end faces (the bending rotation dw/dx stays free,
-// carried by the axial u(z)) + minimal axial/lateral anchors at the two end-face
-// neutral-axis nodes (z = h/2). This yields the (nπ)² simply-supported family
-// rather than the fixed-fixed family the all-DOF clamp would produce. Selection
-// is by coordinate, so it catches the P2 edge-midpoint nodes once the trampoline
+// BC realization (build_dirichlet_bcs → simply_supported_pin_pin_bcs): BOTH
+// beam-axis end faces are named AND every end-face support is a PinnedSupport,
+// which selects the pin-pin branch — pin ONLY the transverse Z DOF on both end
+// faces (the bending rotation dw/dx stays free, carried by the axial u(z)) +
+// minimal axial/lateral anchors at the two end-face neutral-axis nodes
+// (z = h/2). This yields the (nπ)² simply-supported family rather than the
+// fixed-fixed family the all-DOF clamp would produce. Selection is by
+// coordinate, so it catches the P2 edge-midpoint nodes once the trampoline
 // promotes the mesh.
+//
+// Task 6663 re-aimed that discriminator: it used to fire on the target face
+// NAMES alone, so the fixture's then-two-`FixedSupport`s took the pin-pin branch
+// and a genuinely clamped-clamped beam was unreachable. The realization is now
+// per-face and kind-aware, and the fixture spells `PinnedSupport`. The 2% bands
+// below are unchanged and are the guard that the pin-pin numbers are
+// bit-preserved across that change.
 //
 // RED (step-11): the fixture is still P1, so the constant-strain solve biases
 // every bending mode high — MEASURED f1 = 125.752 Hz / f2 = 501.595 Hz /
@@ -725,7 +734,8 @@ fn e2e_simply_supported_modes_match_analytic() {
 //
 // The printer-gantry fixture (examples/modal/printer_gantry_modes.ri) models a
 // 500×60×40 mm Aluminium_6061_T6 crossbeam pinned at both ends (x_min and
-// x_max), requesting the first 5 natural frequencies. This is the 4th fixture
+// x_max) with two `PinnedSupport`s — a crossbeam that RESTS ON its end mounts —
+// requesting the first 5 natural frequencies. This is the 4th fixture
 // in the modal_analysis_e2e CI gate (PRD docs/prds/v0_3/modal-analysis.md §1).
 //
 // The user-observable signal is "runs end-to-end and prints the first 5 modes
@@ -741,7 +751,10 @@ fn e2e_simply_supported_modes_match_analytic() {
 //
 // The two-mount (x_min + x_max) pin-pin realization in the trampoline removes
 // all 6 rigid-body modes so K_free is non-singular and the 5 lowest modes are
-// real, positive, and distinct. No analytic tolerance is asserted — the mesh
+// real, positive, and distinct. That realization is selected because both end
+// faces are named by PINNED supports (task 6663 made the discriminator read the
+// support KIND per face; before it, the fixture's two `FixedSupport`s reached
+// the same branch by face name alone). No analytic tolerance is asserted — the mesh
 // density is not validated for this cross-section, so any threshold would be
 // a guessed/unvalidated number (the false-premise trap).
 //

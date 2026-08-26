@@ -2817,23 +2817,41 @@ fn extract_element_order(val: &Value) -> ElementOrder {
     ElementOrder::P1
 }
 
-/// Build the homogeneous Dirichlet BCs from the `boundary_conditions` faces.
+/// Build the homogeneous Dirichlet BCs from the `boundary_conditions` supports.
 ///
-/// Two realizations, discriminated by the named faces (design_decision #1; the
-/// `Part`/`Support`-topology channel that would carry richer BC intent has not
-/// landed, so the support *targets* encode the configuration):
+/// Realization is **per named face and KIND-AWARE** (task 6663): each support
+/// contributes constraints on its own target face, and what it constrains there
+/// is decided by the support's `type_name`, not by how many supports the model
+/// happens to carry.
 ///
-///   • **Simply-supported (pin-pin)** — both beam-axis end faces (`"x_min"` AND
-///     `"x_max"`) are named (the `simply_supported_beam_modes.ri` two-support
-///     fixture). Delegates to [`simply_supported_pin_pin_bcs`]: pin only the
-///     transverse (Z) DOF on both end faces + minimal axial/lateral anchors, so
-///     the bending rotation stays free and the modes follow the `(nπ)²`
-///     simply-supported family (NOT fixed-fixed).
+///   • **`FixedSupport` (and every other support kind)** — clamp all three
+///     translational DOFs on every mesh node of the named face
+///     (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/`"z_min"`/`"z_max"`). This is the
+///     cantilever root clamp (step-16), and — with BOTH end faces named — the
+///     genuine clamped-clamped beam.
 ///
-///   • **Clamp the named face(s)** — any other target set (the cantilever's lone
-///     `"x_min"` support). Every mesh node on each named face
-///     (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/`"z_min"`/`"z_max"`) has all three
-///     translational DOFs clamped — the cantilever root clamp (step-16).
+///   • **`PinnedSupport`** — pin only the transverse (Z) DOF on every node of the
+///     named face, leaving the bending rotation `dw/dx` free (it is carried by
+///     the axial `u(z)`, not by `w`).
+///
+///   • **Simply-supported (pin-pin) special case** — when BOTH beam-axis end
+///     faces (`"x_min"` AND `"x_max"`) are named AND every support naming an end
+///     face is `PinnedSupport`, delegate to [`simply_supported_pin_pin_bcs`],
+///     which adds the three minimal neutral-axis anchors that the per-face rule
+///     alone cannot supply. Neither end face is clamped in that configuration,
+///     so without those anchors `K_free` is singular (see step-4's comment there
+///     for why the mixed propped-cantilever case needs no such anchors).
+///
+/// **Why the kind matters here, even though a face-pin equals a face-clamp on a
+/// solid tet body** (`reify-solver-elastic/src/shell_boundary.rs:133-140`,
+/// `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`): that equivalence is
+/// about a *single* face's DOF count in the static path. Two fully-clamped END
+/// FACES are a genuinely different STRUCTURE from two pinned ones — the
+/// clamped-clamped fundamental is `(4.730041/π)² = 2.267×` the simply-supported
+/// one. Until task 6663 this function discriminated on the target face NAMES
+/// only and threw the kind away, so two `FixedSupport`s silently produced the
+/// bit-identical pinned-pinned BC set (measured: 391.049 Hz for both, against
+/// the clamped-clamped analytic 900.7 Hz).
 ///
 /// Takes only the node coordinates (`&[[f64; 3]]`) of the discretization the
 /// trampoline hands to [`solve_modal_core`] — BC selection is coordinate-only and
@@ -2852,17 +2870,24 @@ fn build_dirichlet_bcs(
 ) -> Vec<DirichletBc> {
     let targets = support_targets(options);
 
-    // Simply-supported (pin-pin) discriminator: BOTH beam-axis end faces named.
-    let pins_x_min = targets.iter().any(|t| t == "x_min");
-    let pins_x_max = targets.iter().any(|t| t == "x_max");
-    if pins_x_min && pins_x_max {
+    // Simply-supported (pin-pin) special case: BOTH beam-axis end faces named,
+    // and every support naming an end face is Pinned. A single `FixedSupport`
+    // among them makes this a clamped or propped configuration instead, which
+    // the per-face realization below handles directly.
+    let names_face = |face: &str| targets.iter().any(|(_, t)| t == face);
+    let end_face_supports_all_pinned = targets
+        .iter()
+        .filter(|(_, t)| t == "x_min" || t == "x_max")
+        .all(|(kind, _)| *kind == SupportKind::Pinned);
+    if names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned {
         return simply_supported_pin_pin_bcs(nodes, length, height);
     }
 
-    // General "clamp the named face" realization (cantilever root clamp).
+    // Per-face realization: every named face is realized independently, so a
+    // third support ADDS a face rather than reinterpreting the whole model.
     let eps = 1e-9_f64;
     let mut bcs = Vec::new();
-    for target in &targets {
+    for (kind, target) in &targets {
         for (n, coord) in nodes.iter().enumerate() {
             let on_face = match target.as_str() {
                 "x_min" => coord[0] <= eps,
@@ -2873,13 +2898,25 @@ fn build_dirichlet_bcs(
                 "z_max" => coord[2] >= height - eps,
                 _ => false,
             };
-            if on_face {
-                for axis in 0..3 {
-                    bcs.push(DirichletBc {
-                        dof: 3 * n + axis,
-                        value: 0.0,
-                    });
+            if !on_face {
+                continue;
+            }
+            match kind {
+                // Clamp: all three translational DOFs on this face's node.
+                SupportKind::Fixed => {
+                    for axis in 0..3 {
+                        bcs.push(DirichletBc {
+                            dof: 3 * n + axis,
+                            value: 0.0,
+                        });
+                    }
                 }
+                // Simple support: the transverse (Z) DOF only, so the bending
+                // rotation at the support stays free.
+                SupportKind::Pinned => bcs.push(DirichletBc {
+                    dof: 3 * n + 2,
+                    value: 0.0,
+                }),
             }
         }
     }
@@ -3012,10 +3049,32 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     nearest
 }
 
-/// Collect the `target` face names from the options' `boundary_conditions` list
-/// (`FixedSupport { target : String }` instances). Non-StructureInstance entries
-/// and entries without a string `target` are skipped.
-fn support_targets(options: &Value) -> Vec<String> {
+/// How a support constrains its target face in [`build_dirichlet_bcs`].
+///
+/// `FixedSupport` and `PinnedSupport` are declared with IDENTICAL field shapes
+/// (`param target : String = ""`, crates/reify-compiler/stdlib/fea_multi_case.ri
+/// :355 and :380), so the `target` field alone cannot tell them apart — the kind
+/// has to be read off the instance's `type_name` (task 6663).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SupportKind {
+    /// Clamp all three translational DOFs on the target face.
+    Fixed,
+    /// Pin the transverse (Z) DOF only, leaving the bending rotation free.
+    Pinned,
+}
+
+/// Collect the `(kind, target face name)` pairs from the options'
+/// `boundary_conditions` list. Non-StructureInstance entries and entries without
+/// a string `target` are skipped.
+///
+/// The kind is read off `StructureInstance.type_name`: `"PinnedSupport"` maps to
+/// [`SupportKind::Pinned`], and EVERY other type name to [`SupportKind::Fixed`].
+/// Defaulting unknown names to `Fixed` is what keeps every pre-task-6663
+/// configuration bit-for-bit identical except the two-`FixedSupport` one that was
+/// the bug. Note that `RollerSupport`/`DisplacementSupport` are still name-
+/// dispatched builtins returning a `Value::Map`, which this function already
+/// skips because it requires a `Value::StructureInstance`.
+fn support_targets(options: &Value) -> Vec<(SupportKind, String)> {
     let mut targets = Vec::new();
     if let Value::StructureInstance(data) = options
         && let Some(Value::List(items)) = data.fields.get("boundary_conditions")
@@ -3024,7 +3083,12 @@ fn support_targets(options: &Value) -> Vec<String> {
             if let Value::StructureInstance(support) = item
                 && let Some(Value::String(target)) = support.fields.get("target")
             {
-                targets.push(target.clone());
+                let kind = if support.type_name == "PinnedSupport" {
+                    SupportKind::Pinned
+                } else {
+                    SupportKind::Fixed
+                };
+                targets.push((kind, target.clone()));
             }
         }
     }
@@ -4167,6 +4231,16 @@ mod tests {
         )
     }
 
+    /// A `PinnedSupport { target }` instance — same field shape as
+    /// [`fixed_support`], differing ONLY in `type_name`, which is exactly why
+    /// `support_targets` has to read the kind off `type_name` (task 6663).
+    fn pinned_support(target: &str) -> Value {
+        struct_instance(
+            "PinnedSupport",
+            vec![("target".to_string(), Value::String(target.to_string()))],
+        )
+    }
+
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
     /// `extract_damping` discriminates by `type_name`.
     ///
@@ -4400,9 +4474,13 @@ mod tests {
         );
     }
 
-    /// Amendment (suggestion 2): `build_dirichlet_bcs` selects the pin-pin
-    /// realization iff BOTH beam-axis end faces are named, otherwise clamps the
-    /// named face(s).
+    /// Amendment (suggestion 2), re-aimed by task 6663: `build_dirichlet_bcs`
+    /// selects the pin-pin realization iff BOTH beam-axis end faces are named
+    /// AND every end-face support is Pinned, otherwise clamps the named face(s).
+    /// Case (a) previously fed two `fixed_support(...)` and so PINNED THE DEFECT;
+    /// it now feeds the pinned pair, which is the input that legitimately selects
+    /// pin-pin. Step-3 replaces this test wholesale with the four-case
+    /// `build_dirichlet_bcs_discriminates_support_kind`.
     #[test]
     fn build_dirichlet_bcs_selects_pin_pin_vs_clamp() {
         let length = 0.02_f64;
@@ -4413,12 +4491,12 @@ mod tests {
         let on_x_min = |n: usize| mesh.nodes[n][0] <= eps;
         let on_end = |n: usize| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps;
 
-        // (a) Both x_min AND x_max named → pin-pin: some end-face node has ONLY
-        //     its Z DOF constrained (X and Y free) — impossible under a full
-        //     clamp, which constrains all three.
+        // (a) Both x_min AND x_max named by PINNED supports → pin-pin: some
+        //     end-face node has ONLY its Z DOF constrained (X and Y free) —
+        //     impossible under a full clamp, which constrains all three.
         let pin_opts = modal_options(vec![(
             "boundary_conditions".to_string(),
-            Value::List(vec![fixed_support("x_min"), fixed_support("x_max")]),
+            Value::List(vec![pinned_support("x_min"), pinned_support("x_max")]),
         )]);
         let pin_set: std::collections::HashSet<usize> =
             build_dirichlet_bcs(&pin_opts, &mesh.nodes, length, width, height)
