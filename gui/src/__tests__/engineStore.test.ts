@@ -1025,6 +1025,27 @@ describe('engineStore autoResolve loop state', () => {
       dispose();
     });
   });
+
+  it('(e) endAutoResolveLoop preserves the completed loop\'s samples and canonical metric', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2 });
+
+      endAutoResolveLoop();
+      // The loop is finished — but a finished loop must stay READABLE. The panel
+      // mounts on `iterations.length > 0`, not on `active`, so clearing here would
+      // make the result of the loop the user just ran vanish the instant it lands.
+      expect(state.autoResolve.active).toBe(false);
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      expect(state.autoResolve.iterations[1].iteration).toBe(2);
+      // The canonical must survive too, or the chart's y-axis label goes blank
+      // on a completed loop.
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
+      dispose();
+    });
+  });
 });
 
 describe('engineStore autoResolve subscribeToEvents wiring', () => {
