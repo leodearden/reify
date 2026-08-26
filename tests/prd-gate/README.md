@@ -15,14 +15,15 @@ unresolvable by machine and must not be used.
 `docs/prds/**/fixtures/` is **DEPRECATED**. It grew as a parallel convention and is
 being emptied by task #6431; do not add files there.
 
-The other three tiers, keyed on *who consumes the file* rather than who motivated it:
+The other **four** tiers, keyed on *who consumes the file* rather than who motivated it:
 
 | Tier | Home | Why |
 |---|---|---|
 | Ephemeral decompose-time probe | `/tmp/prd-gate-fixtures/` | never committed; see the `/prd` overlay's `references/grammar-gate.md` |
 | **Committed PRD / manifest evidence** | **`tests/prd-gate/fixtures/`** | executed by probe sets; walked by the GUI grammar ledger; covered by the coupling carve-out |
-| User-facing design that must keep working | `examples/` → `examples/best_practices/` + `INDEX.md` | swept by `crates/reify-compiler/tests/examples_smoke.rs` |
+| User-facing design that must keep working | `examples/` → `examples/best_practices/` + `INDEX.md` | swept by `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` |
 | Purely one crate's test detail, not PRD evidence | `crates/<crate>/tests/fixtures/` | crate-local, no PRD coupling |
+| Language-spec conformance corpus | `crates/reify-spec-conformance/fixtures/<section>/` | run only by the spec-conformance suite's own harness (PRD `docs/prds/v0_6/spec-conformance-suite.md` D2); must-reject fixtures are chartered residents, so no repo-wide walker sweeps it — `corpus_no_bare_scalar` carries a registered exclusion arm |
 
 **A fixture read by a compiled test target does not get special placement — it gets
 registration.** Add its basename to `_RUST_COUPLED_RI_FIXTURES` (`scripts/verify.sh:1080`)
