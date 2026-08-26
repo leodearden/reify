@@ -743,9 +743,14 @@ Four movements, in dependency order:
 - **Solver numerics** — multistart quality, basin search, the classifier trap,
   GN/LM. P2 and the solver-internals batch.
 - **Multimodality verdicts / found-basins honesty.** P3 owns the semantics. This PRD
-  leaves a **named slot** in the record and nothing more. Per INV-SF-5 that slot
-  cites a live task rather than "a future PRD"; the citation is stamped at decompose
-  from P3's chartering task.
+  leaves a **named slot** in the record and nothing more — the reserved
+  `completeness` field in §4.1, guarded by §4.2's fourth C2 bullet, populated by no
+  P4 leaf. Per INV-SF-5 the slot names live owners rather than "a future PRD": its
+  vocabulary is `solution-set-completeness.md` α **#6706**'s `Completeness` carrier,
+  and the first leaf that populates it — deduplicating the candidate set by basin box,
+  attaching the verdict, and rendering it through `ObjectiveProvenance` /
+  `reify explain` — is ζ **#6711**. §8.2 rules which of the two co-tenants on
+  `reify explain` adds the field (#6711) and which does not (ξ #6733).
 - **The DOF ledger, minimal conflict sets and `W_UNDERDETERMINED` extension** —
   #4388 (D3). This PRD renders the ledger; it does not compute it.
 - **The sketch DOF ledger** (`constrained-2d-sketch.md` #5509) — a *second*,
