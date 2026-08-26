@@ -673,3 +673,23 @@ describe('AutoResolvePanel (h) sparkline honesty for sub-plottable series', () =
     expect(screen.queryByTestId('auto-resolve-sparkline-no-data')).toBeNull();
   });
 });
+
+// ── Test group (i): loop-state indicator ───────────────────────────────────
+
+describe('AutoResolvePanel (i) loop-state indicator', () => {
+  it('(i.1) a running loop says so on the root and in a visible chip', () => {
+    const state: AutoResolveLoopState = { active: true, iterations: [makeIteration(1)] };
+    render(() => <AutoResolvePanel state={state} />);
+    expect(screen.getByTestId('auto-resolve-panel').getAttribute('data-loop-state')).toBe('running');
+    expect(screen.getByTestId('auto-resolve-loop-state').textContent).toMatch(/running/i);
+  });
+
+  it('(i.2) a completed loop says so on the root and in a visible chip', () => {
+    // Now that a completed loop persists, "Iteration 1" alone is ambiguous
+    // between still-running and finished — the panel must disambiguate.
+    const state: AutoResolveLoopState = { active: false, iterations: [makeIteration(1)] };
+    render(() => <AutoResolvePanel state={state} />);
+    expect(screen.getByTestId('auto-resolve-panel').getAttribute('data-loop-state')).toBe('complete');
+    expect(screen.getByTestId('auto-resolve-loop-state').textContent).toMatch(/complete/i);
+  });
+});
