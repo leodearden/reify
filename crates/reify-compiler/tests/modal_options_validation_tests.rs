@@ -26,6 +26,21 @@
 //! All tests use the production-path `load_stdlib_module()` helper that
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
+//!
+//! OUT-OF-SCOPE LODGERS — read this before changing the structure-ctor
+//! argument binder in `crates/reify-compiler/src/expr.rs`. Two tests near the
+//! bottom of this file pin GENERIC ctor BINDING semantics (task 4522's
+//! by-name resolution, unlabelled args filling only the REMAINING slots in
+//! declaration order, `__arg{i}` leniency for unknown labels, duplicate-label-
+//! only diagnosis) rather than anything modal:
+//!   - `structure_ctor_args_bind_by_name_not_positionally`
+//!   - `misspelled_ctor_label_is_silently_appended_not_diagnosed`
+//! `RayleighDamping` is only their vehicle — they landed here because task
+//! 6093 held this file's lock and not the binder's. Their contract home is
+//! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`; the
+//! relocation is filed as follow-up (escalation id
+//! `agent-followup-6093-mishomed-tests`). Until it happens, a binder change
+//! must run THIS binary too.
 
 use reify_compiler::*;
 use reify_core::*;
@@ -402,7 +417,8 @@ fn rayleigh_damping_param_shape() {
     );
 }
 
-// ─── task-6093 amendment: ctor args bind BY NAME ─────────────────────────────
+// ─── task-6093 amendment: ctor args bind BY NAME (an `expr.rs` binder
+//     contract, not a modal one — see OUT-OF-SCOPE LODGERS above) ────────────
 
 /// Structure-ctor arguments bind BY NAME, not positionally.
 ///
@@ -546,7 +562,8 @@ structure {probe} {{
     }
 }
 
-// ─── task-6093 amendment: the MISLABEL path is silently lenient ──────────────
+// ─── task-6093 amendment: the MISLABEL path is silently lenient (an `expr.rs`
+//     binder contract, not a modal one — see OUT-OF-SCOPE LODGERS above) ─────
 
 /// An UNKNOWN ctor label is silently appended as a positional `__arg{i}` — no
 /// diagnostic at any severity — and the param it was meant for falls back to
