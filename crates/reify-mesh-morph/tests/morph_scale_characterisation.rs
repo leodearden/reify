@@ -408,3 +408,105 @@ fn morph_once_times_a_connectivity_preserving_fillet_perturbation() {
         measurement.elapsed
     );
 }
+
+// ── the gmsh from-scratch arm ────────────────────────────────────────────────
+
+/// One timed from-scratch tetrahedralisation must actually produce a P1 tet
+/// mesh at the resolution it was asked for, and must report counts that match
+/// the mesh it produced.
+///
+/// Deliberately coarse (`mesh_size = 0.06` on the n=4 bracket, whose whole
+/// thickness is `THICKNESS = 0.2`) so the always-on suite pays for a handful
+/// of tets rather than for a calibration rung. The 10K and 100K rungs belong
+/// to the `#[ignore]`d driver.
+///
+/// The surface handed to gmsh is [`fixtures::boundary_surface`]'s output,
+/// which the sibling test above pins as closed and consistently wound — that
+/// ordering matters, because an open surface would not merely fail here, it
+/// would poison the rest of the binary (see [`gmsh_tetrahedralise`]).
+#[cfg(has_gmsh)]
+#[test]
+fn gmsh_tetrahedralise_produces_tets_at_a_requested_mesh_size() {
+    use reify_ir::ElementOrderTag;
+
+    let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
+    let surface = fixtures::boundary_surface(&mesh);
+
+    let measurement = gmsh_tetrahedralise(&surface, 0.06);
+
+    let volume = match &measurement.result {
+        Ok(volume) => volume,
+        Err(error) => panic!(
+            "gmsh_tetrahedralise must succeed on the extracted bracket boundary at a \
+             coarse size: the surface is closed and consistently wound (pinned by \
+             `bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced`), \
+             so a failure here is a rig or linkage fault rather than a geometry one — \
+             got {error:?}"
+        ),
+    };
+
+    assert_eq!(
+        volume.element_order(),
+        Some(ElementOrderTag::P1),
+        "the gmsh arm must produce P1 tets — the morph arm it is compared against is \
+         P1-only, and a P2 mesh would put the two arms on different element counts"
+    );
+
+    let tets = volume
+        .tet_indices()
+        .expect("gmsh must return tet connectivity for a volume mesh");
+    assert!(
+        !tets.is_empty(),
+        "gmsh returned an empty tet table; there is no wall-clock to attribute"
+    );
+
+    // The reported counts are what the driver prints and what
+    // `nearest_by_tet_count` joins the two ladders on, so a count that does
+    // not describe the mesh it came from would silently corrupt every ratio
+    // derived downstream.
+    assert_eq!(
+        measurement.tets,
+        tets.len() / 4,
+        "reported tet count must match the returned mesh"
+    );
+    assert_eq!(
+        measurement.nodes,
+        volume.vertices.len() / 3,
+        "reported node count must match the returned mesh"
+    );
+
+    assert!(
+        measurement.elapsed > Duration::ZERO,
+        "the clock was never read — `elapsed` is {:?}",
+        measurement.elapsed
+    );
+
+    // The requested size is carried through verbatim so a rung is labelled by
+    // what was ASKED, while `tets`/`nodes` record what was ACHIEVED. The
+    // driver prints both precisely because gmsh does not promise they agree.
+    assert_eq!(
+        measurement.mesh_size, 0.06,
+        "the measurement must report the mesh size it was asked for"
+    );
+}
+
+/// A stub build must still run a test here rather than silently compiling the
+/// whole gmsh arm to nothing.
+///
+/// This is the failure mode `crates/reify-solver-elastic/tests/aposteriori_validation.rs:42-70`
+/// warns about: a `#[cfg(has_gmsh)]`-gated test in a crate that never derived
+/// `has_gmsh` for itself vanishes, and a vanished test reports as a pass. The
+/// assertion is deliberately on `reify_kernel_gmsh::GMSH_AVAILABLE` — the
+/// gmsh crate's OWN view of its build — so this test disagrees loudly with
+/// its `#[cfg(has_gmsh)]` sibling if this crate's `build.rs` detection ever
+/// drifts from the gmsh crate's.
+#[cfg(not(has_gmsh))]
+#[test]
+fn gmsh_arm_is_absent_in_a_stub_build() {
+    assert!(
+        !reify_kernel_gmsh::GMSH_AVAILABLE,
+        "this crate's build.rs did NOT set `has_gmsh`, yet the gmsh crate reports \
+         GMSH_AVAILABLE — the two detections have drifted, and the entire gmsh arm \
+         of this harness is silently compiled out while gmsh is in fact usable"
+    );
+}
