@@ -479,18 +479,18 @@ Four movements, in dependency order:
 
 ---
 
-## §10 — Decomposition plan (task IDs assigned at decompose)
+## §10 — Decomposition plan (task IDs assigned 2026-08-26)
 
 **Phase 1 — un-drop the record.**
 
-- **α — Carry `objective_provenance` through `CheckResult` and `BuildResult`.**
+- **α (#6721) — Carry `objective_provenance` through `CheckResult` and `BuildResult`.**
   Modules: `reify-eval` (`lib.rs`, `engine_constraints.rs`, `engine_build.rs`).
   Widen the two result structs and thread the field through the six-line narrowing.
   *Intermediate* — unlocks η, λ, ξ. Signal: unlocks η's user-visible chip; pinned by
   a Rust test asserting a cold `check()` on a multi-objective fixture returns
   non-empty provenance (today: structurally impossible — no field exists).
 
-- **ε — Key per-inequality slack by `ConstraintNodeId`; carry it on
+- **ε (#6722) — Key per-inequality slack by `ConstraintNodeId`; carry it on
   `ConstraintCheckEntry`.** Modules: `reify-constraints` (`solver.rs`), `reify-ir`
   (`constraint.rs`), `reify-eval` (`engine_constraints.rs`). Change
   `collect_slack_terms`'s output to carry the id; **land the same op-rule change in
@@ -506,7 +506,7 @@ Four movements, in dependency order:
 
 **Phase 2 — repair the dead surfaces (integration-gate cluster).**
 
-- **β — Verdict wire contract: fix the casing and pin it two-way.** Modules:
+- **β (#6723) — Verdict wire contract: fix the casing and pin it two-way.** Modules:
   `gui/src-tauri` (`engine.rs`), `gui/src-tauri/src/tests`, `gui/src/__tests__`.
   Emit lower-case tokens from both `build_constraints` sites (D4); add a Rust serde
   roundtrip test pinning the exact tokens; add the **B1 two-way boundary test**
@@ -516,7 +516,7 @@ Four movements, in dependency order:
   `StatusBar` reads `1 / 1 / 1` — today all three render `?` and the counts read
   `0 / 0 / 3`. Asserted via `scripts/gui-test.sh` plus a live-GUI debug-MCP check.
 
-- **γ — Eval diagnostics reach the GUI under a `solve` source tag.** Modules:
+- **γ (#6724) — Eval diagnostics reach the GUI under a `solve` source tag.** Modules:
   `gui/src-tauri` (`engine.rs`), `gui/src` (`App.tsx`, `panels/diagnosticsView.ts`,
   `panels/DiagnosticsPanel.tsx`). Add `build_check_diagnostics()` reading
   `last_check().diagnostics`; add the third `source` tag and its filter chip. Also
@@ -525,7 +525,7 @@ Four movements, in dependency order:
   `W_SOLVER_OPTIMALITY_UNPROVEN` in the Diagnostics panel, filterable by the `solve`
   chip — today no eval-time diagnostic reaches the GUI at all.
 
-- **δ — `AutoResolvePanel` lifecycle: mount on data, render honestly.** Modules:
+- **δ (#6725) — `AutoResolvePanel` lifecycle: mount on data, render honestly.** Modules:
   `gui/src` (`stores/engineStore.ts`, `panels/AutoResolvePanel.tsx`, `App.tsx`).
   Mount on `iterations.length > 0` rather than the synchronously-closed `active`
   flag; stop clearing `iterations` on complete; render a single-sample state
@@ -536,28 +536,28 @@ Four movements, in dependency order:
 
 **Phase 3 — render the record.**
 
-- **ζ — `ConstraintPanel`: verdicts + slack column.** Modules: `gui/src-tauri`
+- **ζ (#6726) — `ConstraintPanel`: verdicts + slack column.** Modules: `gui/src-tauri`
   (`engine.rs`), `gui/src` (`panels/ConstraintPanel.tsx`). Carry `margin` on the
   constraint payload; render a slack column showing `n/a` for equalities (C2).
   *Leaf.* Signal: a model whose `minimize` parks on an active clearance bound shows
   that constraint at slack `0.00mm` while a slack-bearing sibling shows its real
   margin. Depends on β, ε.
 
-- **η — `PropertyEditor`: per-auto provenance chip.** Modules: `gui/src-tauri`
+- **η (#6727) — `PropertyEditor`: per-auto provenance chip.** Modules: `gui/src-tauri`
   (`engine.rs`, `types.rs`), `gui/src` (`panels/PropertyEditor.tsx`, `types.ts`).
   Beside the existing determinacy/freshness/undef chips. *Leaf.* Signal: a
   multi-objective fixture shows, per resolved auto, the governing objective, the
   combination and the `explicit` / `synthetic-centrality` / `inherited` source token,
   agreeing with `reify explain`. Depends on α; the **edit-path** half depends on P1 κ.
 
-- **θ — `StatusBar` solve-summary chip.** Modules: `gui/src`
+- **θ (#6728) — `StatusBar` solve-summary chip.** Modules: `gui/src`
   (`panels/StatusBar.tsx`, `App.tsx`). One chip: optimality status, budget-exhaustion
   and stale-served markers, colour-coded; click drills into the owning panel. *Leaf.*
   Signal: a budget-exhausted solve shows a distinct chip state and clicking it
   reveals `W_SOLVER_OPTIMALITY_UNPROVEN` in the Diagnostics panel. Depends on β, γ;
   the staleness axis depends on P1 α.
 
-- **ι — DOF badge in `StatusBar`.** Modules: `gui/src`
+- **ι (#6730) — DOF badge in `StatusBar`.** Modules: `gui/src`
   (`panels/DofBadge.tsx`, `DofBadge.module.css`, `panels/StatusBar.tsx`,
   `panels/index.ts`, `__tests__/DofBadge.test.tsx`). Renders #4388's ledger. *Leaf.*
   Signal: an under-constrained `at auto` sub shows `spent 5 · free 1` in the badge,
@@ -566,7 +566,7 @@ Four movements, in dependency order:
   `dof: 0` is a known lie for sketches (libslvs reports an honest `dof: 4` for two
   free 2D points); the badge must not render that zero as a fact.
 
-- **κ — Constraint-solver producer on `SolverProgressSink`; fix the overlay's
+- **κ (#6731) — Constraint-solver producer on `SolverProgressSink`; fix the overlay's
   visibility.** Modules: `reify-eval` (`solver_progress.rs` seam), `reify-constraints`
   (`solver.rs`), `gui/src` (`stores/engineStore.ts`, `panels/SolverProgressOverlay.tsx`).
   Emit `solver_kind: "nelder-mead"` per iteration on the existing pipeline; resolve
@@ -578,7 +578,7 @@ Four movements, in dependency order:
   visible. Adds/extends a channel → carries its `docs/gui-event-channels/` spec and
   inventory rows in the same commit (C3).
 
-- **λ — `solve_report` debug-MCP tool.** Modules: `gui/src-tauri`
+- **λ (#6732) — `solve_report` debug-MCP tool.** Modules: `gui/src-tauri`
   (`debug_server.rs`, `engine.rs`), `gui/src/__tests__/debugParity.test.ts`,
   `gui/test/visual/assertions.ts`, `gui/test/fixtures/`, `docs/debug-mcp-contract.md`.
   Engine-side tool per C4's four edits; new `pub(crate)` observational accessor for
@@ -588,7 +588,7 @@ Four movements, in dependency order:
   `npm --prefix gui run test:e2e` against a live `reify-gui`, not in CI** (§12).
   Depends on α, ε.
 
-- **ξ — `reify explain`: the dropped fields, slack, and a failure vocabulary.**
+- **ξ (#6733) — `reify explain`: the dropped fields, slack, and a failure vocabulary.**
   Modules: `reify-cli` (`main.rs`), `crates/reify-cli/tests/harness_cli/cli_explain.rs`,
   `crates/reify-cli/tests/fixtures/`. Render `scope` and `term_contributions`; add
   slack lines; give the infeasible case its own message instead of reusing
@@ -601,7 +601,7 @@ Four movements, in dependency order:
 
 **Phase 4 — docs-truth for the legibility surface, then the integration gate.**
 
-- **ο — Docs-truth for the observable legibility surface.** Modules:
+- **ο (#6735) — Docs-truth for the observable legibility surface.** Modules:
   `crates/reify-mcp/src/tools/chunks/`, `.claude/skills/reify-design/SKILL.md`,
   `docs/reify-language-spec.md`. The docs-truth gate fires on **diagnostics** and on
   **GUI behaviour a design session relies on**, so it is not μ's alone: this leaf
@@ -618,14 +618,14 @@ Four movements, in dependency order:
 
 **Phase 4b — the integration gate.**
 
-- **φ — Two-way solve-record parity gate.** Modules: a test target plus
+- **φ (#6736) — Two-way solve-record parity gate.** Modules: a test target plus
   `gui/test/fixtures/` and `tests/prd-gate/fixtures/`. **Leaf — names the whole §5
   table as its signal.** Depends on β, γ, ζ, η, θ, κ, λ, ξ. Rows B6 and B9
   additionally depend on P1 κ and P1 α.
 
 **Phase 5 — the robustness-floor opt-in (language surface; lands last).**
 
-- **μ — Author opt-in to the robustness floor for non-Money objectives.** Modules:
+- **μ (#6737) — Author opt-in to the robustness floor for non-Money objectives.** Modules:
   `reify-ir` (`constraint.rs`), `reify-compiler` (`entity.rs`), `reify-constraints`
   (`solver.rs`), `reify-eval` (`engine_eval.rs`). Special-form route per D7: a marker
   field mirroring `cost_robustness_lambda`, compile-time typing with coded
@@ -637,7 +637,7 @@ Four movements, in dependency order:
   non-Money `minimize` with the opt-in resolves off the constraint boundary and shows
   its remaining slack in `ConstraintPanel`; without the opt-in it parks on the bound
   as today. Depends on ζ and on **#5711** (§7).
-- **π — docs-truth for the opt-in.** Modules: `crates/reify-mcp/src/tools/chunks/`,
+- **π (#6738) — docs-truth for the opt-in.** Modules: `crates/reify-mcp/src/tools/chunks/`,
   `examples/best_practices/` + `INDEX.md`, `.claude/skills/reify-design/SKILL.md`.
   Doc-chunk text for the opt-in with every signature verified against the compiler
   registries; a worked example that compiles under
@@ -648,7 +648,7 @@ Four movements, in dependency order:
 
 **Phase 6 — corrections and close.**
 
-- **ν — DONE AT AUTHORING TIME, not filed.** #4388's description was rewritten in
+- **ν (no task — executed at authoring time).** #4388's description was rewritten in
   the authoring session (Leo's explicit authorisation, 2026-08-26) to drop the GUI
   badge arm, name this PRD's ι as the badge's owner, and remove the five
   `DofBadge`/`StatusBar` entries from its `metadata.files` (18 → 13). Readback
@@ -656,7 +656,7 @@ Four movements, in dependency order:
   filed for this** — doing it at authoring time removes a coordination hop and lets ι
   depend directly on #4388. Recorded here so the decomposition is not read as
   incomplete.
-- **ω — PRD close.** Set the terminal `Status` marker, name the landed leaf IDs, add
+- **ω (#6739) — PRD close.** Set the terminal `Status` marker, name the landed leaf IDs, add
   the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, and apply the
   matching header to the capability manifest. *Leaf.* Signal: the committed header.
   Depends on every other leaf.
