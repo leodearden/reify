@@ -1898,12 +1898,20 @@ structure AnglePin {
     ///   1. the bare `f64` a client sends is installed UNCHANGED as the cell's
     ///      SI-coherent magnitude, with the cell's own `DimensionVector`
     ///      attached — so an `Angle` cell receives SI RADIANS;
-    ///   2. the paired OUTBOUND `unit` agrees, on BOTH `SetParamResult` and
-    ///      `get_parameters` — that field is the client's only channel for
+    ///   2. the paired OUTBOUND `unit` reads `rad` on both `SetParamResult`
+    ///      and `get_parameters` — that field is the client's only channel for
     ///      *which* SI unit a given parameter takes, so the inbound contract is
-    ///      only discoverable if both halves say `rad`;
+    ///      undiscoverable unless it says `rad`.  NOTE both surfaces are fed by
+    ///      the SAME `dimension_unit` helper, so their agreement is true by
+    ///      construction and the two assertions are NOT independent channels
+    ///      cross-checking each other.  What the pair buys is that the shared
+    ///      formatter's output for `DimensionVector::ANGLE` is fixed at both
+    ///      places a client can observe it — a rename there breaks the wire
+    ///      contract on both surfaces at once, and this catches it;
     ///   3. a `Length` control, so the pin cannot pass on an implementation
-    ///      that hardcodes one dimension for everything.
+    ///      that hardcodes one dimension for everything — it is what proves
+    ///      `dimension_unit` is dimension-DRIVEN rather than returning a
+    ///      constant.
     ///
     /// POSTURE — a REGRESSION PIN, GREEN ON ARRIVAL, not a RED→GREEN cycle.
     /// #6184 is declarations-only by charter and changes no behaviour, so the
@@ -1946,6 +1954,23 @@ structure AnglePin {
              got {update:?}"
         );
 
+        // Snapshot reader, so the three reads below are one line each and the
+        // `lock_state` guard is dropped before the next `set_parameter` call
+        // rather than being held across an assertion block.
+        let read_cell = |member: &str| -> Value {
+            let state = ctx.lock_state();
+            let snapshot = state
+                .engine
+                .as_ref()
+                .and_then(|e| e.snapshot())
+                .expect("engine must hold a snapshot after update_source + set_parameter");
+            let (value, _) = snapshot
+                .values
+                .get(&reify_core::ValueCellId::new("AnglePin", member))
+                .unwrap_or_else(|| panic!("AnglePin.{member} must be present in the snapshot"));
+            value.clone()
+        };
+
         // (1) VERBATIM SI INSTALL — the core claim.  A magnitude in radians,
         // sent as a bare number with no unit suffix.  It is deliberately
         // arbitrary and close to no notable constant, so a green result cannot
@@ -1955,64 +1980,47 @@ structure AnglePin {
             .set_parameter("AnglePin.theta", "1.2345")
             .expect("set_parameter on an Angle cell should succeed");
 
-        {
-            let state = ctx.lock_state();
-            let snapshot = state
-                .engine
-                .as_ref()
-                .and_then(|e| e.snapshot())
-                .expect("engine must hold a snapshot after update_source + set_parameter");
-
-            let theta_id = reify_core::ValueCellId::new("AnglePin", "theta");
-            let (theta_value, _) = snapshot
-                .values
-                .get(&theta_id)
-                .expect("AnglePin.theta must be present in the snapshot");
-            match theta_value {
-                Value::Scalar {
-                    si_value,
+        match read_cell("theta") {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                // Exact equality, not an epsilon: the contract is that NO
+                // arithmetic is applied at all.  A rad→deg conversion would
+                // give 70.7316…, a deg→rad one 0.0215…; both are orders of
+                // magnitude away, so an epsilon here would only weaken the
+                // claim without buying any tolerance the contract allows.
+                assert_eq!(
+                    si_value, 1.2345_f64,
+                    "set_parameter must install the client's f64 verbatim as the \
+                     cell's SI magnitude — no conversion, no unit parsing"
+                );
+                assert_eq!(
                     dimension,
-                } => {
-                    // Exact equality, not an epsilon: the contract is that NO
-                    // arithmetic is applied at all.  A rad→deg conversion would
-                    // give 70.7316…, a deg→rad one 0.0215…; both are orders of
-                    // magnitude away, so an epsilon here would only weaken the
-                    // claim without buying any tolerance the contract allows.
-                    assert_eq!(
-                        *si_value, 1.2345_f64,
-                        "set_parameter must install the client's f64 verbatim as the \
-                         cell's SI magnitude — no conversion, no unit parsing"
-                    );
-                    assert_eq!(
-                        *dimension,
-                        DimensionVector::ANGLE,
-                        "the cell's own dimension must be attached unchanged"
-                    );
-                }
-                other => panic!(
-                    "AnglePin.theta must be a dimensioned Value::Scalar after \
-                     set_parameter; got {other:?}"
-                ),
+                    DimensionVector::ANGLE,
+                    "the cell's own dimension must be attached unchanged"
+                );
             }
-
-            // (3a) DISCRIMINATION control, read from the same snapshot: the
-            // Length cell must still carry LENGTH, not ANGLE.
-            let width_id = reify_core::ValueCellId::new("AnglePin", "width");
-            let (width_value, _) = snapshot
-                .values
-                .get(&width_id)
-                .expect("AnglePin.width must be present in the snapshot");
-            assert!(
-                matches!(
-                    width_value,
-                    Value::Scalar { dimension, .. } if *dimension == DimensionVector::LENGTH
-                ),
-                "AnglePin.width must carry LENGTH, not the Angle cell's dimension; \
-                 got {width_value:?}"
-            );
+            other => panic!(
+                "AnglePin.theta must be a dimensioned Value::Scalar after \
+                 set_parameter; got {other:?}"
+            ),
         }
 
-        // (2) OUTBOUND `unit` agreement — both halves.
+        // (3a) DISCRIMINATION control: the Length cell must still carry
+        // LENGTH, not ANGLE.
+        let width_before = read_cell("width");
+        assert!(
+            matches!(
+                &width_before,
+                Value::Scalar { dimension, .. } if *dimension == DimensionVector::LENGTH
+            ),
+            "AnglePin.width must carry LENGTH, not the Angle cell's dimension; \
+             got {width_before:?}"
+        );
+
+        // (2) OUTBOUND `unit` — both surfaces the shared `dimension_unit`
+        // formatter reaches.
         assert_eq!(
             set_theta.unit, "rad",
             "SetParamResult.unit must name the SI unit the inbound value was \
@@ -2040,27 +2048,15 @@ structure AnglePin {
             set_width.unit, "m",
             "a Length cell's SI unit is metres, not the Angle cell's radians"
         );
-        {
-            let state = ctx.lock_state();
-            let snapshot = state
-                .engine
-                .as_ref()
-                .and_then(|e| e.snapshot())
-                .expect("engine must hold a snapshot");
-            let width_id = reify_core::ValueCellId::new("AnglePin", "width");
-            let (width_value, _) = snapshot
-                .values
-                .get(&width_id)
-                .expect("AnglePin.width must be present in the snapshot");
-            assert!(
-                matches!(
-                    width_value,
-                    Value::Scalar { si_value, dimension }
-                        if *si_value == 0.12_f64 && *dimension == DimensionVector::LENGTH
-                ),
-                "a Length cell must take the same verbatim-SI install (0.12 m, \
-                 LENGTH); got {width_value:?}"
-            );
-        }
+        let width_after = read_cell("width");
+        assert!(
+            matches!(
+                &width_after,
+                Value::Scalar { si_value, dimension }
+                    if *si_value == 0.12_f64 && *dimension == DimensionVector::LENGTH
+            ),
+            "a Length cell must take the same verbatim-SI install (0.12 m, \
+             LENGTH); got {width_after:?}"
+        );
     }
 }
