@@ -212,15 +212,15 @@ fn faults_strictly_inside(node: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<
                 return out;
             }
             let parent = cursor.node();
-            if let Some(&(fault, mark)) = descended_faults.last() {
-                if fault == parent {
-                    descended_faults.pop();
-                    if out.len() == mark {
-                        // Descended into a fault and found nothing broken below it: this node
-                        // IS the innermost fault. Source order holds — every entry recorded
-                        // after `mark` would have come from inside it, and there are none.
-                        out.push(parent);
-                    }
+            if let Some(&(fault, mark)) = descended_faults.last()
+                && fault == parent
+            {
+                descended_faults.pop();
+                if out.len() == mark {
+                    // Descended into a fault and found nothing broken below it: this node
+                    // IS the innermost fault. Source order holds — every entry recorded
+                    // after `mark` would have come from inside it, and there are none.
+                    out.push(parent);
                 }
             }
             if parent == node {
