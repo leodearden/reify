@@ -1598,7 +1598,19 @@ describe('Viewport fitHelpers wiring (#6588)', () => {
     // A model that grows or shrinks between evaluations must re-size the helpers,
     // not keep the extent measured on first open.
     expect(mockFitHelpers.mock.calls.length).toBeGreaterThan(before);
-    // And it must stay in lockstep with clipping - one call site, one cadence.
-    expect(mockFitHelpers.mock.calls.length).toBe(mockAdjustClipping.mock.calls.length);
+
+    // And the LATEST helper sizing must have used the LATEST measurement, i.e. the
+    // one the camera is currently clipping against.
+    //
+    // Deliberately NOT an exact call-count equality between the two spies:
+    // adjustClipping is genuinely camera-dependent (it derives near/far from
+    // camera.position.distanceTo(center)), so a future, correct orbit- or
+    // resize-driven call site for it would break a count check while the fitHelpers
+    // wiring this test exists to guard was never touched. Object identity is the
+    // contract; the preceding test already pins it for the first call.
+    const lastFit = mockFitHelpers.mock.calls[mockFitHelpers.mock.calls.length - 1][0];
+    const lastClip =
+      mockAdjustClipping.mock.calls[mockAdjustClipping.mock.calls.length - 1][0];
+    expect(lastFit).toBe(lastClip);
   });
 });
