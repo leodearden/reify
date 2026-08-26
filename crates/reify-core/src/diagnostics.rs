@@ -6072,21 +6072,14 @@ mod tests {
         assert_eq!(s, "\"CtorArity\"");
     }
 
-    /// `CtorUnknownField` and `CtorArity` are DISTINCT codes, and distinct from
-    /// [`DiagnosticCode::ArgTypeMismatch`] — the three facts a single bad ctor
-    /// call can carry (wrong type / unknown field name / too many args) must stay
-    /// separately countable, which is what the ε cross-talk probe in
-    /// `struct_ctor_field_conformance_tests.rs` asserts on and what β's corpus
-    /// survey buckets by.
-    #[test]
-    fn ctor_structural_codes_are_distinct_from_each_other_and_from_arg_type_mismatch() {
-        assert_ne!(DiagnosticCode::CtorUnknownField, DiagnosticCode::CtorArity);
-        assert_ne!(
-            DiagnosticCode::CtorUnknownField,
-            DiagnosticCode::ArgTypeMismatch
-        );
-        assert_ne!(DiagnosticCode::CtorArity, DiagnosticCode::ArgTypeMismatch);
-    }
+    // NOTE: no "these three codes are distinct" test lives here. With the derived
+    // `PartialEq` on this fieldless enum, `assert_ne!` between named variants is a
+    // compile-time tautology — it cannot fail for any change that still compiles,
+    // so it carries no regression signal. The property it appeared to guard (the
+    // three facts one bad ctor call can carry stay SEPARATELY COUNTABLE) is
+    // guarded executably by `all_three_ctor_faults_on_one_call_emit_exactly_one_
+    // diagnostic_each` in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
+    // and the externally-visible identifiers are pinned by the serde tests above.
 
     // --- ReservedTypeName tests (task 4591 — W_RESERVED_TYPE_NAME) ---
     // Pairs with the lint pass in

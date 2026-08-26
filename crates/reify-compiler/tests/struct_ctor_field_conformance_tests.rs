@@ -3157,6 +3157,96 @@ fn all_three_ctor_faults_on_one_call_emit_exactly_one_diagnostic_each() {
     );
 }
 
+const SRC_UNKNOWN_NAME_THEN_POSITIONAL: &str = r#"module test.unknown_name_then_positional
+structure def Widget14 { param label : String }
+structure def Root {
+    let x = Widget14(labl: "x", "a")
+}
+"#;
+
+/// (e) SLOT ACCOUNTING, half one: an UNKNOWN named argument does NOT consume a
+/// param slot, so a following positional binds into the slot the typo'd name
+/// failed to claim. `Widget14(labl: "x", "a")` against a 1-param def is therefore
+/// exactly one `CtorUnknownField` and ZERO `CtorArity` — the call is not
+/// over-arity, because pass 1 left slot 0 free for `"a"` to take.
+///
+/// (d) above and `positional_argument_after_named_fills_the_slot_emits_ctor_arity`
+/// both use a VALID named argument, which DOES consume its slot, so without this
+/// fixture the unknown-name-skips-the-slot rule is unpinned. Making an unknown
+/// name consume a slot anyway is a plausible "be more helpful" refactor — and
+/// exactly the seam #6191 works in — which would silently add a spurious second
+/// diagnostic here with the rest of the suite still green.
+#[test]
+fn unknown_named_argument_does_not_consume_a_param_slot() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_NAME_THEN_POSITIONAL);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "the unknown name must not claim slot 0, leaving it for the positional — \
+         exactly one CtorUnknownField and no CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorUnknownField));
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::CtorArity))
+            .count(),
+        0,
+        "one positional for one free slot is exact arity — an unknown NAME must not \
+         additionally be reported as surplus, got: {diags:#?}"
+    );
+}
+
+const SRC_UNKNOWN_NAME_AND_SURPLUS: &str = r#"module test.unknown_name_and_surplus
+structure def Widget15 { param label : String }
+structure def Root {
+    let x = Widget15(labl: "x", "a", "b")
+}
+"#;
+
+/// (f) SLOT ACCOUNTING, half two: add one more positional to (e) and the call
+/// genuinely IS over-arity — `"a"` takes slot 0, `"b"` has nowhere to go — so both
+/// ε codes fire, exactly one each.
+///
+/// The load-bearing pin is the `got` COUNT. It is `args.len()`, so it counts the
+/// unknown NAMED argument too: the message reads `expects at most 1 argument,
+/// got 3`, not `got 2`, even though the fact being reported concerns surplus
+/// POSITIONALS. That is deliberate — it reports the call's actual argument count,
+/// matching `arg_check.rs`'s builtin-arity wording, rather than a positionals-only
+/// count the author could not match against their own source. Recorded as a
+/// decision because (e)'s "does not consume a slot" and this "is nevertheless
+/// counted in `got`" are separate questions: a refactor that unified them would
+/// flip exactly one of these two fixtures.
+#[test]
+fn unknown_named_argument_is_still_counted_in_the_arity_got_total() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_NAME_AND_SURPLUS);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        2,
+        "expected exactly one CtorUnknownField and one CtorArity, got: {diags:#?}"
+    );
+    for expected in [DiagnosticCode::CtorUnknownField, DiagnosticCode::CtorArity] {
+        assert_eq!(
+            diags.iter().filter(|d| d.code == Some(expected)).count(),
+            1,
+            "expected exactly one {expected:?}, got: {diags:#?}"
+        );
+    }
+    let arity_msg = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::CtorArity))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        arity_msg.contains("at most 1 argument") && arity_msg.contains("got 3"),
+        "`got` is args.len(), so the unknown named argument is counted in the total; \
+         expected `at most 1 argument` / `got 3`, got: {arity_msg:?}"
+    );
+}
+
 const SRC_UNKNOWN_FIELD_POISONED_ARG: &str = r#"module test.unknown_field_poisoned
 structure def Widget11 { param label : String }
 structure def Root {
@@ -3164,7 +3254,7 @@ structure def Root {
 }
 "#;
 
-/// (e) ANTI-CASCADE CARVE-OUT. The unknown-named arg here is itself an erroring
+/// (g) ANTI-CASCADE CARVE-OUT. The unknown-named arg here is itself an erroring
 /// expression (an unresolved name → poison). The `CtorUnknownField` must STILL
 /// fire exactly once.
 ///
@@ -3199,7 +3289,7 @@ fn unknown_named_argument_still_fires_when_its_value_is_poisoned() {
     assert_eq!(unknown[0].severity, Severity::Warning);
 }
 
-/// (f) BEHAVIOUR PRESERVATION. ε adds diagnostics only: every ε fixture whose
+/// (h) BEHAVIOUR PRESERVATION. ε adds diagnostics only: every ε fixture whose
 /// faults are purely ctor-conformance ones still compiles to a module with NO
 /// errors, i.e. `reify check` keeps exit 0 until δ flips the knob. The poisoned
 /// fixture from (e) is deliberately excluded — its unresolved name is a genuine
@@ -3217,6 +3307,8 @@ fn epsilon_fixtures_remain_error_free_and_exit_code_neutral() {
         ("zero-param over-arity", SRC_ZERO_PARAM_OVER_ARITY),
         ("mixed named + positional", SRC_MIXED_NAMED_THEN_POSITIONAL),
         ("all three faults", SRC_ALL_THREE_FAULTS),
+        ("unknown + positional", SRC_UNKNOWN_NAME_THEN_POSITIONAL),
+        ("unknown + surplus", SRC_UNKNOWN_NAME_AND_SURPLUS),
     ];
     let mut offenders: Vec<String> = Vec::new();
     for &(label, source) in cases {
