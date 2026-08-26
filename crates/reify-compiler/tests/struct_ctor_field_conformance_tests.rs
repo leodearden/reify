@@ -3477,3 +3477,174 @@ fn no_auto_unknown_field_behaviour_is_unchanged_by_the_declared_param_view() {
         );
     }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Step-12 probes (REVIEW REMEDIATION, second half): the over-arity CEILING is
+// the DECLARED param count, not the count of positionally-bindable slots.
+//
+// The step-4 emit site reports `nparams` (= `params.len()`, `Param`-only), so on
+// a template declaring an auto param it both fires spuriously and states a count
+// the source contradicts.
+//
+// RED today for (a)/(b)/(c). (a)/(b) currently measure `count=1` where zero is
+// owed; (c) currently reads `"at most 1 argument"` where the template declares
+// two — so (c) is what forbids "just suppress CtorArity when an `Auto` cell is
+// present" as a fix: the ceiling must RISE, not vanish. (d) is a no-drift guard,
+// green before AND after.
+//
+// SCOPE, so (a) is not misread as a hole: `WidgetAutoArity(1.0, 2.0)` binds
+// `1.0` to `b` (the first `Param`-kind cell, i.e. the SECOND declared param) and
+// drops `2.0` into a garbage `__arg1` member. That is a REAL defect — but a
+// BINDING one, not an arity one, and ε cannot state a true fact about it without
+// changing the IR (forbidden: ε is diagnostics-only). It is owned by #6705.
+// Probe (a) asserts SILENCE, not correctness.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_AUTO_PARAM_EXACT_ARITY: &str = r#"module test.auto_param_exact_arity
+structure def WidgetAutoArity {
+    param a : Real = auto
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoArity(1.0, 2.0)
+}
+"#;
+
+/// (a) Two positional args against a template declaring TWO params (one of them
+/// `auto`) is not over-arity, so no ctor-conformance diagnostic is owed. Today
+/// the ceiling is the `Param`-only slot count (1), so this fires with
+/// `"expects at most 1 argument, got 2"` — the opposite of what the source says.
+///
+/// Asserts silence, NOT binding correctness: the call still mis-binds (see the
+/// scope note above), which is #6705's to fix.
+#[test]
+fn arity_within_the_declared_param_count_is_not_over_arity() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_EXACT_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "`WidgetAutoArity` declares TWO params (`a` is `auto`, still declared), so a \
+         2-arg call is within the declared arity and must be silent. The ceiling must \
+         count DECLARED params, not positionally-bindable slots. Got: {diags:#?}"
+    );
+}
+
+const SRC_AUTO_FREE_PARAM_EXACT_ARITY: &str = r#"module test.auto_free_param_exact_arity
+structure def WidgetAutoFreeArity {
+    param a : Real = auto(free)
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoFreeArity(1.0, 2.0)
+}
+"#;
+
+/// (b) The same for `auto(free)` — both spellings lower to
+/// `ValueCellKind::Auto { free }`, so the ceiling must key off the VARIANT.
+#[test]
+fn arity_ceiling_counts_auto_free_params_too() {
+    let module = compile_source_with_stdlib(SRC_AUTO_FREE_PARAM_EXACT_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "an `auto(free)` param is declared just as a strict `auto` one is; the ceiling \
+         must not depend on the `free` flag. Got: {diags:#?}"
+    );
+}
+
+const SRC_AUTO_PARAM_GENUINE_OVER_ARITY: &str = r#"module test.auto_param_over_arity
+structure def WidgetAutoSurplus {
+    param a : Real = auto
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoSurplus(1.0, 2.0, 3.0)
+}
+"#;
+
+/// (c) DETECTION-POWER GUARD, RED today. A genuine over-arity on the SAME
+/// auto-param template must still emit exactly one `CtorArity`, now reporting the
+/// DECLARED count with the noun keyed off it: `"expects at most 2 arguments,
+/// got 3"`. Today it wrongly reads `"at most 1 argument"`.
+///
+/// This is what forbids fixing (a)/(b) by suppressing the code whenever the
+/// template holds an `Auto` cell: that would pass (a)/(b) while deleting ε's
+/// arity detection on ~20 corpus structures.
+#[test]
+fn genuine_over_arity_on_an_auto_param_template_reports_the_declared_ceiling() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_GENUINE_OVER_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "three args against two declared params is still over-arity — exactly one \
+         CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::CtorArity),
+        "expected CtorArity, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].message,
+        "E_CTOR_ARITY: WidgetAutoSurplus() expects at most 2 arguments, got 3",
+        "the ceiling, the reported count and the PLURAL noun must all key off the \
+         DECLARED param count (2), not the `Param`-only slot count (1)"
+    );
+}
+
+/// (d) NO-DRIFT GUARD — green before AND after. On a template with no `Auto`
+/// cell `declared_count == nparams`, and a non-empty surplus set already implies
+/// `args.len() > nparams`, so the new ceiling and the new `args.len() >
+/// declared_count` conjunct are both no-ops there. Table-driven over the
+/// pre-existing no-auto arity fixtures — message, count and span all unchanged.
+#[test]
+fn no_auto_over_arity_messages_and_spans_are_unchanged_by_the_declared_ceiling() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "one surplus",
+            SRC_OVER_ARITY,
+            "E_CTOR_ARITY: Widget12() expects at most 1 argument, got 2",
+        ),
+        (
+            "two surplus",
+            SRC_OVER_ARITY_BY_TWO,
+            "E_CTOR_ARITY: Widget12() expects at most 1 argument, got 3",
+        ),
+        (
+            "zero-param template",
+            SRC_ZERO_PARAM_OVER_ARITY,
+            "E_CTOR_ARITY: W0() expects at most 0 arguments, got 1",
+        ),
+        (
+            "named then positional",
+            SRC_MIXED_NAMED_THEN_POSITIONAL,
+            "E_CTOR_ARITY: Widget12() expects at most 1 argument, got 2",
+        ),
+    ];
+    for &(label, source, expected) in cases {
+        let module = compile_source_with_stdlib(source);
+        let diags = ctor_conformance_diags(&module);
+        assert_eq!(
+            diags.len(),
+            1,
+            "[{label}] must still emit exactly one ctor-conformance diagnostic, got: \
+             {diags:#?}"
+        );
+        assert_eq!(
+            diags[0].message, expected,
+            "[{label}] a template with no `Auto` cell must be wholly unaffected by the \
+             declared-param ceiling"
+        );
+    }
+    // Span: unchanged anchoring at the FIRST surplus argument.
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY);
+    let span: SourceSpan = ctor_conformance_diags(&module)[0].labels[0].span;
+    let sliced = &SRC_OVER_ARITY[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains('b') && !sliced.contains('a'),
+        "the label must still anchor at the surplus `\"b\"` — the ceiling change must \
+         not move `extra_positional_idxs`, got slice {sliced:?}"
+    );
+}
