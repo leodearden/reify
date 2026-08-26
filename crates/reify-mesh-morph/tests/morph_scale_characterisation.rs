@@ -624,3 +624,103 @@ fn gmsh_arm_is_absent_in_a_stub_build() {
          of this harness is silently compiled out while gmsh is in fact usable"
     );
 }
+
+/// The joiner must select the rung minimising `|tets - target|`, must skip
+/// failed rungs, and must degrade to `None` rather than panicking.
+///
+/// Driven entirely by synthetic values: no gmsh call and no meshing, because
+/// what is under test is the selection rule, not any particular count. Held
+/// non-ignored for that reason — it is pure arithmetic and costs nothing.
+///
+/// The load-bearing case is the third one. The two ladders are swept
+/// INDEPENDENTLY — the morph arm by `n`, the gmsh arm by `mesh_size` — so
+/// their counts never coincide, and a naive "largest rung at or below the
+/// target" scan silently reports a ratio taken at a materially coarser
+/// gmsh rung than the morph it is divided by. That inflates the morph arm's
+/// apparent advantage in exactly the direction #2953's threshold is
+/// sensitive to, which is why it is pinned here rather than left to review.
+#[cfg(has_gmsh)]
+#[test]
+fn nearest_by_tet_count_selects_the_closest_rung() {
+    fn rung(mesh_size: f64, tets: usize, ok: bool) -> GmshMeasurement {
+        GmshMeasurement {
+            mesh_size,
+            tets,
+            nodes: tets / 5,
+            elapsed: Duration::from_millis(1),
+            result: if ok {
+                Ok(VolumeMesh {
+                    vertices: Vec::new(),
+                    connectivity: reify_ir::VolumeConnectivity::Tet {
+                        indices: Vec::new(),
+                        order: reify_ir::ElementOrderTag::P1,
+                    },
+                    normals: None,
+                    boundary: None,
+                })
+            } else {
+                Err(reify_ir::GeometryError::OperationFailed(
+                    "synthetic failed rung".to_string(),
+                ))
+            },
+        }
+    }
+
+    // Empty ladder — a stub build or a wholly failed sweep must degrade to
+    // "no paired ratio available", not abort the driver mid-run.
+    assert!(
+        nearest_by_tet_count(&[], 10_000).is_none(),
+        "an empty ladder must yield None"
+    );
+
+    let ladder = [
+        rung(0.060, 4_000, true),
+        rung(0.035, 9_000, true),
+        rung(0.028, 12_000, true),
+        rung(0.014, 95_000, true),
+    ];
+
+    // Exact hit.
+    let hit = nearest_by_tet_count(&ladder, 12_000).expect("a non-empty ok ladder must select");
+    assert_eq!(hit.tets, 12_000, "an exact match must select itself");
+
+    // Nearest is BELOW the target.
+    let below = nearest_by_tet_count(&ladder, 9_400).expect("must select");
+    assert_eq!(
+        below.tets, 9_000,
+        "9,400 is 400 from 9,000 and 2,600 from 12,000"
+    );
+
+    // Nearest is ABOVE the target — the case a "largest rung below target"
+    // scan gets wrong, and the reason this test exists.
+    let above = nearest_by_tet_count(&ladder, 11_000).expect("must select");
+    assert_eq!(
+        above.tets, 12_000,
+        "11,000 is 1,000 from 12,000 but 2,000 from 9,000 — a below-only scan \
+         would wrongly pair against the 9,000 rung and overstate the morph arm's \
+         advantage by pairing it against a coarser remesh than it was matched to"
+    );
+
+    // Failed rungs are excluded even when they are numerically nearest: a
+    // failed rung reports `tets == 0` and carries no meaningful wall-clock, so
+    // pairing against one would fabricate a ratio out of a zero.
+    let with_failure = [
+        rung(0.028, 12_000, false),
+        rung(0.035, 9_000, true),
+        rung(0.060, 4_000, true),
+    ];
+    let selected = nearest_by_tet_count(&with_failure, 12_000).expect("must select an ok rung");
+    assert_eq!(
+        selected.tets, 9_000,
+        "the numerically exact rung failed, so the nearest SUCCEEDING rung must be \
+         chosen instead of fabricating a ratio against a failed one"
+    );
+
+    // A ladder with no successful rung at all is indistinguishable from an
+    // empty one, and must degrade the same way.
+    let all_failed = [rung(0.028, 12_000, false), rung(0.035, 9_000, false)];
+    assert!(
+        nearest_by_tet_count(&all_failed, 12_000).is_none(),
+        "a ladder whose every rung failed must yield None, not a failed rung"
+    );
+}
