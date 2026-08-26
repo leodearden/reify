@@ -1067,9 +1067,41 @@ pub structure DriveTendons {
     //     so fusion is chirally one-sided). The rail feeds can't fuse either:
     //     their diagonals cross BOTH collar webs' swept z-band with
     //     contradictory slope requirements.
-    // Low runs stagger at low_hi / low_lo wherever their plan spans cross;
-    // every low run passes below the collar plates and the below-entry
-    // pulley discs.
+    // In-plane low runs stagger (plane_in's pair at low_in_hi / low_in_lo)
+    // wherever their plan spans cross; every low run passes below the collar
+    // plates and the below-entry pulley discs.
+    //
+    // ── OPEN QUESTIONS for future rounds (Leo, 2026-08-26 — parked while
+    // the queued engine fixes (#6586/#6592/#6631) land; v3.3+ candidates) ──
+    //  Q1. UNFLIP fairlead B: the v3 side-swap made the station set mirror-
+    //      symmetric, but it is also what pins b2's rise to the INBOARD
+    //      vertical (−32) — the very fact that kills b2's fusion (rule 7
+    //      note: its diagonal must hug plane_in near the rise). Unflipping
+    //      restores b2's rise to the outboard vertical (−168): does that
+    //      open a fused diagonal web element for b2 and delete its corner
+    //      disc (26 pulleys)? Price the trade: the unflip un-mirrors the
+    //      fairlead interface and re-raises the z-nesting questions this
+    //      header settled — and b1-in / b2-in consumed the swap too.
+    //  Q2. INCLINE the remaining desc_* segments (b1, a2, b2) even where no
+    //      pulley can be deleted: a descent need not be vertical — leaning
+    //      it toward its corner shortens descent + low run (the rule-7
+    //      fillet algebra applies unchanged; the corner disc yaws like the
+    //      v3.1 slant discs). The collar webs and the crossing rules
+    //      (families 2/2c/2d) bound the lean; nothing else obviously
+    //      forbids it.
+    //  Q3. LOWER idler_in_a1 / idler_in_b1 (and mirrors): the IN X-runs
+    //      ride at band height purely because the rear turns emit them
+    //      there — inclining each X-run downward from its rear turn to a
+    //      LOWERED down-idler shortens run + descent. Bounds: the z-nesting
+    //      law (the z_b run must still cross the z_a hardware from above)
+    //      and the fairlead entry heights (flz_in*).
+    //  Q4. FAIRLEAD lead geometry: the lead_in/lead_out segments meet the
+    //      drum HORIZONTALLY today, but the rope channel is a helix (lead
+    //      angle ≈2.7°) — should the leads meet the capstan TANGENT to the
+    //      helical channel instead? And would the static-balance C2
+    //      argument (FairleadPair placed twice) still cancel the moments as
+    //      well, given the helix tilt is chiral (same sign both windings)?
+    //      Lives in Capstan/CapstanUnit/FairleadPair, not this web.
     //
     // Fairlead mirrors — DERIVED through RearDrive's relays (#5360 landed
     // 2026-07-31); every one of these was a hand-kept literal until 2026-08-25.
