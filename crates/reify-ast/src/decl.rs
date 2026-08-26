@@ -1577,19 +1577,20 @@ impl ParseError {
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
     /// a parse error a user cannot locate is only marginally better than silence. `SourceSpan`
-    /// carries byte offsets only; this is the single place that converts them for human
-    /// output, so every caller reports positions the same way.
+    /// carries byte offsets only, and this — together with
+    /// [`render_with_offsets`](Self::render_with_offsets), which it delegates to — is the
+    /// single place that converts them for human output, so every caller reports positions the
+    /// same way.
     ///
-    /// Degrades rather than aborting on a span that does not index `source`:
+    /// Degrades rather than aborting on a span that does not index `source`: the prelude
+    /// sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) becomes the canonical
+    /// "no user-file location" fallback `1:1`, and any other out-of-range offset (a stale
+    /// span, or one belonging to a different file) is clamped to `source.len()`. See
+    /// [`render_with_offsets`](Self::render_with_offsets) for why each is handled that way.
     ///
-    /// - The prelude sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) is passed through
-    ///   UNCLAMPED, because [`reify_core::byte_offset_to_line_col`] short-circuits it to
-    ///   `(1, 1)` — the canonical "no user-file location" fallback — ahead of its own
-    ///   `debug_assert`. Clamping it first would turn that marker into a bogus end-of-file
-    ///   position.
-    /// - Any other out-of-range offset (a stale span, or one belonging to a different file)
-    ///   is clamped to `source.len()`, which keeps `byte_offset_to_line_col`'s
-    ///   `debug_assert!(offset <= source.len())` from panicking in debug builds.
+    /// This builds a newline table to serve ONE lookup, which is the same O(len(source)) it
+    /// would cost to scan; rendering a whole list should go through
+    /// [`render_all`](Self::render_all) instead, which builds one table for all of them.
     pub fn render(&self, source: &str) -> String {
         self.render_with_offsets(source, &reify_core::build_line_offsets(source))
     }
@@ -1784,7 +1785,8 @@ mod parse_error_render_tests {
             assert_eq!(
                 err.render_with_offsets(source, &line_offsets),
                 format!("{line}:{col}: m"),
-                "batch render disagrees with the scanning render at byte offset {offset} of                  {source:?}",
+                "batch render disagrees with the scanning render at byte offset {offset} \
+                 of {source:?}",
             );
         }
     }
