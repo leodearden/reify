@@ -311,3 +311,189 @@ fn both_reflection_paths_tessellate_to_outward_wound_closed_manifold() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tessellation-orientation helpers (step-4)
+// ---------------------------------------------------------------------------
+
+/// Compute the geometric normal of triangle (pa, pb, pc) from the emitted
+/// winding order: AB × AC. All inputs and the result are in f64.
+///
+/// Verbatim-shaped reuse of the same-named helper in
+/// `tessellation_winding_integration.rs`. Intentionally duplicated rather
+/// than hoisted to `tests/common/mod.rs` (reserved for helpers duplicated
+/// across MANY modules — see its header): this one is shared by exactly two
+/// sibling submodules of the same compile unit, and keeping the name
+/// identical documents the kinship for a reader rather than hiding it.
+fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
+    let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+    let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+    [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ]
+}
+
+/// Per-axis (min+max)/2 over `verts` — the AABB-centre reference direction
+/// used by [`assert_outward_wound_closed_manifold`]'s outward-winding check.
+/// Robust to non-uniform vertex density across faces, unlike a vertex-cloud
+/// mean (same rationale as `tessellation_winding_integration.rs`'s
+/// `box_centroid`).
+fn aabb_centre(verts: &[[f32; 3]]) -> [f64; 3] {
+    let mut min = [f64::MAX; 3];
+    let mut max = [f64::MIN; 3];
+    for v in verts {
+        for k in 0..3 {
+            let coord = v[k] as f64;
+            if coord < min[k] {
+                min[k] = coord;
+            }
+            if coord > max[k] {
+                max[k] = coord;
+            }
+        }
+    }
+    [
+        (min[0] + max[0]) / 2.0,
+        (min[1] + max[1]) / 2.0,
+        (min[2] + max[2]) / 2.0,
+    ]
+}
+
+/// Assert that `mesh` is a closed, orientable manifold whose triangles are
+/// ALL outward-wound and whose supplied per-vertex normals agree with that
+/// winding — the full T17 core obligation ([`both_reflection_paths_tessellate_to_outward_wound_closed_manifold`]'s
+/// doc comment explains why obligation (b) below is the load-bearing one and
+/// (a) alone is not sufficient).
+///
+/// `what` is interpolated into every panic message (e.g.
+/// `"cylinder_r6_h20 via AffineApply"`) so a failure identifies which
+/// fixture × path regressed. `#[track_caller]` so a failure points at the
+/// calling test line, matching this crate's `assert_aabb_eq` /
+/// `assert_records_in_range` convention.
+///
+/// Obligations, verbatim-shaped from `tessellation_winding_integration.rs`'s
+/// two tests (this module's convex reflected fixtures are the subject; that
+/// module's plain OCCT box is the precedent this reuses):
+///
+///   (a) `mesh.validate(0.0)` is `Ok` — the INV-GEO-1 mesh contract (Closed +
+///       ConsistentWinding + NonDegenerate on the position-welded quotient
+///       topology). `tol = 0.0`: this asserts real OCCT tessellation output,
+///       not a distance-tolerant approximation.
+///   (b) EVERY triangle is OUTWARD-wound: over the welded canonical
+///       positions, the winding normal `AB × AC` must have a strictly
+///       positive dot product with (triangle centroid − AABB centre).
+///   (c) EVERY triangle's averaged supplied per-vertex normal (over the RAW
+///       unwelded indices/vertices) agrees (dot > 0) with its raw winding
+///       normal.
+#[track_caller]
+fn assert_outward_wound_closed_manifold(mesh: &reify_ir::Mesh, what: &str) {
+    // (a) INV-GEO-1 mesh contract.
+    mesh.validate(0.0).unwrap_or_else(|e| {
+        panic!("{what}: mesh.validate(0.0) should succeed (INV-GEO-1 contract), got {e:?}")
+    });
+
+    assert_eq!(
+        mesh.indices.len() % 3,
+        0,
+        "{what}: index count must be a multiple of 3"
+    );
+    let num_tris = mesh.indices.len() / 3;
+
+    // (b) Outward winding over the welded canonical positions.
+    let (canon_verts, welded) = mesh.weld_positions();
+    let centre = aabb_centre(&canon_verts);
+
+    for t in 0..num_tris {
+        let ia = welded[mesh.indices[t * 3] as usize] as usize;
+        let ib = welded[mesh.indices[t * 3 + 1] as usize] as usize;
+        let ic = welded[mesh.indices[t * 3 + 2] as usize] as usize;
+        let pa = canon_verts[ia];
+        let pb = canon_verts[ib];
+        let pc = canon_verts[ic];
+
+        let pa_f64 = [pa[0] as f64, pa[1] as f64, pa[2] as f64];
+        let pb_f64 = [pb[0] as f64, pb[1] as f64, pb[2] as f64];
+        let pc_f64 = [pc[0] as f64, pc[1] as f64, pc[2] as f64];
+        let normal = tri_winding_normal(pa_f64, pb_f64, pc_f64);
+
+        let tri_centroid = [
+            (pa_f64[0] + pb_f64[0] + pc_f64[0]) / 3.0,
+            (pa_f64[1] + pb_f64[1] + pc_f64[1]) / 3.0,
+            (pa_f64[2] + pb_f64[2] + pc_f64[2]) / 3.0,
+        ];
+        let outward = [
+            tri_centroid[0] - centre[0],
+            tri_centroid[1] - centre[1],
+            tri_centroid[2] - centre[2],
+        ];
+        let dot = normal[0] * outward[0] + normal[1] * outward[1] + normal[2] * outward[2];
+
+        assert!(
+            dot > 0.0,
+            "{what}: triangle {t} (welded verts {ia},{ib},{ic}) geometric normal from emitted \
+             winding points inward (dot = {dot:.6}); every triangle must be outward-wound"
+        );
+    }
+
+    // (c) Supplied normals agree with the RAW (unwelded) winding.
+    let supplied = mesh
+        .normals
+        .as_ref()
+        .unwrap_or_else(|| panic!("{what}: tessellate should emit per-vertex normals"));
+    assert_eq!(
+        supplied.len(),
+        mesh.vertices.len(),
+        "{what}: normals array must have same length as vertices array"
+    );
+
+    for t in 0..num_tris {
+        let i0 = mesh.indices[t * 3] as usize;
+        let i1 = mesh.indices[t * 3 + 1] as usize;
+        let i2 = mesh.indices[t * 3 + 2] as usize;
+
+        let pa = [
+            mesh.vertices[i0 * 3] as f64,
+            mesh.vertices[i0 * 3 + 1] as f64,
+            mesh.vertices[i0 * 3 + 2] as f64,
+        ];
+        let pb = [
+            mesh.vertices[i1 * 3] as f64,
+            mesh.vertices[i1 * 3 + 1] as f64,
+            mesh.vertices[i1 * 3 + 2] as f64,
+        ];
+        let pc = [
+            mesh.vertices[i2 * 3] as f64,
+            mesh.vertices[i2 * 3 + 1] as f64,
+            mesh.vertices[i2 * 3 + 2] as f64,
+        ];
+        let winding_normal = tri_winding_normal(pa, pb, pc);
+
+        let avg_supplied = [
+            (supplied[i0 * 3] as f64 + supplied[i1 * 3] as f64 + supplied[i2 * 3] as f64) / 3.0,
+            (supplied[i0 * 3 + 1] as f64
+                + supplied[i1 * 3 + 1] as f64
+                + supplied[i2 * 3 + 1] as f64)
+                / 3.0,
+            (supplied[i0 * 3 + 2] as f64
+                + supplied[i1 * 3 + 2] as f64
+                + supplied[i2 * 3 + 2] as f64)
+                / 3.0,
+        ];
+
+        let dot = winding_normal[0] * avg_supplied[0]
+            + winding_normal[1] * avg_supplied[1]
+            + winding_normal[2] * avg_supplied[2];
+
+        assert!(
+            dot > 0.0,
+            "{what}: triangle {t} (raw verts {i0},{i1},{i2}) supplied normals (avg \
+             [{:.4},{:.4},{:.4}]) disagree with the geometric winding normal (dot = {dot:.6}); \
+             supplied normals must agree with the outward-wound triangles",
+            avg_supplied[0],
+            avg_supplied[1],
+            avg_supplied[2],
+        );
+    }
+}
