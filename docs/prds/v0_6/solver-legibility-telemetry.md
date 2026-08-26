@@ -246,12 +246,22 @@ The record's fields are exactly the union of what is already computed:
 |---|---|---|
 | Per-auto | `cell_id`, resolved value, `scope`, `objective` (term count + terms), `combination`, `term_contributions`, `synthetic_centrality`, `inherited_from` | `ObjectiveProvenance` (5 fields, of which `reify explain` renders 3) |
 | Per-constraint | `id`, `label`, `satisfaction`, `margin: Option<f64>` | `ConstraintCheckEntry` + ε's keyed slack |
-| Per-solve | `OptimalityStatus`, uniqueness, the `ResolutionProfile` that ran (budget axis, staleness axis), stale-served flag | `ranked.rs` + P1 α |
+| Per-solve | `OptimalityStatus`, uniqueness, the `ResolutionProfile` that ran (budget axis, staleness axis), stale-served flag, `completeness` (**RESERVED** — see §8.2) | `ranked.rs` + P1 α; the `completeness` slot has **no source today** — its vocabulary is P3 **#6706**'s `Completeness` carrier (`Exhaustive \| Partial{reason} \| Refuted{narrowing}`), first populated by P3 **#6711** |
 | Diagnostics | the `DiagnosticCode`-carrying eval diagnostics for this solve | `CheckResult.diagnostics` (γ) |
+
+**The `completeness` slot is named and reserved, and no P4 leaf populates it.** It is
+listed here so that §11's "a named slot in the record" has a referent a reader can
+point at, and so that a renderer author meets the slot in the contract rather than
+inventing one. The vocabulary is **#6706**'s (the `Completeness` carrier); the first
+producer that fills it is **#6711**, which dedups the candidate set by basin box,
+attaches the verdict, and renders it through `ObjectiveProvenance` / `reify explain`
+(§8.2 rules the ownership split). Reserving the slot changes **no** P4 leaf's scope,
+`metadata.files` or signal: nothing in §13 gains an obligation, and no leaf acquires
+a dependency on either id.
 
 ### §4.2 — C2: honest absence, never a fabricated value
 
-Three field-level rules, each with a verified motivating defect:
+Four field-level rules, each with a verified motivating defect:
 
 - **Slack is inequality-only.** `Eq`, `Ne` and `Or` are explicitly skipped by
   `collect_slack_terms` — there is no well-defined signed interior slack for an
@@ -265,6 +275,14 @@ Three field-level rules, each with a verified motivating defect:
   that emitting `0.0` "would be a wire-level lie". That judgement is correct and is
   hereby promoted to a contract rule. Populating those fields honestly requires
   widening `ConstraintCheckEntry` first (ε), which is why ζ depends on ε.
+- **Never substitute a weaker claim for an absent one.** While the `completeness` slot
+  (§4.1) is unpopulated, every renderer shows **nothing** for it — and in particular must
+  not render a bare `unique: true` in its place. #6706's invariant C1 makes `unique` a
+  *derived* value — `unique == (completeness == Exhaustive && solutions.len() == 1)` — so
+  a standalone uniqueness claim, asserted without the completeness verdict it is derived
+  from, is exactly the fabricated value this rule bans. Nothing renders uniqueness today
+  (§13 Q1's θ chip states and λ's `solve_report` field list both omit it), so this bullet
+  forbids a future lie rather than obligating any existing leaf.
 
 ### §4.3 — C3: the GUI seam obeys the existing conventions
 
