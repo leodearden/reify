@@ -16,6 +16,11 @@
 //!   * `crates/reify-syntax/tests/`
 //!   * `crates/reify-ast/tests/`
 //!
+//! Excluded from scan (conformance corpus, must-reject fixtures are chartered):
+//!   * `crates/reify-spec-conformance/fixtures/` — Ring-1 language-spec
+//!     conformance fixtures are free to violate any spec clause on purpose,
+//!     including this one.
+//!
 //! This test is GREEN (δ migration complete). It becomes compiler-redundant
 //! once γ adds `E_BARE_SCALAR`, but protects the δ→γ window as a regression
 //! guard.
@@ -230,6 +235,28 @@ fn corpus_has_zero_bare_scalar() {
     let syntax_tests = root.join("crates").join("reify-syntax").join("tests");
     let ast_tests = root.join("crates").join("reify-ast").join("tests");
     files.retain(|p| !p.starts_with(&syntax_tests) && !p.starts_with(&ast_tests));
+
+    // Exclude the Ring-1 language-spec conformance fixture tree — its residents
+    // are CHARTERED must-reject fixtures (PRD `docs/prds/v0_6/spec-conformance-suite.md`
+    // D2, leaf beta #6759).  Deliberately unparseable, deliberately-diagnostic-emitting
+    // and deliberately spec-violating .ri files live there by design, and bare-`Scalar`
+    // rejection is ITSELF a spec clause the conformance suite must be able to test —
+    // so its fixtures have to be free to violate it.  See that tree's own
+    // `fixtures/README.md` for the charter.
+    //
+    // Accepted blind spot: the exclusion is directory-level, not file-level.
+    // Any future fixture added under that tree is also excluded from the scan.
+    // This is intentional and matches the arm above: the invariant the directory
+    // enforces — a conformance fixture may violate any spec clause on purpose —
+    // holds for every future resident, not just today's files.  The tree carries a
+    // permanently committed placement probe that IS a live violator of this
+    // predicate, so this arm can never silently go vacuous: delete it, narrow its
+    // path, or move the tree, and this test reds again naming that file.
+    let spec_conformance_fixtures = root
+        .join("crates")
+        .join("reify-spec-conformance")
+        .join("fixtures");
+    files.retain(|p| !p.starts_with(&spec_conformance_fixtures));
 
     let mut violations: Vec<String> = Vec::new();
 
