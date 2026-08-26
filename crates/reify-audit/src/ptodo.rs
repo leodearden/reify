@@ -180,12 +180,145 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 // §8.2 citation resolution (canonical vs malformed)
 // -----------------------------------------------------------------------
 
+/// §8.2 PRD-relative index: `true` when the `#` at `cite_start` (with parsed
+/// value `id`) names an index INSIDE a PRD document — a task/invariant/row/
+/// open-question number local to some `docs/prds/**` file — rather than a
+/// canonical task id.  Inspects ONLY the bytes to the LEFT of the `#`.
+///
+/// CLAUDE.md's TODO-citation convention already bans this register
+/// ("PRD-relative indices (`task-5`) … resolve to `malformed-cite`"); this is
+/// the recogniser that implements it for the `#N` spelling.
+///
+/// Three families, all measured over the live corpus (task #6103):
+///
+/// 1. **Glued PRD-artifact namespace** — the `#` is glued (no space) to a
+///    section or artifact abbreviation: `§7#5`, `Open Q#4`, `OQ#1`, `PRD DD#4`,
+///    `PRD T#11`.  The abbreviation must itself have a left word boundary, so
+///    an identifier that merely ENDS in one of those letters (`ELEMENT#3`) does
+///    not match.
+/// 2. **Spaced PRD-local noun** — exactly one space separates the `#` from a
+///    preceding `invariant(s)` / `row(s)` / `boundary` / `open-question` /
+///    `design decision` token.  These need no digit bound: all 52 repo-wide
+///    `invariant #N` occurrences are single-digit PRD-local, and not one is a
+///    task id, so the noun alone is a zero-collision discriminator.
+/// 3. **`task(s)` + digit bound** — exactly one space separates the `#` from a
+///    `task`/`tasks` token AND `id <= 99`.
+///
+/// **Why family 3 keys on DIGIT COUNT, not on a `PRD` left-context window.**
+/// A form catalogue of the whole corpus showed left-context alone fails
+/// `task #N` in BOTH directions.  Poor recall: `crates/reify-core/src/
+/// diagnostics.rs:3304` reads ``(task #2992, PRD `docs/prds/v0_3/
+/// hex-wedge-meshing.md` task #11)`` — `task #11` is PRD-relative but a long
+/// path pushes `PRD` outside any sane window.  False suppression:
+/// `crates/reify-compiler/src/stdlib_loader.rs:257` reads `task #333 per PRD
+/// §Slice B`, where a symmetric window would kill a GENUINE cite.  The digit
+/// split is decisive and measured: **1721 four-digit genuine `task #N` cites
+/// vs ~281 one/two-digit PRD-relative ones; the max observed PRD-relative
+/// index is 21; and the only genuine three-digit legacy ids are #333, #479 and
+/// #630 — all ≥ 100.**  Pinned by `prd_relative_cite_negatives`.
+///
+/// **Classification is per-`#N`-OCCURRENCE, never per-line.**  Six live lines
+/// carry both idioms at once — `crates/reify-mesh-morph/src/eligibility.rs:61`
+/// reads ``/// visibility scheme (PRD task #11, task #2948) maintain separate
+/// counters`` — so a per-line verdict would either drop the real `#2948` cite
+/// or resurrect the PRD-relative `#11`.  Pinned by
+/// `prd_relative_cite_is_per_occurrence_not_per_line`.
+///
+/// **Deliberately out of scope:** the non-PRD `#N` registers `edge #N`,
+/// `suggestion #N`, `Gap #N` and `site #N`.  They are unambiguous non-task
+/// idioms and could be added, but they have ZERO measured exposure in any lane
+/// (none appears in the δ-B population), and PRD §14/§16's methodology is that
+/// every widening arrives with a fresh live-corpus enumeration, a
+/// hand-inspected FP count and a dated §16 row.  Adding unmeasured forms would
+/// violate the discipline this recogniser exists to honour — so a later
+/// widening needs its own evidence row, not a one-line edit here.
+///
+/// The G-allow owner-cite lane's own narrower `PRD `-immediately-left check
+/// ([`is_g_allow_cite_exempt`] rule (c)) is deliberately NOT refactored to
+/// delegate here: it belongs to a different lane with its own `g-allow-orphaned`
+/// baseline exposure, and widening it would silently change which owner cites
+/// are exempt.  That is the same restraint task #6087 applied to the γ
+/// `#[ignore]` arm.  The two grammars are genuinely decoupled —
+/// [`extract_g_allow_owner_cites`] runs an independent scan and never calls
+/// [`extract_cites`] — so the duplication is contained and is pinned by the
+/// pre-existing `extract_g_allow_owner_cites_*` tests staying green.
+fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
+    /// The token alphabet for the spaced-noun families: [`is_word_byte`] plus
+    /// `-`, so a hyphenated PRD noun (`open-question`) is read as ONE token.
+    fn is_token_byte(b: u8) -> bool {
+        is_word_byte(b) || b == b'-'
+    }
+
+    /// The whole token ending at `end` (exclusive), scanning left over
+    /// [`is_token_byte`].  Returns the token slice and its start offset; the
+    /// token is empty when `end` is preceded by a non-token byte.
+    fn token_before(bytes: &[u8], end: usize) -> (&[u8], usize) {
+        let mut s = end;
+        while s > 0 && is_token_byte(bytes[s - 1]) {
+            s -= 1;
+        }
+        (&bytes[s..end], s)
+    }
+
+    let left = &bytes[..cite_start];
+
+    // ---- family 1: glued PRD-artifact namespace ------------------------
+    // `§<digits/dots>#N` — scan back over the section number, then require the
+    // section sign itself (U+00A7 = 0xC2 0xA7).
+    let mut s = left.len();
+    while s > 0 && (left[s - 1].is_ascii_digit() || left[s - 1] == b'.') {
+        s -= 1;
+    }
+    if s >= 2 && left[s - 2] == 0xC2 && left[s - 1] == 0xA7 {
+        return true;
+    }
+    // `OQ#N` / `DD#N` / `Q#N` / `T#N` — an uppercase artifact abbreviation with
+    // a left word boundary.  All candidates are tried: `OQ#1` would fail the
+    // boundary check as `Q` (preceded by the word byte `O`) yet passes as `OQ`.
+    for abbrev in [b"OQ".as_slice(), b"DD".as_slice(), b"Q".as_slice(), b"T".as_slice()] {
+        if let Some(head) = left.strip_suffix(abbrev)
+            && head.last().is_none_or(|&b| !is_word_byte(b))
+        {
+            return true;
+        }
+    }
+
+    // ---- families 2 and 3: exactly one space, then a PRD-local noun -----
+    // "Exactly one space" is the conservative reading: a wider separator rule
+    // would classify MORE cites as PRD-relative, and every such classification
+    // suppresses a cite, so the narrow form is the fail-safe direction.
+    if left.last() != Some(&b' ') || (left.len() >= 2 && left[left.len() - 2] == b' ') {
+        return false;
+    }
+    let (token, token_start) = token_before(left, left.len() - 1);
+    let token = String::from_utf8_lossy(token).to_ascii_lowercase();
+    match token.as_str() {
+        "invariant" | "invariants" | "row" | "rows" | "boundary" | "open-question"
+        | "design_decision" => true,
+        // `design decision #5` — the bare noun `decision` is only PRD-local
+        // when `design` immediately qualifies it (one space, as above).
+        "decision" => {
+            token_start > 0
+                && left[token_start - 1] == b' '
+                && token_before(left, token_start - 1)
+                    .0
+                    .eq_ignore_ascii_case(b"design")
+        }
+        // Family 3 — the digit bound is what makes this arm safe; see above.
+        "task" | "tasks" => id <= 99,
+        _ => false,
+    }
+}
+
 /// §8.2 canonical citation: a `#` immediately followed by a run of 1..=5 ASCII
 /// digits whose run length is ≤5 (the char after the run is not a digit, so a
 /// 6-digit number is not matched on its 5-digit prefix) AND whose value is ≥1.
 /// An all-zero run (`#0`, `#00`) is rejected — task ids start at 1, so a `#0`
 /// cite is not canonical and falls through to the structural `untracked`
 /// classification (mirrors the ≥1 guard in [`extract_cites`]).
+///
+/// A `#N` that [`prd_relative_cite`] recognises as a PRD-relative index is NOT
+/// canonical — it names a position inside a PRD document, not a task.
 fn has_canonical_cite(line: &str) -> bool {
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -198,7 +331,19 @@ fn has_canonical_cite(line: &str) -> bool {
             let run = j - (i + 1);
             // ≥1 guard: the run must carry a non-zero digit (`#0`/`#00` → 0 → not
             // a valid task id). `#007` (= 7) is still canonical.
-            if (1..=5).contains(&run) && bytes[i + 1..j].iter().any(|&b| b != b'0') {
+            //
+            // `line[i + 1..j]` is a 1..=5-digit ASCII run, so it always fits in
+            // u32 (max 99999) and the parse cannot fail. The §8.2 PRD-relative
+            // filter is applied AFTER the digit-run and ≥1 checks so it COMPOSES
+            // with the existing grammar rather than replacing it, and it is
+            // consulted per-OCCURRENCE — a disqualified `#N` is skipped and the
+            // scan continues, so a line carrying both idioms still reports the
+            // genuine cite.
+            if (1..=5).contains(&run)
+                && let Ok(id) = line[i + 1..j].parse::<u32>()
+                && id >= 1
+                && !prd_relative_cite(bytes, i, id)
+            {
                 return true;
             }
         }
@@ -216,6 +361,11 @@ fn has_canonical_cite(line: &str) -> bool {
 /// is dropped here (keeping it lock-step with [`has_canonical_cite`]'s ≥1 guard,
 /// so `#0` classifies structurally as `untracked` rather than spuriously
 /// `unknown-id`).
+///
+/// PRD-relative indices are dropped here too, by the same
+/// [`prd_relative_cite`] filter [`has_canonical_cite`] applies — the two are
+/// required to stay lock-step, so a cite that is not canonical must also not be
+/// extracted.
 fn extract_cites(line: &str) -> Vec<u32> {
     let bytes = line.as_bytes();
     let mut out = Vec::new();
@@ -233,6 +383,7 @@ fn extract_cites(line: &str) -> Vec<u32> {
                 // `#00`) — task ids start at 1, so it is not a valid cite.
                 if let Ok(id) = line[i + 1..j].parse::<u32>()
                     && id >= 1
+                    && !prd_relative_cite(bytes, i, id)
                 {
                     out.push(id);
                 }
