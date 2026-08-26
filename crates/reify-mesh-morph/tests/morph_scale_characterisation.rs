@@ -159,3 +159,79 @@ fn bracket_fixture_reaches_the_10k_and_100k_tet_calibration_scales() {
         }
     }
 }
+
+/// The tet -> boundary-surface extractor that feeds the gmsh arm must emit
+/// exactly the once-occurring tet faces, wound outward, compacted onto only
+/// the vertices it actually references.
+///
+/// The assertion target is `reify_ir::Mesh::validate`
+/// (`crates/reify-ir/src/geometry.rs:3187`) rather than a hand-rolled Euler
+/// check: it is precisely the producer-obligation set gmsh's preflight
+/// demands — finite, index-valid, non-degenerate, closed, and consistently
+/// wound on the position-welded quotient.
+///
+/// Cheap and always-on: n=4, the existing `calibration.rs` cost point.
+#[test]
+fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
+    use std::collections::{HashMap, HashSet};
+
+    let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
+    let surface = fixtures::boundary_surface(&mesh);
+
+    // (1) The full mesh contract. Naming the Err variant means a contract
+    // violation reports which obligation failed rather than "assert failed".
+    if let Err(violation) = surface.validate(1e-6) {
+        panic!(
+            "boundary_surface(bracket(n=4)) violates the mesh contract, so gmsh's \
+             preflight would reject it: {violation:?}"
+        );
+    }
+
+    assert_eq!(
+        surface.indices.len() % 3,
+        0,
+        "boundary_surface must emit whole triangles; got {} indices",
+        surface.indices.len()
+    );
+
+    // (2) Triangle count == number of tet faces occurring exactly once,
+    // recomputed here from `tet_indices` so the test does not merely restate
+    // the implementation.
+    let tets = mesh
+        .tet_indices()
+        .expect("bracket must expose tet connectivity");
+    let mut face_counts: HashMap<[u32; 3], usize> = HashMap::new();
+    for tet in tets.chunks_exact(4) {
+        for &[i, j, k] in &[[0usize, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] {
+            let mut key = [tet[i], tet[j], tet[k]];
+            key.sort_unstable();
+            *face_counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    let expected_tris = face_counts.values().filter(|&&c| c == 1).count();
+    assert_eq!(
+        surface.indices.len() / 3,
+        expected_tris,
+        "boundary_surface must emit exactly the once-occurring tet faces"
+    );
+
+    // (3) Compaction: every emitted vertex is referenced by some triangle,
+    // i.e. the extractor remaps rather than carrying interior nodes through.
+    let used: HashSet<u32> = surface.indices.iter().copied().collect();
+    assert_eq!(
+        used.len(),
+        surface.vertices.len() / 3,
+        "boundary_surface must carry only referenced vertices; {} emitted but only \
+         {} referenced (interior nodes would be handed to gmsh for nothing)",
+        surface.vertices.len() / 3,
+        used.len()
+    );
+
+    // (4) Compaction is a strict narrowing of the volume mesh's vertex table.
+    assert!(
+        surface.vertices.len() / 3 <= mesh.vertices.len() / 3,
+        "boundary_surface emitted {} vertices from a {}-vertex volume mesh",
+        surface.vertices.len() / 3,
+        mesh.vertices.len() / 3
+    );
+}
