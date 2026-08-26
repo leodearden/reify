@@ -476,6 +476,152 @@ assert "(g-d) check does NOT report an inert config.worktree as armed" \
 assert "(g-d) ...and arm therefore succeeds on such a store" \
     bash "$GUARD" arm "$NOEXT_REPO"
 
+# ── (g-e) THE MAIN CHECKOUT's own config.worktree is a sweep blind spot ───────
+# With extensions.worktreeConfig on, the main checkout's per-worktree config is
+# <common>/config.worktree — NOT <common>/worktrees/*/config.worktree — because
+# for the main checkout git dir == common dir.  That is the same asymmetry (i-f)
+# already pins for scan-locks.  A main-checkout self-arm is therefore invisible
+# to BOTH detection paths at once: the effective-value read
+# (`git -C $TARGET config --get`) sees only the TARGET's own config.worktree, and
+# the sweep globs only the linked worktrees.
+#
+# MEASURED against the pre-fix guard: shared rerere.enabled=false plus a main-dir
+# plant of true made `check <lane>` exit 0 emitting NOTHING while `check <main>`
+# exited 1, and `arm <lane>` returned 0 ("disarmed and verified") with main still
+# effectively true.  That is a silent FALSE CLEAN — not even the advisory exit 2
+# — at the site that matters most: scripts/land.sh runs a real
+# `git merge --no-ff` in the main checkout (CLAUDE.md "Landing on main").
+echo ""
+echo "--- (g-e) check sweeps the main checkout's own config.worktree ---"
+
+read -r GE_REPO GE_A GE_B <<< "$(make_wt_repo)"
+GE_COMMON="$(common_dir "$GE_REPO")"
+
+# (g-e-a) NEGATIVE CONTROL FIRST.  With no main-dir plant this fixture is clean,
+# so a PASS below cannot be the new sweep arm firing unconditionally.
+assert "(g-e-a) no main-dir plant -> check from a lane exits 0" \
+    bash "$GUARD" check "$GE_A"
+
+git -C "$GE_REPO" config --worktree rerere.enabled true
+
+# (g-e-b) Fixture preconditions MEASURED, not assumed.
+assert "(g-e-b) fixture: the plant landed at <common>/config.worktree" \
+    bash -c "[ \"\$(git config --file '$GE_COMMON/config.worktree' --bool --get rerere.enabled)\" = true ]"
+
+assert "(g-e-b) fixture: nothing under worktrees/ carries it — the glob is blind" \
+    bash -c "! grep -rqs rerere '$GE_COMMON/worktrees/'"
+
+assert "(g-e-b) fixture: effective rerere.enabled is true in the MAIN checkout" \
+    bash -c "[ \"\$(git -C '$GE_REPO' config --bool --get rerere.enabled)\" = true ]"
+
+assert "(g-e-b) fixture: ...while a LANE still reads false (so only the sweep can see it)" \
+    bash -c "[ \"\$(git -C '$GE_A' config --bool --get rerere.enabled)\" = false ]"
+
+# (g-e-c) The hazard itself: a lane must now SEE the main checkout's self-arm.
+assert "(g-e-c) main-dir override -> check from a lane exits non-zero" \
+    bash -c "! bash '$GUARD' check '$GE_A' >/dev/null 2>&1"
+
+assert "(g-e-c) check names the hit '<main checkout>'" \
+    bash -c "bash '$GUARD' check '$GE_A' 2>&1 >/dev/null | grep -q -- '<main checkout>'"
+
+# The label must be STATED, not derived: basename(dirname <common>/config.worktree)
+# is the useless '.git'.  _classify_lock already labels that same dir
+# '<main checkout>' in scan-locks, and the two subcommands must agree.
+assert "(g-e-c) ...and never labels it the useless '.git'" \
+    bash -c "! bash '$GUARD' check '$GE_A' 2>&1 >/dev/null | grep -q \"worktree '.git'\""
+
+assert "(g-e-c) ...and does not name an innocent linked worktree" \
+    bash -c "! bash '$GUARD' check '$GE_A' 2>&1 >/dev/null | grep -q 'wtA'"
+
+# (g-e-d) Main/lane symmetry — the guard's header promises the main checkout and
+# any linked lane are interchangeable as targets.
+assert "(g-e-d) check from the MAIN checkout also exits non-zero" \
+    bash -c "! bash '$GUARD' check '$GE_REPO' >/dev/null 2>&1"
+
+# (g-e-e) `arm` writes --local only and can never clear a per-worktree file, so
+# the correct verdict is the advisory 2 — the same contract as (h-f), which
+# setup-dev.sh warns-and-continues on.  The shared config is armed FIRST so the
+# "still wrote both keys" assertions below are not vacuous.
+git -C "$GE_REPO" config rerere.enabled true
+git -C "$GE_REPO" config rerere.autoupdate true
+
+bash "$GUARD" arm "$GE_A" >/dev/null 2>&1 && _ge_status=0 || _ge_status=$?
+
+assert "(g-e-e) arm from a lane exits 2 (not 0, not 1) with main self-armed" \
+    test "$_ge_status" -eq 2
+
+assert "(g-e-e) arm still wrote rerere.enabled=false to the shared config" \
+    bash -c "[ \"\$(git -C '$GE_REPO' config --local --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-e-e) arm still wrote rerere.autoupdate=false to the shared config" \
+    bash -c "[ \"\$(git -C '$GE_REPO' config --local --bool --get rerere.autoupdate)\" = false ]"
+
+assert "(g-e-e) arm names '<main checkout>' so an operator can act" \
+    bash -c "bash '$GUARD' arm '$GE_A' 2>&1 >/dev/null | grep -q -- '<main checkout>'"
+
+unset _ge_status
+
+# ── (g-e-f) EXTENSION OFF: a main-dir config.worktree is inert too ────────────
+# The (g-d) false-positive rule applies identically to the new path.  With
+# extensions.worktreeConfig off git never reads config.worktree at all, so a
+# main-dir plant is dead bytes; reporting it ARMED would make `arm` fail
+# permanently on a healthy store, since `arm` writes --local and can never clear
+# a per-worktree file.
+echo ""
+echo "--- (g-e-f) main-dir config.worktree with the extension OFF is inert ---"
+
+GENX_REPO="$(make_repo)"
+GENX_COMMON="$(common_dir "$GENX_REPO")"
+git -C "$GENX_REPO" config rerere.enabled false
+git -C "$GENX_REPO" config rerere.autoupdate false
+# Planted with `git config --file`, never `--worktree`: git REFUSES the latter
+# outright while the extension is off, which is itself part of the point.
+git config --file "$GENX_COMMON/config.worktree" rerere.enabled true
+
+assert "(g-e-f) fixture: extensions.worktreeConfig is NOT enabled" \
+    bash -c "[ \"\$(git -C '$GENX_REPO' config --bool --get extensions.worktreeConfig 2>/dev/null || true)\" != true ]"
+
+assert "(g-e-f) fixture: the main-dir config.worktree really was planted" \
+    bash -c "[ \"\$(git config --file '$GENX_COMMON/config.worktree' --bool --get rerere.enabled)\" = true ]"
+
+assert "(g-e-f) git IGNORES it — effective rerere.enabled in the main checkout is false" \
+    bash -c "[ \"\$(git -C '$GENX_REPO' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-e-f) check does NOT report an inert main-dir config.worktree" \
+    bash "$GUARD" check "$GENX_REPO"
+
+assert "(g-e-f) ...and arm therefore succeeds on such a store" \
+    bash "$GUARD" arm "$GENX_REPO"
+
+# ── (g-e-g) NO LINKED WORKTREES: the main dir is still swept ──────────────────
+# A store with no worktrees/ dir is a normal shape, not a reason to skip the
+# sweep — the same reasoning (i-f) already pins for scan-locks.  The load-bearing
+# assertion is the '<main checkout>' LABEL: an armed rerere.enabled is also
+# visible to `check`'s ordinary effective-value read here (the target IS the main
+# checkout), so only the label proves the sweep itself ran on this shape.
+echo ""
+echo "--- (g-e-g) the sweep reaches the main dir on a store with no lanes ---"
+
+GENW_REPO="$(make_repo)"
+GENW_COMMON="$(common_dir "$GENW_REPO")"
+git -C "$GENW_REPO" config extensions.worktreeConfig true
+git -C "$GENW_REPO" config rerere.enabled false
+git -C "$GENW_REPO" config rerere.autoupdate false
+
+assert "(g-e-g) fixture: the store really has no worktrees/ dir" \
+    bash -c "! test -d '$GENW_COMMON/worktrees'"
+
+assert "(g-e-g) baseline: clean before the plant" \
+    bash "$GUARD" check "$GENW_REPO"
+
+git -C "$GENW_REPO" config --worktree rerere.enabled true
+
+assert "(g-e-g) a main-dir plant is reported even with no worktrees/ dir" \
+    bash -c "! bash '$GUARD' check '$GENW_REPO' >/dev/null 2>&1"
+
+assert "(g-e-g) ...naming '<main checkout>', proving the sweep ran on this shape" \
+    bash -c "bash '$GUARD' check '$GENW_REPO' 2>&1 >/dev/null | grep -q -- '<main checkout>'"
+
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
 #     rr-cache.  The whole point is that all ~238 lanes inherit one shared
