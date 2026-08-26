@@ -66,3 +66,48 @@ must parse it, and leaf η (#6765), the first real §9.2 wave.
 The directive/annotation format (`//@ key: value`, `//~ ERROR E_*`) and the
 generated `manifest.json` arrive with leaf γ (#6761), together with the harness
 that consumes them. At β this tree carries fixtures and this charter only.
+
+## Placement probe (leaf β, #6759)
+
+A committed, re-runnable observation — not a claim. With
+`_placement-probe/placement_probe.ri` present, unparseable *and* carrying a real
+bare `Scalar` annotation, every walker and gate that could plausibly reach this
+tree was run from a clean worktree:
+
+| Command | Verdict |
+|---|---|
+| `cargo build -p reify-spec-conformance` | Finished dev profile, exit 0 |
+| `cargo test -p reify-spec-conformance --test fixture_tree` | ok. 3 passed; 0 failed |
+| `cargo test -p reify-cli --test harness_cli corpus_no_bare_scalar::` | ok. 26 passed; 0 failed *(the headline observation)* |
+| `cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::` | ok. 9 passed; 0 failed (walks `examples/` only) |
+| `cargo test -p reify-test-support --test ignore_reason_hygiene` | ok. 1 passed; 0 failed (repo-wide over `*.rs`; nothing here carries `#[ignore]`) |
+| `bash tests/infra/test_verify_scope.sh` | 255 passed, 0 failed (PG-DRIFT / PG-DRIFT-DIR unaffected) |
+| `bash tests/infra/test_heavy_filter_atoms.sh` | 23 passed, 0 failed; atom count still exactly 8 |
+| `bash scripts/gui-test.sh --no-typecheck -- src/__tests__/reifyGrammarCorpus.test.ts` | 477 passed (Lezer `CORPUS_ROOTS` is explicit-inclusion) |
+| `cargo metadata --format-version 1 --locked` | exit 0 (the `Cargo.lock` entry is current, so `scripts/affected-crates-lib.sh` does not degrade to "ALL crates affected") |
+
+The walker set was re-derived from the worktree rather than taken on trust.
+Of the 22 sources in the repo that both recurse a directory and mention `.ri`,
+every root resolves to `examples/` (`examples_smoke`,
+`auto_type_param_determinism_tests`, `no_stale_undef_invariant_gate`,
+`snapshot_cache_divergence_gate`, `examples/kernel_queries` for
+`selector_coercion_golden`, `examples/best_practices` for
+`best_practices_constraint_gate`), to `['examples', 'tests/prd-gate/fixtures']`
+(the Lezer ledger's `CORPUS_ROOTS`), to a `tempfile` cache dir, or to a named
+non-`.ri` corpus — **except one**:
+
+* `crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs`, whose
+  `collect_files(&root.join("crates"), "ri", …)` is the sole repo-wide sweep of
+  `crates/**/*.ri`. It carries the registered exclusion arm for this tree.
+
+Two walkers are repo-wide over `*.rs` and auto-cover the crate harmlessly:
+`reify-test-support`'s `walk_rs_files` (checks `#[ignore]` reasons — nothing here
+has one) and `ambient_default_material_integration_gate`, which walks `crates/`
+but only enters `src/` mode and greps for two unrelated symbols. No shell or
+Python walker globs `.ri` at all; `run-gui.sh` / `run-gui-dev.sh` only check an
+argument's extension.
+
+**Conclusion:** an unparseable, bare-`Scalar`-bearing fixture in this tree is
+inert to every repo walker, because exactly one walker reaches `crates/**/*.ri`
+and it carries a registered exclusion arm. Re-run the table above after any
+change to this tree's location or to that arm.
