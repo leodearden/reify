@@ -3863,6 +3863,52 @@ pub enum DiagnosticCode {
     /// one-variant addition that serde round-trips automatically (same
     /// non-breaking argument as `ExpressionNestingTooDeep` above).
     DimensionedArgRejected,
+    /// Origin:
+    /// `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
+    /// — the single shared refusal builder, emitted from BOTH export surfaces:
+    /// `reify build -o <file>` (`cmd_build`'s `-o` arm, `crates/reify-cli/src/main.rs`)
+    /// and the occurrence-driven `Engine::build_outputs_with_result`
+    /// (`crates/reify-eval/src/engine_build.rs`).
+    ///
+    /// Emitted as a `Severity::Error` when the module declares a
+    /// `RepresentationWithin` bound that the export path cannot demonstrate it
+    /// honours. The artifact is then **REFUSED** — no bytes are written and no
+    /// pre-existing file at the destination is truncated — rather than written
+    /// and reported successful, which is the failure described in PRD
+    /// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1
+    /// (task **η** / C-SURFACE (2)). `Error` severity is load-bearing, not
+    /// cosmetic: it is what `cmd_build`'s existing
+    /// `diagnostics.iter().any(|d| d.severity == Severity::Error)` gate keys
+    /// on, so the refusal exits non-zero with no new CLI exit logic
+    /// (PRD INV-SF-2: "η rides `cmd_build`'s existing gate rather than adding a
+    /// per-code bolt-on").
+    ///
+    /// The refusal is a STATIC module-shape decision taken before any deviation
+    /// is measured, so it fires for any declared bound, achievable or not.
+    /// Narrowing it to genuinely unachievable bounds is follow-on task **θ**,
+    /// which is hard-blocked on task 6085 giving the export path a real
+    /// tessellation-tolerance measurement (PRD §5 dependency table, §9 task θ).
+    ///
+    /// Canonical message form:
+    /// `"E_REPR_BOUND_UNENFORCED_ON_EXPORT: <subject>: <bound> …"` — built by
+    /// `unenforced_representation_bound_diagnostic` from
+    /// `compute_representation_bounds`' subject → tightest-bound table, so every
+    /// bounded subject is named in deterministic `BTreeMap` order.
+    ///
+    /// PRD-prose mnemonic: `E_REPR_BOUND_UNENFORCED_ON_EXPORT` (severity
+    /// convention: `E_*` → Error). Its message-embedded twin is
+    /// `reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT`, which exists because the
+    /// CLI integration tests observe only captured stderr TEXT and have no
+    /// access to this typed code.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, has no
+    /// exhaustive match-on-self anywhere in the workspace (the only `match self`
+    /// arms in this file are on `Severity`), and derives feature-gated serde
+    /// `Serialize`/`Deserialize` with `rename_all = "PascalCase"` — so adding one
+    /// variant is non-breaking for downstream consumers and round-trips
+    /// automatically (same non-breaking argument as `ExpressionNestingTooDeep`
+    /// and `DimensionedArgRejected` above).
+    RepresentationBoundUnenforcedOnExport,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -6524,6 +6570,42 @@ mod tests {
     fn diagnostic_code_enum_type_arg_conflict_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::EnumTypeArgConflict).unwrap();
         assert_eq!(s, "\"EnumTypeArgConflict\"");
+    }
+
+    // --- RepresentationBoundUnenforcedOnExport tests (task eta #6170 —
+    //     E_REPR_BOUND_UNENFORCED_ON_EXPORT) ---
+    // Pairs with the export refusal built by
+    // `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
+    // and emitted from both `reify build -o <file>` and
+    // `Engine::build_outputs_with_result`.
+    //
+    // Only the serde WIRE FORMAT is pinned here, because it is the only property
+    // of this variant that lives in this crate: `rename_all = "PascalCase"` makes
+    // the emitted string a compatibility surface for downstream consumers, and
+    // nothing else in reify-core observes the variant.
+    //
+    // Deliberately NOT tested here: a `Diagnostic::error(..).with_code(..)`
+    // round-trip. It would exercise the generic constructor and builder — whose
+    // behaviour is variant-agnostic and already covered by
+    // `diagnostic_code_derives` and the sibling code tests above — while
+    // asserting nothing specific to this variant. The contract that actually
+    // matters (the REFUSAL carries this code at `Severity::Error`, which is what
+    // `cmd_build`'s existing `any(|d| d.severity == Severity::Error)` exit gate
+    // keys on) is pinned where the refusal is BUILT and USED:
+    // `tolerance_combine::tests::unenforced_representation_bound_diagnostic_returns_error_for_direct_bound`,
+    // the `engine_build` Mode-B tests, and the CLI integration tests in
+    // `cli_representation_within.rs`.
+
+    /// Under `feature = "serde"`,
+    /// `DiagnosticCode::RepresentationBoundUnenforcedOnExport` serializes as
+    /// `"RepresentationBoundUnenforcedOnExport"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_representation_bound_unenforced_on_export_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::RepresentationBoundUnenforcedOnExport).unwrap();
+        assert_eq!(s, "\"RepresentationBoundUnenforcedOnExport\"");
     }
 }
 

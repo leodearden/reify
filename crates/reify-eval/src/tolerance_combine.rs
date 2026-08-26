@@ -28,7 +28,7 @@
 
 use crate::graph::ConstraintNodeData;
 use reify_compiler::CompiledModule;
-use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Type, ValueCellId};
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::value::GeometryHandleRef;
 use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
 use std::collections::BTreeMap;
@@ -219,6 +219,160 @@ pub(crate) fn match_representation_within_shape(
 /// `None` on any gate failure (silent-skip posture).
 pub fn recognize_representation_within(expr: &CompiledExpr) -> Option<(ValueCellId, String, f64)> {
     match_representation_within_shape(expr)
+}
+
+/// Returns `true` when any template in `module` declares at least one
+/// `RepresentationWithin(subject, bound)` constraint — directly on the template
+/// or inside a guarded group's true/else branch.
+///
+/// This is a STATIC, PRE-EVAL predicate on *declarations*: it reads compiled IR
+/// only, evaluates nothing, and so is available at routing time, before any
+/// realization or measurement has happened. It says the design *declares* a
+/// representation bound; it says nothing about whether that bound is met.
+///
+/// Defined as `!compute_representation_bounds(module).is_empty()` — the C-BOUND
+/// bound table is empty exactly when the module declares no bound, so this is
+/// that table's emptiness rather than a second traversal of the same IR. Both
+/// therefore reach the one canonical matcher
+/// ([`recognize_representation_within`]'s `match_representation_within_shape`:
+/// UFC name + arity + arg0 `ValueRef`/member-access typed `StructureRef` + arg1
+/// `Literal Scalar` LENGTH finite ≥ 0) through a single walk that cannot drift
+/// from itself. See `compute_representation_bounds` for the traversal and for
+/// why this mirror was retired in #6170.
+///
+/// # Consumers
+///
+/// * `reify check` routing (`crates/reify-cli/src/main.rs`'s
+///   `module_has_representation_within`, a one-line delegation to this
+///   function): decides whether to take the kernel-backed
+///   `set_capture_repr_tol(true)` → `tessellate_realizations` → `check` path.
+///
+/// Both export refusal sites (task #6170, PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` task eta /
+/// C-SURFACE (2)) need the bound TABLE rather than a boolean — the refusal names
+/// the unenforced bound — so they consume
+/// [`unenforced_representation_bound_diagnostic`] below instead of this
+/// predicate. Its `None` case is this predicate returning `false`.
+///
+/// A module for which this returns `false` is untouched by every one of those
+/// paths — that is what keeps existing unbounded designs byte-identical.
+pub fn module_declares_representation_within(module: &reify_compiler::CompiledModule) -> bool {
+    // The C-BOUND bound table is empty EXACTLY when the module declares no
+    // bound, so this predicate is that table's emptiness — not a second walk
+    // that happens to agree with it. Until #6170 the two WERE separate
+    // traversals kept term-for-term in sync by hand; making it one call turns
+    // that standing obligation into a compile-time identity.
+    !compute_representation_bounds(module).is_empty()
+}
+
+/// Build the export-refusal diagnostic for `module`, or `None` when the module
+/// declares no `RepresentationWithin` bound.
+///
+/// This is the ONE builder both export surfaces consult — `reify build -o <file>`
+/// (`cmd_build`'s `-o` arm in `crates/reify-cli/src/main.rs`) and
+/// [`crate::Engine::build_outputs_with_result`] — so the two refusals cannot
+/// word themselves differently or disagree about what counts as bounded (PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, task η /
+/// C-SURFACE (2) §1.1).
+///
+/// # Contract
+///
+/// * `None` — the module declares no bound. THE LOAD-BEARING CASE: every
+///   existing unbounded design is untouched by both refusal sites and keeps
+///   exporting byte-identically (PRD C2 / §3.1(f)).
+/// * `Some(d)` — `d.severity == Severity::Error` and
+///   `d.code == Some(DiagnosticCode::RepresentationBoundUnenforcedOnExport)`.
+///   `Error` is load-bearing rather than cosmetic: `cmd_build`'s existing
+///   `diagnostics.iter().any(|d| d.severity == Severity::Error)` gate is what
+///   turns the refusal into a non-zero exit, so no new CLI exit logic is
+///   needed (PRD INV-SF-2). The message embeds
+///   [`crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT`] for the CLI integration
+///   tests, which observe only captured stderr text.
+///
+/// # Built solely from the bound table
+///
+/// Everything — which subjects are named, in what order, and at what bound —
+/// comes from `compute_representation_bounds`; this function performs NO
+/// independent scan of `module.templates`. That is what gives the message its
+/// two non-decorative properties: per-subject **min-fold** (a subject bounded
+/// twice is reported once, at the tighter bound) and deterministic
+/// **`BTreeMap` (lexicographic-by-subject) order**, so the refusal text is
+/// reproducible across runs. A boolean `.any()` walk could produce neither.
+///
+/// Subjects are named by their declared `StructureRef` type — the table's key —
+/// not by the template that declares the constraint, because the type is what
+/// the user must go and look at.
+///
+/// # What counts as a declared bound: EVERY template, deliberately
+///
+/// The refusal inherits `compute_representation_bounds`' breadth verbatim, and
+/// that breadth is wider than the canonical checker-structure idiom in two ways
+/// a reader will not guess. Both are the intended verdict, not accidents of
+/// reuse, and both are pinned by tests so a later "obvious" narrowing is a
+/// deliberate edit against a red test rather than a silent behaviour change:
+///
+/// * **`@test` templates count.** The table iterates ALL of `module.templates`,
+///   *not* `non_test_templates()`, so a bound declared only inside an
+///   `@test structure TCheck { param subject : D  constraint
+///   RepresentationWithin(subject, 1mm) }` refuses every PRODUCTION export of
+///   that design. Narrowing here would fork the traversal — the routing
+///   predicate [`module_declares_representation_within`] IS this table's
+///   emptiness, and #6170's whole implementation constraint was to stop keeping
+///   two walks in sync by hand — so the refusal takes the one table the rest of
+///   C-BOUND already uses. It is also the safe direction: a `@test` bound is
+///   still the design stating what its representation must be within, and
+///   over-refusing costs a build, while under-refusing ships PRD §1.1.
+///   Pinned by
+///   `unenforced_representation_bound_diagnostic_refuses_a_bound_declared_in_a_test_template`.
+/// * **A bound on the `: Output` occurrence template itself counts.** The v0_2
+///   per-purpose-tolerance idiom (`occurrence def TightSTL : Output { param
+///   subject : D  constraint RepresentationWithin(subject, 1um) }` — see
+///   [`extract_output_tolerance_bound`] and
+///   `reify_test_support::tolerance_fixtures::step_output_template_with_body`)
+///   is exactly the shape the matcher recognises, and user-defined occurrence
+///   templates DO live in `module.templates`. So the design that DEMANDS an
+///   export tolerance the supported way is refused too. That is correct today
+///   precisely BECAUSE the demand is not yet plumbed: task 6085 has not landed
+///   `kernel.export()`-side honouring, so nothing on the export path reads that
+///   bound. Exempting it would ship §1.1 verbatim for the designs that asked
+///   most explicitly. The seam un-blocks in the other direction — once 6085
+///   lands a real measurement, task θ (#6173) narrows from "any declared bound"
+///   to "a bound this export cannot demonstrate it honours". Pinned by
+///   `build_outputs_refuses_a_bound_declared_on_the_output_occurrence_itself`
+///   in `engine_build/tests.rs`.
+///
+/// # Static, pre-eval, pre-measurement
+///
+/// This reads compiled IR only. It evaluates nothing, realizes nothing and
+/// tessellates nothing, so it is available before `engine.build()` and costs no
+/// OCCT tessellation (PRD §6 gate-cost rule). The corollary is that it fires for
+/// ANY declared bound, achievable or not: narrowing the refusal to genuinely
+/// unachievable bounds is follow-on task θ, hard-blocked on task 6085 giving the
+/// export path a real measurement.
+pub fn unenforced_representation_bound_diagnostic(module: &CompiledModule) -> Option<Diagnostic> {
+    let bounds = compute_representation_bounds(module);
+    if bounds.is_empty() {
+        return None;
+    }
+    // `BTreeMap` iteration is lexicographic by subject struct name, so the
+    // rendered list is deterministic across runs. `{:.3e} m` matches the house
+    // convention already used by `eval_representation_within`'s Violated
+    // diagnostic above.
+    let named = bounds
+        .iter()
+        .map(|(subject, bound)| format!("{subject} (bound {bound:.3e} m)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(
+        Diagnostic::error(format!(
+            "{}: refusing to write the export artifact — this design declares a \
+             RepresentationWithin bound that the export path cannot demonstrate it \
+             honours: {named}. Run `reify check` on this design to evaluate the bound \
+             (it tessellates the realization and measures the achieved deviation).",
+            crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT
+        ))
+        .with_code(DiagnosticCode::RepresentationBoundUnenforcedOnExport),
+    )
 }
 
 // ── Pure assertion eval helper ────────────────────────────────────────────────
@@ -425,14 +579,19 @@ fn resolve_repr_tol_key(
 ///
 /// # Emptiness is F's scoping predicate
 ///
-/// The table is empty **exactly when** the module declares no bound — which is
-/// the negation of reify-cli's `module_has_representation_within`
-/// (crates/reify-cli/src/main.rs:2462), F's routing gate. Both delegate to the
-/// same matcher and must keep the **same traversal**: a change to one is a
-/// change to the other. Keeping the mirror is a **lockstep requirement of
-/// C-BOUND, not a coincidence**.
+/// The table is empty **exactly when** the module declares no bound, so
+/// [`module_declares_representation_within`] — F's routing gate, and the
+/// predicate behind reify-cli's `module_has_representation_within` — is
+/// literally `!compute_representation_bounds(module).is_empty()`.
 ///
-/// The traversal, term for term with that gate, is
+/// This *used* to be a mirror: the gate ran its own hand-rolled `.any()` walk,
+/// term-for-term identical to the one below, and keeping the two in sync was a
+/// standing lockstep obligation of C-BOUND. Task #6170 retired it. The two are
+/// now the same call, so they structurally cannot drift and there is nothing
+/// left to keep in sync — the traversal is documented once, here, on the
+/// function that performs it.
+///
+/// The traversal is
 ///
 /// ```text
 /// module.templates × ( t.constraints
@@ -446,11 +605,11 @@ fn resolve_repr_tol_key(
 /// any guard cell is evaluated, so the union over both branches is the static,
 /// conservative reading.
 ///
-/// The equivalence is load-bearing, not tidiness: a narrower scan would let a
-/// module route into the kernel-backed check path (the CLI gate says `true`)
-/// while carrying an empty bound table, and under δ (#6168) an empty table means
-/// that realization is never measured — silently degrading a real
-/// Satisfied/Violated verdict to Indeterminate.
+/// The breadth is load-bearing, not tidiness: a narrower scan would report an
+/// empty table for a module that does declare a bound, and under δ (#6168) an
+/// empty table means that realization is never measured — silently degrading a
+/// real Satisfied/Violated verdict to Indeterminate. Since #6170 it would also
+/// let such a module export unrefused.
 ///
 /// # Silent-skip posture
 ///
@@ -464,13 +623,17 @@ fn resolve_repr_tol_key(
 /// demanded-tolerance budget — see PRD §4.8; do not couple it to
 /// [`extract_output_tolerance_bound`], which is owned by
 /// `docs/prds/v0_2/per-purpose-tolerance.md`.
-// TODO(#6171): first production consumer — the measure-and-refine loop threads
-// this table into the tessellate callback; #6168 (δ) reuses it to narrow
-// measurement. Until one of those lands there is no non-`cfg(test)` caller, and
-// `scripts/verify.sh` runs `cargo clippy --workspace --all-targets -- -D
-// warnings`, which builds the lib WITHOUT `cfg(test)` — so the unit tests in
-// `tolerance_combine/compute_representation_bounds_tests.rs` do not keep this alive.
-#[allow(dead_code)]
+///
+/// # Visibility: `pub(crate)` on purpose
+///
+/// C-BOUND declares this `pub(crate)` and it stays there. Every cross-crate
+/// consumer wants a DECISION, not the raw table: reify-cli takes
+/// [`module_declares_representation_within`] (routing) and
+/// [`unenforced_representation_bound_diagnostic`] (refusal), which are the two
+/// public seams. Exporting the `BTreeMap` as well would publish an internal
+/// table shape — subject-name keys, SI-metre values — as reify-eval API with no
+/// caller to justify the commitment. The in-crate callers just above already
+/// satisfy dead-code analysis, so no `#[allow(dead_code)]` is needed either.
 pub(crate) fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
     let mut bounds: BTreeMap<String, f64> = BTreeMap::new();
     for template in &module.templates {
@@ -813,7 +976,9 @@ mod compute_representation_bounds_tests;
 mod tests {
     use super::*;
     use crate::graph::ConstraintNodeData;
-    use reify_core::{ConstraintNodeId, ContentHash, DimensionVector, Type, ValueCellId};
+    use reify_core::{
+        ConstraintNodeId, ContentHash, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId,
+    };
     use reify_ir::{CompiledExpr, PersistentMap, Value};
 
     /// Build a `(ConstraintNodeId, ConstraintNodeData)` pair carrying the
@@ -2506,6 +2671,448 @@ mod tests {
             resolve_repr_tol_key(&vcid, "Curved", &values, &nan_last),
             Some("Curved#realization[0]".to_string()),
             "NaN seen second cannot displace an established best_val (NaN > 5e-6 is false)"
+        );
+    }
+
+    // ── task 6170 (precision-nominal η): shared bound-declaration detector ────
+    //
+    // `module_declares_representation_within` is the ONE static, pre-eval
+    // predicate both export modes consult before deciding whether an export may
+    // claim success (PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`,
+    // task eta / C-SURFACE (2)). It is hoisted here — next to the canonical
+    // `recognize_representation_within` gate it delegates to — so the CLI's
+    // routing predicate and the engine's export refusal cannot drift apart.
+    //
+    // Assertion shape deliberately mirrors the CLI-side
+    // `module_has_representation_within_detects_assertion_vs_plain`
+    // (`crates/reify-cli/src/main.rs`), so the two read as the same contract.
+
+    /// A module whose template carries a DIRECT
+    /// `constraint RepresentationWithin(subject, 1mm)` is detected.
+    ///
+    /// This is the common case and the one both export modes hit today: every
+    /// bound-carrying fixture on main declares the constraint at template level.
+    #[test]
+    fn module_declares_representation_within_detects_direct_template_constraint() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom
+    param w : Real = 5.0
+    constraint RepresentationWithin(subject, 1mm)
+    constraint w > 0.0
+}
+"#,
+        );
+        assert!(
+            module_declares_representation_within(&compiled),
+            "a template-level RepresentationWithin constraint must be detected"
+        );
+    }
+
+    /// A `RepresentationWithin` living inside a `where … { … }` guarded group's
+    /// TRUE branch is detected.
+    ///
+    /// The walk chains `guarded_groups[*].constraints` with
+    /// `guarded_groups[*].else_constraints`, so a bound is not smuggled past the
+    /// gate by wrapping it in a guard — an export that refuses only on
+    /// unguarded bounds would still silently ship the guarded case.
+    #[test]
+    fn module_declares_representation_within_detects_guarded_true_branch() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure GuardedTrue {
+    param subject : MyGeom
+    param w : Real = 5.0
+    where w > 0.0 {
+        constraint RepresentationWithin(subject, 1mm)
+    }
+}
+"#,
+        );
+        assert!(
+            module_declares_representation_within(&compiled),
+            "a RepresentationWithin inside a guarded group's true branch must be \
+             detected (guarded_groups[*].constraints)"
+        );
+    }
+
+    /// A `RepresentationWithin` living inside a guarded group's ELSE branch is
+    /// detected — the `else_constraints` half of the same chained walk.
+    #[test]
+    fn module_declares_representation_within_detects_guarded_else_branch() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure GuardedElse {
+    param subject : MyGeom
+    param z : Real = 5.0
+    where z > 0.0 {
+        constraint z > 0.0
+    } else {
+        constraint RepresentationWithin(subject, 1mm)
+    }
+}
+"#,
+        );
+        assert!(
+            module_declares_representation_within(&compiled),
+            "a RepresentationWithin inside a guarded group's else branch must be \
+             detected (guarded_groups[*].else_constraints)"
+        );
+    }
+
+    /// A plain module carrying only an ordinary numeric constraint is NOT
+    /// detected.
+    ///
+    /// This is the load-bearing negative: it is what keeps every existing
+    /// unbounded design exporting byte-identically after the refusal lands. A
+    /// detector that over-fires here would refuse every export in the repo.
+    #[test]
+    fn module_declares_representation_within_rejects_plain_module() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure Plain {
+    param x : Real = 1.0
+    constraint x > 0.0
+}
+"#,
+        );
+        assert!(
+            !module_declares_representation_within(&compiled),
+            "a module with no RepresentationWithin constraint must NOT be detected \
+             (unbounded designs keep exporting unchanged)"
+        );
+    }
+    // ── task 6170 (precision-nominal η): the shared export-refusal diagnostic ─
+    //
+    // `unenforced_representation_bound_diagnostic` is the ONE builder both
+    // export surfaces consult — `reify build -o <file>` (`cmd_build`'s `-o` arm)
+    // and `Engine::build_outputs_with_result` — so the two refusals cannot word
+    // themselves differently or disagree about what counts as bounded (PRD
+    // `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, task eta /
+    // C-SURFACE (2) §1.1).
+    //
+    // It is built SOLELY from `compute_representation_bounds`' subject →
+    // tightest-bound table, never from an independent scan of
+    // `module.templates`. Cases 4 and 5 below are what make that structural
+    // rather than stylistic: min-fold-per-subject and deterministic
+    // lexicographic-by-subject ordering are properties only the `BTreeMap` table
+    // provides — a hand-rolled `.any()` boolean walk cannot produce either.
+
+    /// A module with a DIRECT template-level bound yields an `Error` diagnostic
+    /// carrying the typed code, the `E_*` message token, and the SUBJECT's
+    /// struct name.
+    ///
+    /// The name asserted is `MyGeom` (`param subject : MyGeom`), NOT the
+    /// declaring template `Checker` — the table keys on the subject's declared
+    /// `StructureRef` type, which is what the user must go and look at.
+    ///
+    /// `Severity::Error` is load-bearing, not cosmetic: `cmd_build`'s existing
+    /// `diagnostics.iter().any(|d| d.severity == Severity::Error)` gate is what
+    /// turns this diagnostic into a non-zero exit (PRD INV-SF-2).
+    #[test]
+    fn unenforced_representation_bound_diagnostic_returns_error_for_direct_bound() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#,
+        );
+        let diag = unenforced_representation_bound_diagnostic(&compiled)
+            .expect("a module declaring a RepresentationWithin bound must be refused");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "the refusal must be Error severity — that is what cmd_build's existing \
+             exit gate keys on to produce a non-zero exit"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::RepresentationBoundUnenforcedOnExport),
+            "the refusal must carry the typed code so downstream tooling matches on \
+             it rather than on message substrings"
+        );
+        assert!(
+            diag.message
+                .contains(crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the message must embed the E_* token — CLI integration tests observe \
+             only captured stderr TEXT and have no access to the typed code; got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("MyGeom"),
+            "the message must name the SUBJECT struct (the compute_representation_bounds \
+             key), so the user knows which structure carries the bound; got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("Checker"),
+            "the message must NOT name the DECLARING template — the table keys on the \
+             subject's declared StructureRef type, not on where the constraint was \
+             written; got: {}",
+            diag.message
+        );
+    }
+
+    /// A module with no `RepresentationWithin` at all yields `None`.
+    ///
+    /// THE LOAD-BEARING NEGATIVE. `None` is what makes every existing unbounded
+    /// design keep exporting byte-identically once both refusal sites consult
+    /// this builder (PRD C2 / §3.1(f)). A builder that over-fired here would
+    /// refuse every export in the repo.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_returns_none_for_plain_module() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure Plain {
+    param x : Real = 1.0
+    constraint x > 0.0
+}
+"#,
+        );
+        assert!(
+            unenforced_representation_bound_diagnostic(&compiled).is_none(),
+            "a module with no RepresentationWithin constraint must NOT be refused — \
+             unbounded designs keep exporting unchanged"
+        );
+    }
+
+    /// A bound wrapped in a guarded group's ELSE branch is still refused.
+    ///
+    /// A bound must not be smuggled past the export gate by hiding it in a
+    /// guard: the table unions `guarded_groups[*].constraints` with
+    /// `guarded_groups[*].else_constraints` and evaluates no guard, so the
+    /// static reading is conservative in both branches.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_detects_guarded_else_branch() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure GuardedElse {
+    param subject : MyGeom
+    param z : Real = 5.0
+    where z > 0.0 {
+        constraint z > 0.0
+    } else {
+        constraint RepresentationWithin(subject, 1mm)
+    }
+}
+"#,
+        );
+        let diag = unenforced_representation_bound_diagnostic(&compiled).expect(
+            "a RepresentationWithin inside a guarded group's else branch must still be \
+             refused (guarded_groups[*].else_constraints)",
+        );
+        assert!(
+            diag.message.contains("MyGeom"),
+            "the guarded-else bound's subject must be named; got: {}",
+            diag.message
+        );
+    }
+
+    /// Two bounds on ONE subject report only the TIGHTER of the two.
+    ///
+    /// NON-TAUTOLOGICAL AND STRUCTURALLY LOAD-BEARING: min-fold-per-subject is a
+    /// property only `compute_representation_bounds`' `BTreeMap` provides. A
+    /// hand-rolled `.any()` boolean walk cannot produce it, and a `Vec`-append
+    /// walk would name BOTH bounds. This test is what proves the delegation is
+    /// real rather than a second traversal that happens to agree today.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_reports_the_tightest_bound_per_subject() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure LooseFirst {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 2mm)
+}
+
+structure TightSecond {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 0.5mm)
+}
+"#,
+        );
+        let diag = unenforced_representation_bound_diagnostic(&compiled)
+            .expect("a doubly-bounded subject must still be refused");
+        assert!(
+            diag.message.contains("5.000e-4"),
+            "the TIGHTER bound (0.5mm = 5.000e-4 m) must be reported; got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("2.000e-3"),
+            "the LOOSER bound (2mm = 2.000e-3 m) must be min-folded away, not also \
+             reported — duplicate bounds on one subject collapse to the tightest; \
+             got: {}",
+            diag.message
+        );
+    }
+
+    /// Two DISTINCT bounded subjects are BOTH named, in `BTreeMap`
+    /// (lexicographic-by-subject-struct-name) order.
+    ///
+    /// The checkers are declared in REVERSE alphabetical order deliberately: a
+    /// source-order (`Vec`-append) walk would emit `Zeta` first, so asserting
+    /// `Alpha` precedes `Zeta` pins the ordering to the table rather than to the
+    /// traversal. Deterministic order is what makes the refusal text reproducible
+    /// across runs and therefore assertable by the CLI integration tests.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_names_every_bounded_subject_in_deterministic_order()
+    {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure Alpha {
+    param x : Real = 1.0
+}
+
+structure Zeta {
+    param y : Real = 2.0
+}
+
+structure ZetaChecker {
+    param subject : Zeta
+    constraint RepresentationWithin(subject, 3mm)
+}
+
+structure AlphaChecker {
+    param subject : Alpha
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#,
+        );
+        let diag = unenforced_representation_bound_diagnostic(&compiled)
+            .expect("a module with two bounded subjects must be refused");
+        let alpha = diag
+            .message
+            .find("Alpha")
+            .unwrap_or_else(|| panic!("subject `Alpha` must be named; got: {}", diag.message));
+        let zeta = diag
+            .message
+            .find("Zeta")
+            .unwrap_or_else(|| panic!("subject `Zeta` must be named; got: {}", diag.message));
+        assert!(
+            alpha < zeta,
+            "every bounded subject must be named in BTreeMap (lexicographic) order, so \
+             the refusal text is reproducible across runs — `Alpha` must precede `Zeta` \
+             even though `ZetaChecker` is declared first; got: {}",
+            diag.message
+        );
+    }
+
+    /// A bound declared inside an `@test` template refuses PRODUCTION exports of
+    /// that design — the deliberate verdict, pinned so it cannot change silently.
+    ///
+    /// # What this pins that no other test does
+    ///
+    /// `compute_representation_bounds` iterates ALL of `module.templates`, *not*
+    /// `non_test_templates()`. That breadth was chosen for δ's measurement
+    /// routing (#6168); since η the export refusal INHERITS it, so a bound that
+    /// only ever appears under `@test` makes `reify build -o out.step` exit
+    /// non-zero and write nothing. Nothing else in the suite covers that, and the
+    /// narrowing looks like an obvious tidy-up: swapping in
+    /// `non_test_templates()` here would read as removing test-only noise while
+    /// actually changing production export behaviour — and would pass a green
+    /// suite without this test.
+    ///
+    /// # Why REFUSE is the deliberate choice
+    ///
+    /// * The routing predicate `module_declares_representation_within` IS this
+    ///   table's emptiness. A narrower refusal needs a SECOND, narrower table —
+    ///   reinstating exactly the hand-synced mirror #6170's implementation
+    ///   constraint retired.
+    /// * It is the safe direction. An `@test` template is still the design
+    ///   stating what its representation must be within; over-refusing costs the
+    ///   user a build and a clear message telling them to run `reify check`,
+    ///   while under-refusing ships PRD §1.1 — an artifact written against a
+    ///   bound nobody enforced, reported as success.
+    ///
+    /// The assertion is two-sided: the same module with the `@test` template
+    /// deleted must NOT be refused, so this pins the `@test` declaration as the
+    /// cause rather than something else in the module.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_refuses_a_bound_declared_in_a_test_template() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure def D {
+    param width : Length = 10mm
+}
+
+@test structure TDCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#,
+        );
+        assert!(
+            compiled.templates.iter().any(|t| t.name == "TDCheck" && t.is_test()),
+            "the fixture must actually compile `TDCheck` as an `@test` template — \
+             otherwise this test would pass for the ordinary-template reason; got {:?}",
+            compiled
+                .templates
+                .iter()
+                .map(|t| (t.name.clone(), t.is_test()))
+                .collect::<Vec<_>>()
+        );
+
+        let diag = unenforced_representation_bound_diagnostic(&compiled).unwrap_or_else(|| {
+            panic!(
+                "a bound declared inside an `@test` template must STILL refuse the \
+                 export: the refusal reads the C-BOUND table, which iterates ALL of \
+                 `module.templates` (not `non_test_templates()`), and narrowing it \
+                 would fork the traversal from the routing predicate"
+            )
+        });
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "an `@test`-declared bound is refused at full Error severity, not softened \
+             to a warning — the CLI exit gate keys on Error"
+        );
+        assert!(
+            diag.message.contains("D (bound 1.000e-3 m)"),
+            "the refusal must name the subject and bound read out of the `@test` \
+             template, proving the table saw it; got: {}",
+            diag.message
+        );
+
+        // Two-sided: the SAME module with the `@test` template deleted is not
+        // refused, so the `@test` declaration is what caused the refusal above.
+        let without = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure def D {
+    param width : Length = 10mm
+}
+"#,
+        );
+        assert!(
+            unenforced_representation_bound_diagnostic(&without).is_none(),
+            "the same module WITHOUT the `@test` checker must not be refused — \
+             otherwise the assertion above would hold for an unrelated reason"
         );
     }
 }
