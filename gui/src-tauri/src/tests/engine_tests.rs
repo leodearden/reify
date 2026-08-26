@@ -20390,6 +20390,26 @@ fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
          mistaken for a compile rejection, got: {err}"
     );
 
+    // A failed write must also clean up after itself: the write goes through a
+    // sibling temp file, and the rename is what consumes it, so a rename that
+    // fails leaves the temp behind unless the error path removes it. One
+    // `part.ri.<pid>.tmp` per failed edit accumulating next to the user's
+    // design would be a user-visible regression.
+    let litter: Vec<String> = std::fs::read_dir(_dir.path())
+        .expect("the fixture directory should be readable")
+        .map(|e| {
+            e.expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.ends_with(".tmp"))
+        .collect();
+    assert!(
+        litter.is_empty(),
+        "a failed write-back must leave no temp file behind, found: {litter:?}"
+    );
+
     // Disk is deliberately not read back here — it is a directory now, so
     // `assert_writeback_untouched`'s `read_to_string` cannot apply. The other
     // three surfaces are asserted directly.
@@ -20616,4 +20636,193 @@ fn apply_param_to_source_still_rewrites_a_bool_literal_default() {
         writeback_rejection_source().replace("param flag: Bool = true", "param flag: Bool = false"),
         "only the Bool default span should change"
     );
+}
+
+#[test]
+fn apply_param_to_source_refuses_to_clobber_a_file_that_changed_on_disk() {
+    // The write replaces the WHOLE file with the in-memory buffer, so a session
+    // whose buffer has diverged from disk would resolve that divergence by
+    // destroying the disk side — wholesale, not merely at the spliced span.
+    // Two ordinary ways to get there: an external editor saved the `.ri` and
+    // the FS-watcher has not re-fired `update_source` yet, or the GUI editor's
+    // dirty-buffer path (per-keystroke `update_source`, never a disk write) is
+    // holding text the user did not ask to save.
+    //
+    // Simulated with the first: write the file behind the session's back, and
+    // deliberately change a param the write-back would NOT splice, so what is
+    // at stake is an edit no splice of `Part.width` could ever preserve.
+    let (_dir, path, mut session) = writeback_session();
+    let external_edit = writeback_source().replace(
+        "param depth: Length = 0.5m",
+        "param depth: Length = 0.75m",
+    );
+    std::fs::write(&path, &external_edit).expect("the external edit should be writable");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a write-back over a diverged file must be REFUSED, not silently applied");
+    assert!(
+        err.contains("disk"),
+        "the rejection should say the DISK copy is what diverged, so it is not \
+         mistaken for a compile rejection, got: {err}"
+    );
+    assert!(
+        err.contains(&path.display().to_string()),
+        "the rejection should name the file it refused to write, got: {err}"
+    );
+
+    // The whole point: the other writer's edit survives byte for byte.
+    let disk_after = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_after, external_edit,
+        "the external edit must survive untouched — a refusal that still wrote \
+         would be the exact data loss this check exists to prevent"
+    );
+
+    // ...and the refusal is resolve-phase-shaped: it happens before the
+    // recompile, so no in-process surface moved either. `assert_writeback_untouched`
+    // does not apply here (it expects disk and source_map to hold the SAME text,
+    // which is precisely what this test arranges not to be true), so the three
+    // in-process surfaces are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a refused write-back");
+        assert_eq!(
+            source_map_text,
+            writeback_source(),
+            "source_map must still hold the text this session compiled"
+        );
+    }
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+    assert!(
+        !session.is_stale(),
+        "a refused write-back must not raise the hot-reload staleness banner"
+    );
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a refused write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a refused write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a refused write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
+    // The write is temp-file-plus-rename (so a partial write can never leave a
+    // truncated `.ri` for the watcher to reload). The temp is an implementation
+    // detail and must stay one: the rename consumes it on success, and the
+    // failure path removes it — a project directory accumulating
+    // `part.ri.1234.tmp` siblings would be a user-visible regression.
+    let (dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let mut entries: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("the fixture directory should be readable")
+        .map(|e| {
+            e.expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![path
+            .file_name()
+            .expect("fixture path has a file name")
+            .to_string_lossy()
+            .into_owned()],
+        "a successful write-back must leave the design file and nothing else"
+    );
+}
+
+#[test]
+fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
+    // `compile_entry_with_imports` MERGES a direct import's pub templates into
+    // `compiled.templates`, so an imported param passes the cell-existence gate
+    // — while its text never enters `parsed_cache` or `source_map`, so there is
+    // nothing here to splice. Without a dedicated arm that combination reads as
+    // "no default expression", which is not what happened: the default is right
+    // there in the other file, and δ would surface a reason that sends its
+    // caller looking in the wrong place.
+    //
+    // Two-file fixture mirroring `load_file_with_user_import_resolves_imported_structure`.
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let helper_source = "pub structure Helper { param x: Length = 10mm }\n";
+    let entry_source = "import helper\nstructure Top { sub h = Helper() }\n";
+    let helper_path = dir.path().join("helper.ri");
+    let entry_path = dir.path().join("main.ri");
+    std::fs::write(&helper_path, helper_source).expect("write helper.ri");
+    std::fs::write(&entry_path, entry_source).expect("write main.ri");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_file(&entry_path)
+        .expect("load_file should succeed with a resolved import");
+
+    let err = session
+        .apply_param_to_source("Helper.x", &mm(20.0))
+        .expect_err("a param declared in an imported module must be REFUSED");
+    assert!(
+        err.contains("Helper"),
+        "the rejection should name the entity it refused, got: {err}"
+    );
+    assert!(
+        err.contains("imported module"),
+        "the rejection should say the declaration lives in an IMPORTED module — \
+         that is the actionable half for the caller, got: {err}"
+    );
+    assert!(
+        !err.contains("no default expression"),
+        "the misdiagnosis this arm exists to prevent: Helper.x's default is right \
+         there in helper.ri, got: {err}"
+    );
+
+    // NEITHER file moved — least of all the imported one, which this session
+    // has no business rewriting.
+    assert_eq!(
+        std::fs::read_to_string(&helper_path).expect("helper.ri should be readable"),
+        helper_source,
+        "the imported module must be byte-identical after a refused write-back"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&entry_path).expect("main.ri should be readable"),
+        entry_source,
+        "the entry module must be byte-identical after a refused write-back"
+    );
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+
+    // The rejection is specifically NOT "unknown parameter": the cell exists,
+    // and the ephemeral edit path proves it by accepting the very same id. That
+    // agreement is what `require_known_cell` exists to keep true — the slider
+    // and the write-back must never disagree about which params exist, only
+    // about which are rewritable IN SOURCE.
+    assert!(
+        !err.contains("Unknown parameter"),
+        "an imported param is known, just not rewritable here, got: {err}"
+    );
+    session
+        .set_parameter("Helper.x", "20mm")
+        .expect("the ephemeral edit path must still accept the same cell id");
 }

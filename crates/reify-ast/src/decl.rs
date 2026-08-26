@@ -576,9 +576,17 @@ pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<Sou
 /// overwriting one of those destroys a user-authored parametric relationship or
 /// a solver-determined value. That literal-ness gate lives with the splice, in
 /// the GUI engine — this helper only hands over the expression it needs to make
-/// the decision, and deliberately does not narrow its own contract to literals
-/// (`find_param_default_span`'s documented invariant is the default-EXPRESSION
-/// range, and its other callers depend on that).
+/// the decision, and deliberately does not narrow its own contract to literals:
+/// a walker that answered "where is the default, if it is one of four kinds"
+/// would be a different question, and the kinds it admits are the GUI's policy
+/// rather than the AST's.
+///
+/// [`find_param_default_span`] is a `.map(|e| e.span)` wrapper over this and,
+/// as of γ, has no in-tree caller beyond the tests and the reify-ast API-surface
+/// guard: `apply_param_to_source` needs the expression, so it calls this. The
+/// wrapper stays because it is α's published span API (task #5094) for the
+/// consumers still to come — δ's MCP tools and η's re-homed slider, which want
+/// a span without borrowing the AST — not because anything calls it today.
 pub fn find_param_default_expr<'a>(members: &'a [MemberDecl], name: &str) -> Option<&'a Expr> {
     let mut candidates = ParamDefaultCandidates::default();
     collect_param_default_candidates(members, name, 0, &mut candidates);
@@ -1858,35 +1866,6 @@ mod find_param_default_span_tests {
             SourceSpan::new(22, 27),
             "the borrowed expression's own span is the default range"
         );
-    }
-
-    #[test]
-    fn span_accessor_is_exactly_the_expression_accessors_span() {
-        // Pins the delegation itself: `find_param_default_span` is
-        // `find_param_default_expr(..).map(|e| e.span)` and nothing more, across
-        // every outcome shape the rest of this module establishes — resolved,
-        // no-default, absent-name, and the multiply-declared refusal. A second
-        // hand-rolled walk behind either accessor would show up here as a
-        // divergence rather than as a silently mismatched splice.
-        let cases: Vec<(&str, Vec<MemberDecl>)> = vec![
-            ("width", vec![param("width", (0, 30), Some((22, 27)))]),
-            ("thickness", vec![param("thickness", (0, 24), None)]),
-            ("height", vec![param("width", (0, 30), Some((22, 27)))]),
-            (
-                "size",
-                vec![guarded(
-                    vec![param("size", (0, 40), Some((10, 14)))],
-                    vec![param("size", (50, 90), Some((30, 34)))],
-                )],
-            ),
-        ];
-        for (name, members) in cases {
-            assert_eq!(
-                find_param_default_span(&members, name),
-                find_param_default_expr(&members, name).map(|e| e.span),
-                "span accessor diverged from the expression accessor for '{name}'"
-            );
-        }
     }
 
     #[test]
