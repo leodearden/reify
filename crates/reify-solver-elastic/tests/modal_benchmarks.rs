@@ -786,6 +786,127 @@ fn simply_supported_beam_p2_modal_within_two_percent() {
 // Clamped-clamped P2 modal benchmark (task 6663)
 // ---------------------------------------------------------------------------
 
+/// Outcome of one clamped-clamped P2 modal solve on a given mesh.
+struct ClampedClampedMeasurement {
+    f1: f64,
+    f1_analytic: f64,
+    f2: f64,
+    f3: f64,
+    rel_err: f64,
+    n_free: usize,
+    n_nodes_p2: usize,
+    mass_rel: f64,
+    converged: bool,
+    lambda_min: f64,
+}
+
+/// Build the clamped-clamped beam at the given mesh, assemble (K, M) at P2, clamp
+/// BOTH end faces, project to free DOFs, dense-eigensolve, and return the measured
+/// fundamental frequency vs the Euler-Bernoulli reference.
+///
+/// Structurally [`measure_cantilever`] with exactly two changes: the BC loop
+/// catches `x ≈ 0` OR `x ≈ L` (both end faces, by coordinate so the P2
+/// edge-midpoints on each face are included), and the analytic reference uses
+/// `βL = 4.730041` instead of the cantilever's 1.875104. Everything else
+/// (`build_node_xyz`, `build_tet_mesh`, `promote_tets_to_p2`,
+/// `assemble_p2_k_and_m`, `sum_all_entries`, `free_dof_map`, `project_free`,
+/// `solve_eigen_dense`) is reused unchanged.
+fn measure_clamped_clamped(grid: &BeamFixture) -> ClampedClampedMeasurement {
+    let nodes_p1 = build_node_xyz(grid);
+    let tets_p1 = build_tet_mesh(grid);
+    let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
+    let n_nodes_p2 = nodes_p2.len();
+    let n_dofs = 3 * n_nodes_p2;
+
+    let material = IsotropicElastic { youngs_modulus: STEEL_E_PA, poisson_ratio: STEEL_NU };
+
+    // BCs: clamp BOTH end faces (all 3 DOFs, catches P2 edge-midpoints).
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+    for (n, xyz) in nodes_p2.iter().enumerate() {
+        if xyz[0].abs() < 1e-10 || (xyz[0] - grid.lx).abs() < 1e-10 {
+            for axis in 0..3_usize {
+                bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+            }
+        }
+    }
+    assert!(!bcs.is_empty(), "clamped-clamped must clamp at least one end-face DOF");
+
+    // Assemble (K, M) at P2.
+    let (k_full, m_full) = assemble_p2_k_and_m(&nodes_p2, &tets_p2, &material, STEEL_DENSITY);
+
+    // Total-mass sanity: Σ M = 3·ρ·V_total (V_total = L·b·h, exact box fill).
+    let v_total = grid.lx * grid.ly * grid.lz;
+    let total_mass_sum = sum_all_entries(&m_full);
+    let expected_mass_sum = 3.0 * STEEL_DENSITY * v_total;
+    let mass_rel = (total_mass_sum - expected_mass_sum).abs() / expected_mass_sum;
+
+    // Project to the free-DOF subspace and solve K_free φ = λ M_free φ.
+    let (free_of_full, n_free) = free_dof_map(n_dofs, &bcs);
+    let k_free = project_free(&k_full, &free_of_full, n_free);
+    let m_free = project_free(&m_full, &free_of_full, n_free);
+    let opts = EigenSolverOptions { n_modes: 3, tol: 1e-9, max_iters: 200, sigma: 0.0 };
+    let eig = solve_eigen_dense(&k_free, &m_free, opts);
+
+    let lambda_min = eig.eigenvalues.first().copied().unwrap_or(f64::NAN);
+    let to_hz = |l: f64| l.sqrt() / (2.0 * PI);
+    let f1 = to_hz(lambda_min);
+    let f2 = eig.eigenvalues.get(1).map(|&l| to_hz(l)).unwrap_or(f64::NAN);
+    let f3 = eig.eigenvalues.get(2).map(|&l| to_hz(l)).unwrap_or(f64::NAN);
+
+    // Analytic Euler-Bernoulli clamped-clamped first frequency:
+    // f₁ = (β₁L)²/(2π) · √(EI / (ρ A L⁴)), β₁L = 4.730041, I = b·h³/12, A = b·h.
+    const BETA1_L: f64 = 4.730041;
+    let f1_analytic = BETA1_L.powi(2) / (2.0 * PI)
+        * (STEEL_E_PA * grid.i_bending_z() / (STEEL_DENSITY * grid.area() * grid.lx.powi(4)))
+            .sqrt();
+    let rel_err = (f1 - f1_analytic).abs() / f1_analytic;
+
+    ClampedClampedMeasurement {
+        f1,
+        f1_analytic,
+        f2,
+        f3,
+        rel_err,
+        n_free,
+        n_nodes_p2,
+        mass_rel,
+        converged: eig.converged,
+        lambda_min,
+    }
+}
+
+/// Calibrated relative-error bound on the clamped-clamped fundamental frequency.
+///
+/// **This is an HONEST MEASURED FLOOR, not the 2% the cantilever/SS bounds hit** —
+/// the same class as this file's existing euler P2 5% and P1 9–11% bounds, which
+/// `CANTILEVER_P2_REL_TOL`'s doc comment names explicitly as the contrast case.
+///
+/// # Tuning history (release mode, analytic f₁ = 262.6464 Hz)
+///
+/// | nx×ny×nz | n_free | f₁ (Hz) | rel_err | note                              |
+/// |----------|--------|---------|---------|-----------------------------------|
+/// | 16×1×1   | 837    | 270.760 | +3.089% | fails a 2% bound                  |
+/// | **24×1×1** | **1269** | **268.179** | **+2.106%** | **chosen** — 1.89% margin under 4%, matches the SS benchmark's span mesh |
+/// | 32×1×1   | 1701   | 267.096 | +1.694% | clears 2% by only 0.31%           |
+///
+/// **Why 2% is not used here.** It FAILS at nx=16 and nx=24 and clears at nx=32
+/// by only 0.31%, so a 2% bound at any of this file's established meshes would be
+/// either unreachable or knife-edge fragile. 4% at nx=24 leaves a 1.89% margin —
+/// ahead of the 0.65% margin `CANTILEVER_P2_REL_TOL` was calibrated with.
+///
+/// **Why the residual is discretization, not a model gap.** The error falls
+/// monotonically under span refinement (3.089% → 2.106% → 1.694%) and `f₁ >
+/// analytic` at every mesh, which is the signature of a conforming P2 +
+/// consistent-mass Rayleigh quotient: it bounds the exact 3-D value from ABOVE
+/// and descends toward it. The clamped-clamped fundamental sits at βL = 4.730041,
+/// i.e. `(4.730041/π)² = 2.27×` the simply-supported fundamental's curvature
+/// demand, so the same mesh resolves it less well — hence a residual roughly 2×
+/// the SS benchmark's at the identical nx=24. The Timoshenko shear/rotary-inertia
+/// correction for this `L/r ≈ 346` beam is only about −0.12%, far too small to
+/// explain a +2.1% offset, so this is discretization stiffening and not the
+/// 3D-solid-vs-Euler-Bernoulli model gap.
+const CLAMPED_P2_REL_TOL: f64 = 0.04;
+
 /// Clamped-clamped (fixed-fixed) P2 modal-frequency accuracy benchmark — the
 /// third member of this file's cantilever / simply-supported family, on the SAME
 /// shared steel fixture.
