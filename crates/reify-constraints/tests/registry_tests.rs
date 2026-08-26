@@ -840,6 +840,95 @@ fn solve_ranked_registry_cross_merges_independent_component_into_every_candidate
     }
 }
 
+/// CHARACTERIZATION GUARD (task #5721 item 1) — every per-component
+/// sub-problem inherits the FULL `current_values`, with no per-component
+/// filter of any kind.
+///
+/// `SolverRegistry::solve_inner` builds each component's sub-problem from a
+/// `..problem.clone()` spread and today ALSO rebuilds `current_values` cell by
+/// cell into a fresh `ValueMap` under a comment claiming to "Filter
+/// current_values to only this component's params". That comment misdescribes
+/// the code: the loop copies EVERY entry, so the rebuild is an exact — and
+/// strictly more expensive — reproduction of what the spread already supplies
+/// (`ValueMap` is a persistent `im::HashMap`, so the spread's clone is O(1)
+/// structural sharing rather than n inserts + 2n key/value clones).
+///
+/// This test pins the observable contract the deletion relies on: with the
+/// fixture decomposing into an objective component {x,y} and a genuinely
+/// independent component {z}, BOTH sub-problems must still see all three
+/// cells — the {z} component sees x and y, and the {x,y} component sees z.
+/// It is therefore expected to be GREEN both before and after the rebuild is
+/// deleted; that is exactly what makes the deletion provably a no-op.
+///
+/// The pass-through is not incidental, it is load-bearing: the #5720
+/// per-component `dependent_cells` filter is justified in registry.rs on the
+/// explicit premise that every cell of `problem.current_values` reaches every
+/// component, so each retained dependent expression stays evaluable.
+///
+/// If a FUTURE task legitimately introduces a REAL per-component
+/// `current_values` filter, this test is expected to fail. Update it
+/// deliberately alongside that change — and re-check the #5720 filter's
+/// premise while doing so — rather than deleting it.
+#[test]
+fn every_component_sub_problem_inherits_the_full_current_values() {
+    let (problem, x_id, y_id, z_id) = two_param_objective_plus_independent_component();
+
+    // Capture the originals before the solve so the assertions compare against
+    // the problem's own seeded values rather than restating literals.
+    let expected: Vec<(reify_core::ValueCellId, Value)> = [&x_id, &y_id, &z_id]
+        .into_iter()
+        .map(|id| {
+            (
+                id.clone(),
+                problem
+                    .current_values
+                    .get(id)
+                    .unwrap_or_else(|| panic!("fixture must seed current_values for {id:?}"))
+                    .clone(),
+            )
+        })
+        .collect();
+
+    // `registry.solve()` runs `solve_inner` with `want_optimality = false`, so
+    // EVERY component — objective-bearing or not — goes through the plain
+    // `solver.solve()` arm and is captured by the spy.
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved { values: std::collections::HashMap::new(), unique: false },
+        SolveResult::Solved { values: std::collections::HashMap::new(), unique: false },
+    ]);
+    let captured = spy.captured_problems();
+    let registry = SolverRegistry::new(Box::new(spy));
+
+    let _ = registry.solve(&problem);
+
+    let captured_guard = captured.lock().unwrap();
+    assert_eq!(
+        captured_guard.len(),
+        2,
+        "fixture must decompose into exactly 2 components ({{x,y}} + independent {{z}}); \
+         got {} sub-problem(s)",
+        captured_guard.len()
+    );
+
+    for (i, sub) in captured_guard.iter().enumerate() {
+        let own: Vec<_> = sub.auto_params.iter().map(|ap| ap.id.clone()).collect();
+        for (id, want) in &expected {
+            let got = sub.current_values.get(id).unwrap_or_else(|| {
+                panic!(
+                    "sub-problem[{i}] (autos {own:?}) is missing current_values entry {id:?}: \
+                     `current_values` must reach every component WHOLE, with no per-component \
+                     filter — the #5720 `dependent_cells` filter is justified on that premise"
+                )
+            });
+            assert_eq!(
+                got, want,
+                "sub-problem[{i}] (autos {own:?}) altered current_values entry {id:?}: \
+                 expected {want:?}, got {got:?}"
+            );
+        }
+    }
+}
+
 /// dim=1 companion guard: a single-auto-param objective problem must keep
 /// the pre-δ single-candidate path at the registry seam (mirrors B1 at the
 /// `DimensionalSolver` level and the byte-identical test at the registry
