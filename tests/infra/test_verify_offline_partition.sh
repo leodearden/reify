@@ -364,13 +364,26 @@ _offline_has_cargo_line() {
     return 1
 }
 _offline_all_cargo_lines_idle_class() {
-    local plan cmds rc=0
+    local plan cmds rc=0 _line _offender=0
     plan="$(offline_plan)" || rc=$?
     if [ "$rc" -eq 0 ]; then
-        cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
-        if ! printf '%s\n' "$cmds" | grep -E '(^| )cargo ' | grep -vq 'nice -n 19 ionice -c3 cargo'; then
-            return 0
-        fi
+        cmds="$(_plan_cmds "$plan")"
+        # Pipeline-free for the same reason as _has/_lacks above -- and this
+        # site was the worst of them. `grep -E ... | grep -vq ...` exits 0 on
+        # the FIRST cargo line MISSING the idle prefix, so a SIGPIPE'd
+        # upstream (rc 141, promoted by pipefail) turned the enclosing
+        # `! <pipeline>` TRUE and this check reported CLEAN on the very
+        # violation it had just found -- a false PASS, not a flake. Note the
+        # spelling was `grep -vq`, not `grep -q`, so it also hides from a
+        # naive `grep -n "grep -q"` sweep of this file.
+        while IFS= read -r _line; do
+            case "$_line" in
+                "cargo "*|*" cargo "*) ;;   # a cargo command line — must be idle-class
+                *) continue ;;              # not a cargo line — not this check's business
+            esac
+            _has "$_line" 'nice -n 19 ionice -c3 cargo' || { _offender=1; break; }
+        done <<< "$cmds"
+        [ "$_offender" -eq 0 ] && return 0
     fi
     _dump_plan_evidence "_offline_all_cargo_lines_idle_class" "$plan" "$rc"
     return 1
