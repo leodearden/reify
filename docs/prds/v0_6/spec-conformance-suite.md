@@ -107,7 +107,7 @@ New substrate this PRD builds (verified absent, so owned here, never assumed): t
 
 | Other PRD / program | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
-| Driver-contract implementation PRD (in-flight sibling session) | consumes | CLI `--json` diagnostics; shared engine constructor; exit unification; `@test` verdict fixes; GUI/LSP parity gates (η/#5521 shape) | other PRD | **still uncommitted at this PRD's decompose (2026-08-26) — no edge wired.** Affected leaves λ #6769, σ #6780, χ #6787 carry the obligation in-task; wire real edges when it decomposes |
+| `docs/prds/v0_6/driver-contract-implementation.md` (**landed + decomposed 2026-08-26**, leaves #6773–#6808) | consumes | CLI `--json` driver-result envelope (its σ **#6800**); shared capability profile (α **#6773**); exit unification (θ/ι/κ **#6788/#6790/#6792**); `@test` verdict fixes (λ **#6793**); GUI/LSP parity gates (χ **#6805**) and the Ring-1/Ring-2 verdict split (ψ **#6806**) | other PRD | **OBLIGATION DISCHARGED 2026-08-26**, same day: real edges now wired — `λ #6769 → #6800` (`--json`) and `χ #6787 → #6806` (the parity/conformance verdict split). σ #6780's obligation is the GUI purpose PRD's, not this one's, and remains open. |
 | Driver-contract implementation PRD | produces | the ruled driver contract is the **faithfulness target** of D9; transitional check-behavior divergences land as D10 baseline rows owned by driver-contract tasks | this PRD (baseline rows), other PRD (fixes) | wired via baseline |
 | GUI purpose surface PRD (in-flight sibling session) | consumes | `activate_purpose_session()` seam; purpose fixtures beyond `check --purpose` wait on it | other PRD | **still uncommitted at this PRD's decompose (2026-08-26) — no edge wired.** σ #6780 carries the obligation in-task; `check --purpose` fixtures are producible today and are in σ's signal |
 | resolution-unification (5516–5529) | consumes | multi-file import/cfg semantics on non-check drivers | other PRD | wired at decompose: χ #6787 ← #5517, #5518, #5519, #5520, #5521 (the non-check-driver leaves + the P1 parity harness) |
@@ -197,7 +197,10 @@ Three decompose-time dispositions, recorded here because they change the graph t
 1. **δ depends on ε** (real `add_dependency` edge, not the Phase-1 reading order). δ's own signal is "corpus
    green-or-baselined", and the baselining half is ε's mechanism — without the edge δ's signal is unproducible
    from its own dependency set (G6 branch 3). The reading order α→θ is not a dependency order.
-2. **The two in-flight sibling PRDs could not be wired.** The driver-contract implementation PRD and the GUI
+2. **The two in-flight sibling PRDs could not be wired** *(HALF DISCHARGED 2026-08-26 — see the §7 row: the
+   driver-contract PRD landed and decomposed hours later, and its two edges `λ #6769 → #6800` and
+   `χ #6787 → #6806` are now real. The GUI purpose-surface half remains open: that PRD has landed but is not yet
+   decomposed, so σ #6780 still has no id to point at.)* The driver-contract implementation PRD and the GUI
    purpose-surface PRD were both still being authored on 2026-08-26 and are uncommitted, so their leaf ids do not
    exist and no real edge could be created (same-project cross-PRD deps must be real edges; `metadata.external_deps`
    is the cross-*project* mechanism and would not gate here). Affected leaves — λ (`--json` egress), σ (GUI purpose
