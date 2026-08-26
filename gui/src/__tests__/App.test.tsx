@@ -1770,24 +1770,53 @@ describe('App handleSetParameter error handling', () => {
 });
 
 /**
- * CHARACTERIZATION PIN — green on arrival (task #6028). This block changes no
- * behaviour; it makes an already-shipped, deliberately accepted degradation
- * executable rather than folklore, and is the ready-made failing assertion for
- * the backend fix to flip.
+ * CONTRACT PIN — the reconciled parameter-input contract (task #5757).
  *
- * WHY the gate admits units the backend then refuses, and why that is
- * accepted: see the canonical rationale on `quantityUnitAlphabet` in
- * gui/src/stores/unitLadder.ts. In one line — the unit ladders are the curated
- * DISPLAY table, while the commit path parses against its own hard-coded
- * suffix table, so advertised is a strictly larger set than parseable.
+ * This block was the task-#6028 CHARACTERIZATION of a deliberately accepted
+ * degradation: the typed-input gate admitted every curated ladder label, while
+ * the commit path parsed only a hard-coded five-entry suffix table, so
+ * `5mm^3` and `5L` were accepted by the panel and then refused by the engine
+ * with `Cannot parse value '<input>'` — the typed text discarded and replaced
+ * by an async error toast. Its clause (d) was named in-source as "the clause
+ * the eventual UNIT_TABLE fix must flip". Task #5757 is that fix, so the block
+ * is rewritten here to state the contract that now HOLDS rather than the gap
+ * that used to.
  *
- * What these tests pin is the user-visible SHAPE of that failure: the gate
- * accepts, `submitValue` exits edit mode, the typed text is REPLACED by the
- * prop-derived display value, and an async `Parameter update failed: ...`
- * toast arrives — where before #6028 the same input was held in place with an
- * inline `data-invalid` for correction. Clause (d) is that regression.
+ * What changed underneath: `parse_value_string` (gui/src-tauri/src/engine.rs)
+ * no longer carries its own table. It scans an index composed from
+ * `reify_core::display_units::unit_ladders()` — the very table this panel's
+ * accept-alphabet is derived from, fetched over `get_unit_ladders` — unioned
+ * with `reify_core::BUILTIN_UNITS`. Advertised and parseable are now the same
+ * set by construction, not by two tables kept in lockstep.
+ *
+ * The block pins BOTH directions of the reconciled contract, because widening
+ * what is accepted and narrowing it are the same edit and each can break the
+ * other:
+ *
+ *   * a curated ladder unit commits cleanly, with no toast;
+ *   * a BARE number in a dimensioned cell is refused INLINE and never reaches
+ *     the bridge at all (PRD ratified decision (1), §6 row 16).
+ *
+ * ON CLAUSE (d), read carefully. The original asserted that the typed text was
+ * GONE after commit, and called that the regression to flip. It cannot flip
+ * literally: `PropertyEditor`'s input reads
+ * `editingCellId() === cell_id ? editValue() : primaryDisplay(val)`, so text is
+ * held on screen for exactly as long as the row is still being edited. A
+ * SUCCESSFUL commit ends the edit, and the panel then correctly shows what the
+ * engine says the cell is — the mocked bridge here does not push a new value
+ * back, so that is still `7045002.24`. The same assertion therefore reads the
+ * same but MEANS the opposite: the text is gone because the value landed, not
+ * because a rejection threw it away. What the original clause was really
+ * protecting — typed text preserved for correction — is asserted where it now
+ * genuinely belongs, on the bare-number case below, which is refused and does
+ * keep the text.
+ *
+ * Mocking discipline is unchanged (see the standing rule on the `vi.mock('../bridge')`
+ * factory): no conversion to a partial mock, per-test overrides via `vi.mocked`,
+ * and the `waitFor` on the unit picker stays the synchronization point because
+ * the ladder fetch is fire-and-forget.
  */
-describe('App parameter input: ladder-derived units the backend cannot parse (task #6028)', () => {
+describe('App parameter input: the reconciled unit/bare-number contract (task #5757)', () => {
   /** The task #5199 Volume-ladder cell, rebuilt per test so no case can mutate another's fixture. */
   function capacityState(): GuiState {
     return { fea_convergence: null,
@@ -1818,73 +1847,195 @@ describe('App parameter input: ladder-derived units the backend cannot parse (ta
     };
   }
 
+  /**
+   * Render <App /> over the Volume cell and hand back its input, ready to type
+   * into.
+   *
+   * The `waitFor` on the picker is the synchronization point: the ladder fetch
+   * is fire-and-forget (App.tsx), and the picker only renders once it resolves —
+   * so waiting on it also proves the widened, ladder-derived alphabet is live
+   * here rather than the static five-unit floor.
+   */
+  async function renderCapacityInput(): Promise<HTMLInputElement> {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(capacityState());
+    vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
+      {
+        dimension: 'Volume',
+        units: [
+          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'L', si_scale: 1e-3, is_default: false },
+        ],
+      },
+    ]);
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('unit-select-Tank.capacity')).toBeTruthy();
+    });
+
+    const row = screen.getByTestId('prop-row-Tank.capacity');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.value).toBe('7045002.24');
+    return input;
+  }
+
   // `mm^3` is the ASCII spelling of the ladder's own default rung; `L` is the
-  // second rung. Both are advertised by `get_unit_ladders`, so both pass the
-  // widened gate — and neither is in `UNIT_TABLE`, so both are refused on commit.
+  // second rung. Both are advertised by `get_unit_ladders`, and since #5757 the
+  // engine resolves both — `L` notably being reachable ONLY through the display
+  // ladders, since reify-compiler/stdlib/units.ri declares no SI volume units.
   it.each([
     ['5mm^3'],
     ['5L'],
-  ])('accepts %s, discards the typed text, and surfaces the backend parse failure as a toast', async (typed) => {
+  ])('submits %s to the engine cleanly, with no inline rejection and no error toast', async (typed) => {
     await withSuppressedRejectionsAndErrorSpy(async () => {
-      // The REAL failure string is the tail of `parse_value_string`
-      // (gui/src-tauri/src/engine.rs) — NOT the .ri compiler's unknown-unit
-      // diagnostic, which is a different subsystem: `set_parameter`
-      // short-circuits on the parse error before `edit_check`, so this path
-      // never reaches the compiler at all.
-      vi.mocked(bridge.setParameter).mockRejectedValue(
-        new Error(`Cannot parse value '${typed}'`),
-      );
-      vi.mocked(bridge.getInitialState).mockResolvedValue(capacityState());
-      vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
-        {
-          dimension: 'Volume',
-          units: [
-            { label: 'mm³', si_scale: 1e-9, is_default: true },
-            { label: 'L', si_scale: 1e-3, is_default: false },
-          ],
-        },
-      ]);
+      // RESOLVES. The pre-#5757 version of this test hand-mocked a
+      // `Cannot parse value '<input>'` rejection here — a failure the engine no
+      // longer produces for these literals.
+      vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
 
-      render(() => <App />);
-
-      // The picker only renders once the ladder fetch resolves, so waiting on
-      // it also proves the widened (ladder-derived) alphabet is live here
-      // rather than the static five-unit floor.
-      await waitFor(() => {
-        expect(screen.getByTestId('unit-select-Tank.capacity')).toBeTruthy();
-      });
-
-      const row = screen.getByTestId('prop-row-Tank.capacity');
-      const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-      expect(input).toBeTruthy();
-      expect(input.value).toBe('7045002.24');
+      const input = await renderCapacityInput();
 
       fireEvent.focus(input);
       fireEvent.input(input, { target: { value: typed } });
       fireEvent.keyDown(input, { key: 'Enter' });
 
-      // (a) the frontend gate ACCEPTED it — no inline invalid marker.
+      // (a) the frontend gate accepted it — no inline invalid marker.
       expect(input.hasAttribute('data-invalid')).toBe(false);
 
-      // (b) it was submitted to the backend verbatim.
+      // (b) it was submitted to the backend verbatim: the panel never rewrites
+      // a literal by the picked unit's conversion factor.
       expect(bridge.setParameter).toHaveBeenCalledWith('Tank.capacity', typed);
 
-      // (c) the backend's refusal arrives asynchronously, as a toast.
-      await waitFor(() => {
-        const toast = screen.getByTestId('toast');
-        expect(toast.dataset.type).toBe('error');
-        expect(toast.textContent).toContain(
-          `Parameter update failed: Cannot parse value '${typed}'`,
-        );
-      });
+      // (c) THE FLIP. No error toast arrives, because nothing rejects.
+      await flushMacrotasks();
+      expect(screen.queryByTestId('toast')).toBeNull();
 
-      // (d) THE TYPED TEXT IS GONE. `submitValue` cleared `data-invalid`, called
-      // `onSetParameter` and `setEditingCellId(null)`, so the input reverted to
-      // the prop-derived display value — the user's rejected input is not
-      // preserved for correction. This is the accepted regression in feedback
-      // quality, and the clause the eventual `UNIT_TABLE` fix must flip.
-      expect(input.value).not.toBe(typed);
+      // (d) the edit ended and the row reverted to the engine-derived display
+      // value. Reverting is now the CORRECT outcome — the value landed. See the
+      // block doc above for why this assertion reads the same as the one it
+      // replaces while meaning the opposite.
       expect(input.value).toBe('7045002.24');
+    });
+  });
+
+  it('refuses a bare number on a dimensioned cell inline, never calling the bridge', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+
+      const input = await renderCapacityInput();
+
+      // `20` in a Volume cell is ambiguous — 20 what? The engine used to answer
+      // that silently, reading it as 20 CUBIC METRES on a cell whose SI value is
+      // 0.00704500224. `parse_value_string_for_cell` now refuses it, and the
+      // frontend mirrors that refusal so the feedback is immediate.
+      fireEvent.focus(input);
+      fireEvent.input(input, { target: { value: '20' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Inline, on the cell itself.
+      expect(input.hasAttribute('data-invalid')).toBe(true);
+
+      // The bridge is mocked, so ONLY the frontend gate can stop this call —
+      // which is what makes this an end-to-end check of the panel's own rule
+      // rather than of the engine's.
+      expect(bridge.setParameter).not.toHaveBeenCalled();
+
+      // No toast: the whole point of gating inline is that the user is not sent
+      // an async failure for something the panel already knew was wrong.
+      await flushMacrotasks();
+      expect(screen.queryByTestId('toast')).toBeNull();
+
+      // AND THE TYPED TEXT SURVIVES for correction — the row is still in edit
+      // mode, so the user adds a unit rather than retyping the number. This is
+      // the feedback quality the #6028 characterization block recorded as lost.
+      expect(input.value).toBe('20');
+    });
+  });
+
+  /**
+   * The same fixture plus a cell whose dimension NO curated ladder covers — the
+   * real in-tree `Money` shape, badge and all.
+   *
+   * Same mocking discipline as `renderCapacityInput`: the non-partial
+   * `vi.mock('../bridge')` factory with per-test `vi.mocked` overrides, the
+   * ladder map supplied through `getUnitLadders`, and the `waitFor` on the
+   * Volume picker as the synchronization point — which also proves the fetch
+   * resolved, so the uncovered cell below is genuinely uncovered rather than
+   * merely un-fetched.
+   */
+  async function renderWithUncoveredCell(): Promise<{
+    covered: HTMLInputElement;
+    uncovered: HTMLInputElement;
+  }> {
+    const state = capacityState();
+    state.values.push({
+      cell_id: 'Tank.unit_cost',
+      name: 'unit_cost',
+      value: '5',
+      unit: 'USD',
+      determinacy: 'determined',
+      entity_path: 'Tank.unit_cost',
+      kind: 'param',
+      freshness: 'final',
+      dimension: 'Money',
+      si_value: 5,
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(state);
+    vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
+      {
+        dimension: 'Volume',
+        units: [
+          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'L', si_scale: 1e-3, is_default: false },
+        ],
+      },
+    ]);
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('unit-select-Tank.capacity')).toBeTruthy();
+    });
+
+    const inputFor = (cellId: string) =>
+      screen
+        .getByTestId(`prop-row-${cellId}`)
+        .querySelector('input[type="text"]') as HTMLInputElement;
+    return { covered: inputFor('Tank.capacity'), uncovered: inputFor('Tank.unit_cost') };
+  }
+
+  it('sends a bare number straight through for a cell no curated ladder covers', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+
+      const { covered, uncovered } = await renderWithUncoveredCell();
+
+      // The Money cell: `USD` is reachable only through the compiler's
+      // per-module `UnitRegistry`, which the engine's composed index excludes,
+      // so the bare number is the ONLY input either end accepts. Gating it would
+      // brick the row — 16 such declarations exist across examples/*.ri.
+      fireEvent.focus(uncovered);
+      fireEvent.input(uncovered, { target: { value: '6' } });
+      fireEvent.keyDown(uncovered, { key: 'Enter' });
+
+      expect(uncovered.hasAttribute('data-invalid')).toBe(false);
+      expect(bridge.setParameter).toHaveBeenCalledWith('Tank.unit_cost', '6');
+
+      await flushMacrotasks();
+      expect(screen.queryByTestId('toast')).toBeNull();
+
+      // The LADDERED neighbour in the same panel is discriminated, in the same
+      // render: still refused inline, still never reaching the bridge. Without
+      // this the test could pass by the gate having been removed outright.
+      vi.mocked((bridge as any).setParameter).mockClear();
+      fireEvent.focus(covered);
+      fireEvent.input(covered, { target: { value: '20' } });
+      fireEvent.keyDown(covered, { key: 'Enter' });
+
+      expect(covered.hasAttribute('data-invalid')).toBe(true);
+      expect(bridge.setParameter).not.toHaveBeenCalled();
     });
   });
 });
