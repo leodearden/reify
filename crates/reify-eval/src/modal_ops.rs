@@ -4474,64 +4474,148 @@ mod tests {
         );
     }
 
-    /// Amendment (suggestion 2), re-aimed by task 6663: `build_dirichlet_bcs`
-    /// selects the pin-pin realization iff BOTH beam-axis end faces are named
-    /// AND every end-face support is Pinned, otherwise clamps the named face(s).
-    /// Case (a) previously fed two `fixed_support(...)` and so PINNED THE DEFECT;
-    /// it now feeds the pinned pair, which is the input that legitimately selects
-    /// pin-pin. Step-3 replaces this test wholesale with the four-case
-    /// `build_dirichlet_bcs_discriminates_support_kind`.
+    /// Task 6663: `build_dirichlet_bcs` realizes each named face independently
+    /// and KIND-AWARELY. Four cases over `build_beam_mesh` node coordinates:
+    ///
+    ///   (i)   two `PinnedSupport`s on x_min+x_max → pin-pin (some end-face node
+    ///         has ONLY its Z DOF constrained);
+    ///   (ii)  two `FixedSupport`s on x_min+x_max → clamped-clamped (EVERY node
+    ///         of BOTH end faces has all three DOFs, and NO end-face node is
+    ///         Z-only) — the defect this task fixes: this input used to return
+    ///         the bit-identical pin-pin set;
+    ///   (iii) one `FixedSupport` on x_min → the cantilever, unchanged;
+    ///   (iv)  `[FixedSupport("x_min"), PinnedSupport("x_max")]` → a genuine
+    ///         propped cantilever (x_min fully clamped, x_max Z-only).
+    ///
+    /// Supersedes `build_dirichlet_bcs_selects_pin_pin_vs_clamp`, which fed two
+    /// `fixed_support(...)` and asserted the pin-pin set — i.e. PINNED THE DEFECT.
     #[test]
-    fn build_dirichlet_bcs_selects_pin_pin_vs_clamp() {
+    fn build_dirichlet_bcs_discriminates_support_kind() {
+        use std::collections::HashSet;
+
         let length = 0.02_f64;
         let width = 0.05_f64;
         let height = 0.1_f64;
         let mesh = build_beam_mesh(length, width, height);
         let eps = 1e-9_f64;
         let on_x_min = |n: usize| mesh.nodes[n][0] <= eps;
-        let on_end = |n: usize| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps;
+        let on_x_max = |n: usize| mesh.nodes[n][0] >= length - eps;
+        let on_end = |n: usize| on_x_min(n) || on_x_max(n);
 
-        // (a) Both x_min AND x_max named by PINNED supports → pin-pin: some
-        //     end-face node has ONLY its Z DOF constrained (X and Y free) —
-        //     impossible under a full clamp, which constrains all three.
-        let pin_opts = modal_options(vec![(
-            "boundary_conditions".to_string(),
-            Value::List(vec![pinned_support("x_min"), pinned_support("x_max")]),
-        )]);
-        let pin_set: std::collections::HashSet<usize> =
-            build_dirichlet_bcs(&pin_opts, &mesh.nodes, length, width, height)
+        let dof_set = |supports: Vec<Value>| -> HashSet<usize> {
+            let opts = modal_options(vec![(
+                "boundary_conditions".to_string(),
+                Value::List(supports),
+            )]);
+            build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height)
                 .iter()
                 .map(|b| b.dof)
-                .collect();
-        let z_only_end_node = (0..mesh.nodes.len()).any(|n| {
-            on_end(n)
-                && pin_set.contains(&(3 * n + 2))
-                && !pin_set.contains(&(3 * n))
-                && !pin_set.contains(&(3 * n + 1))
-        });
+                .collect()
+        };
+        let clamped = |set: &HashSet<usize>, n: usize| {
+            set.contains(&(3 * n)) && set.contains(&(3 * n + 1)) && set.contains(&(3 * n + 2))
+        };
+        let z_only = |set: &HashSet<usize>, n: usize| {
+            set.contains(&(3 * n + 2)) && !set.contains(&(3 * n)) && !set.contains(&(3 * n + 1))
+        };
+
+        // (i) Two PINNED supports naming both end faces → pin-pin: some end-face
+        //     node has ONLY its Z DOF constrained (X and Y free) — impossible
+        //     under a full clamp, which constrains all three.
+        let pin_pin = dof_set(vec![pinned_support("x_min"), pinned_support("x_max")]);
         assert!(
-            z_only_end_node,
-            "pin-pin must leave an end-face node with only Z constrained"
+            (0..mesh.nodes.len()).any(|n| on_end(n) && z_only(&pin_pin, n)),
+            "pin-pin must leave an end-face node with only Z constrained",
         );
 
-        // (b) Only x_min named → clamp: every x_min node has all three DOFs.
-        let clamp_opts = modal_options(vec![(
-            "boundary_conditions".to_string(),
-            Value::List(vec![fixed_support("x_min")]),
-        )]);
-        let clamp_set: std::collections::HashSet<usize> =
-            build_dirichlet_bcs(&clamp_opts, &mesh.nodes, length, width, height)
-                .iter()
-                .map(|b| b.dof)
-                .collect();
-        let all_x_min_clamped = (0..mesh.nodes.len()).filter(|&n| on_x_min(n)).all(|n| {
-            clamp_set.contains(&(3 * n))
-                && clamp_set.contains(&(3 * n + 1))
-                && clamp_set.contains(&(3 * n + 2))
-        });
+        // (ii) Two FIXED supports naming both end faces → clamped-clamped: every
+        //      node of BOTH end faces carries all three DOFs, and NO end-face
+        //      node is Z-only. Before task 6663 this input returned the pin-pin
+        //      set above verbatim (measured: an identical 391.049 Hz).
+        let fix_fix = dof_set(vec![fixed_support("x_min"), fixed_support("x_max")]);
         assert!(
-            all_x_min_clamped,
+            (0..mesh.nodes.len())
+                .filter(|&n| on_end(n))
+                .all(|n| clamped(&fix_fix, n)),
+            "two FixedSupports must clamp all three DOFs on every node of BOTH end faces",
+        );
+        assert!(
+            !(0..mesh.nodes.len()).any(|n| on_end(n) && z_only(&fix_fix, n)),
+            "two FixedSupports must NOT degrade to the pin-pin realization \
+             (no end-face node may be Z-only)",
+        );
+
+        // (iii) One FixedSupport on x_min → the cantilever: every x_min node
+        //       fully clamped, no x_max node touched. Unchanged by task 6663.
+        let cantilever = dof_set(vec![fixed_support("x_min")]);
+        assert!(
+            (0..mesh.nodes.len())
+                .filter(|&n| on_x_min(n))
+                .all(|n| clamped(&cantilever, n)),
             "clamp realization must constrain all three DOFs on every x_min node",
+        );
+        assert!(
+            !(0..mesh.nodes.len())
+                .filter(|&n| on_x_max(n) && !on_x_min(n))
+                .any(|n| (0..3).any(|a| cantilever.contains(&(3 * n + a)))),
+            "a lone x_min support must leave the x_max face entirely free",
+        );
+
+        // (iv) Mixed [Fixed(x_min), Pinned(x_max)] → a genuine propped
+        //      cantilever: x_min fully clamped, x_max Z-only (X/Y free).
+        let propped = dof_set(vec![fixed_support("x_min"), pinned_support("x_max")]);
+        assert!(
+            (0..mesh.nodes.len())
+                .filter(|&n| on_x_min(n))
+                .all(|n| clamped(&propped, n)),
+            "propped cantilever must fully clamp every x_min node",
+        );
+        assert!(
+            (0..mesh.nodes.len())
+                .filter(|&n| on_x_max(n) && !on_x_min(n))
+                .all(|n| z_only(&propped, n)),
+            "propped cantilever must constrain Z ONLY on the pinned x_max face",
+        );
+    }
+
+    /// Task 6663: the per-face realization must emit each DOF at most once.
+    ///
+    /// A corner node shared by two named faces is visited once per face, so the
+    /// un-deduped union emits several `DirichletBc`s for the same `dof`. That is
+    /// harmless for the modal solve (`solve_modal_core`'s `is_constrained` map is
+    /// idempotent) but the same shape debug-PANICS in
+    /// `reify-solver-elastic/src/boundary/dirichlet.rs:175-188`
+    /// ("duplicate DirichletBc dof"), so the emitted vector must be unique.
+    #[test]
+    fn build_dirichlet_bcs_emits_no_duplicate_dofs() {
+        use std::collections::HashSet;
+
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+
+        // x_min and y_min share an entire edge of nodes, so the un-deduped
+        // union emits those nodes' DOFs twice.
+        let opts = modal_options(vec![(
+            "boundary_conditions".to_string(),
+            Value::List(vec![fixed_support("x_min"), fixed_support("y_min")]),
+        )]);
+        let bcs = build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height);
+
+        let mut seen = HashSet::new();
+        let dups: Vec<usize> = bcs
+            .iter()
+            .filter(|b| !seen.insert(b.dof))
+            .map(|b| b.dof)
+            .collect();
+        assert!(
+            dups.is_empty(),
+            "build_dirichlet_bcs emitted {} duplicate dof(s) out of {} constraints \
+             for a face set sharing corner nodes: {:?}",
+            dups.len(),
+            bcs.len(),
+            dups,
         );
     }
 
