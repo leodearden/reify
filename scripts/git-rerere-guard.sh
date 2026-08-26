@@ -25,7 +25,10 @@
 # Usage:
 #   scripts/git-rerere-guard.sh <subcommand> [target_dir]
 #
-#   check       Report whether rerere is effectively ARMED for the target store.
+#   check       Report whether rerere is effectively ARMED for the target store —
+#               the effective rerere.enabled/rerere.autoupdate, plus a sweep of
+#               every config.worktree in the store (the main checkout's own
+#               included, since git dir == common dir there).
 #               Read-only: never writes config anywhere.
 #               Exit 0 = safe, 1 = armed (the machine-readable signal).
 #   arm         Idempotently write rerere.enabled=false and rerere.autoupdate=false

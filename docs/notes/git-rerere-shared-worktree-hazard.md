@@ -136,7 +136,7 @@ the main checkout and any lane are interchangeable.
 
 | Subcommand | Effect | Exit 0 | Non-zero |
 |---|---|---|---|
-| `check` | Read-only. Never writes config anywhere. | safe | **1** — rerere effectively armed |
+| `check` | Read-only. Never writes config anywhere. Reads the effective `rerere.enabled` / `rerere.autoupdate`, and sweeps every `config.worktree` in the store — the **main checkout's own** as well as every linked worktree's. | safe | **1** — rerere effectively armed |
 | `arm` | Idempotently writes `rerere.enabled=false` + `rerere.autoupdate=false` to shared local config, then re-verifies via `check`. Never prunes `rr-cache`. | disarmed | **2** — shared config pinned, but an out-of-reach override survives; **1** — genuine failure of this run |
 | `scan-locks` | Read-only census of `MERGE_RR.lock` across the **main checkout and every linked worktree**, classified STALE vs OPERATION-IN-PROGRESS. Never deletes. | clean | **1** — lock(s) found |
 
@@ -179,8 +179,16 @@ The value is also not durable here: Claude Code's worktree feature demonstrably 
 `.git/config` (the reason `setup-main-gate-worktree-config.sh` exists), a stray `core.hooksPath =
 echo` was found in that same shared config during this task's earlier audit (esc-5870-1..3), and
 **`config.worktree` was measured to BEAT shared config** — so any single lane can re-arm rerere for
-itself. That last fact is why `check` sweeps `worktrees/*/config.worktree` rather than reading the
-shared file alone.
+itself. That last fact is why `check` **sweeps every `config.worktree` in the store** rather than
+reading the shared file alone — and the sweep covers the **main checkout's own
+`<common-git-dir>/config.worktree`** as well as every `worktrees/*/config.worktree`. For the main
+checkout git dir == common dir, so its per-worktree config sits *beside* the shared config rather
+than under `worktrees/`, and a glob over the linked worktrees alone is blind to it. That blind spot
+is doubly silent: `check`'s effective-value read only ever sees the *target's own* `config.worktree`,
+so from any lane a main-checkout self-arm would be invisible to both detection paths at once and
+`arm` would report "disarmed and verified" while `main` stayed armed. The main checkout is also
+where `scripts/land.sh` runs its sanctioned `git merge --no-ff` — an active merge site, the same
+reasoning that already makes `scan-locks` cover `<common-git-dir>/MERGE_RR.lock`.
 
 `arm` writes with `--local`, never `--worktree`: the point is that all 239 lanes inherit one shared
 default with zero per-lane wiring.
