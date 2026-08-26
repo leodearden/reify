@@ -23,9 +23,6 @@ import { AXIS_LABEL_RENDER_ORDER } from './renderOrder';
  */
 export const DEFAULT_LABEL_OFFSET = 2.3;
 
-/** Module-local alias, kept so the LABELS spec below reads as it always has. */
-const LABEL_OFFSET = DEFAULT_LABEL_OFFSET;
-
 /**
  * On-screen size of a label sprite, as a fraction of the viewport HEIGHT divided
  * by cot(fov/2)/2 — i.e. the `scale` the r183 sprite shader consumes when the
@@ -83,9 +80,9 @@ interface LabelSpec {
 }
 
 const LABELS: LabelSpec[] = [
-  { axis: 'X', color: 0xff0000, position: [LABEL_OFFSET, 0, 0] },
-  { axis: 'Y', color: 0x00ff00, position: [0, LABEL_OFFSET, 0] },
-  { axis: 'Z', color: 0x0000ff, position: [0, 0, LABEL_OFFSET] },
+  { axis: 'X', color: 0xff0000, position: [DEFAULT_LABEL_OFFSET, 0, 0] },
+  { axis: 'Y', color: 0x00ff00, position: [0, DEFAULT_LABEL_OFFSET, 0] },
+  { axis: 'Z', color: 0x0000ff, position: [0, 0, DEFAULT_LABEL_OFFSET] },
 ];
 
 /**
@@ -200,12 +197,12 @@ export function createAxisLabels(): {
 
   /** Unit direction per axis, derived from the LABELS spec rather than re-deduced
    *  from the letter, so direction has exactly one definition in this module.
-   *  LABEL_OFFSET divides out exactly (2.3/2.3 = 1, 0/2.3 = 0), so the units are
+   *  DEFAULT_LABEL_OFFSET divides out exactly (2.3/2.3 = 1, 0/2.3 = 0), so the units are
    *  exact and `setOffset(d)` lands on `d` and `0` with no float drift. */
   const unitByAxis = new Map<LabelSpec['axis'], [number, number, number]>(
     LABELS.map((spec) => [
       spec.axis,
-      spec.position.map((c) => c / LABEL_OFFSET) as [number, number, number],
+      spec.position.map((c) => c / DEFAULT_LABEL_OFFSET) as [number, number, number],
     ]),
   );
 
