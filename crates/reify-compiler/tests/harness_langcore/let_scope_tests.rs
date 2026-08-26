@@ -1737,23 +1737,59 @@ fn sweep_non_geometry_path_emits_error() {
     );
 }
 
+/// The geom_ref fallback survives, and all THREE displacement rejections fire.
+///
+/// FLIPPED by task 5750 (units-length η), contract C6 of
+/// `docs/prds/v0_6/units-length-gate-completion.md`. This test used to assert
+/// `translate(42, 1, 0, 0)` produced NO errors at all. That is no longer true
+/// and flipping it IS THE FIX, not a regression to suppress: `1, 0, 0` are the
+/// `dx`/`dy`/`dz` displacement, and η's whole point is that a bare component
+/// there is a compile-time Error rather than a silent 1-SI-METRE shift.
+///
+/// WHY arg0 IS NOT AMONG THEM, and why the op-sequence assertion below is KEPT:
+/// `42` sits at the geometry-handle position, which is deliberately unchecked
+/// (ε=4358's territory), so the silent geom_ref fallback this test was
+/// ORIGINALLY written to pin is UNCHANGED — three errors, not four. The
+/// fallback still resolves to `GeomRef::Step(step_offset)` and the Translate op
+/// is STILL LOWERED despite the diagnostics, because
+/// `check_builtin_arg_types` is anti-cascade: it touches only `diagnostics`,
+/// never lowering or result-type inference. The surviving `ExpectedOp::Transform`
+/// assertion is what pins that, so the test now pins BOTH facts.
 #[test]
 fn translate_non_geometry_target_uses_fallback() {
-    // translate(42, 1, 0, 0): arg 0 is a literal number, not a geometry expression.
-    // The geom_ref fallback silently uses GeomRef::Step(step_offset). This should
-    // compile without errors (the fallback is intentional for single-geom-arg functions).
     let source = r#"structure S {
     let result = translate(42, 1, 0, 0)
 }"#;
     let compiled = compile_with_diagnostics(source);
     let errors = error_diagnostics(&compiled);
-    // No error expected — the geom_ref closure falls back silently.
-    assert!(
-        errors.is_empty(),
-        "translate() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "translate: dx argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "translate: dy argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "translate: dz argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+        ],
+        "expected exactly the three displacement rejections — arg0 (the \
+         geometry handle) must still fall back silently, so there is no fourth. \
+         Got: {:?}",
         errors
     );
-    // Should still produce a realization with a Transform op.
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch)),
+        "each rejection must carry the COMPILE-layer code, not the eval layer's \
+         DimensionedArgRejected (PRD decision D2); got: {:?}",
+        errors
+    );
+
+    // ANTI-CASCADE: the diagnostics did not stop lowering. The realization is
+    // still produced, with the Translate op still targeting the fallback step.
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(

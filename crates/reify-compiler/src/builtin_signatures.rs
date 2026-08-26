@@ -1512,6 +1512,93 @@ mod tests {
         assert_slots_at_every_arity("draft", &[]);
     }
 
+    // ── Task 5750 (units-length η): TRANSFORM LENGTH slots ───────────────────
+    //
+    // The task-5623 `transform` row of `crates/reify-eval/src/arg_acceptance.rs`'s
+    // family table. Not one of the four families this leaf's task text names —
+    // it is pulled in by contract C6, whose named fixtures
+    // (`translate_non_geometry_target_uses_fallback`,
+    // `rotate_around_let_bound_target_ops`) force the decision either way, so
+    // the row is completed rather than left half-open. Arg names from
+    // `geometry_transform.rs`.
+
+    /// translate(target, dx, dy, dz) → the DISPLACEMENT triple only.
+    ///
+    /// Index 0 is the geometry handle: permanently unchecked, ε=4358's
+    /// territory, and already pinned in general by `arg0_never_fires`. Asserted
+    /// here too, positively, because `translate`'s displacement starts at index
+    /// 1 and an off-by-one in the arm would land exactly there.
+    #[test]
+    fn translate_slots_the_displacement_but_never_the_handle() {
+        assert_slots_at_every_arity(
+            "translate",
+            &[
+                length_slot(1, "dx"),
+                length_slot(2, "dy"),
+                length_slot(3, "dz"),
+            ],
+        );
+
+        let slotted: Vec<usize> = builtin_arg_slots("translate", 4)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        assert!(
+            !slotted.contains(&0),
+            "translate arg0 is the geometry handle and must stay slot-free; \
+             got slots at {slotted:?}"
+        );
+    }
+
+    /// rotate_around(target, px, py, pz, ax, ay, az, angle) → the PIVOT only.
+    ///
+    /// The third STRADDLE case, and structurally identical to `revolve`'s: a
+    /// gated point in space, an un-gated dimensionless axis DIRECTION, and an
+    /// ANGLE that belongs to
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
+    /// decree. All three exclusions are asserted positively.
+    #[test]
+    fn rotate_around_slots_the_pivot_but_never_the_axis_or_the_angle() {
+        assert_slots_at_every_arity(
+            "rotate_around",
+            &[
+                length_slot(1, "px"),
+                length_slot(2, "py"),
+                length_slot(3, "pz"),
+            ],
+        );
+
+        let slotted: Vec<usize> = builtin_arg_slots("rotate_around", 8)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        for excluded in [0usize, 4, 5, 6, 7] {
+            assert!(
+                !slotted.contains(&excluded),
+                "rotate_around arg{excluded} is the geometry handle, an axis \
+                 DIRECTION component, or the ANGLE — none of which this leaf may \
+                 gate; got slots at {slotted:?}"
+            );
+        }
+    }
+
+    /// `scale` stays wholly slot-free — its factor is DIMENSIONLESS.
+    ///
+    /// A scale factor is a ratio, so demanding a Length of it would reject
+    /// correct `.ri` outright. `arg_acceptance.rs` names dimensionless scale
+    /// FACTORS explicitly among the deliberately-not-gated set. Pinned as a
+    /// seam control: `scale` sits in the same `compile_transform_op` match as
+    /// `translate` and `rotate_around`, so "the transform family is gated" must
+    /// not be read as "every transform argument is gated".
+    ///
+    /// Covers BOTH of its lowered forms — the uniform `factor` and the
+    /// `ScaleNonUniform` `factors` vec3 — since the sweep probes every arity
+    /// and the arm is keyed on the name alone.
+    #[test]
+    fn scale_stays_slot_free_because_its_factor_is_dimensionless() {
+        assert_slots_at_every_arity("scale", &[]);
+    }
+
     /// Task 5652 (step-1 RED). Pins the guard-only-overloaded-names half of
     /// [`builtin_arg_slots`]'s contract (rule and rationale documented there):
     /// the `arg_count` parameter is *available* to every arm but *used* only by
