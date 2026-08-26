@@ -63,6 +63,20 @@ use tempfile::TempDir;
 /// test does not recurse when the child re-runs it.
 const REPLAY_GUARD: &str = "REIFY_AUDIT_HOOK_ENV_REPLAY";
 
+/// [`REPLAY_GUARD`]'s value for a child spawned by a parent that has verified
+/// NOTHING about this environment beyond the fact that it is replaying.
+const REPLAY_PLAIN_MARK: &str = "1";
+
+/// [`REPLAY_GUARD`]'s value for a child whose parent DID verify, in this same
+/// process and this same environment, that the orphan audit produces an
+/// envelope. The stronger claim, and the only one that entitles the child to
+/// treat a skip as a failure.
+///
+/// Kept private alongside [`REPLAY_GUARD`], for the same single-source reason:
+/// the predicate and the spawner below are its only readers, so no call site
+/// can re-read or re-stamp the marker under its own name.
+const REPLAY_ENVELOPE_MARK: &str = "envelope";
+
 /// True when this process is the poisoned replay child spawned by
 /// [`replay_self_under_hook_git_env`]. Lets a test tighten an
 /// otherwise-graceful skip into a hard failure for the replay run only —
@@ -79,6 +93,31 @@ const REPLAY_GUARD: &str = "REIFY_AUDIT_HOOK_ENV_REPLAY";
 #[allow(dead_code)]
 pub fn in_replay_child() -> bool {
     std::env::var_os(REPLAY_GUARD).is_some()
+}
+
+/// True when this process is a replay child whose parent verified an audit
+/// envelope before spawning it — [`in_replay_child`] plus the fact that makes
+/// a skip inexplicable.
+///
+/// This is the predicate a test uses to tighten an otherwise-graceful skip
+/// into a hard failure. Keying such a tightening on the weaker
+/// [`in_replay_child`] instead is a measured defect, not a stylistic one: the
+/// child inherits environments where `python3`, `git` or the script is
+/// genuinely absent, and there the tightening converts a supported
+/// environment's clean skip into a red build with a self-contradicting
+/// diagnosis (see
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`).
+///
+/// The guarantee comes from the spawn side:
+/// [`replay_self_under_hook_git_env_expecting_envelope`] is the only thing
+/// that stamps [`REPLAY_ENVELOPE_MARK`], and its contract is that the caller
+/// has already seen an envelope in this environment. So inside such a child a
+/// skip means the environment changed underfoot between two runs seconds
+/// apart — which, under an ambient hook git environment, is exactly the
+/// hazard the replay exists to catch.
+#[allow(dead_code)]
+pub fn replay_child_expects_envelope() -> bool {
+    std::env::var(REPLAY_GUARD).as_deref() == Ok(REPLAY_ENVELOPE_MARK)
 }
 
 /// A pre-sanitized `git -C <dir>` command for fixture-repo setup.
@@ -393,6 +432,31 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
 /// is unaffected because the child is spawned by us, not by nextest.
 #[allow(dead_code)]
 pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
+    replay_with_mark(filters, expected_min, REPLAY_PLAIN_MARK);
+}
+
+/// [`replay_self_under_hook_git_env`], but stamping the marker that entitles
+/// the replayed test to treat a skip as a hard failure
+/// ([`replay_child_expects_envelope`]).
+///
+/// Call this ONLY after this process has verified, in this same environment,
+/// that the audit under replay actually produces an envelope. That verified
+/// fact is the whole content of the stronger mark — stamping it
+/// unconditionally would not tighten anything, it would just rename the
+/// weaker mark and restore the false RED this variant exists to prevent.
+///
+/// Everything else — the re-entrancy guard, the `--list` non-vacuity floor,
+/// the decoy, the poison, the status assertion and both post-run count checks
+/// — is shared verbatim with the plain variant, so the two spawn paths cannot
+/// drift apart.
+#[allow(dead_code)]
+pub fn replay_self_under_hook_git_env_expecting_envelope(filters: &[&str], expected_min: usize) {
+    replay_with_mark(filters, expected_min, REPLAY_ENVELOPE_MARK);
+}
+
+/// The shared body of both replay variants; `mark` is the value stamped into
+/// [`REPLAY_GUARD`] for the child, and the ONLY difference between them.
+fn replay_with_mark(filters: &[&str], expected_min: usize, mark: &str) {
     // Re-entrancy guard: we ARE the replayed child. Do not recurse.
     if std::env::var_os(REPLAY_GUARD).is_some() {
         return;
@@ -421,7 +485,7 @@ pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
     let mut cmd = Command::new(&exe);
     cmd.args(filters)
         .args(["--test-threads=1", "--nocapture"])
-        .env(REPLAY_GUARD, "1");
+        .env(REPLAY_GUARD, mark);
     poison_with_hook_git_env(&mut cmd, &decoy);
 
     let out = cmd
@@ -513,6 +577,17 @@ pub fn spawn_replay_child_lacking_audit_prereqs(
     filters: &[&str],
     mark: &str,
 ) -> std::process::Output {
+    // The mark's meaning is what the caller is testing, so a literal that has
+    // drifted from the const it is meant to name must fail HERE, naming both,
+    // rather than downstream as a mysteriously well-behaved child. This is
+    // also why neither const needs to be `pub`.
+    assert!(
+        mark == REPLAY_PLAIN_MARK || mark == REPLAY_ENVELOPE_MARK,
+        "{mark:?} is neither the plain replay mark ({REPLAY_PLAIN_MARK:?}) nor the \
+         envelope mark ({REPLAY_ENVELOPE_MARK:?}), so a child stamped with it \
+         exercises neither branch of the tightening"
+    );
+
     let exe = std::env::current_exe().expect("current_exe");
 
     // Held until after `output()` returns, so the child sees a PATH that

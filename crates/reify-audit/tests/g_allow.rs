@@ -31,15 +31,20 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 
     // Defence-in-depth against `run_orphan_audit`'s public contract, which
     // still permits `None` (see its doc for the causes). A poisoned run dies
-    // earlier than this today, inside `run_orphan_audit_at`. Scoped to the
-    // replay child, where a skip has no innocent reading; the graceful-skip
-    // path below is untouched everywhere else.
-    if audit.is_none() && common::git_env::in_replay_child() {
+    // earlier than this today, inside `run_orphan_audit_at`. Scoped to a
+    // replay child whose parent EARNED the envelope mark, where a skip has no
+    // innocent reading; the graceful-skip path below is untouched everywhere
+    // else, including in a child stamped with the plain mark.
+    if audit.is_none() && common::git_env::replay_child_expects_envelope() {
         panic!(
-            "run_orphan_audit returned None inside the poisoned replay child. \
-             `python3`/`git`/script absent is not a plausible reading here: the \
-             parent process just ran this same test successfully before \
-             spawning this child."
+            "run_orphan_audit returned None inside a replay child stamped with \
+             the envelope mark. That mark is stamped only by a parent that ran \
+             this same audit, for this same scope, in this same environment \
+             moments earlier and GOT an envelope — and that parent returns \
+             without spawning any child when it did not. So `python3`/`git`/the \
+             script being absent is not a plausible reading here: what changed \
+             between that run and this one is the ambient hook git environment \
+             this child carries."
         );
     }
 
@@ -129,7 +134,38 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// filter to actually select them.
 #[test]
 fn orphan_audit_survives_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&["reify_audit_pub_fns_are_g_allow_marked"], 1);
+    const SCOPE: &str = "crates/reify-audit/src";
+
+    // EARN the mark before spawning anything. The child is entitled to treat
+    // a skip as a failure only because THIS run just proved, in THIS
+    // environment, that the audit produces an envelope; without that proof the
+    // only honest thing a child could report is the same skip, so no child is
+    // spawned at all.
+    //
+    // The whole skip protocol is delegated to `run_orphan_audit` rather than
+    // re-probed here — the same decision the PART 2 helper makes — so this
+    // covers python3/git/the script absent, `repo_root` outside a git work
+    // tree, and an EXCLUDE_CRATES scope uniformly, with no second copy of the
+    // git diagnostic string that protocol keys on.
+    //
+    // Cost: one extra scoped script run in the parent — measured 0.10-0.24 s
+    // wall on this lane (`scripts/audit-orphan-producers.sh --scope
+    // crates/reify-audit/src --quiet --format json`), against the handful of
+    // such runs this binary already performs.
+    if run_orphan_audit(SCOPE).is_none() {
+        eprintln!(
+            "run_orphan_audit({SCOPE:?}) produced no envelope in this environment, \
+             so there is nothing for a replay child to preserve; skipping the \
+             ambient-hook-git-env replay rather than spawning a child that could \
+             only reproduce the same skip"
+        );
+        return;
+    }
+
+    common::git_env::replay_self_under_hook_git_env_expecting_envelope(
+        &["reify_audit_pub_fns_are_g_allow_marked"],
+        1,
+    );
 }
 
 /// The replay child's hard failure must fire ONLY where the parent has
