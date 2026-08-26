@@ -465,7 +465,10 @@ fn structure_ctor_args_bind_by_name_not_positionally() {
     assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelFirstProbe", "beta: 0.0003s, 0.0Hz");
     // (d)/(e) mixed with `alpha` labelled — the unlabelled arg must SKIP the
     //     named-bound slot 0 and land on slot 1 (`beta`). The skip pins.
-    assert_rayleigh_ctor_binds_canonically("CtorMixedAlphaLabelFirstProbe", "alpha: 0.0Hz, 0.0003s");
+    assert_rayleigh_ctor_binds_canonically(
+        "CtorMixedAlphaLabelFirstProbe",
+        "alpha: 0.0Hz, 0.0003s",
+    );
     assert_rayleigh_ctor_binds_canonically("CtorMixedAlphaLabelLastProbe", "0.0003s, alpha: 0.0Hz");
 }
 
