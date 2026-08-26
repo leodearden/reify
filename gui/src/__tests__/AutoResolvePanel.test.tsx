@@ -539,3 +539,56 @@ describe('AutoResolvePanel (f) non-scalar error chip in Parameters section', () 
     expect(chips[0].textContent).toBe('<non-scalar>');
   });
 });
+
+// ── Test group (g): chart honesty for sub-plottable sample counts ──────────
+
+describe('AutoResolvePanel (g) chart honesty for sub-plottable sample counts', () => {
+  it('(g.1) production shape (no driving metric at all): no chart svg, a no-data note instead', () => {
+    // Exactly what `emit_auto_resolve_if_any` emits today: one iteration with
+    // `driving_metric` and `driving_metric_value` both absent. `makeIteration`
+    // defaults both via `??`, so they are overridden after construction.
+    const iterations: AutoResolveIteration[] = [
+      { ...makeIteration(1), driving_metric: undefined, driving_metric_value: undefined },
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    // An axis frame with nothing on it is a lie about the data.
+    expect(screen.queryByTestId('auto-resolve-chart')).toBeNull();
+    expect(screen.getByTestId('auto-resolve-chart-no-data')).toBeTruthy();
+    // And no orphaned polyline survives anywhere in the panel's chart section.
+    expect(screen.getByTestId('auto-resolve-chart-no-data').querySelector('polyline')).toBeNull();
+  });
+
+  it('(g.2) single sample: no chart svg, a single-sample note naming the metric and its value', () => {
+    const iterations = [
+      makeIteration(1, { driving_metric: 'max_von_mises', driving_metric_value: 180 }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    expect(screen.queryByTestId('auto-resolve-chart')).toBeNull();
+    const note = screen.getByTestId('auto-resolve-chart-single-sample');
+    expect(note.textContent).toContain('180');
+    expect(note.textContent).toContain('max_von_mises');
+    expect(note.textContent).toMatch(/single sample/i);
+  });
+
+  it('(g.3) regression guard: 2+ finite samples still draw the real chart', () => {
+    const iterations = [
+      makeIteration(1, { driving_metric: 'max_von_mises', driving_metric_value: 180 }),
+      makeIteration(2, { driving_metric: 'max_von_mises', driving_metric_value: 165 }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+
+    const svg = screen.getByTestId('auto-resolve-chart');
+    const polyline = svg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    const points = (polyline!.getAttribute('points') ?? '').trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+    // Neither honest-fallback marker may appear on the drawn path.
+    expect(screen.queryByTestId('auto-resolve-chart-single-sample')).toBeNull();
+    expect(screen.queryByTestId('auto-resolve-chart-no-data')).toBeNull();
+  });
+});
