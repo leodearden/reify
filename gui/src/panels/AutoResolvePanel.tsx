@@ -223,8 +223,13 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
           <div class={styles.sectionLabel}>Parameters over time</div>
           <For each={sparklineData()}>
             {({ cellId, series }) => {
+              // Decided per ROW, not per section: a loop where one parameter has
+              // a real trace and another is null-filtered down to a single point
+              // must still draw the trace it has.
               const hasLine = series.length >= 2;
-              // Build points in sparkline SVG coordinate space (SPARK_W × SPARK_H)
+              // Build points in sparkline SVG coordinate space (SPARK_W × SPARK_H).
+              // Only computed on the drawn path — the Show below subsumes the
+              // old inner guard.
               const pts = hasLine
                 ? buildPolylinePoints(
                     series.map((p) => p.x),
@@ -236,22 +241,44 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
                   )
                 : '';
               return (
-                <div class={styles.sparklineRow}>
+                <div class={styles.sparklineRow} data-testid="auto-resolve-sparkline-row">
                   <span class={styles.sparklineCellId}>{cellId}</span>
-                  <svg
-                    class={styles.sparkline}
-                    width={SPARK_W}
-                    height={SPARK_H}
-                    data-testid="auto-resolve-sparkline"
+                  <Show
+                    when={hasLine}
+                    fallback={
+                      <Show
+                        when={series.length === 1}
+                        fallback={
+                          <span
+                            class={styles.emptyNote}
+                            data-testid="auto-resolve-sparkline-no-data"
+                          >
+                            no samples
+                          </span>
+                        }
+                      >
+                        <span
+                          class={styles.singleSampleNote}
+                          data-testid="auto-resolve-sparkline-single-sample"
+                        >
+                          single sample
+                        </span>
+                      </Show>
+                    }
                   >
-                    <Show when={hasLine}>
+                    <svg
+                      class={styles.sparkline}
+                      width={SPARK_W}
+                      height={SPARK_H}
+                      data-testid="auto-resolve-sparkline"
+                    >
                       <polyline
                         class={styles.sparklineLine}
                         fill="none"
                         points={pts}
                       />
-                    </Show>
-                  </svg>
+                    </svg>
+                  </Show>
                 </div>
               );
             }}
