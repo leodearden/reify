@@ -331,6 +331,41 @@ impl SolverRegistry {
             // NEXT field added to `ResolutionProblem` cannot be silently dropped.
             // That warning still holds for every field this literal does not name.
             //
+            // # What the spread COSTS, and why it is kept anyway (task #5721)
+            //
+            // `..problem.clone()` clones all six `ResolutionProblem` fields and
+            // immediately discards the four this literal overrides
+            // (`auto_params`, `constraints`, `objective`, `dependent_cells`),
+            // keeping only what it inherits: `current_values` — an O(1)
+            // persistent-`ValueMap` structural-sharing clone — and `functions`,
+            // an `Arc` refcount bump.  The discarded work that is REAL is
+            // `constraints` and `dependent_cells`: genuine `CompiledExpr` deep
+            // clones of the whole model's lists.
+            //
+            // It is kept because that cost is paid ONCE PER COMPONENT, not per
+            // trial, and the sub-problem it builds then drives a best-of-K
+            // multistart of `K = 2 * (dim + 1)` starts (`multistart_seeds`),
+            // each running Nelder-Mead for up to
+            // `min(FEASIBLE_OPT_ITERS_PER_DIM * (dim + 1), MAX_ITERS)`
+            // iterations warm-started, or `MAX_ITERS = 5000` cold — so 9k–30k
+            // cost evaluations at dim=2.  EVERY one of those evaluations
+            // re-evaluates the entire `constraints` list via
+            // `compute_total_violation` (plus a `build_trial_values` fold).  So
+            // the spread pays roughly ONE clone of a list that is then
+            // EVALUATED ~10⁴ times: conservatively under 0.01% of the
+            // component's solve, and nowhere near the per-trial hot path
+            // `fold_dependent_cells`' own cost model identifies.
+            //
+            // Restructuring to hoist the invariant tail out of the loop would
+            // therefore trade a real drift guard for a speedup on a path that
+            // is not hot.  The guard is deliberately KEPT.  Its one weakness —
+            // that a NEW field is inherited WHOLESALE here rather than getting
+            // a per-site decision, which is exactly what #5720 had to fix for
+            // `dependent_cells` — is covered by the compile-time tripwire
+            // `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`
+            // in this file's `mod tests`, which is ADDITIVE to the spread, not
+            // a replacement for it.
+            //
             // # Why `dependent_cells` is FILTERED per component (task #5720)
             //
             // It used to be passed wholesale, on the rationale that
@@ -733,6 +768,13 @@ fn solve_lexicographic(
     };
 
     // Degenerate case: all terms share one priority — delegate as WeightedSum.
+    //
+    // This is the THIRD `ResolutionProblem` spread site in the registry (task
+    // #5721), and the cheapest: it runs exactly once, overrides only
+    // `objective`, and therefore discards nothing meaningful from the
+    // `..base.clone()`.  It is the shape the staged loop below was made to
+    // mirror in #5189.  Cost accounting for all three sites lives at the staged
+    // loop's β comment.
     if priority_order.len() == 1 {
         let ws_objective = ObjectiveSet {
             terms: obj.terms.clone(),
@@ -788,6 +830,26 @@ fn solve_lexicographic(
         // priorities the objective carries — a multi-rank lexicographic objective
         // over a joint-drive cluster dropped the per-trial fold at every stage.
         // Override only what genuinely differs per stage.
+        //
+        // COST, and why the spread is kept (task #5721).  `..base.clone()`
+        // clones all six `ResolutionProblem` fields and discards the four this
+        // literal overrides (`auto_params`, `constraints`, `current_values`,
+        // `objective`), keeping `functions` (an `Arc` refcount bump) and
+        // `dependent_cells` (a real `CompiledExpr` deep clone).  It runs ONCE
+        // PER DISTINCT PRIORITY RANK, and each stage then hands its sub-problem
+        // to a full solve — the same `K = 2 * (dim + 1)` multistart × up to
+        // `MAX_ITERS` Nelder-Mead iterations analysed at the per-component site
+        // in `solve_inner`, every iteration re-evaluating the whole
+        // `accumulated_constraints` list.  The discarded clone is under 0.01%
+        // of a stage's work, so the drift guard is deliberately KEPT here too.
+        // The third spread in this function — the degenerate single-priority
+        // `ws_problem` above, which overrides only `objective` and runs exactly
+        // once — discards nothing meaningful and needs no separate accounting.
+        // All three sites are enumerated in the doc of
+        // `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`
+        // (this file's `mod tests`), the compile-time tripwire that catches the
+        // failure mode the spread itself cannot: a NEW field inherited
+        // WHOLESALE at every site instead of getting a per-site decision.
         let stage_problem = ResolutionProblem {
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
