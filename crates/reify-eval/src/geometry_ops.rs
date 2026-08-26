@@ -12001,6 +12001,31 @@ pub(crate) fn diagnose_pose_composition_failure(
         return None;
     }
 
+    // Origination guard 1 — the failure happened at a SHALLOWER level.
+    //
+    // `child_world` is written back as the next level's `composed_world`, and
+    // `transform_compose` returns `Undef` whenever EITHER operand is not a
+    // well-formed Transform. So one bad pose at depth 1 poisons every deeper
+    // composition; without this guard a depth-N subtree emits N copies of the
+    // same error for a single authoring mistake, and the message's "the sub you
+    // must edit is `X`" promise becomes false at every level but the first.
+    // Do not "simplify" this away — pinned by
+    // `pose_composition_silent_when_parent_world_already_undef`.
+    if matches!(parent_world, reify_ir::Value::Undef) {
+        return None;
+    }
+
+    // Origination guard 2 — this sub's pose ALREADY reported itself.
+    //
+    // `eval_sub_pose`'s catch-all arm pushes its own `Diagnostic::error`
+    // ("`at` pose expression must evaluate to a Transform or Frame") for a pose
+    // that failed to evaluate, then returns `Undef` — which composes to an
+    // `Undef` child here. Firing again would double-report one mistake.
+    // Pinned by `pose_composition_silent_when_sub_pose_already_undef`.
+    if matches!(sub_pose, reify_ir::Value::Undef) {
+        return None;
+    }
+
     let parent_dim = pose_translation_dimension(parent_world);
     let sub_dim = pose_translation_dimension(sub_pose);
 
