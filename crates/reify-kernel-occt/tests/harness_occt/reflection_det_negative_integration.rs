@@ -707,3 +707,171 @@ fn negative_x_3d_point_count(step_text: &str) -> usize {
         })
         .count()
 }
+
+// ---------------------------------------------------------------------------
+// Test 4 (steps 7-8) — GTransform hazards are real but ORTHOGONAL to
+// determinant sign: analytic-geometry loss and pre-tessellation fragility.
+// This is the A-δ-informing payload of the probe.
+// ---------------------------------------------------------------------------
+
+/// Two `BRepBuilderAPI_GTransform` hazards that a reader could otherwise
+/// mis-attribute to the det<0 orientation question tests 1-3 above answer
+/// cleanly: they are real, but they are artifacts of
+/// `GTransform`/`BRepTools_GTrsfModification` itself, not of reflection or
+/// determinant sign. Both halves below also exercise the IDENTITY linear map
+/// `diag(1,1,1)` (det = +1, geometrically a no-op) alongside the det<0
+/// reflection: reproducing a hazard under the identity map is what turns
+/// "OCCT mishandles det<0" from a plausible misreading of this probe into a
+/// disproven one — precisely the distinction PRD §4's open question turns on.
+///
+/// RED: `fresh_pretessellated_cylinder` does not exist yet, so this fails to
+/// COMPILE until step-8 adds it.
+///
+/// **Half (a) — analytic geometry is destroyed** (fixture never tessellated).
+/// `BRepBuilderAPI_GTransform` rewrites every analytic surface (planes,
+/// cylinders, ...) as a B-spline approximation; `GeometryOp::Mirror`
+/// (`gp_Trsf::SetMirror`) does not, so analytic surface types and exact
+/// volume survive it unchanged.
+///
+/// **Half (b) — pre-tessellation fragility**, and why it needs a CURVED
+/// fixture. `BRepTools_GTrsfModification` (GTransform's modifier) rewrites
+/// analytic geometry but carries the source's `Poly_Triangulation` across
+/// UNCHANGED. If the source was tessellated before the transform, that stale
+/// triangulation no longer matches the new B-spline geometry and
+/// `BRepCheck_Analyzer::IsValid()` (`GeometryQuery::IsWatertight`) reports
+/// `false`. A box fixture would NOT show this: the B-spline image of a flat
+/// plane is exact, so a stale planar triangulation still matches it — only a
+/// curved surface exposes the mismatch, hence the cylinder. `GeometryOp::Mirror`
+/// is immune: `gp_Trsf` is a true isometry that never touches the shape's
+/// underlying geometry representation, so the carried triangulation always
+/// still matches.
+///
+/// The two `IsWatertight == false` assertions in half (b) are CHARACTERIZATION
+/// PINS of this known defect (follow-up ticket
+/// `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`), not desired behaviour — **if either
+/// assertion FAILS, the defect has been FIXED: delete that pin, update this
+/// module's doc, and close the named ticket.**
+#[test]
+fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    // --- Half (a): analytic geometry is destroyed (never-tessellated source) ---
+    let mut kernel = OcctKernel::new();
+    let (_, cylinder) = convex_fixtures(&mut kernel)
+        .into_iter()
+        .find(|(name, _)| *name == "cylinder_r6_h20")
+        .expect("convex_fixtures should include cylinder_r6_h20");
+
+    let source_text = step_text(&kernel, cylinder);
+    let source_volume = volume_of(&kernel, cylinder);
+    let source_cyl = step_entity_count(&source_text, "CYLINDRICAL_SURFACE");
+    let source_planes = step_entity_count(&source_text, "PLANE(");
+    assert_eq!(
+        source_cyl, 1,
+        "cylinder_r6_h20 source should export exactly 1 CYLINDRICAL_SURFACE"
+    );
+    assert_eq!(
+        source_planes, 2,
+        "cylinder_r6_h20 source should export exactly 2 PLANE( entities (the two end caps)"
+    );
+    assert_eq!(
+        step_entity_count(&source_text, "B_SPLINE_SURFACE"),
+        0,
+        "cylinder_r6_h20 source should export no B_SPLINE_SURFACE entities"
+    );
+
+    let mirrored = mirror_across_yz(&mut kernel, cylinder);
+    let affine = affine_reflect_x(&mut kernel, cylinder);
+
+    // Mirror preserves analytic geometry and volume exactly.
+    let mirrored_text = step_text(&kernel, mirrored);
+    assert_eq!(
+        step_entity_count(&mirrored_text, "CYLINDRICAL_SURFACE"),
+        source_cyl,
+        "Mirror should preserve the source's CYLINDRICAL_SURFACE count exactly \
+         (gp_Trsf::SetMirror never rewrites analytic geometry)"
+    );
+    assert_eq!(
+        step_entity_count(&mirrored_text, "PLANE("),
+        source_planes,
+        "Mirror should preserve the source's PLANE( count exactly"
+    );
+    assert_eq!(
+        step_entity_count(&mirrored_text, "B_SPLINE_SURFACE"),
+        0,
+        "Mirror should introduce no B_SPLINE_SURFACE entities"
+    );
+    let mirrored_volume = volume_of(&kernel, mirrored);
+    let mirrored_rel_err = (mirrored_volume - source_volume).abs() / source_volume;
+    assert!(
+        mirrored_rel_err < 1e-12,
+        "Mirror volume should be bit-exact vs source (measured identical to the last printed \
+         digit), got rel_err={mirrored_rel_err:e}"
+    );
+
+    // AffineApply det<0 destroys analytic geometry and drifts the volume.
+    let affine_text = step_text(&kernel, affine);
+    assert_eq!(
+        step_entity_count(&affine_text, "CYLINDRICAL_SURFACE"),
+        0,
+        "AffineApply det<0 should destroy the analytic CYLINDRICAL_SURFACE entirely \
+         (BRepBuilderAPI_GTransform rewrites it as a B-spline)"
+    );
+    assert_eq!(
+        step_entity_count(&affine_text, "PLANE("),
+        0,
+        "AffineApply det<0 should destroy the analytic PLANE( entities entirely"
+    );
+    assert!(
+        step_entity_count(&affine_text, "B_SPLINE_SURFACE") > 0,
+        "AffineApply det<0 should introduce >=1 B_SPLINE_SURFACE entity (measured 5); \
+         asserted as > 0 rather than an exact count since the entity name mixes plain and \
+         complex-entity spellings"
+    );
+    let affine_volume = volume_of(&kernel, affine);
+    let affine_rel_err = (affine_volume - source_volume).abs() / source_volume;
+    assert!(
+        affine_rel_err > 1e-4,
+        "AffineApply det<0 volume should differ from source by more than 1e-4 relative \
+         (measured +8.615e-3) — this is a real analytic-to-B-spline approximation loss, not \
+         noise, got rel_err={affine_rel_err:e}"
+    );
+
+    // --- Half (b): pre-tessellation fragility, determinant-independent ---
+    let (mut kernel_b, base) = fresh_pretessellated_cylinder(1e-4);
+
+    let mirrored_b = mirror_across_yz(&mut kernel_b, base);
+    assert!(
+        flag_of(&kernel_b, GeometryQuery::IsWatertight(mirrored_b)),
+        "Mirror on a pre-tessellated source should remain IsWatertight=true — this is the \
+         invariant A-δ (#6618) depends on, and it is the stable half of this test"
+    );
+
+    let affine_b = affine_reflect_x(&mut kernel_b, base);
+    assert!(
+        !flag_of(&kernel_b, GeometryQuery::IsWatertight(affine_b)),
+        "Known defect (follow-up ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC): AffineApply det<0 on \
+         a pre-tessellated source is IsWatertight=false — BRepTools_GTrsfModification carries \
+         the source's stale Poly_Triangulation across the analytic-to-B-spline rewrite, so it \
+         no longer matches the new geometry and BRepCheck_Analyzer::IsValid() fails. If this \
+         assertion FAILS, the defect has been FIXED — delete this characterization pin, update \
+         this module's doc, and close ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC."
+    );
+
+    let identity_b = affine_linear(
+        &mut kernel_b,
+        base,
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    );
+    assert!(
+        !flag_of(&kernel_b, GeometryQuery::IsWatertight(identity_b)),
+        "Known defect (follow-up ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC): determinant-independence \
+         proof — AffineApply with the IDENTITY linear map on a pre-tessellated source is ALSO \
+         IsWatertight=false, proving this hazard belongs to BRepBuilderAPI_GTransform itself and \
+         is NOT a det<0 orientation defect. If this assertion FAILS, the defect has been FIXED — \
+         delete this characterization pin, update this module's doc, and close ticket \
+         tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC."
+    );
+}
