@@ -20314,6 +20314,75 @@ fn apply_param_to_source_leaves_no_trace_when_the_recompile_rejects_the_value() 
 }
 
 #[test]
+fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
+    // The OTHER direction of invariant (1)'s mutual consistency. The recompile
+    // rejection above leaves disk behind the engine's intent; this leaves the
+    // ENGINE ahead of disk: `update_source` has already committed `source_map`,
+    // `parsed_cache`, `compiled` and `last_check` to the spliced text when
+    // `fs::write` fails, so the GUI would show a value that the `.ri` on disk
+    // does not contain — and a later FS-watcher re-fire would silently revert
+    // it, with no error anywhere near the revert.
+    //
+    // Trigger: replace the `.ri` with a DIRECTORY at the same path. `fs::write`
+    // then fails EISDIR deterministically — and unlike a `chmod 0444` trigger,
+    // it still fails when the suite happens to run as root.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    std::fs::remove_file(&path).expect("removing the fixture .ri should succeed");
+    std::fs::create_dir(&path).expect("creating a directory at the .ri path should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a failed disk write must surface as Err, not be swallowed");
+    assert!(
+        err.contains(&path.display().to_string()),
+        "the write failure should name the path it could not write, got: {err}"
+    );
+    assert!(
+        err.contains("writing"),
+        "the write failure should say the WRITE is what failed, so it is not \
+         mistaken for a compile rejection, got: {err}"
+    );
+
+    // Disk is deliberately not read back here — it is a directory now, so
+    // `assert_writeback_untouched`'s `read_to_string` cannot apply. The other
+    // three surfaces are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a failed disk write");
+        assert_eq!(
+            source_map_text,
+            writeback_rejection_source(),
+            "source_map must be rolled back to the PRE-EDIT text — the engine \
+             must never sit ahead of what is on disk"
+        );
+    }
+
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the rollback recompile must succeed cleanly and leave no diagnostics"
+    );
+    assert!(
+        !session.is_stale(),
+        "a failed disk write must not raise the hot-reload staleness banner"
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a rolled-back write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a rolled-back write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must report the PRE-EDIT value after a failed disk write"
+    );
+}
+
+#[test]
 fn apply_param_to_source_still_rewrites_a_bool_literal_default() {
     // The literal-ness gate must admit the whole literal set, not just
     // quantities: Number/Quantity/String/Bool defaults all stay rewritable.
