@@ -135,8 +135,8 @@ pub(crate) fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
 ///   nor an orientation has no kind to match against the residual.
 ///
 /// Reachability note: the surface name `Orientation` is not currently
-/// resolvable from `.ri` source — `resolve_type_name`
-/// (`type_resolution.rs:661`) deliberately omits it, so a declared
+/// resolvable from `.ri` source — the builtin-name table in
+/// `resolve_type_name` deliberately omits it, so a declared
 /// `with orientation: Orientation` field resolves to `Type::Error`, not
 /// `Type::Orientation(3)`, and never reaches this function. Today the
 /// `Orientation(3)` arm above is exercised only by internally-constructed
