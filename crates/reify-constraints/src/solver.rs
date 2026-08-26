@@ -9324,6 +9324,64 @@ mod tests {
         );
     }
 
+    /// The hostile auto-collision fixture shared by the three BT-2 collision
+    /// tests below.
+    ///
+    /// Returns `(auto id, base values, auto params, dependent cells)` for a
+    /// malformed `dependent_cells` list whose SOLE entry is keyed on the AUTO's
+    /// own id — a list reify-eval's `build_dependent_cells` would never emit,
+    /// since stage (a) drops autos by construction.  The entry evaluates to
+    /// `unit_cost * unit_cost` = 0.5 * 0.5 = 0.25, which is neither trial point,
+    /// so a clobber is unmistakable.
+    ///
+    /// One fixture, three tests: the unconditional helper-level test, and the
+    /// two cfg-gated end-to-end siblings that drive `build_trial_values`. They
+    /// must stay on the SAME hostile input or the profile halves stop being
+    /// comparable.
+    fn hostile_auto_collision_fixture() -> (
+        reify_core::ValueCellId,
+        ValueMap,
+        Vec<reify_ir::AutoParam>,
+        Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)>,
+    ) {
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let q_id = ValueCellId::new("Rivet", "quantity_produced");
+        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+
+        let mut base = ValueMap::new();
+        base.insert(
+            unit_cost_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::MONEY,
+            },
+        );
+
+        let auto_params = vec![AutoParam {
+            id: q_id.clone(),
+            param_type: Type::dimensionless_scalar(),
+            bounds: Some((1.0, 100.0)),
+            free: true,
+        }];
+
+        let money = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+        let hostile = vec![(
+            q_id.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(unit_cost_id.clone(), money.clone()),
+                CompiledExpr::value_ref(unit_cost_id, money),
+                Type::dimensionless_scalar(),
+            ),
+        )];
+
+        (q_id, base, auto_params, hostile)
+    }
+
     /// BT-2 never-overwrite-auto INVARIANT — the half that is assertable in
     /// EVERY profile (task #5721 item 3).
     ///
@@ -9359,39 +9417,15 @@ mod tests {
     /// observe the fold BODY running past a collision in a debug build.
     #[test]
     fn fold_skips_a_colliding_cell_and_keeps_the_solver_value_in_either_profile() {
-        use reify_core::{DimensionVector, Type, ValueCellId};
-        use reify_ir::{BinOp, CompiledExpr, Value};
+        use reify_core::DimensionVector;
+        use reify_ir::Value;
 
-        let q_id = ValueCellId::new("Rivet", "quantity_produced");
-        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
-
-        // HOSTILE: a dependent cell keyed on the AUTO's own id. Evaluating it
-        // would yield 0.5 * 0.5 = 0.25, which is neither trial point — so a
-        // clobber is unmistakable.
-        let money = Type::Scalar {
-            dimension: DimensionVector::MONEY,
-        };
-        let hostile = vec![(
-            q_id.clone(),
-            CompiledExpr::binop(
-                BinOp::Mul,
-                CompiledExpr::value_ref(unit_cost_id.clone(), money.clone()),
-                CompiledExpr::value_ref(unit_cost_id.clone(), money),
-                Type::dimensionless_scalar(),
-            ),
-        )];
+        let (q_id, base, _auto_params, hostile) = hostile_auto_collision_fixture();
 
         for trial in [2.0_f64, 8.0_f64] {
             // Mirror the state `build_trial_values` hands the fold: the base
             // cells, plus the trial auto already inserted.
-            let mut values = ValueMap::new();
-            values.insert(
-                unit_cost_id.clone(),
-                Value::Scalar {
-                    si_value: 0.5,
-                    dimension: DimensionVector::MONEY,
-                },
-            );
+            let mut values = base.clone();
             values.insert(
                 q_id.clone(),
                 Value::Scalar {
@@ -9430,73 +9464,69 @@ mod tests {
         }
     }
 
-    /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT).
+    /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT) — the
+    /// DEBUG half: the alarm must FIRE on the production path.
     ///
     /// Hands the fold a hostile/malformed `dependent_cells` list whose entry id
     /// COLLIDES with an auto param — a list reify-eval's `build_dependent_cells`
-    /// would never emit, since stage (a) drops autos by construction. The trial
-    /// auto scalar must survive: silently clobbering it would corrupt the point
-    /// Nelder-Mead thinks it is evaluating, and the corruption would be
-    /// invisible (the solver would report a solved auto it never actually
-    /// tested).
+    /// would never emit, since stage (a) drops autos by construction. This
+    /// guards against upstream membership DRIFT, not against today's contract,
+    /// which is exactly why it must be enforced rather than assumed.
     ///
-    /// This guards against upstream membership DRIFT, not against today's
-    /// contract — which is exactly why it must be enforced rather than assumed.
+    /// Drives the REAL `build_trial_values` call site rather than the extracted
+    /// helper, so what is pinned here is the end-to-end wiring: a membership
+    /// regression reaching `build_trial_values` must trip the `debug_assert!`
+    /// rather than pass quietly into production.
     ///
-    /// The guard is profile-split, and this one test pins BOTH halves rather
-    /// than taking either on trust — the `should_panic` attribute is itself
-    /// `cfg_attr`-gated on `debug_assertions`, so the same body asserts a
-    /// different contract per profile:
+    /// What this pins, precisely: that the alarm fires, and that its message
+    /// contains "collides with an auto param". It does NOT pin that the alarm
+    /// NAMES the offending cell — `should_panic` matches a substring of the
+    /// formatted message, and this substring never contained the cell name. The
+    /// cell-naming, and the skip-and-preserve behaviour, are pinned in EVERY
+    /// profile by
+    /// `fold_skips_a_colliding_cell_and_keeps_the_solver_value_in_either_profile`
+    /// above.
     ///
-    /// * debug (`cargo test`) — the `debug_assert!` fires, and the expected
-    ///   panic substring pins that the alarm NAMES the offending cell. A
-    ///   membership regression in reify-eval must not reach production quietly.
-    /// * release — there is no alarm, so the entry is skipped, the body runs to
-    ///   completion, and its assertions pin that the trial scalar survived.
+    /// One trial point suffices: the panic is unconditional on the collision,
+    /// so looping would add nothing, and any assertion placed after the call
+    /// would be unreachable. The surviving-trial-scalar half lives in the
+    /// `#[cfg(not(debug_assertions))]` sibling below.
+    #[cfg(debug_assertions)]
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "collides with an auto param")
-    )]
-    fn fold_must_never_overwrite_an_auto_param() {
+    #[should_panic(expected = "collides with an auto param")]
+    fn fold_collision_alarm_fires_on_the_production_path_in_debug() {
         use super::build_trial_values;
-        use reify_core::{DimensionVector, Type, ValueCellId};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
-        let q_id = ValueCellId::new("Rivet", "quantity_produced");
-        let unit_cost_id = ValueCellId::new("Rivet", "unit_cost");
+        let (_q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
-        let mut base = ValueMap::new();
-        base.insert(
-            unit_cost_id.clone(),
-            Value::Scalar {
-                si_value: 0.5,
-                dimension: DimensionVector::MONEY,
-            },
-        );
+        let _ = build_trial_values(&base, &auto_params, &[2.0_f64], &hostile, &[], None);
+    }
 
-        let auto_params = vec![AutoParam {
-            id: q_id.clone(),
-            param_type: Type::dimensionless_scalar(),
-            bounds: Some((1.0, 100.0)),
-            free: true,
-        }];
+    /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT) — the
+    /// RELEASE half: end-to-end, the trial scalar SURVIVES a collision.
+    ///
+    /// Same hostile fixture, same `build_trial_values` call site. In release
+    /// there is no alarm, so the call runs to completion and the fold must have
+    /// skipped the colliding entry rather than clobbering the auto with the
+    /// expression's 0.25. Silently clobbering it would corrupt the point
+    /// Nelder-Mead thinks it is evaluating, and the corruption would be
+    /// invisible — the solver would report a solved auto it never actually
+    /// tested.
+    ///
+    /// This is the profile `DF_VERIFY_ROLE=merge` reaches via verify.sh's
+    /// `--profile both`; keeping this sibling is what stops the split from
+    /// trading away coverage that exists today. The same skip-and-preserve
+    /// contract is pinned at the helper level in EVERY profile by
+    /// `fold_skips_a_colliding_cell_and_keeps_the_solver_value_in_either_profile`
+    /// above — this sibling adds that the wiring THROUGH `build_trial_values`
+    /// still delivers it.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn fold_keeps_the_trial_scalar_on_the_production_path_in_release() {
+        use super::build_trial_values;
+        use reify_ir::Value;
 
-        // HOSTILE: a dependent cell keyed on the AUTO's own id. Evaluating it
-        // would yield 0.5 * 0.5 = 0.25, which is neither trial point — so a
-        // clobber is unmistakable.
-        let money = Type::Scalar {
-            dimension: DimensionVector::MONEY,
-        };
-        let hostile = vec![(
-            q_id.clone(),
-            CompiledExpr::binop(
-                BinOp::Mul,
-                CompiledExpr::value_ref(unit_cost_id.clone(), money.clone()),
-                CompiledExpr::value_ref(unit_cost_id, money),
-                Type::dimensionless_scalar(),
-            ),
-        )];
+        let (q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
         for trial in [2.0_f64, 8.0_f64] {
             let values = build_trial_values(&base, &auto_params, &[trial], &hostile, &[], None);
