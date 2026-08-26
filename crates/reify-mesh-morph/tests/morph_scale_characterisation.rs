@@ -775,3 +775,171 @@ fn nearest_by_tet_count_selects_the_closest_rung() {
         "a ladder whose every rung failed must yield None, not a failed rung"
     );
 }
+
+// ── the driver ───────────────────────────────────────────────────────────────
+
+/// Measure both arms at both scales on one host and print everything.
+///
+/// ## Why this test asserts nothing
+///
+/// It is a measurement, not a bound. A single unrepeated run on one host
+/// carries no statistics, so any threshold asserted from it would be pinning
+/// noise. Its output is the deliverable; its exit status means only "the rig
+/// ran".
+///
+/// ## Why there is no RED commit for this
+///
+/// An `#[ignore]`d test never runs under `cargo test`, so it can be neither
+/// red nor green, and it asserts nothing by design — there is no proposition
+/// to fail. That is not a gap in the TDD chain: every helper composed below
+/// was driven RED -> GREEN on its own, and this function only sequences them
+/// and formats output. Nothing here is unwrapped, so a `SolverNotConverged`
+/// or a gmsh `GeometryError` is printed as data rather than aborting the run
+/// that produced it.
+///
+/// ## How to run
+///
+/// ```text
+/// cargo test -p reify-mesh-morph --test morph_scale_characterisation -- --ignored --nocapture --test-threads=1
+/// ```
+#[test]
+#[ignore = "characterisation harness; run explicitly with --ignored"]
+fn gmsh_from_scratch_vs_morph_wall_clock_at_10k_and_100k() {
+    eprintln!("[task-6638] ── characterisation harness ──────────────────────────");
+    eprintln!(
+        "[task-6638] fixture: bracket(arm_length={ARM_LENGTH}, thickness={THICKNESS}, \
+         fillet_radius={FILLET_BASE})"
+    );
+
+    // ── 1. the surfaces both scales are read off ─────────────────────────────
+    let mut surfaces = Vec::new();
+    for n in [N_10K, N_100K] {
+        let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, n);
+        let surface = fixtures::boundary_surface(&mesh);
+        eprintln!(
+            "[task-6638] surface n={n:<3} volume_tets={:<7} surface_tris={:<7} surface_verts={}",
+            mesh.tet_indices().map_or(0, |t| t.len() / 4),
+            surface.indices.len() / 3,
+            surface.vertices.len() / 3,
+        );
+        surfaces.push(surface);
+    }
+
+    // ── 2. the gmsh ladder ───────────────────────────────────────────────────
+    #[cfg(has_gmsh)]
+    let ladder: Vec<GmshMeasurement> = {
+        // Swept against the N_100K-derived surface. One surface for the whole
+        // ladder, and the finer of the two: a coarse boundary would cap the
+        // achievable interior resolution at the fine rungs, so the fine
+        // surface is the better input at BOTH target sizes and using one
+        // keeps the rungs comparable to each other.
+        let surface = &surfaces[1];
+        eprintln!(
+            "[task-6638] gmsh ladder input: the n={N_100K} surface ({} tris) for every rung",
+            surface.indices.len() / 3
+        );
+        MESH_SIZE_LADDER
+            .iter()
+            .map(|&mesh_size| {
+                let measurement = gmsh_tetrahedralise(surface, mesh_size);
+                eprintln!(
+                    "[task-6638] gmsh  mesh_size={:.3} tets={:<8} nodes={:<8} wall={:>12?} {}",
+                    measurement.mesh_size,
+                    measurement.tets,
+                    measurement.nodes,
+                    measurement.elapsed,
+                    match &measurement.result {
+                        Ok(_) => "Ok".to_string(),
+                        Err(error) => format!("Err({error})"),
+                    }
+                );
+                measurement
+            })
+            .collect()
+    };
+
+    #[cfg(not(has_gmsh))]
+    eprintln!(
+        "[task-6638] gmsh arm skipped: stub build (no libgmsh). The morph arm below \
+         is a HALF table — there is no from-scratch baseline to pair it against, and \
+         no ratio may be derived from this run."
+    );
+
+    // ── 3. the morph arm ─────────────────────────────────────────────────────
+    let morphs: Vec<MorphMeasurement> = [N_10K, N_100K]
+        .into_iter()
+        .map(|n| {
+            let measurement = morph_once(n);
+            eprintln!(
+                "[task-6638] morph n={:<3} tets={:<8} nodes={:<8} dof={:<8} wall={:>12?} {}",
+                measurement.n,
+                measurement.tets,
+                measurement.nodes,
+                measurement.dof,
+                measurement.elapsed,
+                match &measurement.result {
+                    Ok(_) => "Ok".to_string(),
+                    Err(failure) => format!("Err({failure:?})"),
+                }
+            );
+            measurement
+        })
+        .collect();
+
+    // ── 4. the count-matched pairing — the number #2953 actually needs ───────
+    #[cfg(has_gmsh)]
+    for morph in &morphs {
+        match nearest_by_tet_count(&ladder, morph.tets) {
+            Some(gmsh) => {
+                let mismatch_pct =
+                    100.0 * (gmsh.tets as f64 - morph.tets as f64) / morph.tets as f64;
+                let ratio = gmsh.elapsed.as_secs_f64() / morph.elapsed.as_secs_f64();
+                eprintln!(
+                    "[task-6638] PAIR  n={:<3} morph_tets={:<8} gmsh_tets={:<8} \
+                     mismatch={:+.1}% morph_wall={:>12?} gmsh_wall={:>12?} \
+                     gmsh/morph={:.2}x (gmsh mesh_size={:.3}){}",
+                    morph.n,
+                    morph.tets,
+                    gmsh.tets,
+                    mismatch_pct,
+                    morph.elapsed,
+                    gmsh.elapsed,
+                    ratio,
+                    gmsh.mesh_size,
+                    if morph.result.is_err() {
+                        "  [morph FAILED — this ratio divides by a time-to-give-up, \
+                         not by a time-to-solve]"
+                    } else {
+                        ""
+                    },
+                );
+            }
+            None => eprintln!(
+                "[task-6638] PAIR  n={:<3} morph_tets={:<8} no paired ratio available \
+                 (no succeeding gmsh rung to match against)",
+                morph.n, morph.tets,
+            ),
+        }
+    }
+
+    // ── 5. what a consumer of these numbers must carry with them ─────────────
+    eprintln!("[task-6638] ── caveats ────────────────────────────────────────────");
+    eprintln!("[task-6638] * ONE host, ONE run per point. No repetition, no variance,");
+    eprintln!("[task-6638]   no warm-up discard — do not read a small ratio difference");
+    eprintln!("[task-6638]   as signal.");
+    eprintln!("[task-6638] * The morph arm is forced SERIAL: src/elasticity.rs hardcodes");
+    eprintln!("[task-6638]   AssemblyMode::Deterministic and SolverMode::Deterministic, and");
+    eprintln!("[task-6638]   elasticity_morph exposes no assembly/solve split, so the time");
+    eprintln!("[task-6638]   above is the combined call and cannot be attributed between");
+    eprintln!("[task-6638]   assembly and CG.");
+    eprintln!("[task-6638] * The gmsh arm is forced SINGLE-THREADED (deterministic: true) as");
+    eprintln!("[task-6638]   the apples-to-apples counterpart. NEITHER arm characterises the");
+    eprintln!("[task-6638]   parallel path that both PRD figures also quote.");
+    eprintln!("[task-6638] * Each pairing carries a residual count mismatch, printed above.");
+    eprintln!("[task-6638]   The ladders are swept independently and never land on the same");
+    eprintln!("[task-6638]   count, so a ratio is only as meaningful as its mismatch is small.");
+    eprintln!("[task-6638] * A morph Err is still timed. Time-to-max-iter is data, but a ratio");
+    eprintln!("[task-6638]   against it measures how long the solver took to GIVE UP, not how");
+    eprintln!("[task-6638]   long it took to solve.");
+    eprintln!("[task-6638] ───────────────────────────────────────────────────────");
+}
