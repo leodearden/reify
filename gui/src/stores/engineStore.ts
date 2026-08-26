@@ -168,7 +168,14 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null });
+    // `autoResolve` resets alongside the rest of the snapshot: a completed loop
+    // now persists (the panel is data-gated, not `active`-gated), so without
+    // this the previous file's resolved parameters and constraint rows would
+    // stay mounted after opening a new one. Safe because this is the
+    // full-snapshot path ONLY — file-open / initial-load / debug
+    // fixture-injection (App.tsx:1241, App.tsx:1453, debug/bridge.ts:1346,1362),
+    // never a per-re-eval path — so it cannot clobber a loop that is mid-flight.
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null, autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined, pendingReset: undefined } });
     options?.onEngineReinitialized?.();
   }
 
