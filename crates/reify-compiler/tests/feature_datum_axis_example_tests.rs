@@ -153,11 +153,21 @@ fn describe_arg(expr: &CompiledExpr) -> String {
 /// **Why `rad`, not `deg`.** `revolve` reads its angle through
 /// `eval_named_arg_f64` (`crates/reify-eval/src/geometry_ops.rs`) → `Value::as_f64`,
 /// with no degree conversion on the path — so the bare literal was ALREADY being
-/// consumed as radians, and `deg` would silently change the model. `rad` also has
-/// a conversion factor of exactly 1.0 (`crates/reify-core/src/units.rs`), so the
-/// SI magnitude must equal the source literal bit for bit; the magnitude assertion
+/// consumed as radians, and `rad` is the suffix that names what it already meant.
+/// `rad`'s conversion factor is exactly 1.0 (`crates/reify-core/src/units.rs`), so
+/// the SI magnitude equals the source literal bit for bit; the magnitude assertion
 /// below is therefore `==` and not an epsilon compare, which would mask precisely
-/// the regression it exists to catch.
+/// the regression it exists to catch. That bit-exactness is the whole reason.
+///
+/// **`deg` would NOT have been unsafe** — do not read this comment as "avoid `deg`
+/// in `.ri` source". Unit suffixes are resolved to SI in the COMPILER, not at eval
+/// (`unit_to_scalar`, `crates/reify-compiler/src/units.rs` →
+/// `reify_core::units::unit_symbol_to_si`, where `deg` carries a factor of π/180),
+/// so `360deg` would reach eval as SI radians too — and `360.0 * (PI / 180.0)` is
+/// bit-exactly `TAU`, i.e. the identical `si_value` and identical geometry. Writing
+/// the suffix *is* the conversion. The rest of the `.ri` corpus already writes
+/// `deg`, and that stays correct; see
+/// `docs/notes/angle-literal-migration-ledger.md` §3.3 and §5.
 ///
 /// **Why the direction half is here too.** `ax`/`ay`/`az` are dimensionless
 /// unit-vector components and are explicitly NOT gated (PRD C1 invariant 4). That
