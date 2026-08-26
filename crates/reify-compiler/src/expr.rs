@@ -2712,6 +2712,30 @@ fn compile_expr_guarded_with_expected_inner(
                     .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
                     .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
                     .collect();
+                // The DECLARED param set — a read-only VIEW for the ε diagnostics
+                // below, deliberately NOT the `params` binding vec above.
+                //
+                // `param x : T = auto` / `auto(free)` lowers to
+                // `ValueCellKind::Auto { free }` (`entity.rs`,
+                // `build_param_value_cell_decl`), so an auto-declared param is a
+                // param the author WROTE but not a slot a positional can bind to.
+                // The two views answer different questions — "how many params did
+                // the author write?" vs "which cells can a positional bind to?" —
+                // and the ε diagnostics must answer the first: reporting the slot
+                // set as the declared set makes them assert the opposite of the
+                // source (`WidgetAuto(a: …)` reported as an unknown field on a
+                // structure that visibly declares `a`).
+                //
+                // `Param | Auto { .. }` is the same externally-settable member-set
+                // predicate already used by `connect.rs` and `traits.rs`; this
+                // binder was the outlier. Matching on the VARIANT, not on `free`,
+                // covers strict `auto` and `auto(free)` alike.
+                let declared_param_names: Vec<&str> = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto { .. }))
+                    .map(|vc| vc.id.member.as_str())
+                    .collect();
                 // --- By-name binder (task-4522) ---
                 // Named arg `p` binds to the template param named `p`;
                 // positional (None) args fill the next declaration-order
@@ -2810,25 +2834,43 @@ fn compile_expr_guarded_with_expected_inner(
                 // unknown NAME is decidable without reference to any argument's
                 // type, and suppressing it on a poisoned arg would hide the typo
                 // behind the downstream error the typo itself often caused.
+                //
+                // The DIAGNOSTIC and the lenient push deliberately carry DIFFERENT
+                // predicates. The push is keyed on `params` (no slot bound it, so
+                // the arg still needs somewhere to go) and stays unconditional, so
+                // the IR is byte-for-byte what it was before ε — ε is
+                // diagnostics-only, and β's corpus survey must measure diagnostics,
+                // not behaviour drift. The diagnostic is keyed on
+                // `declared_param_names`, because "is this a param the author
+                // wrote?" is the question its message actually asserts.
+                //
+                // A named arg for an auto-declared param therefore compiles to the
+                // same `__arg{i}` member it always did, silently. That residual
+                // binding gap — positional and named args skipping `Auto` slots
+                // into garbage `__arg{i}` members — is owned by #6705, which also
+                // decides whether a diagnostic is owed for it; ε cannot state a
+                // true fact about it without changing the IR.
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
                     if let Some(pname) = arg_name
                         && !params.iter().any(|(n, _)| *n == pname.as_str())
                     {
-                        diagnostics.push(
-                            crate::conformance::diag_at(
-                                crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
-                                format!(
-                                    "E_CTOR_UNKNOWN_FIELD: unknown named argument '{}' \
-                                     in call to '{}'; '{}' has no parameter with that name",
-                                    pname, name, name
-                                ),
-                            )
-                            .with_code(DiagnosticCode::CtorUnknownField)
-                            .with_label(DiagnosticLabel::new(
-                                args[call_idx].span,
-                                "unknown named argument",
-                            )),
-                        );
+                        if !declared_param_names.contains(&pname.as_str()) {
+                            diagnostics.push(
+                                crate::conformance::diag_at(
+                                    crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
+                                    format!(
+                                        "E_CTOR_UNKNOWN_FIELD: unknown named argument '{}' \
+                                         in call to '{}'; '{}' has no parameter with that name",
+                                        pname, name, name
+                                    ),
+                                )
+                                .with_code(DiagnosticCode::CtorUnknownField)
+                                .with_label(DiagnosticLabel::new(
+                                    args[call_idx].span,
+                                    "unknown named argument",
+                                )),
+                            );
+                        }
                         ordered_args.push((
                             format!("__arg{}", call_idx),
                             compiled_args[call_idx].clone(),
