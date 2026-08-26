@@ -95,7 +95,14 @@ pub enum Reason {
 ///
 /// 1. **Stage A** — inspects `old.graph` / `new.graph` and `old.values` /
 ///    `new.values` to decide whether the design-tree shape is unchanged and
-///    all differing parameters are dimensional. Cheap; no kernel calls.
+///    all differing LEAF parameters are dimensional. Cheap; no kernel calls.
+///
+///    Derived cells — notably `Type::Geometry` realization references, which
+///    are recomputed whenever any upstream cell changes — carry no independent
+///    structural signal and are deliberately NOT treated as structural diffs
+///    (task 6635; see `reify_eval::classify_cell`'s "Type::Geometry and Rule 4"
+///    note for the full rationale). Stage A is therefore strictly a
+///    leaf-parameter + graph-shape gate.
 ///
 /// 2. **Realization gate** — if Stage A passes, this function ASSUMES the
 ///    caller has already realized the new B-rep and populated
@@ -105,6 +112,17 @@ pub enum Reason {
 /// 3. **Stage B** — attempts to construct a 1-to-1 correspondence map
 ///    between old and new B-rep sub-shapes using the persistent-naming
 ///    attribute tables and handle slices.
+///
+///    Consequently Stage B is the ONLY gate for a dimensional tick that
+///    crosses a topology threshold — a fillet radius reaching 0, a blind hole
+///    becoming a through-hole, two faces merging. PRD
+///    `docs/prds/v0_3/mesh-morphing.md` lines 33-34 already assign exactly this
+///    split ("classify each leaf parameter"; "Even when Stage A passes,
+///    continuous parameter changes can cross topology-changing thresholds").
+///    MEASURED confirmation: the `cut_z` through-hole fixture in
+///    `reify-eval/tests/morph_arm_e2e.rs` reaches Stage B after task 6635 and is
+///    rejected there (`ineligible_naming_error`), where before 6635 it never got
+///    past Stage A.
 ///
 /// ## Realization deferral
 ///
