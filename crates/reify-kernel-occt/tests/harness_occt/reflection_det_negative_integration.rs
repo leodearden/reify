@@ -103,9 +103,11 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
 ///     derived fixture would make this module's validity assertions
 ///     unsatisfiable.
 ///   - **Positioned wholly at x>0.** step-5's baked-geometry STEP assertion
-///     reads a negative leading X coordinate in an exported `CARTESIAN_POINT`
+///     reads a negative x coordinate in an exported 3D `CARTESIAN_POINT`
 ///     entity as the reflection signal; a fixture straddling or left of x=0
-///     would make that signal ambiguous.
+///     would make that signal ambiguous. (The signal is counted by
+///     `negative_x_3d_point_count`, which excludes 2D pcurve parameter-space
+///     points — the cone source emits 3 of those and they are NOT positions.)
 ///
 /// All three are additionally CONVEX, which is what licenses the AABB-centre
 /// reference direction in the outward-winding tessellation check (steps 3-4)
@@ -555,12 +557,16 @@ fn reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement
         // Baseline for (c): the source's own ADVANCED_FACE count.
         let source_faces = step_entity_count(&source_text, "ADVANCED_FACE");
         // (e) baked-geometry negative control: the source lives wholly at x>0,
-        // so it must carry no negative-leading-X CARTESIAN_POINT entity.
+        // so it must carry no negative-x 3D CARTESIAN_POINT entity. Counted
+        // via `negative_x_3d_point_count`, NOT a raw
+        // `CARTESIAN_POINT('',(-` substring: see that helper's doc — the raw
+        // literal also matches 2D pcurve parameter-space points, of which the
+        // cone source legitimately exports 3.
         assert_eq!(
-            step_entity_count(&source_text, "CARTESIAN_POINT('',(-"),
+            negative_x_3d_point_count(&source_text),
             0,
-            "{name} source: wholly-x>0 fixture should export NO negative-leading-X \
-             CARTESIAN_POINT entities"
+            "{name} source: wholly-x>0 fixture should export NO 3D CARTESIAN_POINT \
+             entity with a negative x coordinate"
         );
         // (d) det=+1 by construction on the source too.
         assert_eq!(
@@ -613,13 +619,13 @@ fn reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement
             );
 
             // (e) geometry is BAKED, not placed: the reflected export carries >=1
-            // negative-leading-X CARTESIAN_POINT while the wholly-x>0 source
-            // carries exactly 0 — so a negative leading coordinate can only come
-            // from baked mirrored geometry.
+            // negative-x 3D CARTESIAN_POINT while the wholly-x>0 source carries
+            // exactly 0 — so a negative x coordinate can only come from baked
+            // mirrored geometry.
             assert!(
-                step_entity_count(&text, "CARTESIAN_POINT('',(-") >= 1,
-                "{name} via {path}: reflected export should contain >=1 negative-leading-X \
-                 CARTESIAN_POINT entity (baked mirrored geometry)"
+                negative_x_3d_point_count(&text) >= 1,
+                "{name} via {path}: reflected export should contain >=1 3D CARTESIAN_POINT \
+                 with a negative x coordinate (baked mirrored geometry)"
             );
         }
     }
@@ -660,4 +666,44 @@ fn step_text(kernel: &OcctKernel, id: GeometryHandleId) -> String {
 ///     token boundary between them).
 fn step_entity_count(step_text: &str, entity: &str) -> usize {
     step_text.match_indices(entity).count()
+}
+
+/// Count `CARTESIAN_POINT` entities that are **3D model-space** points whose
+/// x (first) coordinate is strictly negative — i.e. baked geometry left of
+/// the x=0 plane.
+///
+/// Deliberately NOT a plain `step_entity_count(text, "CARTESIAN_POINT('',(-")`.
+/// That literal is a FALSE-POSITIVE detector, and the cone fixture proves it:
+/// `cone_r8_r4_h15`'s untransformed (x>0) SOURCE export contains 3 such
+/// matches, all of them **2D parameter-space** points inside pcurve
+/// `DEFINITIONAL_REPRESENTATION` / `SEAM_CURVE` entries under a
+/// `REPRESENTATION_CONTEXT('2D SPACE','')` — `(-0.,-15.)`, `(-0.,-0.)` and
+/// `(-6.28318530718,0.)`, the last being the −2π periodic seam-parameter
+/// wrap of the conical surface. Those (u,v) parameters have nothing to do
+/// with 3D position, and the box and cylinder fixtures happen not to emit
+/// any (measured 0 / 0 / 3 across box / cylinder / cone sources), which is
+/// why the naive literal looked sound until the cone was measured.
+///
+/// Discriminator: a 3D `CARTESIAN_POINT` carries exactly three coordinates,
+/// a parameter-space one exactly two. So parse the parenthesised coordinate
+/// list and require arity 3 plus `x < 0.0`. Parsing (rather than a
+/// `starts_with('-')` text test) also drops the STEP writer's signed-zero
+/// spelling `-0.` for free: IEEE `-0.0 < 0.0` is `false`.
+///
+/// Whole-string scan, same as [`step_entity_count`], so a folded STEP line
+/// cannot split a match; the per-field `trim` absorbs any fold whitespace
+/// inside the coordinate list.
+fn negative_x_3d_point_count(step_text: &str) -> usize {
+    const HEAD: &str = "CARTESIAN_POINT('',(";
+    step_text
+        .match_indices(HEAD)
+        .filter(|(at, _)| {
+            let rest = &step_text[at + HEAD.len()..];
+            let Some(end) = rest.find(')') else {
+                return false;
+            };
+            let coords: Vec<&str> = rest[..end].split(',').map(str::trim).collect();
+            coords.len() == 3 && coords[0].parse::<f64>().is_ok_and(|x| x < 0.0)
+        })
+        .count()
 }
