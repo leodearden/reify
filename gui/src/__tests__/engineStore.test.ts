@@ -1156,6 +1156,63 @@ describe('engineStore autoResolve deferred loop reset', () => {
   });
 });
 
+describe('engineStore autoResolve initFromState reset', () => {
+  const sampleIteration = {
+    iteration: 1,
+    parameters: {
+      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+    },
+    constraints: {
+      max_von_mises: {
+        name: 'max_von_mises',
+        value: 180,
+        unit: 'MPa',
+        target_upper: 200,
+        satisfied: true,
+      },
+    },
+    driving_metric: 'max_von_mises',
+    driving_metric_value: 180,
+  };
+
+  it('initFromState drops the previous file\'s completed auto-resolve loop', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop, initFromState } = createEngineStore();
+
+      // File A runs a loop to completion; its samples now persist (they are what
+      // the data-gated panel renders).
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      endAutoResolveLoop();
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      // Opening file B must not leave file A's resolved parameters and
+      // constraint rows mounted — that is actively misleading.
+      const guiState: GuiState = {
+        fea_convergence: null,
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        fea_diagnostics: [],
+      };
+      initFromState(guiState);
+
+      expect(state.autoResolve.active).toBe(false);
+      expect(state.autoResolve.iterations).toHaveLength(0);
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      expect(state.autoResolve.pendingReset).toBeFalsy();
+      dispose();
+    });
+  });
+});
+
 describe('engineStore autoResolve subscribeToEvents wiring', () => {
   const sampleIteration = {
     iteration: 1,
