@@ -1744,6 +1744,35 @@ mod tests {
         );
     }
 
+    // (g) TASK 6119 — pin BOTH degenerate branches of the `d_scale` guard
+    // BEFORE step-6 rewrites its `!(d_scale > 0.0)` spelling to clear
+    // `clippy::neg_cmp_op_on_partial_ord`. The NaN branch is reachable only
+    // through this negated-comparison spelling: an obvious rewrite like
+    // `if d_scale <= 0.0` silently drops NaN rejection, since every
+    // comparison against NaN (including `<=`) is false — a NaN residual would
+    // then run the full iteration cap and report `converged == false` instead
+    // of surfacing the degeneracy immediately. Calls the private function
+    // directly with hand-built `Mat<f64>` inputs (no `assemble_d` involved),
+    // so both branches are exercised in isolation.
+    #[test]
+    fn free_equilibrium_residual_relative_returns_infinity_on_non_positive_or_nan_d_scale() {
+        let nodes = vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]];
+        let free_indices = [1usize];
+
+        // (a) all-zero free-row block: node 1's row of D is identically zero
+        // (the isolated-free-node shape from test (e), at the criterion
+        // level rather than through the full surfaces solve).
+        let d_zero = Mat::<f64>::zeros(2, 2);
+        let r_zero = free_equilibrium_residual_relative(&d_zero, &nodes, &free_indices);
+        assert_eq!(r_zero, f64::INFINITY, "all-zero free row must reject, got {r_zero}");
+
+        // (b) a free row carrying NaN: node 1's row has a NaN entry.
+        let mut d_nan = Mat::<f64>::zeros(2, 2);
+        d_nan[(1, 0)] = f64::NAN;
+        let r_nan = free_equilibrium_residual_relative(&d_nan, &nodes, &free_indices);
+        assert_eq!(r_nan, f64::INFINITY, "NaN-carrying free row must reject, got {r_nan}");
+    }
+
     // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────
 
     /// Tolerance for the anisotropic stencil reduction test (σ_w=σ_f → isotropic).
