@@ -642,6 +642,27 @@ structure FeaBodyMultiCase {
 /// The kernel-agnostic unit-level statement of the same contract lives in
 /// `tests/redispatch_template_order_regression.rs`; this test closes it on the
 /// real OCCT+gmsh path.
+///
+/// # The field bar is [`assert_box_grid_miss_measurement`]'s, same as the sibling
+///
+/// This test was authored against a base that predated both #6154's grid-miss
+/// helpers and #6200's mesh-coverage fix, so it hand-rolled an `any(is_finite)`
+/// / `all(finite || nan)` pair and recorded `len=8967 nonfinite=3165
+/// axes=[61,7,7]` for the box. RE-MEASURED post-merge, both cases and both
+/// fields now report:
+///
+/// ```text
+/// axes=[61, 7, 7] n_grid=2989 n_missed=0 (0.0%)
+///   | interior=0 face=0 edge=0 corner=0 | nonfinite_anomalies=0
+/// ```
+///
+/// i.e. the 3165 sentinel components are gone — that was the coverage defect
+/// #6200 fixed, not anything this test owns. The reproducible claim is the
+/// helper's `missed_interior == 0`, which is keyed on COVERAGE rather than on a
+/// count and so survives the drift the total is subject to; the exact-count form
+/// stays where #6154 put it. Both this test and the green no-leading-template
+/// sibling [`multi_case_body_solve_shares_one_realization_across_cases`] now
+/// state that same contract through the same helper, on the byte-identical body.
 #[cfg(has_gmsh)]
 #[test]
 fn multi_case_body_solve_survives_a_preceding_template() {
@@ -680,15 +701,9 @@ fn multi_case_body_solve_survives_a_preceding_template() {
         .values
         .get(&result_cell)
         .unwrap_or_else(|| panic!("cell FeaBodyMultiCase.result not found in build values"));
-    let cases_map = match result_val {
-        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
-            Some(Value::Map(inner)) => inner.clone(),
-            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
-        },
-        other => panic!(
-            "solve_load_cases result must be a MultiCaseResult Value::Map, got: {other:?}"
-        ),
-    };
+    // Shared two-level unwrap (#6154's helper), whose own panic text already
+    // names the pre-hydration Failed/Undef signature this test is about.
+    let cases_map = multi_case_cases_map(result_val);
     assert_eq!(
         cases_map.len(),
         2,
@@ -701,14 +716,7 @@ fn multi_case_body_solve_survives_a_preceding_template() {
     );
 
     for case_name in ["operating", "overload"] {
-        let case_val = cases_map
-            .get(&Value::String(case_name.to_string()))
-            .unwrap_or_else(|| {
-                panic!(
-                    "cases map must contain \"{case_name}\"; got: {:?}",
-                    cases_map.keys().collect::<Vec<_>>()
-                )
-            });
+        let case_val = multi_case_case(&cases_map, case_name);
         assert!(
             !matches!(case_val, Value::Undef),
             "case \"{case_name}\" must not be Undef"
@@ -721,35 +729,6 @@ fn multi_case_body_solve_survives_a_preceding_template() {
             "case \"{case_name}\": displacement must be a 3D Regular grid, got {} axes",
             disp.axis_grids.len()
         );
-        // NOT `all(is_finite)`. On the REALIZED path the §7a grid spans the tet
-        // mesh AABB, so grid points that fall outside the solid carry the PRD §3
-        // outside-solid sentinel `f64::NAN` BY DESIGN — see
-        // `compute_targets/elastic_static.rs:143-144`. Measured on this fixture:
-        // 3165 of 8967 components are the sentinel, and the already-green
-        // sibling `multi_case_body_solve_shares_one_realization_across_cases`
-        // (same body, no leading template) reports the byte-identical
-        // `len=8967 nonfinite=3165 axes=[61,7,7]` while passing. An
-        // all-finite bar would therefore fail the GREEN path too — it measures
-        // the sampler's AABB coverage, not the redispatch this test pins.
-        //
-        // The meaningful bar is: real in-solid samples exist, and the only
-        // non-finite values are the documented NaN sentinel (never ±inf, which
-        // WOULD mean the solve diverged).
-        assert!(
-            !disp.data.is_empty(),
-            "case \"{case_name}\": displacement data must be non-empty"
-        );
-        assert!(
-            disp.data.iter().any(|v| v.is_finite()),
-            "case \"{case_name}\": displacement must carry at least one finite \
-             in-solid sample — an all-sentinel field means the solve never ran \
-             on the realized mesh"
-        );
-        assert!(
-            disp.data.iter().all(|v| v.is_finite() || v.is_nan()),
-            "case \"{case_name}\": displacement may only be finite or the PRD §3 \
-             out-of-solid NaN sentinel; a ±inf means the solve diverged"
-        );
         assert_ne!(
             disp.data.len() / 3,
             SYNTHETIC_GRID_NODES,
@@ -759,25 +738,43 @@ fn multi_case_body_solve_survives_a_preceding_template() {
         );
         // The positive half of the same statement: the realized-AABB heuristic
         // drove the grid, exactly as it does on the green no-leading-template
-        // sibling (61×7×7 for the 1 m × 100 mm × 100 mm box).
+        // sibling.
         assert_eq!(
             disp.data.len() / 3,
-            61 * 7 * 7,
+            REALIZED_BOX_GRID_NODES,
             "case \"{case_name}\": §7a grid node count must equal the realized-AABB \
-             heuristic 2989, the same grid the green sibling produces"
+             heuristic {REALIZED_BOX_GRID_NODES} ({REALIZED_BOX_GRID_AXES:?} for the \
+             1 m × 100 mm × 100 mm box), the same grid the green sibling produces"
         );
 
         let stress = sampled_field(case_val, "stress");
-        assert!(
-            !stress.data.is_empty() && stress.data.iter().any(|v| v.is_finite()),
-            "case \"{case_name}\": stress must be non-empty and carry at least one \
-             finite in-solid sample"
-        );
-        assert!(
-            stress.data.iter().all(|v| v.is_finite() || v.is_nan()),
-            "case \"{case_name}\": stress may only be finite or the PRD §3 \
-             out-of-solid NaN sentinel; a ±inf means the solve diverged"
-        );
+
+        // ── the finiteness bar: #6154's normative bucket split ───────────────
+        // NOT `all(is_finite)`: on the REALIZED path the §7a grid spans the tet
+        // mesh AABB, so any grid point outside the solid carries the PRD §3
+        // sentinel `f64::NAN` BY DESIGN (`compute_targets/elastic_static.rs`'s
+        // field-population contract is the producer side). But the branch's
+        // hand-rolled `any(is_finite)` / `all(finite || nan)` pair is not the
+        // right replacement either — it says nothing about WHERE the sentinel
+        // fires. `assert_box_grid_miss_measurement` does, and is what the green
+        // no-leading-template sibling
+        // [`multi_case_body_solve_shares_one_realization_across_cases`] already
+        // asserts on the byte-identical body, so the two now state the same
+        // contract the same way: grid pinned per-axis to `REALIZED_BOX_GRID_AXES`,
+        // the report reconciled against the raw buffer (which subsumes
+        // `all(finite || nan)`, and strengthens it — a MIXED part-NaN point is
+        // rejected too), `stress` pinned to mark the SAME grid points as
+        // `displacement`, and the BOX-SPECIFIC prediction `missed_interior == 0`:
+        // for a prismatic body the mesh AABB IS the solid, so every
+        // strictly-index-interior grid point must lie inside some tet.
+        //
+        // That last one also subsumes `any(is_finite)` here, which is why (unlike
+        // B9's cylinder, where it is kept) it is dropped: this grid has
+        // 59 × 5 × 5 = 1475 index-interior nodes, so an ALL-sentinel field — the
+        // #5951 silent failure mode — lands as `missed_interior == 1475` and
+        // fails loudly. A non-zero interior count is otherwise a regression of
+        // the mesh-coverage defect #6200 fixed and belongs THERE, not here.
+        assert_box_grid_miss_measurement(&disp, &stress);
 
         assert_eq!(
             extract_field(case_val, "converged"),
