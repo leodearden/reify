@@ -2899,15 +2899,45 @@ fn compile_expr_guarded_with_expected_inner(
                 // arity reads identically to builtin arity. Its helper fns cannot be
                 // called here: all three hard-code `Diagnostic::error`, and this site
                 // must emit at the ctor-conformance knob.
-                if let Some(&first_extra) = extra_positional_idxs.first() {
-                    let noun = if nparams == 1 { "argument" } else { "arguments" };
+                //
+                // The CEILING is `declared_param_names.len()`, while the SLOTS a
+                // positional can bind to still come from `params`. The two views
+                // answer different questions, and this message asserts the first:
+                // reporting the slot count as the declared count is exactly the
+                // false-message defect the declared view exists to fix
+                // (`WidgetAutoSurplus() expects at most 1 argument` on a structure
+                // that visibly declares two).
+                //
+                // The `args.len() > declared_count` conjunct is what makes a call
+                // WITHIN the declared arity silent. It is provably a no-op when the
+                // template has no `Auto` cell — there `declared_count == nparams`,
+                // and a non-empty `extra_positional_idxs` already implies
+                // `args.len() > nparams`: if any positional overflows then all
+                // `nparams` slots are filled, so `args.len() == named +
+                // positionals_placed + extra >= nparams + 1`. It therefore cannot
+                // suppress a pre-ε-remediation diagnostic.
+                //
+                // `extra_positional_idxs` itself is untouched, so the label still
+                // anchors where it did. A call within the declared count that
+                // nonetheless overflows the bindable slots (because `Auto` params
+                // are not positionally bindable today) is deliberately NOT
+                // diagnosed here — that is the binding defect owned by #6705.
+                let declared_count = declared_param_names.len();
+                if let Some(&first_extra) = extra_positional_idxs.first()
+                    && args.len() > declared_count
+                {
+                    let noun = if declared_count == 1 {
+                        "argument"
+                    } else {
+                        "arguments"
+                    };
                     diagnostics.push(
                         crate::conformance::diag_at(
                             crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
                             format!(
                                 "E_CTOR_ARITY: {}() expects at most {} {}, got {}",
                                 name,
-                                nparams,
+                                declared_count,
                                 noun,
                                 args.len()
                             ),
