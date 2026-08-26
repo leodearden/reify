@@ -20262,6 +20262,58 @@ fn apply_param_to_source_discriminates_its_resolve_phase_rejections() {
 }
 
 #[test]
+fn apply_param_to_source_leaves_no_trace_when_the_recompile_rejects_the_value() {
+    // PRD §7 B7's SECOND half: a type/dimension-mismatched V. Unlike the
+    // resolve-phase taxonomy above, nothing here is refusable up front —
+    // `Part.width`'s default IS a rewritable quantity literal, so the splice
+    // happens and the RECOMPILE is what rejects the result.
+    //
+    // The no-mutation ledger must nonetheless be identical to a resolve-phase
+    // rejection. Three of the four surfaces already are (the recompile fails
+    // before `commit_state`, so disk, `source_map` and eval state never move);
+    // the fourth is the leak this test exists to close. `update_source`'s
+    // failure path calls `record_compile_failure`, which stores the SPLICED
+    // text plus its diagnostics — and `build_gui_state`'s LiveEdit branch then
+    // surfaces diagnostics indexed into text that reached neither disk nor
+    // `source_map`, i.e. text no user has ever seen.
+    let cases: &[reify_ir::Value] = &[
+        reify_ir::Value::Bool(true),
+        reify_ir::Value::String("hi".to_string()),
+    ];
+
+    for value in cases {
+        let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+        let err = session
+            .apply_param_to_source("Part.width", value)
+            .expect_err(&format!(
+                "{value:?} into a `Length` param must be REFUSED by the recompile"
+            ));
+        assert!(
+            err.contains("width"),
+            "the recompile rejection should name the offending param, got: {err}"
+        );
+        assert!(
+            err.contains("initializer"),
+            "the recompile rejection should say the initializer is what mismatched, \
+             got: {err}"
+        );
+
+        assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+
+        // The staleness banner is the fifth thing a user would SEE, and it is
+        // driven by `last_reload_error` rather than by `compile_failure`, so
+        // `assert_writeback_untouched` does not reach it. A write-back the
+        // engine refused is not a failed hot reload — the on-disk file the
+        // watcher would reload is exactly the one already loaded.
+        assert!(
+            !session.is_stale(),
+            "a rejected write-back must not raise the hot-reload staleness banner"
+        );
+    }
+}
+
+#[test]
 fn apply_param_to_source_still_rewrites_a_bool_literal_default() {
     // The literal-ness gate must admit the whole literal set, not just
     // quantities: Number/Quantity/String/Bool defaults all stay rewritable.
