@@ -42,6 +42,42 @@ fn make_occt_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
+/// Serializes every test in this binary that touches the **process-global**
+/// `reify_mesh_morph::diagnostics` counters (`crates/reify-mesh-morph/src/diagnostics.rs`
+/// `COUNTERS`).
+///
+/// The verify gate runs this binary under nextest, which forks a process per
+/// test, so the counters are naturally isolated there. A plain
+/// `cargo test -p reify-eval --test morph_arm_e2e` does NOT: it runs the tests
+/// as THREADS in one process, where one test's `reset_for_test()` can zero the
+/// counters between another's rebuild and its `snapshot()` — a spurious failure
+/// that looks like a morph-arm regression. Task 6635 un-ignored a second
+/// counter-touching test, which is what made that latent hazard reachable.
+///
+/// Acquired via [`lock_and_reset_morph_diagnostics`] at the top of each such
+/// test and held (as a `let _diag_guard` binding) for the whole body, through
+/// the final `snapshot()` assertion.
+#[cfg(has_gmsh)]
+static MORPH_DIAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take [`MORPH_DIAG_LOCK`], then reset the process-global morph counters.
+///
+/// Returns the guard: bind it (`let _diag_guard = ...`, NOT `let _ = ...`, which
+/// would drop it immediately) so the lock is held for the whole test body.
+///
+/// A test that panics while holding the lock poisons it; recover the inner guard
+/// rather than letting a poison panic cascade into the sibling tests and mask
+/// the original failure.
+#[cfg(has_gmsh)]
+#[must_use = "bind the guard (let _diag_guard = ...) so the lock is held for the whole test"]
+fn lock_and_reset_morph_diagnostics() -> std::sync::MutexGuard<'static, ()> {
+    let guard = MORPH_DIAG_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reify_mesh_morph::diagnostics::reset_for_test();
+    guard
+}
+
 // Per-thread capture slot for `morph_probe_capture_fn`. Each cargo test runs on
 // its own thread; the e2e clears it at entry for defensiveness against reuse.
 #[cfg(has_gmsh)]
@@ -159,9 +195,10 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
         return;
     }
 
-    // Process-global morph counters: reset so `morphed == 1` is exact. nextest
-    // runs each test in its own process, so this is isolated.
-    reify_mesh_morph::diagnostics::reset_for_test();
+    // Process-global morph counters: take the file-local lock and reset, so
+    // `morphed == 1` is exact even under a thread-per-test `cargo test` run.
+    // See MORPH_DIAG_LOCK. Held for the whole body.
+    let _diag_guard = lock_and_reset_morph_diagnostics();
 
     let compiled =
         reify_test_support::parse_and_compile_with_stdlib(include_str!("fixtures/morph_box.ri"));
@@ -262,7 +299,8 @@ fn e2e_no_producer_engine_remeshes_volume_mesh() {
         return;
     }
 
-    reify_mesh_morph::diagnostics::reset_for_test();
+    // Process-global morph counters — see MORPH_DIAG_LOCK. Held for the whole body.
+    let _diag_guard = lock_and_reset_morph_diagnostics();
 
     let compiled =
         reify_test_support::parse_and_compile_with_stdlib(include_str!("fixtures/morph_box.ri"));
@@ -337,7 +375,8 @@ fn e2e_structural_tick_remeshes_and_records_ineligible() {
         return;
     }
 
-    reify_mesh_morph::diagnostics::reset_for_test();
+    // Process-global morph counters — see MORPH_DIAG_LOCK. Held for the whole body.
+    let _diag_guard = lock_and_reset_morph_diagnostics();
 
     // Inline structural fixture: a box minus a movable Z-cylinder cutter. See the
     // doc comment — parsed at runtime, so it costs no compile time.
@@ -420,13 +459,20 @@ structure StructuralMorphBox {
          change; a non-zero Stage-A bucket means the derived Type::Geometry cell \
          is vetoing again; snapshot: {snap:?}"
     );
-    let ineligible = snap.ineligible_structural_change
-        + snap.ineligible_bijection_failure
-        + snap.ineligible_naming_error;
+    // …and the reject must land in the STAGE-B family specifically. Summing all
+    // three ineligible buckets would re-open the blind spot the assertion above
+    // closes: a regression that moved the reject back toward Stage A, or into a
+    // different stage entirely, would still show green. MEASURED post-6635:
+    // `ineligible_naming_error: 1`. Both Stage-B buckets are accepted because
+    // which one fires depends on how far the naming layer gets on the
+    // through-hole B-rep (count mismatch vs. attribution diagnostic) — that is
+    // Stage B's internal business, not this test's premise.
+    let stage_b_ineligible = snap.ineligible_bijection_failure + snap.ineligible_naming_error;
     assert!(
-        ineligible >= 1,
-        "a structural (topology-changing) tick must record at least one ineligible \
-         bucket; snapshot: {snap:?}"
+        stage_b_ineligible >= 1,
+        "a structural (topology-changing) tick must be rejected by STAGE B — the \
+         bijection/naming check is what sees the face/edge/vertex count change; \
+         snapshot: {snap:?}"
     );
     assert_eq!(
         snap.morphed, 0,
