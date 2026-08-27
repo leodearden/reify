@@ -3131,10 +3131,14 @@
 
             // Wording is byte-unchanged and still owned solely by
             // `ArgRejection::message` — the retrofit moves severity + code, never text.
-            // NB: the kind_label a `PatternKind::Linear` op carries is `"linear"`,
-            // not `"linear_pattern"` — measured from the live diagnostic, not assumed.
+            // NB: since task 5755 the kind_label a `PatternKind::Linear` op
+            // carries is `"linear_pattern"` — the DSL builtin the author typed,
+            // not the `PatternKind::Linear` variant nickname `"linear"` this
+            // previously recorded. Measured from the live diagnostic, not
+            // assumed. The needle is the FULL label so a partial revert of the
+            // λ rename cannot pass this test on the `linear` substring.
             for needle in [
-                "linear",
+                "linear_pattern",
                 "spacing",
                 "Length",
                 "pass a dimensioned length such as `5mm`",
@@ -7825,10 +7829,18 @@
             "diagnostic message should mention 'spacing', got: {}",
             diagnostics[0].message
         );
+        // C6 MIGRATION (task 5755): this used to read
+        // `contains("linear") && !contains("linear_")`. Task 5755 renamed the
+        // `PatternKind::Linear` label from `linear` to `linear_pattern` (the
+        // DSL builtin the author typed), which makes the negated clause FALSE
+        // by construction. The ORIGINAL INTENT — the diagnostic names THIS
+        // builtin and not its 2D sibling — is preserved verbatim below; only
+        // the needles move with the rename.
         assert!(
-            diagnostics[0].message.contains("linear")
-                && !diagnostics[0].message.contains("linear_"),
-            "diagnostic message should mention 'linear' but not any underscore-suffixed sibling (linear_*), got: {}",
+            diagnostics[0].message.contains("linear_pattern")
+                && !diagnostics[0].message.contains("linear_pattern_2d"),
+            "diagnostic message should name the builtin the author typed \
+             ('linear_pattern') and not its 2D sibling ('linear_pattern_2d'), got: {}",
             diagnostics[0].message
         );
     }
