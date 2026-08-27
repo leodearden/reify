@@ -2458,6 +2458,30 @@ pub(crate) fn compile_geometry_op(
         CompiledGeometryOp::Isosurface { grid, args } => {
             let grid_id = resolve_geom_ref(grid, step_handles)?;
 
+            // REACHABLE SOURCE SHAPE for the rejection below, so the failure is
+            // discoverable from here: `isosurface`'s optional args are lowered
+            // POSITIONALLY. `reify_compiler::geometry`'s
+            // `compile_geometry_call_inner` destructures
+            // `ExprKind::FunctionCall { name, args, .. }` and DROPS `arg_names`,
+            // and the `"isosurface"` arm then assigns positional slot 1 to
+            // `iso` and slot 2 to `adaptive`. So a source that SKIPS the first
+            // optional arg — `isosurface(g, adaptive: true)` — arrives here with
+            // `Bool(true)` bound to `iso`, and is rejected as
+            // `isosurface: iso argument expects Length, got Bool`: a message
+            // naming an argument the author never wrote, and (unlike the
+            // pre-λ Warning, which still built the surface at iso 0.0) a DROPPED
+            // op. Pinned end-to-end by
+            // `crates/reify-eval/tests/isosurface_iso_units_e2e.rs`'s
+            // `skipped_optional_iso_slot_binds_adaptive_positionally`.
+            //
+            // The real fix is to honour `arg_names` in that lowering arm (bind
+            // by name, fall back to position), which lives in
+            // `crates/reify-compiler/src/geometry.rs` — a file units-length λ
+            // (task 5755) holds no lock on, and a pre-existing quirk λ did not
+            // introduce. Deliberately NOT patched around here: a local
+            // `Value::Bool` special case would fork the caller-facing wording
+            // that `required_length_arg` solely owns (decision D9) and would
+            // have to be removed again once the lowering binds by name.
             let iso_level = match args.iter().find(|(n, _)| n == "iso") {
                 None => 0.0,
                 Some(_) => required_length_arg(
