@@ -36,6 +36,15 @@
 #   (h) anti-vacuity / hard-fail — missing or empty --spec, missing
 #       --tombstones are exit 2, never a graceful skip.
 #   (i) unknown flag — exit 2.
+#   (j) rule 5 — an anchored paragraph DELETED without a same-diff tombstone.
+#   (k) the converse control — the same deletion WITH a tombstone row is
+#       clean, so (j)/(k) are a discriminator rather than "reds on any
+#       deletion", which would make the tombstone mechanism unusable.
+#   (l) a no-op base is clean — rule 5's clean verdict is earned, not
+#       hardcoded.
+#   (m) base resolution is never a SKIP — an unreadable --base-spec, an
+#       unresolvable --base rev, and both flags together are all exit 2.
+#   (n) the DEFAULT base is live — a flagless run really consults git.
 #
 # NO-SILENT-GREEN FLOOR: a $RAN counter is incremented by every scenario and
 # checked after test_summary. A future guard condition that skipped every
@@ -270,6 +279,27 @@ _insert_before_paragraph() {
         END { if (!done) exit 3 }
     ' "$file" >"$file.ins"
     mv "$file.ins" "$file"
+}
+
+# _delete_anchored_paragraph <file> <id> — remove the anchor line carrying
+# <id> AND the paragraph it anchors (the contiguous non-blank run that follows
+# it), in place. This is the shape rule 5 exists to catch: the ID vanishes
+# from the spec entirely, so a consumer's cite silently resolves to nothing.
+_delete_anchored_paragraph() {
+    local file="$1" id="$2"
+    awk -v id="$id" '
+        BEGIN { del = 0; hit = 0 }
+        {
+            if ($0 == "<!-- sc-anchor: " id " -->") { del = 1; hit = 1; next }
+            if (del) {
+                if ($0 ~ /^[[:space:]]*$/) { del = 0 }
+                next
+            }
+            print
+        }
+        END { if (!hit) exit 3 }
+    ' "$file" >"$file.del"
+    mv "$file.del" "$file"
 }
 
 # _line_of <file> <literal> — 1-based line number of the FIRST occurrence.
@@ -578,6 +608,147 @@ RAN=$((RAN + 1))
 _run_lint --nope
 assert "(i) an unknown flag is a usage error (rc 2)" _rc_is 2
 assert "(i) the usage error names the offending flag" _out_has "--nope"
+
+# ===========================================================================
+# (j) RULE 5 — an anchored paragraph DELETED without a same-diff tombstone.
+#
+# This is the mechanism §8.1 hangs the whole anchor contract on: without it,
+# "cite by opaque ID" degrades to "cite by an ID that may or may not still
+# exist", which is strictly worse than citing a section number (at least a
+# stale section number is visibly stale).
+#
+# Built hermetically from the REAL spec so it exercises full scale, not a toy.
+# ===========================================================================
+echo ""
+echo "--- (j) rule 5: a deletion with NO tombstone row ---"
+RAN=$((RAN + 1))
+
+J_BASE="$TMPWORK/j_base.md"
+_spec_copy_with_anchors "$J_BASE" 4
+J_GONE="$(_first_anchor_id "$J_BASE")"
+J_KEPT="$(awk 'match($0, /^<!-- sc-anchor: sc-[0-9a-f]{6} -->$/) {
+                   id = $0; sub(/^<!-- sc-anchor: /, "", id); sub(/ -->$/, "", id)
+                   n++
+                   if (n == 2) { print id; exit }
+               }' "$J_BASE")"
+J_CUR="$TMPWORK/j_cur.md"
+cp "$J_BASE" "$J_CUR"
+_delete_anchored_paragraph "$J_CUR" "$J_GONE"
+
+# An unrelated-but-well-formed tombstone file: (j) must fire because THIS id
+# is missing from it, not because the file is empty or malformed.
+J_OTHER="$(_fresh_ids "$J_BASE" 1)"
+J_TOMB="$TMPWORK/j.tombstones"
+{
+    printf '# tombstone fixture\n'
+    printf '%s 2026-05-06 an unrelated retirement\n' "$J_OTHER"
+} >"$J_TOMB"
+
+assert "(j) meta: two distinct anchor IDs were available in the base" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ]' -- "$J_GONE" "$J_KEPT"
+assert "(j) meta: the vanished ID IS present in the base copy" \
+    bash -c 'grep -qF -- "$1" "$2"' -- "$J_GONE" "$J_BASE"
+assert "(j) meta: the vanished ID is NOT present in the current copy" \
+    bash -c '! grep -qF -- "$1" "$2"' -- "$J_GONE" "$J_CUR"
+assert "(j) meta: the SURVIVING ID is still present in the current copy" \
+    bash -c 'grep -qF -- "$1" "$2"' -- "$J_KEPT" "$J_CUR"
+assert "(j) meta: the tombstone fixture does NOT mention the vanished ID" \
+    bash -c '! grep -qF -- "$1" "$2"' -- "$J_GONE" "$J_TOMB"
+
+_run_lint --spec "$J_CUR" --tombstones "$J_TOMB" --base-spec "$J_BASE"
+assert "(j) a deletion with no tombstone row is FLAGGED (rc 1)" _rc_is 1
+assert "(j) output NAMES the vanished ID ($J_GONE)" _out_has "$J_GONE"
+assert "(j) output points at the tombstone file as the place to add the row" \
+    _out_has "$J_TOMB"
+assert "(j) output does NOT name the surviving ID ($J_KEPT)" _out_lacks "$J_KEPT"
+
+# ===========================================================================
+# (k) THE CONVERSE CONTROL — the same deletion, WITH the tombstone row.
+#
+# Without (k), (j) would be satisfied by a lint that reds on ANY deletion,
+# which would make the tombstone mechanism unusable and the whole rule a
+# constant verdict rather than a discriminator.
+# ===========================================================================
+echo ""
+echo "--- (k) converse control: the same deletion WITH a tombstone row ---"
+RAN=$((RAN + 1))
+
+K_TOMB="$TMPWORK/k.tombstones"
+{
+    printf '# tombstone fixture\n'
+    printf '%s 2026-08-27 paragraph deleted in this very diff; no forwarding anchor\n' "$J_GONE"
+} >"$K_TOMB"
+
+assert "(k) meta: the tombstone fixture DOES carry a row for the vanished ID" \
+    bash -c 'grep -qF -- "$1" "$2"' -- "$J_GONE" "$K_TOMB"
+
+_run_lint --spec "$J_CUR" --tombstones "$K_TOMB" --base-spec "$J_BASE"
+assert "(k) the SAME deletion with a tombstone row is CLEAN (rc 0)" _rc_is 0
+assert "(k) the converse control produces NO output" _out_empty
+
+# ===========================================================================
+# (l) NO-OP BASE — a byte-identical base deletes nothing.
+#
+# Proves rule 5's clean verdict is an EARNED comparison result, not a
+# hardcoded pass on the "no --base-spec violations to report" path.
+# ===========================================================================
+echo ""
+echo "--- (l) no-op base: a byte-identical base is clean ---"
+RAN=$((RAN + 1))
+
+L_CUR="$TMPWORK/l_cur.md"
+_spec_copy_with_anchors "$L_CUR" 4
+L_BASE="$TMPWORK/l_base.md"
+cp "$L_CUR" "$L_BASE"
+
+assert "(l) meta: base and current are byte-identical" cmp -s "$L_CUR" "$L_BASE"
+assert "(l) meta: the fixture actually carries anchors to compare" \
+    bash -c '[ "$(grep -cE "^<!-- sc-anchor: sc-[0-9a-f]{6} -->$" "$1")" -ge 1 ]' -- "$L_CUR"
+
+_run_lint --spec "$L_CUR" --tombstones "$TOMBSTONES" --base-spec "$L_BASE"
+assert "(l) a no-op base yields a CLEAN verdict (rc 0)" _rc_is 0
+assert "(l) a no-op base produces NO output" _out_empty
+
+# ===========================================================================
+# (m) BASE RESOLUTION IS NOT A SKIP.
+#
+# The failure mode INV-SF-5 exists to prevent is a gate that silently
+# downgrades "I could not determine the base" to "deletion check skipped" —
+# green on exactly the configuration where the check matters.
+# ===========================================================================
+echo ""
+echo "--- (m) an unresolvable base is exit 2, never a silent skip ---"
+RAN=$((RAN + 1))
+
+_run_lint --spec "$SPEC_REL" --tombstones "$TOMB_REL" --base-spec "$TMPWORK/no-such-base.md"
+assert "(m1) an unreadable --base-spec is exit 2" _rc_is 2
+assert "(m1) an unreadable --base-spec is NEVER rc 0" bash -c '[ "$1" != 0 ]' -- "$LINT_RC"
+
+_run_lint --spec "$SPEC_REL" --tombstones "$TOMB_REL" --base definitely-not-a-ref
+assert "(m2) an unresolvable --base rev is exit 2" _rc_is 2
+assert "(m2) an unresolvable --base rev is NEVER rc 0" bash -c '[ "$1" != 0 ]' -- "$LINT_RC"
+
+_run_lint --spec "$SPEC_REL" --tombstones "$TOMB_REL" --base HEAD --base-spec "$SPEC"
+assert "(m3) --base and --base-spec together is a usage error (rc 2)" _rc_is 2
+assert "(m3) --base and --base-spec together is NEVER rc 0" bash -c '[ "$1" != 0 ]' -- "$LINT_RC"
+
+# ===========================================================================
+# (n) THE DEFAULT BASE IS LIVE — a flagless run really consults git.
+# ===========================================================================
+echo ""
+echo "--- (n) default base: a flagless run consults git ---"
+RAN=$((RAN + 1))
+
+_run_lint
+assert "(n) the flagless invocation on the shipped tree is CLEAN (rc 0)" _rc_is 0
+assert "(n) the flagless invocation produces NO output" _out_empty
+N_RC="$LINT_RC"
+N_OUT="$LINT_OUT"
+
+_run_lint --base HEAD
+assert "(n) an explicit --base HEAD yields the same rc as the flagless run" _eq "$LINT_RC" "$N_RC"
+assert "(n) an explicit --base HEAD yields byte-identical output to the flagless run" \
+    bash -c '[ "$1" = "$2" ]' -- "$LINT_OUT" "$N_OUT"
 
 # ---------------------------------------------------------------------------
 # Summary.
