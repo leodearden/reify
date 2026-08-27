@@ -735,14 +735,14 @@ fn multiple_geometry_lets_all_produce_realizations() {
 
 #[test]
 fn translate_let_bound_target_ops() {
-    // translate(hole, 1, 0, 0) where hole is a let-bound cylinder.
+    // translate(hole, 1mm, 0mm, 0mm) where hole is a let-bound cylinder.
     // Expected: cylinder sub-op at step 0, translate op referencing step 0.
     // Currently FAILS: translate compiles hole as scalar, no sub-op emitted.
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = translate(hole, 1, 0, 0)
+    let result = translate(hole, 1mm, 0mm, 0mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -804,8 +804,14 @@ fn rotate_around_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = rotate_around(hole, 0, 0, 0, 0, 0, 1, 90)
+    let result = rotate_around(hole, 0mm, 0mm, 0mm, 0, 0, 1, 90)
 }"#;
+    // C6 MIGRATION (task 5750): only the PIVOT `px`/`py`/`pz` is dimensioned.
+    // The `0, 0, 1` that follows is the axis DIRECTION — a dimensionless unit
+    // vector — and `90` is an ANGLE owned by
+    // docs/prds/v0_6/angle-units-surface-convergence.md. Dimensioning either
+    // would assert a gate this leaf deliberately does not add. Same
+    // origin-vs-direction split as the two `revolve` rows above.
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
     let realization = realization_named(template, &["hole", "result"], "result");
@@ -879,7 +885,7 @@ fn extrude_let_bound_profile_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let profile = cylinder(r, h)
-    let result = extrude(profile, 10)
+    let result = extrude(profile, 10mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -899,8 +905,13 @@ fn revolve_let_bound_profile_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let profile = cylinder(r, h)
-    let result = revolve(profile, 0, 0, 0, 0, 0, 1, 90)
+    let result = revolve(profile, 0mm, 0mm, 0mm, 0, 0, 1, 90)
 }"#;
+    // C6 MIGRATION (task 5750): only the axis ORIGIN `ox`/`oy`/`oz` is
+    // dimensioned. The `0, 0, 1` that follows is the axis DIRECTION — a
+    // dimensionless unit vector — and `90` is an ANGLE owned by
+    // docs/prds/v0_6/angle-units-surface-convergence.md. Dimensioning either
+    // would assert a gate this leaf deliberately does not add.
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
     let realization = realization_named(template, &["profile", "result"], "result");
@@ -919,8 +930,15 @@ fn revolve_full_let_bound_profile_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let profile = cylinder(r, h)
-    let result = revolve_full(profile, 0, 0, 0, 0, 0, 1)
+    let result = revolve_full(profile, 0mm, 0mm, 0mm, 0, 0, 1)
 }"#;
+    // C6 MIGRATION (task 5750), same origin-vs-direction split as
+    // `revolve_let_bound_profile_ops` above. NOT in this leaf's plan-time
+    // measured migration list — surfaced by re-running the full
+    // `cargo test -p reify-compiler` suite after landing the sweep slots,
+    // which is why step-7 mandates that rerun rather than trusting the list.
+    // `revolve_full` takes no angle argument at all: the compiler injects a
+    // literal 2π at lowering.
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
     let realization = realization_named(template, &["profile", "result"], "result");
@@ -941,7 +959,7 @@ fn shell_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = shell(body, 1)
+    let result = shell(body, 1mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -958,7 +976,7 @@ fn thicken_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = thicken(body, 1)
+    let result = thicken(body, 1mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -996,7 +1014,7 @@ fn chamfer_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = chamfer(body, 2)
+    let result = chamfer(body, 2mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1015,7 +1033,7 @@ fn fillet_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = fillet(body, 2)
+    let result = fillet(body, 2mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1038,7 +1056,7 @@ fn chamfer_chained_shell_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = chamfer(shell(body, 0.5), 2)
+    let result = chamfer(shell(body, 0.5mm), 2mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1062,7 +1080,7 @@ fn fillet_chained_shell_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = fillet(shell(body, 0.5), 2)
+    let result = fillet(shell(body, 0.5mm), 2mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1091,7 +1109,7 @@ fn chamfer_fillet_shell_chained_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = chamfer(fillet(shell(body, 0.5), 2), 1)
+    let result = chamfer(fillet(shell(body, 0.5mm), 2mm), 1mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1122,7 +1140,7 @@ fn chamfer_shell_difference_chained_ops() {
     param h: Length = 10mm
     let a = cylinder(r, h)
     let b = cylinder(r2, h)
-    let result = chamfer(shell(difference(a, b), 0.5), 1)
+    let result = chamfer(shell(difference(a, b), 0.5mm), 1mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1193,7 +1211,7 @@ fn loft_let_bound_profiles_ops() {
 
 #[test]
 fn cross_category_composition_ops() {
-    // difference(body, translate(hole, 1, 0, 0)):
+    // difference(body, translate(hole, 1mm, 0mm, 0mm)):
     // body is inlined by resolve_boolean_arg (boolean path, unchanged).
     // translate(hole, ...) goes through the generic loop; hole → Sub("hole") (task #4668).
     // Expected: [Cylinder(body), Transform(Translate, Sub("hole")), BoolDiff(0,1)]
@@ -1203,7 +1221,7 @@ fn cross_category_composition_ops() {
     param h: Length = 10mm
     let body = cylinder(r, h)
     let hole = cylinder(r2, h)
-    let result = difference(body, translate(hole, 1, 0, 0))
+    let result = difference(body, translate(hole, 1mm, 0mm, 0mm))
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1226,7 +1244,7 @@ fn cyclic_refs_through_transforms_resolve_to_sub() {
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
-    let a = translate(b, 1, 0, 0)
+    let a = translate(b, 1mm, 0mm, 0mm)
     let b = rotate(a, 0, 0, 1, 90)
 }"#;
     // With the sibling-let pre-check (task #4668), a bare Ident arg that names a
@@ -1262,13 +1280,13 @@ fn cyclic_refs_through_transforms_resolve_to_sub() {
 
 #[test]
 fn translate_inline_geometry_arg_ops() {
-    // translate(cylinder(r, h), 1, 0, 0): the geometry arg is inline, not let-bound.
+    // translate(cylinder(r, h), 1mm, 0mm, 0mm): the geometry arg is inline, not let-bound.
     // The generic resolution block should still compile it as a sub-op.
     // Expected: [Cylinder, Transform(Translate, 0)]
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
-    let result = translate(cylinder(r, h), 1, 0, 0)
+    let result = translate(cylinder(r, h), 1mm, 0mm, 0mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1286,7 +1304,7 @@ fn translate_inline_geometry_arg_ops() {
 
 #[test]
 fn chained_transforms_step_indices() {
-    // let a = cylinder(r, h); let b = translate(a, 1, 0, 0); let c = rotate(b, 0, 0, 1, 90)
+    // let a = cylinder(r, h); let b = translate(a, 1mm, 0mm, 0mm); let c = rotate(b, 0, 0, 1, 90)
     // With sibling-let pre-check (task #4668): b → Sub("b") in c's rotate op; no inlining.
     // c's realization: [Rotate(Sub("b"))]
     // (b itself has [Translate(Sub("a"))]; a itself has [Cylinder])
@@ -1294,7 +1312,7 @@ fn chained_transforms_step_indices() {
     param r: Length = 5mm
     param h: Length = 10mm
     let a = cylinder(r, h)
-    let b = translate(a, 1, 0, 0)
+    let b = translate(a, 1mm, 0mm, 0mm)
     let c = rotate(b, 0, 0, 1, 90)
 }"#;
     let compiled = compile_no_errors(source);
@@ -1477,7 +1495,7 @@ fn ident_alias_with_transform() {
     param h: Length = 10mm
     let body = cylinder(r, h)
     let alias = body
-    let result = translate(alias, 1, 0, 0)
+    let result = translate(alias, 1mm, 0mm, 0mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1725,23 +1743,59 @@ fn sweep_non_geometry_path_emits_error() {
     );
 }
 
+/// The geom_ref fallback survives, and all THREE displacement rejections fire.
+///
+/// FLIPPED by task 5750 (units-length η), contract C6 of
+/// `docs/prds/v0_6/units-length-gate-completion.md`. This test used to assert
+/// `translate(42, 1, 0, 0)` produced NO errors at all. That is no longer true
+/// and flipping it IS THE FIX, not a regression to suppress: `1, 0, 0` are the
+/// `dx`/`dy`/`dz` displacement, and η's whole point is that a bare component
+/// there is a compile-time Error rather than a silent 1-SI-METRE shift.
+///
+/// WHY arg0 IS NOT AMONG THEM, and why the op-sequence assertion below is KEPT:
+/// `42` sits at the geometry-handle position, which is deliberately unchecked
+/// (ε=4358's territory), so the silent geom_ref fallback this test was
+/// ORIGINALLY written to pin is UNCHANGED — three errors, not four. The
+/// fallback still resolves to `GeomRef::Step(step_offset)` and the Translate op
+/// is STILL LOWERED despite the diagnostics, because
+/// `check_builtin_arg_types` is anti-cascade: it touches only `diagnostics`,
+/// never lowering or result-type inference. The surviving `ExpectedOp::Transform`
+/// assertion is what pins that, so the test now pins BOTH facts.
 #[test]
 fn translate_non_geometry_target_uses_fallback() {
-    // translate(42, 1, 0, 0): arg 0 is a literal number, not a geometry expression.
-    // The geom_ref fallback silently uses GeomRef::Step(step_offset). This should
-    // compile without errors (the fallback is intentional for single-geom-arg functions).
     let source = r#"structure S {
     let result = translate(42, 1, 0, 0)
 }"#;
     let compiled = compile_with_diagnostics(source);
     let errors = error_diagnostics(&compiled);
-    // No error expected — the geom_ref closure falls back silently.
-    assert!(
-        errors.is_empty(),
-        "translate() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "translate: dx argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "translate: dy argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "translate: dz argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+        ],
+        "expected exactly the three displacement rejections — arg0 (the \
+         geometry handle) must still fall back silently, so there is no fourth. \
+         Got: {:?}",
         errors
     );
-    // Should still produce a realization with a Transform op.
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch)),
+        "each rejection must carry the COMPILE-layer code, not the eval layer's \
+         DimensionedArgRejected (PRD decision D2); got: {:?}",
+        errors
+    );
+
+    // ANTI-CASCADE: the diagnostics did not stop lowering. The realization is
+    // still produced, with the Translate op still targeting the fallback step.
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(
@@ -1780,25 +1834,55 @@ fn loft_non_geometry_profiles_uses_fallback() {
     );
 }
 
+/// The geom_ref fallback survives, and the arg-1 LENGTH rejection now FIRES.
+///
+/// FLIPPED by task 5750 (units-length η), contract C6 of
+/// `docs/prds/v0_6/units-length-gate-completion.md`. This test used to assert
+/// `extrude(42, 10)` produced NO errors at all. That is no longer true and
+/// flipping it IS THE FIX, not a regression to suppress: `10` sits at
+/// `extrude`'s `distance` position, and η's whole point is that a bare
+/// magnitude there is a compile-time Error rather than a silent 10-SI-METRE
+/// extrusion.
+///
+/// The half this test was ORIGINALLY written for is untouched and still pinned
+/// below. `42` sits at arg 0 — the geometry-handle position, permanently
+/// unchecked (ε=4358's territory) — so the geom_ref closure still falls back
+/// silently to `GeomRef::Step(step_offset)`, and the op is STILL LOWERED
+/// despite the arg-1 diagnostic. That second fact is not incidental:
+/// `check_builtin_arg_types` is anti-cascade, touching only `diagnostics` and
+/// never lowering or result-type inference, and the surviving op-sequence
+/// assertion is what pins it.
 #[test]
 fn extrude_non_geometry_target_uses_fallback() {
-    // extrude(42, 10): arg 0 is a literal number, not a geometry expression.
-    // extrude() uses the same geom_ref fallback path as translate() and other
-    // single-geom-arg functions — it silently falls back to GeomRef::Step(step_offset).
-    // This verifies the silent-fallback behavior is consistent across the category,
-    // not just for transform functions.
     let source = r#"structure S {
     let result = extrude(42, 10)
 }"#;
     let compiled = compile_with_diagnostics(source);
     let errors = error_diagnostics(&compiled);
-    // No error expected — the geom_ref closure falls back silently.
-    assert!(
-        errors.is_empty(),
-        "extrude() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+
+    // Exactly one error, and it is the LENGTH rejection on arg 1 — NOT a
+    // geometry-handle complaint about arg 0.
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly the arg-1 LENGTH rejection; arg 0 must still fall \
+         back silently. Got: {:?}",
         errors
     );
-    // Should still produce a realization with an Extrude (Sweep) op.
+    assert_eq!(
+        errors[0].code,
+        Some(reify_core::DiagnosticCode::ArgTypeMismatch),
+        "the rejection must carry the COMPILE-layer code, not the eval layer's \
+         DimensionedArgRejected (PRD decision D2)"
+    );
+    assert_eq!(
+        errors[0].message,
+        "extrude: distance argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+
+    // ANTI-CASCADE: the diagnostic did not stop lowering. The realization is
+    // still produced, with the Extrude op still targeting the fallback step.
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(
@@ -2348,7 +2432,7 @@ fn geometry_valued_if_then_else_chain_lowers_to_single_conditional_primitive() {
     }
 }
 
-/// RED step-3c: translate-wrapped `translate(box(a),tx,0,0)` vs `translate(box(b),tx,0,0)`
+/// RED step-3c: translate-wrapped `translate(box(a),tx,0mm,0mm)` vs `translate(box(b),tx,0mm,0mm)`
 /// hoists to `[Primitive{Box}, Transform{Translate}]` where the box has Conditional args.
 #[test]
 fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
@@ -2357,7 +2441,7 @@ fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
     param b: Length = 20mm
     param tx: Length = 5mm
     param axis: Length = 0
-    let body = if axis == 0 then translate(box(a, a, a), tx, 0, 0) else translate(box(b, b, b), tx, 0, 0)
+    let body = if axis == 0 then translate(box(a, a, a), tx, 0mm, 0mm) else translate(box(b, b, b), tx, 0mm, 0mm)
 }"#;
 
     let compiled = compile_with_diagnostics(source);

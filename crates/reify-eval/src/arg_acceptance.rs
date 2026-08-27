@@ -201,7 +201,7 @@ pub fn density_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Density",
         dimension: reify_core::DimensionVector::MASS_DENSITY,
-        migration_hint: Some("pass a dimensioned Density literal such as `7850kg/m^3`"),
+        migration_hint: Some(reify_core::units::DENSITY_MIGRATION_HINT),
     }
 }
 
@@ -240,7 +240,7 @@ pub fn length_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Length",
         dimension: reify_core::DimensionVector::LENGTH,
-        migration_hint: Some("pass a dimensioned length such as `5mm`"),
+        migration_hint: Some(reify_core::units::LENGTH_MIGRATION_HINT),
     }
 }
 

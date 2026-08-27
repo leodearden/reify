@@ -238,6 +238,27 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
     // problem; piling an ArgTypeMismatch on top would bury the real error
     // under a diagnostic about an argument whose position is meaningless in a
     // call that has the wrong shape to begin with.
+    //
+    // Task 5750 (units-length η), PRD boundary row 9b — RESOLUTION RECORDED
+    // HERE because this fixture is the site the row is about.
+    // `docs/prds/v0_6/units-length-gate-completion.md` claimed the arity-6
+    // `linear_pattern_2d(w, 1, 0, 0, 3, 20)` "slips past today's
+    // `arg_count == 11` guard entirely", leaving the bare `20` ungated and
+    // implying η owed either a new arity-6 slot or a migration of this line.
+    //
+    // PROBED on 2026-07-28 and again during η, and the claim is FALSE IN BOTH
+    // DIRECTIONS: this call is neither a legitimate overload nor a malformed
+    // fixture. The arity guard in `geometry.rs` DOES reject it — `reify check`
+    // and `reify eval` both exit 1 with
+    // `linear_pattern_2d() expects 11 arguments, got 6` — so nothing "slips
+    // past" and there is no ungated position to gate.
+    //
+    // Resolution: NO arity-6 LENGTH slot is added, the bare `20` stays bare
+    // under contract C6's deliberate-negative-fixture clause, and this site was
+    // SUBTRACTED from η's migration list. The `arg_type_mismatches.is_empty()`
+    // assertion below IS the pin for all of that — do not weaken it to a
+    // "contains the arity message" check, which would hold even if a future
+    // slot started firing here.
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -541,7 +562,7 @@ fn compile_loft_produces_realization() {
 fn compile_shell_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let hollowed = shell(w, 1)
+    let hollowed = shell(w, 1mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_shell"));
     assert!(
@@ -575,7 +596,7 @@ fn compile_shell_produces_realization() {
 fn compile_thicken_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let thickened = thicken(w, 2)
+    let thickened = thicken(w, 2mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_thicken"));
     assert!(
@@ -1845,7 +1866,7 @@ fn loft_nested_in_union_correct_step_refs() {
 #[test]
 fn compile_boolean_op_union_via_compile() {
     let source = r#"structure S {
-    let a = union(sphere(1), cylinder(1, 2))
+    let a = union(sphere(1mm), cylinder(1mm, 2mm))
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_bool_union"));
     assert!(
@@ -1889,7 +1910,7 @@ fn compile_boolean_op_union_via_compile() {
 #[test]
 fn compile_boolean_op_union_all_via_compile() {
     let source = r#"structure S {
-    let a = union_all(sphere(1), sphere(2), sphere(3))
+    let a = union_all(sphere(1mm), sphere(2mm), sphere(3mm))
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -1954,7 +1975,7 @@ fn compile_boolean_op_union_all_via_compile() {
 #[test]
 fn compile_boolean_op_difference_via_compile() {
     let source = r#"structure S {
-    let a = difference(sphere(1), cylinder(1, 2))
+    let a = difference(sphere(1mm), cylinder(1mm, 2mm))
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -2001,7 +2022,7 @@ fn compile_boolean_op_difference_via_compile() {
 #[test]
 fn compile_boolean_op_intersection_all_via_compile() {
     let source = r#"structure S {
-    let a = intersection_all(sphere(1), sphere(2), sphere(3))
+    let a = intersection_all(sphere(1mm), sphere(2mm), sphere(3mm))
 }"#;
     let parsed = reify_syntax::parse(
         source,
