@@ -907,7 +907,7 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
 /// `General.Terminal = 0` — the capture buffer is a separate switch gmsh
 /// keeps regardless of that option.
 ///
-/// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
+// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
 pub fn logger_start() -> Result<(), GeometryError> {
     gmsh_call!("gmshLoggerStart", ierr, gmshLoggerStart(&mut ierr))
 }
@@ -918,7 +918,7 @@ pub fn logger_start() -> Result<(), GeometryError> {
 /// `Vec` with `ierr=0` — stopping the logger drains the buffer, it does not
 /// merely pause capture.
 ///
-/// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
+// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
 pub fn logger_stop() -> Result<(), GeometryError> {
     gmsh_call!("gmshLoggerStop", ierr, gmshLoggerStop(&mut ierr))
 }
@@ -936,7 +936,7 @@ pub fn logger_stop() -> Result<(), GeometryError> {
 /// buffers on the `ierr != 0` path, since `check_ierr` returns early via
 /// `?`).
 ///
-/// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
+// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
 pub fn logger_get() -> Result<Vec<String>, GeometryError> {
     let mut log_ptr: *mut *mut c_char = ptr::null_mut();
     let mut log_n: usize = 0;
@@ -982,7 +982,7 @@ pub fn logger_get() -> Result<Vec<String>, GeometryError> {
 /// decomposition and is far more version-sensitive than a dim-scoped
 /// census.
 ///
-/// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
+// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
 pub fn get_element_types(dim: i32, tag: i32) -> Result<Vec<i32>, GeometryError> {
     let mut types_ptr: *mut c_int = ptr::null_mut();
     let mut types_n: usize = 0;
