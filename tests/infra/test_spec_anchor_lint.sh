@@ -25,6 +25,22 @@
 #   (a) spec hygiene — living-document front matter, heading-number
 #       uniqueness, the §15 renumber, and a regression guard on the one
 #       compiled spec consumer.
+#   (b) LIVE control — the SHIPPED spec + tombstone sidecar scan CLEAN.
+#   (c) duplicate anchor ID — flagged, BOTH sites named.
+#   (d) malformed anchor ID (non-hex / too long / missing space) — flagged.
+#   (e) an ID that is simultaneously live and tombstoned — flagged.
+#   (f) tombstone-file row grammar + LC_ALL=C sortedness (f1-f3 fire, f4 is
+#       the well-formed control proving comments/blanks are not sort keys).
+#   (g) rule 6, dangling placement — an anchor followed by a blank line, and
+#       an anchor as the file's last line.
+#   (h) anti-vacuity / hard-fail — missing or empty --spec, missing
+#       --tombstones are exit 2, never a graceful skip.
+#   (i) unknown flag — exit 2.
+#
+# NO-SILENT-GREEN FLOOR: a $RAN counter is incremented by every scenario and
+# checked after test_summary. A future guard condition that skipped every
+# scenario would otherwise let this HARD GATE report green having asserted
+# nothing.
 #
 # Makes NO elapsed-time assertion anywhere (so it needs no `# wallclock:allow`
 # escape and stays green under tests/infra/test_no_new_wallclock_upper_bounds.sh).
@@ -43,18 +59,31 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
-SPEC="$REPO_ROOT/docs/reify-language-spec.md"
+SPEC_REL="docs/reify-language-spec.md"
+TOMB_REL="docs/reify-language-spec.tombstones"
+SPEC="$REPO_ROOT/$SPEC_REL"
+TOMBSTONES="$REPO_ROOT/$TOMB_REL"
+LINT="$REPO_ROOT/scripts/spec-anchor-lint.sh"
 TS_CONSUMER="$REPO_ROOT/tree-sitter-reify/tests/spec_purpose_example_grammar.rs"
+
+# Did ANY scenario actually execute?  Consulted after test_summary; a run that
+# asserted nothing must not exit 0.  See NO-SILENT-GREEN FLOOR in the header.
+RAN=0
 
 # ---------------------------------------------------------------------------
 # Single EXIT trap covers every temp path this suite mints. Registering two
 # separate traps would silently replace the first with the second and leak
 # temps on exit (the convention test_reify_audit_ptodo.sh:457-486 records).
 # ---------------------------------------------------------------------------
+TMPWORK=""
 cleanup_all() {
-    :
+    # "|| true" per line: [ -n "" ] short-circuits to rc 1, which would
+    # otherwise become the trap's exit code and override the suite's status.
+    [ -n "$TMPWORK" ] && rm -rf "$TMPWORK" || true
 }
 trap cleanup_all EXIT
+
+TMPWORK="$(mktemp -d)"
 
 echo "=== spec-conformance anchor substrate (task #6758) ==="
 
@@ -93,6 +122,161 @@ _file_has_literal() {
     grep -qF -- "$2" "$1"
 }
 
+# ---------------------------------------------------------------------------
+# Lint harness — run scripts/spec-anchor-lint.sh once, capture rc + combined
+# output into GLOBALS, then assert over those globals. `assert` runs "$@" in
+# THIS shell (redirect only, no command-substitution subshell), so the global
+# mutations survive; that is exactly what this idiom needs.
+# ---------------------------------------------------------------------------
+LINT_RC=0
+LINT_OUT=""
+
+_run_lint() {
+    LINT_OUT=""
+    LINT_RC=0
+    LINT_OUT="$(bash "$LINT" "$@" 2>&1)" || LINT_RC=$?
+}
+
+_rc_is() {
+    [ "$LINT_RC" = "$1" ] && return 0
+    echo "expected rc $1, got $LINT_RC; output was:"
+    printf '%s\n' "$LINT_OUT"
+    return 1
+}
+
+_out_has() {
+    case "$LINT_OUT" in
+        *"$1"*) return 0 ;;
+    esac
+    echo "expected output to contain '$1'; output was:"
+    printf '%s\n' "$LINT_OUT"
+    return 1
+}
+
+_out_lacks() {
+    case "$LINT_OUT" in
+        *"$1"*)
+            echo "expected output NOT to contain '$1'; output was:"
+            printf '%s\n' "$LINT_OUT"
+            return 1 ;;
+    esac
+    return 0
+}
+
+_out_empty() {
+    [ -z "$LINT_OUT" ] && return 0
+    echo "expected EMPTY output; output was:"
+    printf '%s\n' "$LINT_OUT"
+    return 1
+}
+
+_out_line_count_is() {
+    local _n=0
+    if [ -n "$LINT_OUT" ]; then
+        _n="$(printf '%s\n' "$LINT_OUT" | wc -l)"
+    fi
+    [ "$_n" -eq "$1" ] && return 0
+    echo "expected $1 output line(s), got $_n; output was:"
+    printf '%s\n' "$LINT_OUT"
+    return 1
+}
+
+_lt() { [ "$1" -lt "$2" ]; }
+
+_eq() { [ "$1" = "$2" ]; }
+
+# ---------------------------------------------------------------------------
+# Fixture builders. Every mutant is a copy of the REAL shipped spec, mutated
+# under $TMPWORK — a synthetic-only fixture is written to match whatever the
+# checker currently does, so fixture drift and checker drift move together.
+# ---------------------------------------------------------------------------
+
+# _fresh_ids <file> <n> — emit <n> well-formed, distinct sc-XXXXXX IDs (one
+# per line, ascending in LC_ALL=C order) that do NOT already occur in <file>.
+# Deterministic rather than random on purpose: a fixture ID must be
+# reproducible, and the absence check is what keeps it collision-free against
+# whatever the live spec carries.
+_fresh_ids() {
+    local file="$1" n="$2" i=0 c=0 id
+    while [ "$c" -lt "$n" ] && [ "$i" -lt 4096 ]; do
+        id="$(printf 'sc-f0%04x' "$i")"
+        i=$((i + 1))
+        if grep -qF -- "$id" "$file"; then continue; fi
+        printf '%s\n' "$id"
+        c=$((c + 1))
+    done
+    [ "$c" -eq "$n" ]
+}
+
+# _first_anchor_id <file> — the ID of the first well-formed anchor line.
+_first_anchor_id() {
+    awk 'match($0, /^<!-- sc-anchor: sc-[0-9a-f]{6} -->$/) {
+             id = $0
+             sub(/^<!-- sc-anchor: /, "", id)
+             sub(/ -->$/, "", id)
+             print id
+             exit
+         }' "$1"
+}
+
+# _spec_copy_with_anchors <dest> <n> — copy the SHIPPED spec to <dest>,
+# guaranteeing at least <n> well-formed anchors in it.
+#
+# ORDER-INDEPENDENCE: once the §9.2 seeding lands, the shipped spec already
+# carries more than <n> anchors and the copy is byte-identical — every mutant
+# below is then built from the real substrate at full scale. Before it lands,
+# the helper seeds well-formed anchors itself, so these scenarios neither
+# depend on nor anticipate the seeding step.
+_spec_copy_with_anchors() {
+    local dest="$1" n="$2" have ids
+    have="$(grep -cE '^<!-- sc-anchor: sc-[0-9a-f]{6} -->$' "$SPEC" || true)"
+    if [ "${have:-0}" -ge "$n" ]; then
+        cp "$SPEC" "$dest"
+        return 0
+    fi
+    ids="$(_fresh_ids "$SPEC" "$n" | tr '\n' ' ')"
+    awk -v ids="$ids" -v n="$n" '
+        BEGIN { split(ids, ID, " "); k = 0; fence = 0; prev_blank = 1 }
+        {
+            if ($0 ~ /^[[:space:]]*```/) { fence = !fence; print; prev_blank = 0; next }
+            if (!fence && k < n && prev_blank && $0 != "" && $0 !~ /^<!--/ && NR > 5) {
+                k++
+                printf "<!-- sc-anchor: %s -->\n", ID[k]
+            }
+            print
+            prev_blank = ($0 == "")
+        }
+    ' "$SPEC" >"$dest"
+}
+
+# _insert_before_paragraph <file> <ordinal> <text> — insert <text> as its own
+# line immediately before the <ordinal>-th paragraph start outside any fenced
+# code block, in place. awk exits 3 (and `set -e` aborts loudly) if the file
+# has fewer eligible paragraphs, so an out-of-range ordinal can never silently
+# degenerate into "copy the file unchanged".
+_insert_before_paragraph() {
+    local file="$1" ord="$2" text="$3"
+    awk -v ord="$ord" -v text="$text" '
+        BEGIN { k = 0; fence = 0; prev_blank = 1; done = 0 }
+        {
+            if ($0 ~ /^[[:space:]]*```/) { fence = !fence; print; prev_blank = 0; next }
+            if (!done && !fence && prev_blank && $0 != "" && $0 !~ /^<!--/ && NR > 5) {
+                k++
+                if (k == ord) { print text; done = 1 }
+            }
+            print
+            prev_blank = ($0 == "")
+        }
+        END { if (!done) exit 3 }
+    ' "$file" >"$file.ins"
+    mv "$file.ins" "$file"
+}
+
+# _line_of <file> <literal> — 1-based line number of the FIRST occurrence.
+_line_of() { grep -nF -- "$2" "$1" | head -n 1 | cut -d: -f1; }
+# _last_line_of <file> <literal> — 1-based line number of the LAST occurrence.
+_last_line_of() { grep -nF -- "$2" "$1" | tail -n 1 | cut -d: -f1; }
+
 # ===========================================================================
 # (a) SPEC HYGIENE
 #
@@ -106,6 +290,7 @@ _file_has_literal() {
 # ===========================================================================
 echo ""
 echo "--- (a) spec hygiene: living-document front matter + heading-number uniqueness ---"
+RAN=$((RAN + 1))
 
 assert "(a0) the spec exists and is non-empty" test -s "$SPEC"
 
@@ -151,4 +336,259 @@ assert "(a7) the compiled consumer still keys on '### 9.5 Purposes'" \
 assert "(a7) the compiled consumer still keys on '### 4.4 Purpose Declarations'" \
     _file_has_literal "$TS_CONSUMER" '### 4.4 Purpose Declarations'
 
+# ===========================================================================
+# (b) LIVE CONTROL — the SHIPPED corpus scans CLEAN.
+#
+# The anti-vacuity partner to every mutant below: without it, a permanently
+# broken lint (wrong regex, unreadable input silently swallowed, an early
+# `exit 0`) reads exactly like "no violations found". Deliberately invoked
+# with REPO-RELATIVE paths, which also pins that the lint resolves them
+# against its repo root rather than the caller's CWD.
+# ===========================================================================
+echo ""
+echo "--- (b) LIVE control: the SHIPPED spec + tombstone sidecar scan CLEAN ---"
+RAN=$((RAN + 1))
+
+assert "(b) the lint script exists" test -f "$LINT"
+assert "(b) the tombstone sidecar exists (an absent sidecar is exit 2, never an empty pass)" \
+    test -f "$TOMBSTONES"
+
+_run_lint --spec "$SPEC_REL" --tombstones "$TOMB_REL"
+assert "(b) the SHIPPED corpus is CLEAN (rc 0)" _rc_is 0
+assert "(b) the SHIPPED corpus produces NO output" _out_empty
+
+# ===========================================================================
+# (c) DUPLICATE ID — flagged, and BOTH sites named.
+# ===========================================================================
+echo ""
+echo "--- (c) duplicate anchor ID: flagged, both sites named ---"
+RAN=$((RAN + 1))
+
+DUP="$TMPWORK/dup.md"
+_spec_copy_with_anchors "$DUP" 4
+DUP_ID="$(_first_anchor_id "$DUP")"
+DUP_LINE_TXT="<!-- sc-anchor: $DUP_ID -->"
+_DUP_BEFORE="$(wc -l <"$DUP")"
+_insert_before_paragraph "$DUP" 60 "$DUP_LINE_TXT"
+_DUP_AFTER="$(wc -l <"$DUP")"
+_DUP_OCC="$(grep -cF -- "$DUP_LINE_TXT" "$DUP" || true)"
+
+# Meta-assertions: without these, a restructure that stopped mutating would
+# silently degenerate into "scan the pristine file twice" and still look green.
+assert "(c) meta: the fixture carries a well-formed anchor to duplicate" \
+    bash -c '[ -n "$1" ]' -- "$DUP_ID"
+assert "(c) meta: the mutation actually added a line" _lt "$_DUP_BEFORE" "$_DUP_AFTER"
+assert "(c) meta: the duplicated ID now occurs exactly twice" _eq "$_DUP_OCC" 2
+
+_DUP_L1="$(_line_of "$DUP" "$DUP_LINE_TXT")"
+_DUP_L2="$(_last_line_of "$DUP" "$DUP_LINE_TXT")"
+
+_run_lint --spec "$DUP" --tombstones "$TOMBSTONES"
+assert "(c) a duplicated anchor ID is FLAGGED (rc 1)" _rc_is 1
+assert "(c) output names the offending ID $DUP_ID" _out_has "$DUP_ID"
+assert "(c) output names the FIRST site ($DUP:$_DUP_L1)" _out_has "$DUP:$_DUP_L1"
+assert "(c) output names the SECOND site ($DUP:$_DUP_L2)" _out_has "$DUP:$_DUP_L2"
+
+# ===========================================================================
+# (d) MALFORMED ID — three near-miss mutants.
+#
+# Catching the NEAR MISS (rather than only scanning for well-formed lines) is
+# the point: a typo'd anchor that the lint silently ignores is strictly worse
+# than no anchor at all, because a consumer greps for it and finds nothing.
+# ===========================================================================
+echo ""
+echo "--- (d) malformed anchor IDs: non-hex / too long / missing space ---"
+RAN=$((RAN + 1))
+
+_D_IDX=0
+for BAD in '<!-- sc-anchor: sc-XYZ123 -->' '<!-- sc-anchor: sc-1234567 -->' '<!-- sc-anchor:sc-abc123 -->'; do
+    _D_IDX=$((_D_IDX + 1))
+    MUT="$TMPWORK/malformed_$_D_IDX.md"
+    _spec_copy_with_anchors "$MUT" 4
+    _M_BEFORE="$(wc -l <"$MUT")"
+    _insert_before_paragraph "$MUT" 40 "$BAD"
+    _M_AFTER="$(wc -l <"$MUT")"
+    assert "(d$_D_IDX) meta: the mutation actually inserted '$BAD'" \
+        _lt "$_M_BEFORE" "$_M_AFTER"
+    _M_LINE="$(_line_of "$MUT" "$BAD")"
+    _run_lint --spec "$MUT" --tombstones "$TOMBSTONES"
+    assert "(d$_D_IDX) malformed anchor '$BAD' is FLAGGED (rc 1)" _rc_is 1
+    assert "(d$_D_IDX) output names the site ($MUT:$_M_LINE)" _out_has "$MUT:$_M_LINE"
+done
+
+# ===========================================================================
+# (e) LIVE/TOMBSTONE DISJOINTNESS — an ID cannot be both live and retired.
+# ===========================================================================
+echo ""
+echo "--- (e) an ID that is simultaneously live and tombstoned ---"
+RAN=$((RAN + 1))
+
+E_SPEC="$TMPWORK/disjoint.md"
+_spec_copy_with_anchors "$E_SPEC" 4
+E_ID="$(_first_anchor_id "$E_SPEC")"
+E_TOMB="$TMPWORK/disjoint.tombstones"
+{
+    printf '# tombstone fixture\n'
+    printf '%s 2026-08-27 retired while still live -- the violation under test\n' "$E_ID"
+} >"$E_TOMB"
+
+assert "(e) meta: the tombstoned ID is genuinely still live in the spec copy" \
+    bash -c 'grep -qF -- "<!-- sc-anchor: $1 -->" "$2"' -- "$E_ID" "$E_SPEC"
+
+_run_lint --spec "$E_SPEC" --tombstones "$E_TOMB"
+assert "(e) a live-AND-tombstoned ID is FLAGGED (rc 1)" _rc_is 1
+assert "(e) output names the offending ID $E_ID" _out_has "$E_ID"
+assert "(e) output names the spec path" _out_has "$E_SPEC"
+assert "(e) output names the tombstone path" _out_has "$E_TOMB"
+
+# ===========================================================================
+# (f) TOMBSTONE FILE — row grammar and LC_ALL=C sortedness.
+#
+# f4 is the discriminator's clean half: without it, f1-f3 would be satisfied
+# by a lint that reds on every tombstone file, which would make the whole
+# mechanism unusable.
+# ===========================================================================
+echo ""
+echo "--- (f) tombstone row grammar + sortedness ---"
+RAN=$((RAN + 1))
+
+F_SPEC="$TMPWORK/tomb_spec.md"
+_spec_copy_with_anchors "$F_SPEC" 4
+# Fresh IDs checked absent from THIS spec copy, so (f) exercises the tombstone
+# rules alone and can never accidentally trip the (e) disjointness rule.
+F_IDS="$(_fresh_ids "$F_SPEC" 2)"
+F_A="$(printf '%s\n' "$F_IDS" | sed -n 1p)"
+F_B="$(printf '%s\n' "$F_IDS" | sed -n 2p)"
+
+assert "(f) meta: two distinct fixture IDs were minted in ascending order" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$1" \< "$2" ]' -- "$F_A" "$F_B"
+assert "(f) meta: neither fixture ID collides with a live ID in the spec copy" \
+    bash -c '! grep -qF -- "$1" "$3" && ! grep -qF -- "$2" "$3"' -- "$F_A" "$F_B" "$F_SPEC"
+
+# (f1) descending data rows
+F1="$TMPWORK/f1.tombstones"
+printf '# fixture header\n%s 2026-08-27 retired\n%s 2026-08-27 retired\n' "$F_B" "$F_A" >"$F1"
+_run_lint --spec "$F_SPEC" --tombstones "$F1"
+assert "(f1) descending tombstone rows are FLAGGED (rc 1)" _rc_is 1
+assert "(f1) output names the out-of-order row ($F1:3)" _out_has "$F1:3"
+
+# (f2) malformed date
+F2="$TMPWORK/f2.tombstones"
+printf '# fixture header\n%s 2026-13-45 retired\n' "$F_A" >"$F2"
+_run_lint --spec "$F_SPEC" --tombstones "$F2"
+assert "(f2) a calendar-impossible date is FLAGGED (rc 1)" _rc_is 1
+assert "(f2) output names the offending row ($F2:2)" _out_has "$F2:2"
+
+# (f3) no reason field
+F3="$TMPWORK/f3.tombstones"
+printf '# fixture header\n%s 2026-08-27\n' "$F_A" >"$F3"
+_run_lint --spec "$F_SPEC" --tombstones "$F3"
+assert "(f3) a row with no reason field is FLAGGED (rc 1)" _rc_is 1
+assert "(f3) output names the offending row ($F3:2)" _out_has "$F3:2"
+
+# (f4) well-formed control: comments and blanks interleaved, rows ascending
+F4="$TMPWORK/f4.tombstones"
+{
+    printf '# fixture header\n'
+    printf '\n'
+    printf '%s 2026-01-02 superseded; forwarding anchor in the same section\n' "$F_A"
+    printf '# a comment BETWEEN two correctly ordered data rows\n'
+    printf '\n'
+    printf '%s 2026-03-04 paragraph deleted in a rewrite\n' "$F_B"
+    printf '\n'
+    printf '# trailing comment\n'
+} >"$F4"
+_run_lint --spec "$F_SPEC" --tombstones "$F4"
+assert "(f4) a well-formed tombstone file with interleaved comments/blanks is CLEAN (rc 0)" _rc_is 0
+assert "(f4) the well-formed control produces NO output" _out_empty
+
+# ===========================================================================
+# (g) RULE 6 — PLACEMENT. §8.1 says an anchor sits "immediately preceding the
+# anchored paragraph (or heading)". Without this rule that clause is
+# decorative: an anchor stranded before a blank line or at EOF anchors
+# nothing, and the deletion rule then has no well-defined referent.
+# ===========================================================================
+echo ""
+echo "--- (g) rule 6: an anchor must immediately precede what it anchors ---"
+RAN=$((RAN + 1))
+
+# (g1) anchor followed by a blank line
+G1="$TMPWORK/dangling_blank.md"
+_spec_copy_with_anchors "$G1" 4
+G1_ID="$(_first_anchor_id "$G1")"
+G1_LINE="$(_line_of "$G1" "<!-- sc-anchor: $G1_ID -->")"
+_G1_BEFORE="$(wc -l <"$G1")"
+awk -v n="$G1_LINE" '{ print; if (NR == n) print "" }' "$G1" >"$G1.ins"
+mv "$G1.ins" "$G1"
+_G1_AFTER="$(wc -l <"$G1")"
+assert "(g1) meta: the mutation actually inserted the blank line" _lt "$_G1_BEFORE" "$_G1_AFTER"
+assert "(g1) meta: the line after the anchor is now blank" \
+    bash -c '[ -z "$(sed -n "$(($1 + 1))p" "$2")" ]' -- "$G1_LINE" "$G1"
+_run_lint --spec "$G1" --tombstones "$TOMBSTONES"
+assert "(g1) an anchor followed by a blank line is FLAGGED (rc 1)" _rc_is 1
+assert "(g1) output names the dangling anchor's line ($G1:$G1_LINE)" _out_has "$G1:$G1_LINE"
+
+# (g2) anchor as the file's last line
+G2="$TMPWORK/dangling_eof.md"
+_spec_copy_with_anchors "$G2" 4
+G2_ID="$(_fresh_ids "$G2" 1)"
+_G2_BEFORE="$(wc -l <"$G2")"
+printf '<!-- sc-anchor: %s -->\n' "$G2_ID" >>"$G2"
+_G2_AFTER="$(wc -l <"$G2")"
+assert "(g2) meta: the mutation actually appended the trailing anchor" \
+    _lt "$_G2_BEFORE" "$_G2_AFTER"
+_run_lint --spec "$G2" --tombstones "$TOMBSTONES"
+assert "(g2) an anchor as the file's LAST line is FLAGGED (rc 1)" _rc_is 1
+assert "(g2) output names the trailing anchor's line ($G2:$_G2_AFTER)" _out_has "$G2:$_G2_AFTER"
+
+# ===========================================================================
+# (h) ANTI-VACUITY / HARD-FAIL — the lint never gracefully skips.
+#
+# Exit 2 ("could not scan") is kept strictly distinct from exit 1 ("scanned,
+# found violations") precisely so these three configurations cannot be
+# mistaken for a clean corpus.
+# ===========================================================================
+echo ""
+echo "--- (h) anti-vacuity: missing/empty inputs are exit 2, never a pass ---"
+RAN=$((RAN + 1))
+
+_run_lint --spec "$TMPWORK/does-not-exist.md" --tombstones "$TOMBSTONES"
+assert "(h1) a nonexistent --spec is exit 2" _rc_is 2
+assert "(h1) a nonexistent --spec is NEVER rc 0" bash -c '[ "$1" != 0 ]' -- "$LINT_RC"
+
+H_EMPTY="$TMPWORK/empty.md"
+: >"$H_EMPTY"
+assert "(h2) meta: the empty-spec fixture really is zero bytes" \
+    bash -c '[ ! -s "$1" ] && [ -f "$1" ]' -- "$H_EMPTY"
+_run_lint --spec "$H_EMPTY" --tombstones "$TOMBSTONES"
+assert "(h2) an EMPTY --spec is exit 2 (a zero-byte corpus is not a clean corpus)" _rc_is 2
+assert "(h2) an EMPTY --spec is NEVER rc 0" bash -c '[ "$1" != 0 ]' -- "$LINT_RC"
+
+_run_lint --spec "$SPEC" --tombstones "$TMPWORK/no-such.tombstones"
+assert "(h3) a nonexistent --tombstones is exit 2" _rc_is 2
+assert "(h3) a nonexistent --tombstones is NEVER rc 0" bash -c '[ "$1" != 0 ]' -- "$LINT_RC"
+
+# ===========================================================================
+# (i) UNKNOWN FLAG — a usage error, not a silently ignored argument.
+# ===========================================================================
+echo ""
+echo "--- (i) unknown flag ---"
+RAN=$((RAN + 1))
+
+_run_lint --nope
+assert "(i) an unknown flag is a usage error (rc 2)" _rc_is 2
+assert "(i) the usage error names the offending flag" _out_has "--nope"
+
+# ---------------------------------------------------------------------------
+# Summary.
+#
+# test_summary exits 1 when FAIL > 0, so control only reaches the $RAN floor
+# on the otherwise-all-green path — which is exactly where a zero-assertion
+# run would have been laundered into a passing hard gate.
+# ---------------------------------------------------------------------------
 test_summary
+
+if [ "$RAN" -eq 0 ]; then
+    echo "test_spec_anchor_lint.sh: NO scenario executed — refusing to report green for a hard gate that asserted nothing" >&2
+    exit 1
+fi
