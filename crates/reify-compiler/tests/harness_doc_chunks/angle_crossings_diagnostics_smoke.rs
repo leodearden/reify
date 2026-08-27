@@ -256,10 +256,10 @@ fn canonical_copy_entries_from(text: &str) -> Vec<TranscribedDiagnostic> {
                 };
                 fragments.push(rendered.to_string());
             }
-        } else if indent == CONTINUATION_INDENT {
-            if let Some((_, fragments)) = current.as_mut() {
-                fragments.push(content.to_string());
-            }
+        } else if indent == CONTINUATION_INDENT
+            && let Some((_, fragments)) = current.as_mut()
+        {
+            fragments.push(content.to_string());
         }
         // Any other indent is prose inside the marker paragraph; ignored.
     }
