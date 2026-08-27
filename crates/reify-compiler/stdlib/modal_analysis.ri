@@ -35,7 +35,9 @@
 //      → `0.00000001`.
 //   2. `ModalResult.part`, `ForcingTimeHistory.part`, and
 //      `DisplacementTimeHistory.part` are now typed `Part`, a minimal opaque
-//      marker declared in this module (task 4578, per PRD §12 OQ3). `Part`
+//      marker declared in this module (task 4578, per
+//      `stdlib-surface-type-substrate.md` §12 open-question-3 — see
+//      `structure def Part` below for the full path and rationale). `Part`
 //      will be grown into a full geometry+material+topology structure in a
 //      later task; the single-module opaque form is non-blocking for task ζ.
 //   3. `Mode.frequency : Frequency` carries the natural-frequency dimension
@@ -207,7 +209,8 @@ structure def Mode {
 // ── Part ─────────────────────────────────────────────────────────────────────
 
 // `Part` is a minimal opaque marker structure for the analysed part handle.
-// Per PRD §12 open-question-3 ("minimal opaque structure_def first, then grow"):
+// Per `docs/prds/v0_6/stdlib-surface-type-substrate.md` §12 open-question-3
+// ("minimal opaque structure_def first, then grow"):
 // declared zero-field here so all three `part : Part` params (ModalResult,
 // ForcingTimeHistory, DisplacementTimeHistory) resolve to the same nominal type
 // within this module, without depending on the F foundation / task 4574. The

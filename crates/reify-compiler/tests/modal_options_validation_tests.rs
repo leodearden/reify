@@ -1794,8 +1794,8 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
 // ─── task-4578: Part structure_def (step-1 RED) ───────────────────────────────
 
 /// `Part` must be declared as a zero-field opaque marker structure in
-/// `std/modal/analysis` (PRD §12 open-question-3: "minimal opaque
-/// structure_def first, then grow").
+/// `std/modal/analysis` (`docs/prds/v0_6/stdlib-surface-type-substrate.md`
+/// §12 open-question-3: "minimal opaque structure_def first, then grow").
 ///
 /// Mirrors `no_damping_marker_structure` (above) but asserts `trait_bounds`
 /// is EMPTY — `Part` refines no trait (unlike `NoDamping : DampingDescriptor`).
