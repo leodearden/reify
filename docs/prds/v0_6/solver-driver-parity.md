@@ -340,7 +340,15 @@ sub-cases, all probe-verified as silently passing today:
    resolves to **10 m**; `length <= 12mm` resolves to **1 µm**; two-sided bounds
    give the correct centre. A value that is an artifact of a hardcoded box is not
    a resolution — it is an underdetermined design, and it is reported as one with
-   a coded diagnostic naming the missing bound.
+   a coded diagnostic naming the missing bound. *(Scope ruled 2026-08-27, F2 =
+   option a2: this refusal covers STRICT `auto` only. A one-sided `auto(free)` is
+   NOT refused — the author declared "any feasible point will do" — it resolves to
+   a feasible point anchored to the USER'S stated bound plus a margin (the
+   existing seed-nudge/robustness-floor shape, e.g. ≈8.8 mm for `>= 8mm`; mirror
+   for upper-only), NEVER the default-box edge, accompanied by the coded
+   `Partial{DomainUnbounded}`-class warning. The value rule is owned by P3-δ
+   #6709's verdict policy; ε #6692 implements only the strict refusal and must
+   not fire on `auto(free)`.)*
 3. **A contradictory `relate` block.** Probe-verified: `reify check --strict` on a
    model whose `relate` block demands one part be concentric with two holes 15 mm
    apart prints `All constraints satisfied.` and exits 0, while `reify eval` on the
