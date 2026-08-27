@@ -305,8 +305,17 @@ _check_shared_default() {
 # booleans (`yes`, `on`, `1`) would all produce a false verdict from a grep, in
 # either direction.  grep is used only as a PREFILTER — one fork for the whole
 # store, deciding which files are worth parsing, never deciding a value.
+_report_armed_worktree() {
+    local wt_name="$1" key="$2" wt_config="$3"
+
+    echo "ARMED: worktree '$wt_name' overrides $key=true in its config.worktree." >&2
+    echo "  Path: $wt_config" >&2
+    echo "  git reads config.worktree FIRST, so this beats the shared .git/config." >&2
+}
+
 _sweep_worktree_configs() {
     local armed=0 wt_config wt_name mentions key value
+    local last_enabled last_autoupdate
 
     # config.worktree is DEAD BYTES unless extensions.worktreeConfig is true —
     # git does not read those files at all, so a rerere.enabled=true sitting in
@@ -398,15 +407,35 @@ _sweep_worktree_configs() {
         # but `[include] path = extra.cfg` returned exit 1 and no output here
         # while git's own effective read honoured the chain and armed the lane
         # (measured, git 2.43.0).
+        #
+        # The reduction is LAST-VALUE-PER-KEY, not any-value: --get-regexp
+        # reports EVERY value a file sets for a key, while git resolves a
+        # multi-valued key to the LAST one, so the two must not be conflated.
+        # Flagging any emitted `true` reported a config.worktree whose final word
+        # is `false` as ARMED (measured: `enabled = true` then `enabled = false`
+        # resolves to false, yet was reported) — and that false verdict is one
+        # `arm` can NEVER clear, because it writes --local and cannot touch a
+        # per-worktree file, so the store would park on the advisory exit 2
+        # forever.  Accumulate here, decide after the loop.
+        last_enabled=""
+        last_autoupdate=""
         while read -r key value; do
-            [ "$value" = "true" ] || continue
-            echo "ARMED: worktree '$wt_name' overrides $key=true in its config.worktree." >&2
-            echo "  Path: $wt_config" >&2
-            echo "  git reads config.worktree FIRST, so this beats the shared .git/config." >&2
-            armed=1
+            case "$key" in
+                rerere.enabled)    last_enabled="$value" ;;
+                rerere.autoupdate) last_autoupdate="$value" ;;
+            esac
         done <<EOF
 $(git config --file "$wt_config" --includes --bool --get-regexp '^rerere\.(enabled|autoupdate)$' 2>/dev/null || true)
 EOF
+
+        if [ "$last_enabled" = "true" ]; then
+            _report_armed_worktree "$wt_name" rerere.enabled "$wt_config"
+            armed=1
+        fi
+        if [ "$last_autoupdate" = "true" ]; then
+            _report_armed_worktree "$wt_name" rerere.autoupdate "$wt_config"
+            armed=1
+        fi
     done
 
     return "$armed"
