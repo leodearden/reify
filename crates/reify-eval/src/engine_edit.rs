@@ -40,10 +40,10 @@
 //! 2. snapshot map as `Determined` — uniform
 //! 3. cache entry — uniform
 //! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
-//! 5. journal — all arms except `eval_cached`'s per-template arm and
-//!    [`Engine::edit_source`]: `eval`'s two arms journal via hand-rolled
-//!    `Started`/`Completed` pairs, `eval_cached`'s merged-cluster arm and
-//!    [`Engine::edit_param`] via `commit_cell_result`
+//! 5. journal — all arms except `eval_cached`'s per-template arm:
+//!    `eval`'s two arms journal via hand-rolled `Started`/`Completed`
+//!    pairs, `eval_cached`'s merged-cluster arm, [`Engine::edit_param`]
+//!    and [`Engine::edit_source`] via `commit_cell_result`
 //! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
 //!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
 //! 7. `objective_provenance` — `eval`'s two arms only
@@ -1763,7 +1763,7 @@ impl Engine {
             // preserved automatically.  This is the `edit_param` arm of the
             // warm-Resolution back-prop sync set — see the roster in this
             // file's module-level doc comment ("# Warm-Resolution back-prop
-            // sync set") for the full membership, the five legs to check,
+            // sync set") for the full membership, the seven legs to check,
             // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
@@ -4103,7 +4103,7 @@ impl Engine {
             // preserved automatically.  This is the `edit_source` arm of the
             // warm-Resolution back-prop sync set — see the roster in this
             // file's module-level doc comment ("# Warm-Resolution back-prop
-            // sync set") for the full membership, the five legs to check,
+            // sync set") for the full membership, the seven legs to check,
             // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
