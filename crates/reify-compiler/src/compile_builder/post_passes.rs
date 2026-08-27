@@ -584,16 +584,19 @@ pub(crate) fn phase_inert_objective_check(ctx: &mut CompilationCtx) {
             .map(|id| format!("`{}`", id.member))
             .collect::<Vec<_>>()
             .join(", ");
-        let (subject, verb) = if finding.never_auto_cells.len() == 1 {
-            ("it reads only", "is")
+        // Only the verb inflects — the subject phrase is the same either way,
+        // so binding it twice just invited a reader to hunt for a difference
+        // that is not there (#5417 step-15 tidy).
+        let verb = if finding.never_auto_cells.len() == 1 {
+            "is"
         } else {
-            ("it reads only", "are")
+            "are"
         };
 
         findings.push(
             Diagnostic::error(format!(
                 "E_OBJECTIVE_INERT: the `{sense}` declared in `{}` cannot govern \
-                 anything — {subject} {cells}, which {verb} never `auto`, so no solver \
+                 anything — it reads only {cells}, which {verb} never `auto`, so no solver \
                  variable can change its value. Declare one of them `auto` (e.g. \
                  `= auto` in place of the literal default) to make the objective \
                  effective, or remove the objective.",

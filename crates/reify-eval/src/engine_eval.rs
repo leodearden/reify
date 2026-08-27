@@ -2004,8 +2004,9 @@ fn objective_unconsumed_diagnostic(
 /// The full `E_OBJECTIVE_UNCONSUMED` gate: `Some(diagnostic)` exactly when this
 /// scope declared an objective that the solver silently discarded.
 ///
-/// Shared verbatim by the single-scope and merged-cluster sites (steps 10/12) so
-/// the *decision*, not just the wording, is one source.
+/// Shared verbatim by the single-scope (`eval`) and merged-cluster
+/// (`dispatch_merged_cluster_solve`) emission sites so the *decision*, not just
+/// the wording, is one source.
 ///
 /// All four conditions are necessary:
 ///
@@ -6932,6 +6933,64 @@ impl Engine {
                 ))
                 .with_code(DiagnosticCode::SolverOptimalityUnproven),
             );
+        }
+
+        // DIC γ (task #5417): the MERGED-CLUSTER arm of
+        // `E_OBJECTIVE_UNCONSUMED`, calling the SAME
+        // `objective_unconsumed_finding` the single-scope site calls. Sharing
+        // the function — not just the wording, the whole four-condition
+        // decision — is what makes the two sites provably unable to drift, and
+        // what makes that function's doc comment ("the single-scope (`eval`)
+        // and merged-cluster (`dispatch_merged_cluster_solve`) paths both call
+        // it") true in-tree rather than aspirational.
+        //
+        // PLACEMENT mirrors its sibling #4804 warning immediately above, for
+        // the same two reasons: it is after the `match solve_result`, so every
+        // outcome (Solved / Infeasible / NoProgress) converges here, and
+        // `resolved_params` has by now absorbed the merged write-back that gate
+        // condition (4) reads.
+        //
+        // `problem.objective.as_ref()` is SAFE as `declared` — i.e. it cannot
+        // resurrect the task-4013 synthetic-centrality case condition (1)
+        // exists to exempt. `build_merged_solver_problem` folds the merged
+        // objective EXCLUSIVELY from `governance: &[GoverningObjective]`, which
+        // `governing_objective` populates only from an own `template.objective`
+        // or a §6.1-inherited container objective; a synthesised Chebyshev
+        // centre never lands there (it is tracked in
+        // `centrality_synthesized_scopes`). So a merged objective is
+        // user-declared by construction.
+        //
+        // The scope label is recomputed here rather than reused: the
+        // `merged_scope_label` built for `SnapshotProvenance` is declared
+        // INSIDE the `Solved` arm and is out of scope after the match. This is
+        // the same `cluster.scopes` → `module.templates[i].name` join that
+        // `merged_cluster_left_unresolved_warning`'s caller builds, so a
+        // merged report names every member, never an arbitrary anchor (#5014).
+        //
+        // NOT MIRRORED ONTO THE WARM PATHS, deliberately.
+        // `dispatch_merged_cluster_solve_cached` calls plain `.solve()` and
+        // never `solve_ranked` — cold-only objective reporting is an accepted
+        // #5118 design decision recorded there — and the warm per-template arm
+        // maintains no `resolved_params` map at all, so gate condition (4) has
+        // no warm-side source to read. Mirroring warm would be a NEW precedent
+        // rather than parity, and the PRD never mentions `eval_cached`.
+        //
+        // No double-reporting: `eval()`'s per-template loop `continue`s on
+        // every scope that belongs to a `MergedSolve` cluster (both the
+        // already-dispatched and the first-member branches), so a cluster
+        // member never also reaches the single-scope emission site.
+        let merged_scopes: Vec<&str> = cluster
+            .scopes
+            .iter()
+            .map(|&member_idx| module.templates[member_idx].name.as_str())
+            .collect();
+        if let Some(diag) = objective_unconsumed_finding(
+            &merged_scopes.join(", "),
+            problem.objective.as_ref(),
+            &problem,
+            resolved_params,
+        ) {
+            diagnostics.push(diag);
         }
     }
 
