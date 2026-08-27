@@ -395,11 +395,13 @@ fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
 ///   dim-1 (edges):    20
 ///   dim-2 (faces):    10
 ///
-/// If a gmsh upgrade changes these counts, update the expected triple and
-/// leave a comment with the new gmsh version, then re-verify that the
-/// NodeAttachment producer still attributes all 8 cube corners + 12 edges +
-/// 6 faces correctly (`tests/node_attachment_producer.rs` signal test and
-/// locus test — task 3763).
+/// If these counts change, there are two possible causes: a gmsh upgrade, or
+/// a change to `CLASSIFY_FEATURE_ANGLE`/`CLASSIFY_CURVE_ANGLE` (kernel_real.rs)
+/// — confirm which before re-pinning. If it's a gmsh upgrade, update the
+/// expected triple and leave a comment with the new gmsh version. Either way,
+/// re-verify that the NodeAttachment producer still attributes all 8 cube
+/// corners + 12 edges + 6 faces correctly (`tests/node_attachment_producer.rs`
+/// signal test and locus test — task 3763).
 #[cfg(has_gmsh)]
 #[test]
 fn classify_surfaces_over_decomposes_unit_cube() {
