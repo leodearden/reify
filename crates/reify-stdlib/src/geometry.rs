@@ -6009,6 +6009,145 @@ mod tests {
         );
     }
 
+    // ── bbox dimension-rejection diagnostics (task 6081) ──────────────────────
+    // `bbox` with a non-Length corner returns a bare Value::Undef; this
+    // classifier is what turns that silence into a Severity::Error naming the
+    // builtin, the offending corner and the offending dimension.
+
+    fn make_point3_dim(dimension: DimensionVector) -> Value {
+        Value::Point(
+            [0.0, 1.0, 2.0]
+                .into_iter()
+                .map(|si_value| Value::Scalar {
+                    si_value,
+                    dimension,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn diagnose_bbox_angle_corners_errors_naming_angle() {
+        let min = make_point3_angle(0.0, 0.0, 0.0);
+        let max = make_point3_angle(1.0, 2.0, 3.0);
+        let diag = super::diagnose("bbox", &[min, max])
+            .expect("Angle-cornered bbox must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Error,
+            "a bbox dimension rejection is a construction failure, not a drop-and-continue"
+        );
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "must carry the canonical runtime dimension-rejection code"
+        );
+        assert!(
+            diag.message.contains("bbox"),
+            "message must name the builtin, got: {}",
+            diag.message
+        );
+        let angle_name = DimensionVector::ANGLE
+            .canonical_name()
+            .expect("ANGLE is a named dimension");
+        assert!(
+            diag.message.contains(angle_name),
+            "message must name the offending dimension {angle_name:?}, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("Length"),
+            "message must name the expected Length quantity, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_mass_corner_errors_naming_mass() {
+        // Length min + Mass max: the max corner is the offender.
+        let min = make_point3_min();
+        let max = make_point3_dim(DimensionVector::MASS);
+        let diag = super::diagnose("bbox", &[min, max])
+            .expect("Mass-cornered bbox must produce a diagnostic");
+        assert_eq!(diag.severity, reify_core::Severity::Error);
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+        );
+        let mass_name = DimensionVector::MASS
+            .canonical_name()
+            .expect("MASS is a named dimension");
+        assert!(
+            diag.message.contains(mass_name),
+            "message must name the offending dimension {mass_name:?}, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_length_corners_returns_none() {
+        assert!(
+            super::diagnose("bbox", &[make_point3_min(), make_point3_max()]).is_none(),
+            "a valid metre-valued bbox must not produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_wrong_arity_returns_none() {
+        // Arity failures stay silent, matching the affine_scale/transform3
+        // convention: only the user-correctable dimension cause is explained.
+        assert!(super::diagnose("bbox", &[]).is_none());
+        assert!(super::diagnose("bbox", &[make_point3_angle(0.0, 0.0, 0.0)]).is_none());
+        assert!(
+            super::diagnose(
+                "bbox",
+                &[
+                    make_point3_angle(0.0, 0.0, 0.0),
+                    make_point3_angle(1.0, 2.0, 3.0),
+                    make_point3_angle(4.0, 5.0, 6.0),
+                ]
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn diagnose_bbox_non_point_args_return_none() {
+        // Type failures stay silent too — only the dimension cause is explained.
+        assert!(super::diagnose("bbox", &[Value::Real(1.0), Value::Real(2.0)]).is_none());
+    }
+
+    #[test]
+    fn diagnose_affine_scale_behaviour_survives_the_bbox_arm() {
+        // Guards the restructure of `diagnose`'s early-return guard into a
+        // `match name`: the affine_scale arm must be preserved verbatim.
+        let dimensioned = super::diagnose(
+            "affine_scale",
+            &[Value::length(2.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("dimensioned scale factor must still produce a diagnostic");
+        assert_eq!(dimensioned.severity, reify_core::Severity::Warning);
+        assert!(dimensioned.message.contains("dimensionless"));
+
+        let zero = super::diagnose(
+            "affine_scale",
+            &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("zero scale factor must still produce a diagnostic");
+        assert_eq!(zero.severity, reify_core::Severity::Warning);
+        assert!(zero.message.contains("degenerate"));
+
+        assert!(
+            super::diagnose(
+                "affine_scale",
+                &[Value::Real(2.0), Value::Real(1.0), Value::Real(0.5)],
+            )
+            .is_none()
+        );
+        // Wrong arity for affine_scale still stays silent.
+        assert!(super::diagnose("affine_scale", &[Value::Real(2.0)]).is_none());
+    }
+
     // ── affine_compose tests (step-3 RED / step-4 GREEN) ──────────────────────
 
     /// Build a `Value::AffineMap` directly for test purposes.
