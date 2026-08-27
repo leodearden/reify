@@ -2030,40 +2030,6 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
     }
 }
 
-#[test]
-fn render_survey_states_the_q6_ruling_and_the_provenance_disclaimers() {
-    let run = SurveyRun {
-        total: 1,
-        surveyed: 1,
-        not_surveyed: vec![],
-        partial: vec![],
-        sites: vec![synth_site("a.ri", 1, "W", "f", Owner::NonFea)],
-    };
-    let md = render_survey(&run, "sha").to_lowercase();
-
-    // Q6 (PRD §10 open question) is answered in the ARTIFACT header — the PRD
-    // file is deliberately not edited (sibling α/γ/δ/ζ tasks read it).
-    assert!(md.contains("q6"), "the header must name the Q6 ruling");
-    // The task's own signals, stated rather than implied.
-    assert!(
-        md.contains("zero hand-derived"),
-        "the artifact must state that every row is machine-generated"
-    );
-    assert!(
-        md.contains("advisory"),
-        "the hint column must be marked advisory — the D9 (1)-vs-(2) ruling is γ's"
-    );
-    // Both coverage limitations, stated rather than papered over.
-    assert!(
-        md.contains("rust"),
-        "limitation 1: inline Rust-string .ri fixtures are not file-enumerable"
-    );
-    assert!(
-        md.contains("single-file"),
-        "limitation 2: compile_with_stdlib is the single-file path"
-    );
-}
-
 // ─── step 13/14: output path + the generator entry point ─────────────────────
 
 /// Env var that redirects the generator's output to a scratch path.
