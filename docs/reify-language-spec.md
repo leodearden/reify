@@ -1,8 +1,8 @@
 # Reify Language Specification
 
-**Version:** 0.1
-**Date:** 2026-03-13
-**Status:** Draft -- synthesized from 16 design decision documents and design review resolutions
+**Language version:** 0.6 -- the version of the LANGUAGE this document specifies. (Not the toolchain crate version, which is versioned separately and independently.)
+**Scope:** A living specification tracking the current language version, not a dated snapshot -- so there is deliberately no date pin here. See §14 (Language Versioning and Stability) for the versioning scheme and its terminology.
+**Status:** Draft -- synthesized from 16 design decision documents and design review resolutions. Clauses remain subject to change and carry no backwards-compatibility guarantee (§14.3).
 
 ---
 
@@ -2864,7 +2864,7 @@ map_entry       ::= expr '=>' expr
 BOOL_LIT        ::= 'true' | 'false'
 ```
 
-### 13.1 Newline and Continuation Rules
+### 15.1 Newline and Continuation Rules
 
 Reify is newline-significant: newlines terminate declarations and statements within `{ }` blocks.
 
