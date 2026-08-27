@@ -820,6 +820,199 @@ else
     unset GG_REPO GG_A GG_B GG_A_GITDIR
 fi
 
+# ── (g-h) THE include.path BLIND SPOT ─────────────────────────────────────────
+# `--includes` defaults OFF whenever a SPECIFIC file or scope is named (--file,
+# --local, --worktree, --global, --system, --blob) and ON for an effective read.
+# So every SCOPED read in the guard silently skipped an `include.path`
+# indirection that git's own effective resolution followed — and a config file
+# can therefore arm rerere with the string 'rerere' appearing nowhere in its own
+# bytes, which is what makes "I grepped the configs and they're clean" worthless
+# as evidence.
+#
+# MEASURED on git 2.43.0 against the pre-fix guard, both halves:
+#   sweep  — a lane whose config.worktree is nothing but `[include] path =
+#            extra.cfg`, with `[rerere] enabled = true` in that sibling, has
+#            EFFECTIVE rerere.enabled=true, yet `check <store>` exited 0 printing
+#            NOTHING (`--file --get-regexp` returned exit 1, no output; the same
+#            read with --includes returns `rerere.enabled true`).
+#   shared — `.git/config` reaching rerere.enabled=true through its own
+#            include.path, masked by the target lane's config.worktree, made
+#            `check <lane>` exit 0 (`--local --get` exit 1, `--local --includes
+#            --get` -> true).
+echo ""
+echo "--- (g-h) check follows include.path in its scoped reads ---"
+
+read -r GH_REPO GH_A GH_B <<< "$(make_wt_repo)"
+GH_A_GITDIR="$(git -C "$GH_A" rev-parse --absolute-git-dir)"
+
+# (g-h-a) SWEEP path.  NEGATIVE CONTROL FIRST, before anything is planted, so no
+# assertion below can pass merely because the new read fires unconditionally.
+assert "(g-h-a) negative control: no include plant -> check exits 0" \
+    bash "$GUARD" check "$GH_REPO"
+
+printf '[include]\n\tpath = extra.cfg\n' > "$GH_A_GITDIR/config.worktree"
+printf '[rerere]\n\tenabled = true\n' > "$GH_A_GITDIR/extra.cfg"
+
+# LIVENESS, measured not assumed: git really does honour the indirection, so wtA
+# IS armed.  Without this a later PASS could be the detector never firing.
+assert "(g-h-a) fixture: git honours the include — wtA's EFFECTIVE rerere.enabled is true" \
+    bash -c "[ \"\$(git -C '$GH_A' config --bool --get rerere.enabled)\" = true ]"
+
+assert "(g-h-a) fixture: the string 'rerere' appears nowhere in that config.worktree" \
+    bash -c "! grep -qi rerere '$GH_A_GITDIR/config.worktree'"
+
+assert "(g-h-a) include-mediated lane override -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$GH_REPO' >/dev/null 2>&1"
+
+assert "(g-h-a) ...and names the offending worktree" \
+    bash -c "bash '$GUARD' check '$GH_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtA'\""
+
+assert "(g-h-a) ...and does not name the innocent one" \
+    bash -c "! bash '$GUARD' check '$GH_REPO' 2>&1 >/dev/null | grep -q 'wtB'"
+
+# (g-h-b) SHARED-DEFAULT path — the same blind spot in `_check_shared_default`'s
+# --local reads.  The lane masks the shared scope for ITSELF (the (g-f) shape),
+# so only the shared-scope read can possibly see what the include contributes.
+read -r GHB_REPO GHB_A GHB_B <<< "$(make_wt_repo)"
+GHB_COMMON="$(common_dir "$GHB_REPO")"
+
+git -C "$GHB_A" config --worktree rerere.enabled false
+git -C "$GHB_A" config --worktree rerere.autoupdate false
+
+assert "(g-h-b) negative control: shared false + lane self-disarm -> check exits 0" \
+    bash "$GUARD" check "$GHB_A"
+
+# Reach true through an include INSTEAD of a direct key: the direct keys are
+# unset, so the shared read has nothing to find without following the chain.
+git -C "$GHB_REPO" config --local --unset rerere.enabled
+git -C "$GHB_REPO" config --local --unset rerere.autoupdate
+printf '[rerere]\n\tenabled = true\n\tautoupdate = true\n' > "$GHB_COMMON/shared-extra.cfg"
+git -C "$GHB_REPO" config --local include.path shared-extra.cfg
+
+# Preconditions MEASURED: main armed, lane masked, and NO rr-cache/ — so the -1
+# default branch cannot reach the right verdict for the wrong reason.
+assert "(g-h-b) fixture: the MAIN checkout's EFFECTIVE rerere.enabled is true" \
+    bash -c "[ \"\$(git -C '$GHB_REPO' config --bool --get rerere.enabled)\" = true ]"
+
+assert "(g-h-b) fixture: ...while the LANE's effective value is false (the mask)" \
+    bash -c "[ \"\$(git -C '$GHB_A' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-h-b) fixture: no rr-cache/ exists, so the -1 default cannot fire" \
+    bash -c "! test -d '$GHB_COMMON/rr-cache'"
+
+assert "(g-h-b) include-mediated SHARED arming -> check from the lane exits non-zero" \
+    bash -c "! bash '$GUARD' check '$GHB_A' >/dev/null 2>&1"
+
+assert "(g-h-b) ...naming the SHARED config as the armed scope" \
+    bash -c "bash '$GUARD' check '$GHB_A' 2>&1 >/dev/null | grep -qF 'SHARED config sets rerere.enabled=true'"
+
+# (g-h-c) rerere.autoupdate reached through the same chain is reported
+# INDEPENDENTLY, not folded into the rerere.enabled verdict.
+assert "(g-h-c) ...and reports rerere.autoupdate independently of rerere.enabled" \
+    bash -c "bash '$GUARD' check '$GHB_A' 2>&1 >/dev/null | grep -qF 'SHARED config sets rerere.autoupdate=true'"
+
+# The DIAGNOSTIC, not merely the exit code.  With a residual rr-cache present the
+# pre-fix guard did report ARMED here — but through the wrong branch ("leaves
+# rerere.enabled UNSET"), because its --local read could not see the include.  An
+# exit-code-only assert would pass vacuously against that still-broken read.
+mkdir -p "$GHB_COMMON/rr-cache/dddd4444"
+
+assert "(g-h-b) with a residual rr-cache the verdict is still non-zero" \
+    bash -c "! bash '$GUARD' check '$GHB_A' >/dev/null 2>&1"
+
+assert "(g-h-b) ...and is NOT misattributed to the UNSET + rr-cache branch" \
+    bash -c "! bash '$GUARD' check '$GHB_A' 2>&1 >/dev/null | grep -qF 'leaves rerere.enabled UNSET'"
+
+assert "(g-h-b) ...it names the value the include actually contributes" \
+    bash -c "bash '$GUARD' check '$GHB_A' 2>&1 >/dev/null | grep -qF 'SHARED config sets rerere.enabled=true'"
+
+# (g-h-c) SWEEP side of the same independence claim: a lane whose include sets
+# ONLY autoupdate must be reported for autoupdate and NOT for enabled.
+read -r GHC_REPO GHC_A GHC_B <<< "$(make_wt_repo)"
+GHC_A_GITDIR="$(git -C "$GHC_A" rev-parse --absolute-git-dir)"
+
+assert "(g-h-c) negative control: no include plant -> check exits 0" \
+    bash "$GUARD" check "$GHC_REPO"
+
+printf '[include]\n\tpath = extra.cfg\n' > "$GHC_A_GITDIR/config.worktree"
+printf '[rerere]\n\tautoupdate = true\n' > "$GHC_A_GITDIR/extra.cfg"
+
+assert "(g-h-c) fixture: the lane's EFFECTIVE rerere.autoupdate is true" \
+    bash -c "[ \"\$(git -C '$GHC_A' config --bool --get rerere.autoupdate)\" = true ]"
+
+assert "(g-h-c) fixture: ...while its effective rerere.enabled stays false" \
+    bash -c "[ \"\$(git -C '$GHC_A' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-h-c) an include-mediated autoupdate-only override -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$GHC_REPO' >/dev/null 2>&1"
+
+assert "(g-h-c) ...naming rerere.autoupdate for that worktree" \
+    bash -c "bash '$GUARD' check '$GHC_REPO' 2>&1 >/dev/null | grep -qF 'overrides rerere.autoupdate=true'"
+
+assert "(g-h-c) ...and NOT claiming rerere.enabled is overridden there" \
+    bash -c "! bash '$GUARD' check '$GHC_REPO' 2>&1 >/dev/null | grep -qF 'overrides rerere.enabled=true'"
+
+# (g-h-d) `arm` SELF-HEALS the (g-h-b) store.  Its --local write lands in a
+# [rerere] section APPENDED AFTER the [include] line, so it wins on git's
+# last-wins precedence and the effective value really becomes false: exit 0, not
+# the advisory 2.  The precondition is measured because it is the whole reason
+# this case differs from (g-h-e): git 2.43.0 removes a section that `--unset`
+# empties, so the shared config carries no [rerere] section for the write to be
+# rewritten INTO.
+assert "(g-h-d) fixture: the shared config has no [rerere] section for arm to rewrite" \
+    bash -c "! grep -q '^\[rerere\]' '$GHB_COMMON/config'"
+
+bash "$GUARD" arm "$GHB_A" >/dev/null 2>&1 && _ghd_status=0 || _ghd_status=$?
+
+assert "(g-h-d) arm on an include-armed shared config exits 0 (self-healed)" \
+    test "$_ghd_status" -eq 0
+
+assert "(g-h-d) ...and the effective value really is false afterwards" \
+    bash -c "[ \"\$(git -C '$GHB_REPO' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-h-d) ...via a direct pin appended after the [include] line" \
+    bash -c "awk '/^\[include\]/{i=NR} /^\[rerere\]/{r=NR} END{exit !(i && r && i < r)}' '$GHB_COMMON/config'"
+
+unset _ghd_status
+
+# (g-h-e) `arm` stays HONEST when include ORDER defeats it.  With a [rerere]
+# section already present BEFORE the [include], git rewrites that section in
+# place, the later include still wins, and the effective value stays true.  The
+# contract is exit 2 (advisory) — never a false 0 — with the surviving scope
+# named.  MEASURED against the pre-fix guard: the write succeeds and the exit IS
+# 2, but the WARNING enumerates only "another lane's config.worktree, or the
+# user's global gitconfig" — a cause list that omits the actual cause.
+read -r GHE_REPO GHE_A GHE_B <<< "$(make_wt_repo)"
+GHE_COMMON="$(common_dir "$GHE_REPO")"
+GHE_ERR="$_SUITE_TMP/arm-include-order.err"
+
+git -C "$GHE_REPO" config --local rerere.enabled true
+git -C "$GHE_REPO" config --local rerere.autoupdate true
+printf '[rerere]\n\tenabled = true\n\tautoupdate = true\n' > "$GHE_COMMON/shared-extra.cfg"
+git -C "$GHE_REPO" config --local include.path shared-extra.cfg
+
+assert "(g-h-e) fixture: the [rerere] section precedes the [include] line" \
+    bash -c "awk '/^\[rerere\]/{r=NR} /^\[include\]/{i=NR} END{exit !(r && i && r < i)}' '$GHE_COMMON/config'"
+
+bash "$GUARD" arm "$GHE_REPO" >/dev/null 2>"$GHE_ERR" && _ghe_status=0 || _ghe_status=$?
+
+assert "(g-h-e) fixture: the shared write DID land in the pre-existing section" \
+    bash -c "[ \"\$(git -C '$GHE_REPO' config --local --get-all rerere.enabled | head -1)\" = false ]"
+
+assert "(g-h-e) fixture: ...yet the later include still wins — effective stays true" \
+    bash -c "[ \"\$(git -C '$GHE_REPO' config --bool --get rerere.enabled)\" = true ]"
+
+assert "(g-h-e) arm exits exactly 2, not a false 0, when an include defeats the write" \
+    test "$_ghe_status" -eq 2
+
+assert "(g-h-e) ...printing an ARMED line rather than claiming success" \
+    grep -q '^ARMED:' "$GHE_ERR"
+
+assert "(g-h-e) ...and the WARNING names an include.path chain as a surviving scope" \
+    grep -qF 'include.path chain in the shared config' "$GHE_ERR"
+
+unset _ghe_status
+
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
 #     rr-cache.  The whole point is that every lane inherits one shared
