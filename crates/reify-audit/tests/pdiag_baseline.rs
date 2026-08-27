@@ -357,15 +357,24 @@ fn rejects_rows_out_of_ascending_order() {
 #[test]
 fn rejects_a_duplicate_path() {
     // Silent last-wins would let a bad merge double a file's allowance.
-    // Adjacent duplicates are caught by the ordering rule (`path <= previous`)
-    // before the insert-collision branch, and non-adjacent ones cannot be
-    // ascending either — so the message may name either rule. What matters
-    // here is that the row is REJECTED and the offending line is named.
-    rejected_at("crates/reify-eval/src/a.rs 1\ncrates/reify-eval/src/a.rs 2\n", 2);
-    rejected_at(
-        "crates/reify-eval/src/a.rs 1\ncrates/reify-eval/src/b.rs 1\ncrates/reify-eval/src/a.rs 2\n",
-        3,
-    );
+    // The duplicate rule is checked BEFORE the ordering rule precisely so this
+    // message is reachable: strict ascension rejects every repeat on its own
+    // (adjacent as `path <= previous`, non-adjacent because it cannot be
+    // ascending either), so asserting only `is_err()` here passed while
+    // exercising the ordering rule and left the duplicate branch dead code.
+    for (content, lineno) in [
+        ("crates/reify-eval/src/a.rs 1\ncrates/reify-eval/src/a.rs 2\n", 2),
+        (
+            "crates/reify-eval/src/a.rs 1\ncrates/reify-eval/src/b.rs 1\ncrates/reify-eval/src/a.rs 2\n",
+            3,
+        ),
+    ] {
+        let err = rejected_at(content, lineno);
+        assert!(
+            err.contains("duplicate row for"),
+            "the duplicate rule must be the one that fires, got {err:?}"
+        );
+    }
 }
 
 #[test]

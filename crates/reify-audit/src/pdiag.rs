@@ -665,9 +665,16 @@ const BASELINE_GEN_BIN: &str = "cargo run -p reify-audit --bin pdiag-baseline-ge
 ///   at parse time is how a scope narrowing gets noticed instead of
 ///   accumulating.
 /// - **a duplicate path.** Silent last-wins would let a bad merge double a
-///   file's allowance.
+///   file's allowance. Checked BEFORE the ordering rule: strict ascension
+///   already rejects any repeat (an adjacent one as `path <= previous`, a
+///   non-adjacent one because it cannot be ascending either), so testing it
+///   afterwards left the specific message unreachable and the rule pinned only
+///   by accident.
 /// - **rows out of order.** Sorted order is what keeps a regenerated
-///   baseline's diff down to the lines that actually changed.
+///   baseline's diff down to the lines that actually changed. The `<=` is
+///   deliberately kept rather than narrowed to `<` now that duplicates are
+///   caught above it: it is what makes the ordering rule self-sufficient if the
+///   duplicate check is ever moved or dropped.
 ///
 /// The error string names the offending line number — this is read by whoever
 /// just broke the build, not by a parser.
@@ -709,6 +716,12 @@ pub fn parse_baseline(content: &str) -> Result<BTreeMap<String, u32>, String> {
                  ever clear it — delete the row and regenerate with `{BASELINE_GEN_BIN}`"
             ));
         }
+        if out.contains_key(path) {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: duplicate row for {path} — one row per file; \
+                 regenerate with `{BASELINE_GEN_BIN}`"
+            ));
+        }
         if previous.is_some_and(|last| path <= last) {
             return Err(format!(
                 "{BASELINE_PATH}:{number}: {path} is out of ascending order (after {}) — \
@@ -716,9 +729,7 @@ pub fn parse_baseline(content: &str) -> Result<BTreeMap<String, u32>, String> {
                 previous.unwrap_or_default()
             ));
         }
-        if out.insert(path.to_string(), count).is_some() {
-            return Err(format!("{BASELINE_PATH}:{number}: duplicate row for {path}"));
-        }
+        out.insert(path.to_string(), count);
         previous = Some(path);
     }
     Ok(out)
@@ -1943,9 +1954,25 @@ mod tests {
     #[test]
     fn a_duplicate_path_is_rejected() {
         // Silently last-wins would let a bad merge double a file's allowance.
-        let content = "crates/reify-eval/src/geometry_ops.rs 137\n\
-                       crates/reify-eval/src/geometry_ops.rs 200\n";
-        assert!(parse_baseline(content).is_err());
+        // The DUPLICATE message must be the one that fires: the ordering rule
+        // rejects a repeat too (`path <= previous`), so a bare `is_err()`
+        // assertion here passed while exercising the wrong rule entirely and
+        // left the duplicate branch unreachable dead code.
+        for content in [
+            // Adjacent — the shape the ordering rule would otherwise claim.
+            "crates/reify-eval/src/geometry_ops.rs 137\n\
+             crates/reify-eval/src/geometry_ops.rs 200\n",
+            // Non-adjacent, and note the rows ARE ascending up to the repeat.
+            "crates/reify-compiler/src/expr.rs 68\n\
+             crates/reify-eval/src/geometry_ops.rs 137\n\
+             crates/reify-compiler/src/expr.rs 70\n",
+        ] {
+            let err = parse_baseline(content).expect_err("a duplicate row must be rejected");
+            assert!(
+                err.contains("duplicate row for"),
+                "the duplicate rule must be the one that fires, got {err:?}"
+            );
+        }
     }
 
     #[test]
