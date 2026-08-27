@@ -4560,16 +4560,45 @@ describe('reifyLanguage — fold and indent coverage', () => {
   describe('BRACE_FIRST_BODIES vs KEYWORD_LED_BODIES matches the grammar', () => {
     const grammarSrc = readFixture('gui/src/editor/reify.grammar');
 
+    /**
+     * The spellings that count as a brace OPENER at the head of an arm: the
+     * anonymous literal `"{"`, plus every NAMED single-literal brace token —
+     * today just `ImportItemsOpen { ".{" }`, which is how `ImportItems` opens
+     * since #5931 folded the destructured import's `.` into its opener.
+     *
+     * Derived from `braceOpenerTokens` — the SAME definition
+     * `braceDelimitedNodeTypes` uses to decide LIST MEMBERSHIP — so the two
+     * halves of this ledger read "what counts as an opener" from one source
+     * instead of two spellings that can drift apart. They did drift once: #5931
+     * taught the membership half about named openers and left this positional
+     * half literal-only, so `ImportItems` was extracted as a brace-delimited
+     * body, correctly filed in BRACE_FIRST_BODIES, and then failed HERE for
+     * having "no \"{\" token at all".
+     *
+     * The sibling KEYWORD_LED_BODIES assertion below stays literal-only: no
+     * keyword-led body opens an arm with a named token today, so widening it
+     * would tighten a currently-green guard for no live case.
+     */
+    const armOpeners = ['"{"', ...braceOpenerTokens(grammarSrc)];
+    /** `opener` appears ANYWHERE in `arm` — the "has a brace at all" reading. */
+    const armHasOpener = (arm: string, opener: string) =>
+      opener === '"{"' ? arm.includes('"{"') : new RegExp(`\\b${opener}\\b`).test(arm);
+    /** `arm` STARTS with `opener` — the positional reading this test is about. */
+    const armStartsWithOpener = (arm: string, opener: string) =>
+      opener === '"{"' ? arm.startsWith('"{"') : new RegExp(`^${opener}\\b`).test(arm);
+
     it.each(BRACE_FIRST_BODIES)('%s opens its braced arm with the brace itself', (name) => {
       const arms = splitTopLevelArms(productionBody(grammarSrc, name));
-      const braceArms = arms.filter((arm) => arm.includes('"{"'));
-      expect(braceArms.length, `${name} has no "{" token in its reify.grammar production at all`).toBeGreaterThan(
-        0,
-      );
+      const braceArms = arms.filter((arm) => armOpeners.some((op) => armHasOpener(arm, op)));
       expect(
-        braceArms.every((arm) => arm.startsWith('"{"')),
+        braceArms.length,
+        `${name} has no brace opener in its reify.grammar production at all — neither a "{" ` +
+          `token nor any named opener (${JSON.stringify(braceOpenerTokens(grammarSrc))})`,
+      ).toBeGreaterThan(0);
+      expect(
+        braceArms.every((arm) => armOpeners.some((op) => armStartsWithOpener(arm, op))),
         `${name} is in BRACE_FIRST_BODIES, but at least one of its arms in reify.grammar has ` +
-          `content before the "{" — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
+          `content before its brace opener — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
       ).toBe(true);
     });
 
