@@ -376,6 +376,218 @@ structure DicLetIndirect {
     );
 }
 
+// ── a FAILED solve stays quiet (review round 1, finding 2) ─────────────────
+//
+// γ's contract is "the solve SUCCEEDED and your `minimize` was silently
+// dropped". When the solve itself fails, that claim is unwarranted: the
+// objective was not consumed because nothing was solved at all. The remedy text
+// ("Add a constraint relating `X` to the rest of the scope") then asks for
+// constraints the source already has, the Error stacks on top of the solve's
+// own report, and on the `NoProgress` arm it escalates a warning to an Error on
+// a model whose behaviour never changed.
+//
+// Each fixture below records the `SolveResult` arm it was MEASURED to produce —
+// probe: a temporary `eprintln!` over `solve_result` immediately before
+// `engine_eval.rs`'s `match solve_result`, run under `--nocapture`. The
+// measurement is not decoration: a fixture that silently drifted onto `Solved`
+// would make its case vacuous, which is why every one of them also asserts,
+// through `assert_solve_failure_still_reported`, that the failure is still on
+// the record.
+
+/// Anti-vacuity guard for the failed-solve cases: the run must STILL report the
+/// solve failure itself.
+///
+/// This is what makes "stays quiet" mean *the spurious second Error is gone*
+/// rather than *the whole scope went silent* — the suppression must cost the
+/// user nothing they were previously told. It doubles as the drift guard: a
+/// fixture that stopped failing would emit no failure diagnostic and trip here,
+/// instead of passing vacuously as a negative case.
+fn assert_solve_failure_still_reported(result: &reify_eval::EvalResult, why: &str) {
+    let reported: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code != Some(DiagnosticCode::ObjectiveUnconsumed)
+                && (d.message.contains("could not be satisfied")
+                    || d.message.contains("no progress")
+                    || d.message.contains("No progress"))
+        })
+        .collect();
+    assert!(
+        !reported.is_empty(),
+        "{why}; the solve failure must still be reported, but no failure \
+         diagnostic survives: {:?}",
+        result.diagnostics
+    );
+}
+
+/// (1) INFEASIBLE, let-indirected objective — the reviewer's repro shape.
+///
+/// MEASURED: `SolveResult::Infeasible`.
+///
+/// GREEN ALREADY, and honestly so: once step-18 expands the objective's refs
+/// through `dependent_cells`, `doubled` reaches `w`, `w` is in a component, and
+/// the registry classifies `Consumed` — gate condition (2) short-circuits before
+/// the outcome is ever consulted. Kept as a pin: it is the reviewer's literal
+/// repro shape, and it must not regress if a later change narrows the expansion.
+/// The case that actually exercises the outcome gate is (4) below.
+#[test]
+fn infeasible_solve_with_a_let_indirected_objective_reports_nothing() {
+    let source = "\
+module dic_infeasible_let
+
+structure DicInfeasibleLet {
+    param w : Length = auto
+    constraint w >= 50mm
+    constraint w <= 10mm
+    let doubled = w * 2.0
+    minimize doubled
+}
+";
+    let result = eval_with_solver(source);
+    assert_solve_failure_still_reported(
+        &result,
+        "the contradictory bracket is a real failure the user must still see",
+    );
+    assert_no_unconsumed(
+        &result,
+        "the solve failed, so `minimize` was not silently dropped — there is \
+         nothing for γ to add on top of the failure the run already reports",
+    );
+}
+
+/// (2) NOPROGRESS — the arm where the spurious report is also a warning→Error
+/// severity escalation.
+///
+/// MEASURED: `SolveResult::NoProgress`. The reach is `a`, which carries no
+/// constraint and so lands in no component; the objective is handed to component
+/// 0 (the `w` bracket) by the fallback, evaluates to undefined at that
+/// component's solution point, and the solver reports no progress — a WARNING.
+/// γ then stacked an ERROR on top, which is the escalation this case pins.
+///
+/// RED before step-20.
+#[test]
+fn no_progress_solve_with_a_dropped_objective_reports_nothing() {
+    let source = "\
+module dic_no_progress
+
+structure DicNoProgress {
+    param a : Real = auto(free)
+    param w : Length = auto
+    constraint w >= 10mm
+    constraint w <= 50mm
+    minimize (a - 3.0) * (a - 3.0)
+}
+";
+    let result = eval_with_solver(source);
+    assert_solve_failure_still_reported(
+        &result,
+        "the run's own no-progress report is the diagnostic of record here",
+    );
+    // The severity half of the finding, pinned separately from the quietness
+    // half: the solver's own report is a WARNING, so a scope whose behaviour did
+    // not change must not come back carrying an Error.
+    let no_progress: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("no progress"))
+        .collect();
+    assert!(
+        no_progress
+            .iter()
+            .all(|d| d.severity == Severity::Warning),
+        "the solver's own no-progress report is a warning; got {no_progress:?}"
+    );
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "this model's worst diagnostic is the solver's no-progress WARNING — γ \
+         must not escalate it to an Error; got {errors:?}"
+    );
+    assert_no_unconsumed(
+        &result,
+        "nothing was solved, so γ must not escalate the run's own warning into \
+         an Error about a `minimize` the solver never got to drop",
+    );
+}
+
+/// (3) INFEASIBLE with a DIRECT objective (`minimize w`, no let in the way).
+///
+/// The identical model with a direct objective is quiet TODAY, for a different
+/// reason: `w` is in a component, so the registry classifies `Consumed` and gate
+/// condition (2) never fires. Pinned so the outcome gate does not accidentally
+/// start reporting it.
+///
+/// MEASURED: `SolveResult::Infeasible`.
+#[test]
+fn infeasible_solve_with_a_direct_objective_reports_nothing() {
+    let source = "\
+module dic_infeasible_direct
+
+structure DicInfeasibleDirect {
+    param w : Length = auto
+    constraint w >= 50mm
+    constraint w <= 10mm
+    minimize w
+}
+";
+    let result = eval_with_solver(source);
+    assert_solve_failure_still_reported(
+        &result,
+        "the contradictory bracket is a real failure the user must still see",
+    );
+    assert_no_unconsumed(
+        &result,
+        "an objective the registry consumed is never γ's business, whatever the \
+         solve outcome",
+    );
+}
+
+/// (4) THE LOAD-BEARING CASE: a genuine DROP verdict *and* a failed solve.
+///
+/// Cases (1) and (3) both classify `Consumed` once the classifier expands refs
+/// through `dependent_cells` (step-18), so gate condition (2) short-circuits and
+/// they would stay quiet even with no outcome gate at all. This one does not:
+/// `a` carries no constraint, so it lands in no component and the objective
+/// over it classifies as a DROP verdict — condition (2) fires, conditions (3)
+/// and (4) hold, and the only thing that can silence it is the outcome gate
+/// itself. It is therefore the case that actually exercises step-20.
+///
+/// MEASURED: `SolveResult::Infeasible`, with consumption
+/// `FallbackComponentZero` — a genuine drop verdict. RED before step-20: the
+/// run reports BOTH the infeasibility and an E_OBJECTIVE_UNCONSUMED Error whose
+/// remedy asks for constraints relating `a` to a scope that could not be solved
+/// at all.
+#[test]
+fn dropped_objective_in_a_failing_scope_reports_nothing() {
+    let source = "\
+module dic_drop_and_fail
+
+structure DicDropAndFail {
+    param a : Real = auto(free)
+    param w : Length = auto
+    constraint w >= 50mm
+    constraint w <= 10mm
+    minimize (a - 3.0) * (a - 3.0)
+}
+";
+    let result = eval_with_solver(source);
+    assert_solve_failure_still_reported(
+        &result,
+        "the contradictory bracket on `w` is the real failure here",
+    );
+    assert_no_unconsumed(
+        &result,
+        "the objective over `a` IS a drop verdict, but the solve failed — γ \
+         claims a successful solve silently discarded a `minimize`, and that \
+         claim is unwarranted here",
+    );
+}
+
 // ── the MERGED-CLUSTER arm ──────────────────────────────────────────────────
 //
 // Everything above exercises the SINGLE-SCOPE emission site. The cases below
