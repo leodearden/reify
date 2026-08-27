@@ -1434,6 +1434,252 @@ fn survey_corpus_orders_sites_deterministically() {
 
 // ─── step 11/12: markdown rendering ─────────────────────────────────────────
 
+/// The EXACT command that regenerates the artifact, committed inside it.
+///
+/// The `env` prefix is not decoration: reify's PreToolUse hook rewrites bare
+/// `cargo test` invocations into condensed `PASS: N | FAIL: M` output. That is
+/// harmless here — the generator WRITES the file rather than being scraped from
+/// stdout — but it will confuse a reader of the run log who expects to see the
+/// usual per-test lines, so the bypass is baked into the published command.
+const REGEN_COMMAND: &str = "env cargo test -p reify-compiler --test harness_compilation_surface \
+     -- --ignored --exact \
+     ctor_conformance_corpus_survey::generate_ctor_conformance_corpus_survey";
+
+/// Render `text` safe for a markdown table cell.
+///
+/// Both `|` and newlines are neutralised: either one inside a diagnostic
+/// message would silently split or truncate the row, and a survey whose table
+/// breaks on its most interesting entries is worse than no survey.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|")
+        .replace(['\n', '\r'], " ")
+        .trim()
+        .to_owned()
+}
+
+/// Render an optional column: `—` when unrecoverable, never empty, never a guess.
+fn opt_cell(value: Option<&String>) -> String {
+    match value {
+        Some(v) => cell(v),
+        None => "—".to_owned(),
+    }
+}
+
+/// Render the survey artifact.
+///
+/// Follows the house convention for a generated markdown artifact set by
+/// `docs/architecture-audit/g-tool-baseline-report.md`: a
+/// `**Captured:** / **Tool:** / **Design:**` header block above a
+/// `## How to regenerate` section holding the literal command.
+///
+/// Deliberate divergence from that report: it pairs with an `#[ignore]`d
+/// tolerance-based freshness test because it is a STANDING baseline. This
+/// survey is a point-in-time SNAPSHOT that γ will legitimately invalidate — a
+/// freshness gate would go red on every γ commit and would be driven to an
+/// EMPTY artifact the moment γ reaches its stated signal, destroying the very
+/// census that sized it. So the base commit SHA is stamped instead.
+fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut md = String::new();
+    let site_count = run.sites.len();
+
+    // ── header ──────────────────────────────────────────────────────────────
+    md.push_str("# Struct-ctor field-type conformance — corpus survey\n\n");
+    let _ = writeln!(md, "**Base commit:** `{base_commit}`");
+    let _ = writeln!(
+        md,
+        "**Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`"
+    );
+    md.push_str("**Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)\n");
+    let _ = writeln!(md, "**Sites:** {site_count}");
+    let _ = writeln!(
+        md,
+        "**Corpus:** {} tracked `.ri`; {} surveyed, {} not surveyed, {} partial",
+        run.total,
+        run.surveyed,
+        run.not_surveyed.len(),
+        run.partial.len()
+    );
+
+    md.push_str(
+        "\n\
+        This is a point-in-time **snapshot**, not a freshness-gated golden file. γ will\n\
+        legitimately invalidate it — that is the point. Its job is to enumerate and size,\n\
+        once, at the base commit stamped above.\n\
+        \n\
+        ## Provenance\n\
+        \n\
+        Every row and every count here is **machine-generated — zero hand-derived\n\
+        entries**. The corpus is `git ls-files -- '*.ri'`; each member is compiled with\n\
+        the α(+ε) warn-stage compiler in-process (`parse_with_stdlib` →\n\
+        `compile_with_stdlib`) and every diagnostic carrying one of the seven\n\
+        ctor-conformance codes becomes one row. The `file:line` comes from the\n\
+        diagnostic's own label span; `expected`/`found` come from the label message.\n\
+        Nothing below was typed in by hand, and a column that could not be recovered\n\
+        renders as `—` rather than as a guess.\n\
+        \n\
+        The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
+        type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
+        (1) *call-site bug* and class (2) *wrong declared field type* as \"per-case\n\
+        judgment … whichever is the actual bug\" and assigns it to **γ**; β does not\n\
+        pre-empt it. What β does decide mechanically is the `owner` grouping below.\n\
+        \n\
+        ## Format (PRD §10 Q6)\n\
+        \n\
+        **Q6 is answered here — grouped by D9 owner class, with a flat\n\
+        `(file, line, field)`-sorted table inside each group.** Grouping first by owner\n\
+        makes the FEA do-not-touch partition unmissable for γ, whose actual consumption\n\
+        question is *which sites may I touch*; a flat table inside each group keeps the\n\
+        result directly sizable and sortable. Recorded in this artifact header rather\n\
+        than by editing the PRD's §10, which the sibling α/γ/δ/ζ tasks concurrently read.\n\
+        \n",
+    );
+
+    // ── site groups, FEA first ──────────────────────────────────────────────
+    md.push_str("## Sites\n\n");
+    if site_count == 0 {
+        md.push_str(
+            "**No ctor-conformance sites were found in the surveyed corpus.** This is an\n\
+             explicit zero, not a truncated run — see the coverage section below for what\n\
+             was and was not surveyed.\n\n",
+        );
+    }
+    for owner in [Owner::FeaDeferredToV06, Owner::NonFea, Owner::Unknown] {
+        let mut group: Vec<&SurveySite> =
+            run.sites.iter().filter(|s| s.owner == owner).collect();
+        group.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
+
+        let _ = writeln!(md, "### {} — {} site(s)\n", owner.title(), group.len());
+        match owner {
+            Owner::FeaDeferredToV06 => md.push_str(
+                "Per PRD §4 D9, these defs are declared in the FEA stdlib modules: γ may make\n\
+                 **call-site changes ONLY**. Field-type flips remain v0.6-owned\n\
+                 (`docs/prds/v0_6/fea-load-support-selector-migration.md`). **DO NOT FIX the\n\
+                 declared field types here.**\n\n",
+            ),
+            Owner::NonFea => md.push_str(
+                "D9's per-case judgment applies: fix the call site or the declared field type,\n\
+                 whichever is the actual bug — γ's ruling, recorded in γ's diff.\n\n",
+            ),
+            Owner::Unknown => md.push_str(
+                "The structure def could not be attributed mechanically — these sites come\n\
+                 through the sub `=` per-arg anchor, which carries no ctor name, and the\n\
+                 diagnostic prose names none either. Deliberately its own group: folding an\n\
+                 unattributable site into the touchable pile is the one classification error\n\
+                 with a real cost. **Triage manually before touching.**\n\n",
+            ),
+        }
+        if group.is_empty() {
+            md.push_str("_(none)_\n\n");
+            continue;
+        }
+        md.push_str(
+            "| site | def | field | expected | found | code | severity | hint (advisory) | message |\n\
+             |---|---|---|---|---|---|---|---|---|\n",
+        );
+        for s in group {
+            let _ = writeln!(
+                md,
+                "| `{}:{}` | {} | {} | {} | {} | `{}` | {} | {} | {} |",
+                cell(&s.file),
+                s.line,
+                opt_cell(s.def.as_ref()),
+                opt_cell(s.field.as_ref()),
+                opt_cell(s.expected.as_ref()),
+                opt_cell(s.found.as_ref()),
+                cell(&s.code),
+                cell(&s.severity),
+                cell(&remedy_hint(s.expected.as_deref(), s.found.as_deref())),
+                cell(&s.message),
+            );
+        }
+        md.push('\n');
+    }
+
+    // ── coverage + limitations ──────────────────────────────────────────────
+    md.push_str("## Coverage and limitations\n\n");
+    let _ = writeln!(
+        md,
+        "Of {} tracked `.ri` members, **{} were surveyed** and **{} were not**. \
+         A further **{}** were surveyed only PARTIALLY. Both are listed below rather \
+         than dropped: a bounded sweep that does not state what it skipped reads as \
+         full coverage and would under-size γ.\n",
+        run.total,
+        run.surveyed,
+        run.not_surveyed.len(),
+        run.partial.len()
+    );
+
+    md.push_str("### Not surveyed (contributed no sites)\n\n");
+    if run.not_surveyed.is_empty() {
+        md.push_str("_(none — every tracked member reached the compile phase)_\n\n");
+    } else {
+        md.push_str("| file | reason |\n|---|---|\n");
+        for (file, reason) in &run.not_surveyed {
+            let _ = writeln!(md, "| `{}` | `{}` |", cell(file), cell(reason));
+        }
+        md.push('\n');
+    }
+
+    md.push_str("### Partially surveyed (sites collected, but the file also failed to compile)\n\n");
+    if run.partial.is_empty() {
+        md.push_str("_(none)_\n\n");
+    } else {
+        md.push_str("| file | reason |\n|---|---|\n");
+        for (file, reason) in &run.partial {
+            let _ = writeln!(md, "| `{}` | `{}` |", cell(file), cell(reason));
+        }
+        md.push('\n');
+    }
+
+    md.push_str(
+        "### Named limitations\n\
+        \n\
+        1. **Inline Rust-string `.ri` fixtures are not file-enumerable.** The task's\n\
+           second half — the Rust test suite's inline fixtures and goldens — lives inside\n\
+           `const SOURCE: &str = r#\"…\"#` literals, which `git ls-files` cannot reach and\n\
+           which could only be swept by changing the compiler (out of scope for this\n\
+           read-only survey). Their coverage is **transitive, and stated as such rather\n\
+           than claimed**: the `--scope all --profile both` merge gate is green at the\n\
+           base commit above, and the landed α/ε gates\n\
+           (`no_example_emits_ctor_field_conformance_diagnostics`, the\n\
+           `struct_ctor_field_conformance_tests` suite) already assert on the\n\
+           ctor-conformance codes.\n\
+        2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses\n\
+           `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows `#cfg`-gated\n\
+           user imports and runs `SimpleConstraintChecker`. Multi-module corpus members\n\
+           (the `examples/module_visibility/consumer.ri` class) therefore cannot resolve\n\
+           standalone and appear above under *not surveyed* or *partially surveyed* with\n\
+           their reason, rather than being silently dropped.\n\
+        \n",
+    );
+
+    // ── regeneration ────────────────────────────────────────────────────────
+    md.push_str("## How to regenerate\n\n```bash\n");
+    let _ = writeln!(md, "{REGEN_COMMAND}");
+    md.push_str("```\n\n");
+    md.push_str(
+        "The generator is `#[ignore]`d: it compiles the whole tracked corpus, which is\n\
+        ~2.5× the `examples/` walk already documented as the most expensive thing that\n\
+        test binary does, and paying that on every merge gate would fight\n\
+        `docs/prds/merge-gate-compile-cost.md`. Everything the generator *decides* —\n\
+        enumeration, span→line, def/field/type extraction, D9 classification and this\n\
+        rendering — is unit-tested on every gate run against synthetic inputs, plus one\n\
+        cheap three-file end-to-end sweep, so the pipeline cannot bit-rot between runs.\n\
+        \n\
+        Set `REIFY_CTOR_SURVEY_OUT` to write elsewhere (e.g. to diff a fresh run against\n\
+        the committed copy without dirtying the tree).\n\
+        \n\
+        > The `env` prefix on the command above bypasses reify's PreToolUse hook, which\n\
+        > condenses `cargo test` output. It is harmless here — the generator writes the\n\
+        > file rather than being scraped from stdout — but without it a reader of the run\n\
+        > log sees only a `PASS: N | FAIL: M` summary and may think the sweep did nothing.\n",
+    );
+
+    md
+}
+
 /// A `SurveyRun` assembled by hand for the renderer tests, so no corpus
 /// compile is needed to exercise the artifact's whole contract.
 #[cfg(test)]
@@ -1603,15 +1849,24 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         .lines()
         .find(|l| l.starts_with("| `a.ri:1`"))
         .expect("the site row");
-    assert_eq!(
-        row.matches('—').count(),
-        4,
-        "def / field / expected / found must each render as an em-dash, never an \
-         empty or invented cell: {row:?}"
-    );
+    // Check the four cells BY POSITION rather than counting em-dashes in the
+    // whole row: the neutral hint string legitimately contains one too, so a
+    // raw count is an imprecise proxy for what this test actually means.
+    let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+    for (idx, name) in [(2, "def"), (3, "field"), (4, "expected"), (5, "found")] {
+        assert_eq!(
+            cells[idx], "—",
+            "the {name} cell must render as an em-dash, never an empty or invented \
+             cell: {row:?}"
+        );
+    }
     assert!(
         !row.contains("||"),
         "no cell may be rendered empty: {row:?}"
+    );
+    assert!(
+        cells[9].starts_with("E_CTOR_ARITY:"),
+        "the raw message must still be carried verbatim: {row:?}"
     );
 }
 
