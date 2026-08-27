@@ -269,7 +269,8 @@ pub fn compute_diagnostics_with_state(
     // Matched by CODE, not by message substring, per this crate's
     // `FEA_NOT_EVALUATED_CODE` precedent (below): a copy-edit to the engine's
     // wording must never silently re-open the leak. Its presence on the engine
-    // side is locked by `crates/reify-eval/tests/eval_cached_guarded_groups.rs`.
+    // side is locked by
+    // `crates/reify-eval/tests/harness_engine/eval_cached_guarded_groups.rs`.
     for diag in &eval_diagnostics {
         if diag.code == Some(DiagnosticCode::EvalCachedGuardedGroupsFallback) {
             continue;
