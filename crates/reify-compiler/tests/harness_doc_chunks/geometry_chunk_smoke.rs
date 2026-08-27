@@ -1205,12 +1205,20 @@ fn cited_test_paths_in_the_chunk_resolve() {
     // Anti-vacuity. Reformatting the SYNC block into a shape this scan cannot
     // read (the two-column layout it replaced wrapped paths across lines, which
     // is exactly invisible here) would otherwise empty the loop above and pass.
+    // The floor is the EXACT live count, not a round number under it. At >= 8
+    // (with 9 actually present) one whole cite could be deleted and this still
+    // passed: dropping trap 5's `single_body_self_pair_excluded` row left
+    // fn_cites=8, rs_paths=5 and ri_paths=4 all green while that row still read
+    // "PINNED by" — a SYNC row silently claiming a pin it had lost. The ninth
+    // cite is this file's own self-cite from the SYNC block, which the old
+    // enumeration below omitted; it is counted here like any other.
     assert!(
-        fn_cites >= 8,
+        fn_cites >= 9,
         "only {fn_cites} `<path>::<fn>` cite(s) were found in {CHUNK_PATH} — expected at least \
-         8 (traps 1, 2, 5 and 6, plus FORM A's posed/swept pair). The traps SYNC block was \
-         reformatted into a shape this scan cannot read; cites must be written WHOLE on ONE \
-         line, never wrapped. Cites seen: {cites:?}"
+         9 (traps 1, 2, 5 and 6, FORM A's posed/swept pair, and the SYNC block's self-cite). \
+         Either the traps SYNC block was reformatted into a shape this scan cannot read (cites \
+         must be written WHOLE on ONE line, never wrapped), or a SYNC row lost a cite while \
+         still claiming to pin it. Cites seen: {cites:?}"
     );
     assert!(
         rs_paths.len() >= 5,
