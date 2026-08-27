@@ -977,7 +977,11 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
             match &args[0] {
                 Value::BoundingBox { min, max } => {
-                    let (min_vals, dim) = match tensor_components_f64(min) {
+                    // A BoundingBox is Length-valued by construction (task 6081),
+                    // so the extent is Length regardless of what the stored
+                    // corners carry — the stored dimension is deliberately NOT
+                    // propagated.
+                    let (min_vals, _) = match tensor_components_f64(min) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
                     };
@@ -988,20 +992,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     if min_vals.len() != 3 || max_vals.len() != 3 {
                         return Some(Value::Undef);
                     }
-                    let make_component = |v: f64| -> Value {
-                        if dim.is_dimensionless() {
-                            Value::Real(v)
-                        } else {
-                            Value::Scalar {
-                                si_value: v,
-                                dimension: dim,
-                            }
-                        }
-                    };
                     Value::Vector(vec![
-                        make_component(max_vals[0] - min_vals[0]),
-                        make_component(max_vals[1] - min_vals[1]),
-                        make_component(max_vals[2] - min_vals[2]),
+                        Value::length(max_vals[0] - min_vals[0]),
+                        Value::length(max_vals[1] - min_vals[1]),
+                        Value::length(max_vals[2] - min_vals[2]),
                     ])
                 }
                 _ => Value::Undef,
@@ -1013,7 +1007,11 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             }
             match &args[0] {
                 Value::BoundingBox { min, max } => {
-                    let (min_vals, dim) = match tensor_components_f64(min) {
+                    // A BoundingBox is Length-valued by construction (task 6081),
+                    // so the centre is Length regardless of what the stored
+                    // corners carry — the stored dimension is deliberately NOT
+                    // propagated.
+                    let (min_vals, _) = match tensor_components_f64(min) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
                     };
@@ -1024,20 +1022,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     if min_vals.len() != 3 || max_vals.len() != 3 {
                         return Some(Value::Undef);
                     }
-                    let make_component = |v: f64| -> Value {
-                        if dim.is_dimensionless() {
-                            Value::Real(v)
-                        } else {
-                            Value::Scalar {
-                                si_value: v,
-                                dimension: dim,
-                            }
-                        }
-                    };
                     Value::Point(vec![
-                        make_component((min_vals[0] + max_vals[0]) / 2.0),
-                        make_component((min_vals[1] + max_vals[1]) / 2.0),
-                        make_component((min_vals[2] + max_vals[2]) / 2.0),
+                        Value::length((min_vals[0] + max_vals[0]) / 2.0),
+                        Value::length((min_vals[1] + max_vals[1]) / 2.0),
+                        Value::length((min_vals[2] + max_vals[2]) / 2.0),
                     ])
                 }
                 _ => Value::Undef,
