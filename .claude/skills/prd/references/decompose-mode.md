@@ -10,7 +10,7 @@ Reify identity (`project_id="reify"`, `project_root="/home/leo/src/reify"`), the
 
 ## Step 2.5 extension — scoping an `expect: absent` delivered_check (reify-specific)
 
-When authoring a `delivered_check` at shared Step 2.5: an `expect: absent` pattern must be scoped to the construct that would carry the defect, never to the bare token, and a later correction to a landed pattern must update the producer task's `metadata.delivered_checks` as well as both manifest twins (`.yaml` and `.md`) by hand. See `../project.md` → "Capability Manifest — reify evidence forms" for the rules and the worked precedent.
+When authoring a `delivered_check` at shared Step 2.5, apply the reify `expect: absent` scoping rules and the landed-correction procedure in `../project.md` → "Capability Manifest — reify evidence forms".
 
 ## Step 3 extension — metadata.files guard (reify-specific, task 4677 β)
 
