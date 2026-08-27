@@ -217,13 +217,59 @@ Reporting this is safe by construction, unlike the inert-`config.worktree` case:
 writer, so the scope reported here is exactly the scope `arm` can clear — it self-heals to exit 0
 rather than the advisory 2. Pinned by `test_git_rerere_guard.sh` (g-f) and (g-f-g).
 
+### `include.path` — why the scoped reads pass `--includes`
+
+`git config` follows `include.path` **only for an effective read**. It turns include-following OFF
+whenever a specific file or scope is named — `--file`, `--local`, `--worktree`, `--global`,
+`--system`, `--blob`. Every scoped read in the guard is one of those, so each silently skipped an
+indirection that git's own resolution honoured. Measured on git 2.43.0:
+
+| read | without `--includes` | with `--includes` | git's effective answer |
+|---|---|---|---|
+| `--file <config.worktree> --get-regexp` | exit 1, no output | `rerere.enabled true` | `true` — the lane IS armed |
+| `--local --get rerere.enabled` | exit 1 (unset) | `true` | `true` |
+
+Both are now passed explicitly. The consequence for an operator is worth stating plainly: **a lane
+can be armed with the string `rerere` appearing nowhere in its `config.worktree`** — the file need
+contain nothing but `[include] path = extra.cfg`. "I grepped the configs and they're clean" is
+therefore not evidence. Run `check`.
+
+Three properties of that fix are deliberate, and a future editor should not tidy them away:
+
+- **`arm`'s idempotence probe does NOT use `--includes`**, in intentional asymmetry with the three
+  reads above. It asks a different question — "is the literal shared *file* already pinned to
+  `false`, so this write would be a byte-level no-op?" — not "what does git resolve?". A shared
+  config whose *included* file happened to set `false` would otherwise make `arm` skip the write
+  entirely, leaving `.git/config` with no direct pin and re-armable the moment another lane edits or
+  removes that included file.
+- **The sweep reports git's LAST-WINS resolution, not any emitted value.** `--get-regexp` emits
+  *every* value a file sets for a key while git resolves a multi-valued key to the last one, so
+  flagging any emitted `true` reported a `config.worktree` whose final word is `false` as ARMED
+  (measured, and pre-dating the include work). That false positive is uniquely damaging: `arm` writes
+  `--local` and can never clear a per-worktree file, so the store would sit on the advisory exit 2
+  permanently and `setup-dev.sh` would warn on every developer setup. The sweep accumulates the last
+  value per key and decides after the loop.
+- **A circular or unreadable include chain is reported UNKNOWN — never clean, and never ARMED.**
+  Following an include lets the read fail on a file the guard never opens: measured, a circular chain
+  and an unreadable target both exit **128 with no stdout**, which the old `2>/dev/null || true`
+  laundered into "no rerere keys here, clean". The status is now captured; exit 1 is git's ordinary
+  "no matching key" answer and stays clean, anything else warns (naming the worktree and the config
+  path) and the sweep continues so one broken lane cannot mask the rest. It is not folded into
+  `armed`, because `arm` cannot fix a lane the guard merely fails to read — the same trap the
+  `extensions.worktreeConfig` gate avoids. A *missing* include target is benign (git ignores it) and
+  stays silent.
+
+Pinned by `test_git_rerere_guard.sh` (g-h), (g-i) and (g-j), each with its negative control asserted
+before the plant and its fixture preconditions measured.
+
 ### Cost
 
 `check` walks every `config.worktree` in the store, so it is O(lanes) by construction. It is kept
 cheap enough to be a startup probe rather than a setup-only one-shot: a single
 `grep -lisE 'rerere|include'` prefilter decides which files are worth parsing (values are still read
 by `git config`, never by grep — comments, valueless keys and `yes`/`on`/`1` all defeat a grep;
-`include` is matched because `git config --file` honours `include.path`), the per-key reads collapse
+`include` is matched, case-insensitively so it catches `includeIf` too, because the read below now
+passes `--includes` and a rerere key can reach the file by indirection), the per-key reads collapse
 into one `--bool --get-regexp`, and labels come from parameter expansion rather than
 `basename`/`dirname`. Measured on the 224-lane store: **5.42s → 0.10s**. The fork pair per file, not
 the `git config` reads, had been the dominant cost.
@@ -309,6 +355,15 @@ not to hold for even a day — which is the whole argument for shipping a re-run
    resolution recorded inside that window still lands in the one shared cache. Closing it requires
    naming the writer, which requires sampling the effective config over time rather than reading it
    once; `check` is the natural probe, since it already exits 1 on an armed store.
+
+   `Hypothesis:` the store could have been re-armed through an `include.path` chain rather than a
+   direct key — a shape `check` was blind to until the round documented in §6, and one that would
+   have left no `rerere` string in the file an auditor grepped. This is a possibility that fix makes
+   newly *detectable*, **not** a diagnosis, and the evidence currently points the other way: the
+   writer has still not been isolated, and both the 2026-08-27 measurement and a read-only
+   re-measurement on 2026-08-28 found the keys set **directly** in `/home/leo/src/reify/.git/config`
+   (lines 46-48) with **no `include` directive anywhere in that file** — `check` exit 1,
+   `rr-cache` 269 entries, still armed.
 
 ## Pointers
 
