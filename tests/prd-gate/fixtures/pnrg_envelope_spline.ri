@@ -37,11 +37,16 @@
 //      <checker>.subject`, exit 0, ~0.26 s.  That was never a kernel gap — it
 //      was a decode rejection.  `crates/reify-ir/src/geometry.rs:1051-1053`
 //      declares `NurbsSurface { control_points: Vec<Vec<[f64;3]>>, weights:
-//      Vec<Vec<f64>> }` — both NESTED (u-major × v) — but `point3_components`
-//      (`crates/reify-eval/src/geometry_ops.rs:1209`) accepts only
-//      `Value::Point`/`Value::Vector` with 3 components, so a flat list of bare
-//      `[x,y,z]` literals decodes to `Value::List` and is rejected, and the
-//      subject is never defined.  The compiler only gates arity
+//      Vec<Vec<f64>> }` — both NESTED (u-major × v) — but the pole decoder is
+//      `accept_length_point3` (`crates/reify-eval/src/geometry_ops.rs:967`),
+//      called per pole from the control-point grid loop in
+//      `compile_geometry_op`'s `SurfaceKind::Nurbs` arm (`geometry_ops.rs:1914`):
+//      it accepts only `Value::Point`/`Value::Vector` with 3 components AND
+//      requires each component to be LENGTH-dimensioned (task 5745), so a flat
+//      list of bare `[x,y,z]` literals decodes to `Value::List`, fails the shape
+//      check silently, and the subject is never defined.  (`point3_components`,
+//      now at `geometry_ops.rs:1413`, survives only as the un-gated decoder for
+//      the three DIRECTION positions.)  The compiler only gates arity
 //      (`check_arg_count_exact`, 6 — crates/reify-compiler/src/geometry.rs:2640),
 //      so a wrong-shape call compiles clean and fails silently downstream — no
 //      diagnostic points at the real defect.

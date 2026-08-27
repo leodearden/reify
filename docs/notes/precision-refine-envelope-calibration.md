@@ -180,10 +180,15 @@ Not measurable, recorded honestly:
 an artifact of a flat, bare-`[x,y,z]`-literal control-point/weight encoding rejected at
 eval decode. `control_points`/`weights` are NESTED (u-major × v) grids
 (`NurbsSurface` in `crates/reify-ir/src/geometry.rs`), and every pole must be a
-`point3(…)` — `point3_components` (`crates/reify-eval/src/geometry_ops.rs:1209`)
-accepts only `Value::Point`/`Value::Vector` with 3 components, so a flat list of bare
-`[x,y,z]` literals decodes to `Value::List` and is rejected, leaving the subject
-undefined. Re-measured 2026-08-24 at HEAD=`2306e029ec` with the corrected nested
+`point3(…)` — the pole decoder `accept_length_point3`
+(`crates/reify-eval/src/geometry_ops.rs:967`), called per pole from the control-point
+grid loop in `compile_geometry_op`'s `SurfaceKind::Nurbs` arm (`geometry_ops.rs:1914`),
+accepts only `Value::Point`/`Value::Vector` with 3 components **and** requires each
+component to be LENGTH-dimensioned (task 5745), so a flat list of bare `[x,y,z]`
+literals decodes to `Value::List`, fails the shape check silently, leaving the subject
+undefined. (`point3_components`, now at `geometry_ops.rs:1413`, survives only as the
+un-gated decoder for the three DIRECTION positions.)
+Re-measured 2026-08-24 at HEAD=`2306e029ec` with the corrected nested
 encoding (3x3 u-major control net of `point3(…)` poles, nested unit weights, the same
 clamped knots `[0,0,0,1,1,1]` in both directions and `u_degree = v_degree = 2` as
 before):
