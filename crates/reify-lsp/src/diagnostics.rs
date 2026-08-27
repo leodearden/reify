@@ -763,6 +763,44 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     result
 }
 
+/// BT8 fixture (PRD `docs/prds/v0_6/driver-contract-implementation.md`, leaf
+/// pi / task #6798).
+///
+/// A CONSTANT constraint (`constraint 0 > 1`) on a two-candidate `auto:`
+/// trait bound. This is the fixture the whole leaf hinges on: a constant
+/// constraint has no `ValueRef` leaves, so `SimpleConstraintChecker`
+/// evaluates it to `Value::Bool(false)` → `Satisfaction::Violated` for
+/// EVERY candidate, regardless of the compile-time `ValueMap` — this is the
+/// ONLY compile-time shape on which the real checker diverges from the
+/// `CompileTimeIndeterminateChecker` stub (PRD §12 premise correction 3).
+/// Under the stub both candidates are `Indeterminate` → both feasible →
+/// strict mode → `E_AUTO_TYPE_PARAM_AMBIGUOUS`; under the real checker both
+/// are `Violated` → zero feasible → `E_AUTO_TYPE_PARAM_NO_CANDIDATE`. That
+/// AMBIGUOUS-vs-NO_CANDIDATE divergence is exactly the task's named
+/// consumer signal: editor users seeing an ambiguity error that
+/// `reify check` does not report.
+///
+/// The type parameter `T` is deliberately UNUSED in `Bearing`'s body
+/// (`param bore : Real = 1.0`, not `param seal : T`). Measured: with `T`
+/// used, a failed `auto:` resolution leaves a `TypeParam("T")`-typed value
+/// cell, and `reify-eval`'s `#[cfg(debug_assertions)]`
+/// `assert_value_cell_types_representable`
+/// (`crates/reify-eval/src/engine_eval.rs:206`) PANICS during the LSP's
+/// eval/check pass — today, on the stub path too (all tests run in debug).
+/// With `T` unused there is no such value cell, so both LSP entry points
+/// return cleanly and the AMBIGUOUS/NO_CANDIDATE divergence is preserved.
+/// Do not "simplify" this back to `param seal : T`.
+#[cfg(test)]
+pub(crate) const BT8_CONSTANT_CONSTRAINT_SRC: &str = r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def OringSeal : Seal { param d : Real = 3.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    constraint 0 > 1
+}
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -770,8 +808,9 @@ mod tests {
 
     // Additional imports for the eval-diagnostics regression-lock cluster.
     use reify_test_support::MockConstraintSolver;
-    use reify_core::{DimensionVector, Severity, ValueCellId};
+    use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
     use reify_ir::Value;
+    use std::collections::HashSet;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -841,6 +880,94 @@ mod tests {
         assert!(
             errors.is_empty(),
             "valid source should produce no errors, got: {errors:?}"
+        );
+    }
+
+    /// BT8 forward (task #6798, PRD `driver-contract-implementation.md` leaf
+    /// pi): the two production compile sites in this file must agree with
+    /// `reify check`'s real-checker verdict on a CONSTANT `auto:`
+    /// constraint, not the compile-time stub's.
+    ///
+    /// Anti-vacuity guard first: assert the stub and the real checker still
+    /// genuinely diverge on [`BT8_CONSTANT_CONSTRAINT_SRC`] before asserting
+    /// the LSP matches the real one — if a future compiler change collapses
+    /// AMBIGUOUS/NO_CANDIDATE into the same verdict, this guard fails loudly
+    /// instead of the LSP assertions below passing vacuously.
+    #[test]
+    fn lsp_constant_constraint_agrees_with_reify_check_real_checker() {
+        let parsed = reify_compiler::parse_with_stdlib(
+            BT8_CONSTANT_CONSTRAINT_SRC,
+            ModulePath::single("test"),
+        );
+
+        // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
+        // Real-checker call shape matches `reify-cli`'s `parse_and_compile`
+        // verbatim (`crates/reify-cli/src/main.rs:200`).
+        let stub = reify_compiler::compile_with_stdlib(&parsed);
+        let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+        let stub_codes: HashSet<DiagnosticCode> =
+            stub.diagnostics.iter().filter_map(|d| d.code).collect();
+        let real_codes: HashSet<DiagnosticCode> =
+            real.diagnostics.iter().filter_map(|d| d.code).collect();
+        assert!(
+            stub_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
+            "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
+             reproducing the stub's AutoTypeParamAmbiguous verdict — the \
+             fixture is no longer divergent and this test would pass \
+             vacuously. stub diagnostics: {:#?}",
+            stub.diagnostics
+        );
+        assert!(
+            real_codes.contains(&DiagnosticCode::AutoTypeParamNoCandidate)
+                && !real_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
+            "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
+             reproducing the real checker's AutoTypeParamNoCandidate \
+             verdict — the fixture is no longer divergent and this test \
+             would pass vacuously. real-checker diagnostics: {:#?}",
+            real.diagnostics
+        );
+        assert_ne!(
+            stub_codes, real_codes,
+            "anti-vacuity guard: stub and real-checker DiagnosticCode sets \
+             must differ on BT8_CONSTANT_CONSTRAINT_SRC — a constant \
+             constraint is the one compile-time shape where they diverge; \
+             stub: {:#?}, real: {:#?}",
+            stub.diagnostics, real.diagnostics
+        );
+
+        // --- Stateless surface: compute_diagnostics ---
+        let diags = compute_diagnostics(BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
+        let no_candidate_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamNoCandidate".to_string(),
+        ));
+        let ambiguous_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamAmbiguous".to_string(),
+        ));
+        assert!(
+            diags.iter().any(|d| d.code == no_candidate_code)
+                && !diags.iter().any(|d| d.code == ambiguous_code),
+            "BT8 forward (compute_diagnostics): must agree with `reify \
+             check`'s real-checker AutoTypeParamNoCandidate verdict on a \
+             constant constraint, not the compile-time stub's \
+             AutoTypeParamAmbiguous; got diagnostics: {:#?}",
+            diags
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
+        let mut state = EvalState::new();
+        let result =
+            compute_diagnostics_with_state(&mut state, BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == no_candidate_code)
+                && !result.diagnostics.iter().any(|d| d.code == ambiguous_code),
+            "BT8 forward (compute_diagnostics_with_state): must agree with \
+             `reify check`'s real-checker AutoTypeParamNoCandidate verdict \
+             on a constant constraint, not the compile-time stub's \
+             AutoTypeParamAmbiguous; got diagnostics: {:#?}",
+            result.diagnostics
         );
     }
 
