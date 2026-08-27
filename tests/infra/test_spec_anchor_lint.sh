@@ -953,7 +953,7 @@ assert "(p3) the note states that a tombstoned ID is retired forever" _note_stat
 assert "(p3) the note states that a tombstoned ID is never reused" _note_states 'never reused'
 assert "(p3) the note names the tombstone sidecar path" _note_states 'docs/reify-language-spec.tombstones'
 assert "(p3) the note states the SAME-diff deletion rule" _note_states 'SAME diff'
-assert "(p3) the note states a heading anchor's scope" _note_states "whole run of intro prose"
+assert "(p3) the note states a heading anchor's scope" _note_states 'whole run of intro prose'
 assert "(p3) the note states the consumer rule: resolve by grepping the literal ID" \
     _note_states 'grepping the literal ID'
 assert "(p3) the note forbids consumers parsing section numbers for identity" \
