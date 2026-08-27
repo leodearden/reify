@@ -2440,25 +2440,35 @@ pub(crate) fn compile_geometry_op(
         // so they are read directly rather than through `eval_named_arg`'s
         // "missing required argument" Warning path. Defaults: iso_level=0.0
         // exactly, adaptive=false.
+        //
+        // The two halves of `iso` are DIFFERENT and must not be conflated
+        // (units-length λ, task 5755, decision D12):
+        //   - ABSENT  → the deliberate un-gated 0.0 default above. Un-gated on
+        //     purpose: `isosurface(solid)` is the common shipped form, and
+        //     routing absence through `required_length_arg` would push
+        //     `eval_named_arg`'s missing-arg Warning at every such call site.
+        //   - PRESENT → LENGTH-gated at the shared Contract C chokepoint, so a
+        //     bare `5` is REJECTED rather than silently read as 5 SI metres.
+        // `required_length_arg` is the SINGLE owner of the caller-facing
+        // `Unresolved` / `Invalid` wording (decision D9), so delegating keeps
+        // these messages byte-identical to every other Contract C position by
+        // construction. Evaluation is unchanged — `eval_named_arg` uses the
+        // same `reify_expr::eval_expr(expr, &eval_ctx_with_meta(..))` call this
+        // previously made inline; only the CLASSIFICATION is added.
         CompiledGeometryOp::Isosurface { grid, args } => {
             let grid_id = resolve_geom_ref(grid, step_handles)?;
 
-            let iso_level = match args.iter().find(|(n, _)| n == "iso").map(|(_, e)| e) {
+            let iso_level = match args.iter().find(|(n, _)| n == "iso") {
                 None => 0.0,
-                Some(expr) => {
-                    let v = reify_expr::eval_expr(
-                        expr,
-                        &eval_ctx_with_meta(values, functions, meta_map),
-                    );
-                    v.as_f64().unwrap_or_else(|| {
-                        diagnostics.push(Diagnostic::warning(
-                            "isosurface: 'iso' argument evaluated to a non-numeric \
-                             value — defaulting to 0.0"
-                                .to_string(),
-                        ));
-                        0.0
-                    })
-                }
+                Some(_) => required_length_arg(
+                    "iso",
+                    "isosurface",
+                    args,
+                    values,
+                    functions,
+                    meta_map,
+                    diagnostics,
+                )?,
             };
 
             let adaptive = match args.iter().find(|(n, _)| n == "adaptive").map(|(_, e)| e) {
