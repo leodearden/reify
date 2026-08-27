@@ -1013,6 +1013,105 @@ assert "(g-h-e) ...and the WARNING names an include.path chain as a surviving sc
 
 unset _ghe_status
 
+# ── (g-i) LAST-WINS: the sweep must report git's RESOLUTION, not any value ────
+# `--get-regexp` emits EVERY value a file sets for a key, while git resolves a
+# multi-valued key to the LAST one.  The sweep flagged ARMED on any emitted
+# `true`, so a config.worktree whose last word is `false` was reported armed
+# even though git reads it as false.  MEASURED on git 2.43.0, WITHOUT any
+# include (this pre-dates the include work and is not caused by it): a file with
+# `[rerere] enabled = true` then `[rerere] enabled = false` has effective
+# rerere.enabled=false in that lane, yet `check` printed "ARMED: worktree 'wtA'
+# overrides rerere.enabled=true".  Adding --includes WIDENS it, because an
+# included file can now contribute an overridden `true` of its own.
+#
+# A sweep false positive is uniquely damaging: `arm` writes --local only and can
+# never clear a per-worktree file, so the store would sit at the advisory exit 2
+# permanently with nothing actually wrong, and setup-dev.sh would warn on every
+# developer setup forever.  That is the same reasoning (g-d) applies to an inert
+# config.worktree.
+echo ""
+echo "--- (g-i) the sweep reports git's resolved value, not any emitted value ---"
+
+read -r GI_REPO GI_A GI_B <<< "$(make_wt_repo)"
+GI_A_GITDIR="$(git -C "$GI_A" rev-parse --absolute-git-dir)"
+GI_B_GITDIR="$(git -C "$GI_B" rev-parse --absolute-git-dir)"
+
+assert "(g-i) negative control: nothing planted -> check exits 0" \
+    bash "$GUARD" check "$GI_REPO"
+
+# (g-i-a) TWO PLAIN VALUES in one file, true then false.
+printf '[rerere]\n\tenabled = true\n[rerere]\n\tenabled = false\n' > "$GI_A_GITDIR/config.worktree"
+
+# Preconditions MEASURED: the armed value really IS emitted (so the detector had
+# something to trip on and a PASS cannot be the read returning nothing) ...
+assert "(g-i-a) fixture: --get-regexp emits BOTH values for the key" \
+    bash -c "[ \"\$(git config --file '$GI_A_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.enabled\$' | wc -l)\" -eq 2 ]"
+
+assert "(g-i-a) fixture: ...the FIRST of which is the armed one" \
+    bash -c "[ \"\$(git config --file '$GI_A_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.enabled\$' | head -1)\" = 'rerere.enabled true' ]"
+
+# ... while git RESOLVES the key to false, which is the verdict that matters.
+assert "(g-i-a) fixture: git resolves the key to false — the last value wins" \
+    bash -c "[ \"\$(git -C '$GI_A' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-i-a) an overridden true is NOT reported ARMED -> check exits 0" \
+    bash "$GUARD" check "$GI_REPO"
+
+assert "(g-i-a) ...and the lane is not named" \
+    bash -c "! bash '$GUARD' check '$GI_REPO' 2>&1 >/dev/null | grep -q 'wtA'"
+
+# (g-i-b) INCLUDE then DIRECT OVERRIDE — the shape --includes newly makes
+# reachable: the included file arms the key, the config.worktree then disarms it
+# directly, and git resolves to false.
+printf '[include]\n\tpath = extra.cfg\n[rerere]\n\tenabled = false\n' > "$GI_B_GITDIR/config.worktree"
+printf '[rerere]\n\tenabled = true\n' > "$GI_B_GITDIR/extra.cfg"
+
+assert "(g-i-b) fixture: the include's armed value is emitted first" \
+    bash -c "[ \"\$(git config --file '$GI_B_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.enabled\$' | head -1)\" = 'rerere.enabled true' ]"
+
+assert "(g-i-b) fixture: git resolves the key to false" \
+    bash -c "[ \"\$(git -C '$GI_B' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-i-b) an include armed then directly disarmed -> check exits 0" \
+    bash "$GUARD" check "$GI_REPO"
+
+assert "(g-i-b) ...and neither lane is named" \
+    bash -c "! bash '$GUARD' check '$GI_REPO' 2>&1 >/dev/null | grep -qE 'wtA|wtB'"
+
+# (g-i-d) The operator-visible consequence: with nothing actually wrong, `arm`
+# must succeed rather than park the store on the advisory exit 2 forever.
+bash "$GUARD" arm "$GI_REPO" >/dev/null 2>&1 && _gi_status=0 || _gi_status=$?
+
+assert "(g-i-d) arm on a store with only overridden values exits 0, not 2" \
+    test "$_gi_status" -eq 0
+
+unset _gi_status
+
+# (g-i-c) REVERSE ORDER IS STILL CAUGHT.  The control that stops (g-i-a)/(g-i-b)
+# from being satisfied by blanket suppression: direct `false` first, an
+# `[include]` arming it after, so git resolves to TRUE and the lane really is
+# armed.
+read -r GIC_REPO GIC_A GIC_B <<< "$(make_wt_repo)"
+GIC_A_GITDIR="$(git -C "$GIC_A" rev-parse --absolute-git-dir)"
+
+assert "(g-i-c) negative control: nothing planted -> check exits 0" \
+    bash "$GUARD" check "$GIC_REPO"
+
+printf '[rerere]\n\tenabled = false\n[include]\n\tpath = extra.cfg\n' > "$GIC_A_GITDIR/config.worktree"
+printf '[rerere]\n\tenabled = true\n' > "$GIC_A_GITDIR/extra.cfg"
+
+assert "(g-i-c) fixture: the DISARMED value is emitted first, the armed one last" \
+    bash -c "[ \"\$(git config --file '$GIC_A_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.enabled\$' | head -1)\" = 'rerere.enabled false' ]"
+
+assert "(g-i-c) fixture: git resolves the key to true — the lane IS armed" \
+    bash -c "[ \"\$(git -C '$GIC_A' config --bool --get rerere.enabled)\" = true ]"
+
+assert "(g-i-c) a value armed LAST is still reported -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$GIC_REPO' >/dev/null 2>&1"
+
+assert "(g-i-c) ...naming the offending worktree" \
+    bash -c "bash '$GUARD' check '$GIC_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtA'\""
+
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
 #     rr-cache.  The whole point is that every lane inherits one shared
