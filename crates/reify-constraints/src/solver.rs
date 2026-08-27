@@ -1891,6 +1891,11 @@ struct ConstraintCostFunction<'a> {
 ///
 /// Returns `None` if ANY term evaluates to a non-numeric / non-finite value,
 /// preserving the single-term None → UNDEF_OBJECTIVE_PENALTY / NoProgress paths.
+/// Returns `None` ALSO when the ACCUMULATED fold is itself non-finite (task
+/// #6377): finite per-term values still fold to ±Inf or NaN when `t.weight` is
+/// non-finite (it is an unvalidated `pub f64`) or when `t.weight * v` overflows.
+/// A non-finite score is not orderable, so this function abstains rather than
+/// emit one — see the fail-closed guard at the end of the body.
 ///
 /// I2 numerical equivalence: for a single term with weight 1.0,
 ///   Minimize → 0.0 + 1.0·v == v  (IEEE-754, finite v)
@@ -1946,6 +1951,34 @@ pub(crate) fn eval_objective_set(
             ObjectiveSense::Minimize => acc += term.weight * v,
             ObjectiveSense::Maximize => acc -= term.weight * v,
         }
+    }
+    // Fail-closed (task #6377; PRD docs/prds/compute-fea-hardening.md decision 4
+    // taxonomy). The per-term `.filter(|v| v.is_finite())?` above guards each
+    // `v` — it does NOT guard `acc`. Two unguarded paths reach a non-finite fold
+    // even so: `term.weight` is an unvalidated `pub f64`
+    // (reify-ir/src/constraint.rs, where "> 0; default 1.0" is a doc comment
+    // only, checked at no construction site), and even with finite POSITIVE
+    // weights `term.weight * v` can overflow to ±Inf, with a +Inf and a -Inf
+    // term folding to NaN. A non-finite score is not orderable, so abstain
+    // rather than emit one: every caller already handles `None` (drop the
+    // candidate / FeasibilityOnly / UNDEF_OBJECTIVE_PENALTY). This is what makes
+    // the "never actually exercised" claims at the two
+    // `unwrap_or(Ordering::Equal)` ranking sites (`solve_ranked_impl` below,
+    // and `impl Ord for ScoredModel` in cpsat.rs) true.
+    //
+    // `debug!`, not `warn!`: this function runs once per Nelder-Mead trial point
+    // via `ConstraintCostFunction::cost`, so a warn would emit thousands of
+    // lines per solve for one pathological objective. The call sits INSIDE the
+    // branch so the finite-fold path does no added work (F-result I1 / PRD §6.2
+    // I2 byte-identical cost-surface invariants).
+    if !acc.is_finite() {
+        tracing::debug!(
+            acc,
+            terms = objective.terms.len(),
+            "objective fold produced a non-finite accumulator; abstaining \
+             (no orderable score) rather than returning a NaN/Inf cost"
+        );
+        return None;
     }
     Some(acc)
 }
