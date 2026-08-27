@@ -286,7 +286,20 @@ pub enum Type {
     },
     /// Complex number type with a quantity type (e.g., Complex<Scalar[Ω]>).
     Complex(Box<Type>),
-    /// Orientation in N-dimensional space (unit quaternion for N=3, angle for N=2).
+    /// Orientation in N-dimensional space. Only `N=3` is inhabited today,
+    /// represented as a unit quaternion (`Value::Orientation { w, x, y, z }` in
+    /// reify-ir; `try_infer_type` yields `Type::Orientation(3)` unconditionally).
+    ///
+    /// This variant previously promised "angle for N=2", but the value layer
+    /// never made good on it: no value can carry `N != 3`, no stdlib
+    /// constructor in the orientation family builds anything but a quaternion,
+    /// and `Orientation(N != 3)` is constructed only in unit tests (here and
+    /// in `joint_self_check`), never by the value or resolution layers.
+    /// The `usize` parameter is therefore vestigial today. Whether SO(2)
+    /// should become a first-class type — the sketch-on-plane anchoring
+    /// question, `docs/prds/v0_6/constrained-2d-sketch.md:24` — is task
+    /// #6336, which would also decide the same vestigial parameter on
+    /// `Frame` / `Transform` / `AffineMap`.
     Orientation(usize),
     /// Coordinate frame in N-dimensional space: an origin point + a basis orientation.
     Frame(usize),
@@ -495,6 +508,8 @@ impl Type {
     }
 
     /// Shorthand for an orientation in N-dimensional space.
+    ///
+    /// See the `Orientation` variant doc: only `N=3` is inhabited today.
     pub fn orientation(n: usize) -> Self {
         Type::Orientation(n)
     }

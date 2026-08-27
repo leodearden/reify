@@ -305,6 +305,7 @@ stl
 svg
 template
 timer
+tombstones
 toml
 ts
 tsx
@@ -690,7 +691,7 @@ fi
 # Cycle 10 owns the missing-entry direction.
 #
 # SUBSET, not equality, and measured to be binding here rather than merely
-# inherited from Cycle 9: the sweep finds 36 extensions while _EXTS carries 59,
+# inherited from Cycle 9: the sweep finds 37 extensions while _EXTS carries 60,
 # and the 23-entry gap is legitimate because this is a SHARED α/γ vector —
 #   cc cjs csv cts cxx diff example example-systemd-config gitattributes
 #   gitmodules hh hpp jsonl jsx log mts python-version scss step stl svg
@@ -755,7 +756,7 @@ fi
 #     Cycle 9 above (α's _EXTLESS PLUS γ's EXTENSIONLESS_FILENAMES copies), and
 #     Cycle 9's own assertion will normally RED beside this one.
 #
-# Green on arrival (36 swept ⊂ the 59 pinned) — by construction, since a RED on
+# Green on arrival (37 swept ⊂ the 60 pinned) — by construction, since a RED on
 # arrival would mean the allowlist was already broken.  Per G6 it was shown to
 # FIRE rather than assumed to: deleting `ri` from _EXTS in a scratch copy of the
 # guard (59 -> 58 entries) turns this block from 41 passed / 0 failed to

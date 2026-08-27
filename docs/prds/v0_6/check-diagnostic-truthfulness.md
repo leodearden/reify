@@ -305,6 +305,14 @@ D2, a full two-sided boundary-test matrix is not.)
   design intent of `check` (locked by `check_fea_violated_constraint_is_not_gated`,
   cited in the :448-474 doc comment — this PRD's D4 changes that diagnostic's
   *severity*, never its trampoline-free *cause*).
+  **CORRECTION, 2026-08-26:** the trampoline-free design intent of `check` has since
+  been OVERTURNED by Leo's ruling 2 in `docs/notes/driver-contract-matrix-draft.md`;
+  `check` gains the FEA trampolines and the named lock is retired, delivered by
+  `docs/prds/v0_6/solver-driver-parity.md` leaf δ. **This PRD's own scope is unchanged** —
+  D4 still owns only the diagnostic's severity, and this bullet's other three
+  "must not change" items still stand. What is no longer true is that the *cause*
+  is permanent. Correction owed and landed by
+  `docs/prds/v0_6/driver-contract-implementation.md`'s authoring session.
 
 ## Pre-conditions for activating
 

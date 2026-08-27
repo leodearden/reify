@@ -28,6 +28,8 @@ mod compile_builder_smoke_tests;
 mod doc_propagation_tests;
 #[path = "harness_compilation_surface/examples_smoke.rs"]
 mod examples_smoke;
+#[path = "harness_compilation_surface/fea_bracket_minimize_mass_example.rs"]
+mod fea_bracket_minimize_mass_example;
 #[path = "harness_compilation_surface/meta_compile_tests.rs"]
 mod meta_compile_tests;
 #[path = "harness_compilation_surface/pragma_compile_tests.rs"]

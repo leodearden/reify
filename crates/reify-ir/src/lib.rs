@@ -32,6 +32,7 @@ pub mod node_traits;
 pub mod persistent;
 pub mod provenance;
 pub mod ranked;
+pub mod ri_literal;
 pub mod sampled;
 pub mod structure_registry;
 pub mod traits;
@@ -48,11 +49,11 @@ pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_ann
 pub use color::Rgb8;
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
-    AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
-    ConstraintResult, ConstraintSolver, DimensionIncoherence, ObjectiveCombination,
-    ObjectiveProvenance, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimizedImpl,
-    OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult, TermContribution,
-    dimension_of, objective_terms_coherent,
+    AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
+    ConstraintInput, ConstraintResult, ConstraintSolver, DimensionIncoherence,
+    ObjectiveCombination, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, ObjectiveTerm,
+    OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult,
+    TermContribution, dimension_of, objective_terms_coherent,
 };
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
@@ -78,6 +79,17 @@ pub use geometry::{
 };
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+    check_length_field, non_length_kernel_field_message, non_numeric_kernel_field_message,
+};
+// TEST-ONLY arming facility for the C4 length tripwire. Hidden from the
+// advertised API surface of a crate 13+ crates depend on: arming from
+// production code would, in a debug build, turn every legacy bare-`Value`
+// kernel op on that thread into a panic (the PRD D5 breakage the
+// default-disarmed design exists to avoid). See
+// `kernel_validation::arm_length_tripwire_assert`.
+#[doc(hidden)]
+pub use kernel_validation::{
+    LengthTripwireAssertGuard, arm_length_tripwire_assert, length_tripwire_assert_armed,
 };
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
@@ -85,6 +97,7 @@ pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
+pub use ri_literal::{RiLiteralError, value_to_ri_literal, value_to_ri_literal_with_unit};
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     KeyedMember, MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation, MemberKey, RegionRef,

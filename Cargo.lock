@@ -4571,6 +4571,7 @@ dependencies = [
  "reify-eval",
  "reify-ir",
  "reify-test-support",
+ "tracing",
 ]
 
 [[package]]

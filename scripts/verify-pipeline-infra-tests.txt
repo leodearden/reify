@@ -269,6 +269,17 @@ scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_w
 # watcher.py::sync_folders never prints).
 scripts/jcodemunch-index-reify.sh    tests/infra/test_jcodemunch_index_reify.sh
 
+# Task 6109 (δ): the transient-serve lifecycle wrapper. Its guard is hermetic
+# (stdlib-only stub serve behind REIFY_JC_SERVE_CMD, ephemeral ports it picks
+# itself, no uvx and no network), so it is cheap enough to run as a per-task
+# fail-fast pole — and it needs to, because every regression this wrapper can
+# suffer is SILENT at the call site: a drifted teardown still exits with the
+# wrapped command's status while leaking a serve that squats 8901 and makes the
+# NEXT invocation refuse, and any wrapper chatter appended to stderr after the
+# wrapped command silently breaks the trailing-findings-array extraction every
+# reify-audit consumer depends on.
+scripts/with-jcodemunch-serve.sh    tests/infra/test_with_jcodemunch_serve.sh
+
 # Task 6320: the merge-worker trivial-pass oracle and its static manifest had
 # NO row here at all, so a guard-only or manifest-only task-scope verify
 # selected ZERO infra poles (select_infra_tests() matches artifact paths
@@ -283,3 +294,55 @@ scripts/jcodemunch-index-reify.sh    tests/infra/test_jcodemunch_index_reify.sh
 # "pre-existing self-protection gap" note in scripts/doc-sync-paths.txt).
 scripts/verify-pipeline-guard.sh     tests/infra/test_verify_pipeline_guard.sh
 scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
+
+# Task 6343: the OCCT presence/SONAME preflight arm of
+# scripts/check-manifold-deps.sh. Same one-artifact-multiple-rows pattern as
+# check-infra-classification-manifest.sh above — the gate script itself, plus
+# each artifact whose content the guard's drift-pins mirror:
+#   - crates/reify-build-utils/src/lib.rs   (NativeDep::Occt candidate lists +
+#     sentinels; the bash block is a declared MIRROR, pinned equal order-wise)
+#   - scripts/setup-dev.sh                  (its dpkg OCCT expectation must be
+#     a member of OCCT_ACCEPTED_SONAMES)
+# check-manifold-deps.sh needs no scripts/verify-pipeline-paths.txt row: it is
+# emitted-not-sourced by verify.sh, so the guard's emitted-gate clause already
+# auto-derives it as load-bearing. These rows are the cheap per-task fail-fast
+# complement to that full-gate route. Under-declaration here would only lose
+# fail-fast, never soundness — the merge-tier --scope all run executes the test
+# regardless.
+scripts/check-manifold-deps.sh          tests/infra/test_occt_deps_preflight.sh
+crates/reify-build-utils/src/lib.rs     tests/infra/test_occt_deps_preflight.sh
+scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
+
+# Task 6758 (spec-conformance leaf α): the sc-anchor substrate for
+# docs/reify-language-spec.md — the opaque, randomly-minted paragraph-level
+# cite targets the conformance suite quantifies over, their tombstone sidecar,
+# the normative authoring note, and the lint that keeps all three well-formed.
+# Same one-artifact-multiple-rows pattern as check-infra-classification-
+# manifest.sh above; the guard's self-test is hermetic (pure bash/awk/git, no
+# cargo), so it is cheap enough to run as a per-task fail-fast pole.
+#
+# These rows are what make the self-test run at TASK scope at all:
+# scripts/verify.sh emits the wholesale tests/infra/run_all.sh pool suite only
+# at DF_VERIFY_ROLE=merge/background, so without them a diff touching only the
+# spec or the lint would select ZERO infra poles and the substrate's guard
+# would first fire at the merge gate.
+#
+# Note the spec ITSELF is a row key here, not just the tooling: an anchor is a
+# line IN the spec, so a spec-only edit (a deletion without a same-diff
+# tombstone, a hand-typed anchor, an anchor stranded before a blank line) is
+# exactly the diff that can break the substrate.
+#
+# SCOPE of what these rows buy TODAY: rules 1-4, 6 and 7 (format, uniqueness,
+# live/tombstone disjointness, tombstone grammar + sortedness, placement, and
+# no swallowed anchors) in full, plus rule 5 (deletion => same-diff tombstone)
+# only for an UNCOMMITTED working-tree deletion. The lint's default base is
+# HEAD, and by the time a task/merge verify runs, the branch's commits are
+# already in HEAD -- so base == current and the deletion comparison is a file
+# against itself. Rule 5 becomes effective at branch scope when leaf theta
+# (#6766) wires the merge-gate invocation and passes `--base <merge-base>`
+# explicitly; that wiring is theta's deliverable, not a defect in these rows.
+docs/reify-language-spec.md          tests/infra/test_spec_anchor_lint.sh
+docs/reify-language-spec.tombstones  tests/infra/test_spec_anchor_lint.sh
+docs/notes/spec-anchor-contract.md   tests/infra/test_spec_anchor_lint.sh
+scripts/spec-anchor-lint.sh          tests/infra/test_spec_anchor_lint.sh
+tests/infra/test_spec_anchor_lint.sh tests/infra/test_spec_anchor_lint.sh

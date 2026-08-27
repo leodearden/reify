@@ -85,6 +85,33 @@ extern crate reify_kernel_occt as _;
 /// this (its `ny` follows the 100 mm width → `ny = 6`, not the hardcoded 1).
 const SYNTHETIC_GRID_NODES: usize = 854;
 
+/// Realized-path §7a grid shape for the 1 m × 100 mm × 100 mm `box(...)` body
+/// (`BODY_SOURCE` / `MULTI_CASE_BODY_SOURCE`), from the realized arm's
+/// derivation: `ext = aabb = [1.0, 0.1, 0.1] m`, `nz = 6`, `dz = ext_z = 0.1`,
+/// `nx = round(ext_x/dz × 6) = 60`, `ny = round(ext_y/dz × 6) = 6` — so the grid
+/// is `(60+1)(6+1)(6+1)`. The synthetic path fixes `ny = 1` (2 Y-nodes), which is
+/// what makes the Y axis the structural discriminator between the two paths.
+#[cfg(has_gmsh)]
+const REALIZED_BOX_GRID_AXES: [usize; 3] = [61, 7, 7];
+
+/// `∏ REALIZED_BOX_GRID_AXES` = 2989. Derived, not restated, so the shape and
+/// the count can never disagree.
+#[cfg(has_gmsh)]
+const REALIZED_BOX_GRID_NODES: usize =
+    REALIZED_BOX_GRID_AXES[0] * REALIZED_BOX_GRID_AXES[1] * REALIZED_BOX_GRID_AXES[2];
+
+/// Realized-path §7a grid shape for `NON_PRISMATIC_BODY_SOURCE`'s
+/// `cylinder(50mm, 200mm)`: AABB `[0.1, 0.1, 0.2] m` ⇒ `nz = 6`,
+/// `nx = ny = round(0.1/0.2 × 6) = 3` ⇒ `(3+1)(3+1)(6+1)`.
+#[cfg(has_gmsh)]
+const REALIZED_CYLINDER_GRID_AXES: [usize; 3] = [4, 4, 7];
+
+/// `∏ REALIZED_CYLINDER_GRID_AXES` = 112.
+#[cfg(has_gmsh)]
+const REALIZED_CYLINDER_GRID_NODES: usize = REALIZED_CYLINDER_GRID_AXES[0]
+    * REALIZED_CYLINDER_GRID_AXES[1]
+    * REALIZED_CYLINDER_GRID_AXES[2];
+
 /// Build a fresh `Engine` backed by a real OCCT kernel as the lex-min BRep
 /// default (so `box(...)` realizes into a tessellatable closed surface),
 /// mirroring `volume_mesh_realization_e2e.rs::make_occt_engine`.
@@ -124,6 +151,134 @@ fn sampled_field(result: &reify_ir::Value, field: &str) -> reify_ir::SampledFiel
         }
         other => panic!("field '{field}' must be Value::Field, got {other:?}"),
     }
+}
+
+/// The `cases` map of a `solve_load_cases` **MultiCaseResult** value, i.e. the
+/// inner map of `Value::Map{"cases" → Map<String, ElasticResult>}`.
+///
+/// Factored out because every multi-case capstone in this file needs the same
+/// two-level unwrap, and the FAILURE text is the part worth having once: a
+/// pre-hydration `Failed`/`Undef` at the outer level is the signature of the
+/// redispatch not delivering the realized mesh to the `solver::multi_case`
+/// trampoline. Three hand-copied versions of that message drift; one does not.
+#[cfg(has_gmsh)]
+fn multi_case_cases_map(
+    result_val: &reify_ir::Value,
+) -> std::collections::BTreeMap<reify_ir::Value, reify_ir::Value> {
+    use reify_ir::Value;
+
+    match result_val {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(inner)) => inner.clone(),
+            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
+        },
+        other => panic!(
+            "solve_load_cases result must be a MultiCaseResult Value::Map, got: {other:?} \
+             — a pre-hydration Failed/Undef here means the redispatch did not deliver \
+             the realized mesh to the multi_case trampoline"
+        ),
+    }
+}
+
+/// One named case out of [`multi_case_cases_map`]'s result, dumping the key set
+/// on a miss (an EMPTY map here is #5951's signature, not a typo'd case name).
+#[cfg(has_gmsh)]
+fn multi_case_case<'a>(
+    cases_map: &'a std::collections::BTreeMap<reify_ir::Value, reify_ir::Value>,
+    case_name: &str,
+) -> &'a reify_ir::Value {
+    cases_map
+        .get(&reify_ir::Value::String(case_name.to_string()))
+        .unwrap_or_else(|| {
+            panic!(
+                "cases map must contain \"{case_name}\"; got: {:?}",
+                cases_map.keys().collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Install the MULTI-CASE fixtures' compute trampolines + VolumeMesh demand.
+///
+/// Manual registration, NOT `register_compute_fns` — see the module doc's
+/// #4876 boundary-demand rationale. The outer consumer is `solver::multi_case`
+/// (VolumeMesh-demanding, NO boundary demand); each per-case sub-solve routes
+/// through `solver::elastic_static`, so BOTH trampolines are registered.
+#[cfg(has_gmsh)]
+fn register_multi_case_trampolines(engine: &mut reify_eval::Engine) {
+    engine.register_compute_fn(
+        "solver::multi_case",
+        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "solver::elastic_static",
+        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_volume_mesh_demand("solver::multi_case");
+}
+
+/// Install the SINGLE-CASE body fixtures' compute trampoline + VolumeMesh demand.
+///
+/// Manual registration, NOT `register_compute_fns` — see the module doc's
+/// #4876 boundary-demand rationale. Trampoline + VolumeMesh demand ONLY, no
+/// boundary demand (that routes through the #4876-SIGSEGV attributed producer,
+/// which is exactly the path a curved/seamed B-rep is most likely to crash on).
+#[cfg(has_gmsh)]
+fn register_elastic_static_body_trampoline(engine: &mut reify_eval::Engine) {
+    engine.register_compute_fn(
+        "solver::elastic_static",
+        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_volume_mesh_demand("solver::elastic_static");
+}
+
+/// The ONE realization harness every `#[cfg(has_gmsh)]` body capstone below
+/// shares: compile `source`, `build()` it through the real OCCT+gmsh path, and
+/// hand back BOTH the engine (so a caller can assert on
+/// `realization_kernel_provenance()`) and the `BuildResult`.
+///
+/// `register` installs the fixture's trampolines and demands — the one thing
+/// that genuinely differs between fixtures, and the reason this takes a callback
+/// rather than hardcoding a registration.
+///
+/// `build()` (not `eval()`) realizes geometry through the kernel and runs the
+/// post-hydration redispatch — the only path that projects a VolumeMesh into a
+/// geometry-consuming `@optimized` consumer.
+///
+/// The no-`Severity::Error` assertion lives here because every caller wants it
+/// and none wants it phrased differently; `label` names the fixture in the
+/// failure message.
+#[cfg(has_gmsh)]
+fn build_realized(
+    source: &str,
+    label: &str,
+    register: impl FnOnce(&mut reify_eval::Engine),
+) -> (reify_eval::Engine, reify_eval::BuildResult) {
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_occt_engine();
+    register(&mut engine);
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let build_result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the {label} build — a tessellation or \
+         mesher failure on this fixture's geometry would surface here. got: {errors:?}"
+    );
+
+    (engine, build_result)
 }
 
 /// `cfg(has_gmsh)`: the body-arg `solve_elastic_static` runs on the realized tet
@@ -230,12 +385,7 @@ fn body_solve_runs_on_realized_volume_mesh() {
 
     let disp = sampled_field(result_val, "displacement");
 
-    // Realized-path §7a grid derivation (elastic_static.rs realized arm):
-    //   ext = box AABB = [1.0, 0.1, 0.1] m, nz = 6, dz = ext_z = 0.1
-    //   nx = round(ext_x/dz × 6) = round(60) = 60
-    //   ny = round(ext_y/dz × 6) = round(6)  = 6   (vs synthetic ny = 1)
-    //   nodes = (60+1)(6+1)(6+1) = 61 × 7 × 7 = 2989
-    const REALIZED_GRID_NODES: usize = 61 * 7 * 7; // 2989
+    // Realized-path §7a grid derivation: see `REALIZED_BOX_GRID_AXES`.
     let node_count = disp.data.len() / 3;
 
     // Structural proof the realized-AABB heuristic (not the synthetic hardcode)
@@ -260,9 +410,10 @@ fn body_solve_runs_on_realized_volume_mesh() {
          synthetic grid — the realized VolumeMesh must drive the §7a resample grid"
     );
     assert_eq!(
-        node_count, REALIZED_GRID_NODES,
+        node_count, REALIZED_BOX_GRID_NODES,
         "the body-arg §7a grid node count must equal the realized-AABB heuristic \
-         {REALIZED_GRID_NODES} (61×7×7 for the 1 m × 100 mm × 100 mm box), got {node_count}"
+         {REALIZED_BOX_GRID_NODES} ({REALIZED_BOX_GRID_AXES:?} for the 1 m × 100 mm × \
+         100 mm box), got {node_count}"
     );
 
     // ── (3) converged ─────────────────────────────────────────────────────────
@@ -322,8 +473,8 @@ structure FeaBodyMultiCase {
 #[cfg(has_gmsh)]
 #[test]
 fn multi_case_body_solve_shares_one_realization_across_cases() {
-    use reify_core::{KernelId, Severity, ValueCellId};
-    use reify_ir::{ExportFormat, ReprKind, Value};
+    use reify_core::{KernelId, ValueCellId};
+    use reify_ir::{ReprKind, Value};
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
@@ -333,43 +484,10 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
         return;
     }
 
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(MULTI_CASE_BODY_SOURCE);
-
-    let mut engine = make_occt_engine();
-    // Manual registration — see the module doc. The outer consumer is
-    // solver::multi_case (VolumeMesh-demanding, NO boundary demand); each per-case
-    // sub-solve routes through solver::elastic_static, so BOTH trampolines are
-    // registered. NOT register_compute_fns (that installs the #4876-SIGSEGV
-    // boundary-attributed producer).
-    engine.register_compute_fn(
-        "solver::multi_case",
-        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_compute_fn(
-        "solver::elastic_static",
-        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_volume_mesh_demand("solver::multi_case");
-    assert!(
-        engine.ensure_gmsh_kernel(),
-        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
-    );
-
-    // build() (not eval()) realizes geometry through the kernel and runs the
-    // post-hydration redispatch — the only path that projects a VolumeMesh into a
-    // geometry-consuming @optimized consumer.
-    let build_result = engine.build(&compiled, ExportFormat::Step);
-
-    let errors: Vec<_> = build_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error diagnostics from the multi-case body build, got: {errors:?}"
+    let (engine, build_result) = build_realized(
+        MULTI_CASE_BODY_SOURCE,
+        "multi-case body",
+        register_multi_case_trampolines,
     );
 
     // ── (b) EXACTLY ONE (VolumeMesh, Gmsh) realization for the shared body ─────
@@ -400,17 +518,7 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
         .get(&result_cell)
         .unwrap_or_else(|| panic!("cell FeaBodyMultiCase.result not found in build values"));
 
-    let cases_map = match result_val {
-        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
-            Some(Value::Map(inner)) => inner.clone(),
-            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
-        },
-        other => panic!(
-            "solve_load_cases result must be a MultiCaseResult Value::Map, got: {other:?} \
-             — a pre-hydration Failed/Undef here means the redispatch did not deliver \
-             the realized mesh to the multi_case trampoline"
-        ),
-    };
+    let cases_map = multi_case_cases_map(result_val);
     assert_eq!(
         cases_map.len(),
         2,
@@ -418,20 +526,10 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
         cases_map.len()
     );
 
-    // Realized-path §7a grid: box AABB [1.0, 0.1, 0.1] m ⇒ nx=60, ny=6, nz=6 ⇒
-    // (60+1)(6+1)(6+1) = 61×7×7 = 2989 (vs the synthetic ny=1 → 854). See the
-    // single-case capstone above for the full derivation.
-    const REALIZED_GRID_NODES: usize = 61 * 7 * 7; // 2989
-
+    // Realized-path §7a grid (vs the synthetic ny=1 → 854): see
+    // `REALIZED_BOX_GRID_AXES` for the derivation.
     for case_name in ["operating", "overload"] {
-        let case_val = cases_map
-            .get(&Value::String(case_name.to_string()))
-            .unwrap_or_else(|| {
-                panic!(
-                    "cases map must contain \"{case_name}\"; got: {:?}",
-                    cases_map.keys().collect::<Vec<_>>()
-                )
-            });
+        let case_val = multi_case_case(&cases_map, case_name);
 
         let disp = sampled_field(case_val, "displacement");
         let node_count = disp.data.len() / 3;
@@ -458,16 +556,28 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
              synthetic grid — the shared realized VolumeMesh must drive the §7a grid"
         );
         assert_eq!(
-            node_count, REALIZED_GRID_NODES,
+            node_count, REALIZED_BOX_GRID_NODES,
             "case \"{case_name}\": §7a grid node count must equal the realized-AABB \
-             heuristic {REALIZED_GRID_NODES} (61×7×7 for the 1 m × 100 mm × 100 mm box), \
-             got {node_count}"
+             heuristic {REALIZED_BOX_GRID_NODES} ({REALIZED_BOX_GRID_AXES:?} for the \
+             1 m × 100 mm × 100 mm box), got {node_count}"
         );
         assert_eq!(
             extract_field(case_val, "converged"),
             Some(Value::Bool(true)),
             "case \"{case_name}\": the shared realized-mesh solve must converge"
         );
+
+        // ── #6154 grid-miss measurement, riding THIS realization ─────────────
+        // A full OCCT+gmsh realization is the most expensive thing in this file
+        // and one has just happened here, on the fixture #6154 measures, so its
+        // measurement is asserted from this capstone rather than from a second
+        // copy of the same build. Every assertion it makes is labelled
+        // "realized box"; see `assert_box_grid_miss_measurement` for the whole
+        // narrative and for what it deliberately does NOT assert.
+        if case_name == "operating" {
+            let stress = sampled_field(case_val, "stress");
+            assert_box_grid_miss_measurement(&disp, &stress);
+        }
     }
 }
 
@@ -666,8 +776,8 @@ structure FeaBodyNonPrismaticMultiCase {
 #[cfg(has_gmsh)]
 #[test]
 fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
-    use reify_core::{KernelId, Severity, ValueCellId};
-    use reify_ir::{ExportFormat, ReprKind, Value};
+    use reify_core::{KernelId, ValueCellId};
+    use reify_ir::{ReprKind, Value};
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
@@ -677,36 +787,12 @@ fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
         return;
     }
 
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(NON_PRISMATIC_BODY_SOURCE);
-
-    let mut engine = make_occt_engine();
-    // Manual registration — see the module doc. Trampoline + VolumeMesh demand
-    // ONLY; NO boundary demand (that routes through the #4876-SIGSEGV attributed
-    // producer, which is exactly the path a curved/seamed B-rep is most likely to
-    // crash on).
-    engine.register_compute_fn(
-        "solver::elastic_static",
-        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_volume_mesh_demand("solver::elastic_static");
-    assert!(
-        engine.ensure_gmsh_kernel(),
-        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
-    );
-
-    let build_result = engine.build(&compiled, ExportFormat::Step);
-
-    // ── (1) no Error diagnostics — the curved body tessellated and tet-meshed ──
-    let errors: Vec<_> = build_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error diagnostics from the non-prismatic body build — a mesher \
-         failure on the curved lateral surface would surface here. got: {errors:?}"
+    // ── (1) no Error diagnostics — the curved body tessellated and tet-meshed;
+    //        `build_realized` carries that assertion for every fixture here.
+    let (engine, build_result) = build_realized(
+        NON_PRISMATIC_BODY_SOURCE,
+        "non-prismatic body",
+        register_elastic_static_body_trampoline,
     );
 
     // ── (2) exactly one (VolumeMesh, Gmsh) realization ────────────────────────
@@ -764,15 +850,28 @@ fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
         Some(Value::Bool(true)),
         "the non-prismatic realized-mesh solve must converge"
     );
+
+    // ── (5) #6154 CYLINDER control, riding THIS realization ───────────────────
+    // The anti-weakening guard for the box's 35% out-of-solid measurement: here
+    // the AABB is NOT the solid, so 84 of 112 grid nodes MUST stay `NaN`. Rides
+    // this build for the same cost reason as the box's; every assertion is
+    // labelled "realized cylinder". Closed form and ownership split:
+    // `assert_cylinder_grid_miss_measurement`.
+    let cyl_stress = sampled_field(result_val, "stress");
+    let _report = assert_cylinder_grid_miss_measurement(&disp, &cyl_stress);
 }
 
 /// Build a fresh OCCT+Gmsh engine with the multi-case FEA trampolines installed,
 /// run `build()` on `source`, and return `(realization_entries delta, build)`.
 ///
-/// Manual registration (`solver::multi_case` + `solver::elastic_static` +
-/// `register_volume_mesh_demand`) — NOT `register_compute_fns`, see the module
-/// doc's #4876 boundary-demand rationale. The delta is taken across the build on
-/// a FRESH engine, so it is attributable to this build alone.
+/// Registration is [`register_multi_case_trampolines`] — NOT
+/// `register_compute_fns`, see the module doc's #4876 boundary-demand rationale.
+/// The delta is taken across the build on a FRESH engine, so it is attributable
+/// to this build alone.
+///
+/// Does NOT go through [`build_realized`]: it must read `cache_stats()` on the
+/// engine BEFORE the build to establish the zero baseline, which a
+/// build-and-return helper cannot expose.
 #[cfg(has_gmsh)]
 fn build_multi_case_and_count_realizations(
     source: &str,
@@ -782,17 +881,7 @@ fn build_multi_case_and_count_realizations(
     let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
 
     let mut engine = make_occt_engine();
-    engine.register_compute_fn(
-        "solver::multi_case",
-        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_compute_fn(
-        "solver::elastic_static",
-        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_volume_mesh_demand("solver::multi_case");
+    register_multi_case_trampolines(&mut engine);
     assert!(
         engine.ensure_gmsh_kernel(),
         "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
@@ -1031,17 +1120,7 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
         .unwrap_or_else(|| {
             panic!("cell FeaBodyNonPrismaticMultiCase.result not found in build values")
         });
-    let cases_map = match result_val {
-        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
-            Some(Value::Map(inner)) => inner.clone(),
-            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
-        },
-        other => panic!(
-            "solve_load_cases result must be a MultiCaseResult Value::Map, got: {other:?} \
-             — a pre-hydration Failed/Undef here means the redispatch did not deliver \
-             the realized mesh to the multi_case trampoline"
-        ),
-    };
+    let cases_map = multi_case_cases_map(result_val);
     assert_eq!(
         cases_map.len(),
         2,
@@ -1052,14 +1131,7 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
     // ── (4) each case carries REAL Sampled fields, converged ──────────────────
     let mut von_mises: Vec<(&str, f64)> = Vec::new();
     for case_name in ["operating", "overload"] {
-        let case_val = cases_map
-            .get(&Value::String(case_name.to_string()))
-            .unwrap_or_else(|| {
-                panic!(
-                    "cases map must contain \"{case_name}\"; got: {:?}",
-                    cases_map.keys().collect::<Vec<_>>()
-                )
-            });
+        let case_val = multi_case_case(&cases_map, case_name);
         assert!(
             !matches!(case_val, Value::Undef),
             "case \"{case_name}\" must not be Undef"
@@ -1072,6 +1144,17 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
             "case \"{case_name}\": displacement must be a 3D Regular grid, got {} axes",
             disp.axis_grids.len()
         );
+        // ⚠ KNOWN-WRONG, and left that way ON PURPOSE (#6154). This assertion
+        // and its `stress` twin below contradict the normative out-of-solid
+        // sentinel (PRD `docs/prds/v0_4/fea-result-model.md` §3/§4.1): the body
+        // here is a CYLINDER, so its AABB is emphatically not the solid and
+        // `assert_cylinder_grid_miss_measurement` measures 84 of 112 grid nodes
+        // as correctly `NaN`. They are inert only because this test is
+        // `#[ignore]`d on #5951. WHEN #5951 UNBLOCKS IT, these two will fail,
+        // and the fix is to replace them with a bucket-split expectation — see
+        // `assert_cylinder_grid_miss_measurement` for the closed form. Do NOT
+        // weaken the sentinel to satisfy them. Rationale: PRD §11 Q2, "Hazard
+        // recorded for #5951".
         assert!(
             !disp.data.is_empty() && disp.data.iter().all(|v| v.is_finite()),
             "case \"{case_name}\": displacement data must be non-empty and all-finite \
@@ -1086,6 +1169,8 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
 
         // `stress` must be a real Sampled field too, not merely present.
         let stress = sampled_field(case_val, "stress");
+        // ⚠ The `stress` twin of the known-wrong all-finite assertion above —
+        // same #6154 hazard, same resolution when #5951 unblocks this test.
         assert!(
             !stress.data.is_empty() && stress.data.iter().all(|v| v.is_finite()),
             "case \"{case_name}\": stress data must be non-empty and all-finite"
@@ -1179,5 +1264,611 @@ fn solve_elastic_static_body_e2e_skipped_without_gmsh() {
     eprintln!(
         "skipping FEA body-arg realized-VolumeMesh capstone: has_gmsh cfg not set \
          (stub-mode build)"
+    );
+}
+
+/// Task #6154 — realize `NON_PRISMATIC_BODY_SOURCE`'s `cylinder(50mm, 200mm)`
+/// through the OCCT+gmsh path and hand back its §7a-resampled
+/// `(displacement, stress)` fields. `None` ⇒ OCCT is unavailable and the caller
+/// skips.
+///
+/// `non_prismatic_body_solve_runs_on_realized_volume_mesh` above already
+/// realizes this source, so the LIVE control
+/// ([`assert_cylinder_grid_miss_measurement`]) rides that build and this helper
+/// is not on its path at all. It exists solely for the `#[ignore]`d
+/// [`realized_cylinder_mesh_covers_its_own_aabb`], which is run explicitly, in
+/// isolation, and so has no capstone realization to ride.
+///
+/// The box has no counterpart: its every claim now rides the capstone (see
+/// [`assert_box_grid_miss_measurement`]), so the second realization that used to
+/// pay for a nominally "independent" box coverage test is gone.
+///
+/// Not memoized — there is exactly one caller, and a `OnceLock` could never
+/// dedupe against the capstone's realization anyway, because that capstone
+/// asserts on the `Engine` (`realization_kernel_provenance()`), which a
+/// field-returning helper cannot hand back. The realization HARNESS that
+/// genuinely IS shared is [`build_realized`].
+#[cfg(has_gmsh)]
+fn realized_cylinder_fields(
+    caller: &str,
+) -> Option<(reify_ir::SampledField, reify_ir::SampledField)> {
+    use reify_core::ValueCellId;
+    use reify_ir::Value;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping {caller}: OCCT not available (no BRep kernel to build the cylinder body)"
+        );
+        return None;
+    }
+
+    let (_engine, build_result) = build_realized(
+        NON_PRISMATIC_BODY_SOURCE,
+        "non-prismatic body",
+        register_elastic_static_body_trampoline,
+    );
+
+    let result_cell = ValueCellId::new("FeaBodyNonPrismatic", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaBodyNonPrismatic.result not found in build values"));
+    assert!(
+        matches!(result_val, Value::StructureInstance(_) | Value::Map(_)),
+        "non-prismatic body result must be a populated ElasticResult, got: {result_val:?}"
+    );
+
+    Some((sampled_field(result_val, "displacement"), sampled_field(result_val, "stress")))
+}
+
+/// Classify a §7a field's out-of-solid grid points and DUMP the full split plus
+/// per-axis miss histograms — the measurement artefact #6154 owes. Returns
+/// `(report, per_axis_histograms)`.
+///
+/// `stride` is the field's component count: 3 for `displacement`, 9 for
+/// `stress`. Both carry the identical PRD §3 sentinel contract (see
+/// `elastic_static.rs`'s field-population contract — "neither is exempt"), so
+/// both are measurable by the same instrument, and `label` is what tells two
+/// dumps of the same realization apart.
+///
+/// A raw NaN *count* diagnoses nothing on its own: the sentinel is normative
+/// (PRD `v0_4/fea-result-model.md` §3 / §4.1), and a coverage hole and boundary
+/// round-off write the identical `NaN`. The index-bucket split is what tells
+/// them apart, so it is printed unconditionally on every run rather than being
+/// reachable only from a failing assertion.
+#[cfg(has_gmsh)]
+fn classify_and_dump_grid_misses(
+    disp: &reify_ir::SampledField,
+    stride: usize,
+    label: &str,
+) -> (reify_solver_elastic::GridMissReport, Vec<Vec<usize>>) {
+    let report = reify_solver_elastic::classify_grid_misses(disp, stride);
+    let axes: Vec<usize> = disp.axis_grids.iter().map(|a| a.len()).collect();
+    let mut hist: Vec<Vec<usize>> = axes.iter().map(|&n| vec![0usize; n]).collect();
+    for idx in &report.missed_indices {
+        for a in 0..3 {
+            hist[a][idx[a]] += 1;
+        }
+    }
+    eprintln!(
+        "#6154 {label} §7a grid-miss report: axes={axes:?} n_grid={} n_missed={} \
+         ({:.1}%) | interior={} face={} edge={} corner={} | nonfinite_anomalies={}",
+        report.n_grid,
+        report.n_missed,
+        100.0 * report.n_missed as f64 / report.n_grid as f64,
+        report.missed_interior,
+        report.missed_face,
+        report.missed_edge,
+        report.missed_corner,
+        report.n_nonfinite_anomalies,
+    );
+    for (a, name) in ["x", "y", "z"].iter().enumerate() {
+        eprintln!("#6154   {label} misses per {name}-index: {:?}", hist[a]);
+    }
+    (report, hist)
+}
+
+/// Pin a [`GridMissReport`] to the field it was derived from, by re-deriving the
+/// miss set STRAIGHT OFF `sf.data` — independently of `classify_grid_misses`.
+///
+/// This is the check the report cannot self-satisfy. Its bucket sums reconcile
+/// with `n_missed` *by construction* (one increment of each per miss, in the
+/// same iteration), so asserting that identity on real data proves nothing
+/// about the data; the identity is already pinned where it belongs, in the
+/// crate-local `resample.rs::miss_diag_tests` fixtures. What is worth asserting
+/// on a realized field is that the report and the field agree: same cardinality,
+/// distinct indices, every reported index genuinely all-`NaN` at its flat
+/// offset, and every reported point equal to the axis-grid coordinates there.
+/// Together those make the reported set exactly the field's `NaN` set.
+///
+/// Holds for ANY realized field — it says nothing about how many misses there
+/// should be, so it survives #6200 landing and the count going to zero.
+#[cfg(has_gmsh)]
+fn assert_report_reconciles_with_field(
+    sf: &reify_ir::SampledField,
+    report: &reify_solver_elastic::GridMissReport,
+    stride: usize,
+    label: &str,
+) {
+    use std::collections::HashSet;
+
+    let (nx1, ny1, nz1) =
+        (sf.axis_grids[0].len(), sf.axis_grids[1].len(), sf.axis_grids[2].len());
+    assert_eq!(report.n_grid, nx1 * nz1 * ny1, "{label}: n_grid must be ∏ axis lengths");
+
+    // (1) Independent recount off the raw buffer — never touches the report.
+    let independent =
+        sf.data.chunks_exact(stride).filter(|c| c.iter().all(|v| v.is_nan())).count();
+    assert_eq!(
+        report.n_missed, independent,
+        "{label}: the report claims {} out-of-solid grid points, but the raw field \
+         buffer holds {independent} all-NaN points",
+        report.n_missed,
+    );
+
+    // (2) No non-finite point OTHER than the all-NaN sentinel — recounted off
+    //     the raw buffer with the SAME `!is_finite()` predicate the instrument
+    //     uses. Not `is_nan()`: a diverged solve overflows to `±INF` at least as
+    //     readily, and an all-`INF` point looks perfectly ordinary to a NaN-only
+    //     test — it is neither a miss nor an anomaly there, so a NaN-only guard
+    //     would certify a already-broken field as fully covered, which is the
+    //     inversion this check exists to prevent. (1) would undercount it too.
+    let independent_anomalies = sf
+        .data
+        .chunks_exact(stride)
+        .filter(|c| !c.iter().all(|v| v.is_nan()) && c.iter().any(|v| !v.is_finite()))
+        .count();
+    assert_eq!(
+        independent_anomalies, 0,
+        "{label}: {independent_anomalies} grid point(s) carry a non-finite (NaN or \
+         ±INF) component that is NOT the all-or-nothing out-of-solid sentinel — i.e. \
+         a diverged solution value. The bucket split then describes a field already \
+         broken upstream of the sampler; fix that before reading it",
+    );
+    assert_eq!(
+        report.n_nonfinite_anomalies, independent_anomalies,
+        "{label}: the report's anomaly count ({}) must agree with the raw buffer's \
+         ({independent_anomalies}) — they are computed independently, so a mismatch \
+         means `classify_grid_misses` and this reconciler disagree about what \
+         'non-finite' means",
+        report.n_nonfinite_anomalies,
+    );
+
+    // (3) The reported indices are distinct, so (1)'s cardinality match plus
+    //     (4)'s per-index NaN check together force set equality.
+    let distinct: HashSet<[usize; 3]> = report.missed_indices.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        report.n_missed,
+        "{label}: missed_indices must hold {} DISTINCT indices, got {} distinct of \
+         {} entries",
+        report.n_missed,
+        distinct.len(),
+        report.missed_indices.len(),
+    );
+    assert_eq!(
+        report.missed_points.len(),
+        report.n_missed,
+        "{label}: missed_points must be parallel to missed_indices",
+    );
+
+    // (4) Every reported miss is really NaN there, at the coordinates claimed.
+    for (idx, p) in report.missed_indices.iter().zip(&report.missed_points) {
+        let flat = (idx[0] * ny1 + idx[1]) * nz1 + idx[2];
+        let comps = &sf.data[flat * stride..(flat + 1) * stride];
+        assert!(
+            comps.iter().all(|v| v.is_nan()),
+            "{label}: index {idx:?} (flat {flat}) is reported out-of-solid but its \
+             {stride} components are {comps:?}",
+        );
+        assert_eq!(
+            *p,
+            [sf.axis_grids[0][idx[0]], sf.axis_grids[1][idx[1]], sf.axis_grids[2][idx[2]]],
+            "{label}: reported coordinates for index {idx:?} must be the axis-grid \
+             coordinates at that index",
+        );
+    }
+}
+
+/// Run the SAME grid-miss measurement over the stride-9 `stress` field and pin
+/// that it agrees with `displacement`'s, grid point for grid point.
+///
+/// `elastic_static.rs`'s field-population contract says `displacement` and
+/// `stress` carry the IDENTICAL PRD §3 sentinel and that "neither is exempt",
+/// and §7a backs that with ONE `resample_multi_nodal_to_grid` call: each grid
+/// point is located once, and both fields are written from that single
+/// containment test. So the two miss sets are not merely similar — they are the
+/// same set. A difference is therefore a real defect (a per-field write path
+/// that drifted, a stride/layout error) of a class a displacement-only check
+/// cannot see, and the expensive realization is already paid for, so measuring
+/// it costs a second classification pass and nothing else.
+///
+#[cfg(has_gmsh)]
+fn assert_stress_miss_set_matches_displacement(
+    stress: &reify_ir::SampledField,
+    disp_report: &reify_solver_elastic::GridMissReport,
+    label: &str,
+) {
+    use std::collections::HashSet;
+
+    let stress_label = format!("{label} stress");
+    let (report, _hist) = classify_and_dump_grid_misses(stress, 9, &stress_label);
+    assert_report_reconciles_with_field(stress, &report, 9, &stress_label);
+
+    let disp_set: HashSet<[usize; 3]> = disp_report.missed_indices.iter().copied().collect();
+    let stress_set: HashSet<[usize; 3]> = report.missed_indices.iter().copied().collect();
+    let mut stress_only: Vec<[usize; 3]> = stress_set.difference(&disp_set).copied().collect();
+    let mut disp_only: Vec<[usize; 3]> = disp_set.difference(&stress_set).copied().collect();
+    stress_only.sort_unstable();
+    disp_only.sort_unstable();
+    assert!(
+        stress_only.is_empty() && disp_only.is_empty(),
+        "{label}: `displacement` and `stress` must mark the SAME grid points \
+         out-of-solid — §7a locates each point once and writes both fields from \
+         that one containment test, so a difference means the two write paths \
+         disagree about containment (or a stride/layout error is mis-reading one \
+         of them). Missed in stress only: {stress_only:?}. Missed in displacement \
+         only: {disp_only:?}",
+    );
+}
+
+/// Task #6154's DELIVERABLE for the BOX — measure the realized box's
+/// out-of-solid grid points, dump the split on every run, and pin that the
+/// report faithfully describes the field it was derived from.
+///
+/// `elastic_static.rs`'s field-population contract used to claim of
+/// `displacement`: "Every grid point lies inside the solid (prismatic box), so
+/// all samples are finite (no NaN sentinels for the cantilever geometry)". The
+/// realized path contradicted it — when #6154 measured it, about a third of this
+/// prismatic box's grid nodes carried the out-of-solid sentinel. VERDICT: a
+/// COVERAGE defect in the realized tet mesh, not a tolerance one; the
+/// measurement, its provenance and the closing argument are recorded ONCE, in
+/// `docs/prds/v0_4/fea-result-model.md` §11 Q2, and the upstream defect was
+/// fixed under #6200. This function pins no count either way — for today's
+/// numbers read the dump below, never a comment.
+///
+/// Called from `multi_case_body_solve_shares_one_realization_across_cases`,
+/// which already realizes this exact source. A full OCCT tessellation + gmsh
+/// tet-mesh + solve is the most expensive thing in this file, so every #6154
+/// claim about the box rides THAT realization rather than paying for a second
+/// copy of it; the same is true of the cylinder's, on its own capstone.
+///
+/// Both `displacement` (stride 3) and `stress` (stride 9) are measured — the
+/// field-population contract makes their sentinel contracts identical, so a
+/// displacement-only check would leave half of it unmeasured. See
+/// [`assert_stress_miss_set_matches_displacement`].
+///
+/// Deliberately NOT asserted here:
+///   - any all-finite property — the sentinel is normative and must survive;
+///   - the total miss COUNT — that count is the thing under investigation, and
+///     pinning it before the mechanism is fixed would cement a bug as a
+///     contract. It would also be FLAKY: the split drifts run to run (measured
+///     2026-08-20, this fixture, same binary — four runs agreed and a fifth
+///     differed by +5 total misses with interior −3, face +8; test-thread count
+///     is ruled out, the full suite reproduced the majority split both at
+///     `--test-threads=1` and at the default). *Hypothesis:* gmsh/HXT's parallel
+///     tetrahedralization is not bit-reproducible under varying host load —
+///     project memory carries an independent measurement of the same effect at
+///     ~1–6% tet-count drift;
+///   - the bucket-sum identity — `classify_grid_misses` satisfies it by
+///     construction, so it says nothing about this field (it is pinned in that
+///     function's own crate-local fixtures instead).
+///
+/// ## What IS asserted: the BOX-SPECIFIC prediction, `missed_interior == 0`
+///
+/// For a PRISMATIC body the mesh AABB **is** the solid, so every
+/// strictly-index-interior grid point must lie inside some tet. When #6154
+/// measured it, it did not: the realized tet mesh filled only a fraction of the
+/// AABB it spanned, and a few dozen index-interior nodes landed in no tet at
+/// all. That was a COVERAGE defect, not a tolerance one — the measured margins
+/// were orders of magnitude beyond any defensible `tol`, and
+/// `volume_mesh_to_solver_mesh` was exonerated. The defect was upstream of this
+/// crate, in the gmsh tetrahedralization path (`crates/reify-kernel-gmsh`),
+/// which #6154's scope explicitly excluded, and it was fixed under #6200
+/// (merged `6ed34b2fe8`). The claim was carried verbatim through that wait —
+/// never deleted, never weakened to a threshold — precisely so #6200 had an
+/// executable acceptance gate. With the fix landed its job is to keep the fix
+/// fixed.
+///
+/// It stays `== 0` on `missed_interior` rather than tightening to `n_missed ==
+/// 0`, even though the box currently measures zero misses in total. The
+/// AABB-shell buckets (face/edge/corner) remain legitimately exposed to boundary
+/// round-off, and the total drifts run to run. Tightening would trade a stable
+/// invariant for a flake.
+///
+/// ### `missed_interior` counts GRID points, NOT mesh nodes
+///
+/// The two are easy to conflate and behave completely differently. #6200's own
+/// measurements record that a box's strictly-interior MESH-NODE count is purely
+/// RESOLUTION-driven — 0 at the auto mesh size even for a complete, `fill = 1.0`
+/// mesh, because `auto_mesh_size_from_features` makes the cross-section exactly
+/// one element wide — so an assertion keyed on THAT number would not have gone
+/// green from a coverage fix at all. This one is keyed on COVERAGE instead: a
+/// grid point is a query location, not a mesh entity, and `missed_interior`
+/// reaches 0 exactly when the tets tile the AABB, at ANY mesh resolution and
+/// with ANY interior-node count — precisely #6200's acceptance property.
+///
+/// This assertion used to live in a separate `realized_box_mesh_tiles_its_own_aabb`
+/// test that paid for a SECOND full OCCT+gmsh realization of this same fixture
+/// (~12 s) for "independence". That independence was illusory — both paths went
+/// through [`build_realized`] to the same source and asserted on the same field
+/// — so the claim moved here, onto the realization the capstone already
+/// performs, and stays live.
+#[cfg(has_gmsh)]
+fn assert_box_grid_miss_measurement(
+    disp: &reify_ir::SampledField,
+    stress: &reify_ir::SampledField,
+) {
+    let (report, hist) = classify_and_dump_grid_misses(disp, 3, "realized box displacement");
+
+    // ── (i) the report describes THIS field, re-derived from `disp.data` ─────
+    assert_report_reconciles_with_field(disp, &report, 3, "realized box displacement");
+
+    // ── (ii) the grid is the realized one, not the synthetic 854 ────────────
+    // Per-AXIS, not just the 2989 product: the interior/face/edge/corner split
+    // is defined by index extremity, so it only means what its name says if the
+    // axis lengths are the ones the AABB heuristic derives. A different shape
+    // with the same node count would silently re-label every bucket.
+    let axes: Vec<usize> = disp.axis_grids.iter().map(|a| a.len()).collect();
+    assert_eq!(
+        axes,
+        REALIZED_BOX_GRID_AXES.to_vec(),
+        "§7a grid shape must equal the realized-AABB heuristic \
+         {REALIZED_BOX_GRID_AXES:?} for the 1 m × 100 mm × 100 mm box \
+         ({REALIZED_BOX_GRID_NODES} nodes); got {axes:?}",
+    );
+
+    // ── (iii) `stress` carries the same sentinel, on the same grid points ────
+    assert_stress_miss_set_matches_displacement(stress, &report, "realized box");
+
+    // ── (iv) BOX-SPECIFIC coverage prediction — see the doc above ────────────
+    assert_eq!(
+        report.missed_interior, 0,
+        "BOX-SPECIFIC prediction: for a prismatic body the mesh AABB IS the solid, \
+         so every strictly-index-interior grid point must lie inside some tet. A \
+         non-zero interior count means the realized mesh handed to §7a does not tile \
+         its own AABB — that is a COVERAGE defect, not a tolerance one, and widening \
+         `tol` would not legitimately fix it. This is a REGRESSION of the upstream \
+         mesh-coverage defect fixed under #6200; the fix belongs there, not here. \
+         Measured: interior={} of n_missed={} (face={}, edge={}, corner={}). \
+         Per-axis miss histograms: x={:?} y={:?} z={:?}",
+        report.missed_interior,
+        report.n_missed,
+        report.missed_face,
+        report.missed_edge,
+        report.missed_corner,
+        hist[0],
+        hist[1],
+        hist[2],
+    );
+}
+
+/// The 4 cross-section columns whose offsets are `(±1/60, ±1/60) m` — the only
+/// ones inside the cylinder's `r = 0.05 m`. Every OTHER `(ix, iy)` column is
+/// outside, at all 7 z-levels: `12 × 7 =` [`CYLINDER_PREDICTED_MISSES`].
+/// Derivation: [`assert_cylinder_grid_miss_measurement`].
+#[cfg(has_gmsh)]
+const CYLINDER_INSIDE_COLUMNS: [[usize; 2]; 4] = [[1, 1], [1, 2], [2, 1], [2, 2]];
+
+/// Out-of-solid grid nodes the closed form predicts for the realized cylinder,
+/// of [`REALIZED_CYLINDER_GRID_NODES`]. Derivation:
+/// [`assert_cylinder_grid_miss_measurement`].
+#[cfg(has_gmsh)]
+const CYLINDER_PREDICTED_MISSES: usize = 84;
+
+/// Task #6154 — the CYLINDER control: prove the normative out-of-solid `NaN`
+/// sentinel still fires exactly where geometry says it must.
+///
+/// The box measurement shows ~35% of a *prismatic* body's grid points marked
+/// out-of-solid where 0% is predicted. The obvious wrong "fix" for that is to
+/// weaken the sentinel — widen `tol`, or assert all-finite. This is the guard
+/// against it: for a cylinder the AABB is emphatically NOT the solid, so a
+/// large, exactly-predictable fraction of grid points MUST stay `NaN`, and any
+/// weakening shows up here as a shortfall.
+///
+/// Rides `non_prismatic_body_solve_runs_on_realized_volume_mesh`'s realization
+/// (see [`realized_cylinder_fields`], which is NOT on this path — it serves the
+/// `#[ignore]`d coverage test, which has no capstone to ride).
+///
+/// ## Closed form (re-derived here, not cited)
+///
+/// `cylinder(50mm, 200mm)` ⇒ AABB `[0.1, 0.1, 0.2] m`; the realized §7a arm
+/// derives `nz = 6`, `nx = ny = round(0.1/0.2 · 6) = 3`, so the grid is
+/// `4 × 4 × 7 = 112` nodes. Each of the x/y axes spans the full 0.1 m diameter
+/// in 3 intervals, so its 4 samples sit at `±0.05` and `±1/60 ≈ ±0.01667` m from
+/// the axis. A cross-section point is inside iff `dx² + dy² < 0.05²`:
+///
+/// | dx, dy | radius | inside? | count |
+/// |---|---|---|---|
+/// | (±0.05, ±0.05)     | 0.0707 | no  | 4 |
+/// | (±0.05, ±0.01667)  | 0.0527 | no  | 8 |
+/// | (±0.01667, ±0.01667) | 0.0236 | yes | 4 |
+///
+/// So 12 of 16 cross-section points are outside, at every one of the 7 z-levels:
+/// **84 of 112 nodes** (75%), i.e. 252 of the 336 displacement components.
+///
+/// Index-bucketing those 84 (extreme = index `0` or `len-1` on that axis):
+/// the 4 `(±0.05, ±0.05)` points are extreme on x AND y, the 8 mixed ones on
+/// exactly one of x/y; z is extreme at 2 of its 7 levels. That gives
+/// `corner = 4·2 = 8`, `edge = 4·5 + 8·2 = 36`, `face = 8·5 = 40`,
+/// **`interior = 0`**.
+///
+/// ## Why `missed_interior == 0` here too — and why that is NOT the box's claim
+///
+/// This task's plan anticipated `missed_interior > 0` for the cylinder ("the
+/// AABB is not the solid, so index-interior points are legitimately outside").
+/// Re-deriving rather than citing shows that is false for THIS grid: the only
+/// index-interior cross-section offsets are `±1/60 m`, which are a comfortable
+/// 0.0236 m < 0.05 m from the axis — every index-interior node is genuinely
+/// inside the cylinder.
+///
+/// The box's violated prediction is a strictly stronger statement, and remains
+/// box-specific: for a prismatic body the AABB IS the solid, so *no* grid point
+/// of any bucket may miss (`n_missed == 0`). Here 84 of 112 must miss. Holding
+/// the cylinder's split next to the box's is what stops a later reader promoting
+/// `missed_interior == 0` to a global sampler invariant, or "correcting" the
+/// cylinder's entirely-correct 75%.
+///
+/// ## Only the UNDER-firing direction is asserted live
+///
+/// A node the closed form puts outside that comes back finite is this crate's
+/// own contract broken, so that is a hard failure here. The opposite direction —
+/// an EXCESS miss, i.e. a node the geometry puts inside that the realized mesh
+/// failed to cover — would be a regression of the upstream mesh-coverage defect
+/// that #6200 fixed, which this test explicitly disclaims ownership of; and the
+/// realized mesh is not bit-reproducible across runs, so pinning it live would
+/// let upstream drift red the merge gate for something that "must not be fixed
+/// here". The excess is logged loudly instead, and the exact-count/bucket form
+/// of the claim is kept in [`realized_cylinder_mesh_covers_its_own_aabb`].
+///
+/// Both `displacement` (stride 3) and `stress` (stride 9) are measured, and
+/// pinned to mark the same grid points — see
+/// [`assert_stress_miss_set_matches_displacement`]. The anti-weakening argument
+/// applies verbatim to `stress`: `elastic_static.rs`'s field-population contract
+/// makes the two sentinel contracts identical and exempts neither, so a
+/// weakening that touched only `stress` would slip past a displacement-only
+/// guard.
+///
+/// Returns the DISPLACEMENT [`GridMissReport`] it dumped, so a caller that wants
+/// to add the upstream-owned claims on the SAME field does not have to
+/// re-classify (and re-print) it.
+#[cfg(has_gmsh)]
+fn assert_cylinder_grid_miss_measurement(
+    disp: &reify_ir::SampledField,
+    stress: &reify_ir::SampledField,
+) -> reify_solver_elastic::GridMissReport {
+    use std::collections::HashSet;
+
+    let (report, _hist) = classify_and_dump_grid_misses(disp, 3, "realized cylinder displacement");
+
+    let axes: Vec<usize> = disp.axis_grids.iter().map(|a| a.len()).collect();
+    assert_eq!(
+        axes,
+        REALIZED_CYLINDER_GRID_AXES.to_vec(),
+        "§7a grid shape for cylinder(50mm, 200mm) must be \
+         {REALIZED_CYLINDER_GRID_AXES:?} ({REALIZED_CYLINDER_GRID_NODES} nodes) — the \
+         closed form above is derived from exactly this shape; got {axes:?}",
+    );
+    assert_report_reconciles_with_field(disp, &report, 3, "realized cylinder displacement");
+    assert_stress_miss_set_matches_displacement(stress, &report, "realized cylinder");
+
+    // ── (a) SENTINEL guard — UNDER-firing ───────────────────────────────────
+    // Owner: this crate's sampler. Every predicted-outside node must carry the
+    // sentinel; a node here going finite means it was weakened.
+    let missed: HashSet<[usize; 3]> = report.missed_indices.iter().copied().collect();
+    let mut finite_but_predicted_outside: Vec<[usize; 3]> = Vec::new();
+    for ix in 0..REALIZED_CYLINDER_GRID_AXES[0] {
+        for iy in 0..REALIZED_CYLINDER_GRID_AXES[1] {
+            if CYLINDER_INSIDE_COLUMNS.contains(&[ix, iy]) {
+                continue;
+            }
+            for iz in 0..REALIZED_CYLINDER_GRID_AXES[2] {
+                if !missed.contains(&[ix, iy, iz]) {
+                    finite_but_predicted_outside.push([ix, iy, iz]);
+                }
+            }
+        }
+    }
+    assert!(
+        finite_but_predicted_outside.is_empty(),
+        "SENTINEL WEAKENED (this crate's sampler): the closed form puts these grid \
+         nodes outside the cylinder, so each MUST carry the normative out-of-solid \
+         `NaN` (PRD v0_4/fea-result-model.md §4.1), but they came back finite: \
+         {finite_but_predicted_outside:?}. Do not 'fix' this by relaxing the \
+         sentinel — a widened `tol`, a clamp, or an all-finite assertion all land \
+         here first, and all of them fabricate values the solver never solved.",
+    );
+
+    // ── (b) COVERAGE — OVER-firing. Logged, NOT asserted (upstream-owned) ───
+    // With (a) green the predicted 84 are all present, so any EXCESS is a node
+    // the geometry places INSIDE the cylinder that the realized mesh failed to
+    // cover — a regression of the coverage defect #6200 fixed, reaching this
+    // fixture. Reported here; pinned in
+    // `realized_cylinder_mesh_covers_its_own_aabb`.
+    if report.n_missed > CYLINDER_PREDICTED_MISSES {
+        eprintln!(
+            "#6154 realized cylinder MESH UNDER-COVERS (upstream mesh-coverage \
+             regression; the defect fixed under #6200 is back): closed \
+             form predicts {CYLINDER_PREDICTED_MISSES} of \
+             {REALIZED_CYLINDER_GRID_NODES} nodes out-of-solid and all of them are \
+             present, so the {} extra miss(es) are nodes the geometry places INSIDE \
+             the cylinder. NOT a sentinel bug, and not fixable here.",
+            report.n_missed - CYLINDER_PREDICTED_MISSES,
+        );
+    }
+
+    report
+}
+
+/// The cylinder's OVER-firing half: the realized mesh covers every grid point
+/// the closed form places inside it, so the miss set is EXACTLY the predicted
+/// 84, split (interior, face, edge, corner) = (0, 40, 36, 8).
+///
+/// Measured green on this base, and `#[ignore]`d anyway — the gate is about
+/// DRIFT and EXPENSE, not about waiting on anyone. What it pins is an EXACT node
+/// count over a gmsh/HXT tetrahedralization that is not bit-reproducible run to
+/// run (the box's pre-fix split drifted on this very host, 1055 vs 1060 across
+/// five runs; this fixture has only ever been observed on one host and one gmsh
+/// build). Live, one drifted node would red the merge queue for a mesh property
+/// this crate does not own and this file explicitly says "must not be fixed
+/// here". It also costs a full OCCT+gmsh realization of its own.
+///
+/// [`assert_cylinder_grid_miss_measurement`] keeps the half this crate DOES own
+/// — the sentinel must fire on every predicted-outside node — as a hard LIVE
+/// assertion on the capstone's realization, and logs any excess. This test
+/// re-runs that half on its own realization before adding the two mesh-coverage
+/// claims, so all three are pinned on one and the same field.
+///
+/// So: run it explicitly (`--ignored`) to re-measure the cylinder's coverage.
+/// The excess-miss direction it pins would now be a REGRESSION of the upstream
+/// coverage defect fixed under #6200, not an instance of it.
+#[cfg(has_gmsh)]
+#[test]
+#[ignore = "expensive: re-measures the realized cylinder's exact coverage; gmsh/HXT tetrahedralization is not bit-reproducible, so the exact count is run-explicit only"]
+fn realized_cylinder_mesh_covers_its_own_aabb() {
+    let Some((disp, stress)) =
+        realized_cylinder_fields("realized_cylinder_mesh_covers_its_own_aabb")
+    else {
+        return;
+    };
+
+    // (a) first, on THIS realization: every predicted-outside node must be
+    // missed. Re-run here rather than leant on from the live capstone — that
+    // capstone measures a DIFFERENT realization of the fixture, and (c) below
+    // needs under- and over-firing pinned on one and the same field to conclude
+    // the miss set is exactly the predicted 84.
+    let report = assert_cylinder_grid_miss_measurement(&disp, &stress);
+
+    // ── (b) COVERAGE guard — OVER-firing ────────────────────────────────────
+    // With (a) green above, every predicted-outside node IS missed, so any
+    // excess over the closed form is a node the geometry places INSIDE.
+    assert_eq!(
+        report.n_missed, CYLINDER_PREDICTED_MISSES,
+        "REALIZED CYLINDER MESH UNDER-COVERS: the closed form predicts exactly \
+         {CYLINDER_PREDICTED_MISSES} of {REALIZED_CYLINDER_GRID_NODES} nodes \
+         out-of-solid, so the {} extra miss(es) are nodes the geometry places INSIDE \
+         the cylinder. That is a REGRESSION of the upstream mesh-coverage defect \
+         fixed under #6200, now reaching the cylinder fixture — it is NOT a sentinel \
+         bug and must not be fixed here.",
+        report.n_missed.saturating_sub(CYLINDER_PREDICTED_MISSES),
+    );
+
+    // ── (c) BUCKETING — the classifier's own index-extremity arm ────────────
+    // (a) puts all 84 predicted misses in the set and (b) admits no others, so
+    // on this field the miss SET is exactly the predicted 84; this checks that
+    // `classify_grid_misses` labels them the way the closed form does.
+    assert_eq!(
+        (
+            report.missed_interior,
+            report.missed_face,
+            report.missed_edge,
+            report.missed_corner,
+        ),
+        (0, 40, 36, 8),
+        "the closed form splits the {CYLINDER_PREDICTED_MISSES} misses as interior=0 \
+         face=40 edge=36 corner=8 by index extremity (derivation: \
+         `assert_cylinder_grid_miss_measurement`). The set is already pinned above, \
+         so a mismatch here is a bug in `classify_grid_misses`' bucketing, not in the \
+         geometry or the mesh."
     );
 }

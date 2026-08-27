@@ -51,6 +51,12 @@ mod realization_read_gamma;
 mod realization_read_test_support;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::ComputeDispatchRegistry;
+// `pub(crate)`, not `pub`: `OptimizedComputeDispatcher`'s only constructor
+// (`from_engine`) is `pub(crate)` by design, so a `pub` re-export would name a type
+// no external crate can ever build. Re-exported at all only so this crate's own
+// engine_eval.rs / engine_edit.rs can reach it as `crate::OptimizedComputeDispatcher`
+// alongside the other engine items they import (task #4880).
+pub(crate) use engine_compute::OptimizedComputeDispatcher;
 // task A (#4934): ComputeFn/ComputeOutcome/DispatchError/RealizationReadHandle/
 // RealizedContent/StructuredComputeDetail moved to the OCCT-free
 // reify-compute-contract foundation crate; re-exported here so the
@@ -1266,6 +1272,30 @@ pub const W_STEP_AP242_FALLBACK: &str = "W_STEP_AP242_FALLBACK";
 /// Embedded in the diagnostic message so callers can match on it without a typed
 /// variant.
 pub const W_3MF_NO_MATERIALS: &str = "W_3MF_NO_MATERIALS";
+
+/// Machine-stable error code for the export refusal raised when a module
+/// declares a `RepresentationWithin` bound the export path cannot demonstrate it
+/// honours (task η, PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1 /
+/// C-SURFACE (2)). Built by
+/// [`crate::tolerance_combine::unenforced_representation_bound_diagnostic`] and
+/// emitted from BOTH export surfaces — `reify build -o <file>` and
+/// [`Engine::build_outputs_with_result`].
+///
+/// This is the message-embedded TWIN of the typed
+/// [`reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport`], and
+/// both are needed: the typed code serves programmatic consumers and the unit
+/// tests (which match on `Diagnostic.code`, so rewording the message cannot
+/// break them), while this string serves the CLI integration tests, which spawn
+/// the binary as a subprocess and observe only captured stderr TEXT — they have
+/// no access to the typed code and would otherwise have to pin arbitrary prose.
+///
+/// Unlike [`I_DISPLAY_OUTPUT_DEFERRED`] / [`W_STEP_AP242_FALLBACK`] /
+/// [`W_3MF_NO_MATERIALS`] above, this code is NOT string-only: their stated
+/// reason for skipping a typed variant ("which would touch the out-of-scope
+/// `reify-core` crate") does not apply here, because `reify-core` is in η's
+/// scope and the variant was minted alongside this const.
+pub const E_REPR_BOUND_UNENFORCED_ON_EXPORT: &str = "E_REPR_BOUND_UNENFORCED_ON_EXPORT";
 
 /// One file artifact produced by the occurrence-driven export driver
 /// [`Engine::build_outputs`] (io-export δ).

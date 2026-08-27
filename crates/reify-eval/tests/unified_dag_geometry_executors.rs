@@ -834,18 +834,19 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 ///   * `p` (`box(10mm,…)`) and `q` (`box(20mm,…)`) are independent, valid box
 ///     realizations with in-degree 0 → the Kahn schedule covers them (inserted
 ///     into the `realized` dedup set during the schedule walk).
-///   * `r = box(a, …)` reads the cyclic cell `a` → it is downstream of the cycle
-///     → `residue` → its `NodeId::Realization` is NOT in `pass.schedule`, so it
-///     reaches dispatch ONLY through the `for r_idx in 0..len { if !realized … }`
-///     fallback-append branch. `a` folds to `Value::Undef` (so `r`'s recorded box
-///     carries `width: Undef`), but its `height`/`depth` are the concrete literal
-///     `5mm` — distinct from `p`'s 10mm and `q`'s 20mm — so `r` is STILL directly
-///     observable, by HEIGHT, in the recorded ops. This lets the test pin the
-///     fallback-append branch dispatching the residue realization exactly once.
+///   * `r = fillet(box(5mm, 5mm, 5mm), a)` reads the cyclic cell `a` through the
+///     FILLET RADIUS → it is downstream of the cycle → `residue` → its
+///     `NodeId::Realization` is NOT in `pass.schedule`, so it reaches dispatch
+///     ONLY through the `for r_idx in 0..len { if !realized … }` fallback-append
+///     branch. `a` folds to `Value::Undef`, so `r`'s FILLET is the op that
+///     actually carries the residue. `r`'s Box is fully concrete `5mm` (distinct
+///     from `p`'s 10mm and `q`'s 20mm), so it keys `r`'s realization in the
+///     recorded ops, but on its own it says nothing about WHICH branch
+///     dispatched it.
 ///
 /// Every box carries `height == width`, so matching recorded boxes by their
 /// concrete `Scalar` HEIGHT keys all three realizations uniformly (`p` → 0.010m,
-/// `q` → 0.020m, `r` → 0.005m) even though `r`'s WIDTH folded to `Undef`.
+/// `q` → 0.020m, `r` → 0.005m).
 ///
 /// Asserts, under `UnifiedDag`:
 ///   (a) δ surfaces `DiagnosticCode::EvalCycle` (confirming the planner is on the
@@ -854,18 +855,54 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 ///       the Kahn schedule + `realized` dedup, and `r` (5mm) via the fallback
 ///       append. A broken dedup set would double-count a scheduled box; a removed
 ///       fallback append would zero-count `r`; a dropped realization would
-///       zero-count its box.
+///       zero-count its box. AND
+///   (c) `r`'s residue-bearing tail op — its fillet, whose radius is the cyclic
+///       `a` — was actually ATTEMPTED, witnessed by the D10 "unresolved (Undef)"
+///       compile error it now raises (and by zero `Fillet` ops reaching the
+///       kernel). Without (c) the test's stated subject is unpinned: `r`'s Box
+///       alone is fully concrete, so `box_height_count(0.005) == 1` would hold
+///       whether or not `r` was classified as residue and whether or not the
+///       fallback-append branch ran at all (reviewer amendment).
 #[test]
 fn unified_dag_residue_realizations_dispatch_exactly_once() {
     // `let a` / `let b` form a Length-typed mutual cycle (the `+ 1mm` literal
-    // anchors both to `Length`), so `r = box(a, …)` type-checks while `a` itself
-    // is cyclic (→ `Undef` at eval, → residue at planning).
+    // anchors both to `Length`), so `r` type-checks while `a` itself is cyclic
+    // (→ `Undef` at eval, → residue at planning).
+    //
+    // `r` reads the cyclic `a` through the FILLET RADIUS, not through a box
+    // dimension. This test is about the scheduler's exactly-once residue
+    // dispatch, and it needs `r`'s Box to actually REACH the kernel to prove
+    // that. Task 5743 (units-length β) gated the 26 primitive/profile
+    // length-semantic slots at `required_length_value`, where decision D10 /
+    // INV-SF-1 makes an `Undef` FAIL the op rather than be stored — so the
+    // original `box(a, 5mm, 5mm)` fixture would drop `r` entirely and this test
+    // could no longer observe the fallback-append branch at all. (The old
+    // comment "robust to `r`'s Undef width" describes exactly the silently
+    // stored Undef that β closed.) Reading the cycle through the fillet RADIUS
+    // instead keeps `r`'s Box concrete, so assertion (b) stays live.
+    //
+    // WHY ASSERTION (c) MOVED (task 5744, units-length γ): γ put that same
+    // modify radius on the SAME chokepoint, so `r`'s `Undef` radius no longer
+    // reaches the kernel — D10 / INV-SF-1 correctly FAILS the fillet compile
+    // instead. The old (c) checked for exactly one kernel-recorded
+    // `Fillet { radius: Value::Undef, .. }`, and its message said the modify
+    // radius was "deliberately un-gated by task 5743 … which is why an `Undef`
+    // still reaches the kernel here at all" — that sentence named #5744 as the
+    // owner, and this is that ownership discharged. (c) is now pinned on the
+    // POST-GATE witness: the D10 "unresolved (Undef)" compile error for
+    // `radius`/`fillet`, plus zero recorded `Fillet` ops. That diagnostic can
+    // only exist if `r`'s realization actually dispatched and its fillet
+    // compile was attempted, so it is a STRICTLY SHARPER residue /
+    // fallback-append witness than "an Undef reached the kernel" was. Do NOT
+    // "restore" the old form — post-γ no Undef-radius fillet can be recorded,
+    // so a restored `undef_radius_fillets == 1` is unsatisfiable and a
+    // restored `== 0` is vacuous.
     let source = r#"structure S {
     let a = b + 1mm
     let b = a + 1mm
     let p = box(10mm, 10mm, 10mm)
     let q = box(20mm, 20mm, 20mm)
-    let r = box(a, 5mm, 5mm)
+    let r = fillet(box(5mm, 5mm, 5mm), a)
 }"#;
 
     // Capture the op recorder BEFORE the kernel is boxed/moved into the engine
@@ -891,7 +928,9 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
     );
 
     // (b) exactly-once dispatch for every realization, keyed by the box's concrete
-    //     `Scalar` HEIGHT (robust to `r`'s `Undef` width).
+    //     `Scalar` HEIGHT — the one key shared by all three realizations. `r`'s
+    //     Undef lives on its FILLET radius, not on any box dimension, so every
+    //     recorded box has a concrete height to match on.
     let ops = ops_ref.lock().unwrap().clone();
     let recorded: Vec<&GeometryOp> = ops.iter().map(|rec| &rec.op).collect();
     let box_height_count = |si_metres: f64| -> usize {
@@ -920,9 +959,65 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
     assert_eq!(
         box_height_count(0.005),
         1,
-        "the RESIDUE `r` (box 5mm, reads cyclic `a`) must dispatch EXACTLY ONCE via \
-         the `for r_idx in 0..len {{ if !realized … }}` fallback-append branch — \
+        "the RESIDUE `r` (`fillet(box(5mm,5mm,5mm), a)`, whose fillet radius reads \
+         the cyclic `a`) must dispatch EXACTLY ONCE via the \
+         `for r_idx in 0..len {{ if !realized … }}` fallback-append branch — \
          not dropped (zero) and not double-appended (two); recorded ops={recorded:?}",
+    );
+
+    // (c) the op that actually CARRIES the residue: `r`'s fillet, whose radius is
+    //     the cyclic `a` folded to `Undef`. `r`'s Box is fully concrete, so (b)
+    //     alone cannot distinguish "dispatched via the fallback-append branch"
+    //     from "dispatched however" — this is what keeps `r` pinned as residue.
+    //
+    //     Post-γ (task 5744) the witness is the fillet's D10 REJECTION, not a
+    //     kernel-recorded Undef: `required_length_value` fails the op and
+    //     `engine_build.rs` wraps that `Err` as
+    //     "failed to compile geometry operation: <the D10 wording>". Emitting it
+    //     REQUIRES that `r`'s realization dispatched and the fillet compile was
+    //     attempted, so it witnesses the fallback-append branch strictly more
+    //     sharply than the old "an Undef reached the kernel" check did.
+    let residue_fillet_rejections = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_core::Severity::Error
+                && d.message.contains("failed to compile geometry operation")
+                && d.message
+                    .contains("argument 'radius' for fillet is unresolved (Undef)")
+        })
+        .count();
+    assert_eq!(
+        residue_fillet_rejections,
+        1,
+        "`r`'s Fillet must be ATTEMPTED EXACTLY ONCE and rejected by the R7 \
+         LENGTH chokepoint's D10 / INV-SF-1 Undef arm, carrying the cyclic `a` \
+         as an unresolved radius — that Undef is what makes `r` residue, and \
+         therefore what makes the fallback-append branch the only path that can \
+         dispatch it. Zero means `r` stopped being residue (or was dropped \
+         before its tail op) and assertion (b) above has gone vacuous; two means \
+         the dedup set broke. diagnostics={:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.severity, d.message.clone()))
+            .collect::<Vec<_>>(),
+    );
+    // The other half of the same witness: because γ gates the modify radius,
+    // NO fillet may reach the kernel at all. This is what makes the rejection
+    // above the only observable trace of `r`'s tail op — and it is the tripwire
+    // that fires if the gate is ever removed and an `Undef` is silently stored
+    // into `GeometryOp::Fillet.radius` again.
+    let recorded_fillets = ops
+        .iter()
+        .filter(|rec| matches!(&rec.op, GeometryOp::Fillet { .. }))
+        .count();
+    assert_eq!(
+        recorded_fillets, 0,
+        "no `Fillet` may reach the kernel: `r`'s is the only one in the fixture \
+         and its `Undef` radius must FAIL the op at the R7 LENGTH chokepoint \
+         rather than be stored (PRD decision D10 / INV-SF-1, task 5744). \
+         recorded ops={recorded:?}",
     );
 }
 

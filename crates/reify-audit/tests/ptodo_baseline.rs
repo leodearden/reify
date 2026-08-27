@@ -35,9 +35,23 @@
 //!   requires `REIFY_PTODO_TASKS_DB` for the liveness lane (see the test doc).
 //!   Mirrors the `baseline_report_freshness` pattern.
 //!
+//! (C) **`generator_emits_scan_evidence_*`** — always-on, hermetic. Runs the
+//!   real `ptodo-baseline-gen` binary over staged tempdir git fixtures and pins
+//!   the §6.6 scan-evidence contract it emits on stderr
+//!   (`@@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>`): exactly one such
+//!   line per run, carrying the REAL counts, never leaking onto stdout, and
+//!   still emitted when the tree is clean and stdout is empty. Graceful-skip if
+//!   `git` is unavailable.
+//!
+//! (D) **fixture git-env hygiene** — always-on. Pins that the two fixture
+//!   command builders (C) drives the real binary through strip every
+//!   `reify_audit::git_env::REPO_REDIRECT_VARS` entry, and replays (C) under a
+//!   real ambient hook git environment. Rationale lives in
+//!   `reify_test_support::git_env`; not restated here.
+//!
 //! User-observable signal:
-//!   `cargo test -p reify-audit --test ptodo_baseline`               (A + A′)
-//!   `cargo test -p reify-audit --test ptodo_baseline -- --ignored`  (A + A′ + B)
+//!   `cargo test -p reify-audit --test ptodo_baseline`               (A + A′ + C + D)
+//!   `cargo test -p reify-audit --test ptodo_baseline -- --ignored`  (A + A′ + B + C + D)
 //!
 //! On (B) failure — regenerate the baseline with the canonical generator
 //! (`src/bin/ptodo-baseline-gen.rs`). It is the SINGLE source of truth: it maps
@@ -56,9 +70,12 @@
 //!   worktree's `.taskmaster/` is untracked, so without it the lane degrades to
 //!   structural-only).
 
+mod common;
+
 use reify_audit::ptodo::{fingerprint, is_allowlisted, is_g_allow_finding, is_swept_ext};
 use std::collections::HashSet;
 use std::path::Path;
+use std::process::Command;
 
 /// Resolve the path to `ptodo-baseline.txt`:
 ///   CARGO_MANIFEST_DIR = `crates/reify-audit` → `./ptodo-baseline.txt`
@@ -427,4 +444,376 @@ fn live_findings_are_within_baseline() {
         violations.len(),
         violations.join("\n"),
     );
+}
+
+// ---------------------------------------------------------------------------
+// (C) Generator scan-evidence contract (task #6241, PRD §6.6)
+//
+// `ptodo-baseline-gen` emits, on STDERR, one machine-readable line per run:
+//
+//     @@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>
+//
+// That line is the RUN evidence the §6.6 vacuity floor in
+// tests/infra/test_reify_audit_ptodo.sh keys on. These tests drive the real
+// binary over hermetic git fixtures and pin the contract end to end: the line
+// exists, carries the REAL counts (not a constant), stays off stdout (stdout is
+// the baseline stream — a leak would corrupt the next regen), and is emitted
+// even when the tree is clean and stdout is empty.
+//
+// Rationale lives in docs/prds/reify-audit-ptodo-detector.md §6.6 and is
+// deliberately not restated here.
+// ---------------------------------------------------------------------------
+
+/// Assemble a comment marker at RUNTIME so this test source never self-matches
+/// the detector it drives (the same self-match-safety idiom the hermetic
+/// scenarios in tests/infra/test_reify_audit_ptodo.sh use).
+fn untracked_marker(body: &str) -> String {
+    format!("// {}{}: {body}\n", "TO", "DO")
+}
+
+/// A `git` command targeting the fixture repo at `root`.
+///
+/// Built through the shared `git -C <root>` constructor, as this crate's
+/// sibling git-fixture test binaries are. The rule lives in
+/// [`reify_audit::git_env`] and the failure mode it prevents in
+/// [`reify_test_support::git_env`]; neither is restated here.
+fn fixture_git_cmd(root: &Path) -> Command {
+    common::git_env::git_cmd(root)
+}
+
+/// Run `git` in `root` with ambient git env stripped, panicking on failure.
+fn git_in(root: &Path, args: &[&str]) {
+    let out = fixture_git_cmd(root)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Stage a hermetic fixture repo containing `files` (relative path → content)
+/// and return its tempdir handle (kept alive by the caller).
+fn staged_fixture(files: &[(&str, String)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git_in(root, &["init", "-q"]);
+    for (rel, content) in files {
+        let full = root.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("create_dir_all");
+        }
+        std::fs::write(&full, content).expect("write fixture file");
+    }
+    // `RealGitOps::ls_files` lists INDEX entries, so staging is enough — no
+    // commit (and therefore no user.name/user.email config) is required.
+    git_in(root, &["add", "-A"]);
+    dir
+}
+
+/// The real generator binary aimed at `root`, with `REIFY_PTODO_TASKS_DB`
+/// removed (the β liveness lane then degrades fail-soft, which is what a
+/// hermetic fixture wants).
+///
+/// Sanitized DIRECTLY rather than built through [`reify_audit::git_env`]'s
+/// `git -C <root>` constructor: the program here is a reify binary that runs
+/// git internally, not git itself, which is the other-shape case
+/// [`reify_test_support::git_env::sanitize`] sanctions.
+fn generator_cmd(root: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ptodo-baseline-gen"));
+    cmd.arg("--project-root")
+        .arg(root)
+        .env_remove("REIFY_PTODO_TASKS_DB");
+    reify_audit::git_env::sanitize(&mut cmd);
+    cmd
+}
+
+/// Run the real generator binary against `root`.
+fn run_generator(root: &Path) -> std::process::Output {
+    generator_cmd(root)
+        .output()
+        .expect("ptodo-baseline-gen spawns")
+}
+
+/// Extract the single `@@PTODO_SCAN@@` line's counters from `stderr`, asserting
+/// there is EXACTLY one such line and that both REQUIRED fields are well formed.
+///
+/// Mirrors the PRD §6.6 grammar rules exactly, so the two consumers of this
+/// machine contract agree on how strict it is:
+///   - MULTIPLICITY: exactly one line per run.  This is the strict consumer and
+///     asserts it; the shell floor deliberately reads only the first (`grep -m1`
+///     in `tests/infra/test_reify_audit_ptodo.sh`) rather than policing the count.
+///   - EXTENSIBILITY: the field list is OPEN for additive extension.  An
+///     unrecognised `key=value` token is IGNORED, so appending a future counter
+///     stays backward compatible and cannot turn this contract test RED.  Only a
+///     MISSING required field (`files_scanned` / `markers_examined`) or an
+///     unparseable value panics.
+fn parse_scan_line(stderr: &str) -> (usize, usize) {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("@@PTODO_SCAN@@"))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected exactly one @@PTODO_SCAN@@ line on stderr; got {}:\n{stderr}",
+        lines.len()
+    );
+    let line = lines[0].trim();
+    let rest = line
+        .strip_prefix("@@PTODO_SCAN@@ ")
+        .unwrap_or_else(|| panic!("scan line must start with the bare token: {line:?}"));
+    let mut files: Option<usize> = None;
+    let mut markers: Option<usize> = None;
+    for field in rest.split_whitespace() {
+        if let Some(v) = field.strip_prefix("files_scanned=") {
+            files = Some(v.parse().unwrap_or_else(|e| {
+                panic!("files_scanned must be an integer ({v:?}): {e}")
+            }));
+        } else if let Some(v) = field.strip_prefix("markers_examined=") {
+            markers = Some(v.parse().unwrap_or_else(|e| {
+                panic!("markers_examined must be an integer ({v:?}): {e}")
+            }));
+        }
+        // else: an unrecognised token is an ADDITIVE extension of the grammar —
+        // ignored by contract, never a failure (PRD §6.6).
+    }
+    (
+        files.unwrap_or_else(|| panic!("scan line lacks files_scanned: {line:?}")),
+        markers.unwrap_or_else(|| panic!("scan line lacks markers_examined: {line:?}")),
+    )
+}
+
+/// (C1) The generator emits the §6.6 scan-evidence line on stderr with the REAL
+/// counters, and the line never leaks onto stdout.
+///
+/// Fixture: two staged swept files — `src/fresh.rs` carrying exactly one
+/// marker, `src/clean.rs` carrying none — so the expected evidence is
+/// `files_scanned=2 markers_examined=1` by construction.
+#[test]
+fn generator_emits_scan_evidence_with_real_counts() {
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("ptodo_baseline: skipping scan-evidence test — git not available");
+        return;
+    }
+
+    let fixture = staged_fixture(&[
+        ("src/fresh.rs", untracked_marker("wire the fixture up")),
+        ("src/clean.rs", "pub fn clean() -> u32 { 7 }\n".to_string()),
+    ]);
+    let out = run_generator(fixture.path());
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    // (iv) exit status.
+    assert!(
+        out.status.success(),
+        "generator must exit 0; status={:?}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+
+    // (i)+(ii) exactly one well-formed scan line, carrying the real counts.
+    let (files_scanned, markers_examined) = parse_scan_line(&stderr);
+    assert_eq!(
+        files_scanned, 2,
+        "files_scanned must be the fixture's swept staged file count (src/fresh.rs, \
+         src/clean.rs); stderr:\n{stderr}"
+    );
+    assert_eq!(
+        markers_examined, 1,
+        "markers_examined must be the fixture's marker-line count (1 in src/fresh.rs, \
+         0 in src/clean.rs); stderr:\n{stderr}"
+    );
+
+    // (iii) stdout is still the fingerprint stream, and the scan line did NOT
+    // leak onto it (a leak would corrupt ptodo-baseline.txt on the next regen).
+    assert!(
+        !stdout.contains("@@PTODO_SCAN@@"),
+        "the scan line must never reach stdout (it is the baseline stream):\n{stdout}"
+    );
+    let fp_lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        fp_lines.len(),
+        1,
+        "expected exactly one fingerprint on stdout; got {fp_lines:?}"
+    );
+    let parts: Vec<&str> = fp_lines[0].split(" :: ").collect();
+    assert_eq!(
+        parts.len(),
+        3,
+        "stdout must keep the `path :: kind :: text` grammar; got {:?}",
+        fp_lines[0]
+    );
+    assert_eq!(parts[0], "src/fresh.rs", "fingerprint path key");
+    assert_eq!(parts[1], "untracked", "fingerprint kind token");
+}
+
+/// (C2) MARKER-FREE REPO — the generator still emits the scan line (with
+/// `files_scanned >= 1`) while stdout is EMPTY.
+///
+/// This is the generator-level witness of the "detector ran, tree is clean"
+/// partition, and the exact shape the §6.6 shell floor keys on: a floor on the
+/// emitted fingerprint count cannot tell this state apart from "the generator
+/// never ran", whereas the scan line can.
+#[test]
+fn generator_emits_scan_evidence_on_a_marker_free_repo() {
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("ptodo_baseline: skipping marker-free scan-evidence test — git not available");
+        return;
+    }
+
+    let fixture = staged_fixture(&[
+        ("src/clean_a.rs", "pub fn a() -> u32 { 1 }\n".to_string()),
+        ("src/clean_b.rs", "pub fn b() {}\n".to_string()),
+    ]);
+    let out = run_generator(fixture.path());
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        out.status.success(),
+        "generator must exit 0 on a clean tree; status={:?}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        stdout.is_empty(),
+        "a marker-free repo emits no fingerprints; got stdout:\n{stdout}"
+    );
+
+    let (files_scanned, markers_examined) = parse_scan_line(&stderr);
+    assert_eq!(
+        files_scanned, 2,
+        "both marker-free swept files must count as scanned; stderr:\n{stderr}"
+    );
+    assert!(
+        files_scanned >= 1,
+        "scan evidence must be non-vacuous even with an empty baseline stream; \
+         stderr:\n{stderr}"
+    );
+    assert_eq!(
+        markers_examined, 0,
+        "a marker-free repo examines no markers; stderr:\n{stderr}"
+    );
+}
+
+/// (C3) EXTENSIBILITY, parser level — `parse_scan_line` IGNORES an unrecognised
+/// `key=value` token and still returns the two required counters.
+///
+/// C1/C2 above drive the REAL generator, which emits exactly `files_scanned`
+/// and `markers_examined`, so the parser's additive-extension branch never
+/// executes there and the documented promise ("appending a future counter
+/// stays backward compatible and cannot turn this contract test RED", PRD §6.6)
+/// went unexercised on both sides of the contract. Driving the parser directly
+/// — no fixture, no spawned binary — is what makes that branch reachable at all.
+///
+/// The fixture deliberately carries TWO shapes of extra token:
+///   * `future_counter=9` — the plain additive case;
+///   * `skipped_files_scanned=0` — the ADVERSARIAL one, whose name ends with a
+///     required key. A parser matching by SUBSTRING rather than by whole token
+///     reads this 0 as the file count; that is exactly the defect the shell
+///     consumer shipped with (see fixture (vi) in
+///     tests/infra/test_reify_audit_ptodo.sh, the mirror of this test). Pinning
+///     it on BOTH sides is what keeps one grammar from growing two parsers.
+///
+/// Field ORDER is also varied here (`markers_examined` first) — the grammar is
+/// a token set, not a sequence, and neither consumer may assume otherwise.
+#[test]
+fn parse_scan_line_ignores_unrecognised_tokens() {
+    let stderr = "ptodo-baseline-gen: 4 fingerprint(s) emitted\n\
+                  @@PTODO_SCAN@@ markers_examined=4 future_counter=9 \
+                  files_scanned=7 skipped_files_scanned=0\n";
+
+    let (files_scanned, markers_examined) = parse_scan_line(stderr);
+
+    assert_eq!(
+        files_scanned, 7,
+        "files_scanned must come from the token NAMED files_scanned, never from \
+         one merely ending with it (skipped_files_scanned=0 here)"
+    );
+    assert_eq!(
+        markers_examined, 4,
+        "markers_examined must survive both an unrecognised token and a \
+         non-canonical field order"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (D) Fixture git-env hygiene
+//
+// (C) above drives the real generator over hermetic tempdir git fixtures, and
+// these tests run ALWAYS-ON under `hooks/pre-commit` -> `hooks/project-checks`
+// -> `scripts/verify.sh` — i.e. inside a git process tree, which is exactly the
+// ambient condition `reify_test_support::git_env` documents. The failure mode
+// and its measured signatures are argued there and are deliberately not
+// restated here.
+// ---------------------------------------------------------------------------
+
+/// (D1) Both fixture command builders must remove EVERY repo-redirect git env
+/// var, iterating the canonical set rather than a local copy.
+///
+/// Iterating `reify_audit::git_env::REPO_REDIRECT_VARS` is the point: the set
+/// may GROW without editing this test (its deletion guard already lives at the
+/// definition site, `repo_redirect_vars_covers_the_removal_floor`), and a local
+/// list of names here would be precisely the "re-derive `REPO_REDIRECT_VARS` by
+/// hand" step that `reify_test_support::git_env::sanitize`'s doc names as how
+/// this bug class reaches a new helper.
+///
+/// Removals are read through `removed_vars` — `std` encodes `env_remove` as a
+/// `(key, None)` pair — so an overwrite, or a value merely inherited from the
+/// parent, cannot pass as a removal.
+///
+/// Hermetic and always-on: no tempdir and no git spawn, so no availability
+/// probe is needed.
+#[test]
+fn fixture_commands_remove_every_repo_redirect_var() {
+    let root = Path::new("/some/root");
+
+    for (label, cmd) in [
+        ("fixture_git_cmd", fixture_git_cmd(root)),
+        ("generator_cmd", generator_cmd(root)),
+    ] {
+        let removed = reify_test_support::git_env::removed_vars(&cmd);
+        for var in reify_audit::git_env::REPO_REDIRECT_VARS {
+            assert!(
+                removed.iter().any(|r| r == var),
+                "{label}() must REMOVE `{var}` (env_remove -> `(key, None)`), not \
+                 merely overwrite it; removals seen: {removed:?}"
+            );
+        }
+    }
+
+    // Separately: the hermeticity property (C1)/(C2) rest on. An ambient tasks
+    // DB would wake the β liveness lane and change the fingerprint set, so a
+    // rewrite of `generator_cmd` may not silently drop this removal.
+    let removed = reify_test_support::git_env::removed_vars(&generator_cmd(root));
+    assert!(
+        removed.iter().any(|r| r == "REIFY_PTODO_TASKS_DB"),
+        "generator_cmd() must REMOVE `REIFY_PTODO_TASKS_DB` so the fixture stays \
+         hermetic (an ambient tasks DB wakes the β liveness lane and changes the \
+         fingerprint set); removals seen: {removed:?}"
+    );
+}
+
+/// (D2) COMPANION — replay the (C) scan-evidence tests under a real *ambient*
+/// hook git environment, mirroring `cli.rs`'s
+/// `hook_env_replay_of_ptodo_git_fixture_tests`.
+///
+/// This is NOT the RED half of (D): it passes both before and after
+/// `fixture_git_cmd`/`generator_cmd` route through the shared sanitizer,
+/// because the shared harness poisons only the three vars git exports into a
+/// hook's process tree (`GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`) and the
+/// hand-rolled trio already removed exactly those. It is regression protection
+/// for the ambient condition itself — (D1) is what pins the rest of the set.
+///
+/// Floor 2 is the selection measured today: (C1)
+/// `generator_emits_scan_evidence_with_real_counts` and (C2)
+/// `generator_emits_scan_evidence_on_a_marker_free_repo`. (C3)
+/// `parse_scan_line_ignores_unrecognised_tokens` and this test's own name both
+/// fall outside the filter, so the replay cannot select itself and the floor is
+/// not vacuous.
+#[test]
+fn hook_env_replay_of_generator_scan_evidence_tests() {
+    common::git_env::replay_self_under_hook_git_env(&["generator_emits_scan_evidence"], 2);
 }

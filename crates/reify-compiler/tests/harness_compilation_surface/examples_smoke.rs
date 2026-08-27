@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+use reify_test_support::missing_paths_under;
+
 /// Absolute path to the workspace `examples/` directory, resolved at compile
 /// time from this crate's manifest directory (two levels up).
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
@@ -242,6 +244,15 @@ fn all_examples_parse_and_compile_with_stdlib() {
 /// Sites listed in [`CTOR_CONFORMANCE_MIGRATION_DEBT`] are waived per `(file,
 /// param)` pair; see [`CTOR_CONFORMANCE_GATE_REMEDY`] for what a firing
 /// diagnostic means and which of the three remedies applies.
+///
+/// Since task 5303 (ε) the gate ALSO covers the two structural ctor codes,
+/// `CtorUnknownField` and `CtorArity` — i.e. no shipped example may carry a
+/// typo'd constructor field name or a silently-dropped surplus positional
+/// argument either. Extending it was conditional on a measurement, because ε
+/// was explicitly not allowed to fix corpus sites (γ owns corpus fix-forward)
+/// and the waiver list is migration debt, not an escape hatch for new codes:
+/// the corpus was measured CLEAN under both new codes, so the tightening was
+/// free, added no `CTOR_CONFORMANCE_MIGRATION_DEBT` entry, and δ inherits it.
 #[test]
 fn no_example_emits_ctor_field_conformance_diagnostics() {
     let walk = ctor_conformance_corpus_walk();
@@ -320,18 +331,38 @@ one diagnostic.";
 /// Sanity guard: every entry in SKIP_SET must name a relative path that actually
 /// exists under `examples/`.  Catches mis-typed or stale skip entries before they
 /// silently disable coverage.
+///
+/// Existence filter: [`reify_test_support::missing_paths_under`], where its
+/// contract is documented and unit-tested.
+///
+/// Every stale entry is reported in one panic rather than failing fast on the
+/// first, matching the corpus-wide-visibility principle this file applies to its
+/// other bulk guards.
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
-    for (rel_path, reason) in SKIP_SET {
-        let path = Path::new(EXAMPLES_DIR).join(rel_path);
-        assert!(
-            path.exists(),
-            "SKIP_SET entry '{}' (reason: {}) does not exist under {}",
-            rel_path,
-            reason,
-            EXAMPLES_DIR,
-        );
+    let missing = missing_paths_under(
+        Path::new(EXAMPLES_DIR),
+        SKIP_SET.iter().map(|(rel, _)| *rel),
+    );
+    if missing.is_empty() {
+        return;
     }
+    // Build the report by walking SKIP_SET and keeping the flagged entries,
+    // rather than looking each flagged path back up in SKIP_SET: the reason
+    // string stays in hand, so there is no lookup that cannot fail and hence no
+    // unreachable "reason missing" branch to justify.
+    let lines: Vec<String> = SKIP_SET
+        .iter()
+        .filter(|(rel, _)| missing.contains(rel))
+        .map(|(rel, reason)| format!("  '{rel}' (reason: {reason})"))
+        .collect();
+    panic!(
+        "SKIP_SET entry/entries name a relative path that does not exist under {}:\n{}\n\
+         A stale key silently disables coverage for a file that is no longer skipped — \
+         delete the entry or fix the path.",
+        EXAMPLES_DIR,
+        lines.join("\n")
+    );
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -488,7 +519,7 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
 }
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance pass (tasks 5302 / 4584 / 4598 / 4622 / 4444).
+/// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
 ///
 /// Kept deliberately in sync with the identically-named helper in
 /// `struct_ctor_field_conformance_tests.rs`; integration tests are separate
@@ -504,6 +535,8 @@ fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode
                 | DiagnosticCode::TypeNotConformingToTrait
                 | DiagnosticCode::TypeNotConformingToStructureRef
                 | DiagnosticCode::TypeNotConformingToVector
+                | DiagnosticCode::CtorUnknownField
+                | DiagnosticCode::CtorArity
         )
     )
 }

@@ -2712,6 +2712,74 @@ fn compile_expr_guarded_with_expected_inner(
                     .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
                     .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
                     .collect();
+                // ── Two read-only VIEWS for the ε diagnostics below ───────────
+                // Both are deliberately NOT the `params` binding vec above, which
+                // answers a third question ("which cells can a positional bind
+                // to?"). `param x : T = auto` / `auto(free)` lowers to
+                // `ValueCellKind::Auto { free }` (`entity.rs`,
+                // `build_param_value_cell_decl`), so an auto-declared param is a
+                // param the author WROTE but not a slot a positional can bind to.
+                //
+                // THE IR CANNOT DISTINGUISH AN AUTO PARAM FROM AN AUTO LET.
+                // `let m : T = auto` inside a structure lowers to the SAME
+                // `ValueCellKind::Auto { free }` cell (`entity.rs`, the auto-let
+                // branch) — verified by probe, not assumed. `visibility` is the
+                // only discriminator carried today, and it is a heuristic, not a
+                // proof: a param defaults to `Public`
+                // (`priv_flag_to_visibility(param.is_priv)`) and a let defaults to
+                // `Private`, but `priv param x : T = auto` and
+                // `pub let m : T = auto` both compile and both invert it. The
+                // durable fix is to carry the origin explicitly (a `from_param`
+                // discriminant on the `Auto` variant, or a declared-param name list
+                // built alongside `value_cells` in `entity.rs`) — an IR change
+                // across ~86 `ValueCellKind::Auto` sites in six crates, outside ε's
+                // diagnostics-only remit and outside this task's declared file set.
+                // A follow-up task is filed for it (steward, esc-5303-9).
+                //
+                // Because no single predicate is right for every shape, the two
+                // diagnostics take the view that is SAFE IN THEIR OWN DIRECTION.
+
+                // (a) The externally-settable member set — WIDE on purpose, and
+                // evaluated LAZILY at its single use site rather than materialized
+                // here (see `is_settable_member` below). Used only to SUPPRESS
+                // `CtorUnknownField`, so over-inclusion can only make the
+                // diagnostic stay silent; it can never make it assert a falsehood.
+                // Every ambiguous `Auto` cell is included, so neither
+                // `priv param x : T = auto` nor an auto let can produce a false
+                // "has no parameter with that name". This is the same predicate
+                // already used by `connect.rs` and `traits.rs`. Matching on the
+                // VARIANT, not on `free`, covers strict `auto` and `auto(free)`.
+
+                // (b) The declared-param COUNT — the number `CtorArity` prints as
+                // its ceiling, so unlike (a) it must be a number the source
+                // actually supports. An `Auto` cell counts only when its
+                // `visibility` says param (`Public`); a `Private` `Auto` cell is
+                // read as an auto LET and excluded. That is what keeps the ceiling
+                // off an auto let — counting one inflated the ceiling into a claim
+                // the source contradicts (`expects at most 2 arguments` on a
+                // structure declaring ONE param plus an auto let) and silenced the
+                // param-less case entirely.
+                //
+                // KNOWN RESIDUAL, pinned by
+                // `priv_auto_param_is_read_as_an_auto_let_by_the_arity_ceiling`:
+                // `priv param x : T = auto` is `Private` `Auto` and is therefore
+                // read as a let, understating the ceiling by one. No predicate over
+                // today's IR can be right for both that shape and a plain auto let
+                // — they are byte-identical cells — so this picks the reading that
+                // is correct for every shape in the corpus (`examples/*.ri` contains
+                // auto lets and zero `priv param … = auto`) and the one that matches
+                // `priv`'s own meaning: a private member is not part of the
+                // constructor's externally-settable surface. Only the origin-carrying
+                // IR change described above removes the ambiguity for good.
+                let declared_count = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| match vc.kind {
+                        ValueCellKind::Param => true,
+                        ValueCellKind::Auto { .. } => vc.visibility == Visibility::Public,
+                        _ => false,
+                    })
+                    .count();
                 // --- By-name binder (task-4522) ---
                 // Named arg `p` binds to the template param named `p`;
                 // positional (None) args fill the next declaration-order
@@ -2792,17 +2860,158 @@ fn compile_expr_guarded_with_expected_inner(
                             .push(((*pname).to_string(), compiled_args[call_idx].clone()));
                     }
                 }
-                // Lenient fallback: unknown named args (no matching param)
-                // are appended as __arg{i} to preserve existing IR handling.
+                // Unknown named args (no matching param): diagnose, then keep the
+                // pre-existing lenient __arg{i} fallback so the IR shape is
+                // unchanged. This site's staging and severity schedule live in
+                // `docs/prds/struct-ctor-field-type-conformance.md` §7 (row 11) —
+                // not restated here, so a later stage flip cannot leave a stale
+                // claim behind. The severity itself is read from the knob below.
+                //
+                // The unknown arg is diagnosed but NOT bound to a param slot: pass
+                // 2 above already let a following positional take the slot the
+                // typo'd name failed to claim. Pinned by
+                // `unknown_named_argument_does_not_consume_a_param_slot`.
+                //
+                // One diagnostic per unknown named arg: a typo'd field name is a
+                // per-argument author error and each needs its own span to be
+                // actionable (PRD §6 C2(ii)). No type anti-cascade guard — an
+                // unknown NAME is decidable without reference to any argument's
+                // type, and suppressing it on a poisoned arg would hide the typo
+                // behind the downstream error the typo itself often caused.
+                //
+                // The DIAGNOSTIC and the lenient push deliberately carry DIFFERENT
+                // predicates. The push is keyed on `params` (no slot bound it, so
+                // the arg still needs somewhere to go) and stays unconditional, so
+                // the IR is byte-for-byte what it was before ε — ε is
+                // diagnostics-only, and β's corpus survey must measure diagnostics,
+                // not behaviour drift. The diagnostic is keyed on the WIDE view
+                // (a), evaluated inline as `is_settable_member` below, because
+                // "could this name be a member the author wrote?" is the only
+                // question this message may safely answer — a false "no parameter
+                // with that name" is the one failure mode this code must never
+                // have.
+                //
+                // A named arg naming an `Auto` cell therefore compiles to the same
+                // `__arg{i}` member it always did, SILENTLY — whether that cell is
+                // an auto param or an auto let. Silence is leniency, not a false
+                // claim, and it is the deliberate ε posture: the residual binding
+                // gap (positional and named args skipping `Auto` slots into garbage
+                // `__arg{i}` members) is owned by #6705, which also decides whether
+                // a diagnostic is owed for it; ε cannot state a true fact about it
+                // without changing the IR. Pinned by
+                // `named_argument_for_an_auto_let_is_leniently_accepted`.
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
                     if let Some(pname) = arg_name
                         && !params.iter().any(|(n, _)| *n == pname.as_str())
                     {
+                        // View (a), evaluated inline. Deliberately NOT hoisted
+                        // into a `Vec` above: this branch runs only for a named
+                        // argument that already failed to bind, so a hoisted view
+                        // would allocate on every well-formed structure-ctor call
+                        // in the program to serve a lookup that almost never
+                        // happens. The scan is O(cells) against an O(cells) `Vec`
+                        // build plus an O(cells) `contains`, so the lazy form is
+                        // never slower even when it does fire.
+                        let is_settable_member = template.value_cells.iter().any(|vc| {
+                            vc.id.member == pname.as_str()
+                                && matches!(
+                                    vc.kind,
+                                    ValueCellKind::Param | ValueCellKind::Auto { .. }
+                                )
+                        });
+                        if !is_settable_member {
+                            diagnostics.push(
+                                crate::conformance::diag_at(
+                                    crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
+                                    format!(
+                                        "E_CTOR_UNKNOWN_FIELD: unknown named argument '{}' \
+                                         in call to '{}'; '{}' has no parameter with that name",
+                                        pname, name, name
+                                    ),
+                                )
+                                .with_code(DiagnosticCode::CtorUnknownField)
+                                .with_label(DiagnosticLabel::new(
+                                    args[call_idx].span,
+                                    "unknown named argument",
+                                )),
+                            );
+                        }
                         ordered_args.push((
                             format!("__arg{}", call_idx),
                             compiled_args[call_idx].clone(),
                         ));
                     }
+                }
+                // Over-arity positional args: diagnose once for the call, then keep
+                // the pre-existing lenient __arg{call_idx} fallback. The `defaults`
+                // computation that follows is untouched: under-arity covered by param
+                // defaults stays legal, and only the SURPLUS direction is diagnosed.
+                // Staging and severity schedule: PRD §7 (row 12), as above.
+                //
+                // Exactly ONE diagnostic per call site, not one per surplus arg:
+                // arity is a call-LEVEL fact (`W("a","b","c")` against a 1-param def
+                // is one mistake), matching arg_check.rs, which emits one arity
+                // diagnostic per call. Anchored at the FIRST surplus arg.
+                //
+                // The reported `got` count is `args.len()` — the WHOLE call's arg
+                // count, including any unknown named arg diagnosed above, even though
+                // the fact being reported concerns surplus POSITIONALS. That is the
+                // number the author can match against their own source. Pinned by
+                // `unknown_named_argument_is_still_counted_in_the_arity_got_total`.
+                //
+                // Wording and the label text are lifted from arg_check.rs — including
+                // its singular/plural rule, keyed on the EXPECTED count — so ctor
+                // arity reads identically to builtin arity. Its helper fns cannot be
+                // called here: all three hard-code `Diagnostic::error`, and this site
+                // must emit at the ctor-conformance knob.
+                //
+                // The CEILING is the declared-param COUNT view (b), while the
+                // SLOTS a positional can bind to still come from `params`. The two
+                // views answer different questions, and this message asserts the
+                // first: reporting the slot count as the declared count is exactly
+                // the false-message defect view (b) exists to fix
+                // (`WidgetAutoSurplus() expects at most 1 argument` on a structure
+                // that visibly declares two).
+                //
+                // The `args.len() > declared_count` conjunct is what makes a call
+                // WITHIN the declared arity silent. It is provably a no-op when the
+                // template has no `Auto` cell — there `declared_count == nparams`,
+                // and a non-empty `extra_positional_idxs` already implies
+                // `args.len() > nparams`: if any positional overflows then all
+                // `nparams` slots are filled, so `args.len() == named +
+                // positionals_placed + extra >= nparams + 1`. It therefore cannot
+                // suppress a pre-ε-remediation diagnostic.
+                //
+                // `extra_positional_idxs` itself is untouched, so the label still
+                // anchors where it did. A call within the declared count that
+                // nonetheless overflows the bindable slots (because `Auto` params
+                // are not positionally bindable today) is deliberately NOT
+                // diagnosed here — that is the binding defect owned by #6705.
+                if let Some(&first_extra) = extra_positional_idxs.first()
+                    && args.len() > declared_count
+                {
+                    let noun = if declared_count == 1 {
+                        "argument"
+                    } else {
+                        "arguments"
+                    };
+                    diagnostics.push(
+                        crate::conformance::diag_at(
+                            crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
+                            format!(
+                                "E_CTOR_ARITY: {}() expects at most {} {}, got {}",
+                                name,
+                                declared_count,
+                                noun,
+                                args.len()
+                            ),
+                        )
+                        .with_code(DiagnosticCode::CtorArity)
+                        .with_label(DiagnosticLabel::new(
+                            args[first_extra].span,
+                            "wrong number of arguments",
+                        )),
+                    );
                 }
                 // Lenient fallback: over-arity positional args appended as
                 // __arg{call_idx}, matching the unknown-named-arg fallback above.

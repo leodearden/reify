@@ -126,6 +126,22 @@ a false Violated") — keep the never-false-Violated half; add the
 attributable-reason half. `reify check --strict` promotes indeterminate
 to failure.
 
+**Doctrine (ruled by Leo, 2026-08-26, solver-integration session)**: every
+`Indeterminate` verdict and every undef output carries a typed cause, and
+causes classify as **expected** (the design is declaredly or derivably
+abstract at this point in the workflow) or **unexpected** (a mechanism
+failed to run or deliver — a solve that never ran, a value that never
+flowed, a constraint that never entered the solver problem). Plain
+`reify check` fails on unexpected causes; `--strict` continues to gate
+all indeterminacy. A newly discovered vacuity class is closed by giving
+it a typed cause — never by widening "expected". Delivery vehicles:
+declared-intent-consumption-accounting (#5415–#5421) and
+eradicate-silent-undef (#5399–#5406). An optional author-side
+"abstract here" declaration (complementing a
+no-concrete-constraints-style determinacy predicate) is a candidate
+follow-on that would let authors pin the expected class explicitly; it is
+deliberately optional, not required by the doctrine.
+
 ## INV-SF-5 `placeholders-owned-and-loud`
 
 **Rule**: Every placeholder in tracked source — placeholder-typed public

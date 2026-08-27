@@ -19,6 +19,14 @@
 //! diagnostic codes so unrelated diagnostics never pollute the counts.
 //!
 //! No new diagnostic codes are minted in α; no reify-core change.
+//!
+//! Task 5303 (struct-ctor-conformance ε) mints exactly two: `CtorUnknownField`
+//! and `CtorArity`, for the two lenient `__arg{i}` sites in the
+//! `StructureInstanceCtor` by-name binder (PRD §7 rows 11/12 — an unknown named
+//! argument, and an over-arity positional argument). Both are emitted from
+//! `crates/reify-compiler/src/expr.rs` at the SAME
+//! `CTOR_FIELD_CONFORMANCE_SEVERITY` knob as the α surface, so they are part of
+//! the ctor-conformance code set below and δ flips them with everything else.
 
 mod common;
 
@@ -30,12 +38,15 @@ use reify_core::{
 use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance pass (task 5302 / 4584 / 4598 / 4622 / 4444).
+/// field-conformance surface (task 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
 ///
 /// Filtering to this set keeps the per-fixture "exactly one diagnostic" counts
 /// from being polluted by unrelated diagnostics (an incidental `W_*` warning, a
-/// downstream note, etc.). All five codes already exist in `diagnostics.rs`; α
-/// mints none.
+/// downstream note, etc.). The first five codes already existed in
+/// `diagnostics.rs`; α minted none. ε (task 5303) adds the two structural codes
+/// `CtorUnknownField` / `CtorArity` — they belong here because they are emitted
+/// at the same `CTOR_FIELD_CONFORMANCE_SEVERITY` knob and δ flips them together
+/// with the α type codes, so the ε probes' "exactly N" counts must see them.
 fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
     matches!(
         code,
@@ -45,6 +56,8 @@ fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
                 | DiagnosticCode::TypeNotConformingToTrait
                 | DiagnosticCode::TypeNotConformingToStructureRef
                 | DiagnosticCode::TypeNotConformingToVector
+                | DiagnosticCode::CtorUnknownField
+                | DiagnosticCode::CtorArity
         )
     )
 }
@@ -2453,5 +2466,1610 @@ fn tensor_matching_dimension_at_moi_param_stays_clean() {
         "a Tensor<2,3,MomentOfInertia> param fed a matrix(…) whose elements carry the SAME \
          dimension (kg·m²) must stay SILENT — the quantity rule compares DimensionVectors, \
          it does not reject dimensioned args. Got: {diags:#?}"
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ε step-1 probes: unknown named argument (PRD §7 row 11 — E_CTOR_UNKNOWN_FIELD)
+//
+// The `StructureInstanceCtor` by-name binder in `crates/reify-compiler/src/expr.rs`
+// appends a named argument whose name matches no `Param` cell as `__arg{i}` and
+// says nothing at all. ε emits `DiagnosticCode::CtorUnknownField` there, at the
+// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning at ε, Error at δ).
+//
+// RED on the pre-step-2 tree for (a)/(b)/(c) — all three fixtures are silent
+// today. (d)/(e)/(f) are legality guards and must be green BOTH before and after.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_UNKNOWN_FIELD: &str = r#"module test.unknown_field
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(labl: "x")
+}
+"#;
+
+/// (a) Row 11 in a value-cell context: a typo'd field name must produce exactly
+/// one `CtorUnknownField`, at Warning, naming both the offending field and the
+/// constructor — and must NOT affect the exit code at ε (`errors_only` empty;
+/// δ is what flips these to Error).
+#[test]
+fn unknown_named_argument_emits_ctor_unknown_field_warning() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a single unknown named argument must emit exactly one ctor-conformance \
+         diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::CtorUnknownField),
+        "unknown named argument must carry the CtorUnknownField code, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "ε emits at the CTOR_FIELD_CONFORMANCE_SEVERITY knob (Warning); a hard-coded \
+         severity here would silently survive δ's one-const flip. Got: {:?}",
+        diags[0]
+    );
+    assert!(
+        diags[0].message.starts_with("E_CTOR_UNKNOWN_FIELD: "),
+        "the mnemonic must be a message PREFIX — `reify check` renders \
+         `{{severity}}: {{message}}` and never prints the DiagnosticCode, so without it \
+         the ε signal is invisible at the CLI. Got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        diags[0].message.contains("labl"),
+        "message must name the offending field, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        diags[0].message.contains("Widget11"),
+        "message must name the constructor, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "ε keeps exit code 0 — the unknown-field tightening is Warning-only until δ. \
+         Got errors: {:?}",
+        errors_only(&module)
+    );
+}
+
+/// (b) Span anchoring (PRD §6 C3): the label must sit at the OFFENDING ARGUMENT's
+/// own span, not at the whole `Widget11(...)` call. α's step-10 moved the
+/// ctor-conformance labels off a representative span onto the real call-site
+/// span; ε goes one level finer because the actionable token is the argument.
+#[test]
+fn unknown_named_argument_label_anchors_at_the_offending_argument() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(diags.len(), 1, "expected one diagnostic, got: {diags:#?}");
+    assert!(
+        !diags[0].labels.is_empty(),
+        "CtorUnknownField must carry a label span, got: {:?}",
+        diags[0]
+    );
+    let span: SourceSpan = diags[0].labels[0].span;
+    assert!(
+        !span.is_empty(),
+        "label span must be NON-empty (a SourceSpan::empty renders no caret), got: {span:?}"
+    );
+    let sliced = &SRC_UNKNOWN_FIELD[span.start as usize..span.end as usize];
+    assert!(
+        !sliced.contains("Widget11("),
+        "label must anchor at the offending ARGUMENT, not at the whole ctor call \
+         (PRD §6 C3), got slice {sliced:?}"
+    );
+    assert!(
+        sliced.contains("\"x\""),
+        "label span must cover the offending `labl: \"x\"` argument, got slice {sliced:?}"
+    );
+}
+
+const SRC_UNKNOWN_FIELD_TWICE: &str = r#"module test.unknown_field_twice
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(labl: "x", lable2: "y")
+}
+"#;
+
+/// (c) Multiplicity: an unknown field name is a PER-ARGUMENT fact, so two typo'd
+/// names produce two diagnostics — each needs its own span to be actionable.
+/// This is the C2(ii) "at most one diagnostic per (arg, fact)" pin for this code;
+/// contrast with `CtorArity`, which is one-per-CALL.
+#[test]
+fn two_unknown_named_arguments_emit_one_diagnostic_each() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD_TWICE);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        2,
+        "two unknown named arguments must emit exactly two diagnostics (one per \
+         offending arg), got: {diags:#?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::CtorUnknownField)),
+        "both diagnostics must be CtorUnknownField, got: {diags:#?}"
+    );
+    let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("labl'")),
+        "one diagnostic must name `labl`, got: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("lable2")),
+        "one diagnostic must name `lable2`, got: {messages:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "ε keeps exit code 0, got errors: {:?}",
+        errors_only(&module)
+    );
+}
+
+const SRC_KNOWN_FIELD: &str = r#"module test.known_field
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(label: "x")
+}
+"#;
+
+/// (d) Legality guard: a correctly-spelled named argument stays silent. Green
+/// both before and after step-2 — this is what proves the tightening keys on
+/// "no such parameter" and not merely on "the call uses named arguments".
+#[test]
+fn correct_named_argument_emits_no_ctor_conformance_diagnostic() {
+    let module = compile_source_with_stdlib(SRC_KNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a correctly-named argument must stay silent, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+const SRC_DUPLICATE_KNOWN_FIELD: &str = r#"module test.duplicate_known_field
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(label: "a", label: "b")
+}
+"#;
+
+/// (e) The sibling duplicate-named-arg diagnostic — emitted three lines away in
+/// the same binder — must be untouched by ε, and a duplicate of a KNOWN parameter
+/// must NOT be reclassified as an unknown field. That diagnostic is code-less
+/// today (it predates the ctor-conformance code set), so it does not appear in
+/// `ctor_conformance_diags` at all; it is matched by message text here.
+#[test]
+fn duplicate_known_named_argument_is_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_DUPLICATE_KNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a duplicate of a KNOWN parameter is not an unknown field — ε must emit no \
+         ctor-conformance diagnostic here, got: {diags:#?}"
+    );
+    let dupes: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("duplicate named argument"))
+        .collect();
+    assert_eq!(
+        dupes.len(),
+        1,
+        "the pre-existing duplicate-named-argument diagnostic must still fire exactly \
+         once, got: {:#?}",
+        module.diagnostics
+    );
+    assert_eq!(
+        dupes[0].severity,
+        Severity::Error,
+        "the duplicate-named-arg precedent is an Error and is outside the ε knob, \
+         got: {:?}",
+        dupes[0]
+    );
+}
+
+const SRC_SUB_UNKNOWN_FIELD: &str = r#"module test.sub_unknown_field
+structure def Widget11 { param label : String }
+structure def Root {
+    sub p = Widget11(labl: "x")
+}
+"#;
+
+/// (f) SCOPE BOUNDARY, pinned deliberately rather than left implicit.
+///
+/// The `sub p = Ctor(...)` binding form does NOT route through the
+/// `StructureInstanceCtor` by-name binder in `expr.rs` — its RHS is handled by
+/// the `PendingBoundCheck` path instead — so neither `__arg{i}` fallback is
+/// reachable from it and ε cannot see this call at all. Measured on the base of
+/// this branch: even the long-standing duplicate-named-arg Error does not fire
+/// through `sub =`, which is the same seam.
+///
+/// ε therefore covers expression-position constructors only. Closing the sub-path
+/// hole means adding an unknown-field check to the `PendingBoundCheck` walker — a
+/// different mechanism in a different file, with its own double-emission risk
+/// (PRD §10 Q4) — so it is a follow-up (#6191), not part of this diff. Note the
+/// over-arity half is unreachable there regardless: `sub p = W("a", "b")` does not
+/// parse. This test exists so
+/// that boundary is a recorded, asserted fact: if a later change DOES make the sub
+/// path reach the binder, this test fails and forces the double-emission question
+/// to be answered rather than silently regressed into.
+#[test]
+fn sub_binding_rhs_is_outside_the_epsilon_binder_seam() {
+    let module = compile_source_with_stdlib(SRC_SUB_UNKNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "the `sub =` RHS does not route through the StructureInstanceCtor binder, so ε \
+         emits nothing here (documented scope boundary, not a silent miss). If this \
+         fires, the seam moved — re-answer the PRD §10 Q4 double-emission question \
+         before widening. Got: {diags:#?}"
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ε step-3 probes: over-arity positional argument (PRD §7 row 12 — E_CTOR_ARITY)
+//
+// The sibling leniency to row 11: a positional argument with no param slot left
+// is appended as `__arg{call_idx}` with no diagnostic. ε emits
+// `DiagnosticCode::CtorArity` there, at the same knob.
+//
+// Multiplicity differs from `CtorUnknownField` on purpose: arity is a CALL-level
+// fact (`W("a","b","c")` against a 1-param def is ONE mistake), so exactly one
+// diagnostic per call site, anchored at the FIRST surplus argument. That matches
+// every existing arity diagnostic in the repo — `arg_check.rs` emits one per
+// call, never one per surplus arg.
+//
+// RED on the pre-step-4 tree for (a)-(e); (f)-(h) are legality guards, green
+// both before and after.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_OVER_ARITY: &str = r#"module test.over_arity
+structure def Widget12 { param label : String }
+structure def Root {
+    let x = Widget12("a", "b")
+}
+"#;
+
+/// (a) Row 12: one surplus positional argument must produce exactly one
+/// `CtorArity`, at Warning, naming BOTH arity facts (expected 1, got 2), with
+/// exit-code neutrality preserved at ε.
+#[test]
+fn over_arity_positional_argument_emits_ctor_arity_warning() {
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "an over-arity ctor call must emit exactly one ctor-conformance diagnostic, \
+         got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::CtorArity),
+        "over-arity must carry the CtorArity code, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "ε emits at the CTOR_FIELD_CONFORMANCE_SEVERITY knob (Warning), got: {:?}",
+        diags[0]
+    );
+    let msg = &diags[0].message;
+    assert!(
+        msg.starts_with("E_CTOR_ARITY: "),
+        "the mnemonic must be a message PREFIX so the ε signal is visible at the CLI, \
+         got: {msg:?}"
+    );
+    assert!(
+        msg.contains("Widget12"),
+        "message must name the constructor, got: {msg:?}"
+    );
+    assert!(
+        msg.contains("at most 1 argument"),
+        "message must name the EXPECTED arity, in arg_check.rs's centralised wording \
+         (singular noun when the count is 1), got: {msg:?}"
+    );
+    assert!(
+        msg.contains("got 2"),
+        "message must name the ACTUAL arity, got: {msg:?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "ε keeps exit code 0, got errors: {:?}",
+        errors_only(&module)
+    );
+}
+
+/// (b) Span anchoring + centralised label text: the label sits at the offending
+/// surplus argument (`"b"`), not at the whole call, and reads exactly
+/// `"wrong number of arguments"` — the wording `arg_check.rs` centralises so
+/// every arg-count diagnostic in the codebase looks identical.
+#[test]
+fn over_arity_label_anchors_at_the_first_surplus_argument() {
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(diags.len(), 1, "expected one diagnostic, got: {diags:#?}");
+    assert!(
+        !diags[0].labels.is_empty(),
+        "CtorArity must carry a label span, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].labels[0].message, "wrong number of arguments",
+        "label text is centralised in arg_check.rs so all arg-count diagnostics read \
+         identically, got: {:?}",
+        diags[0].labels[0]
+    );
+    let span: SourceSpan = diags[0].labels[0].span;
+    assert!(!span.is_empty(), "label span must be NON-empty, got: {span:?}");
+    let sliced = &SRC_OVER_ARITY[span.start as usize..span.end as usize];
+    assert!(
+        !sliced.contains("Widget12("),
+        "label must anchor at the offending argument, not the whole ctor call, got \
+         slice {sliced:?}"
+    );
+    assert!(
+        sliced.contains('b') && !sliced.contains('a'),
+        "label span must cover the SURPLUS second argument `\"b\"`, not the first, got \
+         slice {sliced:?}"
+    );
+}
+
+const SRC_OVER_ARITY_BY_TWO: &str = r#"module test.over_arity_by_two
+structure def Widget12 { param label : String }
+structure def Root {
+    let x = Widget12("a", "b", "c")
+}
+"#;
+
+/// (c) Once-per-call: TWO surplus arguments still produce exactly ONE `CtorArity`,
+/// anchored at the FIRST surplus one. Pins that the implementation does not emit
+/// per surplus arg — which would triple β's survey count for a single author
+/// mistake and make δ's Error stage hostile.
+#[test]
+fn two_surplus_positional_arguments_still_emit_exactly_one_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY_BY_TWO);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "arity is a CALL-level fact: two surplus args are still one mistake and must \
+         emit exactly one diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    let msg = &diags[0].message;
+    assert!(
+        msg.contains("at most 1 argument") && msg.contains("got 3"),
+        "message must report expected 1 / got 3, got: {msg:?}"
+    );
+    let span: SourceSpan = diags[0].labels[0].span;
+    let sliced = &SRC_OVER_ARITY_BY_TWO[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains('b') && !sliced.contains('c'),
+        "the single diagnostic must anchor at the FIRST surplus argument (`\"b\"`), got \
+         slice {sliced:?}"
+    );
+}
+
+const SRC_ZERO_PARAM_OVER_ARITY: &str = r#"module test.zero_param_over_arity
+structure def W0 { let k = 1 }
+structure def Root {
+    let x = W0("a")
+}
+"#;
+
+/// (d) Zero-param structure: any positional argument is surplus. Pins the
+/// plural-noun branch of the centralised wording (`0 arguments`, not
+/// `0 argument`) and that `nparams == 0` is not special-cased into silence.
+#[test]
+fn positional_argument_to_zero_param_structure_emits_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_ZERO_PARAM_OVER_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a positional arg to a param-less structure must emit exactly one CtorArity, \
+         got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    let msg = &diags[0].message;
+    assert!(
+        msg.contains("at most 0 arguments") && msg.contains("got 1"),
+        "message must report expected 0 / got 1, with the PLURAL noun for a zero \
+         expected count (arg_check.rs keys the noun on the expected count), got: {msg:?}"
+    );
+}
+
+const SRC_MIXED_NAMED_THEN_POSITIONAL: &str = r#"module test.mixed_named_positional
+structure def Widget12 { param label : String }
+structure def Root {
+    let x = Widget12(label: "a", "b")
+}
+"#;
+
+/// (e) Mixed named + positional: the named argument consumes the only slot, so
+/// the trailing positional has nowhere to bind and is surplus. Pins that arity is
+/// computed against REMAINING slots (the binder's two-pass named-then-positional
+/// order), not against a naive `args.len() > nparams` on positionals alone.
+#[test]
+fn positional_argument_after_named_fills_the_slot_emits_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_MIXED_NAMED_THEN_POSITIONAL);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "the named arg consumed the only slot, so the positional is surplus — exactly \
+         one CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    assert!(
+        diags[0].message.contains("got 2"),
+        "the reported actual count is the whole call's arg count, got: {:?}",
+        diags[0].message
+    );
+}
+
+const SRC_EXACT_ARITY: &str = r#"module test.exact_arity
+structure def Widget12 { param label : String }
+structure def Root {
+    let x = Widget12("a")
+}
+"#;
+
+/// (f) Legality guard: an exact-arity positional call stays silent.
+#[test]
+fn exact_arity_positional_call_emits_no_ctor_conformance_diagnostic() {
+    let module = compile_source_with_stdlib(SRC_EXACT_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "an exact-arity call must stay silent, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+const SRC_UNDER_ARITY_WITH_DEFAULT: &str = r#"module test.under_arity_default
+structure def W2 {
+    param a : String
+    param b : String = "d"
+}
+structure def Root {
+    let x = W2("x")
+}
+"#;
+
+/// (g) Legality guard, the load-bearing one: UNDER-arity is legal when the
+/// uncovered params carry defaults. ε tightens the surplus direction only; the
+/// binder's `defaults` computation must be untouched. A naive
+/// `args.len() != nparams` check would break every defaulted structure in the
+/// corpus, so this fixture is what stops the tightening from over-reaching.
+#[test]
+fn under_arity_covered_by_defaults_emits_no_ctor_conformance_diagnostic() {
+    let module = compile_source_with_stdlib(SRC_UNDER_ARITY_WITH_DEFAULT);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "uncovered params with defaults are legal — ε must not diagnose under-arity, \
+         got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+const SRC_ZERO_ARG_CALL: &str = r#"module test.zero_arg_call
+structure def W0 { let k = 1 }
+structure def Root {
+    let x = W0()
+}
+"#;
+
+/// (h) Legality guard: a zero-arg call to a param-less structure stays silent —
+/// the empty-args edge of the surplus check.
+#[test]
+fn zero_argument_call_emits_no_ctor_conformance_diagnostic() {
+    let module = compile_source_with_stdlib(SRC_ZERO_ARG_CALL);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a zero-arg call must stay silent, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ε step-5 probes: cross-context reach, no-cross-talk, and preservation pins.
+//
+// Steps 2/4 each verified their own emit site in a value-cell context. These pin
+// the INTERACTIONS those steps leave unverified: that the binder is reached from
+// the other expression positions, that ε's two structural checks neither swallow
+// nor double α's type check when all three faults ride one call, that the type
+// anti-cascade carve-out holds, and that ε remains behaviour-preserving.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_UNKNOWN_FIELD_FN_BODY: &str = r#"module test.unknown_field_fn
+structure def Widget11 { param label : String }
+fn make() -> Widget11 { Widget11(labl: "x") }
+"#;
+
+/// (a) Free-fn body reach: the by-name binder is reached from a `fn` body, not
+/// only from a structure member. Without this, step-2 would only prove the
+/// value-cell path.
+#[test]
+fn unknown_named_argument_in_fn_body_emits_ctor_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD_FN_BODY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a free-fn body ctor must reach the binder and emit exactly one diagnostic, \
+         got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorUnknownField));
+    assert_eq!(diags[0].severity, Severity::Warning);
+}
+
+const SRC_UNKNOWN_FIELD_NESTED: &str = r#"module test.unknown_field_nested
+structure def Widget11 { param label : String }
+structure def O { param inner : Widget11 }
+structure def Root {
+    let x = O(inner: Widget11(labl: "x"))
+}
+"#;
+
+/// (b) Nested-ctor-argument reach, and attribution. The INNER call's typo must be
+/// diagnosed exactly once; the OUTER call is well-formed and must contribute
+/// nothing — a nested ctor is a legal argument, so an implementation that walked
+/// the outer call's args as if they were unknown fields would double-report here.
+#[test]
+fn unknown_named_argument_in_nested_ctor_argument_is_attributed_to_the_inner_call() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD_NESTED);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "only the INNER call is malformed — the well-formed outer `O(inner: ...)` call \
+         must contribute nothing, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorUnknownField));
+    assert!(
+        diags[0].message.contains("Widget11") && !diags[0].message.contains("'O'"),
+        "the diagnostic must be attributed to the inner `Widget11` call, not the outer \
+         `O` call, got: {:?}",
+        diags[0].message
+    );
+}
+
+const SRC_OVER_ARITY_FN_BODY: &str = r#"module test.over_arity_fn
+structure def Widget12 { param label : String }
+fn make2() -> Widget12 { Widget12("a", "b") }
+"#;
+
+/// (c) Free-fn body reach for the arity site, the sibling of (a).
+#[test]
+fn over_arity_in_fn_body_emits_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY_FN_BODY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a free-fn body over-arity ctor must emit exactly one diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    assert_eq!(diags[0].severity, Severity::Warning);
+}
+
+const SRC_ALL_THREE_FAULTS: &str = r#"module test.all_three_faults
+structure def Widget13 { param label : String }
+structure def Root {
+    let x = Widget13(label: 42, labl: "x", "extra")
+}
+"#;
+
+/// (d) NO CROSS-TALK — the central pin of this step. One call carrying all three
+/// faults at once (wrong TYPE on a bound param, an unknown FIELD name, and a
+/// surplus positional) must yield exactly three diagnostics: one each of
+/// `ArgTypeMismatch` (α's type walker), `CtorUnknownField` and `CtorArity`
+/// (ε's structural checks).
+///
+/// This is the C2(ii) at-most-one-per-(arg, fact) pin: no duplicates (ε must not
+/// double-count an argument it already reported), no suppression (ε's structural
+/// checks must not swallow α's type check, nor each other), and all three at the
+/// shared knob severity so δ moves them together. It is also what makes β's
+/// corpus survey able to bucket the three fault classes separately.
+#[test]
+fn all_three_ctor_faults_on_one_call_emit_exactly_one_diagnostic_each() {
+    let module = compile_source_with_stdlib(SRC_ALL_THREE_FAULTS);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        3,
+        "expected exactly three ctor-conformance diagnostics (one per fact), got: {diags:#?}"
+    );
+    let codes: Vec<Option<DiagnosticCode>> = diags.iter().map(|d| d.code).collect();
+    for expected in [
+        DiagnosticCode::ArgTypeMismatch,
+        DiagnosticCode::CtorUnknownField,
+        DiagnosticCode::CtorArity,
+    ] {
+        assert_eq!(
+            codes.iter().filter(|c| **c == Some(expected)).count(),
+            1,
+            "expected exactly one {expected:?}, got codes {codes:#?} from {diags:#?}"
+        );
+    }
+    assert!(
+        diags.iter().all(|d| d.severity == Severity::Warning),
+        "all three must sit at the shared CTOR_FIELD_CONFORMANCE_SEVERITY knob so δ \
+         moves them together, got: {diags:#?}"
+    );
+    let type_msg = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        type_msg.contains("label"),
+        "α's type diagnostic must still name the bound param `label` — ε must not \
+         perturb it, got: {type_msg:?}"
+    );
+    let unknown_msg = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::CtorUnknownField))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        unknown_msg.contains("labl'"),
+        "the unknown-field diagnostic must name `labl`, got: {unknown_msg:?}"
+    );
+    let arity_msg = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::CtorArity))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        arity_msg.contains("at most 1 argument") && arity_msg.contains("got 3"),
+        "the arity diagnostic must report expected 1 / got 3, got: {arity_msg:?}"
+    );
+}
+
+const SRC_UNKNOWN_NAME_THEN_POSITIONAL: &str = r#"module test.unknown_name_then_positional
+structure def Widget14 { param label : String }
+structure def Root {
+    let x = Widget14(labl: "x", "a")
+}
+"#;
+
+/// (e) SLOT ACCOUNTING, half one: an UNKNOWN named argument does NOT consume a
+/// param slot, so a following positional binds into the slot the typo'd name
+/// failed to claim. `Widget14(labl: "x", "a")` against a 1-param def is therefore
+/// exactly one `CtorUnknownField` and ZERO `CtorArity` — the call is not
+/// over-arity, because pass 1 left slot 0 free for `"a"` to take.
+///
+/// (d) above and `positional_argument_after_named_fills_the_slot_emits_ctor_arity`
+/// both use a VALID named argument, which DOES consume its slot, so without this
+/// fixture the unknown-name-skips-the-slot rule is unpinned. Making an unknown
+/// name consume a slot anyway is a plausible "be more helpful" refactor — and
+/// exactly the seam #6191 works in — which would silently add a spurious second
+/// diagnostic here with the rest of the suite still green.
+#[test]
+fn unknown_named_argument_does_not_consume_a_param_slot() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_NAME_THEN_POSITIONAL);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "the unknown name must not claim slot 0, leaving it for the positional — \
+         exactly one CtorUnknownField and no CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorUnknownField));
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::CtorArity))
+            .count(),
+        0,
+        "one positional for one free slot is exact arity — an unknown NAME must not \
+         additionally be reported as surplus, got: {diags:#?}"
+    );
+}
+
+const SRC_UNKNOWN_NAME_AND_SURPLUS: &str = r#"module test.unknown_name_and_surplus
+structure def Widget15 { param label : String }
+structure def Root {
+    let x = Widget15(labl: "x", "a", "b")
+}
+"#;
+
+/// (f) SLOT ACCOUNTING, half two: add one more positional to (e) and the call
+/// genuinely IS over-arity — `"a"` takes slot 0, `"b"` has nowhere to go — so both
+/// ε codes fire, exactly one each.
+///
+/// The load-bearing pin is the `got` COUNT. It is `args.len()`, so it counts the
+/// unknown NAMED argument too: the message reads `expects at most 1 argument,
+/// got 3`, not `got 2`, even though the fact being reported concerns surplus
+/// POSITIONALS. That is deliberate — it reports the call's actual argument count,
+/// matching `arg_check.rs`'s builtin-arity wording, rather than a positionals-only
+/// count the author could not match against their own source. Recorded as a
+/// decision because (e)'s "does not consume a slot" and this "is nevertheless
+/// counted in `got`" are separate questions: a refactor that unified them would
+/// flip exactly one of these two fixtures.
+#[test]
+fn unknown_named_argument_is_still_counted_in_the_arity_got_total() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_NAME_AND_SURPLUS);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        2,
+        "expected exactly one CtorUnknownField and one CtorArity, got: {diags:#?}"
+    );
+    for expected in [DiagnosticCode::CtorUnknownField, DiagnosticCode::CtorArity] {
+        assert_eq!(
+            diags.iter().filter(|d| d.code == Some(expected)).count(),
+            1,
+            "expected exactly one {expected:?}, got: {diags:#?}"
+        );
+    }
+    let arity_msg = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::CtorArity))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        arity_msg.contains("at most 1 argument") && arity_msg.contains("got 3"),
+        "`got` is args.len(), so the unknown named argument is counted in the total; \
+         expected `at most 1 argument` / `got 3`, got: {arity_msg:?}"
+    );
+}
+
+const SRC_UNKNOWN_FIELD_POISONED_ARG: &str = r#"module test.unknown_field_poisoned
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(labl: no_such_name_anywhere)
+}
+"#;
+
+/// (g) ANTI-CASCADE CARVE-OUT. The unknown-named arg here is itself an erroring
+/// expression (an unresolved name → poison). The `CtorUnknownField` must STILL
+/// fire exactly once.
+///
+/// PRD §6 C2(i)'s type anti-cascade exists so a type walker never stacks a second
+/// TYPE complaint on an upstream type error. An unknown field NAME is not a type
+/// fact — it is decidable with no reference to the argument's type — and
+/// suppressing it here would hide the more actionable diagnostic (the typo)
+/// behind a downstream error the typo often caused. Pinned explicitly so a later
+/// refactor cannot quietly fold these emit sites under the walker's skip rules.
+#[test]
+fn unknown_named_argument_still_fires_when_its_value_is_poisoned() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD_POISONED_ARG);
+    // Non-vacuity guard, load-bearing here: if the argument stopped erroring, this
+    // fixture would no longer exercise the anti-cascade path at all and would pass
+    // for the wrong reason. Measured: `error: unresolved name: no_such_name_anywhere`.
+    assert!(
+        !errors_only(&module).is_empty(),
+        "fixture must genuinely poison the argument, else the carve-out is untested"
+    );
+    let unknown: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::CtorUnknownField))
+        .collect();
+    assert_eq!(
+        unknown.len(),
+        1,
+        "an unknown field NAME is type-independent, so a poisoned argument value must \
+         not suppress it (nor duplicate it), got all diagnostics: {:#?}",
+        module.diagnostics
+    );
+    assert_eq!(unknown[0].severity, Severity::Warning);
+}
+
+/// (h) BEHAVIOUR PRESERVATION. ε adds diagnostics only: every ε fixture whose
+/// faults are purely ctor-conformance ones still compiles to a module with NO
+/// errors, i.e. `reify check` keeps exit 0 until δ flips the knob. The poisoned
+/// fixture from (e) is deliberately excluded — its unresolved name is a genuine
+/// pre-existing Error unrelated to ε.
+#[test]
+fn epsilon_fixtures_remain_error_free_and_exit_code_neutral() {
+    let cases: &[(&str, &str)] = &[
+        ("unknown field", SRC_UNKNOWN_FIELD),
+        ("unknown field x2", SRC_UNKNOWN_FIELD_TWICE),
+        ("unknown field in fn body", SRC_UNKNOWN_FIELD_FN_BODY),
+        ("unknown field nested", SRC_UNKNOWN_FIELD_NESTED),
+        ("over-arity", SRC_OVER_ARITY),
+        ("over-arity by two", SRC_OVER_ARITY_BY_TWO),
+        ("over-arity in fn body", SRC_OVER_ARITY_FN_BODY),
+        ("zero-param over-arity", SRC_ZERO_PARAM_OVER_ARITY),
+        ("mixed named + positional", SRC_MIXED_NAMED_THEN_POSITIONAL),
+        ("all three faults", SRC_ALL_THREE_FAULTS),
+        ("unknown + positional", SRC_UNKNOWN_NAME_THEN_POSITIONAL),
+        ("unknown + surplus", SRC_UNKNOWN_NAME_AND_SURPLUS),
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    for &(label, source) in cases {
+        let module = compile_source_with_stdlib(source);
+        let errors = errors_only(&module);
+        if !errors.is_empty() {
+            offenders.push(format!("  [{label}] errors: {errors:#?}"));
+        }
+        // Non-vacuity: each of these fixtures must actually be reaching a ctor
+        // emit site, else "no errors" would pass for the wrong reason.
+        assert!(
+            !ctor_conformance_diags(&module).is_empty(),
+            "[{label}] fixture must still trip a ctor-conformance diagnostic — a silent \
+             fixture would make the error-free assertion vacuous"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "ε is a WARNING stage: these fixtures must still compile error-free (exit 0), \
+         and only δ's one-const flip may turn them into errors:\n{}",
+        offenders.join("\n")
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Step-10 probes (REVIEW REMEDIATION): an `auto`-declared param IS a declared
+// param, so a named argument targeting it is not an unknown field.
+//
+// The binder's `params` vec (`expr.rs`, `StructureInstanceCtor` arm) filters
+// `template.value_cells` to `ValueCellKind::Param` ONLY, but `param x : T = auto`
+// compiles to `ValueCellKind::Auto { free }` (`entity.rs`,
+// `build_param_value_cell_decl`). An auto-declared param is therefore invisible
+// to the ε unknown-field emit site, and its own name reads back as "unknown" —
+// a message that asserts the opposite of the source. Two independent sites
+// already treat `Param | Auto { .. }` as the externally-settable member set
+// (`connect.rs`, `traits.rs`), so this binder is the outlier.
+//
+// Not hypothetical: ~20 corpus structures declare auto params
+// (`examples/auto_binding_sites.ri`, `examples/integration_corner_cases.ri`,
+// `examples/m11_annotations.ri`, …). The corpus gate is green today only
+// because none of them is constructed by name in expression position — and
+// step-6 wired that gate to this very code, so the first example that does
+// fails it; δ then hard-rejects the same valid source.
+//
+// RED today for (a)/(b) (each measured `count=1` against the 89-green
+// baseline). (c)/(d) are guards, green BOTH before and after step-11: (c) pins
+// that the fix must not blanket-suppress the code on any template that merely
+// HAS an `Auto` cell, (d) that the no-auto path is untouched.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_AUTO_PARAM_NAMED_ARG: &str = r#"module test.auto_param_named_arg
+structure def WidgetAuto {
+    param a : Real = auto
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAuto(a: 1.0, b: 2.0)
+}
+"#;
+
+/// (a) A named argument for a strict-`auto` param must emit ZERO
+/// ctor-conformance diagnostics. `WidgetAuto` declares `a`; today the binder
+/// cannot see it and reports `E_CTOR_UNKNOWN_FIELD: … 'WidgetAuto' has no
+/// parameter with that name`, which is false about the source above.
+#[test]
+fn named_argument_for_an_auto_param_is_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_NAMED_ARG);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "`param a : Real = auto` is a DECLARED param — naming it in a ctor call must \
+         emit no ctor-conformance diagnostic. The binder's `params` vec filters to \
+         `ValueCellKind::Param` only, so an `Auto` cell reads back as unknown. Got: \
+         {diags:#?}"
+    );
+}
+
+const SRC_AUTO_FREE_PARAM_NAMED_ARG: &str = r#"module test.auto_free_param_named_arg
+structure def WidgetAutoFree {
+    param a : Real = auto(free)
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoFree(a: 1.0, b: 2.0)
+}
+"#;
+
+/// (b) The same for the `auto(free)` spelling. Both spellings lower to
+/// `ValueCellKind::Auto { free }` — strict is `free: false`, `auto(free)` is
+/// `free: true` — so this pins that the fix matches `Auto { .. }` and not one
+/// `free` polarity, which would leave the other half of the defect live.
+#[test]
+fn named_argument_for_an_auto_free_param_is_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_AUTO_FREE_PARAM_NAMED_ARG);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "`auto(free)` and strict `auto` both lower to `ValueCellKind::Auto {{ free }}`; \
+         the declared-param predicate must match on the VARIANT, not on `free`. Got: \
+         {diags:#?}"
+    );
+}
+
+const SRC_AUTO_PARAM_GENUINE_UNKNOWN: &str = r#"module test.auto_param_genuine_unknown
+structure def WidgetAutoTypo {
+    param a : Real = auto
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoTypo(zz: 1.0, b: 2.0)
+}
+"#;
+
+/// (c) OVER-CORRECTION GUARD — green before AND after. A genuinely unknown name
+/// on a template that ALSO declares an auto param must still emit exactly one
+/// `CtorUnknownField`, naming `zz`. Suppressing the code whenever an `Auto` cell
+/// exists anywhere on the template would pass (a)/(b) while silently deleting
+/// ε's detection power on ~20 corpus structures.
+#[test]
+fn genuine_unknown_name_still_fires_on_a_template_with_an_auto_param() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_GENUINE_UNKNOWN);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a genuinely unknown name must still emit exactly one diagnostic even when the \
+         template declares an auto param, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::CtorUnknownField),
+        "expected CtorUnknownField, got: {:?}",
+        diags[0]
+    );
+    assert!(
+        diags[0].message.contains("zz"),
+        "the diagnostic must name the offending `zz`, not the auto param `a`, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].message.contains("'a'"),
+        "the auto-declared param `a` must not be reported as unknown, got: {:?}",
+        diags[0].message
+    );
+}
+
+/// (d) NO-DRIFT GUARD — green before AND after. The no-auto path is untouched by
+/// the remediation: widening the DIAGNOSTIC's predicate to the declared-param set
+/// must be purely additive, never a rewrite of the base behaviour. Table-driven
+/// over the two pre-existing no-auto fixtures so a step-11 over-reach that
+/// loosened the base predicate is caught here rather than 80 probes downstream.
+#[test]
+fn no_auto_unknown_field_behaviour_is_unchanged_by_the_declared_param_view() {
+    let cases: &[(&str, &str, usize)] = &[
+        ("typo'd name", SRC_UNKNOWN_FIELD, 1),
+        ("correct name", SRC_KNOWN_FIELD, 0),
+    ];
+    for &(label, source, expected) in cases {
+        let module = compile_source_with_stdlib(source);
+        let diags = ctor_conformance_diags(&module);
+        assert_eq!(
+            diags.len(),
+            expected,
+            "[{label}] a template with no `Auto` cell must be wholly unaffected by the \
+             declared-param view (there `declared == params`), got: {diags:#?}"
+        );
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Step-12 probes (REVIEW REMEDIATION, second half): the over-arity CEILING is
+// the DECLARED param count, not the count of positionally-bindable slots.
+//
+// The step-4 emit site reports `nparams` (= `params.len()`, `Param`-only), so on
+// a template declaring an auto param it both fires spuriously and states a count
+// the source contradicts.
+//
+// RED today for (a)/(b)/(c). (a)/(b) currently measure `count=1` where zero is
+// owed; (c) currently reads `"at most 1 argument"` where the template declares
+// two — so (c) is what forbids "just suppress CtorArity when an `Auto` cell is
+// present" as a fix: the ceiling must RISE, not vanish. (d) is a no-drift guard,
+// green before AND after.
+//
+// SCOPE, so (a) is not misread as a hole: `WidgetAutoArity(1.0, 2.0)` binds
+// `1.0` to `b` (the first `Param`-kind cell, i.e. the SECOND declared param) and
+// drops `2.0` into a garbage `__arg1` member. That is a REAL defect — but a
+// BINDING one, not an arity one, and ε cannot state a true fact about it without
+// changing the IR (forbidden: ε is diagnostics-only). It is owned by #6705.
+// Probe (a) asserts SILENCE, not correctness.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_AUTO_PARAM_EXACT_ARITY: &str = r#"module test.auto_param_exact_arity
+structure def WidgetAutoArity {
+    param a : Real = auto
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoArity(1.0, 2.0)
+}
+"#;
+
+/// (a) Two positional args against a template declaring TWO params (one of them
+/// `auto`) is not over-arity, so no ctor-conformance diagnostic is owed. Today
+/// the ceiling is the `Param`-only slot count (1), so this fires with
+/// `"expects at most 1 argument, got 2"` — the opposite of what the source says.
+///
+/// Asserts silence, NOT binding correctness: the call still mis-binds (see the
+/// scope note above), which is #6705's to fix.
+#[test]
+fn arity_within_the_declared_param_count_is_not_over_arity() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_EXACT_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "`WidgetAutoArity` declares TWO params (`a` is `auto`, still declared), so a \
+         2-arg call is within the declared arity and must be silent. The ceiling must \
+         count DECLARED params, not positionally-bindable slots. Got: {diags:#?}"
+    );
+}
+
+const SRC_AUTO_FREE_PARAM_EXACT_ARITY: &str = r#"module test.auto_free_param_exact_arity
+structure def WidgetAutoFreeArity {
+    param a : Real = auto(free)
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoFreeArity(1.0, 2.0)
+}
+"#;
+
+/// (b) The same for `auto(free)` — both spellings lower to
+/// `ValueCellKind::Auto { free }`, so the ceiling must key off the VARIANT.
+#[test]
+fn arity_ceiling_counts_auto_free_params_too() {
+    let module = compile_source_with_stdlib(SRC_AUTO_FREE_PARAM_EXACT_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "an `auto(free)` param is declared just as a strict `auto` one is; the ceiling \
+         must not depend on the `free` flag. Got: {diags:#?}"
+    );
+}
+
+const SRC_AUTO_PARAM_GENUINE_OVER_ARITY: &str = r#"module test.auto_param_over_arity
+structure def WidgetAutoSurplus {
+    param a : Real = auto
+    param b : Real
+}
+structure def Root {
+    let x = WidgetAutoSurplus(1.0, 2.0, 3.0)
+}
+"#;
+
+/// (c) DETECTION-POWER GUARD, RED today. A genuine over-arity on the SAME
+/// auto-param template must still emit exactly one `CtorArity`, now reporting the
+/// DECLARED count with the noun keyed off it: `"expects at most 2 arguments,
+/// got 3"`. Today it wrongly reads `"at most 1 argument"`.
+///
+/// This is what forbids fixing (a)/(b) by suppressing the code whenever the
+/// template holds an `Auto` cell: that would pass (a)/(b) while deleting ε's
+/// arity detection on ~20 corpus structures.
+#[test]
+fn genuine_over_arity_on_an_auto_param_template_reports_the_declared_ceiling() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_GENUINE_OVER_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "three args against two declared params is still over-arity — exactly one \
+         CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::CtorArity),
+        "expected CtorArity, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].message,
+        "E_CTOR_ARITY: WidgetAutoSurplus() expects at most 2 arguments, got 3",
+        "the ceiling, the reported count and the PLURAL noun must all key off the \
+         DECLARED param count (2), not the `Param`-only slot count (1)"
+    );
+}
+
+/// (d) NO-DRIFT GUARD — green before AND after. On a template with no `Auto`
+/// cell `declared_count == nparams`, and a non-empty surplus set already implies
+/// `args.len() > nparams`, so the new ceiling and the new `args.len() >
+/// declared_count` conjunct are both no-ops there. Table-driven over the
+/// pre-existing no-auto arity fixtures — message, count and span all unchanged.
+#[test]
+fn no_auto_over_arity_messages_and_spans_are_unchanged_by_the_declared_ceiling() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "one surplus",
+            SRC_OVER_ARITY,
+            "E_CTOR_ARITY: Widget12() expects at most 1 argument, got 2",
+        ),
+        (
+            "two surplus",
+            SRC_OVER_ARITY_BY_TWO,
+            "E_CTOR_ARITY: Widget12() expects at most 1 argument, got 3",
+        ),
+        (
+            "zero-param template",
+            SRC_ZERO_PARAM_OVER_ARITY,
+            "E_CTOR_ARITY: W0() expects at most 0 arguments, got 1",
+        ),
+        (
+            "named then positional",
+            SRC_MIXED_NAMED_THEN_POSITIONAL,
+            "E_CTOR_ARITY: Widget12() expects at most 1 argument, got 2",
+        ),
+    ];
+    for &(label, source, expected) in cases {
+        let module = compile_source_with_stdlib(source);
+        let diags = ctor_conformance_diags(&module);
+        assert_eq!(
+            diags.len(),
+            1,
+            "[{label}] must still emit exactly one ctor-conformance diagnostic, got: \
+             {diags:#?}"
+        );
+        assert_eq!(
+            diags[0].message, expected,
+            "[{label}] a template with no `Auto` cell must be wholly unaffected by the \
+             declared-param ceiling"
+        );
+    }
+    // Span: unchanged anchoring at the FIRST surplus argument.
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY);
+    let span: SourceSpan = ctor_conformance_diags(&module)[0].labels[0].span;
+    let sliced = &SRC_OVER_ARITY[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains('b') && !sliced.contains('a'),
+        "the label must still anchor at the surplus `\"b\"` — the ceiling change must \
+         not move `extra_positional_idxs`, got slice {sliced:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AUTO-LET vs AUTO-PARAM (esc-5303-9 remediation)
+//
+// `let m : T = auto` inside a structure lowers to the SAME
+// `ValueCellKind::Auto { free }` cell as `param m : T = auto`
+// (`entity.rs`, the auto-let branch) — an auto LET is not a constructor
+// parameter, so a view that counts every `Auto` cell as a declared param
+// inflates the declared set and both ε diagnostics misfire.
+//
+// The two diagnostics therefore take DIFFERENT views, each safe in its own
+// direction (`expr.rs`, views (a) and (b) at the ctor binder):
+//   * `CtorUnknownField` suppresses on the WIDE `Param | Auto{..}` set, so
+//     over-inclusion can only cost a diagnostic, never state a falsehood.
+//   * `CtorArity` prints a NUMBER, so it counts `Param` cells plus only those
+//     `Auto` cells whose `visibility` is `Public` — a param defaults to
+//     `Public`, a plain let to `Private`.
+// ---------------------------------------------------------------------------
+
+const SRC_AUTO_LET_ONLY_POSITIONAL: &str = r#"module test.auto_let_only_positional
+structure def WLet {
+    let m : Length = auto
+}
+structure def Root {
+    let x = WLet(1.0)
+}
+"#;
+
+/// (a) A structure whose ONLY `Auto` cell is an auto LET declares ZERO params,
+/// so a positional argument is surplus and the ceiling is `0`.
+///
+/// Regression pin for esc-5303-9 case (1): counting every `Auto` cell as a
+/// declared param made this call silent, and the surplus argument landed in a
+/// garbage `__arg0` member with no diagnostic at all. The pre-existing
+/// zero-param probe uses a NON-auto `let k = 1`, which never reaches the `Auto`
+/// branch, so the hole was invisible to it.
+#[test]
+fn positional_argument_to_an_auto_let_only_structure_emits_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_AUTO_LET_ONLY_POSITIONAL);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "an auto LET declares no param, so the positional is surplus — exactly one \
+         CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    assert_eq!(
+        diags[0].message, "E_CTOR_ARITY: WLet() expects at most 0 arguments, got 1",
+        "the ceiling must be the DECLARED param count (0), not the `Auto` cell count"
+    );
+}
+
+const SRC_AUTO_LET_PLUS_PARAM_SURPLUS: &str = r#"module test.auto_let_plus_param_surplus
+structure def WLetParam {
+    let m : Length = auto
+    param b : Real
+}
+structure def Root {
+    let x = WLetParam(1.0, 2.0, 3.0)
+}
+"#;
+
+/// (b) An auto LET beside a real param must not inflate the reported ceiling.
+/// `WLetParam` declares ONE param, so the message must say `at most 1 argument`.
+///
+/// Regression pin for esc-5303-9 case (2): counting the auto let made the
+/// message read `expects at most 2 arguments` — a ceiling the source
+/// contradicts, i.e. the same false-message defect class the declared view was
+/// introduced to fix, inverted.
+#[test]
+fn an_auto_let_does_not_inflate_the_ctor_arity_ceiling() {
+    let module = compile_source_with_stdlib(SRC_AUTO_LET_PLUS_PARAM_SURPLUS);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly one CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    assert_eq!(
+        diags[0].message,
+        "E_CTOR_ARITY: WLetParam() expects at most 1 argument, got 3",
+        "the ceiling must count the PARAM only — the auto let is not a declared param"
+    );
+}
+
+const SRC_AUTO_PARAM_BESIDE_AUTO_LET: &str = r#"module test.auto_param_beside_auto_let
+structure def WMixed {
+    let m : Length = auto
+    param a : Length = auto
+    param b : Real
+}
+structure def Root {
+    let x = WMixed(1.0, 2.0, 3.0)
+}
+"#;
+
+/// (c) BOTH DIRECTIONS AT ONCE: an auto PARAM still counts toward the ceiling
+/// while an auto LET still does not. `WMixed` declares two params (`a`, `b`), so
+/// the ceiling is `2` — not `1` (dropping the auto param, the defect the
+/// declared view fixed) and not `3` (counting the auto let, the defect
+/// esc-5303-9 reported).
+#[test]
+fn the_arity_ceiling_counts_auto_params_but_not_auto_lets() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_BESIDE_AUTO_LET);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly one CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].message, "E_CTOR_ARITY: WMixed() expects at most 2 arguments, got 3",
+        "the ceiling must be PARAM count (auto param + plain param = 2)"
+    );
+}
+
+const SRC_NAMED_ARG_FOR_AUTO_LET: &str = r#"module test.named_arg_for_auto_let
+structure def WLetNamed {
+    let m : Length = auto
+    param b : Real
+}
+structure def Root {
+    let x = WLetNamed(m: 1.0, b: 2.0)
+}
+"#;
+
+/// (d) LENIENCY, DELIBERATELY PINNED — a named argument targeting an auto LET is
+/// silently accepted (pushed to `__arg{i}`), NOT reported as an unknown field.
+///
+/// `CtorUnknownField` suppresses on the WIDE view precisely so it can never
+/// assert a falsehood: today's IR cannot tell `let m : T = auto` from
+/// `priv param m : T = auto`, so firing here would risk telling an author their
+/// structure "has no parameter with that name" when it visibly does. Silence is
+/// leniency, not a false claim, and the residual `Auto`-slot binding gap it
+/// leaves is owned by #6705.
+///
+/// This test pins the CURRENT behaviour so a future change to it is a deliberate
+/// decision rather than an accident.
+#[test]
+fn named_argument_for_an_auto_let_is_leniently_accepted() {
+    let module = compile_source_with_stdlib(SRC_NAMED_ARG_FOR_AUTO_LET);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a named argument naming an `Auto` cell must stay silent — `CtorUnknownField` \
+         may not claim a name the author visibly wrote is unknown, got: {diags:#?}"
+    );
+}
+
+const SRC_PRIV_AUTO_PARAM_POSITIONAL: &str = r#"module test.priv_auto_param_positional
+structure def WPrivAuto {
+    priv param x : Length = auto
+}
+structure def Root {
+    let y = WPrivAuto(1.0)
+}
+"#;
+
+/// (e) KNOWN RESIDUAL, pinned so it is visible rather than hidden.
+///
+/// `priv param x : T = auto` lowers to a `Private` `Auto` cell — byte-identical
+/// to a plain auto let — so the arity ceiling reads it as a let and reports `0`
+/// rather than `1`. No predicate over today's IR can be right for both shapes,
+/// and this reading is the one that is correct for every shape in `examples/*.ri`
+/// (which contains auto lets and zero `priv param … = auto`) and the one that
+/// matches `priv`'s own meaning: a private member is not part of the
+/// constructor's externally-settable surface. The durable fix carries the origin
+/// explicitly in the IR (see the `CtorArity` doc comment); it is an ~86-site
+/// change across six crates and is tracked by its own follow-up task.
+///
+/// The companion direction is already covered by (d): the WIDE
+/// `CtorUnknownField` view means `WPrivAuto(x: …)` stays silent, so the residual
+/// is confined to the arity NUMBER and never produces a false "no parameter with
+/// that name".
+#[test]
+fn priv_auto_param_is_read_as_an_auto_let_by_the_arity_ceiling() {
+    let module = compile_source_with_stdlib(SRC_PRIV_AUTO_PARAM_POSITIONAL);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly one CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].message,
+        "E_CTOR_ARITY: WPrivAuto() expects at most 0 arguments, got 1",
+        "documented residual: a `Private` `Auto` cell is read as an auto let, so the \
+         ceiling understates by one. Changing this assertion means the IR gained an \
+         origin discriminator — update the `CtorArity` doc comment with it."
+    );
+}
+
+const SRC_PRIV_AUTO_PARAM_NAMED: &str = r#"module test.priv_auto_param_named
+structure def WPrivAutoNamed {
+    priv param x : Length = auto
+}
+structure def Root {
+    let y = WPrivAutoNamed(x: 1.0mm)
+}
+"#;
+
+/// (f) The residual in (e) must NOT leak into `CtorUnknownField`: a named
+/// argument for a `priv param … = auto` names a parameter the author visibly
+/// wrote, and the WIDE view keeps it silent.
+#[test]
+fn named_argument_for_a_priv_auto_param_is_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_PRIV_AUTO_PARAM_NAMED);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "the wide `CtorUnknownField` view must cover every `Auto` cell regardless of \
+         visibility, got: {diags:#?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// NON-PARAM MEMBERS ARE NOT CTOR-SETTABLE (esc-5303-10, suggestion A)
+//
+// The suite exercised the `Param` and `Auto` sides of the suppressing predicate
+// heavily, but never the NEGATIVE side: a named argument whose name matches a
+// member the structure genuinely has, but which is not externally settable.
+// That is the same predicate axis that produced the esc-5303-9 blocking defect,
+// so it is guarded explicitly here rather than left implied.
+//
+// The rule is keyed on the CELL KIND, not on visibility or on member existence:
+// only `Param` and `Auto { .. }` cells suppress. A `Let` cell does not, at any
+// visibility, and a `sub` is not a value cell at all.
+// ---------------------------------------------------------------------------
+
+const SRC_NAMED_ARG_FOR_PLAIN_LET: &str = r#"module test.named_arg_plain_let
+structure def WLetMember {
+    param p : Real
+    let k = 1
+}
+structure def Root {
+    let x = WLetMember(k: 2.0)
+}
+"#;
+
+const SRC_NAMED_ARG_FOR_AUX_LET: &str = r#"module test.named_arg_aux_let
+structure def WAuxLet {
+    param p : Real
+    aux let k = 1
+}
+structure def Root {
+    let x = WAuxLet(k: 2.0)
+}
+"#;
+
+const SRC_NAMED_ARG_FOR_PUB_LET: &str = r#"module test.named_arg_pub_let
+structure def WPubLet {
+    param p : Real
+    pub let k = 1
+}
+structure def Root {
+    let x = WPubLet(k: 2.0)
+}
+"#;
+
+const SRC_NAMED_ARG_FOR_GEOMETRY_LET: &str = r#"module test.named_arg_geometry_let
+structure def WGeomLet {
+    param p : Real
+    let g = box(1mm, 1mm, 1mm)
+}
+structure def Root {
+    let x = WGeomLet(g: 2.0)
+}
+"#;
+
+const SRC_NAMED_ARG_FOR_SUB: &str = r#"module test.named_arg_sub
+structure def SubInner { param q : Real }
+structure def WSubMember {
+    param p : Real
+    sub inner = SubInner(q: 1.0)
+}
+structure def Root {
+    let x = WSubMember(inner: 2.0)
+}
+"#;
+
+/// A named argument naming a NON-settable member is an unknown field.
+///
+/// Table-driven across every internal-member shape the language admits: a plain
+/// `let`, an `aux let`, a `pub let`, a geometry-typed `let`, and a `sub`. All
+/// five must report `CtorUnknownField` — a constructor sets parameters, and an
+/// internal member is not one, however visible it is.
+///
+/// `pub let` is the load-bearing row. The esc-5303-9 arity fix keys on
+/// `visibility`, but ONLY for `Auto` cells; a `Let` cell is excluded by KIND, so
+/// making it `Public` must not smuggle it into the settable set. Without this row
+/// a future simplification that hoists the visibility test out of the `Auto` arm
+/// would pass the suite while silently making every `pub let` ctor-settable.
+///
+/// `priv let` is deliberately absent: the compiler rejects it upstream with
+/// `E_PRIV_REDUNDANT` ("'let' bindings are already private to the structure
+/// body"), so it is not a reachable shape and a probe for it would be asserting
+/// on a compile error, not on this predicate.
+#[test]
+fn named_argument_for_a_non_param_member_is_an_unknown_field() {
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("plain let", SRC_NAMED_ARG_FOR_PLAIN_LET, "WLetMember", "k"),
+        ("aux let", SRC_NAMED_ARG_FOR_AUX_LET, "WAuxLet", "k"),
+        ("pub let", SRC_NAMED_ARG_FOR_PUB_LET, "WPubLet", "k"),
+        (
+            "geometry let",
+            SRC_NAMED_ARG_FOR_GEOMETRY_LET,
+            "WGeomLet",
+            "g",
+        ),
+        ("sub component", SRC_NAMED_ARG_FOR_SUB, "WSubMember", "inner"),
+    ];
+    for &(label, source, ctor, field) in cases {
+        let module = compile_source_with_stdlib(source);
+        let diags = ctor_conformance_diags(&module);
+        assert_eq!(
+            diags.len(),
+            1,
+            "[{label}] a named arg for a non-settable member must emit exactly one \
+             ctor-conformance diagnostic, got: {diags:#?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CtorUnknownField),
+            "[{label}] must be CtorUnknownField, not CtorArity"
+        );
+        assert_eq!(
+            diags[0].message,
+            format!(
+                "E_CTOR_UNKNOWN_FIELD: unknown named argument '{field}' in call to \
+                 '{ctor}'; '{ctor}' has no parameter with that name"
+            ),
+            "[{label}] the message must name the offending field and the ctor"
+        );
+    }
+}
+
+const SRC_REPEATED_UNKNOWN_NAME: &str = r#"module test.repeated_unknown_name
+structure def WRepeat { param p : Real }
+structure def Root {
+    let x = WRepeat(labl: 1.0, labl: 2.0)
+}
+"#;
+
+/// MULTIPLICITY BOUNDARY — the SAME unknown name supplied twice yields TWO
+/// `CtorUnknownField` diagnostics, one per argument.
+///
+/// This is the deliberate consequence of the two guards having disjoint
+/// domains: the pre-existing duplicate-named-arg Error runs only inside the
+/// KNOWN-param branch (it fires when a param slot is already bound), so it never
+/// sees a repeated unknown name. `CtorUnknownField` is per-argument by design
+/// (PRD §6 C2(ii) — each typo needs its own span to be actionable), and two
+/// arguments are two typos to fix.
+///
+/// Pinned because it is the natural place for a future "collapse duplicate
+/// diagnostics" change to alter behaviour silently, and because it fixes the
+/// contrast with the known-name case asserted below.
+#[test]
+fn the_same_unknown_named_argument_twice_emits_two_diagnostics() {
+    let module = compile_source_with_stdlib(SRC_REPEATED_UNKNOWN_NAME);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        2,
+        "one CtorUnknownField per offending argument, not one per distinct name, \
+         got: {diags:#?}"
+    );
+    for d in &diags {
+        assert_eq!(d.code, Some(DiagnosticCode::CtorUnknownField));
+        assert!(
+            d.message.contains("unknown named argument 'labl'"),
+            "each diagnostic names the repeated field, got: {:?}",
+            d.message
+        );
+    }
+    // The two diagnostics must anchor at DIFFERENT spans — that is the whole
+    // reason the multiplicity is per-argument rather than per-name.
+    assert_ne!(
+        diags[0].labels[0].span.start, diags[1].labels[0].span.start,
+        "the two diagnostics must anchor at the two distinct arguments"
+    );
+}
+
+const SRC_REPEATED_KNOWN_NAME: &str = r#"module test.repeated_known_name
+structure def WKnown { param p : Real }
+structure def Root {
+    let x = WKnown(p: 1.0, p: 2.0)
+}
+"#;
+
+/// CONTRAST — a repeated KNOWN name stays the pre-existing duplicate-named-arg
+/// Error and produces NO `CtorUnknownField`.
+///
+/// Together with the test above this pins the domain split: the duplicate guard
+/// owns known names, `CtorUnknownField` owns unknown ones, and neither doubles
+/// up on the other's case. Note the duplicate diagnostic carries no
+/// `DiagnosticCode` at all, so it is invisible to `ctor_conformance_diags` —
+/// asserted here against the raw diagnostic list.
+#[test]
+fn a_repeated_known_named_argument_is_a_duplicate_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_REPEATED_KNOWN_NAME);
+    assert!(
+        ctor_conformance_diags(&module).is_empty(),
+        "a duplicate of a KNOWN param is not an unknown field"
+    );
+    let dupes: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("duplicate named argument"))
+        .collect();
+    assert_eq!(
+        dupes.len(),
+        1,
+        "the pre-existing duplicate-named-arg guard must still fire exactly once, \
+         got: {:#?}",
+        module.diagnostics
+    );
+    assert_eq!(
+        dupes[0].severity,
+        Severity::Error,
+        "the duplicate guard is a hard Error and is NOT behind the ctor-conformance \
+         knob — it must not move with the δ flip"
     );
 }

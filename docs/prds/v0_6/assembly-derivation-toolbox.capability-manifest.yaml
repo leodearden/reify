@@ -1,0 +1,163 @@
+prd: docs/prds/v0_6/assembly-derivation-toolbox.md
+schema_version: 1
+tasks:
+- label: A-α
+  task_id: 6615
+  title: 'assembly-derivation A-α: grammar producer — fourth sub arm (mirror of /
+    image of + dispositions + overrides block)'
+  capabilities:
+  - name: novel-arm-absent-today
+    binding: grammar-fixture (deliberate failure) — tests/prd-gate/fixtures/adt_mirror_of_arm.ri
+      FAILS tree-sitter parse today (ERROR node, exit 1; probe 2026-08-26). A-α is
+      the named grammar producer; every syntax consumer downstream (G3 resolution
+      b).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivery IS the fixture parsing with 0 ERROR nodes — a parse probe,
+        not a grep; A-α's own gate test asserts it.
+  - name: existing-arm-regression-floor
+    binding: grammar-fixture — tests/prd-gate/fixtures/adt_relation_verbs.ri parses
+      today (exit 0); the surrounding grammar the new arm must not disturb.
+    verdict: PASS
+  - name: contextual-keyword-precedent
+    binding: 'capability→producer — grammar.js has no word: rule; relate/joint/with/priv
+      landed contextual; symmetry reserved by comment (Layer-3 contract ii).'
+    verdict: PASS
+- label: A-β
+  task_id: 6616
+  title: 'assembly-derivation A-β: compiler lowering — derivation spec IR + validation
+    diagnostics'
+  capabilities:
+  - name: subdecl-extensible
+    binding: capability→producer — SubDecl (crates/reify-ast/src/decl.rs), SubComponentDecl
+      (crates/reify-compiler/src/types.rs), keyed-member-overrides compile pattern
+      (crates/reify-compiler/src/entity.rs).
+    verdict: PASS
+  - name: rejection-diagnostics
+    binding: 'G6 branch 4 — every §6 rejection is producer-self: A-β delivers each
+      diagnostic and its own fixtures observe each fire (T8-T10). No rejection is
+      claimed of today''s substrate.'
+    verdict: PASS
+- label: A-γ
+  task_id: 6617
+  title: 'assembly-derivation A-γ: eval value plane — placement algebra, merged-args
+    instantiation, image map'
+  capabilities:
+  - name: merged-args-substrate
+    binding: 'capability→producer UPSTREAM — PRD-0 α #6586 + β #6592 (hard dep edges;
+      docs/prds/v0_6/instantiation-value-flow.md). DAG direction verified: both upstream
+      of A-γ.'
+    verdict: PASS
+  - name: transform-algebra
+    binding: capability→producer — transform_compose/orient_compose + inverse (crates/reify-stdlib/src/geometry.rs,
+      orientation.rs), bit-identical to operators; D2 algebra expressible today.
+    verdict: PASS
+  - name: instantiation-entry
+    binding: capability→producer — elaborate_child_instance family (crates/reify-eval/src/unfold.rs).
+    verdict: PASS
+- label: A-δ
+  task_id: 6618
+  title: 'assembly-derivation A-δ: geometry plane + dispositions — improper-op insertion,
+    keep/exclude, Manifold rejection'
+  capabilities:
+  - name: mirror-op-wired
+    binding: capability→producer — GeometryOp::Mirror (crates/reify-ir/src/geometry.rs)
+      → pattern_mirror (crates/reify-eval/src/geometry_ops.rs) → mirror_shape/SetMirror
+      (crates/reify-kernel-occt/cpp/occt_wrapper.cpp); AffineApply det<0 fallback.
+      Live on the op-execute seam.
+    verdict: PASS
+  - name: walk-insertion-site
+    binding: 'signal premise — walk_placed_realizations + the ApplyTransform issue
+      point (crates/reify-eval/src/geometry_ops.rs): the single composition site.'
+    verdict: PASS
+  - name: manifold-rejection
+    binding: G6 branch 4 — Manifold stubs mirror (crates/reify-kernel-manifold/src/kernel.rs);
+      E_DERIVED_SUB_KERNEL_UNSUPPORTED is producer-self (T14 observes it fire).
+    verdict: PASS
+- label: A-ε
+  task_id: 6619
+  title: 'assembly-derivation A-ε: OCCT det<0 orientation probe (early)'
+  capabilities:
+  - name: occt-harness
+    binding: 'capability→producer — OCCT-gated test surface exists; system OCCT 7.8
+      (CLAUDE.md native-deps invariant: reason from 7.8 headers).'
+    verdict: PASS
+- label: A-ζ
+  task_id: 6620
+  title: 'assembly-derivation A-ζ: Layer-2 check verbs mirror_placed / image_placed'
+  capabilities:
+  - name: relation-vocabulary
+    binding: capability→producer — crates/reify-compiler/src/relation_signatures.rs
+      + crates/reify-eval/src/relate_solve.rs check path (grep-verified).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: image_placed
+      paths:
+      - crates/reify-compiler/src/relation_signatures.rs
+      expect: present
+  - name: verbs-parse-today
+    binding: grammar-fixture — tests/prd-gate/fixtures/adt_relation_verbs.ri parses
+      (probe 2026-08-26); the vocabulary entry is producer-self (T11-T13).
+    verdict: PASS
+- label: A-η
+  task_id: 6621
+  title: 'assembly-derivation A-η: rotation_about / c2_about stdlib builtins'
+  capabilities:
+  - name: builtin-registry
+    binding: capability→producer — crates/reify-compiler/src/builtin_signatures.rs
+      + eval impl + docs/reify-stdlib-reference.md; orientation algebra in crates/reify-stdlib/src/orientation.rs.
+      Names fixed by Layer-3 contract v.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: rotation_about
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+      expect: present
+- label: A-θ
+  task_id: 6622
+  title: 'assembly-derivation A-θ: GUI derived badge + inspector'
+  capabilities:
+  - name: entity-path-tree
+    binding: capability→producer — GUI tree/selection keyed on entity-path strings
+      (gui/src/navigation.ts); debug MCP store_state/screenshot channels (gui/src-tauri/src/debug_server.rs).
+    verdict: PASS
+- label: A-ι
+  task_id: 6623
+  title: 'assembly-derivation A-ι: docs-truth bundle'
+  capabilities:
+  - name: docs-surfaces
+    binding: capability→producer — chunks dir, examples_smoke gate, INDEX.md, reify-design
+      SKILL.md (verified in the PRD-0 manifest, unchanged). Writable only after A-δ/A-ζ
+      (deps wired — DAG direction correct).
+    verdict: PASS
+- label: A-κ
+  task_id: 6624
+  title: 'assembly-derivation A-κ: integration gate — E4 + flip_ab fixtures, STEP-grep
+    + mesh_stats runs'
+  capabilities:
+  - name: observation-channels
+    binding: capability→producer — CLI STEP-grep channel, mesh_stats, _RUST_COUPLED_RI_FIXTURES
+      + PG-DRIFT (verified in the PRD-0 manifest, unchanged).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: adt_mirror_of_arm.ri
+      paths:
+      - scripts/verify.sh
+      expect: present
+- label: A-λ
+  task_id: 6625
+  title: 'assembly-derivation A-λ: PRD close — ID backfill + terminal stamp + freeze'
+  capabilities:
+  - name: terminal-stamp
+    binding: process capability — overlay decompose-close obligations; no substrate.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Status.*SHIPPED
+      paths:
+      - docs/prds/v0_6/assembly-derivation-toolbox.md
+      expect: present

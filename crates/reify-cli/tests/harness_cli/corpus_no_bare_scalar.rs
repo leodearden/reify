@@ -28,6 +28,15 @@
 //!     not matched — they are either qualified or not the plain keyword.
 //!   * Pure comment lines (trimmed starts with `//`) are skipped — doc-prose
 //!     that quotes `-> Scalar` or `: Scalar` in comments must not be flagged.
+//!   * A Rust `{:#?}` Debug struct-field opener — a whole line of the exact
+//!     shape `<ident>: Scalar {` — is excluded. `#[derive(Debug)]` renders the
+//!     `reify_ir::Value::Scalar` ENUM VARIANT *unqualified*, eliding the
+//!     `Value::` prefix the `::Scalar` rule above keys on, so a snapshot golden
+//!     of a dimensioned IR field reads as `width: Scalar {`. This is the SAME
+//!     carve-out with the same rationale — a Rust enum variant name, never a
+//!     DSL type annotation. The `-> Scalar {` codomain arm is deliberately
+//!     untouched: `field def t : Point3 -> Scalar { … }` is real DSL and stays
+//!     a violation.
 
 use std::path::{Path, PathBuf};
 
@@ -81,6 +90,41 @@ fn strip_trailing_line_comment(line: &str) -> &str {
     line
 }
 
+/// Returns `true` when the `Scalar` occurrence at byte offset `abs` in `line`
+/// is the Rust pretty-`Debug` (`{:#?}`) rendering of the `reify_ir::Value::Scalar`
+/// ENUM VARIANT as a struct field — i.e. the whole line is exactly
+/// `<indent><ident>: Scalar {`.
+///
+/// `#[derive(Debug)]` prints a struct-like variant UNQUALIFIED, so the `Value::`
+/// prefix that [`line_has_bare_scalar`]'s `::Scalar` rule keys on is elided:
+/// a `{:#?}` golden of a LENGTH-dimensioned IR field (task 5743's R7 raw-`Value`
+/// chokepoint) reads as `width: Scalar {`. Those goldens are Rust type names in
+/// a snapshot string, never DSL type annotations, so they are excluded for the
+/// same reason `Value::Scalar` already is.
+///
+/// The shape is matched WHOLE-LINE and narrowly on purpose:
+///   * everything after `Scalar` must be exactly ` {` — Rust pretty-Debug puts
+///     nothing else on a struct-variant opener line;
+///   * everything before the `: ` must be leading whitespace plus one plain
+///     Rust identifier — so DSL forms never match. `param w: Scalar = 10mm`
+///     fails on both counts, and `structure def X : Scalar {` (the only DSL
+///     shape that *is* `: <Type> {`, a structure supertype) fails because
+///     `structure def X` is not a single identifier.
+fn is_rust_debug_scalar_field(line: &str, abs: usize) -> bool {
+    // Tail must be exactly ` {` (trailing whitespace tolerated).
+    if line[abs + 6..].trim_end() != " {" {
+        return false;
+    }
+    // Head must be `<whitespace><ident>: `.
+    let Some(head) = line[..abs].strip_suffix(": ") else {
+        return false;
+    };
+    let ident = head.trim_start_matches([' ', '\t']);
+    !ident.is_empty()
+        && ident.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Returns `true` when `line` contains a bare `: Scalar` type annotation or a
 /// bare `-> Scalar` return codomain that must be migrated.
 ///
@@ -114,7 +158,10 @@ fn line_has_bare_scalar(line: &str) -> bool {
             Some(c) => c != '<' && !c.is_ascii_alphabetic(),
         };
 
-        if after_ok {
+        // 1b. A Rust `{:#?}` Debug struct-field opener (`width: Scalar {`) is
+        //     the unqualified rendering of the `Value::Scalar` enum variant —
+        //     excluded for the same reason `::Scalar` is (see the helper).
+        if after_ok && !is_rust_debug_scalar_field(line, abs) {
             // 2. Scan backwards from `abs`, skipping spaces, to find the
             //    preceding non-space character.  It must be:
             //    (a) a single `:` NOT preceded by another `:` → bare annotation, OR
@@ -334,6 +381,43 @@ mod predicate_tests {
     fn excludes_trailing_comment_with_annotation_scalar() {
         assert!(!line_has_bare_scalar(
             "    param width: Length = 10mm // was: Scalar"
+        ));
+    }
+
+    // Rust `{:#?}` Debug goldens — `#[derive(Debug)]` renders the
+    // `Value::Scalar` enum variant unqualified, so a snapshot of a
+    // LENGTH-dimensioned IR field reads as `<field>: Scalar {`.
+    #[test]
+    fn excludes_rust_debug_scalar_struct_field() {
+        assert!(!line_has_bare_scalar("        width: Scalar {"));
+    }
+
+    #[test]
+    fn excludes_rust_debug_scalar_struct_field_underscore_ident() {
+        assert!(!line_has_bare_scalar("        outer_r: Scalar {"));
+    }
+
+    // …and the carve-out must stay narrow: everything below is still a
+    // violation.
+    #[test]
+    fn detects_bare_scalar_annotation_despite_trailing_brace_rule() {
+        // A DSL param annotation has more than an identifier before the `:`
+        // and does not end in ` {` — unaffected by the Debug carve-out.
+        assert!(line_has_bare_scalar("    param width: Scalar = 10mm"));
+    }
+
+    #[test]
+    fn detects_dsl_structure_supertype_scalar_with_brace() {
+        // `structure def X : Scalar {` is the one DSL shape that is `: <Type> {`;
+        // `structure def X` is not a single identifier, so it still matches.
+        assert!(line_has_bare_scalar("structure def OddRule : Scalar {"));
+    }
+
+    #[test]
+    fn detects_return_scalar_with_brace_is_not_debug_excluded() {
+        // The codomain arm is untouched by the Debug carve-out.
+        assert!(line_has_bare_scalar(
+            "    field def temp : Point3 -> Scalar {"
         ));
     }
 

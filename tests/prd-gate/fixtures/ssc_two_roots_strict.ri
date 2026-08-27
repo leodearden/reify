@@ -1,0 +1,17 @@
+module ssc_two_roots_strict
+// PRD EVIDENCE — docs/prds/v0_6/solution-set-completeness.md (leaf beta, delta; BT1/BT3).
+// Two genuine roots inside the Length domain: L = 10mm and L = 14mm.
+// TODAY (strict auto): the perturbation probe finds the second root, and
+// finalise_uniqueness demotes the WHOLE result to SolveResult::Infeasible with
+// "strict auto parameter resolution is not uniquely determined -- consider
+// using auto(free) for exploration"; the cell goes undef with the cause
+// mislabelled SolveFailed{"infeasible"}. Neither root is ever named.
+// AFTER: an error naming BOTH roots, with a typed non-uniqueness cause.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = translate(cylinder(3mm, length), 0mm, 0mm, 0mm - length)
+}
+pub structure SscTwoRootsStrict {
+    sub rod = Rod(length: auto)
+    constraint abs(self.rod.length - 12mm) == 2mm
+}

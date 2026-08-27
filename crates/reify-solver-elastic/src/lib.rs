@@ -627,10 +627,21 @@ pub use progressive::{
 // Task 4135: BVH spatial index — O(grid·log elems) per call.  The public
 // resample_* fns are now thin wrappers over the instrumented cores (which
 // return ResampleStats for deterministic complexity assertions in tests).
+// Task 6154: the grid-miss instrument.  `GridMissReport`/`classify_grid_misses`
+// have an out-of-crate consumer (reify-eval's realized-body e2e tests), so they
+// are re-exported here.  `nearest_miss_margin` deliberately is NOT: it has no
+// consumer outside this crate's own `#[cfg(test)]` modules, and a symbol no
+// build depends on does not belong on the crate root.  It stays `pub` in
+// `resample` (a `pub mod`), so the re-derivation the PRD
+// `v0_4/fea-result-model.md` §11 Q2 promises — its margin figures come from a
+// temporary in-tree probe and rest on being reproducible without re-patching
+// this crate — is still one `use` away, at
+// `reify_solver_elastic::resample::nearest_miss_margin`.  Not dead code; just
+// not root surface.
 pub use resample::{
-    GridSpec, ResampleStats, resample_multi_nodal_to_grid,
-    resample_multi_nodal_to_grid_instrumented, resample_nodal_to_grid,
-    resample_nodal_to_grid_instrumented,
+    GridMissReport, GridSpec, ResampleStats, classify_grid_misses,
+    resample_multi_nodal_to_grid, resample_multi_nodal_to_grid_instrumented,
+    resample_nodal_to_grid, resample_nodal_to_grid_instrumented,
 };
 pub use result::{
     GradientElement, ScalarElement, StressElement, curl_from_gradient, element_gradient_p1,

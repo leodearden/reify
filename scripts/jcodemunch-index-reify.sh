@@ -237,6 +237,29 @@ refuse() {
 # preserved, so a sqlite3 installed in a custom prefix keeps resolving its own
 # libraries. Parsed without IFS/glob tricks so a path containing whitespace or a
 # glob metacharacter cannot corrupt the result.
+#
+# WHY THIS ISN'T REDUNDANT WITH TASK 5730 (esc-6107-9/-10, steward-ruled
+# 2026-08-21 — keep, do not delete as dead code):
+#
+# Task 5730's central fix is verify.sh's `_LD_SCRUB` / `add_tool()` (grep
+# `_LD_SCRUB=` in scripts/verify.sh) and is applied at the verify PLAN LINE —
+# it scrubs LD_LIBRARY_PATH only for processes spawned as children of a
+# verify.sh run. This script has ratified callers OUTSIDE that ancestry,
+# where the central scrub never runs:
+#   - ζ (task 6111, not yet landed) will install
+#     deploy/systemd/reify-jcodemunch-index.{service,timer} with ExecStart
+#     pointing at this script directly — a bare `sqlite3` there will have no
+#     verify.sh parent to have scrubbed its environment;
+#   - today, before ζ lands: manual/interactive runs — a developer or
+#     operator invoking this script by hand, e.g. to refresh the index ahead
+#     of an `/audit` sweep. (`/audit`'s jcodemunch-backed detectors only READ
+#     a pre-built index via jcodemunch-serve; they never invoke this script
+#     themselves, so the refresh is itself a separate, out-of-ancestry run.)
+#     The shell running it may already have scripts/run-gui.sh-style OCCT
+#     env (including the reify-deps LD_LIBRARY_PATH entry) exported.
+#
+# jc_sqlite3 is therefore live defense specifically where verify.sh's central
+# scrub cannot reach — not a redundant duplicate of task 5730.
 JC_DEPS_LIB="${REIFY_DEPS_LIB:-/opt/reify-deps/lib}"
 
 jc_sqlite3() {

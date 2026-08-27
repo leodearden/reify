@@ -59,11 +59,25 @@ trap cleanup EXIT
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/jc-index-reify-scratch-XXXXXX")"
 _TMPDIRS+=("$SCRATCH")
 
+# The ONE run-private root every mk_tmpdir fixture dir is nested under.
+# Registered in _TMPDIRS here, in the MAIN shell, exactly once.
+_RUN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jc-index-reify-root-XXXXXX")"
+_TMPDIRS+=("$_RUN_ROOT")
+
+# mk_tmpdir — a fixture dir, echoed on stdout.
+#
+# SUBSHELL-SAFE BY CONSTRUCTION, and that is the whole reason it nests under
+# $_RUN_ROOT rather than appending to _TMPDIRS itself. Every call site reads
+# `X="$(mk_tmpdir)"`, so this body runs in a command-substitution SUBSHELL, and
+# a `_TMPDIRS+=("$d")` performed here would be silently DISCARDED when that
+# subshell exits — leaking every fixture dir this suite ever mints (measured:
+# 1476 leaked `jc-index-reify-*` dirs on this host before this fix; see
+# test_with_jcodemunch_serve.sh's mk_tmpdir for the sibling fix this mirrors).
+# Anchoring cleanup on the one root means the existing `rm -rf` reclaims
+# everything in one shot — the same reasoning test_helpers.sh's
+# make_isolated_lane documents.
 mk_tmpdir() {
-    local d
-    d="$(mktemp -d "${TMPDIR:-/tmp}/jc-index-reify-XXXXXX")" || return 1
-    _TMPDIRS+=("$d")
-    printf '%s\n' "$d"
+    mktemp -d "$_RUN_ROOT/fixture-XXXXXX"
 }
 
 # jc_field <field> [args...] — the value of a `<field>` line from one run of the

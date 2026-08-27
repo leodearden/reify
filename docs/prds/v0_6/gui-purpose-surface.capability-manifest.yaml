@@ -1,0 +1,660 @@
+prd: docs/prds/v0_6/gui-purpose-surface.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6803
+  title: 'GUI purpose surface α: extract activate_purpose_session() into reify-eval,
+    behaviour-preserving'
+  capabilities:
+  - name: seam-has-a-home-both-callers-reach
+    binding: reify-cli is bin-only (no [lib]) and gui/src-tauri does not depend on
+      it; reify-eval is listed by both, so the seam must land there
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn activate_purpose_session
+      paths:
+      - crates/reify-eval/src
+      expect: present
+  - name: reserved-territory-respected
+    binding: 'check-diagnostic-truthfulness.md holds a binding G4 ruling that cmd_check/finish_check/exit
+      codes/--strict are PRD 2 ONLY; alpha asserts no change to any of them and is
+      wired downstream of #5748'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a scope stance verified against the ruling text and enforced by the
+        upstream edge to #5748; no repo pattern expresses it'
+  - name: upstream-5748-is-in-flight-on-the-same-function
+    binding: 'DAG-direction — #5748 is in-progress with a live claimant and a heartbeat
+      within the hour, rewriting cmd_check including sub-path (c) --purpose; alpha
+      runs after it'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'dependency-direction fact, enforced by the wired edge to #5748'
+  - name: both-enumerations-obligations-known
+    binding: the template-walk runs structural_query::expand_constraint_expr while
+      the graph-walk overlays active_purpose_let_cells; C-SEAM must preserve the union,
+      not pick one
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: expand_constraint_expr
+      paths:
+      - crates/reify-eval/src
+      expect: present
+  - name: activation-apis-are-production-wired
+    binding: 'grep: activate_purpose / activate_purpose_with_bindings / is_purpose_active
+      in engine_purposes.rs, consumed by cmd_check (#4000/#4006/#4009, done)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn activate_purpose_with_bindings
+      paths:
+      - crates/reify-eval/src/engine_purposes.rs
+      expect: present
+  - name: typed-activation-errors-needed-and-absent
+    binding: gap — activate_purpose returns () and is silent on four failure modes;
+      activate_purpose_with_bindings returns free-form Result<(), String>. INV-SF-6
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum PurposeActivationError
+      paths:
+      - crates/reify-eval/src
+      expect: present
+  - name: equivalence-lock-has-a-corpus
+    binding: 59 existing --purpose assertions across cli_purpose.rs, cli_purpose_stdlib.rs,
+      cli_gdt_legality.rs, cli_determinacy_intrinsics.rs and cli_check.rs pin the
+      behaviour alpha must preserve
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '[-]-purpose'
+      paths:
+      - crates/reify-cli/tests
+      expect: present
+  - name: realize_for_check-caveat-recorded
+    binding: '#5748 introduces realize_for_check, which does NOT exist on main; D1
+      flags re-reading the landed set before building the seam'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a forward-looking caveat about an unlanded sibling change; asserted
+        by re-reading at dispatch, not by a pattern
+- label: β
+  task_id: 6831
+  title: 'GUI purpose surface β: route both GUI paths through the seam; set_purpose/clear_purpose
+    commands; purpose intent'
+  capabilities:
+  - name: single-gui-check-choke-point
+    binding: 'grep: EngineSession::check_with_solve_slot wraps Engine::check and is
+      called by all three full-recompile entry points'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn check_with_solve_slot
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: warm-path-already-graph-walks
+    binding: 'grep: Engine::edit_check calls check_constraints_with_values — the §2.4
+      disagreement between the two GUI paths'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: check_constraints_with_values
+      paths:
+      - crates/reify-eval/src/engine_edit.rs
+      expect: present
+  - name: mutate-rebuild-delta-emit-precedent
+    binding: 'grep: set_active_fea_case is the existing named-mode selector with the
+      same command shape'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: set_active_fea_case
+      paths:
+      - gui/src-tauri/src/commands.rs
+      expect: present
+  - name: purpose-commands-registered
+    binding: capability→producer (this leaf) — new entries in the generate_handler!
+      list, which today registers 33 commands and none purpose-related
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: set_purpose
+      paths:
+      - gui/src-tauri/src/main.rs
+      expect: present
+  - name: engine-preserves-bindings-across-recompile
+    binding: 'grep: Engine::eval snapshots active_purpose_bindings and re-applies
+      each against the fresh snapshot'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: active_purpose_bindings
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      expect: present
+  - name: vanished-purpose-silently-dropped-today
+    binding: signal premise — the re-apply path skips a preserved binding whose purpose
+      no longer exists, emitting no diagnostic (the INV-SF-3 defect this leaf repairs)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix behaviour is a coded diagnostic naming the dropped purpose,
+        asserted by BT-7; today's silence is not grep-able
+  - name: commands-can-reach-their-own-read-surface
+    binding: this leaf's modules include commands.rs, where engine_state_json lives
+      — so the generation read-back surface is inside its own lock footprint
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: engine_state_json
+      paths:
+      - gui/src-tauri/src/commands.rs
+      expect: present
+- label: γ
+  task_id: 6832
+  title: 'GUI purpose surface γ: purpose-scoped verdict partition + purpose_applied_epoch;
+    legible rendering'
+  capabilities:
+  - name: partition-key-exists
+    binding: executed probe P4 — injected verdicts render under the entity prefix
+      purpose:<name>@<entity>#constraint[i]
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub purpose: Option<String>'
+      paths:
+      - gui/src-tauri/src/types.rs
+      expect: present
+  - name: added-fields-need-no-new-event-channel
+    binding: 'grep: GuiState.constraints carries diffed keyed(key=node_id, ...), so
+      the generated delta transports any added field'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: constraint-update
+      paths:
+      - gui/src-tauri/src/types.rs
+      expect: present
+  - name: blank-expression-defect-is-real
+    binding: signal premise — build_constraints matches entry.id against compiled.templates[*].constraints
+      then unwrap_or_default(); a purpose-injected id belongs to no template
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-fix behaviour (non-empty expression + populated parameter_ids)
+        is asserted by BT-9; an absence check on unwrap_or_default would false-fail
+        on many legitimate uses in the same file
+  - name: purpose-rows-do-reach-the-panel
+    binding: DAG-direction — build_constraints iterates check.constraint_results,
+      not templates, so purpose rows appear (blank) as soon as verdicts flow; γ's
+      signal is not inverted on δ
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-direction fact established by reading build_constraints'
+        iteration source
+  - name: pre-existing-purpose-aware-render-path
+    binding: 'grep: format_expr already has a live CompiledExprKind::PurposeReflectiveAggregation
+      arm to reconcile with rather than rediscover'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PurposeReflectiveAggregation
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: generation-counter-consumed-not-rebuilt
+    binding: 'DAG-direction — #6742 (pending) owns EngineSession.generation per its
+      C-STALE; this leaf stamps purpose_applied_epoch onto it via a real upstream
+      edge, never a second counter'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'dependency-direction fact, enforced by the wired edge to #6742'
+  - name: verdicts-are-readable-at-all
+    binding: 'DAG-direction — #6723 (pending) fixes the PascalCase/lowercase mismatch
+      that renders every badge ''?''; upstream edge, the same reason #6741 depends
+      on it'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'dependency-direction fact, enforced by the wired edge to #6723'
+  - name: no-second-per-constraint-channel
+    binding: 'collision, not dependency — #6722 adds margin to ConstraintCheckEntry;
+      this leaf adds purpose to ConstraintData. Different structs, different fields;
+      per #6722''s own recorded note no edge is wired'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-task coordination stance recorded on both sides
+- label: δ
+  task_id: 6833
+  title: 'GUI purpose surface δ: set_purpose debug-MCP tool'
+  capabilities:
+  - name: set-purpose-tool-defined
+    binding: repo-wide set_purpose hits only documents (the ruling, this PRD's artifacts,
+      driver-contract-implementation.md); zero source hits
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'name: "set_purpose"'
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: present
+  - name: end-to-end-tool-pattern-exists
+    binding: 'grep: set_fea_case supplies ToolDef + dispatch arm + handler + run_on_engine
+      + frontend push'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: handle_set_fea_case
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: present
+  - name: delta-baseline-refresh-mandatory
+    binding: 'grep: set_fea_case_on_engine_and_refresh_baseline wraps compute_delta(last_state,
+      &gs) — the documented guard against the stale-baseline desync'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compute_delta
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: present
+  - name: engine-work-leaves-tokio
+    binding: 'grep: run_on_engine spawns on a large stack because OCCT panics inside
+      a tokio runtime context'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn run_on_engine
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: present
+  - name: four-registration-guards-satisfied
+    binding: capability→producer (this leaf) — PURE_ENGINE_SIDE allowlist, KNOWN_DEBUG_TOOL_NAMES,
+      toolDefNames, debugContract
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: set_purpose
+      paths:
+      - gui/test/visual/assertions.ts
+      expect: present
+  - name: honest-failure-reporting-possible
+    binding: capability→producer (upstream in-batch α) — without typed activation
+      errors the tool could only return {ok:true} on a silent no-op
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: depends on α's typed error enum, wired intra-batch
+  - name: no-tool-name-collision-with-sibling
+    binding: '#6741 lands measure_constraints / measurement_status; set_purpose is
+      disjoint, and hub-file contention is documented in reify-debug-mcp-expansion.md'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-batch naming fact
+- label: ε
+  task_id: 6834
+  title: 'GUI purpose surface ε: purpose selector + entity-binding picker; feed activePurposes'
+  capabilities:
+  - name: declared-purposes-enumerable-without-new-api
+    binding: 'grep: CompiledModule.compiled_purposes is a public field with a production
+      walk precedent in reify-doc-build'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compiled_purposes
+      paths:
+      - crates/reify-doc-build/src/build.rs
+      expect: present
+  - name: purpose-params-are-entity-refs-only
+    binding: substrate fact — CompiledPurposeParam carries only name and entity_kind;
+      no value type, unit or default. Corrects the charter brief's bindings-form premise
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct CompiledPurposeParam
+      paths:
+      - crates/reify-compiler/src/types.rs
+      expect: present
+  - name: prelude-user-discriminator-exists
+    binding: 'grep: declaration_span.is_prelude() is the same filter reify-doc-build
+      uses to drop prelude-merged purposes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_prelude
+      paths:
+      - crates/reify-compiler/src
+      expect: present
+  - name: prelude-purposes-universally-activatable
+    binding: executed probe — reify check --purpose simulation_ready=Ball against
+      a file declaring NO purpose activates two injected constraints, both OK
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub purpose (simulation_ready|design_review)
+      paths:
+      - crates/reify-compiler/stdlib/determinacy_purposes.ri
+      expect: present
+  - name: entity-candidates-sourceable
+    binding: 'grep: get_entity_tree / get_entity_identity_map supply the candidate
+      set the entity_kind filter narrows'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn get_entity_identity_map
+      paths:
+      - gui/src-tauri/src/main.rs
+      expect: present
+  - name: frontend-consumer-no-longer-fed-a-constant
+    binding: signal premise — the sole production call site passes a hardcoded empty
+      array, making auto:purpose:* views unreachable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: regenerateAutoViews\(entityTree\(\), \[\]
+      paths:
+      - gui/src/App.tsx
+      expect: absent
+- label: ζ
+  task_id: 6835
+  title: 'GUI purpose surface ζ: ruled staleness UX — the purpose instance of the
+    shared stale token'
+  capabilities:
+  - name: shared-stale-token-has-a-filed-owner
+    binding: 'DAG-direction — #6743 (pending) lands the dim/grey stale rendering and
+      the badge-casing fix; upstream edge, so this leaf styles an INSTANCE'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'dependency-direction fact, enforced by the wired edge to #6743'
+  - name: per-prd-instance-shape-is-ruled
+    binding: 'cross-PRD ruling — gui-on-demand-measurement section 7: each PRD implements
+      its own instance; converging on a shared component is tactical for whichever
+      lands second'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ruled cross-PRD stance
+  - name: in-tree-visual-token-exists
+    binding: 'grep: DesignTree.module.css .stale { opacity: 0.5; font-style: italic
+      } is the only DOM stale style in the tree'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\.stale
+      paths:
+      - gui/src/panels/DesignTree.module.css
+      expect: present
+  - name: badge-styling-hook-exists
+    binding: 'grep: ConstraintPanel.module.css uses the .statusBadge[data-status=...]
+      attribute-selector pattern'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: data-status
+      paths:
+      - gui/src/panels/ConstraintPanel.module.css
+      expect: present
+  - name: fixture-can-actually-exercise-staleness
+    binding: 'executed probe P5 — wall_margin is module-declared, let-bearing and
+      verdict-sensitive to a warm-editable param: OK at wall=100mm, VIOLATED at wall=700mm'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: purpose wall_margin
+      paths:
+      - tests/prd-gate/fixtures/gui_purpose_surface.ri
+      expect: present
+  - name: measurement-bearing-purpose-vacuity-refuted-not-assumed
+    binding: executed probe P6 — RepresentationWithin inside a purpose body is INDETERMINATE
+      in all three binding shapes, so D7 claims only 'not re-applied' and BT-5 is
+      a differential oracle rather than a degradation assertion
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a refuted premise recorded before filing; the post-diff assertion is
+        BT-5's differential equality, not a pattern
+  - name: reapply-affordance-present
+    binding: capability→producer (this leaf) — single affordance per D13, worded from
+      ruling 4, never the sibling's 'Measure now'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Reapply
+      paths:
+      - gui/src/panels
+      expect: present
+  - name: stale-name-collision-avoided
+    binding: substrate hazard — EngineSession::is_stale() means last_reload_error.is_some()
+      (compile FAILURE), surfaced as top-level stale in engine_state_json; D8 forbids
+      conflating it with freshness
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn is_stale
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+- label: η
+  task_id: 6836
+  title: 'GUI purpose surface η: B+H integration gate — the BT-1..BT-11 boundary suite'
+  capabilities:
+  - name: fixture-committed-and-parses
+    binding: 'grammar-fixture: tests/prd-gate/fixtures/gui_purpose_surface.ri parses
+      with 0 ERROR nodes (tree-sitter parse --quiet, exit 0, 2026-08-27)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: module gui_purpose_surface
+      paths:
+      - tests/prd-gate/fixtures/gui_purpose_surface.ri
+      expect: present
+  - name: fixture-carries-every-bt-scenario
+    binding: one module holds the measurement control (BallCheck, VIOLATED on the
+      bare path), the declared warm-edit-sensitive purpose (wall_margin), and prelude
+      activation
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: structure BallCheck
+      paths:
+      - tests/prd-gate/fixtures/gui_purpose_surface.ri
+      expect: present
+  - name: gui-driving-harness-exists
+    binding: 'grep: gui/test/visual over the :3939/mcp transport is the existing scripted-session
+      harness'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: KNOWN_DEBUG_TOOL_NAMES
+      paths:
+      - gui/test/visual/assertions.ts
+      expect: present
+  - name: every-bt-capability-is-upstream
+    binding: 'DAG-direction — BT-1/BT-2 from α, BT-3/BT-4/BT-6/BT-7/BT-11 from β,
+      BT-9 from γ, BT-8 from α+δ, BT-10 from ε, BT-5 from ζ: all inside η''s transitive
+      closure'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency-direction fact, enforced by the wired intra-batch edges
+  - name: drift-guard-registration-carried-same-diff
+    binding: 'capability→producer (this leaf) — overlay gate-test rule: a new gate-resident
+      test carries its bucket row and nextest entry in its OWN diff'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the registration targets already exist, so no pattern distinguishes
+        pre- from post-diff; test_run_all_classification.sh goes red if this leaf's
+        diff omits its row
+  - name: no-overlap-with-the-sibling-gate
+    binding: 'scope disjointness — #6745 covers its own PRD''s measurement-parity
+      BTs; these are purpose-specific and share only the fixture-driving harness'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-batch scope fact; both gates are separately owned
+- label: θ
+  task_id: 6837
+  title: 'GUI purpose surface θ: docs-truth — the purposes chunk'
+  capabilities:
+  - name: scope-disjoint-from-6746
+    binding: 'scope disjointness — #6746 owns chunks/constraints.md, chunks/stdlib.md
+      and the reify-design index line; this leaf owns chunks/purposes.md, which #6746
+      does not touch'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'cross-batch file-ownership fact, visible in #6746''s files_to_modify'
+  - name: shared-skill-file-is-ordered-not-raced
+    binding: 'DAG-direction — both touch SKILL.md; the upstream edge to #6746 makes
+      this leaf EXTEND the landed index line'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'dependency-direction fact, enforced by the wired edge to #6746'
+  - name: false-stdlib-claim-is-real
+    binding: signal premise — chunks/purposes.md lists manufacturing_ready under Standard
+      Library Purposes, but determinacy_purposes.ri defines only simulation_ready
+      and design_review
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: manufacturing_ready
+      paths:
+      - crates/reify-mcp/src/tools/chunks/purposes.md
+      expect: absent
+  - name: reflective-example-is-not-vacuous
+    binding: hazard checked and CLEARED — geometric_params/material_params resolved
+      queries ARE populated (traits.rs, task-4137)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: geometric_params
+      paths:
+      - crates/reify-compiler/src/traits.rs
+      expect: present
+  - name: there-is-a-real-authoring-trap-to-document
+    binding: executed probe P6 — a purpose body cannot carry a working kernel-measured
+      constraint; undocumented today, so an author rediscovers it the expensive way
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the post-diff assertion is prose in the chunk describing P6; asserted
+        by θ's own smoke check
+  - name: no-exemplar-corpus-leaf-owed
+    binding: documented exemption — purposes already have corpus presence and this
+      PRD adds no new authoring idiom
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an exemption from the docs-truth exemplar clause, per the gui-on-demand-measurement
+        precedent
+# Corrected 2026-08-27: the "file against check-diagnostic-truthfulness" instruction below is
+# superseded — the residue was adopted by driver-contract alpha #6773 as an acceptance clause
+# per driver-contract-implementation.md §8.3 (commit 1d487a7d1f); iota files only if the defect
+# escapes #5748/#6803/#6773. See task #6838 for the revised instruction.
+- label: ι
+  task_id: 6838
+  title: 'GUI purpose surface ι: companion corrections and the finding handed to PRD
+    2'
+  capabilities:
+  - name: residue-is-real-and-survives-5748
+    binding: '#5748 routes the purpose arm through with_registered_kernel + build
+      but adds neither set_capture_repr_tol(true) nor tessellate_realizations; dispatch_constraints
+      fast-paths past the ReprWithin interception while achieved_repr_tol is empty'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a forward-looking claim about an unlanded sibling diff; the filed task
+        carries this PRD's executed P1/P2/P3 evidence and is re-verified at its own
+        dispatch
+  - name: filing-not-rewriting-is-the-instrument
+    binding: '#5748 is in-progress and claimed; a NEW task in PRD 2''s territory wired
+      to #5748/#5403 touches no other session''s record'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: scope stance; enforced by this leaf's metadata.files naming only docs
+        paths
+  - name: purposes-completion-followup-unfiled
+    binding: 'grep + task-store: purposes-completion.md section 10 names a gui-purpose-activation
+      follow-up; no such task exists — this PRD is that successor'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: gui-purpose-surface
+      paths:
+      - docs/prds/v0_6/purposes-completion.md
+      expect: present
+  - name: survey-d4-extended-by-dated-addendum
+    binding: anchoring discipline — the survey is a DATED snapshot; the inward twin
+      is appended as a dated addendum, never an edit to the snapshot
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: check --purpose is not
+      paths:
+      - docs/notes/cross-driver-divergence-survey-draft.md
+      expect: present
+  - name: reflective-aggregation-note-is-stale
+    binding: 'grep: the note''s Remaining gap section contradicts task-4137''s landed
+      filter-kind resolution'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '4137'
+      paths:
+      - docs/notes/purpose-reflective-aggregation.md
+      expect: present
+  - name: sibling-prd-needs-the-consumer-row
+    binding: cross-PRD hygiene — gui-on-demand-measurement.md still calls the purpose
+      charter 'not yet filed'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: gui-purpose-surface
+      paths:
+      - docs/prds/v0_6/gui-on-demand-measurement.md
+      expect: present
+- label: κ
+  task_id: 6839
+  title: 'GUI purpose surface κ: PRD-close terminal stamp'
+  capabilities:
+  - name: terminal-vocabulary-is-closed
+    binding: contract source — SHIPPED / SUPERSEDED / WITHDRAWN, first token after
+      the Status label, matched case-insensitively
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \*\*Status:? \*?\*?(SHIPPED|SUPERSEDED|WITHDRAWN)
+      paths:
+      - docs/prds/v0_6/gui-purpose-surface.md
+      expect: present
+  - name: freeze-header-shape-has-ratified-exemplars
+    binding: 'grep: the headers of v0_6/data-carrying-enums.md and kernel-seam-contracts.md
+      are the ratified three-part shape'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: AS-AUTHORED
+      paths:
+      - docs/prds/v0_6/gui-purpose-surface.capability-manifest.md
+      expect: present
+  - name: cancelled-sibling-disposition-defined
+    binding: contract — a cancelled sibling counts as satisfied for this leaf's dependency
+      edge
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: scheduler-disposition rule, not a repo pattern

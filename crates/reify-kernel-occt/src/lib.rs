@@ -17,6 +17,22 @@
 /// directories, and `false` otherwise (stub types are used instead).
 /// Downstream crates can check this to skip OCCT-dependent tests
 /// at runtime.
+///
+/// **This constant is never evidence that anything was tested.** When
+/// `cfg!(has_occt)` is false, this crate's `#[cfg(all(test, has_occt))]`
+/// modules and its `#![cfg(has_occt)]` integration binaries are not compiled
+/// at all — the suite reports zero tests REPORTED, not zero tests FAILED, and
+/// nothing downstream can tell the difference from a passing run. So a
+/// runtime check here cannot guard build-time OCCT presence; it can only ever
+/// be tautological (inside a `has_occt` module) or destructive (outside one,
+/// where it would break the sanctioned OCCT-free stub build whose contract
+/// suite lives in `stubs.rs`). Task 6343 deleted the const-assert that tried.
+///
+/// Build-time OCCT presence is gated instead by the OCCT arm of
+/// `scripts/check-manifold-deps.sh`, which `scripts/verify.sh` emits as a plan
+/// entry on every `RUN_RUST=1` verify — before any compile, where it cannot be
+/// cfg'd away. That arm also pins the resolved SONAME and records it in the
+/// verify log. Its guard is `tests/infra/test_occt_deps_preflight.sh`.
 pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 
 // Re-export register::OCCT_KERNEL_VERSION at the crate root so downstream
@@ -205,9 +221,73 @@ const ANGLE_ABS_MIN: f64 = 1e-30;
 
 #[cfg(has_occt)]
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
+///
+/// Length-semantic fields go through [`extract_length_f64`] instead. This
+/// context-free form survives for the FIVE deliberately ungated OCCT fields —
+/// `HalfSpace`'s `nx`/`ny`/`nz` (dimensionless unit-normal components) and
+/// `CircularPattern.angle` / `Draft.angle` (ANGLE, PRD 3's surface) — each
+/// marked at its call site with a `// not length-semantic:` comment.
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
     v.as_f64()
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
+}
+
+#[cfg(has_occt)]
+/// Length-semantic numeric extraction + the C4 kernel LENGTH tripwire.
+///
+/// Identical accept/reject disposition and `Ok` payload to [`extract_f64`];
+/// the only differences are (a) a `tracing::warn!` naming op kind and field
+/// when a non-LENGTH value arrives, (b) the opt-in debug assertion, and (c) an
+/// `Err` string that names op kind and field instead of the bare
+/// `"expected numeric value"`.
+///
+/// **A tripwire, not a gate** (PRD D5 / ratified decision 4): a violation is
+/// *reported* and execution proceeds exactly as before. A fired tripwire means
+/// a hole in the eval-layer gate (`required_length_value` /
+/// `required_length_values`, `crates/reify-eval/src/geometry_ops.rs:482`/`:523`),
+/// not a kernel bug. Canonical rationale, plus the C2 corollary about
+/// `GeometryOp` construction routes, lives with the shared classifier in
+/// `crates/reify-ir/src/kernel_validation.rs`. Contract:
+/// `docs/prds/v0_6/units-length-gate-completion.md` C4/D5, boundary rows 13-14.
+///
+/// It is the SECOND, INDEPENDENT detection layer: the first is the closure
+/// guard (leaf ι), which is not yet landed. The closure guard reasons about
+/// where a value came from; this observes what actually arrived at the kernel
+/// boundary. Neither subsumes the other, so this one keeps working if the
+/// first is bypassed or has a hole.
+///
+/// `OcctKernel::execute`'s 46 numeric-extraction sites split 46 = 41 + 3 + 2:
+/// the 41 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
+/// (dimensionless unit-normal components) and `CircularPattern.angle` /
+/// `Draft.angle` (ANGLE — PRD 3's surface) stay on the context-free
+/// [`extract_f64`], each marked at its call site with a
+/// `// not length-semantic:` comment.
+///
+/// The warn is emitted HERE rather than from `reify-ir` because the house
+/// pattern for a kernel diagnostic is a `tracing::warn!` whose `target:` names
+/// the emitting crate (`reify_kernel_gmsh::repair`,
+/// `reify_kernel_manifold::kernel`), and because it keeps `reify-ir` — a
+/// dependency of 13+ crates — free of a `tracing` edge. The message string
+/// still comes from the single `kernel_validation.rs` formatter, so the two
+/// kernels cannot drift.
+fn extract_length_f64(
+    v: &Value,
+    op: &GeometryOp,
+    field: &'static str,
+) -> Result<f64, GeometryError> {
+    let op_kind = op.kind_name();
+    if let Some(msg) = reify_ir::check_length_field(op_kind, field, v) {
+        tracing::warn!(
+            target: "reify_kernel_occt::length_tripwire",
+            reason = "non_length_field",
+            op_kind = op_kind,
+            field = field,
+            "{msg}"
+        );
+    }
+    v.as_f64().ok_or_else(|| {
+        GeometryError::OperationFailed(reify_ir::non_numeric_kernel_field_message(op_kind, field))
+    })
 }
 
 #[cfg(has_occt)]
@@ -2431,9 +2511,9 @@ impl OcctKernel {
                 height,
                 depth,
             } => {
-                let w = extract_f64(width)?;
-                let h = extract_f64(height)?;
-                let d = extract_f64(depth)?;
+                let w = extract_length_f64(width, op, "width")?;
+                let h = extract_length_f64(height, op, "height")?;
+                let d = extract_length_f64(depth, op, "depth")?;
                 if !(w.is_finite()
                     && w > 0.0
                     && h.is_finite()
@@ -2449,8 +2529,8 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Cylinder { radius, height } => {
-                let r = extract_f64(radius)?;
-                let h = extract_f64(height)?;
+                let r = extract_length_f64(radius, op, "radius")?;
+                let h = extract_length_f64(height, op, "height")?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "cylinder radius must be a finite positive value".into(),
@@ -2465,7 +2545,7 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Sphere { radius } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
@@ -2479,9 +2559,9 @@ impl OcctKernel {
                 inner_r,
                 height,
             } => {
-                let outer = extract_f64(outer_r)?;
-                let inner = extract_f64(inner_r)?;
-                let h = extract_f64(height)?;
+                let outer = extract_length_f64(outer_r, op, "outer_r")?;
+                let inner = extract_length_f64(inner_r, op, "inner_r")?;
+                let h = extract_length_f64(height, op, "height")?;
                 validate_positive_finite(outer, "tube outer radius")?;
                 validate_positive_finite(inner, "tube inner radius")?;
                 validate_positive_finite(h, "tube height")?;
@@ -2507,9 +2587,9 @@ impl OcctKernel {
                 top_radius,
                 height,
             } => {
-                let bottom_r = extract_f64(bottom_radius)?;
-                let top_r = extract_f64(top_radius)?;
-                let h = extract_f64(height)?;
+                let bottom_r = extract_length_f64(bottom_radius, op, "bottom_radius")?;
+                let top_r = extract_length_f64(top_radius, op, "top_radius")?;
+                let h = extract_length_f64(height, op, "height")?;
                 if !(bottom_r.is_finite() && bottom_r >= 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "cone bottom_radius must be finite and non-negative".into(),
@@ -2539,10 +2619,10 @@ impl OcctKernel {
                 height,
                 top_width,
             } => {
-                let w = extract_f64(width)?;
-                let d = extract_f64(depth)?;
-                let h = extract_f64(height)?;
-                let ltx = extract_f64(top_width)?;
+                let w = extract_length_f64(width, op, "width")?;
+                let d = extract_length_f64(depth, op, "depth")?;
+                let h = extract_length_f64(height, op, "height")?;
+                let ltx = extract_length_f64(top_width, op, "top_width")?;
                 validate_positive_finite(w, "wedge width")?;
                 validate_positive_finite(d, "wedge depth")?;
                 validate_positive_finite(h, "wedge height")?;
@@ -2558,8 +2638,8 @@ impl OcctKernel {
                 major_radius,
                 minor_radius,
             } => {
-                let major = extract_f64(major_radius)?;
-                let minor = extract_f64(minor_radius)?;
+                let major = extract_length_f64(major_radius, op, "major_radius")?;
+                let minor = extract_length_f64(minor_radius, op, "minor_radius")?;
                 validate_positive_finite(major, "torus major radius")?;
                 validate_positive_finite(minor, "torus minor radius")?;
                 // Both values are already validated finite+positive above,
@@ -2581,11 +2661,14 @@ impl OcctKernel {
                 ny,
                 nz,
             } => {
-                let px = extract_f64(px)?;
-                let py = extract_f64(py)?;
-                let pz = extract_f64(pz)?;
+                let px = extract_length_f64(px, op, "px")?;
+                let py = extract_length_f64(py, op, "py")?;
+                let pz = extract_length_f64(pz, op, "pz")?;
+                // not length-semantic: dimensionless unit-normal component, not a length.
                 let nx = extract_f64(nx)?;
+                // not length-semantic: dimensionless unit-normal component, not a length.
                 let ny = extract_f64(ny)?;
+                // not length-semantic: dimensionless unit-normal component, not a length.
                 let nz = extract_f64(nz)?;
                 // Validate that the normal is non-zero (gp_Dir requires it).
                 let norm_sq = nx * nx + ny * ny + nz * nz;
@@ -2620,7 +2703,7 @@ impl OcctKernel {
                 edges,
                 radius,
             } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "fillet radius must be a finite positive value".into(),
@@ -2648,7 +2731,7 @@ impl OcctKernel {
                 edges,
                 distance,
             } => {
-                let d = extract_f64(distance)?;
+                let d = extract_length_f64(distance, op, "distance")?;
                 if !(d.is_finite() && d > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "chamfer distance must be a finite positive value".into(),
@@ -2677,8 +2760,8 @@ impl OcctKernel {
                 d1,
                 d2,
             } => {
-                let d1 = extract_f64(d1)?;
-                let d2 = extract_f64(d2)?;
+                let d1 = extract_length_f64(d1, op, "d1")?;
+                let d2 = extract_length_f64(d2, op, "d2")?;
                 if !(d1.is_finite() && d1 > 0.0 && d2.is_finite() && d2 > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "asymmetric chamfer distances must be finite positive values".into(),
@@ -2735,7 +2818,7 @@ impl OcctKernel {
                 spacing,
             } => {
                 let shape = self.get_shape(*target)?;
-                let sp = extract_f64(spacing)?;
+                let sp = extract_length_f64(spacing, op, "spacing")?;
                 if *count == 0 {
                     return Err(GeometryError::OperationFailed(
                         "linear pattern count must be >= 1".into(),
@@ -2759,6 +2842,7 @@ impl OcctKernel {
                 angle,
             } => {
                 let shape = self.get_shape(*target)?;
+                // not length-semantic: ANGLE, not LENGTH — PRD 3's surface, not this one.
                 let total_angle = extract_f64(angle)?;
                 if *count == 0 {
                     return Err(GeometryError::OperationFailed(
@@ -2832,6 +2916,7 @@ impl OcctKernel {
                 angle,
                 plane,
             } => {
+                // not length-semantic: ANGLE, not LENGTH — PRD 3's surface, not this one.
                 let angle_rad = extract_f64(angle)?;
                 if faces.is_empty() {
                     // 3-arg / empty-selection back-compat: draft ALL draftable
@@ -2851,7 +2936,7 @@ impl OcctKernel {
             }
             GeometryOp::Thicken { target, offset } => {
                 let shape = self.get_shape(*target)?;
-                let off = extract_f64(offset)?;
+                let off = extract_length_f64(offset, op, "offset")?;
                 ffi::ffi::thicken_shape(shape, off)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -2861,7 +2946,7 @@ impl OcctKernel {
                 reference,
                 direction,
             } => {
-                let dist = extract_f64(distance)?;
+                let dist = extract_length_f64(distance, op, "distance")?;
                 // Build the offset wire inside an inner scope so the immutable
                 // `get_shape` borrow(s) drop before `store_with_repr` takes
                 // `&mut self` (mirrors `extract_edges` / `execute_split`'s
@@ -2887,13 +2972,13 @@ impl OcctKernel {
             }
             GeometryOp::ZoneSlab { target, width } => {
                 let shape = self.get_shape(*target)?;
-                let w = extract_f64(width)?;
+                let w = extract_length_f64(width, op, "width")?;
                 ffi::ffi::zone_slab_shape(shape, w)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::OffsetSolid { target, distance } => {
                 let shape = self.get_shape(*target)?;
-                let d = extract_f64(distance)?;
+                let d = extract_length_f64(distance, op, "distance")?;
                 ffi::ffi::offset_solid_shape(shape, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -2903,7 +2988,7 @@ impl OcctKernel {
                 faces_to_remove,
                 open_face_handles,
             } => {
-                let th = extract_f64(thickness)?;
+                let th = extract_length_f64(thickness, op, "thickness")?;
                 // Curated-handle path (shell_open): open_face_handles is
                 // non-empty → delegate to shell_solid_faces and early-return,
                 // mirroring the Draft execute arm's curated dispatch
@@ -3048,7 +3133,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Extrude { profile, distance } => {
-                let dist = extract_f64(distance)?;
+                let dist = extract_length_f64(distance, op, "distance")?;
                 if !dist.is_finite() {
                     return Err(GeometryError::OperationFailed(
                         "extrude distance must be finite".into(),
@@ -3130,7 +3215,7 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Pipe { path, radius } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 validate_positive_finite(r, "pipe radius")?;
                 let path_shape = self.get_shape(*path)?;
                 // Orient the circular profile onto the path's start frame: build
@@ -3152,7 +3237,7 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::ExtrudeSymmetric { profile, distance } => {
-                let dist = extract_f64(distance)?;
+                let dist = extract_length_f64(distance, op, "distance")?;
                 if !dist.is_finite() {
                     return Err(GeometryError::OperationFailed(
                         "extrude_symmetric distance must be finite".into(),
@@ -3405,8 +3490,8 @@ impl OcctKernel {
                 spacing2,
             } => {
                 let shape = self.get_shape(*target)?;
-                let sp1 = extract_f64(spacing1)?;
-                let sp2 = extract_f64(spacing2)?;
+                let sp1 = extract_length_f64(spacing1, op, "spacing1")?;
+                let sp2 = extract_length_f64(spacing2, op, "spacing2")?;
                 // Validate direction vectors are finite (NaN/Inf would cause
                 // undefined OCCT behavior).  Consistent with Mirror arm.
                 if !direction1[0].is_finite()
@@ -3480,8 +3565,8 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::RectangleProfile { width, height } => {
-                let w = extract_f64(width)?;
-                let h = extract_f64(height)?;
+                let w = extract_length_f64(width, op, "width")?;
+                let h = extract_length_f64(height, op, "height")?;
                 if !(w.is_finite() && w > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "rectangle_profile width must be a finite positive value".into(),
@@ -3497,7 +3582,7 @@ impl OcctKernel {
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
             GeometryOp::CircleProfile { radius } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "circle_profile radius must be a finite positive value".into(),
@@ -3520,8 +3605,8 @@ impl OcctKernel {
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
             GeometryOp::EllipseProfile { semi_major, semi_minor } => {
-                let a = extract_f64(semi_major)?;
-                let b = extract_f64(semi_minor)?;
+                let a = extract_length_f64(semi_major, op, "semi_major")?;
+                let b = extract_length_f64(semi_minor, op, "semi_minor")?;
                 if !(a.is_finite() && a > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "ellipse_profile semi_major must be a finite positive value".into(),
@@ -5107,16 +5192,6 @@ mod tests {
             adaptive: false,
         });
         assert_operation_fails_with(result, "GeometryOp::Surface");
-    }
-
-    #[test]
-    fn occt_available_is_true_when_built_with_occt() {
-        const {
-            assert!(
-                crate::OCCT_AVAILABLE,
-                "OCCT_AVAILABLE should be true on a system with OCCT installed"
-            )
-        };
     }
 
     #[test]
@@ -13431,4 +13506,721 @@ mod tests {
             depth: Value::Real(10.0),
         },
     );
+
+    // ── C4 kernel LENGTH tripwire (task #5751) ───────────────────────────────
+    //
+    // Boundary rows 13/14 of `docs/prds/v0_6/units-length-gate-completion.md`
+    // through the real OCCT path. The tripwire is a DETECTOR, never a gate.
+    //
+    // Every kernel here is built with `OcctKernel::new()` on the TEST THREAD
+    // (as `make_box_20_10_5` already does) rather than through
+    // `OcctKernelHandle`, whose worker thread would not see the thread-local
+    // arm.
+
+    /// The §2/D3 probe case, made attributable.
+    ///
+    /// `fillet(box(10mm,10mm,10mm), 1)` today produces a span-less
+    /// `OCCT make_fillet_with_history: unexpected: BRepFilletAPI_MakeFillet
+    /// failed`. Calling `extract_length_f64` directly means no OCCT execution
+    /// happens at all, so the assertion cannot be perturbed by a downstream
+    /// `BRepFilletAPI_MakeFillet` failure.
+    #[test]
+    fn occt_extract_length_f64_bare_value_names_op_kind_and_field() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let op = GeometryOp::Fillet {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            radius: Value::Real(1.0),
+        };
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let got = tracing::subscriber::with_default(subscriber, || {
+            extract_length_f64(&Value::Real(1.0), &op, "radius")
+        });
+
+        capture.assert_count(1);
+        let msg = &capture.messages()[0];
+        assert!(msg.contains("Fillet"), "{msg}");
+        assert!(msg.contains("radius"), "{msg}");
+        capture.assert_any_event_field_contains("op_kind", "Fillet");
+        capture.assert_any_event_field_contains("field", "radius");
+
+        // Detector, not gate: the extraction still succeeds with the same
+        // payload `extract_f64` would have produced.
+        assert_eq!(got.expect("a bare Real still extracts"), 1.0);
+    }
+
+    /// End-to-end wiring proof through `OcctKernel::execute`: one diagnostic
+    /// per bare Box dimension, naming the op kind and that field.
+    #[test]
+    fn occt_execute_box_bare_dimensions_emits_tripwire_diagnostics() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = OcctKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(5.0),
+            })
+        });
+
+        capture.assert_count_and_any_message_contains(3, "Box");
+        capture.assert_any_event_field_contains("field", "width");
+        capture.assert_any_event_field_contains("field", "height");
+        capture.assert_any_event_field_contains("field", "depth");
+        assert!(
+            result.is_ok(),
+            "the tripwire is a detector, not a gate: {result:?}"
+        );
+    }
+
+    /// Negative control: dimensioned LENGTH inputs emit ZERO diagnostics.
+    #[test]
+    fn occt_execute_dimensioned_box_emits_no_tripwire_diagnostic() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = OcctKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::length(0.020),
+                height: Value::length(0.010),
+                depth: Value::length(0.005),
+            })
+        });
+
+        capture.assert_count(0);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// Boundary row 13 through the real OCCT path, half 1 (op kind).
+    ///
+    /// `#[cfg(debug_assertions)]` is mandatory on a `#[should_panic]` test for
+    /// a debug-only assertion — see the rule documented at
+    /// `crates/reify-kernel-occt/src/lib.rs` `mod tests` (the three
+    /// `"must be a parent_handle key"` tests).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Box")]
+    fn occt_armed_bare_length_panics_naming_the_op_kind() {
+        let _g = reify_ir::arm_length_tripwire_assert();
+        let mut kernel = OcctKernel::new();
+        let _ = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(20.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(5.0),
+        });
+    }
+
+    /// Boundary row 13 through the real OCCT path, half 2 (field name).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "width")]
+    fn occt_armed_bare_length_panics_naming_the_field() {
+        let _g = reify_ir::arm_length_tripwire_assert();
+        let mut kernel = OcctKernel::new();
+        let _ = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(20.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(5.0),
+        });
+    }
+
+    /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
+    ///
+    /// The PRD's split is 46 = 41 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
+    /// — dimensionless unit-normal components, not lengths. The 2 are
+    /// `CircularPattern.angle` and `Draft.angle` — ANGLE, which is PRD 3's
+    /// surface, not this one. All five must stay on the plain, context-free
+    /// `extract_f64`.
+    ///
+    /// Without this control a blanket conversion of all 46 sites would pass
+    /// every other test in this module.
+    #[test]
+    fn occt_non_length_fields_stay_ungated() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        /// Assert no captured WARN names `field` in its message or its
+        /// structured `field` value.
+        fn assert_no_warn_for_field(capture: &reify_test_support::WarnCapture, field: &str) {
+            for fields in capture.fields_by_event() {
+                assert_ne!(
+                    fields.get("field").map(String::as_str),
+                    Some(field),
+                    "{field} must stay on the ungated extract_f64; captured: {:?}",
+                    capture.messages()
+                );
+            }
+        }
+
+        // 3 dimensionless unit-normal components. Point coords are properly
+        // dimensioned, so a correct build emits nothing at all here.
+        let mut kernel = OcctKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = kernel.execute(&GeometryOp::HalfSpace {
+                px: Value::length(0.0),
+                py: Value::length(0.0),
+                pz: Value::length(0.0),
+                nx: Value::Real(0.0),
+                ny: Value::Real(0.0),
+                nz: Value::Real(1.0),
+            });
+        });
+        for n in ["nx", "ny", "nz"] {
+            assert_no_warn_for_field(&capture, n);
+        }
+        capture.assert_count(0);
+
+        // 2 ANGLE fields. A bare `Value::Real` in each: if either had been
+        // converted, a `field = "angle"` warn would appear.
+        let mut kernel = OcctKernel::new();
+        let target = make_box_20_10_5(&mut kernel);
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = kernel.execute(&GeometryOp::CircularPattern {
+                target,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                count: 2,
+                angle: Value::Real(std::f64::consts::PI),
+            });
+            let _ = kernel.execute(&GeometryOp::Draft {
+                target,
+                faces: vec![],
+                angle: Value::Real(0.05),
+                plane: target,
+            });
+        });
+        assert_no_warn_for_field(&capture, "angle");
+    }
+
+    /// **C4 accept/reject parity (step-9A).**
+    ///
+    /// For every `Value` shape, `extract_length_f64` and `extract_f64` agree on
+    /// the accept/reject DISPOSITION, and where both accept, on the `f64`
+    /// payload bit-for-bit.
+    ///
+    /// Error STRINGS are deliberately excluded from the parity claim: C4 itself
+    /// requires the length-field error to change from the bare
+    /// `"expected numeric value"` to one naming op kind and field. An error
+    /// message is not accept/reject behaviour — the same inputs are still
+    /// `Err`, only the string improves — so this asserts the upgrade instead.
+    #[test]
+    fn occt_length_tripwire_never_changes_accept_reject() {
+        let op = GeometryOp::Fillet {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            radius: Value::Real(2.0),
+        };
+        let cases = vec![
+            Value::Int(2),
+            Value::Real(2.0),
+            Value::length(2.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: reify_core::DimensionVector::MASS,
+            },
+            Value::String("x".into()),
+            Value::Undef,
+        ];
+        for v in cases {
+            let gated = extract_length_f64(&v, &op, "radius");
+            let plain = extract_f64(&v);
+            assert_eq!(
+                gated.is_ok(),
+                plain.is_ok(),
+                "disposition diverged for {v:?}"
+            );
+            match (gated, plain) {
+                (Ok(a), Ok(b)) => assert_eq!(a.to_bits(), b.to_bits(), "payload diverged for {v:?}"),
+                (Err(GeometryError::OperationFailed(s)), Err(_)) => {
+                    assert!(s.contains("Fillet"), "{v:?}: {s}");
+                    assert!(s.contains("radius"), "{v:?}: {s}");
+                    assert!(
+                        !s.contains("expected numeric value"),
+                        "{v:?}: still the bare legacy string: {s}"
+                    );
+                }
+                (g, p) => panic!("unexpected pairing for {v:?}: {g:?} vs {p:?}"),
+            }
+        }
+    }
+
+    /// **Full 41-field enumeration (step-9B).**
+    ///
+    /// The completeness check for the PRD's 46 = 41 + 3 + 2 split, proved by
+    /// OBSERVATION rather than by asserting a table against itself: every one of
+    /// the 41 LENGTH-semantic `(op, field)` pairs is driven through
+    /// `OcctKernel::execute` with a bare `Value::Real` in the field under test
+    /// and a properly dimensioned value in every other length field of the same
+    /// op, so exactly ONE diagnostic is expected and it must name that exact op
+    /// kind and field.
+    ///
+    /// Assertions are on the emitted WARN only, never on the `Result`: the
+    /// tripwire fires before the OCCT call, so a downstream geometric failure
+    /// cannot invalidate the assertion — and asserting on `Result` would make
+    /// this test hostage to OCCT behaviour.
+    ///
+    /// A site left on the plain context-free `extract_f64` fails here.
+    #[test]
+    fn occt_every_length_field_is_gated() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = OcctKernel::new();
+        // Ops taking a target/profile/path handle get one real Box. Five arms
+        // (LinearPattern, Thicken, ZoneSlab, OffsetSolid, LinearPattern2D)
+        // resolve the handle BEFORE extraction, so it must be valid.
+        let target = make_box_20_10_5(&mut kernel);
+
+        let cases: Vec<(GeometryOp, &str, &str)> = vec![
+            (
+                GeometryOp::Box {
+                        width: Value::Real(2.0),
+                        height: Value::length(3.0),
+                        depth: Value::length(4.0),
+                },
+                "Box",
+                "width",
+            ),
+            (
+                GeometryOp::Box {
+                        width: Value::length(2.0),
+                        height: Value::Real(3.0),
+                        depth: Value::length(4.0),
+                },
+                "Box",
+                "height",
+            ),
+            (
+                GeometryOp::Box {
+                        width: Value::length(2.0),
+                        height: Value::length(3.0),
+                        depth: Value::Real(4.0),
+                },
+                "Box",
+                "depth",
+            ),
+            (
+                GeometryOp::Cylinder {
+                        radius: Value::Real(1.0),
+                        height: Value::length(2.0),
+                },
+                "Cylinder",
+                "radius",
+            ),
+            (
+                GeometryOp::Cylinder {
+                        radius: Value::length(1.0),
+                        height: Value::Real(2.0),
+                },
+                "Cylinder",
+                "height",
+            ),
+            (
+                GeometryOp::Sphere {
+                        radius: Value::Real(1.0),
+                },
+                "Sphere",
+                "radius",
+            ),
+            (
+                GeometryOp::Tube {
+                        outer_r: Value::Real(2.0),
+                        inner_r: Value::length(1.0),
+                        height: Value::length(3.0),
+                },
+                "Tube",
+                "outer_r",
+            ),
+            (
+                GeometryOp::Tube {
+                        outer_r: Value::length(2.0),
+                        inner_r: Value::Real(1.0),
+                        height: Value::length(3.0),
+                },
+                "Tube",
+                "inner_r",
+            ),
+            (
+                GeometryOp::Tube {
+                        outer_r: Value::length(2.0),
+                        inner_r: Value::length(1.0),
+                        height: Value::Real(3.0),
+                },
+                "Tube",
+                "height",
+            ),
+            (
+                GeometryOp::Cone {
+                        bottom_radius: Value::Real(2.0),
+                        top_radius: Value::length(1.0),
+                        height: Value::length(3.0),
+                },
+                "Cone",
+                "bottom_radius",
+            ),
+            (
+                GeometryOp::Cone {
+                        bottom_radius: Value::length(2.0),
+                        top_radius: Value::Real(1.0),
+                        height: Value::length(3.0),
+                },
+                "Cone",
+                "top_radius",
+            ),
+            (
+                GeometryOp::Cone {
+                        bottom_radius: Value::length(2.0),
+                        top_radius: Value::length(1.0),
+                        height: Value::Real(3.0),
+                },
+                "Cone",
+                "height",
+            ),
+            (
+                GeometryOp::Wedge {
+                        width: Value::Real(2.0),
+                        depth: Value::length(3.0),
+                        height: Value::length(4.0),
+                        top_width: Value::length(1.0),
+                },
+                "Wedge",
+                "width",
+            ),
+            (
+                GeometryOp::Wedge {
+                        width: Value::length(2.0),
+                        depth: Value::Real(3.0),
+                        height: Value::length(4.0),
+                        top_width: Value::length(1.0),
+                },
+                "Wedge",
+                "depth",
+            ),
+            (
+                GeometryOp::Wedge {
+                        width: Value::length(2.0),
+                        depth: Value::length(3.0),
+                        height: Value::Real(4.0),
+                        top_width: Value::length(1.0),
+                },
+                "Wedge",
+                "height",
+            ),
+            (
+                GeometryOp::Wedge {
+                        width: Value::length(2.0),
+                        depth: Value::length(3.0),
+                        height: Value::length(4.0),
+                        top_width: Value::Real(1.0),
+                },
+                "Wedge",
+                "top_width",
+            ),
+            (
+                GeometryOp::Torus {
+                        major_radius: Value::Real(3.0),
+                        minor_radius: Value::length(1.0),
+                },
+                "Torus",
+                "major_radius",
+            ),
+            (
+                GeometryOp::Torus {
+                        major_radius: Value::length(3.0),
+                        minor_radius: Value::Real(1.0),
+                },
+                "Torus",
+                "minor_radius",
+            ),
+            (
+                GeometryOp::HalfSpace {
+                        nx: Value::Real(0.0),
+                        ny: Value::Real(0.0),
+                        nz: Value::Real(1.0),
+                        px: Value::Real(0.0),
+                        py: Value::length(0.0),
+                        pz: Value::length(0.0),
+                },
+                "HalfSpace",
+                "px",
+            ),
+            (
+                GeometryOp::HalfSpace {
+                        nx: Value::Real(0.0),
+                        ny: Value::Real(0.0),
+                        nz: Value::Real(1.0),
+                        px: Value::length(0.0),
+                        py: Value::Real(0.0),
+                        pz: Value::length(0.0),
+                },
+                "HalfSpace",
+                "py",
+            ),
+            (
+                GeometryOp::HalfSpace {
+                        nx: Value::Real(0.0),
+                        ny: Value::Real(0.0),
+                        nz: Value::Real(1.0),
+                        px: Value::length(0.0),
+                        py: Value::length(0.0),
+                        pz: Value::Real(0.0),
+                },
+                "HalfSpace",
+                "pz",
+            ),
+            (
+                GeometryOp::Fillet {
+                        target,
+                        edges: vec![],
+                        radius: Value::Real(0.1),
+                },
+                "Fillet",
+                "radius",
+            ),
+            (
+                GeometryOp::Chamfer {
+                        target,
+                        edges: vec![],
+                        distance: Value::Real(0.1),
+                },
+                "Chamfer",
+                "distance",
+            ),
+            (
+                GeometryOp::ChamferAsymmetric {
+                        target,
+                        edges: vec![],
+                        d1: Value::Real(0.1),
+                        d2: Value::length(0.2),
+                },
+                "ChamferAsymmetric",
+                "d1",
+            ),
+            (
+                GeometryOp::ChamferAsymmetric {
+                        target,
+                        edges: vec![],
+                        d1: Value::length(0.1),
+                        d2: Value::Real(0.2),
+                },
+                "ChamferAsymmetric",
+                "d2",
+            ),
+            (
+                GeometryOp::LinearPattern {
+                        target,
+                        direction: [1.0, 0.0, 0.0],
+                        count: 2,
+                        spacing: Value::Real(1.0),
+                },
+                "LinearPattern",
+                "spacing",
+            ),
+            (
+                GeometryOp::Thicken {
+                        target,
+                        offset: Value::Real(0.1),
+                },
+                "Thicken",
+                "offset",
+            ),
+            (
+                GeometryOp::OffsetCurve {
+                        target,
+                        reference: None,
+                        direction: None,
+                        distance: Value::Real(0.1),
+                },
+                "OffsetCurve",
+                "distance",
+            ),
+            (
+                GeometryOp::ZoneSlab {
+                        target,
+                        width: Value::Real(1.0),
+                },
+                "ZoneSlab",
+                "width",
+            ),
+            (
+                GeometryOp::OffsetSolid {
+                        target,
+                        distance: Value::Real(0.1),
+                },
+                "OffsetSolid",
+                "distance",
+            ),
+            (
+                GeometryOp::Shell {
+                        target,
+                        faces_to_remove: vec![],
+                        open_face_handles: vec![],
+                        thickness: Value::Real(0.1),
+                },
+                "Shell",
+                "thickness",
+            ),
+            (
+                GeometryOp::Extrude {
+                        profile: target,
+                        distance: Value::Real(1.0),
+                },
+                "Extrude",
+                "distance",
+            ),
+            (
+                GeometryOp::Pipe {
+                        path: target,
+                        radius: Value::Real(0.5),
+                },
+                "Pipe",
+                "radius",
+            ),
+            (
+                GeometryOp::ExtrudeSymmetric {
+                        profile: target,
+                        distance: Value::Real(1.0),
+                },
+                "ExtrudeSymmetric",
+                "distance",
+            ),
+            (
+                GeometryOp::LinearPattern2D {
+                        target,
+                        direction1: [1.0, 0.0, 0.0],
+                        count1: 2,
+                        direction2: [0.0, 1.0, 0.0],
+                        count2: 2,
+                        spacing1: Value::Real(1.0),
+                        spacing2: Value::length(2.0),
+                },
+                "LinearPattern2D",
+                "spacing1",
+            ),
+            (
+                GeometryOp::LinearPattern2D {
+                        target,
+                        direction1: [1.0, 0.0, 0.0],
+                        count1: 2,
+                        direction2: [0.0, 1.0, 0.0],
+                        count2: 2,
+                        spacing1: Value::length(1.0),
+                        spacing2: Value::Real(2.0),
+                },
+                "LinearPattern2D",
+                "spacing2",
+            ),
+            (
+                GeometryOp::RectangleProfile {
+                        width: Value::Real(2.0),
+                        height: Value::length(3.0),
+                },
+                "RectangleProfile",
+                "width",
+            ),
+            (
+                GeometryOp::RectangleProfile {
+                        width: Value::length(2.0),
+                        height: Value::Real(3.0),
+                },
+                "RectangleProfile",
+                "height",
+            ),
+            (
+                GeometryOp::CircleProfile {
+                        radius: Value::Real(1.0),
+                },
+                "CircleProfile",
+                "radius",
+            ),
+            (
+                GeometryOp::EllipseProfile {
+                        semi_major: Value::Real(2.0),
+                        semi_minor: Value::length(1.0),
+                },
+                "EllipseProfile",
+                "semi_major",
+            ),
+            (
+                GeometryOp::EllipseProfile {
+                        semi_major: Value::length(2.0),
+                        semi_minor: Value::Real(1.0),
+                },
+                "EllipseProfile",
+                "semi_minor",
+            ),
+        ];
+        assert_eq!(
+            cases.len(),
+            41,
+            "the PRD's 46 = 41 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
+        );
+
+        for (op, op_kind, field) in cases {
+            let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+            tracing::subscriber::with_default(subscriber, || {
+                let _ = kernel.execute(&op);
+            });
+            capture.assert_count_and_any_message_contains(1, op_kind);
+            capture.assert_any_event_field_contains("op_kind", op_kind);
+            capture.assert_any_event_field_contains("field", field);
+            // Step-9D's per-kernel half: the kernel emits the SHARED formatter's
+            // string verbatim, never a re-rolled literal.
+            assert_eq!(
+                capture.messages()[0],
+                reify_ir::check_length_field(op_kind, field, &Value::Real(1.0))
+                    .expect("a bare Real is a violation"),
+                "{op_kind}.{field}: message drifted from the shared formatter"
+            );
+        }
+    }
+
+    /// **Release contract, boundary row 14 (step-9C).**
+    ///
+    /// In a release build the assertion is compiled out entirely, so even with
+    /// the arm held a bare-`Value::Real` `execute` must (i) not panic,
+    /// (ii) still emit the diagnostic naming op kind and field, and (iii) return
+    /// the SAME disposition as the dimensioned control.
+    ///
+    /// This is the half a debug-only test cannot reach. It executes for real on
+    /// the merge gate, which forces `--profile both` (`scripts/verify.sh`,
+    /// `DF_VERIFY_ROLE=merge`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn occt_release_armed_bare_length_reports_without_panicking() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let _g = reify_ir::arm_length_tripwire_assert();
+        assert!(reify_ir::length_tripwire_assert_armed());
+
+        let mut kernel = OcctKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let bare = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::Real(0.020),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.005),
+            })
+        });
+
+        capture.assert_count_and_any_message_contains(3, "Box");
+        capture.assert_any_event_field_contains("field", "width");
+
+        // Same SI magnitudes, properly dimensioned: the disposition must match.
+        let control = kernel.execute(&GeometryOp::Box {
+            width: Value::length(0.020),
+            height: Value::length(0.010),
+            depth: Value::length(0.005),
+        });
+        assert_eq!(
+            bare.is_ok(),
+            control.is_ok(),
+            "armed release build changed the accept/reject disposition: \
+             bare={bare:?} control={control:?}"
+        );
+    }
 }

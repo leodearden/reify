@@ -7,8 +7,10 @@ import {
   normalizeUnitLabel,
   quantityUnitAlphabet,
   BASE_UNIT_LABELS,
+  BASE_UNIT_DIMENSIONS,
   buildQuantityRe,
   NUMBER_RE,
+  acceptsBareNumber,
 } from '../stores/unitLadder';
 
 describe('formatDisplayNumber', () => {
@@ -182,6 +184,22 @@ describe('quantityUnitAlphabet', () => {
 
   it('exposes that same baseline as BASE_UNIT_LABELS', () => {
     expect([...BASE_UNIT_LABELS]).toEqual(['mm', 'cm', 'm', 'deg', 'rad']);
+  });
+
+  it('pins BASE_UNIT_DIMENSIONS — the dimensions of those same labels', () => {
+    // Pinned by CONTENT, not by iterating it. Every other `BASE_UNIT_DIMENSIONS`
+    // assertion in this file loops over the constant itself, so it is tautological
+    // with respect to what the constant holds: dropping `'Angle'` would fail
+    // nothing here, while the ladder-less panel would then accept `90` in an Angle
+    // cell that `set_parameter` refuses — the panel-accepts/engine-refuses
+    // regression task #5757 closed, re-entered on the degraded path.
+    //
+    // The cross-end direction (everything gated here is gated by the engine too)
+    // is `every_dimension_the_frontend_floor_gates_is_gated_here_too` in
+    // `gui/src-tauri/src/tests/engine_tests.rs`. That guard hand-mirrors these
+    // pairs on its own side, so this assertion is what makes a one-sided edit
+    // loud on the side that OWNS the value.
+    expect([...BASE_UNIT_DIMENSIONS].sort()).toEqual(['Angle', 'Length']);
   });
 
   // (b) Baseline UNION the ladders' labels, ASCII-normalized.
@@ -458,5 +476,154 @@ describe('buildQuantityRe', () => {
     const m = buildQuantityRe(BASE_UNIT_LABELS).exec(input);
     expect(m).not.toBeNull();
     expect(Number.isFinite(Number(m![1]))).toBe(false);
+  });
+});
+
+describe('acceptsBareNumber (task #5757)', () => {
+  // THE RULE, not an enumeration: a cell needs a unit exactly when one CAN be
+  // typed for it. The predicate takes a DIMENSION and a ladder MAP, never a
+  // list of unit strings, so it cannot drift from the Rust-authored curated
+  // table — the standing #5788 D6 prohibition documented on
+  // `quantityUnitAlphabet` above.
+  //
+  // The backend is the authoritative gate (`parse_value_string_for_cell` in
+  // `gui/src-tauri/src/engine.rs`, which refuses a Value::Int/Value::Real for a
+  // dimension its `LADDER_COVERAGE` table records). This is its inline-feedback
+  // mirror: it is what keeps the typed text on screen for correction instead of
+  // discarding it and replacing it with an async error toast.
+
+  const COVERED = [
+    'Length',
+    'Volume',
+    'Density',
+    'Area',
+    'Angle',
+    'Mass',
+    'Pressure',
+    'Force',
+    'Energy',
+    'Power',
+  ];
+
+  // Only MEMBERSHIP is consulted, so a one-rung stub per dimension is a
+  // faithful stand-in for the real fetched map and keeps the fixture from
+  // becoming an eleventh copy of the curated table.
+  const LADDERS: UnitLadderMap = Object.fromEntries(
+    COVERED.map((d) => [d, [{ label: 'x', si_scale: 1, is_default: true }]]),
+  );
+
+  it.each(COVERED.map((d) => [d]))(
+    'disallows a bare number for the %s cell, which a curated ladder covers',
+    (dimension) => {
+      expect(acceptsBareNumber(dimension, LADDERS)).toBe(false);
+    },
+  );
+
+  it.each([
+    ['Torque'],
+    ['Frequency'],
+    ['MomentOfInertia'],
+  ])(
+    'ALLOWS a bare number for the %s cell, which NO curated ladder covers',
+    (dimension) => {
+      // EXPRESSIBILITY, not dimensionedness. The 1000x hazard this gate targets
+      // presupposes that a unit COULD have been typed: `20` in a Volume cell is
+      // ambiguous because `20mm^3` and `20L` were both available. Where the
+      // picker offers nothing and the alphabet admits nothing, refusing the bare
+      // number disambiguates nothing — it removes the cell's LAST accepted input
+      // and bricks the row.
+      //
+      // Not a weakening, because the backend agrees: `dimension_requires_unit`
+      // returns None for exactly these dimensions, so `set_parameter` accepts
+      // the bare number as a canonical SI magnitude. Refusing here would refuse
+      // input the engine would have taken.
+      expect(acceptsBareNumber(dimension, LADDERS)).toBe(true);
+    },
+  );
+
+  it.each([
+    [undefined],
+    [''],
+  ])('allows a bare number when the dimension is %p', (dimension) => {
+    // The backend emits an empty `dimension` string for non-scalar,
+    // dimensionless AND composed-dimension cells. The first two are genuinely
+    // unit-less and must keep taking bare numbers — every dimensionless slider
+    // in the panel depends on it. The third used to be a KNOWN ASYMMETRY caught
+    // only by the backend; since the coverage-conditional rule the backend does
+    // not gate a composed dimension either, so the two ends now AGREE on it.
+    expect(acceptsBareNumber(dimension, LADDERS)).toBe(true);
+  });
+
+  it.each([
+    [undefined],
+    [{}],
+  ])(
+    'keeps GATING the static floor with ladders %p — the get_unit_ladders fetch having failed',
+    (ladders) => {
+      // The ENGINE does not degrade on this path. Its `LADDER_COVERAGE` is built
+      // in-process from the Rust-authored curated table and is always populated,
+      // so `set_parameter` keeps refusing `80` in a Length cell whatever became
+      // of `get_unit_ladders` (`App.tsx`'s one-shot fetch logs, toasts, and
+      // leaves the map `{}`). Failing open here made the two ends disagree
+      // exactly where the panel could not see the ladders, and in the harmful
+      // direction: the panel accepted the bare number, `editSeed` seeded it, and
+      // the engine then refused it behind the async toast that discards the
+      // typed text — the failure task #5757 exists to remove, re-entered through
+      // the degraded path.
+      //
+      // The floor is what the panel can still DESCRIBE with no ladder data:
+      // `quantityUnitAlphabet` unions `BASE_UNIT_LABELS` in on every path, so a
+      // Length cell gated here can still be satisfied inline with `80mm`, and
+      // `editSeed` still seeds one via `editSeedUnitLabel`'s `?? val.unit`
+      // fallback. Gating without that would be the brick this predicate avoids.
+      for (const dimension of BASE_UNIT_DIMENSIONS) {
+        expect(acceptsBareNumber(dimension, ladders)).toBe(false);
+      }
+    },
+  );
+
+  it.each([
+    [undefined],
+    [{}],
+  ])('FAILS OPEN BELOW THE FLOOR with ladders %p', (ladders) => {
+    // Below the floor the safe direction is the other one, and pinned as a
+    // direction rather than an accident: with no ladder data the panel can
+    // neither offer a unit for these dimensions nor accept one, so refusing the
+    // bare number would remove the row's LAST accepted input while refusing
+    // input the engine takes outright for the genuinely uncovered ones.
+    const belowFloor = [...COVERED, 'Torque', 'NotADimension'].filter(
+      (d) => !BASE_UNIT_DIMENSIONS.includes(d),
+    );
+    expect(belowFloor.length).toBeGreaterThan(0);
+    for (const dimension of belowFloor) {
+      expect(acceptsBareNumber(dimension, ladders)).toBe(true);
+    }
+  });
+
+  it('gates the floor even when a PRESENT map omits it', () => {
+    // The floor applies unconditionally — the same shape `quantityUnitAlphabet`
+    // already has, since it unions `BASE_UNIT_LABELS` in on every path and not
+    // just the ladder-less one. A complete map covers the floor anyway, so the
+    // two forms differ only for a present-but-partial payload; matching the
+    // alphabet there is what keeps the gate and the alphabet beside it reading
+    // ONE rule.
+    const partial: UnitLadderMap = {
+      Volume: [{ label: 'L', si_scale: 1e-3, is_default: true }],
+    };
+    for (const dimension of BASE_UNIT_DIMENSIONS) {
+      expect(acceptsBareNumber(dimension, partial)).toBe(false);
+    }
+    expect(acceptsBareNumber('Volume', partial)).toBe(false);
+    expect(acceptsBareNumber('Torque', partial)).toBe(true);
+  });
+
+  it('keys on the floor plus map MEMBERSHIP — an unrecognised name is simply uncovered', () => {
+    // Off the floor, the predicate reads whether the dimension has a ladder and
+    // never what is in it, so it stays immune to the rung labels themselves
+    // (#5788 D6). A name the curated table does not carry is uncovered by
+    // definition.
+    expect(acceptsBareNumber('Length', LADDERS)).toBe(false);
+    expect(acceptsBareNumber('NotADimension', LADDERS)).toBe(true);
+    expect(acceptsBareNumber(undefined, LADDERS)).toBe(true);
   });
 });

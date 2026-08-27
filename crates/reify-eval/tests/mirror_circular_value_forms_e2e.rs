@@ -523,3 +523,344 @@ fn circular_pattern_scalar_mm_origin_builds_op() {
         other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
     }
 }
+
+// ── units-length δ (task 5745): the decoded VALUE-FORM origin gate ────────────
+//
+// PRD §6 boundary rows 5 and 6, at the outermost seam. Until δ the value form
+// BYPASSED the very gate its scalar sibling enforced: `mirror(b, plane_yz(10))`
+// reached the kernel as a 10 SI-**metre** plane offset, exit 0, zero
+// diagnostics, while `mirror(b, 10, 0, 0, 1, 0, 0)` was rejected at ox/oy/oz.
+// That is the 1000× hazard this PRD exists for, arriving through the one route
+// an author is most likely to take.
+//
+// These rows drive the real parser and unit system (not hand-built
+// `CompiledExpr` fixtures, which the `geometry_ops/tests.rs` unit rows cover),
+// so they would catch a regression introduced anywhere between the `.ri`
+// surface and the kernel call.
+
+/// Build `source` against a mock kernel and return `(diagnostics, mirror_ops)`.
+///
+/// Returns the diagnostics THEMSELVES rather than a count, unlike
+/// `build_circular_ops` above: the δ rows below assert on the specific
+/// `ArgRejection` diagnostic — its `DiagnosticCode` and its wording — not merely
+/// that "some Error was emitted". That distinction matters, because the
+/// op-compile Error which accompanies every rejection ALSO names the argument
+/// and the word "Length", so a looser shape would pass without the gate ever
+/// having fired.
+fn build_value_form(
+    source: &str,
+    want: fn(&GeometryOp) -> bool,
+) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
+    let compiled = parse_and_compile(source);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let ops = ops_ref.lock().unwrap();
+    let kept: Vec<GeometryOp> = ops
+        .iter()
+        .filter(|r| want(&r.op))
+        .map(|r| r.op.clone())
+        .collect();
+    (result.diagnostics.clone(), kept)
+}
+
+/// `build_value_form` narrowed to `Mirror` ops.
+fn build_mirror(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
+    build_value_form(source, |op| matches!(op, GeometryOp::Mirror { .. }))
+}
+
+/// `build_value_form` narrowed to `CircularPattern` ops.
+fn build_circular(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
+    build_value_form(source, |op| matches!(op, GeometryOp::CircularPattern { .. }))
+}
+
+/// PRD §6 row 5 — the BYPASS, closed: a bare `plane_yz(10)` origin must be
+/// REJECTED and the op DROPPED, never silently built with a 10 SI-metre plane
+/// offset.
+///
+/// The assertion is deliberately specific: the diagnostic must be the shared
+/// `ArgRejection` one (`DiagnosticCode::DimensionedArgRejected`, worded
+/// "argument expects Length") and must name the ORIGIN component `ox` — the same
+/// name the scalar form has used since task 5214, so the two forms of the same
+/// author mistake now read identically.
+#[test]
+fn mirror_value_form_bare_plane_origin_drops_op_with_error() {
+    let (diagnostics, mirror_ops) = build_mirror(
+        r#"
+        structure def BarePlaneMirror {
+            let b = box(10mm, 10mm, 10mm)
+            let m = mirror(b, plane_yz(10))
+        }
+        "#,
+    );
+
+    let rejection = diagnostics.iter().find(|d| {
+        d.severity == reify_core::Severity::Error
+            && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+    });
+    let rejection = rejection.unwrap_or_else(|| {
+        panic!(
+            "a bare `plane_yz(10)` origin must produce the shared \
+             DimensionedArgRejected Error; got: {:?}",
+            diagnostics
+        )
+    });
+    assert!(
+        rejection.message.contains("argument expects Length"),
+        "the wording must come from `ArgRejection::message`, shared with the \
+         named-arg and variadic routes; got: {}",
+        rejection.message
+    );
+    assert!(
+        rejection.message.contains("ox"),
+        "the rejection must name the ORIGIN component `ox` — the same name the \
+         scalar form uses; got: {}",
+        rejection.message
+    );
+    assert!(
+        mirror_ops.is_empty(),
+        "a bare-origin value-form mirror must be DROPPED, not silently built \
+         with a 10 SI-metre plane origin; emitted Mirror ops: {:?}",
+        mirror_ops
+    );
+}
+
+/// PRD §6 row 6 — the positive control that keeps row 5 from passing vacuously,
+/// and the compatibility promise: the DIMENSIONED value form still builds, and
+/// is geometrically identical to what `plane_yz(0.01)` produced before δ.
+///
+/// `1e-12` rather than `==` because the parser computes `10 * 1e-3`; the f64
+/// error is at most ~1 ulp (order 1e-18 at this magnitude), so this clears it by
+/// six orders of magnitude while staying far tighter than the 1000× defect being
+/// guarded against. It is the same tolerance the sibling
+/// `decode_plane_producer_round_trip_*` unit tests use for this same quantity.
+#[test]
+fn mirror_value_form_dimensioned_plane_origin_builds_unchanged() {
+    let (diagnostics, mirror_ops) = build_mirror(
+        r#"
+        structure def MmPlaneMirror {
+            let b = box(10mm, 10mm, 10mm)
+            let m = mirror(b, plane_yz(10mm))
+        }
+        "#,
+    );
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the dimensioned value form must build with ZERO Error diagnostics; \
+         got: {:?}",
+        errors
+    );
+    assert_eq!(
+        mirror_ops.len(),
+        1,
+        "expected exactly one Mirror op to reach the kernel, got {:?}",
+        mirror_ops
+    );
+    match &mirror_ops[0] {
+        GeometryOp::Mirror {
+            plane_origin,
+            plane_normal,
+            ..
+        } => {
+            for (i, expected) in [0.01_f64, 0.0, 0.0].into_iter().enumerate() {
+                assert!(
+                    (plane_origin[i] - expected).abs() < 1e-12,
+                    "plane_yz(10mm) must reach the kernel with plane_origin[{i}] \
+                     = {expected} SI metres (NOT {} m); got {:?}",
+                    expected * 1000.0,
+                    plane_origin
+                );
+            }
+            for (i, expected) in [1.0_f64, 0.0, 0.0].into_iter().enumerate() {
+                assert!(
+                    (plane_normal[i] - expected).abs() < 1e-12,
+                    "plane_yz's normal is the dimensionless unit vector [1,0,0] \
+                     and is NOT gated; got {:?}",
+                    plane_normal
+                );
+            }
+        }
+        other => panic!("expected GeometryOp::Mirror, got {:?}", other),
+    }
+}
+
+/// NO-REGRESSION lock on the SCALAR form, which δ must leave completely alone.
+/// Its three `ox`/`oy`/`oz` rejections keep their exact pre-δ wording — this is
+/// what proves the decoded-value route joined the shared chokepoint rather than
+/// forking a second copy of the text.
+#[test]
+fn mirror_scalar_bare_origin_rejections_are_unchanged_by_delta() {
+    let (diagnostics, mirror_ops) = build_mirror(
+        r#"
+        structure def BareScalarMirror {
+            let b = box(10mm, 10mm, 10mm)
+            let m = mirror(b, 10, 0, 0, 1, 0, 0)
+        }
+        "#,
+    );
+
+    for name in ["ox", "oy", "oz"] {
+        let expected = format!(
+            "mirror: {name} argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`"
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.message == expected
+                && d.severity == reify_core::Severity::Error
+                && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)),
+            "the scalar form's `{name}` rejection must be unchanged by δ; \
+             expected {expected:?}, got: {:?}",
+            diagnostics
+        );
+    }
+    assert!(
+        mirror_ops.is_empty(),
+        "the scalar bare-origin form must still be DROPPED; got {:?}",
+        mirror_ops
+    );
+}
+
+/// The scalar-form positive control, unchanged by δ: a dimensioned scalar origin
+/// still builds clean. Paired with the row above so neither can pass vacuously.
+#[test]
+fn mirror_scalar_dimensioned_origin_still_builds_clean() {
+    let (diagnostics, mirror_ops) = build_mirror(
+        r#"
+        structure def MmScalarMirror {
+            let b = box(10mm, 10mm, 10mm)
+            let m = mirror(b, 0mm, 0mm, 0mm, 1, 0, 0)
+        }
+        "#,
+    );
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected zero Errors, got: {:?}", errors);
+    assert_eq!(mirror_ops.len(), 1, "got {:?}", mirror_ops);
+}
+
+/// PRD §6 row 5, axis half — the counterpart of
+/// `circular_pattern_scalar_bare_origin_drops_op_with_error` directly above,
+/// for the route that BYPASSED the gate that test locks.
+///
+/// A bare `axis_z(point3(12, 0, 0))` origin must be rejected and the op DROPPED,
+/// never silently built with a 12 SI-**metre** axis origin — 1000× a plausible
+/// 12 mm offset. Placing the rotation axis 12 metres out silently reproduces the
+/// scalar form's headline defect through a different door, which is exactly what
+/// made the two forms' disagreement worth closing.
+#[test]
+fn circular_pattern_value_form_bare_axis_origin_drops_op_with_error() {
+    let (diagnostics, circular_ops) = build_circular(
+        r#"
+        structure def BareAxisRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, axis_z(point3(12, 0, 0)), 6, 60deg)
+        }
+        "#,
+    );
+
+    let rejection = diagnostics
+        .iter()
+        .find(|d| {
+            d.severity == reify_core::Severity::Error
+                && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "a bare `axis_z(point3(12, 0, 0))` origin must produce the shared \
+                 DimensionedArgRejected Error; got: {:?}",
+                diagnostics
+            )
+        });
+    assert!(
+        rejection.message.contains("argument expects Length"),
+        "wording must come from `ArgRejection::message`; got: {}",
+        rejection.message
+    );
+    assert!(
+        rejection.message.contains("ox"),
+        "the rejection must name the ORIGIN component `ox`, matching the scalar \
+         form; got: {}",
+        rejection.message
+    );
+    assert!(
+        circular_ops.is_empty(),
+        "a bare-origin value-form circular_pattern must be DROPPED, not silently \
+         built with a 12 SI-metre axis origin; emitted ops: {:?}",
+        circular_ops
+    );
+}
+
+/// PRD §6 row 6, axis half — the positive control that keeps the row above from
+/// passing vacuously, and the compatibility promise: the DIMENSIONED value form
+/// still builds and still reaches the kernel at `[0.012, 0, 0]`, not `[12, 0, 0]`.
+///
+/// `1e-12` for `circular_pattern_scalar_mm_origin_builds_op`'s reason: the parser
+/// computes `12 * 1e-3`, so the f64 error is at most ~1 ulp (order 1e-18 here),
+/// six orders below this bound and far tighter than the 1000× defect guarded
+/// against.
+#[test]
+fn circular_pattern_value_form_dimensioned_axis_origin_builds_unchanged() {
+    let (diagnostics, circular_ops) = build_circular(
+        r#"
+        structure def MmAxisRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, axis_z(point3(12mm, 0mm, 0mm)), 6, 60deg)
+        }
+        "#,
+    );
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the dimensioned value form must build with ZERO Error diagnostics; \
+         got: {:?}",
+        errors
+    );
+    assert_eq!(
+        circular_ops.len(),
+        1,
+        "expected exactly one CircularPattern op, got {:?}",
+        circular_ops
+    );
+    match &circular_ops[0] {
+        GeometryOp::CircularPattern {
+            axis_origin,
+            axis_dir,
+            ..
+        } => {
+            for (i, expected) in [0.012_f64, 0.0, 0.0].into_iter().enumerate() {
+                assert!(
+                    (axis_origin[i] - expected).abs() < 1e-12,
+                    "axis_origin[{i}] must be {expected} SI metres (NOT {} m); \
+                     got {:?}",
+                    expected * 1000.0,
+                    axis_origin
+                );
+            }
+            for (i, expected) in [0.0_f64, 0.0, 1.0].into_iter().enumerate() {
+                assert!(
+                    (axis_dir[i] - expected).abs() < 1e-12,
+                    "axis_z's direction is the dimensionless unit vector [0,0,1] \
+                     and is NOT gated; got {:?}",
+                    axis_dir
+                );
+            }
+        }
+        other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
+    }
+}
