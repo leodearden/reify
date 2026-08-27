@@ -33,19 +33,28 @@
 //! `dispatch_merged_cluster_solve` / `dispatch_merged_cluster_solve_cached`
 //! (task #5118).
 //!
-//! All six write the resolved auto into `values`, the snapshot map as
-//! `Determined`, and a cache entry. Two legs are NOT uniform across the six:
+//! Each arm writes some subset of seven legs. Three are uniform across
+//! all six arms; four are not:
 //!
-//! 1. `values`
-//! 2. snapshot map as `Determined`
-//! 3. cache entry
+//! 1. `values` — uniform
+//! 2. snapshot map as `Determined` — uniform
+//! 3. cache entry — uniform
 //! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
 //! 5. journal — all arms except `eval_cached`'s per-template arm and
 //!    [`Engine::edit_source`]: `eval`'s two arms journal via hand-rolled
 //!    `Started`/`Completed` pairs, `eval_cached`'s merged-cluster arm and
 //!    [`Engine::edit_param`] via `commit_cell_result`
+//! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
+//!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
+//! 7. `objective_provenance` — `eval`'s two arms only
 //!
-//! Check all five legs when modifying warm Resolution back-prop.
+//! Legs 6-7 are a deliberate, documented divergence, not drift:
+//! `dispatch_merged_cluster_solve_cached`'s own doc records that its arm
+//! still emits no `resolved_params` and no `objective_provenance` — see
+//! that symbol's doc for the rationale before "fixing" `eval_cached` to
+//! write them.
+//!
+//! Check all seven legs when modifying warm Resolution back-prop.
 //!
 //! A further arm, `resolve_concurrent_edit` — the fourth member of this
 //! roster's original four-site form, before [`Engine::edit_source`] and the
