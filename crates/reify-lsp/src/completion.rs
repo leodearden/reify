@@ -2168,6 +2168,49 @@ type Speed = Length
         );
     }
 
+    // --- bbox declared signatures are Length-valued (task 6081) ---
+    //
+    // A bounding box is spatial by construction, so the two accessors return
+    // `Vector3<Length>` / `Point3<Length>`, not an unqualified `Vector` /
+    // `Point`. These are the only other USER-VISIBLE declared signatures for
+    // these builtins, so leaving them un-narrowed would reintroduce the exact
+    // static/runtime disagreement the ruling removes, just in another surface.
+    //
+    // `bbox`'s entry also carried a pre-existing ARITY bug: `bbox(solid)` is
+    // `bounding_box`'s signature, not the 2-point constructor's.
+
+    fn builtin_signature(name: &str) -> &'static str {
+        BUILTIN_FUNCTIONS
+            .iter()
+            .find(|info| info.name == name)
+            .unwrap_or_else(|| panic!("{name:?} must be a registered builtin"))
+            .signature
+    }
+
+    #[test]
+    fn bbox_declared_signature_is_the_two_point_length_constructor() {
+        assert_eq!(
+            builtin_signature("bbox"),
+            "bbox(min: Point3<Length>, max: Point3<Length>) -> BoundingBox"
+        );
+    }
+
+    #[test]
+    fn bbox_size_declared_signature_returns_vector3_length() {
+        assert_eq!(
+            builtin_signature("bbox_size"),
+            "bbox_size(bb: BoundingBox) -> Vector3<Length>"
+        );
+    }
+
+    #[test]
+    fn bbox_center_declared_signature_returns_point3_length() {
+        assert_eq!(
+            builtin_signature("bbox_center"),
+            "bbox_center(bb: BoundingBox) -> Point3<Length>"
+        );
+    }
+
     // --- stdlib completions: new geometry primitives (task-4162) ---
     #[test]
     fn completions_include_new_geometry_primitives() {
