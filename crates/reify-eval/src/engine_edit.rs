@@ -28,10 +28,10 @@
 //! Four entry points resolve Auto params through the constraint solver and
 //! back-propagate the result: `Engine::eval`, `Engine::eval_cached`,
 //! [`Engine::edit_param`], and [`Engine::edit_source`]. Between them there
-//! are six write-back arms, because `Engine::eval` and `Engine::eval_cached`
-//! each take a mutually exclusive merged-cluster branch through
-//! `dispatch_merged_cluster_solve` / `dispatch_merged_cluster_solve_cached`
-//! (task #5118).
+//! are six write-back arms, because, per template index, `Engine::eval` and
+//! `Engine::eval_cached` each take a mutually exclusive merged-cluster
+//! branch through `dispatch_merged_cluster_solve` /
+//! `dispatch_merged_cluster_solve_cached` (task #5118).
 //!
 //! Each arm writes some subset of seven legs. Three are uniform across
 //! all six arms; four are not:
