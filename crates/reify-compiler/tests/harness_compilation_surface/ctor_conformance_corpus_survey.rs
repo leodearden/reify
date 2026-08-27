@@ -388,6 +388,217 @@ fn ctor_type_name_at_returns_none_rather_than_guessing() {
 
 // ─── step 5/6: diagnostic field extraction ───────────────────────────────────
 
+/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
+/// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
+///
+/// Deliberately duplicated from the identically-named helpers in
+/// `examples_smoke.rs` and `struct_ctor_field_conformance_tests.rs`, following
+/// the rule those files' own headers state: integration tests are separate
+/// binaries and cannot share a private helper without a support-crate hop, and
+/// the set is small enough that duplication is cheaper than the indirection.
+/// The survey is a third consumer under that same rule.
+fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
+    use reify_core::diagnostics::DiagnosticCode;
+    matches!(
+        code,
+        Some(
+            DiagnosticCode::ArgTypeMismatch
+                | DiagnosticCode::SelectorKindMismatch
+                | DiagnosticCode::TypeNotConformingToTrait
+                | DiagnosticCode::TypeNotConformingToStructureRef
+                | DiagnosticCode::TypeNotConformingToVector
+                | DiagnosticCode::CtorUnknownField
+                | DiagnosticCode::CtorArity
+        )
+    )
+}
+
+/// Which D9 fix-forward rule governs a site — the load-bearing, mechanizable
+/// half of D9 and the artifact's primary grouping key.
+///
+/// This does NOT encode D9's split between class (1) call-site bug and class
+/// (2) wrong declared field type. The PRD defines that as "per-case judgment …
+/// whichever is the actual bug" and assigns it to γ; β must not fabricate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Owner {
+    /// The site's structure def is declared in an FEA stdlib module. Per D9,
+    /// γ may make CALL-SITE changes only — field-type flips stay v0.6-owned.
+    FeaDeferredToV06,
+    /// The def is resolved and is not FEA-owned: D9's per-case judgment applies.
+    NonFea,
+    /// The def could not be attributed (the sub `=` per-arg anchor carries no
+    /// ctor name, and the diagnostic prose names none). Deliberately its own
+    /// bucket: silently defaulting an unattributable site into the touchable
+    /// pile would be the one classification error with a real cost.
+    Unknown,
+}
+
+impl Owner {
+    /// Stable section title for the rendered artifact.
+    fn title(self) -> &'static str {
+        match self {
+            Owner::FeaDeferredToV06 => "FEA — deferred to v0.6 (DO NOT FIX HERE)",
+            Owner::NonFea => "non-FEA — γ per-case judgment",
+            Owner::Unknown => "unattributed def — needs manual triage",
+        }
+    }
+}
+
+/// One ctor-conformance warning site, as one row of the survey artifact.
+///
+/// Every field is machine-derived; nothing here is ever typed in by hand. An
+/// extractor that cannot recover its column yields `None`, which renders as an
+/// em-dash — never an empty cell and never a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SurveySite {
+    /// Repo-relative forward-slash path of the swept file.
+    file: String,
+    /// 1-based line of the diagnostic's first label span (or 1 when unlabelled).
+    line: u32,
+    /// Structure def being constructed, when recoverable.
+    def: Option<String>,
+    /// Offending field / param name, when the wording carries one.
+    field: Option<String>,
+    /// Declared param type, from the `expected '<X>', got '<Y>'` label.
+    expected: Option<String>,
+    /// Supplied arg type, from the same label.
+    found: Option<String>,
+    /// `Debug` rendering of the `DiagnosticCode` (PascalCase).
+    code: String,
+    /// `Debug` rendering of the measured `Severity` — reported, not assumed.
+    severity: String,
+    /// The diagnostic's raw message, preserved verbatim.
+    message: String,
+    /// D9 owner class. Assigned by the corpus sweep via [`d9_owner`]; the
+    /// builder leaves it `Unknown`, the conservative default.
+    owner: Owner,
+}
+
+/// The `emit_arg_type_mismatch` prose prefix that introduces the offending param
+/// name. Also a substring of `emit_geometry_trait_violation`'s
+/// `geometry argument '` and of ε's `unknown named argument '`, so one search
+/// covers six of the seven codes.
+const ARG_PREFIX: &str = "argument '";
+
+/// The prefix used by the two non-geometry `TypeNotConformingToTrait` emitters
+/// (`type 'X' does not conform to trait 'T' required by param 'f'`), which name
+/// the param nowhere else.
+const REQUIRED_BY_PARAM_PREFIX: &str = "required by param '";
+
+/// The ε `CtorUnknownField` prose that names the target structure def.
+const IN_CALL_TO_PREFIX: &str = "in call to '";
+
+/// The ε `CtorArity` message prefix; the def name follows it, up to `()`.
+const CTOR_ARITY_PREFIX: &str = "E_CTOR_ARITY: ";
+
+/// The single-quoted token immediately following `prefix` in `haystack`.
+///
+/// This is the guarded quoted-token idiom from `examples_smoke.rs`'s
+/// `param_name_from_ctor_diagnostic`, lifted verbatim rather than re-invented,
+/// and it carries that helper's warning forward: **this is a real coupling to
+/// diagnostic prose.** Every extractor built on it therefore returns `Option`,
+/// and [`survey_site_from_diagnostic`] preserves the RAW message on a miss, so
+/// a future wording drift degrades to a still-usable row instead of a silently
+/// dropped site or a fabricated field.
+fn quoted_after(haystack: &str, prefix: &str) -> Option<String> {
+    let start = haystack.find(prefix)? + prefix.len();
+    let rest = &haystack[start..];
+    let end = rest.find('\'')?;
+    Some(rest[..end].to_owned())
+}
+
+/// The offending field / param name, across every wording the 7 codes use.
+///
+/// Returns `None` for `CtorArity` (whose wording names no param) and for any
+/// message that has drifted out of all three known shapes.
+fn field_of_message(message: &str) -> Option<String> {
+    quoted_after(message, ARG_PREFIX)
+        .or_else(|| quoted_after(message, REQUIRED_BY_PARAM_PREFIX))
+        .filter(|s| !s.is_empty())
+}
+
+/// `(expected, found)` from a `expected '<X>', got '<Y>'` LABEL.
+///
+/// The label is preferred over the prose main message because it is exactly
+/// that shape (`conformance/mod.rs` `emit_arg_type_mismatch` and its three
+/// siblings), whereas the message interleaves the param name twice and may
+/// carry the D4-6 dimensioned-scalar migration hint after a `;`. The two ε
+/// codes carry no such label and correctly yield `(None, None)`.
+fn expected_found_of_labels(d: &reify_core::Diagnostic) -> (Option<String>, Option<String>) {
+    for label in &d.labels {
+        let (Some(expected), Some(found)) = (
+            quoted_after(&label.message, "expected '"),
+            quoted_after(&label.message, "got '"),
+        ) else {
+            continue;
+        };
+        return (Some(expected), Some(found));
+    }
+    (None, None)
+}
+
+/// The structure def being constructed, when recoverable.
+///
+/// Three sources, in order of reliability:
+/// 1. The ε `CtorUnknownField` prose `in call to '<Def>'`.
+/// 2. The ε `CtorArity` prose `<Def>() expects at most …`.
+/// 3. The call-site span anchor — α anchors the expression-path label at the
+///    ctor's own span, so `source[span.start..]` begins with `Def(`.
+///
+/// Returns `None` — never a guess — for the sub `=` per-arg anchor, which
+/// starts mid-argument and names no def anywhere.
+fn def_of_diagnostic(source: &str, d: &reify_core::Diagnostic) -> Option<String> {
+    if let Some(def) = quoted_after(&d.message, IN_CALL_TO_PREFIX) {
+        return Some(def);
+    }
+    if let Some(rest) = d.message.strip_prefix(CTOR_ARITY_PREFIX)
+        && let Some(paren) = rest.find("()")
+        && !rest[..paren].is_empty()
+    {
+        return Some(rest[..paren].to_owned());
+    }
+    d.labels
+        .first()
+        .and_then(|l| ctor_type_name_at(source, l.span))
+}
+
+/// Build one [`SurveySite`] from a diagnostic observed while sweeping `file`.
+///
+/// Returns `None` only when `d` is not one of the 7 ctor-conformance codes (an
+/// uncoded legacy diagnostic included). A ctor-coded diagnostic ALWAYS yields a
+/// row, even when every extractor misses — dropping it would silently
+/// under-size γ, which is the artifact's whole purpose.
+///
+/// `owner` is left [`Owner::Unknown`]; the corpus sweep assigns it via
+/// [`d9_owner`] once the FEA def set has been scanned.
+fn survey_site_from_diagnostic(
+    file: &str,
+    source: &str,
+    d: &reify_core::Diagnostic,
+) -> Option<SurveySite> {
+    if !is_ctor_conformance_code(d.code) {
+        return None;
+    }
+    let (expected, found) = expected_found_of_labels(d);
+    let line = d
+        .labels
+        .first()
+        .map(|l| line_of_span(source, l.span))
+        .unwrap_or(1);
+    Some(SurveySite {
+        file: file.to_owned(),
+        line,
+        def: def_of_diagnostic(source, d),
+        field: field_of_message(&d.message),
+        expected,
+        found,
+        code: format!("{:?}", d.code.expect("filtered to Some(code) above")),
+        severity: format!("{:?}", d.severity),
+        message: d.message.clone(),
+        owner: Owner::Unknown,
+    })
+}
+
 /// Build a synthetic diagnostic in the exact shape a given emitter produces, so
 /// the extractor tests need no compilation at all.
 #[cfg(test)]
