@@ -864,7 +864,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
     dom_query: (params) => {
       const testId = params.testId;
-      if (!testId) return { error: 'testId is required' };
+      if (typeof testId !== 'string' || testId === '') return { error: 'testId is required' };
 
       // #5891: dom_query is an existence PROBE, not a driver, so it collapses BOTH
       // absence errors — `notFound` (no such testid anywhere) and
@@ -1476,7 +1476,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       if (kind === 'selector') {
         const testId = pred.testId;
-        if (!testId) {
+        if (typeof testId !== 'string' || testId === '') {
           return { error: 'predicate.testId is required for selector kind' };
         }
         const state = (pred.state ?? 'visible') as 'visible' | 'gone';
