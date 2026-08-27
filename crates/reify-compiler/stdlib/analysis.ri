@@ -49,7 +49,7 @@ trait AnalysisResult {
     param principal_stress_2 : Stress
     param principal_stress_3 : Stress
     param max_shear_stress : Stress
-    param safety_factor_value : Real
+    param safety_factor_value : Real // dimensionless
     constraint von_mises_stress >= 0
     constraint max_shear_stress >= 0
     constraint safety_factor_value > 0

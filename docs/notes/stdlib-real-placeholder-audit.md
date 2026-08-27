@@ -392,22 +392,42 @@ Source: `crates/reify-compiler/stdlib/analysis.ri`
 
 | Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
 |------|-------|-------|-------------|-------------------|----------------|-----------|
-| 30 | `AnalysisResult` trait | `von_mises_stress` | `Real` | `Stress` (= Pressure) | structural-contract | — |
-| 31 | `AnalysisResult` trait | `principal_stress_1` | `Real` | `Stress` | structural-contract | — |
-| 32 | `AnalysisResult` trait | `principal_stress_2` | `Real` | `Stress` | structural-contract | — |
-| 33 | `AnalysisResult` trait | `principal_stress_3` | `Real` | `Stress` | structural-contract | — |
-| 34 | `AnalysisResult` trait | `max_shear_stress` | `Real` | `Stress` | structural-contract | — |
-| 35 | `AnalysisResult` trait | `safety_factor_value` | `Real` | `Real` | structural-contract | — |
-| 46 | `Analysis` trait | `yield_strength` | `Real` | `Pressure` | structural-contract | — |
+| 47 | `AnalysisResult` trait | `von_mises_stress` | `Stress` (= Pressure) | `Stress` (= Pressure) | tightened | task #6165 |
+| 48 | `AnalysisResult` trait | `principal_stress_1` | `Stress` | `Stress` | tightened | task #6165 |
+| 49 | `AnalysisResult` trait | `principal_stress_2` | `Stress` | `Stress` | tightened | task #6165 |
+| 50 | `AnalysisResult` trait | `principal_stress_3` | `Stress` | `Stress` | tightened | task #6165 |
+| 51 | `AnalysisResult` trait | `max_shear_stress` | `Stress` | `Stress` | tightened | task #6165 |
+| 52 | `AnalysisResult` trait | `safety_factor_value` | `Real` | `Real` | genuine-dimensionless | task #6165 |
+| 67 | `Analysis` trait | `yield_strength` | `Real` | `Pressure` | structural-contract | task #5807 |
 
-**Rationale for structural-contract classification:** The file-header explicitly states
-"All params use `Real` as a dimension-agnostic placeholder. The runtime builtins produce
+**Rationale — originally `structural-contract`, superseded for the five stress params.**
+The original classification rested on the analysis.ri file header, which stated:
+~~"All params use `Real` as a dimension-agnostic placeholder. The runtime builtins produce
 correctly-dimensioned values (e.g. Scalar<PRESSURE> for stresses, dimensionless Real for
 safety_factor_value). This trait is intended as a structural contract — it does not
-participate in dimension checking and will not reject dimensioned conforming values."
-Tightening e.g. `von_mises_stress : Real` to `von_mises_stress : Stress` would BREAK
-the contract: Real-typed conforming structures (which the runtime produces) would be
-rejected by the dimension checker. **No follow-up task is filed for this module.**
+participate in dimension checking and will not reject dimensioned conforming values."~~
+On that basis, tightening e.g. `von_mises_stress : Real` to `: Stress` was held to BREAK
+the contract, by rejecting the Real-typed conforming structures the runtime produces.
+
+**SUPERSEDED 2026-08-10 (Leo, ruling task 6165 — RULING Q7 posture 2):** that basis is
+rejected for the five stress params. The producing builtins (`von_mises`,
+`principal_stresses`, `max_shear`) already compile to `Scalar<PRESSURE>`, so under strict
+dimension equality a `Real` param holding that value was a hard lie rather than a wildcard
+— the same value read as `Scalar<PRESSURE>` through the builtin but as `Real` through a
+conformer. And the feared breakage was hypothetical: **zero conformers of either trait
+existed repo-wide** (re-measured at implementation time), so the migration was free. The
+quoted prose is **no longer present in `analysis.ri`** — the trait's doc comment now records
+the ruling, the bare-`0` zero-coercion convention (task-4485/β — do not spell `0Pa`), and a
+posture-3 breadcrumb for any future cross-domain result contract (per-domain sibling traits
+or a quantity-parameterized trait, never a re-weakening to `Real`).
+
+`safety_factor_value` is genuinely dimensionless, so it correctly stayed `Real` and is
+reclassified `genuine-dimensionless` rather than left open. `Analysis.yield_strength`
+remains a genuinely open `structural-contract` site — it belongs to dimension-checked-readers
+decision 9 / **task #5807**, not to this ruling, and was deliberately left untouched.
+Behaviour is regression-locked by `tests/analysis_stress_fn_compile.rs::{analysis_result_conforming_structure_compiles_clean,
+analysis_result_real_typed_stress_param_is_rejected}` plus the six per-param declared-dimension
+pins (five `PRESSURE`, one `DIMENSIONLESS`).
 
 ---
 
@@ -416,14 +436,15 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | Classification | Count | Action |
 |----------------|-------|--------|
 | `tightenable-now` | 20 | tasks-B/C/A resolved; task-D (#3114) pending |
-| `genuine-dimensionless` | 26 | Annotated `// dimensionless` in-place |
+| `genuine-dimensionless` | 27 | Annotated `// dimensionless` in-place (+1: `analysis.ri::AnalysisResult.safety_factor_value`, reclassified by #6165) |
 | `tightened-by-#3111` | 12 | task-A ✓ resolved 2026-06-05 — 10 pre-β + 2 post-β (#4240) sites in materials_mechanical.ri: density→Density, youngs_modulus/shear_modulus/yield_strength/ultimate_tensile_strength/compressive_strength/fatigue_limit/fatigue_strength_at→Pressure, charpy_impact/izod_impact→Energy |
 | `tightened-by-#3115` | 11 | Composite-dim alias task-E ✓ resolved 2026-05-15 — all 11 sites now use named-dimension aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness) |
 | `tightened-by-#3116` | 24 | Geometry task-F ✓ resolved 2026-06-07 — all 24 tolerancing.ri blocked-geometry-type sites tightened (17 feature→Geometry, 8 datum_refs→DatumRef; `fn require_finish` param also tightened) |
 | `blocked-composite` | 0 | All 11 previous blocked-composite sites tightened by #3115 |
 | `blocked-geometry-type` | 0 | All 24 previous blocked-geometry-type sites tightened by #3116 |
 | `blocked-field-in-param` | 0 | Resolved by task 3117; both sites tightened to Field types |
-| `structural-contract` | 7 | Rationale recorded; no tightening needed or intended |
+| `structural-contract` | 1 | `analysis.ri::Analysis.yield_strength` only — open, owned by task #5807 |
+| `tightened-by-#6165` | 5 | RULING Q7 posture 2 ✓ resolved 2026-08-10 — `AnalysisResult`'s five stress params (von_mises_stress, principal_stress_1/2/3, max_shear_stress) `Real`→`Stress`; `safety_factor_value` reclassified `genuine-dimensionless` (correct as shipped) |
 | **Total** | **106** | |
 
 > Note: the original audit counted 99 rows across all tables (88 unique `param X : Real`
