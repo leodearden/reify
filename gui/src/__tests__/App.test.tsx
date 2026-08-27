@@ -278,6 +278,7 @@ beforeEach(() => {
   vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
   vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onAutoResolveStart).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onAutoResolveIteration).mockResolvedValue(() => {});
   vi.mocked((bridge as any).onAutoResolveComplete).mockResolvedValue(() => {});
 });
 

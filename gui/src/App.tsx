@@ -2181,7 +2181,7 @@ const App: Component = () => {
               class={styles.sidePanel}
               style={{ 'grid-template-rows': (() => {
                 const hasMech = mechanismStore.state.descriptors.length > 0;
-                const hasAR = engineStore.state.autoResolve.active;
+                const hasAR = engineStore.state.autoResolve.iterations.length > 0;
                 const hasChat = chatOpen();
                 const base = `${layoutStore.state.designTreeHeight}px 4px ${layoutStore.state.propertyHeight}px 4px`;
                 // Middle tracks: one `auto` per optional panel present (autoResolve then
@@ -2232,9 +2232,13 @@ const App: Component = () => {
                 onConstraintSelect={handleConstraintSelect}
                 onAskClaude={handleAskClaude}
               />
-              {/* AutoResolvePanel: auto-promotes when a param=auto loop is active,
-                  auto-restores (unmounts) when complete — no bookkeeping needed. */}
-              <Show when={engineStore.state.autoResolve.active}>
+              {/* AutoResolvePanel: promotes once a param=auto loop reports its
+                  FIRST iteration, and stays readable after the loop completes —
+                  a finished loop's result is exactly what the user wants to
+                  read. Cleared by the next loop's first iteration or by a
+                  full-state reload. The predicate MUST stay identical to
+                  `hasAR` above, which sizes the grid track for this panel. */}
+              <Show when={engineStore.state.autoResolve.iterations.length > 0}>
                 <AutoResolvePanel state={engineStore.state.autoResolve} />
               </Show>
               {/* SolverProgressOverlay: shows after >1s of in-flight CG solver
