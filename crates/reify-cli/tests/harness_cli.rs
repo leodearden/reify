@@ -27,6 +27,8 @@ mod cli_affine_eval;
 mod cli_affine_tapered_spacer;
 #[path = "harness_cli/cli_auto_type_param_select.rs"]
 mod cli_auto_type_param_select;
+#[path = "harness_cli/cli_bbox_eval.rs"]
+mod cli_bbox_eval;
 #[path = "harness_cli/cli_build.rs"]
 mod cli_build;
 #[path = "harness_cli/cli_build_3mf.rs"]
