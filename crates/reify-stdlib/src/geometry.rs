@@ -1594,12 +1594,18 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   gate. A twist wrong in both halves is rejected by eval's angular gate before the
 ///   linear one is reached, so this arm stays silent there and leaves the explaining
 ///   to #6080, which owns that gate.
+/// - **`bbox`** (exactly 2 args) — a corner that is not `Point3<Length>`
+///   (task 6081: a BoundingBox is spatial by construction). Non-`Point`
+///   arguments stay silent, like the arity convention above: a type failure is
+///   not a dimension failure.
 ///
-/// Invariant: the dimension arms consult [`TWIST_LINEAR_DIM`] — the SAME const the
-/// eval gates use — and read the twist shape through
+/// Invariant: the two RULING #6126 dimension arms consult [`TWIST_LINEAR_DIM`] —
+/// the SAME const the eval gates use — and read the twist shape through
 /// [`decompose_twist_component`] — the SAME helper the eval arm uses — so the
 /// classifier cannot drift away from what eval actually rejects, in either the
-/// dimension or the shape dimension of that drift.
+/// dimension or the shape dimension of that drift. The `bbox` arm consults
+/// `DimensionVector::LENGTH` directly — the SAME constant its own eval gate
+/// reads — for the same reason.
 ///
 /// Invariant: this hook fires on EVERY `Value::Undef` from these builtins, not just
 /// dimension rejections, so each arm stays SILENT (`None`) on every non-dimension
@@ -1619,12 +1625,23 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   `diagnostics.iter().any(|d| d.severity == Severity::Error)`, so the severity IS
 ///   the exit code here. #6080 plans the same Error/exit-1 for the sibling angular
 ///   half, so one fault class does not report two ways across one builtin family.
+/// - The `bbox` arm is `Severity::Error` for the same reason (task 6081): a
+///   non-Length corner is an outright CONSTRUCTION failure — no BoundingBox is
+///   produced at all — rather than a drop-and-continue like `affine_scale`,
+///   where the offending factor is discarded and evaluation proceeds.
 ///
-/// Every arm stays code-less (no `DiagnosticCode`): minting
+/// `DiagnosticCode` is deliberately NOT uniform across the arms. The two RULING
+/// #6126 arms stay code-less because MINTING
 /// `DiagnosticCode::ArgDimensionMismatch` is owned by
 /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 (whose own direction is
 /// Error, not Warning), and `tolerancing.rs`'s code-less `Diagnostic::error` through
-/// this same hook is the standing in-crate precedent.
+/// this same hook is the standing in-crate precedent. The `bbox` arm mints nothing
+/// either — it carries the PRE-EXISTING
+/// [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
+/// `reify_eval::geometry_ops` already attaches to exactly this fault class (an
+/// `Severity::Error` runtime dimension rejection of a positional argument).
+/// Converging the two — once the PRD's code exists — is worth doing and is
+/// deliberately NOT done here.
 /// Returns `None` for any other name, wrong arity, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
     match name {
@@ -1710,8 +1727,65 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
                 dimension_label(lin_dim)
             )))
         }
+        "bbox" => {
+            if args.len() != 2 {
+                return None;
+            }
+            diagnose_bbox_corners(&args[0], &args[1])
+        }
         _ => None,
     }
+}
+
+/// The `bbox` arm of [`diagnose`]: report the first corner that is not
+/// `Point3<Length>`.
+///
+/// `min` is reported before `max` so a both-wrong call names `min`
+/// deterministically. Non-`Point` arguments return `None` — a type failure is
+/// not a dimension failure, and staying silent matches the `affine_scale`
+/// convention of explaining only the user-correctable dimension cause.
+///
+/// The dimension half of the message goes through [`dimension_label`] (added by
+/// RULING #6126) rather than re-rolling a fourth rendering of the same thing, so an
+/// unnamed dimension prints its actual exponents instead of the uninformative word
+/// "dimensioned". DIMENSIONLESS is the one divergence and it is deliberate: the label
+/// lands in a TYPE-ARGUMENT slot (`Point3<…>`), where the spelling is `Real`, not
+/// `dimension_label`'s prose "dimensionless".
+///
+/// The message mirrors `ArgRejection::message`'s
+/// `"{builtin}: {arg_name} argument expects {expected}, got {got}"` shape
+/// (`crates/reify-eval/src/arg_acceptance.rs`). It is hand-mirrored rather than
+/// shared: reify-stdlib cannot depend on reify-eval (reify-eval → reify-expr →
+/// reify-stdlib would be a cycle), and copying the wording across that boundary
+/// is established practice (see `reify-compiler/src/conformance/mod.rs`,
+/// annotated "COPIED from ArgRejection::message").
+fn diagnose_bbox_corners(min: &Value, max: &Value) -> Option<reify_core::Diagnostic> {
+    for (arg_name, corner) in [("min", min), ("max", max)] {
+        let comps = match corner {
+            Value::Point(comps) => comps,
+            _ => continue,
+        };
+        let dim = comps
+            .first()
+            .map(|v| v.dimension())
+            .unwrap_or(DimensionVector::DIMENSIONLESS);
+        if dim == DimensionVector::LENGTH {
+            continue;
+        }
+        let got = if dim.is_dimensionless() {
+            "Real".to_string()
+        } else {
+            dimension_label(dim)
+        };
+        return Some(
+            reify_core::Diagnostic::error(format!(
+                "bbox: {arg_name} argument expects Point3<Length>, got Point3<{got}> \
+                 (a bounding box is spatial by construction)"
+            ))
+            .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+        );
+    }
+    None
 }
 
 #[cfg(test)]
