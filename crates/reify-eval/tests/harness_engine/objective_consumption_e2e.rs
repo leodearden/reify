@@ -50,6 +50,17 @@ use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
 /// compile half untouched, or a `ObjectiveUnconsumed`-shaped hole could be
 /// masked by an `ObjectiveInert` Error raised earlier on the same source.
 fn eval_with_solver(source: &str) -> reify_eval::EvalResult {
+    eval_with_solver_keeping_engine(source).1
+}
+
+/// As [`eval_with_solver`], but hands back the `Engine` too so a caller can
+/// read `engine.snapshot()`.
+///
+/// The merged-cluster cases below need it: `SnapshotProvenance::Resolution`'s
+/// comma-joined member label is the only merged-vs-single-scope signal that
+/// survives into a post-`eval()` observation, and it is what makes their
+/// anti-vacuity assertion possible (see `assert_merged_cluster_spanned`).
+fn eval_with_solver_keeping_engine(source: &str) -> (Engine, reify_eval::EvalResult) {
     let compiled = compile_source_with_stdlib(source);
     let compile_errors: Vec<&Diagnostic> = compiled
         .diagnostics
@@ -64,7 +75,8 @@ fn eval_with_solver(source: &str) -> reify_eval::EvalResult {
 
     let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(SolverRegistry::production()));
-    engine.eval(&compiled)
+    let result = engine.eval(&compiled);
+    (engine, result)
 }
 
 /// Every `ObjectiveUnconsumed` diagnostic in an eval result.
@@ -133,6 +145,43 @@ fn assert_bound(result: &reify_eval::EvalResult, entity: &str, member: &str) {
         "cell {entity}.{member} must be concretely bound for this negative case \
          to mean anything; got {got:?}"
     );
+}
+
+/// Anti-vacuity guard for the MERGED-CLUSTER cases: the shape must really have
+/// been solved as one cross-scope merged problem, spanning exactly
+/// `expected_members`.
+///
+/// Load-bearing in both directions. A merged fixture that quietly stopped
+/// forming a cluster would fall through to the single-scope emission site, so
+/// the positive case would keep passing while testing nothing about the arm it
+/// names; and the false-positive canary would stop guarding the merged arm at
+/// all. `SnapshotProvenance::Resolution.scope` is the comma-joined
+/// `cluster.scopes` member-name label `dispatch_merged_cluster_solve` writes
+/// (`merged_scope_label`) — a per-template solve writes a single name there,
+/// so the member SET is the discriminator. Asserted as a set-and-order over the
+/// split parts rather than the exact joined string, mirroring
+/// `merged_cluster_solve.rs`'s
+/// `merged_cluster_snapshot_provenance_scope_is_comma_joined_member_names`, so
+/// a benign separator change does not fail it.
+fn assert_merged_cluster_spanned(engine: &Engine, expected_members: &[&str]) {
+    let snapshot = engine
+        .snapshot()
+        .expect("engine must have a snapshot after eval()");
+    match &snapshot.provenance {
+        reify_ir::SnapshotProvenance::Resolution { scope, .. } => {
+            let members: Vec<&str> = scope.split(", ").collect();
+            assert_eq!(
+                members, expected_members,
+                "this fixture must be solved as ONE merged cross-scope cluster \
+                 spanning {expected_members:?} — otherwise it exercises the \
+                 single-scope emission site, not the merged one; got {scope:?}"
+            );
+        }
+        other => panic!(
+            "expected SnapshotProvenance::Resolution after a merged solve; got \
+             {other:?}"
+        ),
+    }
 }
 
 // ── (B7) the target: a well-posed objective the solver drops ────────────────
@@ -305,5 +354,145 @@ structure DicLetIndirect {
         &result,
         "the objective reaches `w` through the let and the component consumed \
          it — order-independent w.r.t. PRD 2",
+    );
+}
+
+// ── the MERGED-CLUSTER arm ──────────────────────────────────────────────────
+//
+// Everything above exercises the SINGLE-SCOPE emission site. The cases below
+// cover `dispatch_merged_cluster_solve` — the second path
+// `objective_unconsumed_diagnostic`'s own doc comment already claims calls it
+// ("the single-scope (`eval`) and merged-cluster (`dispatch_merged_cluster_solve`)
+// paths both call it"). Written RED in step-14: until step-15 wires that site,
+// only the single-scope one calls it and that claim is FALSE in-tree, so
+// INV-SF-3 has a real hole on every merged model.
+//
+// Why a merged cluster can reach `NoComponents` at all: `compute_clusters`
+// (`resolve_order.rs`) seeds a cluster on cross-scope OBJECTIVE reads ALONE —
+// constraint reads are deliberately NOT unioned — so an objective-span cluster
+// with zero constraints anywhere is a first-class shape, and
+// `decompose_into_components` returns `vec![]` when `constraints.is_empty()`.
+// That is the merged analogue of `dic_min_unconstrained.ri`.
+
+/// The `examples/whole_model_joint_drive.ri` shape with the child's two
+/// bracketing constraints DELETED.
+///
+/// The parent's INLINED `minimize cost(self.descendants)` expands to
+/// `[RivetedPanel.rivets.line_cost].sum`, which reads a cell of the CHILD — so
+/// the objective span couples `{RivetedPanel, Rivet}` into one `MergedSolve`
+/// cluster even though no constraint exists anywhere. The merged problem then
+/// carries one auto and zero constraints ⇒ zero components ⇒ the objective is
+/// dropped, and `Rivet.quantity_produced` is never written back.
+///
+/// **The aggregate MUST stay inlined in the `minimize`.** Putting it behind a
+/// `let` forms NO cluster at all (pinned by `resolve_order.rs`'s
+/// `objective_must_inline_the_aggregate_to_couple`: δ's C1 rule expands
+/// objective TERMS only, so an unexpanded `cost(self.descendants)` surfaces no
+/// `line_cost` read), which would silently demote this to a single-scope test
+/// that passes for the wrong reason. `assert_merged_cluster_spanned` is the
+/// executable guard against exactly that.
+const MERGED_UNCONSTRAINED: &str = r#"
+module dic_merged_unconstrained
+
+structure def Rivet : Costed {
+    param supplier          : String = "Acme Fastener"
+    param part_number       : String = "R-4210"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+
+    param quantity_produced : Real   = auto(free)
+}
+
+structure RivetedPanel {
+    sub rivets = Rivet()
+
+    minimize cost(self.descendants)
+}
+"#;
+
+#[test]
+fn merged_cluster_unconstrained_objective_reports_unconsumed() {
+    let (engine, result) = eval_with_solver_keeping_engine(MERGED_UNCONSTRAINED);
+    assert_merged_cluster_spanned(&engine, &["Rivet", "RivetedPanel"]);
+    assert_one_unconsumed_error_naming(&result, "Rivet.quantity_produced");
+}
+
+/// FALSE-POSITIVE CANARY — and the load-bearing case of the pair.
+///
+/// `examples/whole_model_joint_drive.ri` UNCHANGED must stay quiet, and it is
+/// the one in-tree model that proves the merged wiring passes a genuinely
+/// populated `bound_this_run`. It ALREADY classifies `FallbackComponentZero`
+/// today: the expanded objective's DIRECT refs are
+/// `{RivetedPanel.rivets.line_cost}` (an instance-path let) while the
+/// component's autos are structure-keyed `{Rivet.quantity_produced}`, so the
+/// registry's first-match scan finds nothing even though a component exists —
+/// i.e. gate condition (2) FIRES here. The only thing keeping it quiet is gate
+/// condition (4): the merged write-back binds `Rivet.quantity_produced` into
+/// `resolved_params`.
+///
+/// So `assert_bound` is not decoration — it is the assertion that proves the O2
+/// rule is what silences this, rather than an accidental early return. A step-15
+/// that passed an empty or stale map for `bound_this_run` would raise an Error
+/// on a published example, and this test is what catches it.
+///
+/// Read from the published file rather than mirrored inline, following
+/// `joint_drive_expansion_boundary.rs`'s BT-5 idiom, so the canary degrades
+/// loudly if the example itself drifts.
+#[test]
+fn joint_drive_example_stays_quiet_because_its_auto_is_bound() {
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/whole_model_joint_drive.ri"
+    ))
+    .expect("examples/whole_model_joint_drive.ri must be readable");
+
+    let (engine, result) = eval_with_solver_keeping_engine(&source);
+    assert_merged_cluster_spanned(&engine, &["Rivet", "RivetedPanel"]);
+    assert_bound(&result, "Rivet", "quantity_produced");
+    assert_no_unconsumed(
+        &result,
+        "the merged write-back bound every objective-reachable auto this run — \
+         the vacuous-healthy rule (O2) is what silences this, and it must keep \
+         silencing it once the merged site is wired",
+    );
+}
+
+/// (O1) The second existing objective-bearing merged fixture — the same shape
+/// carrying a per-sub parameter override (`joint_drive_expansion_boundary.rs`'s
+/// `OVERRIDE_SRC`) — stays byte-quiet too.
+///
+/// An override changes which value the instance-path cost cell folds to, not
+/// whether the auto is bound, so it must not perturb the rule. Pinning it
+/// separately keeps a step-15 that accidentally keyed off the folded objective
+/// VALUE (rather than the binding of the auto) from passing the canary above.
+#[test]
+fn merged_cluster_with_sub_override_stays_quiet() {
+    let source = r#"
+module dic_merged_override
+
+structure def Rivet : Costed {
+    param supplier          : String = "Acme Fastener"
+    param part_number       : String = "R-4210"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+
+    param quantity_produced : Real   = auto(free)
+    constraint quantity_produced >= 0.0
+    constraint quantity_produced <= 100.0
+}
+
+structure RivetedPanel {
+    sub rivets = Rivet(unit_cost: 0.90USD)
+
+    minimize cost(self.descendants)
+}
+"#;
+    let (engine, result) = eval_with_solver_keeping_engine(source);
+    assert_merged_cluster_spanned(&engine, &["Rivet", "RivetedPanel"]);
+    assert_bound(&result, "Rivet", "quantity_produced");
+    assert_no_unconsumed(
+        &result,
+        "a per-sub override changes the folded cost, not whether the auto is \
+         bound — this merged fixture must stay byte-quiet (O1)",
     );
 }
