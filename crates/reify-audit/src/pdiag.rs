@@ -427,14 +427,26 @@ fn escape_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
 ///   in the tree contain a `Diagnostic::{error,warning}` constructor, so
 ///   recognising it would buy nothing today, and *under*-skipping is the safe
 ///   direction: an unskipped site is merely counted into the baseline.
-/// - `#[cfg(not(test))]` / `#[cfg(not(any(test, …)))]` MUST never arm the
-///   skip — those bodies are the *production* build, and suppressing them
-///   would blind the ratchet to exactly the sites INV-SF-6 governs. Both are
-///   excluded structurally by the `#[cfg(any(` prefix test rather than by a
-///   negation special-case.
+/// - ANY attribute containing `not(` MUST never arm the skip — a negated
+///   `test` predicate describes the *production* build, and suppressing that
+///   body would blind the ratchet to exactly the sites INV-SF-6 governs. The
+///   exclusion is an explicit `not(` rejection and NOT a consequence of the
+///   prefix tests, which only reach the leading forms: `#[cfg(not(test))]` and
+///   the tree's real `#[cfg(not(any(test, feature = "test-instrumentation")))]`
+///   fail both prefixes, but `#[cfg(any(not(test), …))]` passes the
+///   `#[cfg(any(` one and presents a bare `test` predicate to
+///   [`has_bare_test_predicate`] — its `(` / `)` neighbours are not predicate
+///   glue. Zero such attributes exist in the corpus today; the rejection
+///   closes the hole before one can open it. Rejecting the whole `not(`-
+///   bearing family is also right on its merits: a body reachable when `test`
+///   is OFF (`any(test, not(feature = "x"))`) is a production body, and
+///   *under*-skipping only ever counts a site into the baseline.
 /// - `#[cfg(feature = "test-fixtures")]` (38) is likewise not recognised: a
 ///   feature-gated body can be present in a production build.
 fn is_cfg_test_attr(trimmed: &str) -> bool {
+    if trimmed.contains("not(") {
+        return false;
+    }
     trimmed.starts_with("#[cfg(test)]")
         || (trimmed.starts_with("#[cfg(any(") && has_bare_test_predicate(trimmed))
 }
@@ -1400,6 +1412,59 @@ mod tests {
             "}",
         ]);
         assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn a_negated_test_predicate_never_arms_the_skip() {
+        // The negative side of `is_cfg_test_attr`, which is where a hard-gate
+        // hole would hide: a body the skip swallows is invisible to the
+        // ratchet forever. All three shapes below reach a PRODUCTION build.
+
+        // (i) The tree's real shape — `crates/reify-eval/src/engine_build.rs`
+        //     :3398 and :4122 carry
+        //     `#[cfg(not(any(test, feature = "test-instrumentation")))]`.
+        let src = file(&[
+            "#[cfg(not(any(test, feature = \"test-instrumentation\")))]",
+            "mod prod {",
+            "    fn emit() { let d = Diagnostic::error(m); }",
+            "}",
+        ]);
+        assert_eq!(sites(&src), vec![(3, false)]);
+
+        // (ii) Bare negation.
+        let src = file(&["#[cfg(not(test))]", "fn emit() {", "    let d = Diagnostic::error(m);", "}"]);
+        assert_eq!(sites(&src), vec![(3, false)]);
+
+        // (iii) `any(not(test), …)` — the shape the `#[cfg(any(` prefix test
+        //       does NOT exclude on its own: `not(test)` presents a bare `test`
+        //       predicate whose `(`/`)` neighbours are not predicate glue, so
+        //       without the explicit `not(` rejection this armed the skip and
+        //       silently dropped the body from the census. Absent from the
+        //       corpus today — pinned so introducing one cannot open the hole.
+        let src = file(&[
+            "#[cfg(any(not(test), feature = \"emit\"))]",
+            "mod prod {",
+            "    fn emit() { let d = Diagnostic::warning(m); }",
+            "}",
+        ]);
+        assert_eq!(sites(&src), vec![(3, false)]);
+    }
+
+    #[test]
+    fn a_feature_gate_that_merely_mentions_test_never_arms_the_skip() {
+        // `#[cfg(feature = "test-fixtures")]` (38 in-tree) is a FEATURE name
+        // that happens to start with `test`, not the `test` cfg predicate — a
+        // feature-gated body can be present in a production build. This is the
+        // case `is_predicate_glue` exists for, and the branch a refactor of it
+        // is most likely to break.
+        for attr in [
+            "#[cfg(feature = \"test-fixtures\")]",
+            "#[cfg(feature = \"test\")]",
+            "#[cfg(any(feature = \"test-support\", feature = \"other\"))]",
+        ] {
+            let src = file(&[attr, "mod gated {", "    fn emit() { let d = Diagnostic::error(m); }", "}"]);
+            assert_eq!(sites(&src), vec![(3, false)], "{attr} must not arm the skip");
+        }
     }
 
     #[test]
