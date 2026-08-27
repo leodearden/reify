@@ -230,6 +230,78 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
     }
 }
 
+// ─── Shared SubDecl expression-field enumeration ─────────────────────────────
+//
+// `sub_direct_exprs` is consumed by BOTH halves of this module — the
+// member-segment detection scan immediately below AND `collect_uses_in_sub`'s
+// use-collection scan further down (task #5579 amendment) — so it lives here,
+// outside either section's banner, rather than nested inside one of them as
+// if it belonged to only one consumer.
+
+/// Exhaustively enumerate every direct (non-nested-scope) expression carried
+/// by a `SubDecl` — constructor args, specialization param overrides, the
+/// `at` placement pose, the indexer clause's domain expression (task #5481/
+/// #5579), the inline `at … where { }` relate-block relations (task δ 4384),
+/// and the `where` guard condition.
+///
+/// Both `collect_uses_in_sub` (use-collection) and the `MemberDecl::Sub` arm
+/// of `cursor_on_member_segment` (`.member`-segment refusal) consume this
+/// instead of re-listing `SubDecl`'s fields themselves, so the two scanners
+/// cannot drift apart the way they already have twice — `relate_relations`
+/// (task δ 4384) and `index_domain` (#5481/#5579) were each added to
+/// `collect_uses_in_sub` without a matching guard clause in
+/// `cursor_on_member_segment`, silently letting a `.member` segment on that
+/// field mis-resolve to an unrelated same-named binding instead of refusing.
+///
+/// The `let SubDecl { .. } = s` pattern below names every field with no `..`,
+/// so adding a new field to `SubDecl` is a compile error here, forcing a
+/// deliberate choice: fold it into the returned chain if it is a use-bearing
+/// expression, or extend the `_`-bound list with a one-line reason if it
+/// isn't — as `index_binder` already is (it mirrors the existing
+/// `ExprKind::Quantifier` `variable`/`variable_span` precedent: a
+/// binder-introducing field is deliberately not itself a use site here; see
+/// the "Known limitation" doc comment on `collect_idents_in_expr`).
+///
+/// Excludes `body` and `keyed_members`: both consumers recurse into those
+/// separately, at `depth + 1`/nested-scope depth, since they open a nested
+/// member scope rather than being a direct expression of this `sub`.
+fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
+    let SubDecl {
+        // Identifiers, flags, and span/cache metadata below — never expressions.
+        name: _,
+        structure_name: _,
+        type_args: _,
+        args,
+        is_collection: _,
+        where_clause,
+        // Nested member scope, not a direct expression — both consumers
+        // recurse into it separately at depth + 1 (see doc comment above).
+        body: _,
+        spec_param_overrides,
+        // Nested member scope, not a direct expression — both consumers
+        // recurse into it separately at depth + 1 (see doc comment above).
+        keyed_members: _,
+        is_aux: _,
+        is_priv: _,
+        pose_expr,
+        // Binder site, not a use — mirrors the existing `ExprKind::Quantifier`
+        // `variable`/`variable_span` precedent (see doc comment above).
+        index_binder: _,
+        index_domain,
+        relate_relations,
+        span: _,
+        content_hash: _,
+    } = s;
+
+    args.iter()
+        .map(|(_, e)| e)
+        .chain(spec_param_overrides.iter().map(|(_, e)| e))
+        .chain(pose_expr.iter())
+        .chain(index_domain.iter())
+        .chain(relate_relations.iter())
+        .chain(where_clause.iter().map(|w| &w.condition))
+}
+
 // ─── Member-segment detection helpers ────────────────────────────────────────
 //
 // These two helpers implement the AST-aware guard in `collect_references_at`
@@ -243,16 +315,8 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
 // the two scanners symmetric ensures the detection scan never drifts from the
 // use-collection scan.
 //
-// The `MemberDecl::Sub` arm's field set was the symmetry-critical part: it had
-// to be updated whenever `SubDecl` gained a new expression-bearing field
-// walked by `collect_uses_in_sub`, and had already been missed twice —
-// `relate_relations` (task δ 4384) and `index_domain` (task #5481/#5579) —
-// both silently letting a `.member` segment mis-resolve to an unrelated
-// same-named binding instead of refusing. Both the Sub arm and
-// `collect_uses_in_sub` now consume the single, exhaustively-destructured
-// `sub_direct_exprs` enumeration instead of re-listing `SubDecl`'s fields
-// themselves, so a newly added field is a compile error there rather than a
-// silent drift (task #5579 amendment).
+// The `MemberDecl::Sub` arm's field set is centralized in `sub_direct_exprs`
+// — see its doc comment for why.
 
 /// Return `true` when the cursor byte offset `off` falls on the `.member`
 /// segment of a `MemberAccess` node anywhere in `expr`.
@@ -355,63 +419,6 @@ fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
         | ExprKind::EnumAccess { .. }
         | ExprKind::Undef => false,
     }
-}
-
-/// Exhaustively enumerate every direct (non-nested-scope) expression carried
-/// by a `SubDecl` — constructor args, specialization param overrides, the
-/// `at` placement pose, the indexer clause's domain expression (task #5481/
-/// #5579), the inline `at … where { }` relate-block relations (task δ 4384),
-/// and the `where` guard condition.
-///
-/// Both `collect_uses_in_sub` (use-collection) and the `MemberDecl::Sub` arm
-/// of `cursor_on_member_segment` (`.member`-segment refusal) consume this
-/// instead of re-listing `SubDecl`'s fields themselves, so the two scanners
-/// cannot drift apart the way they already have twice — `relate_relations`
-/// (task δ 4384) and `index_domain` (#5481/#5579) were each added to
-/// `collect_uses_in_sub` without a matching guard clause in
-/// `cursor_on_member_segment`, silently letting a `.member` segment on that
-/// field mis-resolve to an unrelated same-named binding instead of refusing.
-///
-/// The `let SubDecl { .. } = s` pattern below names every field with no `..`,
-/// so adding a new field to `SubDecl` is a compile error here, forcing a
-/// deliberate choice: fold it into the returned chain if it is a use-bearing
-/// expression, or extend the `_`-bound list with a one-line reason if it
-/// isn't — as `index_binder` already is (it mirrors the existing
-/// `ExprKind::Quantifier` `variable`/`variable_span` precedent: a
-/// binder-introducing field is deliberately not itself a use site here; see
-/// the "Known limitation" doc comment on `collect_idents_in_expr`).
-///
-/// Excludes `body` and `keyed_members`: both consumers recurse into those
-/// separately, at `depth + 1`/nested-scope depth, since they open a nested
-/// member scope rather than being a direct expression of this `sub`.
-fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
-    let SubDecl {
-        name: _,
-        structure_name: _,
-        type_args: _,
-        args,
-        is_collection: _,
-        where_clause,
-        body: _,
-        spec_param_overrides,
-        keyed_members: _,
-        is_aux: _,
-        is_priv: _,
-        pose_expr,
-        index_binder: _,
-        index_domain,
-        relate_relations,
-        span: _,
-        content_hash: _,
-    } = s;
-
-    args.iter()
-        .map(|(_, e)| e)
-        .chain(spec_param_overrides.iter().map(|(_, e)| e))
-        .chain(pose_expr.iter())
-        .chain(index_domain.iter())
-        .chain(relate_relations.iter())
-        .chain(where_clause.iter().map(|w| &w.condition))
 }
 
 /// Return `true` when the cursor byte offset `off` falls on the `.member`
@@ -1895,6 +1902,44 @@ mod tests {
             .unwrap_or_else(|| panic!("no `sub {sub_name}` found in parsed module"))
     }
 
+    /// Assert that all four rename/reference producers (`prepare_rename`,
+    /// `compute_rename`, `compute_document_highlights`, `collect_references`)
+    /// refuse to resolve the cursor at `pos` — the shared `.member`-segment
+    /// refusal contract every fixture in this file's `.member`-segment suite
+    /// pins. `ctx` is interpolated into each failure message to name the
+    /// specific scenario under test, e.g. `"inside port body"`.
+    ///
+    /// Builds its own dummy [`Url`] internally: none of the four producers
+    /// read the URI before returning `None` on the refusal path under test
+    /// here — `compute_rename` only touches `uri` after the shared
+    /// `collect_references` gate it has in common with the other three has
+    /// already passed — so the URI's exact value is immaterial to this
+    /// assertion.
+    ///
+    /// Centralizes what were four independent ~22-line copies of this same
+    /// assertion block (one per `.member`-segment fixture) so a fifth
+    /// producer joining the refusal contract is a one-place edit instead of a
+    /// find-and-fix across every fixture test.
+    fn assert_all_producers_refuse(source: &str, parsed: &ParsedModule, pos: Position, ctx: &str) {
+        let uri = Url::parse("file:///member-segment-refusal.ri").unwrap();
+        assert!(
+            prepare_rename(source, parsed, pos).is_none(),
+            "prepare_rename must refuse .field segment {ctx}"
+        );
+        assert!(
+            compute_rename(source, parsed, &uri, pos, "renamed").is_none(),
+            "compute_rename must refuse .field segment {ctx}"
+        );
+        assert!(
+            compute_document_highlights(source, parsed, pos).is_none(),
+            "compute_document_highlights must refuse .field segment {ctx}"
+        );
+        assert!(
+            collect_references(source, parsed, pos, true).is_none(),
+            "collect_references must refuse .field segment {ctx}"
+        );
+    }
+
     // ─── κ (task 4210): cross-file references + rename scaffolding ────────────
     //
     // The CANONICAL SIGNAL (PRD boundary row 8): a `Hole` structure declared in
@@ -2151,6 +2196,143 @@ structure S {
             vec![span_of(gap[1], "gap")],
             "the sole use of `gap` inside the inline relate-block relation must \
              be reachable from a find-references query on its declaration"
+        );
+    }
+
+    // --- task #5579 (amendment): mutation-coverage gap closure for the three
+    // `sub_direct_exprs` chain links no test previously exercised — deleting
+    // `.chain(pose_expr.iter())`, `.chain(where_clause.iter().map(|w|
+    // &w.condition))`, or `.chain(spec_param_overrides.iter().map(|(_, e)|
+    // e))` each independently left the whole reify-lsp suite green. These
+    // three tests mirror `collect_references_reaches_indexed_sub_domain_use`
+    // / `_inline_relate_block_use` above, one per previously-uncovered link. ---
+
+    #[test]
+    fn collect_references_reaches_sub_pose_expr_use() {
+        // `dx` is used only inside the sub's `at <expr>` placement pose, never
+        // in its args/where/index-domain/relate-block.
+        let source = "\
+structure S {
+    param dx: Length = 1mm
+    sub b : Bolt at translate(dx)
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("pose"));
+        assert!(
+            parsed.errors.is_empty(),
+            "pose fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        assert!(
+            find_sub(&parsed, "b").pose_expr.is_some(),
+            "fixture must actually lower a pose_expr for the walker to reach"
+        );
+
+        // dx[0] = `param dx` decl, dx[1] = the sole use inside the pose expr.
+        let dx = occurrences(source, "dx");
+        assert_eq!(dx.len(), 2, "1 param decl + 1 use inside the pose expression");
+
+        let pos = offset_to_position(source, dx[0] as u32);
+        let refset = collect_references(source, &parsed, pos, false)
+            .expect("param dx declaration should resolve to a ReferenceSet");
+        assert_eq!(refset.name, "dx");
+        assert_eq!(refset.kind, RefSymbolKind::Param);
+        assert_eq!(refset.declaration, span_of(dx[0], "dx"));
+        assert_eq!(
+            refset.references,
+            vec![span_of(dx[1], "dx")],
+            "the sole use of `dx` inside the sub's `at` pose expression must be \
+             reachable from a find-references query on its declaration"
+        );
+    }
+
+    #[test]
+    fn collect_references_reaches_sub_where_clause_use() {
+        // `ready` is used only inside the sub's own trailing `where <cond>`
+        // guard (`SubDecl::where_clause` — distinct from both a member-level
+        // `where { }` GuardedGroup and the inline `at … where { }`
+        // relate-block), never in its args/pose/index-domain.
+        let source = "\
+structure S {
+    param ready: Bool = true
+    sub b = Widget() where ready
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("subwhere"));
+        assert!(
+            parsed.errors.is_empty(),
+            "sub-where fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        assert!(
+            find_sub(&parsed, "b").where_clause.is_some(),
+            "fixture must actually lower a where_clause for the walker to reach"
+        );
+
+        // ready[0] = `param ready` decl, ready[1] = the sole use inside the
+        // sub's where guard.
+        let ready = occurrences(source, "ready");
+        assert_eq!(
+            ready.len(),
+            2,
+            "1 param decl + 1 use inside the sub's where guard"
+        );
+
+        let pos = offset_to_position(source, ready[0] as u32);
+        let refset = collect_references(source, &parsed, pos, false)
+            .expect("param ready declaration should resolve to a ReferenceSet");
+        assert_eq!(refset.name, "ready");
+        assert_eq!(refset.kind, RefSymbolKind::Param);
+        assert_eq!(refset.declaration, span_of(ready[0], "ready"));
+        assert_eq!(
+            refset.references,
+            vec![span_of(ready[1], "ready")],
+            "the sole use of `ready` inside the sub's own `where` guard must be \
+             reachable from a find-references query on its declaration"
+        );
+    }
+
+    #[test]
+    fn collect_references_reaches_sub_spec_param_override_use() {
+        // `margin` is used only inside the sub's specialization-body param
+        // override value (`SubDecl::spec_param_overrides`), never in its
+        // args/pose/where/index-domain.
+        let source = "\
+structure S {
+    param margin: Length = 1mm
+    sub b : Bearing { bore = margin }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("specoverride"));
+        assert!(
+            parsed.errors.is_empty(),
+            "spec-override fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        assert!(
+            !find_sub(&parsed, "b").spec_param_overrides.is_empty(),
+            "fixture must actually lower a spec_param_overrides entry for the \
+             walker to reach"
+        );
+
+        // margin[0] = `param margin` decl, margin[1] = the sole use inside the
+        // override value.
+        let margin = occurrences(source, "margin");
+        assert_eq!(
+            margin.len(),
+            2,
+            "1 param decl + 1 use inside the specialization-body override"
+        );
+
+        let pos = offset_to_position(source, margin[0] as u32);
+        let refset = collect_references(source, &parsed, pos, false)
+            .expect("param margin declaration should resolve to a ReferenceSet");
+        assert_eq!(refset.name, "margin");
+        assert_eq!(refset.kind, RefSymbolKind::Param);
+        assert_eq!(refset.declaration, span_of(margin[0], "margin"));
+        assert_eq!(
+            refset.references,
+            vec![span_of(margin[1], "margin")],
+            "the sole use of `margin` inside the sub's specialization-body \
+             param override must be reachable from a find-references query \
+             on its declaration"
         );
     }
 
@@ -3323,25 +3505,9 @@ structure S {
         assert_eq!(d.len(), 2, "1 param decl + 1 port-body member-access segment");
 
         let member_pos = offset_to_position(source, d[1] as u32);
-        let uri = Url::parse("file:///portbody.ri").unwrap();
 
         // All four producers must refuse the port-body member-access .field segment.
-        assert!(
-            prepare_rename(source, &parsed, member_pos).is_none(),
-            "prepare_rename must refuse .field segment inside port body"
-        );
-        assert!(
-            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
-            "compute_rename must refuse .field segment inside port body"
-        );
-        assert!(
-            compute_document_highlights(source, &parsed, member_pos).is_none(),
-            "compute_document_highlights must refuse .field segment inside port body"
-        );
-        assert!(
-            collect_references(source, &parsed, member_pos, true).is_none(),
-            "collect_references must refuse .field segment inside port body"
-        );
+        assert_all_producers_refuse(source, &parsed, member_pos, "inside port body");
 
         // Over-refusal guard: the base `h` inside the port body still resolves as a Sub.
         let h_off = source.find("h.diameter").expect("h.diameter present");
@@ -3379,24 +3545,13 @@ structure S {
         assert_eq!(d.len(), 2, "1 param decl + 1 member-access segment");
 
         let member_pos = offset_to_position(source, d[1] as u32);
-        let uri = Url::parse("file:///s.ri").unwrap();
 
         // All four producers must refuse the member-access segment.
-        assert!(
-            prepare_rename(source, &parsed, member_pos).is_none(),
-            "prepare_rename must refuse cursor on .field segment"
-        );
-        assert!(
-            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
-            "compute_rename must refuse cursor on .field segment"
-        );
-        assert!(
-            compute_document_highlights(source, &parsed, member_pos).is_none(),
-            "compute_document_highlights must refuse cursor on .field segment"
-        );
-        assert!(
-            collect_references(source, &parsed, member_pos, true).is_none(),
-            "collect_references must refuse cursor on .field segment"
+        assert_all_producers_refuse(
+            source,
+            &parsed,
+            member_pos,
+            "when colliding with a local binding",
         );
 
         // Over-refusal guard: the BASE `h` (cursor at the start of `h.diameter`) must
@@ -3468,25 +3623,9 @@ structure S {
         );
 
         let member_pos = offset_to_position(source, d[1] as u32);
-        let uri = Url::parse("file:///indexdom.ri").unwrap();
 
         // All four producers must refuse the `.count` segment inside the domain.
-        assert!(
-            prepare_rename(source, &parsed, member_pos).is_none(),
-            "prepare_rename must refuse .field segment inside indexed-sub domain"
-        );
-        assert!(
-            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
-            "compute_rename must refuse .field segment inside indexed-sub domain"
-        );
-        assert!(
-            compute_document_highlights(source, &parsed, member_pos).is_none(),
-            "compute_document_highlights must refuse .field segment inside indexed-sub domain"
-        );
-        assert!(
-            collect_references(source, &parsed, member_pos, true).is_none(),
-            "collect_references must refuse .field segment inside indexed-sub domain"
-        );
+        assert_all_producers_refuse(source, &parsed, member_pos, "inside indexed-sub domain");
 
         // Over-refusal guard: the BASE `cfg` (start of `cfg.count`) must still
         // resolve as a Sub binding — the guard clause must refuse only the
@@ -3537,25 +3676,9 @@ structure S {
         );
 
         let member_pos = offset_to_position(source, d[1] as u32);
-        let uri = Url::parse("file:///relateblock.ri").unwrap();
 
         // All four producers must refuse the `.axis` segment inside the relate block.
-        assert!(
-            prepare_rename(source, &parsed, member_pos).is_none(),
-            "prepare_rename must refuse .field segment inside inline relate block"
-        );
-        assert!(
-            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
-            "compute_rename must refuse .field segment inside inline relate block"
-        );
-        assert!(
-            compute_document_highlights(source, &parsed, member_pos).is_none(),
-            "compute_document_highlights must refuse .field segment inside inline relate block"
-        );
-        assert!(
-            collect_references(source, &parsed, member_pos, true).is_none(),
-            "collect_references must refuse .field segment inside inline relate block"
-        );
+        assert_all_producers_refuse(source, &parsed, member_pos, "inside inline relate block");
 
         // Over-refusal guard: the BASE `bolt` (start of `bolt.axis`) must still
         // resolve as a Sub binding — the guard clause must refuse only the
