@@ -13,7 +13,7 @@
 //!   codimension split (via [`crate::relation_signatures::relation_delta_dof_kinds`]),
 //!   so the residual is `(3 − Σrot, 3 − Σtrans)`, saturating at 0.
 //! - [`declared_kinds`] — the kinds the declared DOF fields contribute
-//!   (`Angle` → rotational, `Length` → translational, `Orientation` → 3
+//!   (`Angle` → rotational, `Length` → translational, `Orientation(3)` → 3
 //!   rotational).
 //! - [`check_joint_dof`] — compares the two `(rot, trans)` pairs by exact
 //!   integer equality (no tolerance; PRD §12 G6 numeric-floor is N/A) and, on
@@ -126,9 +126,22 @@ pub(crate) fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
 /// contribution, or `None` if it has no geometric joint-DOF kind:
 /// - `Scalar<Angle>` → `(1, 0)` (1 rotational),
 /// - `Scalar<Length>` → `(0, 1)` (1 translational),
-/// - `Orientation(_)` → `(3, 0)` (a free spherical orientation),
+/// - `Orientation(3)` → `(3, 0)` (a free spherical orientation) — `SO(N)` has
+///   `N(N-1)/2` rotational DOF, but only `N=3` is inhabited today
+///   (`Value::Orientation` is a quaternion, and `try_infer_type` returns
+///   `Orientation(3)` unconditionally), so every other arity falls through to
+///   `None` below rather than being answered,
 /// - anything else → `None` — a DOF field that is neither an angle, a length,
 ///   nor an orientation has no kind to match against the residual.
+///
+/// Reachability note: the surface name `Orientation` is not currently
+/// resolvable from `.ri` source — the builtin-name table in
+/// `resolve_type_name` deliberately omits it, so a declared
+/// `with orientation: Orientation` field resolves to `Type::Error`, not
+/// `Type::Orientation(3)`, and never reaches this function. Today the
+/// `Orientation(3)` arm above is exercised only by internally-constructed
+/// `Type` values (e.g. this module's own tests), not by any reachable `.ri`
+/// declaration.
 ///
 /// The single source of truth for DOF-kind classification, shared by
 /// [`declared_kinds`] (which sums the classifiable contributions) and the
@@ -143,7 +156,7 @@ pub(crate) fn dof_kind_of(ty: &Type) -> Option<DofKinds> {
         Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => {
             Some(DofKinds::new(0, 1))
         }
-        Type::Orientation(_) => Some(DofKinds::new(3, 0)),
+        Type::Orientation(3) => Some(DofKinds::new(3, 0)),
         _ => None,
     }
 }
@@ -422,6 +435,19 @@ mod tests {
         assert_eq!(dof_kind_of(&Type::Axis), None);
     }
 
+    /// `SO(N)` has `N(N-1)/2` rotational DOF (1, 3, 6 for N = 2, 3, 4), so the
+    /// flat answer of 3 is correct only at N=3. `Value::Orientation` is
+    /// quaternion-only and `try_infer_type` returns `Orientation(3)`
+    /// unconditionally, so no other arity is inhabited — the classifier must
+    /// decline rather than invent a DOF count for an uninhabitable type.
+    /// Widening this to a real per-arity formula is task 6336's call, not this
+    /// test's.
+    #[test]
+    fn dof_kind_of_uninhabitable_orientation_arity_is_none() {
+        assert_eq!(dof_kind_of(&Type::Orientation(2)), None);
+        assert_eq!(dof_kind_of(&Type::Orientation(4)), None);
+    }
+
     /// A `Scalar<Angle>` DOF field contributes 1 rotational freedom.
     #[test]
     fn declared_kinds_angle_is_one_rotational() {
@@ -444,7 +470,7 @@ mod tests {
         );
     }
 
-    /// An `Orientation(_)` DOF field declares a full 3-rotational freedom (a free
+    /// An `Orientation(3)` DOF field declares a full 3-rotational freedom (a free
     /// spherical/ball orientation).
     #[test]
     fn declared_kinds_orientation_is_three_rotational() {
