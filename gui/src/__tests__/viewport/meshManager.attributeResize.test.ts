@@ -169,4 +169,33 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
 
     expect(violations).toEqual([]);
   });
+
+  it('re-bakes via setColorize after an off/on toggle spanning a vertex-count change', () => {
+    // Site 2 (setColorize) is reachable independently of the sync() re-bake:
+    // setColorize(null) deliberately leaves the colour buffer attached to the
+    // geometry (see the setColorize JSDoc), so a subsequent count-changing
+    // sync() skips the `if (colorize)` re-bake entirely and leaves a stale
+    // 3N-float colour attribute on a geometry whose position is now 3M. Turning
+    // FEA mode back on then bakes 3M floats into that stale attribute.
+    //
+    // This is what a user toggling FEA mode off, editing the model, and
+    // toggling FEA back on produces. Viewport.tsx happens to pair
+    // setColorize(null) with rebuildMaterials(), which would strip the colour
+    // attribute — deliberately NOT called here, so the setColorize path is
+    // isolated rather than masked.
+    const mm = createMeshManager(scene, { colorize: { channel: 'vonMises', bake } });
+
+    mm.sync({ A: triScalars(2) });
+    renderPass(scene, 'after-first-sync');
+
+    mm.setColorize(null);
+
+    mm.sync({ A: triScalars(5) });
+    renderPass(scene, 'after-resync-uncolorized');
+
+    mm.setColorize({ channel: 'vonMises', bake });
+    renderPass(scene, 'after-recolorize');
+
+    expect(violations).toEqual([]);
+  });
 });
