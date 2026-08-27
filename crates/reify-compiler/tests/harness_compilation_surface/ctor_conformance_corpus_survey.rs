@@ -190,6 +190,90 @@ fn tracked_ri_corpus_paths_are_repo_relative_forward_slash() {
 
 // ─── step 3/4: source-position helpers ───────────────────────────────────────
 
+/// 1-based line of `span`'s START offset within `source`.
+///
+/// Delegates to `reify_core::byte_offset_to_line_col` rather than hand-rolling
+/// newline counting — that helper is already multi-byte-correct and carries its
+/// own round-trip tests, and it short-circuits the prelude sentinel to `(1, 1)`
+/// in both debug and release builds.
+///
+/// The one thing added here is the OUT-OF-RANGE CLAMP: `byte_offset_to_line_col`
+/// carries a `debug_assert!(offset <= source.len())`, so a synthetic or stale
+/// span would abort a debug-profile sweep of 660 files.
+///
+/// The clamp bounds the resulting LINE, not merely the offset, and that
+/// distinction is load-bearing for the artifact. Clamping the offset alone to
+/// `source.len()` reports line 3 for a two-line file that ends in a newline —
+/// `byte_offset_to_line_col` counts the phantom empty line after the trailing
+/// `\n`. Every row in the survey is a `file:line` a human will open, so a line
+/// number past the end of the file is a dangling pointer. The postcondition is
+/// therefore `1 <= result <= source.lines().count().max(1)`: every emitted line
+/// resolves to a real line of the swept file.
+///
+/// The prelude sentinel is deliberately NOT offset-clamped: it is passed
+/// through so the callee's own `(1, 1)` short-circuit applies.
+fn line_of_span(source: &str, span: reify_core::SourceSpan) -> u32 {
+    let raw = span.start as usize;
+    let offset = if raw == reify_core::SourceSpan::PRELUDE_SENTINEL_OFFSET {
+        raw
+    } else {
+        raw.min(source.len())
+    };
+    let line = reify_core::byte_offset_to_line_col(source, offset).0 as u32;
+    // `lines()` does not yield a trailing empty line for a source ending in
+    // `\n`, which is exactly the bound wanted here. `.max(1)` keeps the empty
+    // source reporting line 1 rather than 0.
+    let last_line = source.lines().count().max(1) as u32;
+    line.clamp(1, last_line)
+}
+
+/// The structure-def name at `span`'s start, when `span` anchors a ctor call.
+///
+/// Takes the leading Rust-identifier-shaped run at `span.start` and returns it
+/// ONLY when the next non-whitespace byte is `(`. That is exactly α's
+/// expression-path anchor shape — `compile_builder/entities_phase.rs` sets the
+/// label span to `ctor_span.unwrap_or(representative_span)`, the offending
+/// `Foo(...)` call's own span — so recovery is exact there.
+///
+/// Returns `None`, never a guess, for every other shape: the sub `=` path's
+/// per-arg anchor (`entity.rs` `PendingBoundCheck`, which starts mid-argument),
+/// a plain identifier reference, an out-of-range or prelude-sentinel span, and
+/// a `representative_span` fallback of `SourceSpan::empty(0)`. A `None` renders
+/// as `—` in the artifact; the def is then named in prose by the two ε codes or
+/// left unattributed, which is the honest outcome.
+fn ctor_type_name_at(source: &str, span: reify_core::SourceSpan) -> Option<String> {
+    let start = span.start as usize;
+    if start >= source.len() {
+        return None;
+    }
+    // A span that starts inside a multi-byte codepoint cannot be a ctor anchor
+    // (identifiers are ASCII-led), and slicing at it would panic.
+    if !source.is_char_boundary(start) {
+        return None;
+    }
+    let rest = &source[start..];
+    let mut chars = rest.char_indices();
+    // Rust-identifier shape: first char alphabetic or `_`, then alphanumeric
+    // or `_`. Reify def names are a subset of this.
+    let (_, first) = chars.next()?;
+    if !(first.is_alphabetic() || first == '_') {
+        return None;
+    }
+    let ident_end = chars
+        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+        .map(|(i, _)| i)
+        .unwrap_or(rest.len());
+    let ident = &rest[..ident_end];
+    // Whitespace between the identifier and `(` is legal and must not defeat
+    // recovery; anything else means this is not a call.
+    let after = rest[ident_end..].trim_start();
+    if after.starts_with('(') {
+        Some(ident.to_owned())
+    } else {
+        None
+    }
+}
+
 #[test]
 fn line_of_span_is_one_based_and_multibyte_correct() {
     use reify_core::SourceSpan;
