@@ -71,7 +71,9 @@ fn tracked_ri_corpus() -> Vec<String> {
         .args(["ls-files", "-z", "--", "*.ri"])
         .output()
         .unwrap_or_else(|e| {
-            panic!("ctor_conformance_corpus_survey: cannot run `git ls-files` in {WORKSPACE_ROOT}: {e}")
+            panic!(
+                "ctor_conformance_corpus_survey: cannot run `git ls-files` in {WORKSPACE_ROOT}: {e}"
+            )
         });
     assert!(
         out.status.success(),
@@ -170,7 +172,10 @@ fn tracked_ri_corpus_reaches_outside_examples() {
         corpus.iter().any(|p| p.starts_with("examples/")),
         "corpus must still include the examples/ tree"
     );
-    let non_examples = corpus.iter().filter(|p| !p.starts_with("examples/")).count();
+    let non_examples = corpus
+        .iter()
+        .filter(|p| !p.starts_with("examples/"))
+        .count();
     assert!(
         non_examples >= 300,
         "the non-examples half is the point of β (399 measured at plan time), got {non_examples}"
@@ -677,7 +682,10 @@ fn survey_site_extracts_field_from_the_argument_prose_prefix() {
     ] {
         let d = synth(code, msg, Some("expected 'X', got 'Y'"));
         let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
-        assert!(site.field.is_some(), "{code:?} must yield a field, got None");
+        assert!(
+            site.field.is_some(),
+            "{code:?} must yield a field, got None"
+        );
     }
 }
 
@@ -749,7 +757,10 @@ fn survey_site_prefers_the_label_for_expected_and_found() {
     ] {
         let d = synth(code, msg, Some(label));
         let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
-        assert_eq!(site.expected, None, "{code:?} carries no expected/got label");
+        assert_eq!(
+            site.expected, None,
+            "{code:?} carries no expected/got label"
+        );
         assert_eq!(site.found, None, "{code:?} carries no expected/got label");
     }
 }
@@ -784,9 +795,8 @@ fn survey_site_degrades_to_none_fields_and_keeps_the_raw_message() {
     // silently dropped site, and never a fabricated field.
     let drifted = "the wording of this diagnostic drifted entirely";
     let d = synth(DiagnosticCode::ArgTypeMismatch, drifted, None);
-    let site = survey_site_from_diagnostic("a.ri", "", &d).expect(
-        "an unrecognised message must still yield a row — dropping it would under-size γ",
-    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d)
+        .expect("an unrecognised message must still yield a row — dropping it would under-size γ");
     assert_eq!(site.field, None);
     assert_eq!(site.expected, None);
     assert_eq!(site.found, None);
@@ -924,9 +934,7 @@ fn scan_structure_defs(
 fn fea_owned_defs() -> &'static std::collections::BTreeSet<String> {
     static DEFS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
         std::sync::OnceLock::new();
-    DEFS.get_or_init(|| {
-        scan_structure_defs(std::path::Path::new(STDLIB_DIR), FEA_STDLIB_MODULES)
-    })
+    DEFS.get_or_init(|| scan_structure_defs(std::path::Path::new(STDLIB_DIR), FEA_STDLIB_MODULES))
 }
 
 /// The D9 fix-forward class governing a site whose structure def is `def`.
@@ -1081,7 +1089,10 @@ fn scan_structure_defs_panics_when_a_listed_module_is_missing() {
 #[test]
 fn fea_owned_defs_scans_the_real_stdlib() {
     let defs = fea_owned_defs();
-    assert!(!defs.is_empty(), "the real FEA stdlib declares structure defs");
+    assert!(
+        !defs.is_empty(),
+        "the real FEA stdlib declares structure defs"
+    );
     for expected in ["PointLoad", "FixedSupport", "LoadCase", "PressureLoad"] {
         assert!(
             defs.contains(expected),
@@ -1185,7 +1196,10 @@ fn selector_type_renderings_match_what_reify_core_actually_displays() {
         "the D3 String→selector case is the PRD's headline illegality; it must \
          carry a hint"
     );
-    assert!(hint.contains("face(b"), "the hint names the typed-ctor replacement");
+    assert!(
+        hint.contains("face(b"),
+        "the hint names the typed-ctor replacement"
+    );
 
     // Pose Display forms are `Frame3` / `Transform3` / `Point3<Length>`.
     for pose in [
@@ -1284,7 +1298,8 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
     for rel in rel_paths {
         let path = root.join(rel);
         let Ok(source) = std::fs::read_to_string(&path) else {
-            run.not_surveyed.push((rel.clone(), "read-error".to_owned()));
+            run.not_surveyed
+                .push((rel.clone(), "read-error".to_owned()));
             continue;
         };
         let stem = path
@@ -1326,13 +1341,8 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
     // members were handed in. `code` and `message` break the remaining ties so
     // two sites at the same (file, line, field) still sort deterministically.
     run.sites.sort_by(|a, b| {
-        (&a.file, a.line, &a.field, &a.code, &a.message).cmp(&(
-            &b.file,
-            b.line,
-            &b.field,
-            &b.code,
-            &b.message,
-        ))
+        (&a.file, a.line, &a.field, &a.code, &a.message)
+            .cmp(&(&b.file, b.line, &b.field, &b.code, &b.message))
     });
     run.not_surveyed.sort();
     run.partial.sort();
@@ -1635,8 +1645,7 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
         );
     }
     for owner in [Owner::FeaDeferredToV06, Owner::NonFea, Owner::Unknown] {
-        let mut group: Vec<&SurveySite> =
-            run.sites.iter().filter(|s| s.owner == owner).collect();
+        let mut group: Vec<&SurveySite> = run.sites.iter().filter(|s| s.owner == owner).collect();
         group.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
 
         let _ = writeln!(md, "### {} — {} site(s)\n", owner.title(), group.len());
@@ -1711,7 +1720,9 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
         md.push('\n');
     }
 
-    md.push_str("### Partially surveyed (sites collected, but the file also failed to compile)\n\n");
+    md.push_str(
+        "### Partially surveyed (sites collected, but the file also failed to compile)\n\n",
+    );
     if run.partial.is_empty() {
         md.push_str("_(none)_\n\n");
     } else {
@@ -1782,7 +1793,9 @@ fn synth_site(file: &str, line: u32, def: &str, field: &str, owner: Owner) -> Su
         found: Some("String".to_owned()),
         code: "ArgTypeMismatch".to_owned(),
         severity: "Warning".to_owned(),
-        message: format!("argument '{field}' has type 'String' but param '{field}' requires type 'Selector(Face)'"),
+        message: format!(
+            "argument '{field}' has type 'String' but param '{field}' requires type 'Selector(Face)'"
+        ),
         owner,
     }
 }
@@ -1854,7 +1867,7 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
 
 #[test]
 fn render_survey_orders_rows_deterministically_within_a_group() {
-    let ordered = vec![
+    let ordered = [
         synth_site("a.ri", 2, "W", "alpha", Owner::NonFea),
         synth_site("a.ri", 9, "W", "beta", Owner::NonFea),
         synth_site("b.ri", 1, "W", "gamma", Owner::NonFea),
@@ -1969,7 +1982,10 @@ fn render_survey_renders_the_zero_site_case_explicitly() {
         sites: vec![],
     };
     let md = render_survey(&run, "sha");
-    assert!(md.contains("**Sites:** 0"), "the count must still be stated");
+    assert!(
+        md.contains("**Sites:** 0"),
+        "the count must still be stated"
+    );
     assert!(
         md.to_lowercase().contains("no ctor-conformance"),
         "a zero-site outcome must be rendered as an explicit statement, never an \
