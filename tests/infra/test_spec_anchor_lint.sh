@@ -45,6 +45,9 @@
 #   (m) base resolution is never a SKIP — an unreadable --base-spec, an
 #       unresolvable --base rev, and both flags together are all exit 2.
 #   (n) the DEFAULT base is live — a flagless run really consults git.
+#   (o) §9.2 is ACTUALLY anchored in the shipped spec — structurally
+#       (every heading present is anchored) rather than by a pinned count,
+#       so leaf η's later graduation edits to §9.2 cannot red it.
 #
 # NO-SILENT-GREEN FLOOR: a $RAN counter is incremented by every scenario and
 # checked after test_summary. A future guard condition that skipped every
@@ -749,6 +752,168 @@ _run_lint --base HEAD
 assert "(n) an explicit --base HEAD yields the same rc as the flagless run" _eq "$LINT_RC" "$N_RC"
 assert "(n) an explicit --base HEAD yields byte-identical output to the flagless run" \
     bash -c '[ "$1" = "$2" ]' -- "$LINT_OUT" "$N_OUT"
+
+# ===========================================================================
+# (o) §9.2 IS ACTUALLY ANCHORED — the leaf's other user-observable signal.
+#
+# Asserted STRUCTURALLY, quantifying at run time over whatever headings exist,
+# never by a pinned anchor count or a hardcoded "nine subsections". Leaf η
+# (#6765) will rewrite §9.2's clause text and may add or split subsections; a
+# pinned count would red on that legitimate edit and would then be maintained
+# by deletion rather than by thought. Each quantifier carries its own
+# NON-VACUITY floor, so "every heading is anchored" can never pass by finding
+# zero headings.
+# ===========================================================================
+echo ""
+echo "--- (o) §9.2 is anchored in the SHIPPED spec ---"
+RAN=$((RAN + 1))
+
+# o1 — the capability manifest's own α check.
+_spec_has_a_wellformed_anchor() {
+    local n
+    n="$(grep -cE '^<!-- sc-anchor: sc-[0-9a-f]{6} -->$' "$SPEC" || true)"
+    [ "${n:-0}" -ge 1 ] && return 0
+    echo "no well-formed anchor line found in $SPEC"
+    return 1
+}
+
+# o2 — the §9.2 section heading itself carries an anchor.
+_heading_is_anchored() {
+    local pat="$1" out
+    out="$(awk -v pat="$pat" '
+        $0 ~ pat {
+            n++
+            if (prev !~ /^<!-- sc-anchor: sc-[0-9a-f]{6} -->$/) {
+                printf "%d: heading is NOT immediately preceded by a well-formed anchor: %s\n", FNR, $0
+                printf "%d: (the preceding line was: %s)\n", FNR - 1, prev
+                bad++
+            }
+        }
+        { prev = $0 }
+        END {
+            if (n == 0) { printf "NO heading matched %s — the check would be vacuous\n", pat; exit 1 }
+            if (bad > 0) exit 1
+        }
+    ' "$SPEC")" && return 0
+    printf '%s\n' "$out"
+    return 1
+}
+
+# o3 — EVERY `#### 9.2.N` heading present, whatever the current set is.
+_all_9_2_subheadings_anchored() { _heading_is_anchored '^#### 9\.2\.[0-9]+ '; }
+
+# o4 — scoped density floor: strictly more anchors than headings inside the
+# §9.2 range, which is what proves the seeding is PARAGRAPH-level rather than
+# headings-only. Both numbers are computed over the live file; no absolutes.
+_9_2_anchor_density() {
+    local out
+    out="$(awk '
+        BEGIN { in92 = 0; fence = 0; anchors = 0; heads = 0 }
+        {
+            if ($0 ~ /^### 9\.2 /) {
+                in92 = 1; heads++
+                if (prev ~ /^<!-- sc-anchor: sc-[0-9a-f]{6} -->$/) anchors++
+                prev = $0; next
+            }
+            if (in92 && $0 ~ /^### /) in92 = 0
+            if (in92) {
+                if ($0 ~ /^[[:space:]]*```/) fence = !fence
+                else if (!fence) {
+                    if ($0 ~ /^<!-- sc-anchor: sc-[0-9a-f]{6} -->$/) anchors++
+                    else if ($0 ~ /^#+ /) heads++
+                }
+            }
+            prev = $0
+        }
+        END {
+            printf "§9.2 range: anchors=%d headings=%d\n", anchors, heads
+            if (heads == 0) { print "NO §9.2 section found — the check would be vacuous"; exit 1 }
+            if (anchors <= heads) exit 1
+        }
+    ' "$SPEC")" && return 0
+    printf '%s\n' "$out"
+    return 1
+}
+
+# o5 — no anchor lands inside a fenced code block within §9.2.
+_no_anchor_inside_9_2_fence() {
+    local out
+    out="$(awk '
+        BEGIN { in92 = 0; fence = 0; seen_fence = 0 }
+        {
+            if ($0 ~ /^### 9\.2 /) { in92 = 1; next }
+            if (in92 && $0 ~ /^### /) in92 = 0
+            if (!in92) next
+            if ($0 ~ /^[[:space:]]*```/) { fence = !fence; if (fence) seen_fence++; next }
+            if (fence && index($0, "sc-anchor") > 0) {
+                printf "%d: anchor inside a fenced code block: %s\n", FNR, $0
+                bad++
+            }
+        }
+        END {
+            if (seen_fence == 0) { print "NO fenced block found inside §9.2 — the check would be vacuous"; exit 1 }
+            if (bad > 0) exit 1
+        }
+    ' "$SPEC")" && return 0
+    printf '%s\n' "$out"
+    return 1
+}
+
+# o6 — cheap smell check that IDs carry NO positional information. Not a
+# statistical test: two structural tells, both of which a sequential or
+# section-derived minting scheme would trip immediately.
+_ids_are_opaque() {
+    local ids positional
+    ids="$(grep -oE '^<!-- sc-anchor: sc-[0-9a-f]{6} -->$' "$SPEC" \
+            | sed -E 's/^<!-- sc-anchor: sc-//; s/ -->$//' || true)"
+    if [ -z "$ids" ]; then
+        echo "no anchor IDs found — the check would be vacuous"
+        return 1
+    fi
+    positional="$(printf '%s\n' "$ids" | grep '92' || true)"
+    if [ -n "$positional" ]; then
+        echo "anchor ID(s) contain the section digits '92' — IDs must not correlate with section numbers:"
+        printf '%s\n' "$positional"
+        return 1
+    fi
+    return 0
+}
+
+_ids_are_not_sorted() {
+    local ids n
+    ids="$(grep -oE '^<!-- sc-anchor: sc-[0-9a-f]{6} -->$' "$SPEC" \
+            | sed -E 's/^<!-- sc-anchor: sc-//; s/ -->$//' || true)"
+    n="$(printf '%s\n' "$ids" | grep -c . || true)"
+    if [ "${n:-0}" -lt 2 ]; then
+        echo "fewer than 2 anchor IDs — the sortedness tell would be vacuous"
+        return 1
+    fi
+    if [ "$ids" = "$(printf '%s\n' "$ids" | LC_ALL=C sort)" ]; then
+        echo "anchor IDs appear in ascending order down the file, which betrays sequential minting:"
+        printf '%s\n' "$ids"
+        return 1
+    fi
+    return 0
+}
+
+assert "(o1) the shipped spec carries at least one well-formed anchor" \
+    _spec_has_a_wellformed_anchor
+
+assert "(o2) the '### 9.2' section heading is immediately preceded by an anchor" \
+    _heading_is_anchored '^### 9\.2 '
+
+assert "(o3) EVERY '#### 9.2.N' subheading present is immediately preceded by an anchor" \
+    _all_9_2_subheadings_anchored
+
+assert "(o4) the §9.2 range holds strictly MORE anchors than headings (seeding is paragraph-level)" \
+    _9_2_anchor_density
+
+assert "(o5) no anchor lands inside a fenced code block within §9.2" \
+    _no_anchor_inside_9_2_fence
+
+assert "(o6) anchor IDs carry no section digits" _ids_are_opaque
+
+assert "(o6) anchor IDs are NOT in ascending order down the file" _ids_are_not_sorted
 
 # ---------------------------------------------------------------------------
 # Summary.
