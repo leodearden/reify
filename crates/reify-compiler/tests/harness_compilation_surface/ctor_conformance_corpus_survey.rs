@@ -187,3 +187,117 @@ fn tracked_ri_corpus_paths_are_repo_relative_forward_slash() {
         );
     }
 }
+
+// ─── step 3/4: source-position helpers ───────────────────────────────────────
+
+#[test]
+fn line_of_span_is_one_based_and_multibyte_correct() {
+    use reify_core::SourceSpan;
+
+    let source = "alpha\nbeta\ngamma\n";
+    assert_eq!(
+        line_of_span(source, SourceSpan::empty(0)),
+        1,
+        "offset 0 must be line 1 (1-based, not 0-based)"
+    );
+    let third = source.find("gamma").expect("fixture has 'gamma'") as u32;
+    assert_eq!(
+        line_of_span(source, SourceSpan::new(third, third + 5)),
+        3,
+        "an offset on the third line must be line 3"
+    );
+
+    // A multi-byte prefix must not shift the line: `byte_offset_to_line_col`
+    // counts codepoints for COLUMNS but newlines for LINES, so a non-ASCII
+    // prefix on line 1 leaves an offset on line 2 reporting 2.
+    let wide = "π·m·s^-1\nsecond line\n";
+    let second = wide.find("second").expect("fixture has 'second'") as u32;
+    assert_eq!(
+        line_of_span(wide, SourceSpan::new(second, second + 6)),
+        2,
+        "a multi-byte prefix must not shift the reported line"
+    );
+}
+
+#[test]
+fn line_of_span_clamps_past_eof_instead_of_panicking() {
+    use reify_core::SourceSpan;
+
+    // A synthetic / fallback span must never abort a 660-file sweep. Both the
+    // plain past-EOF case and the PRELUDE sentinel are exercised: the sentinel
+    // is `SourceSpan::empty(u32::MAX)`, which `byte_offset_to_line_col` maps to
+    // (1, 1) but which a naive `offset <= len` debug_assert would trip on.
+    let source = "one\ntwo\n";
+    assert_eq!(
+        line_of_span(source, SourceSpan::empty(9_999)),
+        2,
+        "an offset past EOF must clamp to the last line, not panic"
+    );
+    assert_eq!(
+        line_of_span("", SourceSpan::empty(0)),
+        1,
+        "an empty source must still report line 1"
+    );
+    let prelude = line_of_span(source, SourceSpan::prelude());
+    assert_eq!(
+        prelude, 1,
+        "the prelude sentinel must degrade to line 1, not panic or report a wild line"
+    );
+}
+
+#[test]
+fn ctor_type_name_at_recovers_the_def_from_the_call_site_anchor() {
+    use reify_core::SourceSpan;
+
+    // α anchors the expression-path label at the ctor call-site's OWN span
+    // (compile_builder/entities_phase.rs: `ctor_span.unwrap_or(representative_span)`),
+    // so `source[span.start..]` begins with `Widget(` and the leading
+    // identifier IS the def name.
+    let source = "structure def Root {\n    let x = Widget(label: 42)\n}\n";
+    let at_ctor = source.find("Widget(").expect("fixture has 'Widget('") as u32;
+    assert_eq!(
+        ctor_type_name_at(source, SourceSpan::new(at_ctor, at_ctor + 6)),
+        Some("Widget".to_owned()),
+        "a span starting at the ctor identifier must recover the def name"
+    );
+}
+
+#[test]
+fn ctor_type_name_at_returns_none_rather_than_guessing() {
+    use reify_core::SourceSpan;
+
+    let source = "structure def Root {\n    let x = Widget(label: 42)\n}\n";
+
+    // The sub `=` path anchors PER-ARG (entity.rs `PendingBoundCheck`), so the
+    // span starts mid-argument. Recovery must yield None — recorded as `—` in
+    // the artifact — never a guessed def name.
+    let at_arg = source.find("42").expect("fixture has '42'") as u32;
+    assert_eq!(
+        ctor_type_name_at(source, SourceSpan::new(at_arg, at_arg + 2)),
+        None,
+        "a span starting mid-argument must not be mistaken for a ctor anchor"
+    );
+
+    // An identifier not followed by `(` is a plain reference, not a ctor.
+    let plain = "let y = someBinding + 1\n";
+    let at_ident = plain.find("someBinding").expect("fixture has ident") as u32;
+    assert_eq!(
+        ctor_type_name_at(plain, SourceSpan::new(at_ident, at_ident + 11)),
+        None,
+        "an identifier not followed by '(' is not a ctor call"
+    );
+
+    // Whitespace between the identifier and `(` is still a call.
+    let spaced = "let z = Gadget (a: 1)\n";
+    let at_g = spaced.find("Gadget").expect("fixture has 'Gadget'") as u32;
+    assert_eq!(
+        ctor_type_name_at(spaced, SourceSpan::new(at_g, at_g + 6)),
+        Some("Gadget".to_owned()),
+        "whitespace before '(' must not defeat recovery"
+    );
+
+    // Out-of-range and empty-source spans must degrade to None, not panic.
+    assert_eq!(ctor_type_name_at(source, SourceSpan::empty(9_999)), None);
+    assert_eq!(ctor_type_name_at("", SourceSpan::empty(0)), None);
+    assert_eq!(ctor_type_name_at(source, SourceSpan::prelude()), None);
+}
