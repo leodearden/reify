@@ -6,8 +6,16 @@
 //! - Compound-product: MomentOfInertia (kg·m²)
 //! - Compound-quotient: Stiffness (N/m), Velocity (m/s)
 //!
-//! All comparison tests compile without error diagnostics (infer_binop_type
-//! returns Bool unconditionally for comparisons), so they serve as a regression net.
+//! The `no error diagnostics` assertions below are NOT vacuous: comparisons DO
+//! dimension-check. `emit_comparison_operand_diagnostics` (expr.rs — dimension
+//! arm added by task-4490 step-6, widened by task-4629 W5) emits
+//! `DiagnosticCode::DimensionMismatch` for a Scalar-vs-Scalar comparison whose
+//! dimensions differ, and an error for a dimensioned Scalar against a NON-ZERO
+//! Int. The paired negatives live in `comparison_operand_guard_tests.rs`
+//! (`scalar_different_dimensions_comparison_emits_dimension_mismatch`,
+//! `dimensioned_scalar_gt_nonzero_int_emits_error`). So a clean compile here
+//! means the zero really WAS coerced to the sibling's dimension, not that the
+//! comparison went unchecked.
 //! The eval signal (polymorphic_zero_eval.rs) proves the coercion fires at runtime
 //! and produces Satisfaction::Satisfied, including for compound dimensions (Stiffness).
 //!
@@ -15,7 +23,8 @@
 //! file: the additive tests confirm the coercion fires before the Add/Sub dimension
 //! guard, so `dimensioned ± 0` compiles without error.
 
-use reify_test_support::{assert_no_error_diagnostics, compile_source_with_stdlib};
+use reify_core::DiagnosticCode;
+use reify_test_support::{assert_no_error_diagnostics, collect_errors, compile_source_with_stdlib};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Step-3 (b): comparison-position breadth
@@ -239,47 +248,48 @@ structure S {
 // comments
 //
 // The stdlib comment sweep restates several `> 0N` / `> 0Hz` / `>= 0kg` /
-// `> 0 * 1N * 1s` constraint literals as a readability CONVENTION rather than a
-// requirement, on the grounds that a bare `0` would compile too. These cases
-// pin that claim for the dimension families and the operator those sites use
-// but which the Step-3/Step-5 sections above do not exercise, so a regression
-// cannot silently re-stale the corrected comments.
+// `> 0 * 1N * 1s` / `> 0.0V/m` constraint literals as a readability CONVENTION
+// rather than a requirement, on the grounds that a bare `0` would compile too.
+//
+// `coerce_zero_operand` gates on the sibling being `Type::Scalar{dimension}`
+// with `!dimension.is_dimensionless()`, so it is entirely dimension-family-
+// AGNOSTIC: one `#[test]` per stdlib dimension family would add no
+// discriminating power over the comparison-breadth cases above (no mutation of
+// the coercion could fail Force-but-not-Length). Family breadth is therefore
+// kept as ONE cheap table-driven case; the axes that are genuinely new get a
+// test each:
+//   - `>=`, a distinct arm of `compile_binop`'s operator list,
+//   - the MEMBER-ACCESS operand shape (plus its non-vacuity guard),
+//   - the bare non-negated REAL literal `0.0` (only `-0.0` existed above).
 // ────────────────────────────────────────────────────────────────────────────
 
-/// `member > 0` — base-ish named dimension Force (N).
+/// Family breadth for the dimension aliases the swept stdlib sites use:
+/// Force (`StepForce.magnitude > 0N`, `HarmonicForce.amplitude > 0N`,
+/// `JointLimit.max_force`), Frequency (`HarmonicForce.frequency > 0Hz` and the
+/// three shaper `target_frequency > 0Hz`), and Impulse
+/// (`ImpulseForce.impulse > 0 * 1N * 1s`).
 ///
-/// Backs the corrected notes on `StepForce.magnitude > 0N` and
-/// `HarmonicForce.amplitude > 0N` (modal_analysis.ri) and
-/// `JointLimit.max_force` (trajectory.ri).
+/// Table-driven on purpose: the coercion is dimension-agnostic, so these pin
+/// that the ALIASES resolve to non-dimensionless `Scalar` (which is what puts
+/// them on the coercion's path at all) without three near-identical `#[test]`
+/// bodies that no mutation could separate.
 #[test]
-fn force_gt_zero_no_error() {
-    let compiled = compile_source_with_stdlib(
-        r#"
-structure S {
-    param magnitude : Force = 1N
-    constraint magnitude > 0
-}
-"#,
-    );
-    assert_no_error_diagnostics(&compiled.diagnostics, "force > 0 comparison");
-}
-
-/// `member > 0` — named dimension Frequency (Hz).
-///
-/// Backs the corrected notes on `HarmonicForce.frequency > 0Hz`
-/// (modal_analysis.ri) and the three `target_frequency > 0Hz` shaper
-/// constraints (ZVShaper / ZVDShaper / EIShaper, trajectory.ri).
-#[test]
-fn frequency_gt_zero_no_error() {
-    let compiled = compile_source_with_stdlib(
-        r#"
-structure S {
-    param frequency : Frequency = 1Hz
-    constraint frequency > 0
-}
-"#,
-    );
-    assert_no_error_diagnostics(&compiled.diagnostics, "frequency > 0 comparison");
+fn stdlib_dimension_families_gt_zero_no_error() {
+    for (ty, init) in [
+        ("Force", "1N"),
+        ("Frequency", "1Hz"),
+        ("Impulse", "1N * 1s"),
+    ] {
+        let compiled = compile_source_with_stdlib(&format!(
+            r#"
+structure S {{
+    param x : {ty} = {init}
+    constraint x > 0
+}}
+"#
+        ));
+        assert_no_error_diagnostics(&compiled.diagnostics, &format!("{ty} > 0 comparison"));
+    }
 }
 
 /// `member >= 0` — the `>=` operator, which no case above exercises.
@@ -300,36 +310,40 @@ structure S {
     assert_no_error_diagnostics(&compiled.diagnostics, "mass >= 0 comparison");
 }
 
-/// `member > 0` — compound-product dimension Impulse (N·s = kg·m·s⁻¹).
+/// `member > 0.0` — bare, NON-NEGATED real-literal zero.
 ///
-/// Backs the corrected note on `ImpulseForce.impulse > 0 * 1N * 1s`
-/// (modal_analysis.ri), whose stale text claimed the dimensioned-zero form was
-/// needed "because polymorphic-zero has not landed".
+/// `is_syntactic_zero_literal` matches `NumberLiteral { value == 0.0 }`
+/// regardless of `is_real`, so `0.0` is coerced exactly like `0`. Every other
+/// real-literal case in this file is the NEGATED `-0.0` form, so this is the
+/// only pin on the plain `0.0` shape — the one the `dielectric_strength >
+/// 0.0V/m` note in materials_electrical.ri rests on.
 #[test]
-fn impulse_gt_zero_no_error() {
+fn real_literal_zero_rhs_no_error() {
     let compiled = compile_source_with_stdlib(
         r#"
 structure S {
-    param impulse : Impulse = 1N * 1s
-    constraint impulse > 0
+    param dielectric_strength : DielectricStrength = 1V/m
+    constraint dielectric_strength > 0.0
 }
 "#,
     );
-    assert_no_error_diagnostics(&compiled.diagnostics, "impulse > 0 comparison");
+    assert_no_error_diagnostics(
+        &compiled.diagnostics,
+        "dielectric_strength > 0.0 comparison",
+    );
 }
 
 /// `material.density > 0` — MEMBER-ACCESS operand, the shape backing
 /// `structural_physical.ri`'s `trait Physical` / `constraint material.density
 /// > 0kg/m^3`.
 ///
-/// MEASURED (task 6038): the coercion DOES reach a member-access operand. The
-/// gate in `coerce_zero_operand` (expr.rs:337/353) keys on the sibling's
+/// The coercion reaches a member access: its gate keys on the sibling's
 /// COMPILED TYPE being `Type::Scalar{D}` with non-dimensionless D — it is
 /// syntax-agnostic about the sibling's expression shape — and
-/// `material.density` compiles to `Scalar[kg·m^-3]`. This is a genuinely
-/// different operand shape from the `IndexAccess` case that
-/// `structural_physical.ri:69-72` deliberately carves out, so it is asserted
-/// separately rather than assumed from the plain-identifier cases above.
+/// `material.density` compiles to `Scalar[kg·m^-3]`. This is a different
+/// operand shape from the `IndexAccess` case that `structural_physical.ri`
+/// deliberately carves out, so it is asserted rather than inferred from the
+/// plain-identifier cases above.
 ///
 /// Deliberately written as a `structure`, not the `trait Physical` it mirrors:
 /// see `member_access_mismatched_non_zero_still_errors` below for why a trait
@@ -349,12 +363,17 @@ structure S {
 
 /// NON-VACUITY GUARD for `member_access_lhs_gt_zero_no_error` above.
 ///
-/// Every case in this file asserts the ABSENCE of a diagnostic, which is only
-/// meaningful if the dimension guard would actually fire on this operand shape.
-/// It does: a mismatched NON-ZERO literal against the same member access
-/// (`Scalar[kg·m^-3]` vs `Scalar[m]`) is rejected, and per the expr.rs gate a
-/// non-zero is never coerced. So the sibling test passing means the zero WAS
-/// coerced, not that member accesses are simply unchecked.
+/// A mismatched NON-ZERO literal against the same member access
+/// (`Scalar[kg·m^-3]` vs `Scalar[m]`) must be rejected with
+/// `DiagnosticCode::DimensionMismatch` — the code
+/// `format_dimension_mismatch_diagnostic` attaches on the Scalar-vs-Scalar
+/// arm. A non-zero is never coerced, so the sibling test passing means the
+/// ZERO was coerced, not that member accesses go unchecked.
+///
+/// Asserting the CODE, not merely "some error", matters: an unrelated future
+/// diagnostic on `param material : Material` would keep a bare non-empty check
+/// green while the dimension guard rotted away. Mirrors
+/// `comparison_operand_guard_tests.rs`'s `assert_has_code` idiom.
 ///
 /// This guard is not ceremonial. When the same probe is written against a
 /// `trait` body instead of a `structure`, the guard goes silent: a trait-body
@@ -373,17 +392,73 @@ structure S {
 }
 "#,
     );
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| format!("{:?}", d.severity).contains("Error"))
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(
-        !errors.is_empty(),
-        "expected a dimension-mismatch error for `material.density > 1m` \
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::DimensionMismatch)),
+        "expected DiagnosticCode::DimensionMismatch for `material.density > 1m` \
          (Density vs Length); got none — the member-access dimension guard is \
          not firing, which would make member_access_lhs_gt_zero_no_error vacuous. \
          Diagnostics: {:#?}",
         compiled.diagnostics
+    );
+}
+
+/// CONTRAST CASE — a param DEFAULT is not rewritten the way a binop operand is.
+///
+/// `coerce_zero_operand`'s sole call site is inside `compile_binop`, so the
+/// polymorphic-zero rewrite never reaches a param default. The param-default
+/// literal guard in `check_param_default_type` merely early-`return`s to
+/// SUPPRESS `ParamDefaultTypeMismatch`; it performs no rewrite. Consequence,
+/// measured here: `param x : Angle = 0` stores a DIMENSIONLESS default while
+/// `= 0deg` stores `Scalar[rad]`.
+///
+/// This is what the `HarmonicForce.phase : Angle = 0deg` note in
+/// modal_analysis.ri records — `0deg` is preferred because it dimensions the
+/// stored default, not merely because it reads better.
+#[test]
+fn param_default_bare_zero_stays_dimensionless() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param phase_deg : Angle = 0deg
+    param phase_bare : Angle = 0
+}
+"#,
+    );
+    assert_no_error_diagnostics(&compiled.diagnostics, "Angle param defaults");
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("structure S must compile to a template");
+    let default_type = |member: &str| {
+        template
+            .value_cells
+            .iter()
+            .find(|c| c.id.member == member)
+            .unwrap_or_else(|| panic!("no value cell named {member}"))
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("{member} has no default expr"))
+            .result_type
+            .clone()
+    };
+
+    let deg = default_type("phase_deg");
+    assert!(
+        matches!(&deg, reify_core::ty::Type::Scalar { dimension } if !dimension.is_dimensionless()),
+        "`= 0deg` must store a dimensioned Angle default; got {deg:?}"
+    );
+
+    let bare = default_type("phase_bare");
+    assert!(
+        !matches!(&bare, reify_core::ty::Type::Scalar { dimension } if !dimension.is_dimensionless()),
+        "`= 0` must stay DIMENSIONLESS — the param-default guard suppresses the \
+         diagnostic but does not rewrite the value, unlike coerce_zero_operand. \
+         Got {bare:?}; if this now fails, the `phase : Angle = 0deg` note in \
+         modal_analysis.ri needs revisiting."
     );
 }
