@@ -4124,6 +4124,160 @@ mod tests {
         );
     }
 
+    /// Task 6663 / review blocker (a): a Pinned-ONLY support set must not panic.
+    ///
+    /// `build_dirichlet_bcs`'s `SupportKind::Pinned` branch emits Z-only
+    /// constraints and adds NO rigid-body anchors (deliberately — see its NOTE;
+    /// a single pinned face is genuinely a mechanism and anchors must not be
+    /// invented for it). `eigensolve_modal`'s guard is
+    /// `n_dofs - n_free < 6`, which counts CONSTRAINED DOFs rather than
+    /// rigid-body modes actually removed: one Z DOF per face node here is
+    /// 14 ≥ 6, so `force_dense` stays false, the solve takes the shift-invert
+    /// path, and its up-front Cholesky `.expect(...)` PANICS on the singular
+    /// `K_free`.
+    ///
+    /// MEASURED pre-fix on exactly this input (debug):
+    /// `n_dofs = 84  n_constrained = 14  bcs dofs = [2, 8, 14, 20, 26, 32] …`
+    /// (Z-only, stride 6) → `panicked at eigensolve.rs:660: eigensolve: K must
+    /// be SPD; sp_cholesky failed … NonPositivePivot { index: 67 }`.
+    ///
+    /// The BCs are built through the REAL `build_dirichlet_bcs` rather than a
+    /// hand-written vector, so this exercises the kind-aware realization
+    /// end-to-end. Same geometry as
+    /// `solve_modal_core_unconstrained_default_n_modes_does_not_panic`, which
+    /// covers the 0-constrained-DOF sibling case that the count-based guard
+    /// *does* catch.
+    #[test]
+    fn pinned_only_single_face_does_not_panic() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+
+        let opts = modal_options(vec![(
+            "boundary_conditions".to_string(),
+            Value::List(vec![pinned_support("x_min")]),
+        )]);
+        let bcs = build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height);
+        assert!(
+            bcs.len() >= 6,
+            "fixture must constrain ≥ 6 DOFs so the count-based under-constraint \
+             guard does NOT fire (that is the whole point); got {}",
+            bcs.len(),
+        );
+        assert!(
+            3 * mesh.nodes.len() - bcs.len() > 64,
+            "fixture must exceed the dense-regime threshold so the shift-invert \
+             path is selected on size",
+        );
+
+        // Production default knobs (the trampoline's own).
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 10,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
+
+        let result: ModalCoreResult = solve_modal_core(
+            ModalMesh::P1(&mesh),
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &eigen_opts,
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "a pinned-only (under-constrained) solve must still return modes, \
+             not panic",
+        );
+        let has_rigid_warning = result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning && d.message.starts_with("W_ModalRigidBodyMode")
+        });
+        assert!(
+            has_rigid_warning,
+            "expected a W_ModalRigidBodyMode Warning for the pinned-only model \
+             (measured: 4 surviving rigid-body modes — X translation, Y \
+             translation, in-plane Z-rotation and the bending-plane Y-rotation); \
+             got {:?}",
+            result.diagnostics,
+        );
+    }
+
+    /// Task 6663 / review blocker (b): the singular-K fallback must not trade a
+    /// panic for an OOM.
+    ///
+    /// `solve_eigen_dense` allocates four `n × n` `Mat`s plus three `Col`s
+    /// (≈ 32·n² bytes) and costs O(n³), so the naive fix — "on Cholesky failure
+    /// just fall back to dense" — is harmless at the ~70-DOF scale of
+    /// [`pinned_only_single_face_does_not_panic`] but a resource bomb at real
+    /// mesh sizes (the reviewer's release repro reports a pivot failure at index
+    /// 25345; 32·25345² ≈ 20.6 GB, a guaranteed OOM, i.e. strictly WORSE than
+    /// today's panic, which the trampoline at least catches into `f1 = Undef`).
+    ///
+    /// This fixture is `n_free = 2548` (MEASURED: `n_nodes = 854`,
+    /// `n_dofs = 2562`, `n_constrained = 14`), comfortably above any defensible
+    /// dense-fallback ceiling, so it pins that the guarded path degrades
+    /// gracefully instead of densifying. Pre-fix it panics at the same
+    /// `eigensolve.rs:660` (`NonPositivePivot { index: 2542 }`) in ~221 ms — RED
+    /// as a fast panic, not as a hang.
+    #[test]
+    fn pinned_only_large_mesh_does_not_exhaust_memory() {
+        let length = 1.0_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+
+        let opts = modal_options(vec![(
+            "boundary_conditions".to_string(),
+            Value::List(vec![pinned_support("x_min")]),
+        )]);
+        let bcs = build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height);
+        let n_free = 3 * mesh.nodes.len() - bcs.len();
+        assert!(
+            n_free > 2000,
+            "fixture must be large enough that a dense fallback would be \
+             unacceptable; got n_free = {n_free}",
+        );
+
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 10,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
+
+        let started = std::time::Instant::now();
+        let result: ModalCoreResult = solve_modal_core(
+            ModalMesh::P1(&mesh),
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &eigen_opts,
+        );
+        let elapsed = started.elapsed();
+
+        let has_rigid_warning = result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning && d.message.starts_with("W_ModalRigidBodyMode")
+        });
+        assert!(
+            has_rigid_warning,
+            "expected a W_ModalRigidBodyMode Warning naming the under-constrained \
+             model; got {:?}",
+            result.diagnostics,
+        );
+        // Generous bound: the point is to pin that a 2548-DOF SINGULAR system is
+        // not routed into `solve_eigen_dense` (O(n³) QZ + ~208 MB of dense
+        // allocation here), not to benchmark the guarded path.
+        assert!(
+            elapsed < std::time::Duration::from_secs(60),
+            "the singular-K fallback must not densify a large system; took {elapsed:?}",
+        );
+    }
+
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
     /// the usual elastic fields, optionally carrying a `density` scalar. Mirrors
     /// the runtime material shape the trampoline reads (cf. buckling's
