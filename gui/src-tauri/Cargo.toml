@@ -39,19 +39,44 @@ tower-lsp.workspace = true
 tauri = { workspace = true, optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-shell = { version = "2", optional = true }
-# `sync` and `rt` are named HERE, by the crate that uses them, rather than being
-# inherited from another crate in the same build. `main.rs` already uses
-# `tokio::sync::Mutex`, and `large_stack.rs`/`lsp_bridge.rs` use
-# `tokio::sync::oneshot` + `tokio::runtime::Handle` (task 5772). Those compiled
-# before only via cross-crate feature unification — the workspace root declares
-# `sync`/`rt-multi-thread`, and cargo builds tokio once with the UNION of every
-# dependent's features. That is a silent dependency on some other crate in the
-# build keeping them enabled, and it breaks the moment `reify-gui` is built with
-# a narrower feature slice.
+# Every tokio feature this crate's own non-test sources reach for is named HERE,
+# by the crate that uses them, rather than inherited from another crate in the
+# same build. Cargo builds tokio ONCE with the UNION of every dependent's
+# features, so an undeclared feature compiles only for as long as some OTHER
+# crate in the build happens to enable it — a silent dependency that breaks the
+# moment `reify-gui` is built with a narrower feature slice.
+#
+# The list is the complete set for `src/**` minus `#[cfg(test)]`, so the comment
+# above is a checkable claim rather than a slogan. Feature -> its use sites:
+#
+#   sync    `main.rs`'s `tokio::sync::Mutex`; `large_stack.rs` / `lsp_bridge.rs`
+#           `tokio::sync::oneshot` (task 5772)
+#   rt      `large_stack.rs`'s `tokio::runtime::Handle` (5772), `tokio::spawn`,
+#           `tokio::task::spawn_blocking`
+#   time    `tokio::time::{timeout, sleep}`
+#   process `claude_bridge.rs`'s `tokio::process::{Command, Child}`
+#   io-util `claude_bridge.rs:14`'s `tokio::io::{AsyncBufReadExt, AsyncWriteExt,
+#           BufReader}` (the bare `AsyncRead`/`AsyncWrite`/`AsyncBufRead` traits
+#           are unconditional; the `*Ext` traits and `BufReader` are not)
+#   net     `debug_server.rs`'s `tokio::net::TcpListener`
+#
+# `io-util` and `net` were the two that had NOT been named while the comment
+# already claimed the principle: `io-util` was arriving from the workspace root
+# and `net` from `axum`'s own `tokio` feature, i.e. exactly the silent
+# unification this entry exists to stop relying on. Declaring them changes no
+# built artifact today (cargo unions features); it makes the crate's slice
+# self-sufficient.
 #
 # The same principle applies to the TEST target — see the `tokio` entry under
 # `[dev-dependencies]`, which names what the tests alone need.
-tokio = { workspace = true, features = ["process", "time", "sync", "rt"] }
+tokio = { workspace = true, features = [
+    "process",
+    "time",
+    "sync",
+    "rt",
+    "io-util",
+    "net",
+] }
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
