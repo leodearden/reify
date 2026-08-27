@@ -241,6 +241,18 @@ The seven hand-rolled content predicates (`module_has_geometry`, `module_has_iso
 **into** the construction path, which sees the compiled module. This is where "all get
 all" actually bites: a driver stops choosing which content-gated capability it wants.
 
+**`cmd_check` is the exception, and the exception is not optional** (corrected
+2026-08-27). Check's content predicates *are* its kernel routing, and check's kernel
+routing is reserved to check-diagnostic-truthfulness by a binding G4 ruling (§8.1) — so
+"move the predicates" cannot mean check's without this PRD breaking its own seam table.
+What actually happens to check is a three-step hand-off this PRD is the last step of:
+its kernel routing is rewritten by that PRD's in-flight leaf; the GUI purpose PRD's
+`activate_purpose_session()` leaf then makes **one** body serve both check arms,
+behaviour-preservingly; and only then does leaf α make check *construct from a profile*
+like every other driver, adopting the already-unified arm sequence rather than
+re-deriving it. Leaf α carries real dependency edges on both upstreams. The predicate
+unification α owns outright is the other six drivers'.
+
 Enforcement is the existing grep architecture test
 (`scripts/check-compute-trampoline-registration.sh`, wired into the verify manifests),
 widened from the trampolines axis to the construction path — not a new gate.
@@ -478,11 +490,15 @@ Two are hard, one is a coordination obligation with a deadline.
    extracts `Engine::run_measurement_pass`; those leaves call it rather than re-extracting
    the arm sequence, which that PRD's D1 forbids.
 
-Soft, ordering-only: check-diagnostic-truthfulness's kernel-widening leaf is
-**in-progress** and edits `crates/reify-cli/src/main.rs` — the same file several leaves
-here touch, and its declared file set also includes the test file holding the FEA lock
-that solver-driver-parity's leaf δ inverts. Three PRDs converge on that file; the leaves
-here are ordered behind it rather than racing it.
+**Promoted from soft to hard, 2026-08-27.** check-diagnostic-truthfulness's
+kernel-widening leaf is **in-progress** and edits `crates/reify-cli/src/main.rs` — the
+same file several leaves here touch, and its declared file set also includes the test
+file holding the FEA lock that solver-driver-parity's leaf δ inverts. **Four** PRDs now
+converge on that file: add the GUI purpose PRD, whose seam leaf rewrites `cmd_check`'s
+body. For leaf α that convergence is not merely contention but a correctness ordering —
+α adopts the unified body those two leaves produce — so both are now real edges, not
+prose. The remaining leaves that touch `main.rs` are ordered behind it rather than
+racing it.
 
 ---
 
@@ -502,10 +518,12 @@ here are ordered behind it rather than racing it.
 | `Engine::run_measurement_pass` (the arm-sequence extraction) | gui-on-demand-measurement α | hard for leaves γ and δ |
 | GUI OpenVDB kernel registration | its own baseline task | hard for the GUI half only; this PRD owns the eval/report/explain half |
 | GUI η export refusal · GUI viewport at-auto poses · delete `reify mcp-server` | their own tasks | reference |
-| `check`'s kernel-arm widening, `finish_check`, check's exit codes, `--strict` | check-diagnostic-truthfulness β, and its exit-gate leaf | **binding G4 ruling reserves them** — leaves here must not touch them |
+| `check`'s kernel-arm widening, `finish_check`, check's exit codes, `--strict` | check-diagnostic-truthfulness β, and its exit-gate leaf | **binding G4 ruling reserves them** — leaves here must not touch them. **This binds leaf α too** (§4.2): α makes check construct from a profile, it does not rewrite check's routing, and it is ordered behind that leaf by a real edge. |
+| the single `cmd_check` body — one arm sequence serving both the plain and `--purpose` arms | GUI purpose PRD's `activate_purpose_session()` leaf | hard for leaf α, wired 2026-08-27. Deliberately **behaviour-preserving**: it unifies the body without changing routing, exit codes, diagnostics or `--strict`. α adopts its result. |
 | multi-file / cfg plumbing, `compile_program`, the GUI twin deletion, LSP multi-file diagnostics | resolution-unification β/γ/δ/ε/ζ | hard for leaves ξ, ο, υ |
 | imported-file module-header mismatch surfacing | resolution-unification ξ | reference — the *import* axis, disjoint from this PRD's *driver* axis |
-| the shared `activate_purpose_session()` seam | the GUI purpose PRD (parallel session, 2026-08-26) | hard for leaf φ; see §8.3 |
+| the shared `activate_purpose_session()` seam | the GUI purpose PRD's seam leaf | hard for leaves φ **and α**; see §8.3 |
+| `crates/reify-mcp/src/tools/chunks/purposes.md` — the purposes chunk | the GUI purpose PRD's docs leaf | hard for leaf ω, wired 2026-08-27. That leaf rewrites the chunk and documents `--purpose` **as it stands when it runs** — check and the GUI. φ then widens the flag to five more drivers, which makes that one statement stale; ω corrects exactly that statement on top of their rewrite and touches nothing else in the file. Same for the `reify-design` index line: extend theirs, never add a competing one. |
 
 ### §8.2 — Corrections this PRD owes to committed documents
 
@@ -535,6 +553,17 @@ gain `--purpose` "in the flag-unification wave" — this PRD is that wave. The s
 session on the same day. At this PRD's decompose: if that session has filed its seam leaf,
 leaf φ wires a real dependency edge to it; if not, φ is filed **deferred** with the seam
 named in its text, and whichever session lands second wires the edge. Leo, 2026-08-26.
+
+**DISCHARGED 2026-08-27.** That PRD landed and decomposed; its seam leaf exists. φ's real
+edge is wired and φ is `pending`. Two consequences a reader should not have to derive:
+the seam is **behaviour-preserving for `cmd_check`**, so φ inherits a callable unified
+body and **not** a fixed `--purpose` arm; and that PRD's own investigation recorded, with
+executed evidence, that `reify check --purpose` currently exits 0 on a file plain
+`reify check` rejects with a `RepresentationWithin` violation. That false green is
+**not** closed by the seam. Its capability half — capture flags and tessellation reaching
+the purpose arm — is what leaf α's profile closes structurally; its routing half is
+check-diagnostic-truthfulness's, where that PRD files it as a fresh evidenced task. φ must
+not assume either half has landed.
 
 ### §8.4 — A message this PRD owes a sibling leaf
 
@@ -581,10 +610,9 @@ Twenty-five leaves, decomposed 2026-08-26; task IDs stamped below and in the man
 sidecar. Rows carry `#NNNN` and deliberately say nothing about task *status* — the id is
 immutable and queryable, a status word rots the moment the task moves.
 
-**φ (#6804) is filed `deferred`, not `pending`** — the GUI purpose PRD had not filed its
-`activate_purpose_session()` seam leaf when this batch was committed, so there is no real
-edge to wire yet (§8.3). Flip it to `pending` and wire the edge once that leaf exists;
-until then Ω (#6808) stays blocked on it by design.
+**φ (#6804) was filed `deferred`** because the GUI purpose PRD had not yet filed its
+`activate_purpose_session()` seam leaf. **Resolved 2026-08-27**: that leaf is #6803, the
+real edge is wired, and φ is `pending`. Ω (#6808) is no longer blocked on a park.
 
 ### Phase 1 — the profile
 
@@ -597,7 +625,10 @@ until then Ω (#6808) stays blocked on it by design.
   grep architecture test; updates the `INV-FEA-1` registry row from the trampolines axis
   to the construction path, **same diff**. *Intermediate.* Signal: the workspace compiles
   with no engine-construction path that names no profile, and the widened architecture
-  test fails on an injected undelegated site. Depends: solver-driver-parity α.
+  test fails on an injected undelegated site. Depends: solver-driver-parity α;
+  check-diagnostic-truthfulness's kernel-widening leaf and the GUI purpose PRD's seam
+  leaf — both added 2026-08-27, because α adopts `cmd_check`'s unified body rather than
+  re-deriving its routing (§4.2).
 
 ### Phase 2 — per-driver reach
 
@@ -719,8 +750,11 @@ until then Ω (#6808) stays blocked on it by design.
   acceptance: an author who knows the goal ("make my tests fail when they can't be
   decided") finds the mechanism from the chunks or the corpus index. **Also corrects the
   spec's `@test` section**, which today promises constraint diagnostics for failures that
-  the runner does not print. *Leaf.* Signal: each documented signature compiles as
-  written in a smoke `.ri`; the corpus example is auto-compile-gated. Depends: λ, σ, τ, φ.
+  the runner does not print. **Does not own the purposes chunk** — the GUI purpose PRD's
+  docs leaf does, and ω is ordered behind it (§8.1); ω's only edit there is the
+  flag-availability statement that φ makes stale. *Leaf.* Signal: each documented
+  signature compiles as written in a smoke `.ri`; the corpus example is auto-compile-gated.
+  Depends: λ, σ, τ, φ, and the GUI purpose PRD's docs leaf.
 - **Ω (#6808) — PRD close.** Docs-only. Backfills real task IDs into this section, sets the
   terminal status marker naming the landed leaves, adds the AS-AUTHORED freeze paragraph
   and the LIVE/AS-AUTHORED map, and applies the matching header to the capability
@@ -732,9 +766,14 @@ Hard intra-batch edges, as wired: `α → {β, γ, δ, ε, η, ρ}`; `η → {θ
 `δ → ζ`; `ε → λ`; `ν → {ξ, ο}`; `{σ, θ, ι, κ, λ, γ, δ, ξ, ο, μ} → χ`; `χ → ψ`;
 `{λ, σ, τ, φ} → ω`; all twenty-four → `Ω`.
 
-Out-of-batch hard edges, as wired: `#6689 → α` · `#6694 → {ε, λ}` · `#6721 → ζ` ·
-`#6740 → {γ, δ}` · `#6724 → μ` · `#5519 → ξ` · `#5520 → {ο, υ}` · `#5516 → υ` ·
-`{#6700, #5521} → χ`. The GUI purpose seam → φ edge is **not yet wired** (see above).
+Out-of-batch hard edges, as wired: `{#6689, #5748, #6803} → α` · `#6694 → {ε, λ}` ·
+`#6721 → ζ` · `#6740 → {γ, δ}` · `#6724 → μ` · `#5519 → ξ` · `#5520 → {ο, υ}` ·
+`#5516 → υ` · `{#6700, #5521} → χ` · `#6803 → φ` · `#6837 → ω`. The last of α's, the φ
+edge and the ω edge were added 2026-08-27, once the GUI purpose PRD decomposed (§8.3).
+
+Outbound, into other PRDs: `#6769 → σ` and `#6787 → ψ` — the spec-conformance suite's
+CLI-observable tier and cross-driver tier, whose own task text asked for these edges to
+be wired when this PRD decomposed.
 
 Note π (#6798) and ν (#6795) and τ (#6801) carry no intra-batch upstream: they are
 independent of the profile and of the verdict chain, and can start immediately.

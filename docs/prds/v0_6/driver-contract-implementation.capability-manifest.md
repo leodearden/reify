@@ -15,7 +15,7 @@ and HEAD are docs-only, so the binary is code-current. The six committed fixture
 Code-only claims were verified by reading the cited symbol at HEAD, not by trusting the
 survey's cites — four of which had drifted or were wrong (§12 of the PRD).
 
-**Verdict summary: 25 leaves, 100 bindings, 0 FAIL.** Thirty-five carry a mechanical `delivered_check` in the sidecar; the rest are `manual` or evidence-only.
+**Verdict summary: 25 leaves, 103 bindings, 0 FAIL.** Thirty-five carry a mechanical `delivered_check` in the sidecar; the rest are `manual` or evidence-only.
 
 **Scope-of-evidence caveat, stated up front.** Three leaves — ξ (GUI module header),
 ο (LSP module header) and ρ (GUI FEA cache) — rest on **code-read evidence only**. No
@@ -60,6 +60,7 @@ the warning would let a leaf "fix" explain into gating and still pass.
 | `grep-architecture-gate-exists` | capability→producer, **wired on main** — `scripts/check-compute-trampoline-registration.sh` exists and is registered in the verify-pipeline manifests. α widens it; it does not mint a second gate. | PASS |
 | `seventeen-construction-sites` | observed — an exhaustive census of production (non-test-helper) engine construction found 17 sites carrying 12 distinct 7-axis fingerprints. This is the duplication α removes. | PASS |
 | `inv-fea-1-row-exists` | capability→producer, **wired on main** — `docs/invariants.md` carries an `INV-FEA-1` row ("full registration has one constructor", status `proposed`, owner compute-fea-hardening). α generalises that row rather than minting a new id. | PASS |
+| `cmd-check-predicates-are-not-alpha's` | **SCOPE BOUNDARY, added 2026-08-27** — check's content predicates *are* its kernel routing, which a binding G4 ruling reserves to check-diagnostic-truthfulness. As first filed, α's deliverable 3 asked for something this PRD's own §8.1 forbids. Resolved by ordering, not by exemption: check's routing is rewritten upstream, the GUI purpose PRD's seam leaf then unifies check's body behaviour-preservingly, and α adopts the result. Both are real edges on α now. | PASS |
 
 ### β — `build` gains the FEA persistent cache
 
@@ -239,7 +240,8 @@ the warning would let a leaf "fix" explain into gating and still pass.
 |---|---|---|
 | `purpose-engine-api-exists` | capability→producer, **wired on main** — activate/deactivate/is-active purpose methods all exist on the engine and are exercised today by `reify check --purpose`. | PASS |
 | `purpose-is-check-only-today` | observed — `--purpose` appears in exactly one usage string; no other driver parses it, and the GUI has no purpose surface at all (33 Tauri commands, none purpose-related). | PASS |
-| `shared-seam-is-upstream-and-unfiled` | **DAG-direction, with a filing caveat** — `activate_purpose_session()` is owned by the GUI purpose PRD, authored in a parallel session on 2026-08-26. It has no task id at this manifest's writing. Per Leo's ruling (PRD §8.3), φ is filed **deferred** if the seam leaf does not exist at decompose time, and the edge is wired by whichever session lands second. | PASS |
+| `shared-seam-is-upstream-and-filed` | **DAG-direction — RESOLVED 2026-08-27.** `activate_purpose_session()` is owned by the GUI purpose PRD, which landed and decomposed on 2026-08-27; the seam is its leaf α. The real edge is wired and φ is `pending`. (This binding read *unfiled* at authoring, when φ was correctly parked `deferred` per PRD §8.3.) | PASS |
+| `seam-is-behaviour-preserving-for-check` | **observed in the landed sibling PRD, added 2026-08-27** — that seam leaf is explicitly scoped behaviour-preserving: it changes no `cmd_check` routing, exit code, diagnostic or `--strict`, because all four are reserved elsewhere. So φ inherits a callable unified body, **not** a fixed `--purpose` arm. The same PRD records, with executed evidence, that `reify check --purpose` exits 0 on a file plain `reify check` rejects with a `RepresentationWithin` violation — a false green the seam does not close. φ must not assume it has. | PASS |
 
 ### χ — Cross-driver diagnostic-set and exit-code parity
 
@@ -267,6 +269,7 @@ the warning would let a leaf "fix" explain into gating and still pass.
 | `language-surface-changes` | producer-self — this PRD adds `@allow_indeterminate` (language surface), `--json` and the exit-code contract (tooling surface), and widens `--purpose` reach. The overlay's docs-truth gate therefore fires and requires all four deliverables. | PASS |
 | `chunk-and-corpus-substrate-exists` | capability→producer, **wired on main** — the MCP chunk directory, the auto-compile-gated best-practices corpus with its index, and the reify-design cheatsheet index all exist. ω updates them. | PASS |
 | `spec-test-section-is-already-wrong` | observed — the language spec's `@test` section promises that test output "reports pass/fail with constraint diagnostics for failures". The runner does not print them. ω corrects the spec alongside the leaf that makes the promise true. | PASS |
+| `purposes-chunk-is-not-omegas` | **DOCS-OWNERSHIP BOUNDARY, added 2026-08-27** — the GUI purpose PRD's docs leaf owns `chunks/purposes.md` and documents `--purpose` as it stands when it runs (check + GUI). φ then widens the flag to five more drivers, making that statement stale. ω is ordered behind that leaf by a real edge and corrects **only** that statement; it does not rewrite the chunk, and it extends the existing `reify-design` index line rather than adding a competing one. | PASS |
 
 ### Ω — PRD close
 
