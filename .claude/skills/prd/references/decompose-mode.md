@@ -8,6 +8,10 @@ Reify identity (`project_id="reify"`, `project_root="/home/leo/src/reify"`), the
 
 > Step 3 (the synchronous, curator-bypassing `planning_mode=True` path that returns `task_id` directly — no `resolve_ticket` round trip) is unchanged; see the generic `decompose-mode.md` Step 3. This is the pattern `.claude/skills/audit/references/severity-routing.md` refers to.
 
+## Step 2.5 extension — scoping an `expect: absent` delivered_check (reify-specific)
+
+When authoring a `delivered_check` at shared Step 2.5: an `expect: absent` pattern must be scoped to the construct that would carry the defect, never to the bare token, and a later correction to a landed pattern must update the producer task's `metadata.delivered_checks` as well as both manifest twins (`.yaml` and `.md`) by hand. See `../project.md` → "Capability Manifest — reify evidence forms" for the rules and the worked precedent.
+
 ## Step 3 extension — metadata.files guard (reify-specific, task 4677 β)
 
 **Before each leaf's `submit_task`**, run the α guard predicate on the leaf's `metadata.files` list:
