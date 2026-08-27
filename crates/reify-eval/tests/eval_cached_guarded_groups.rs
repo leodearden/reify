@@ -16,7 +16,7 @@
 //! bypass, instead of silently dropping the cells.
 
 use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
-use reify_core::{ModulePath, SourceSpan, Type, ValueCellId, VersionId};
+use reify_core::{DiagnosticCode, ModulePath, SourceSpan, Type, ValueCellId, VersionId};
 use reify_eval::Engine;
 use reify_ir::{CompiledExpr, DeterminacyPredicateKind, Value};
 use reify_test_support::builders::value_ref_typed;
@@ -96,8 +96,17 @@ fn eval_cached_supports_or_signals_guarded_groups_and_does_not_panic_on_determin
             .eval_result
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("guarded groups") && d.message.contains("incremental")),
-        "expected a diagnostic naming the guarded-groups/incremental fallback; got: {:?}",
+            .any(|d| {
+                d.code == Some(DiagnosticCode::EvalCachedGuardedGroupsFallback)
+                    && d.message.contains("guarded groups")
+                    && d.message.contains("incremental")
+            }),
+        "expected a DiagnosticCode::EvalCachedGuardedGroupsFallback warning naming \
+         the guarded-groups/incremental fallback. The CODE half is load-bearing: \
+         reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state drops this \
+         diagnostic from the editor stream by matching that code, so removing the \
+         `.with_code(..)` would silently re-open the spurious-editor-warning leak \
+         (task 5240). Got: {:?}",
         result.eval_result.diagnostics,
     );
 
@@ -173,8 +182,17 @@ fn eval_cached_guarded_module_matches_cold_eval_values_for_guard_false() {
             .eval_result
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("guarded groups") && d.message.contains("incremental")),
-        "expected a diagnostic naming the guarded-groups/incremental fallback; got: {:?}",
+            .any(|d| {
+                d.code == Some(DiagnosticCode::EvalCachedGuardedGroupsFallback)
+                    && d.message.contains("guarded groups")
+                    && d.message.contains("incremental")
+            }),
+        "expected a DiagnosticCode::EvalCachedGuardedGroupsFallback warning naming \
+         the guarded-groups/incremental fallback. The CODE half is load-bearing: \
+         reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state drops this \
+         diagnostic from the editor stream by matching that code, so removing the \
+         `.with_code(..)` would silently re-open the spurious-editor-warning leak \
+         (task 5240). Got: {:?}",
         result_b.eval_result.diagnostics,
     );
 

@@ -7570,26 +7570,55 @@ impl Engine {
         // guarded pipeline correctly (guard evaluation, member/else_member
         // activation, determinacy-snapshot population), so this reuses that
         // proven path rather than duplicating guard logic on the warm path.
+        //
         // The pushed Warning makes the incremental-path bypass observable to
-        // any caller instead of silently returning wrong/missing values.
+        // any caller instead of silently returning wrong/missing values. It
+        // carries `DiagnosticCode::EvalCachedGuardedGroupsFallback` because it
+        // is an INTERNAL engine note, not a user fault — the values returned
+        // are the correct cold-eval ones, so nothing in the user's source is
+        // wrong when it fires. `reify-lsp`'s eval-diagnostic merge
+        // (reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state) keys
+        // on that code to drop it from the editor stream, which is what keeps
+        // every valid `where`-using `.ri` file (the shipped stdlib
+        // `determinacy_purposes.ri`, `examples/m5_guarded_enum.ri`) from
+        // showing a spurious warning that flickers in and out as the user
+        // types. Match on the code, never on this prose, in any other
+        // consumer that needs to recognise the bypass.
         if module.templates.iter().any(|t| !t.guarded_groups.is_empty()) {
             let mut er = self.eval(module);
-            er.diagnostics.push(Diagnostic::warning(
-                "guarded groups (where-blocks) are not supported on the incremental \
-                 eval_cached path; falling back to a full cold eval",
-            ));
+            er.diagnostics.push(
+                Diagnostic::warning(
+                    "guarded groups (where-blocks) are not supported on the incremental \
+                     eval_cached path; falling back to a full cold eval",
+                )
+                .with_code(DiagnosticCode::EvalCachedGuardedGroupsFallback),
+            );
             return CachedEvalResult {
                 eval_result: er,
-                // NOTE: all-zero stats here mean "the incremental cache was
-                // bypassed for this call", not "fully cached / nothing to
-                // evaluate" — eval_cached's own hit/miss/early-cutoff
-                // counters never ran, since the cold `eval()` above doesn't
-                // touch them. A caller that only inspects `stats` (without
-                // also checking `eval_result.diagnostics` for the Warning
-                // pushed above) could otherwise misread this as full cache
-                // reuse. The diagnostic is the authoritative bypass signal;
-                // treat default stats from this branch accordingly.
-                stats: CacheStats::default(),
+                // NOTE: the three zero eval-cache counters here mean "the
+                // incremental cache was bypassed for this call", not "fully
+                // cached / nothing to evaluate" — eval_cached's own
+                // hit/miss/early-cutoff counters never ran, since the cold
+                // `eval()` above doesn't touch them. A caller that only
+                // inspects `stats` (without also checking
+                // `eval_result.diagnostics` for the coded Warning pushed
+                // above) could otherwise misread this as full cache reuse.
+                // The diagnostic is the authoritative bypass signal; treat
+                // zeroed counters from this branch accordingly.
+                //
+                // `realization_entries` is the ONE field that must not be
+                // left at its `Default` zero: `CacheStats::realization_entries`
+                // (crates/reify-eval/src/lib.rs) documents it as a MONOTONIC
+                // lifetime count owned by the RealizationCache that "is never
+                // decremented". Reporting zero here would make that count
+                // appear to run backwards for any caller sampling it across a
+                // guarded call. Read it live from the same accessor the
+                // normal path's tail uses, so both exits of this function
+                // report the identical lifetime figure.
+                stats: CacheStats {
+                    realization_entries: self.realization_cache.realization_entries(),
+                    ..CacheStats::default()
+                },
             };
         }
 
