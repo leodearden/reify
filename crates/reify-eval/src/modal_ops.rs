@@ -26,7 +26,7 @@ use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult,
     ElementOrder, ElementStiffness, IsotropicElastic, JointStiffness, add_joint_stiffness,
     assemble_global_stiffness, consistent_element_mass_tet_p1, consistent_element_mass_tet_p2,
-    element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
+    element_stiffness, solve_eigen_dense, try_solve_eigen_shift_invert,
 };
 use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
@@ -378,17 +378,23 @@ pub(crate) fn eigensolve_modal(
     // A connected 3-D elastic solid has a 6-dimensional rigid-body null space, so
     // K_free is SPD (hence Cholesky-factorable) only once the Dirichlet BCs remove
     // all six rigid-body modes — which needs at least 6 constrained DOFs. Fewer
-    // than that leaves K_free singular, and solve_eigen_shift_invert factors K up
-    // front (before its own dense fallback), so it would PANIC on such an
-    // under-constrained model whenever n_free is large enough to take the
-    // shift-invert path (e.g. the production default n_modes = 10 on n_free > 64).
-    // Route these cases to the dense generalized solver, which tolerates a
-    // singular K_free and lets the W_ModalRigidBodyMode diagnostic surface
-    // gracefully regardless of mesh size — matching the small-mesh behaviour the
-    // rigid-body diagnostic was designed for (suggestion 1 / robustness).
+    // than that leaves K_free singular, and the shift-invert path factors K up
+    // front, so it would PANIC on such an under-constrained model.
+    //
+    // This count is a NECESSARY condition for SPD-ness, never a sufficient one:
+    // a Pinned-only support set constrains one Z DOF per face node (≥ 6, so this
+    // detector stays quiet) yet still leaves 3–4 rigid-body modes alive. It is
+    // therefore kept only as a CHEAP FAST PATH for the common no/insufficient-
+    // supports user error — skipping a factorization that is known in advance to
+    // fail — and is NOT load-bearing for panic-safety. That guarantee lives in
+    // `solve_generalized_eigen`, which measures SPD-ness directly via
+    // `try_solve_eigen_shift_invert` (task 6663).
     const RIGID_BODY_DOFS: usize = 6;
     let under_constrained = n_dofs.saturating_sub(n_free) < RIGID_BODY_DOFS;
-    let eig = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
+    let GeneralizedEigenOutcome {
+        result: eig,
+        singular_k_over_ceiling,
+    } = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
 
     // ---- Convert λ→f and scatter φ_free → φ_full --------------------------
     let n_modes_out = eig.eigenvalues.len();
@@ -477,6 +483,20 @@ pub(crate) fn eigensolve_modal(
                  may be under-constrained (rigid-body or spurious mode)."
             )));
         }
+    }
+
+    // Singular K_free above the dense-fallback ceiling: no eigenpairs at all were
+    // computed, so the rigid-body loop above had nothing to flag. Say WHY rather
+    // than returning a silently empty spectrum. The `W_ModalRigidBodyMode` prefix
+    // is deliberate — the model IS under-constrained, and existing assertions and
+    // consumer grouping keys are keyed on that prefix.
+    if singular_k_over_ceiling {
+        diagnostics.push(Diagnostic::warning(format!(
+            "W_ModalRigidBodyMode: K_free is singular (the model is \
+             under-constrained) and n_free = {n_free} exceeds the dense-fallback \
+             ceiling {DENSE_FALLBACK_MAX_DIM}; no modes were computed. Add \
+             supports that remove all six rigid-body modes."
+        )));
     }
 
     // Convergence shortfall: `eig.converged` is false iff fewer modes were
@@ -729,41 +749,119 @@ fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
     ))
 }
 
+/// Largest `n_free` for which a SINGULAR `K_free` is still routed to the dense
+/// generalized solver rather than degenerating to "no modes".
+///
+/// [`solve_eigen_dense`] densifies the problem: it allocates four `n × n`
+/// `faer::Mat<f64>`s plus three `Col`s, i.e. ≈ `32·n²` bytes, and its QZ costs
+/// `O(n³)`. At 1024 that is ≈ 34 MB and a few seconds — an acceptable price for
+/// turning an under-constrained model into a graceful `W_ModalRigidBodyMode`
+/// result. 2048 (≈ 134 MB) is the upper end of what is defensible; beyond that
+/// the "fallback" becomes strictly worse than the panic it replaces (a 25 345-DOF
+/// singular system would need ≈ 20.6 GB — a guaranteed OOM).
+///
+/// This ceiling gates ONLY the singular fallback. An SPD `K_free` never reaches
+/// it (the shift-invert path succeeds and returns first), and the small-model
+/// regime `n ≤ max(64, 2·n_modes)` already goes dense by design, so no
+/// well-posed model changes behaviour because of this constant.
+const DENSE_FALLBACK_MAX_DIM: usize = 1024;
+
+/// What [`solve_generalized_eigen`] produced, plus the one fact the caller
+/// cannot recover from an [`EigenSolverResult`] alone.
+struct GeneralizedEigenOutcome {
+    result: EigenSolverResult,
+    /// `true` iff `K_free` was singular AND `n_free` exceeded
+    /// [`DENSE_FALLBACK_MAX_DIM`], so `result` carries NO eigenpairs at all.
+    ///
+    /// An empty `result` is otherwise indistinguishable from a converge-to-zero
+    /// eigensolver failure, and the rigid-body diagnostic loop in
+    /// [`eigensolve_modal`] has no modes to inspect in this case — so the reason
+    /// has to be carried out of band for the caller to be able to say WHY.
+    singular_k_over_ceiling: bool,
+}
+
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
 /// returning eigenvalues ascending by |λ| with column-major eigenvectors.
 ///
 /// Dispatches to the dense path directly in the small regime instead of always
-/// going through [`solve_eigen_shift_invert`], which unconditionally
-/// Cholesky-factors `K` up front and would panic on a singular / near-singular
-/// `K_free` (e.g. an unconstrained fixture's rigid-body modes). The dense-regime
-/// predicate `n ≤ max(64, 2·n_modes)` mirrors the wrapper's own internal
-/// dense-fallback threshold, so the numerical path is identical to what the
-/// wrapper would pick — minus the premature factorization. Larger constrained
-/// problems (`K_free` SPD after BCs) take the shift-invert Lanczos path
-/// (design_decision #4).
+/// going through the shift-invert wrapper, which unconditionally Cholesky-factors
+/// `K` up front and would panic on a singular / near-singular `K_free` (e.g. an
+/// unconstrained fixture's rigid-body modes). The dense-regime predicate
+/// `n ≤ max(64, 2·n_modes)` mirrors the wrapper's own internal dense-fallback
+/// threshold, so the numerical path is identical to what the wrapper would pick —
+/// minus the premature factorization. Larger constrained problems (`K_free` SPD
+/// after BCs) take the shift-invert Lanczos path (design_decision #4).
 ///
-/// `force_dense` overrides the size heuristic to take the dense path regardless
-/// of `n`. The caller sets it when the model is detected as under-constrained
-/// (too few Dirichlet DOFs to remove the rigid-body null space), so a singular
-/// `K_free` never reaches `solve_eigen_shift_invert`'s up-front Cholesky and
-/// panics. NOTE: the caller's detector (constrained-DOF count) is a *necessary*
-/// condition for SPD-ness, not a sufficient one — a pathological
-/// ≥6-but-rank-deficient constraint set on a mesh large enough to take the
-/// shift-invert path could still reach the panicking factorization. Closing that
-/// residual edge would need an explicit SPD probe (a throwaway Cholesky attempt
-/// with graceful fallback) and is deferred as a follow-up; the common
-/// no/insufficient-supports user error is handled here.
+/// # Singular `K_free` is measured, not predicted
+///
+/// Above the small regime this calls [`try_solve_eigen_shift_invert`], whose
+/// `None` means EXACTLY "`K` is not SPD". That is a direct measurement, so the
+/// ≥6-but-rank-deficient edge this function's doc previously deferred as a
+/// follow-up is now CLOSED — and closed at zero cost, because the `try_` variant
+/// factors `K` once and reuses that factorization on the healthy path. A
+/// well-posed model therefore pays nothing: same call, same factorization, same
+/// numbers.
+///
+/// On `None` the model is genuinely under-constrained and the response is size-
+/// dependent: at or below [`DENSE_FALLBACK_MAX_DIM`] the dense generalized solver
+/// tolerates the singular `K_free` and the rigid modes come back as `ω ≈ 0`,
+/// which [`eigensolve_modal`]'s `RIGID_BODY_OMEGA_TOL` loop turns into
+/// `W_ModalRigidBodyMode` warnings. Above it, densifying would be a resource bomb
+/// (see the constant), so the result degenerates to no eigenpairs with
+/// `converged: false` and `singular_k_over_ceiling: true`, and the caller emits
+/// the explanatory diagnostic.
+///
+/// `force_dense` is the caller's CHEAP FAST PATH for the common no-supports error
+/// (constrained DOFs < 6, which cannot possibly remove a 6-dimensional null
+/// space): it skips a factorization attempt already known to fail. It is no
+/// longer load-bearing for panic-safety — the `try_` call is. Note that it is
+/// routed through the SAME ceiling, which also closes a pre-existing hazard for
+/// free: before task 6663, a no-supports model on a large mesh set `force_dense`
+/// and walked straight into the dense allocation described above.
 fn solve_generalized_eigen(
     k_free: &SparseRowMat<usize, f64>,
     m_free: &SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
     force_dense: bool,
-) -> EigenSolverResult {
+) -> GeneralizedEigenOutcome {
     let n = k_free.nrows();
-    if force_dense || n <= 64_usize.max(2 * opts.n_modes) {
-        solve_eigen_dense(k_free, m_free, opts)
+
+    // Small-model regime: dense by design and cheap, whatever K looks like.
+    if n <= 64_usize.max(2 * opts.n_modes) {
+        return GeneralizedEigenOutcome {
+            result: solve_eigen_dense(k_free, m_free, opts),
+            singular_k_over_ceiling: false,
+        };
+    }
+
+    // Well-posed models: shift-invert Lanczos, exactly as before. `None` is the
+    // one non-contract outcome — K is not SPD.
+    if !force_dense
+        && let Some(result) = try_solve_eigen_shift_invert(k_free, m_free, opts.clone())
+    {
+        return GeneralizedEigenOutcome {
+            result,
+            singular_k_over_ceiling: false,
+        };
+    }
+
+    // Under-constrained: degrade gracefully if that is affordable, degenerately
+    // if it is not.
+    if n <= DENSE_FALLBACK_MAX_DIM {
+        GeneralizedEigenOutcome {
+            result: solve_eigen_dense(k_free, m_free, opts),
+            singular_k_over_ceiling: false,
+        }
     } else {
-        solve_eigen_shift_invert(k_free, m_free, opts)
+        GeneralizedEigenOutcome {
+            result: EigenSolverResult {
+                eigenvalues: Vec::new(),
+                eigenvectors: faer::Mat::<f64>::zeros(n, 0),
+                n_converged: 0,
+                converged: false,
+            },
+            singular_k_over_ceiling: true,
+        }
     }
 }
 
@@ -2929,14 +3027,26 @@ fn build_dirichlet_bcs(
                 //
                 // NOTE the deliberate ASYMMETRY with the pin-pin branch above,
                 // which adds three minimal neutral-axis anchors on top of its
-                // Z pins: it needs them precisely because NEITHER end face is
-                // clamped there, so the X translation, the Y translation and the
-                // in-plane Z-rotation would survive and leave `K_free` singular.
-                // On this path at least one face is Fixed whenever a Pinned face
-                // could leak a rigid-body mode — e.g. the propped cantilever
-                // `[Fixed(x_min), Pinned(x_max)]`, whose x_min full-face clamp
-                // already removes all six. So the absence of anchors here is a
-                // consequence of the per-face rule, not an oversight.
+                // Z pins. That branch needs them because a simply-supported beam
+                // is a WELL-POSED structure whose 2-D bending idealization the
+                // anchors do not disturb — they sit on the neutral axis, on the
+                // vertical modes' own node line.
+                //
+                // No such anchors belong here. A Pinned-only realization that is
+                // not the pin-pin branch MAY leave 3-4 rigid-body modes alive —
+                // measured: `[PinnedSupport("x_min")]` alone leaves four (X
+                // translation, Y translation, in-plane Z-rotation, and the
+                // bending-plane Y-rotation, which survives because a rigid
+                // rotation about y through the x_min face gives u_z = 0
+                // everywhere ON that face, so Z-pinning it does not touch that
+                // mode). That is not a defect in this realization: it is an
+                // under-constrained MODEL — a mechanism — and inventing anchors
+                // for it would return plausible-looking frequencies for a
+                // structure that has none, the exact silent-wrong-answer class
+                // task 6663 exists to close. It is handled downstream instead,
+                // by the singular-K fallback in `solve_generalized_eigen`, which
+                // routes it to the graceful `W_ModalRigidBodyMode` path rather
+                // than the shift-invert Cholesky.
                 SupportKind::Pinned => bcs.push(DirichletBc {
                     dof: 3 * n + 2,
                     value: 0.0,

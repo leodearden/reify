@@ -14,6 +14,9 @@
 //! - [`solve_eigen_shift_invert`] — shift-invert Lanczos via sparse Cholesky +
 //!   `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back to
 //!   dense when the Krylov window would exceed the problem dimension.
+//! - [`try_solve_eigen_shift_invert`] — the same solve, returning `None`
+//!   instead of panicking when `K` is not SPD (task 6663; for callers that can
+//!   legitimately be handed an under-constrained system).
 //! - [`lanczos_shift_invert`] — generic Lanczos core operating over arbitrary
 //!   [`StiffnessOp`] / [`MetricOp`] operator pairs; no dense fallback (caller
 //!   is responsible for small-problem dispatch).
@@ -646,18 +649,51 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 /// - K is not SPD (Cholesky failure → panic with descriptive message, matching
 ///   Task-2544 panic-on-contract convention)
 /// - See also [`check_eigen_options_and_shapes`]
+///
+/// A caller that can legitimately be handed a singular `K` — an
+/// under-constrained modal model, say — should use
+/// [`try_solve_eigen_shift_invert`] instead of catching this panic.
 pub fn solve_eigen_shift_invert(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
 ) -> EigenSolverResult {
+    try_solve_eigen_shift_invert(k, b, opts)
+        .expect("eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied")
+}
+
+/// Non-panicking sibling of [`solve_eigen_shift_invert`]: returns `None` when
+/// the up-front sparse Cholesky of `K` fails.
+///
+/// `None` means EXACTLY ONE thing — `K` is not SPD (`sp_cholesky` returned
+/// `Err`). Every other precondition is still a hard contract and still panics
+/// via [`check_eigen_options_and_shapes`] (bad `n_modes`, shape mismatch, …),
+/// so `None` is never ambiguous between "singular K" and "caller bug". That is
+/// what makes it safe for a caller to treat `None` as the domain fact "this
+/// model is under-constrained" rather than as a generic failure.
+///
+/// The factorization is performed exactly ONCE: on `Some` the very same `llt`
+/// feeds [`SparseStiffnessOp`], so the healthy path pays no extra cost relative
+/// to calling [`solve_eigen_shift_invert`] directly. (This is why the shape
+/// here is `try_` + delegate rather than "probe with a throwaway `sp_cholesky`,
+/// then call the panicking entry point", which would factor K twice on every
+/// well-posed solve.)
+///
+/// # Panics
+///
+/// - See [`check_eigen_options_and_shapes`]. A non-SPD `K` does NOT panic here;
+///   it is the `None` return.
+pub fn try_solve_eigen_shift_invert(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> Option<EigenSolverResult> {
     check_eigen_options_and_shapes(k, b, &opts);
     let n = k.nrows();
 
-    // Factor K via sparse Cholesky (panics if not SPD per Task-2544 convention).
-    let llt = k
-        .sp_cholesky(Side::Lower)
-        .expect("eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied");
+    // Factor K via sparse Cholesky. A failure here means K is not SPD — the one
+    // condition this entry point reports rather than panics on.
+    let llt = k.sp_cholesky(Side::Lower).ok()?;
 
     // Dense-fallback dispatch (sparse-matrix-specific; not in the generic).
     // faer's partial_self_adjoint_eigen_imp requires max_dim < n strictly.
@@ -682,7 +718,7 @@ pub fn solve_eigen_shift_invert(
         // Problem too small for Lanczos; delegate to the direct dense solver.
         // The dense result already satisfies the EigenSolverResult contract
         // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
-        return solve_eigen_dense(k, b, opts);
+        return Some(solve_eigen_dense(k, b, opts));
     }
 
     // Delegate to the generic Lanczos core via zero-cost adapter pair.
@@ -691,5 +727,5 @@ pub fn solve_eigen_shift_invert(
     // so buckling goldens pass bit-for-bit.
     let k_op = SparseStiffnessOp { llt: &llt, n };
     let m_op = SparseMetricOp { m: b.as_ref() };
-    lanczos_shift_invert(&k_op, &m_op, opts)
+    Some(lanczos_shift_invert(&k_op, &m_op, opts))
 }
