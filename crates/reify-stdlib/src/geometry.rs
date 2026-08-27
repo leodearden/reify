@@ -3086,9 +3086,18 @@ mod tests {
         assert!(eval_builtin("bbox_center", &[make_bbox(), make_bbox()]).is_undef());
     }
 
-    #[test]
-    fn bbox_size_dimensionless_bbox() {
-        let bbox = Value::BoundingBox {
+    // ── accessors are Length-valued in their own right (task 6081) ───────────
+    // These hand-built BoundingBox values deliberately BYPASS the `bbox`
+    // constructor gate, which now admits only Length corners. They pin that
+    // `bbox_size`/`bbox_center` emit Length components for EVERY
+    // `Value::BoundingBox` — including one produced by the kernel
+    // (`dispatch_bounding_box`, itself unconditionally Length) or hand-built —
+    // which is what makes the static rows `Vector3<Length>` / `Point3<Length>`
+    // sound. The old behaviour propagated the stored corner dimension; that
+    // was incidental generic propagation, not a designed capability.
+
+    fn make_dimensionless_bbox() -> Value {
+        Value::BoundingBox {
             min: Box::new(Value::Point(vec![
                 Value::Real(0.0),
                 Value::Real(0.0),
@@ -3099,15 +3108,69 @@ mod tests {
                 Value::Real(4.0),
                 Value::Real(6.0),
             ])),
-        };
-        let result = eval_builtin("bbox_size", &[bbox]);
+        }
+    }
+
+    fn make_angle_bbox() -> Value {
+        Value::BoundingBox {
+            min: Box::new(make_point3_angle(0.0, 0.0, 0.0)),
+            max: Box::new(make_point3_angle(2.0, 4.0, 6.0)),
+        }
+    }
+
+    #[test]
+    fn bbox_size_emits_length_components_for_dimensionless_bbox() {
+        let result = eval_builtin("bbox_size", &[make_dimensionless_bbox()]);
         match result {
             Value::Vector(ref comps) => {
-                assert_eq!(comps[0], Value::Real(2.0));
-                assert_eq!(comps[1], Value::Real(4.0));
-                assert_eq!(comps[2], Value::Real(6.0));
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(2.0));
+                assert_eq!(comps[1], Value::length(4.0));
+                assert_eq!(comps[2], Value::length(6.0));
             }
-            other => panic!("expected Vector of Reals, got {:?}", other),
+            other => panic!("expected Vector of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_center_emits_length_components_for_dimensionless_bbox() {
+        let result = eval_builtin("bbox_center", &[make_dimensionless_bbox()]);
+        match result {
+            Value::Point(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(1.0));
+                assert_eq!(comps[1], Value::length(2.0));
+                assert_eq!(comps[2], Value::length(3.0));
+            }
+            other => panic!("expected Point of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_size_emits_length_components_for_angle_bbox() {
+        let result = eval_builtin("bbox_size", &[make_angle_bbox()]);
+        match result {
+            Value::Vector(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(2.0));
+                assert_eq!(comps[1], Value::length(4.0));
+                assert_eq!(comps[2], Value::length(6.0));
+            }
+            other => panic!("expected Vector of Lengths, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_center_emits_length_components_for_angle_bbox() {
+        let result = eval_builtin("bbox_center", &[make_angle_bbox()]);
+        match result {
+            Value::Point(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(1.0));
+                assert_eq!(comps[1], Value::length(2.0));
+                assert_eq!(comps[2], Value::length(3.0));
+            }
+            other => panic!("expected Point of Lengths, got {:?}", other),
         }
     }
 
