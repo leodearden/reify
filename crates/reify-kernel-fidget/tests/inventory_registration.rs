@@ -3,7 +3,7 @@
 //! Pins the Fidget [`CapabilityDescriptor`] (step-1/step-2) and the
 //! `inventory::submit!` plumbing (step-5/step-6).
 //!
-//! Unlike the OCCT counterpart (`crates/reify-kernel-occt/tests/inventory_registration.rs`),
+//! Unlike the OCCT counterpart (`crates/reify-kernel-occt/tests/harness_occt/inventory_registration.rs`),
 //! these tests are NOT gated on an `OCCT_AVAILABLE`-style flag — the fidget
 //! adapter submits unconditionally in this v0.2 scaffold task (no
 //! `cfg(has_fidget)` gate; see design decisions in `src/register.rs`).

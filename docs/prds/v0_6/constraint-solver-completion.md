@@ -138,10 +138,18 @@ Ran the overlay grammar gate (`tree-sitter parse --quiet` from `tree-sitter-reif
 |---|---|---|---|
 | `minimize mass` + `maximize stiffness` (two bare decls, one scope) | conflict case + equal-weight sum | **exit 0 — parses** | No grammar work. Semantics only. |
 | `minimize 0.7 * mass - 0.3 * stiffness` | explicit weighted-sum via arithmetic | **exit 0 — parses** | No grammar work. The supported explicit-weight path. |
-| `minimize mass where thickness > 2mm` | guarded objective | **exit 0 — parses** | Already supported (guard clause). |
+| `minimize mass where thickness > 2mm` | guarded objective | **exit 0 — parses** | ⛔ **CORRECTED 2026-08-25 — "Already supported" was FALSE.** Parse-green, semantics-red: the compiler's Minimize/Maximize arms never read the guard, so it registers **zero** constraints and the objective runs unopposed with no diagnostic. Ruled **reject** (Leo, 2026-08-25; owner task **6575**) — objectives take no `where` guard, in either form. Express the predicate as a separate `constraint` member. |
 | `minimize mass weight 0.7` | trailing-keyword explicit weight | **exit 1 — FAILS** (`ERROR` at `weight`) | Novel syntax. **Out of scope**; if wanted, follow-up grammar PRD. |
 | `minimize mass priority 1` | trailing-keyword lexicographic rank | **exit 1 — FAILS** | Novel syntax. **Out of scope**; follow-up grammar PRD. |
 | `minimize(mass, weight: 0.7)` | call-style named-arg | **exit 1 — FAILS** | Novel syntax. Rejected. |
+
+> **Caution added 2026-08-25.** The "parses today ⇒ supported" step above is exactly how the
+> guarded-objective row went green. A `tree-sitter parse` exit 0 proves only that the CST accepts
+> the form — it says nothing about whether the compiler consumes the resulting AST field. For any
+> fragment carrying a *modifier* (a guard, a trailing keyword, an extra clause), confirm the
+> compiler reads it before recording "already supported"; a `grep` for the field name in the
+> lowering arm is the cheap check. See `docs/prds/v0_4/fea-result-model.md` §6 decision #5 for the
+> same failure on the same construct.
 
 **Decision (G3-clean):** this PRD ships multi-objective semantics using **only syntax that parses today**. Explicit weights and lexicographic priorities are expressed through:
 - **Weighted-sum:** the combined arithmetic expression form (`minimize 0.7*mass - 0.3*stiffness`) — fully covered by the widened `ObjectiveSet` with a single folded term, *and* the multi-decl equal-weight sum (multiple `minimize`/`maximize` decls → multi-term `WeightedSum`).

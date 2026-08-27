@@ -22,8 +22,11 @@
 //!    stand-in that echoes the input profile (a valid `Shaper` is still
 //!    required — an unrecognised shaper ⇒ `Value::Undef`).
 //!
-//!    The dispatcher checks for `TOTSShaper` BEFORE the impulse-train path (λ):
-//!    when the shaper is a `TOTSShaper`, it runs the real SQP loop
+//!    The dispatcher checks for a TOTS-family shaper (`TOTSShaper` /
+//!    `RevoluteTOTSShaper`, one per joint kind — membership is decided by
+//!    [`super::tots::is_tots_shaper_type_name`], the single source of truth)
+//!    BEFORE the impulse-train path (λ): when the shaper is one of those, it
+//!    runs the real SQP loop
 //!    ([`super::tots::solve_tots`], which calls `simulate_trajectory_core` +
 //!    `inverse_dynamics_open_chain` per iteration) on a canonical single-DOF
 //!    point-to-point stand-in parameterised by the shaper's readable scalar
@@ -39,7 +42,8 @@ use super::impulse_shaper::ImpulseTrain;
 use super::simulate::{EffectorLocation, MechanismModel, ModeDesc, ModalModel};
 use super::simulate::LinkDesc;
 use super::tots::{
-    JointWaypoints, SqpConfig, TotsModel, TotsOutcome, TotsParams, solve_tots,
+    JointWaypoints, SqpConfig, TotsModel, TotsOutcome, TotsParams, is_tots_shaper_type_name,
+    solve_tots,
 };
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 
@@ -147,11 +151,19 @@ pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
     }
 }
 
-/// Build the canonical single-DOF gantry stand-in model for a `TOTSShaper`.
+/// Build the canonical single-DOF gantry stand-in model for a TOTS-family
+/// shaper (`TOTSShaper` / `RevoluteTOTSShaper`; see
+/// [`super::tots::is_tots_shaper_type_name`]).
 ///
-/// This is the θ-deferred placeholder: full Value marshalling of the
-/// `TOTSShaper`'s `modes` (`List<Mode>`) and `actuator_limits`
-/// (`List<JointLimit>`) into a multi-mode `TotsModel` waits until the
+/// Joint-kind-independent by construction: the model is the same canonical
+/// stand-in for both halves of the family, because the marshalling path
+/// (`field_f64` → `read_scalar_si`) reads SI magnitudes and discards the
+/// dimension. Only the `.ri` DECLARATIONS differ per joint kind (m·s⁻¹ /
+/// m·s⁻² vs rad·s⁻¹ / rad·s⁻²).
+///
+/// This is the θ-deferred placeholder: full Value marshalling of the shaper's
+/// `modes` (`List<Mode>`) and `actuator_limits` (`List<JointLimit>` /
+/// `List<RevoluteJointLimit>`) into a multi-mode `TotsModel` waits until the
 /// Profile↔spline `Value` marshalling (`evaluate_profile`) is unblocked.
 ///
 /// The canonical model mirrors the gantry fixture in `tots.rs` tests:
@@ -179,8 +191,15 @@ fn canonical_tots_model() -> TotsModel {
     }
 }
 
-/// Run the TOTS SQP loop for a `TOTSShaper`, using the readable scalar fields
-/// of `shaper_data` to parameterise a canonical single-DOF P2P stand-in.
+/// Run the TOTS SQP loop for a TOTS-family shaper (`TOTSShaper` /
+/// `RevoluteTOTSShaper`; membership per
+/// [`super::tots::is_tots_shaper_type_name`]), using the readable scalar
+/// fields of `shaper_data` to parameterise a canonical single-DOF P2P
+/// stand-in.
+///
+/// Kind-agnostic: `field_f64` reads `velocity_limit` / `acceleration_limit` as
+/// SI magnitudes and discards the dimension, so the revolute half's rad·s⁻¹ /
+/// rad·s⁻² values flow through exactly as the linear half's m·s⁻¹ / m·s⁻² do.
 ///
 /// Returns the [`TotsOutcome`] so the caller can map
 /// `ConstraintInfeasible` → `Value::Undef` and
@@ -226,13 +245,17 @@ fn run_tots(shaper_data: &StructureInstanceData) -> TotsOutcome {
 /// - exactly two arguments `(profile, shaper)`;
 /// - both must be a [`Value::StructureInstance`];
 /// - the shaper must resolve to an [`ImpulseTrain`] via
-///   [`build_train_for_shaper`] (ZV/ZVD/EI/Cascaded), or be a `TOTSShaper`
-///   whose SQP run is feasible. Any other shaper or infeasible TOTS problem
+///   [`build_train_for_shaper`] (ZV/ZVD/EI/Cascaded), or be a TOTS-family
+///   shaper (`TOTSShaper` / `RevoluteTOTSShaper`, one per joint kind) whose
+///   SQP run is feasible. Any other shaper or infeasible TOTS problem
 ///   returns `Value::Undef`.
 ///
-/// **Dispatch order**: `TOTSShaper` is checked FIRST (λ arm), because
-/// `build_train_for_shaper` returns `None` for it and would otherwise
-/// immediately return `Value::Undef`. Impulse arms are structurally unchanged.
+/// **Dispatch order**: the TOTS FAMILY is checked FIRST (λ arm), because
+/// `build_train_for_shaper` returns `None` for every member and would
+/// otherwise immediately return `Value::Undef`. Impulse arms are structurally
+/// unchanged. Family membership is decided by
+/// [`super::tots::is_tots_shaper_type_name`] — the single source of truth,
+/// shared with `trampoline::input_shape_value` so the two arms cannot drift.
 ///
 /// On success the shaped `Profile` is returned as a registry-free
 /// [`Value::StructureInstance`] that **echoes the input profile's own**
@@ -257,11 +280,17 @@ pub(crate) fn eval_input_shape(args: &[Value]) -> Value {
         return Value::Undef;
     };
 
-    // ── λ: TOTSShaper arm — dispatch BEFORE impulse-train check ─────────────
-    // build_train_for_shaper returns None for TOTSShaper (it only knows
-    // ZV/ZVD/EI/Cascaded); placing this arm first prevents a TOTSShaper from
+    // ── λ: TOTS shaper FAMILY arm — dispatch BEFORE impulse-train check ─────
+    // build_train_for_shaper returns None for every TOTS-family shaper (it
+    // only knows ZV/ZVD/EI/Cascaded); placing this arm first prevents one from
     // being mis-rejected as an unknown shaper.
-    if shaper_data.type_name == "TOTSShaper" {
+    //
+    // Recognition goes through the shared `is_tots_shaper_type_name` predicate
+    // (task 6096) so this arm and `trampoline::input_shape_value`'s cannot
+    // drift: the family has two members, one per joint kind (`TOTSShaper` /
+    // `RevoluteTOTSShaper`), and a member either site fails to recognise falls
+    // through to a SILENT `Value::Undef`.
+    if is_tots_shaper_type_name(&shaper_data.type_name) {
         return match run_tots(shaper_data) {
             // ConstraintInfeasible → Undef (no feasible shaped profile exists;
             // surfaces E_TrajectoryConstraintInfeasible semantics).
@@ -489,19 +518,55 @@ mod tests {
         }))
     }
 
-    /// Build a `TOTSShaper` `Value::StructureInstance` with the given fields,
-    /// exactly as the eval path receives it from the compiled `.ri` output.
-    fn tots_shaper(fields: Vec<(&str, Value)>) -> Value {
+    /// Build a TOTS-family shaper `Value::StructureInstance` with the given
+    /// fields, exactly as the eval path receives it from the compiled `.ri`
+    /// output.
+    ///
+    /// `type_name` is a parameter (task 6096) because the family has TWO
+    /// members — `TOTSShaper` (prismatic/linear) and `RevoluteTOTSShaper`
+    /// (revolute/rotational) — and the dispatch arm keys on exactly this
+    /// string. Parameterising the existing builder rather than adding a second
+    /// one keeps the two kinds provably identical apart from the name.
+    fn tots_shaper(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
         let fields: PersistentMap<String, Value> = fields
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect();
         Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "TOTSShaper".to_string(),
+            type_name: type_name.to_string(),
             version: 1,
             fields,
         }))
+    }
+
+    /// The feasible field set both kinds share. The marshalling readers are
+    /// dimension-blind (`field_f64` → `read_scalar_si` discards the
+    /// dimension), so the revolute shaper's rad·s⁻¹ / rad·s⁻² SI magnitudes
+    /// flow through identically to the linear m·s⁻¹ / m·s⁻² ones — which is
+    /// exactly why the SAME numbers are correct for both kinds here.
+    fn feasible_tots_fields() -> Vec<(&'static str, Value)> {
+        vec![
+            ("velocity_limit", Value::Real(300.0)),
+            ("acceleration_limit", Value::Real(5000.0)),
+            ("vibration_tolerance", Value::Real(0.02)),
+            ("max_iters", Value::Int(100)),
+            ("tol", Value::Real(1e-6)),
+        ]
+    }
+
+    /// The infeasible field set both kinds share: `velocity_limit = 0` on the
+    /// canonical nonzero P2P model. Constructible directly as a
+    /// `StructureInstance`, bypassing the `.ri` `velocity_limit > 0` ctor
+    /// constraint.
+    fn infeasible_tots_fields() -> Vec<(&'static str, Value)> {
+        vec![
+            ("velocity_limit", Value::Real(0.0)),
+            ("acceleration_limit", Value::Real(5000.0)),
+            ("vibration_tolerance", Value::Real(0.02)),
+            ("max_iters", Value::Int(100)),
+            ("tol", Value::Real(1e-6)),
+        ]
     }
 
     // ── TOTSShaper arm ────────────────────────────────────────────────────────
@@ -514,13 +579,7 @@ mod tests {
     #[test]
     fn tots_shaper_feasible_echoes_profile() {
         let p = profile();
-        let s = tots_shaper(vec![
-            ("velocity_limit", Value::Real(300.0)),
-            ("acceleration_limit", Value::Real(5000.0)),
-            ("vibration_tolerance", Value::Real(0.02)),
-            ("max_iters", Value::Int(100)),
-            ("tol", Value::Real(1e-6)),
-        ]);
+        let s = tots_shaper("TOTSShaper", feasible_tots_fields());
         let result = eval_input_shape(&[p, s]);
         match result {
             Value::StructureInstance(data) => {
@@ -538,6 +597,37 @@ mod tests {
         }
     }
 
+    /// (task 6096) The REVOLUTE member of the TOTS shaper family must take the
+    /// same λ arm as the linear one.
+    ///
+    /// This is one of TWO independent dispatch sites keyed on `type_name` (the
+    /// other is `trampoline.rs::input_shape_value`), which is why each gets its
+    /// own coverage: a `RevoluteTOTSShaper` that this arm does not recognise
+    /// falls through to `build_train_for_shaper` — which knows only
+    /// ZV/ZVD/EI/Cascaded — gets `None`, and returns `Value::Undef` with ZERO
+    /// diagnostics. Silent Undef, not a loud failure.
+    #[test]
+    fn revolute_tots_shaper_feasible_echoes_profile() {
+        let p = profile();
+        let s = tots_shaper("RevoluteTOTSShaper", feasible_tots_fields());
+        let result = eval_input_shape(&[p, s]);
+        match result {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.type_name, "PiecewisePolynomialProfile",
+                    "eval_input_shape with a feasible RevoluteTOTSShaper should echo the \
+                     profile (type_name = PiecewisePolynomialProfile), got: {:?}",
+                    data.type_name
+                );
+            }
+            other => panic!(
+                "expected Value::StructureInstance(PiecewisePolynomialProfile) for a feasible \
+                 RevoluteTOTSShaper, got {other:?} — an Undef here means this dispatch arm \
+                 does not recognise the revolute member of the TOTS shaper family (task 6096)"
+            ),
+        }
+    }
+
     /// `velocity_limit = 0` on the canonical nonzero P2P model causes `solve_tots`
     /// to return `ConstraintInfeasible` (early-exit; see
     /// `tots.rs::sqp_infeasible_zero_velocity_limit`), which the λ arm maps to
@@ -551,18 +641,31 @@ mod tests {
         let p = profile();
         // velocity_limit = 0 → canonical P2P (start=0, end=1, nonzero) is
         // infeasible; all other params are slack positives.
-        let s = tots_shaper(vec![
-            ("velocity_limit", Value::Real(0.0)),
-            ("acceleration_limit", Value::Real(5000.0)),
-            ("vibration_tolerance", Value::Real(0.02)),
-            ("max_iters", Value::Int(100)),
-            ("tol", Value::Real(1e-6)),
-        ]);
+        let s = tots_shaper("TOTSShaper", infeasible_tots_fields());
         assert_eq!(
             eval_input_shape(&[p, s]),
             Value::Undef,
             "eval_input_shape with velocity_limit=0 TOTSShaper should return Value::Undef \
              (ConstraintInfeasible → Undef)"
+        );
+    }
+
+    /// (task 6096) The revolute member reaches the SAME infeasibility path.
+    ///
+    /// Paired with `revolute_tots_shaper_feasible_echoes_profile` above so the
+    /// revolute Undef is pinned as coming from `ConstraintInfeasible` — not
+    /// from the arm silently failing to recognise the type. Without both
+    /// polarities, a completely unwired revolute dispatch would still satisfy
+    /// the infeasible test.
+    #[test]
+    fn revolute_tots_shaper_infeasible_returns_undef() {
+        let p = profile();
+        let s = tots_shaper("RevoluteTOTSShaper", infeasible_tots_fields());
+        assert_eq!(
+            eval_input_shape(&[p, s]),
+            Value::Undef,
+            "eval_input_shape with a velocity_limit=0 RevoluteTOTSShaper should return \
+             Value::Undef (ConstraintInfeasible → Undef), same as the linear half"
         );
     }
 

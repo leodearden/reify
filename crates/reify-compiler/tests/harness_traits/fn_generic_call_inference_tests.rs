@@ -9,26 +9,10 @@
 //!
 //! Uses `reify_test_support::compile_source` (resolves `5mm`/`Length`/`List`
 //! with no stdlib) + `reify_expr` eval (INV-2 type erasure). Call-site type is
-//! read via `module.templates[0].value_cells[].default_expr`.
+//! read via `reify_test_support::get_let_expr`.
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
-use reify_test_support::compile_source;
-
-/// Locate the `default_expr` of a named value cell in the first template.
-fn cell_expr<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+use reify_test_support::{compile_source, get_let_expr};
 
 // ── step-5 (ii): overload resolution selects the generic candidate ───────────
 
@@ -42,7 +26,7 @@ fn cell_expr<'a>(
 fn generic_id_call_resolves_and_evaluates() {
     let module = compile_source("fn id<T>(x: T) -> T { x } structure S { let v = id(5mm) }");
 
-    let v_expr = cell_expr(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     match &v_expr.kind {
         reify_ir::CompiledExprKind::UserFunctionCall {
             function_name,
@@ -91,7 +75,7 @@ fn generic_id_call_substitutes_return_type() {
         "expected no Error diagnostics for id(5mm), got: {errors:?}"
     );
 
-    let v_expr = cell_expr(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::length(),
@@ -121,7 +105,7 @@ fn generic_single_call_substitutes_to_list_and_evals() {
         "expected no Error diagnostics for single(5mm), got: {errors:?}"
     );
 
-    let v_expr = cell_expr(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::List(Box::new(Type::length())),
@@ -168,7 +152,7 @@ fn generic_constant_field_call_substitutes_codomain_tolerates_unbound_domain() {
         "B5: constant_field(42.5) must check clean (nested unbound D is tolerated), got: {errors:?}"
     );
 
-    let v_expr = cell_expr(&module, "v");
+    let v_expr = get_let_expr(&module, "v");
     assert_eq!(
         v_expr.result_type,
         Type::Field {
@@ -296,8 +280,8 @@ fn dim_param_scale_q_resolves_at_two_dimensions() {
     );
 
     // (b) result_type of a == Scalar{LENGTH}, b == Scalar{MASS}.
-    let a_expr = cell_expr(&module, "a");
-    let b_expr = cell_expr(&module, "b");
+    let a_expr = get_let_expr(&module, "a");
+    let b_expr = get_let_expr(&module, "b");
     assert_eq!(
         a_expr.result_type,
         Type::Scalar {

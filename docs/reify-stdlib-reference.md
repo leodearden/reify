@@ -350,10 +350,16 @@ parameters are unit-less in the joint's local frame.
 **Note on the signatures below:** these describe the target `std.geometry` stdlib
 API — the structured/typed argument forms designers should expect. The
 compiler's current lowering for a few of these constructors (`polygon`,
-`line_segment`, `arc`, `interp`, `bezier`) accepts only flat positional
+`line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat positional
 coordinate arguments rather than the structured types shown; each is annotated
 below with a `// current compiler form:` comment giving the form that compiles
 today.
+
+The flat form is only a SHAPE divergence, not a units one: every argument the
+structured signature types as a `Length` must still be written dimensioned in
+the flat form (`0mm`, not `0`), and a bare number is rejected rather than read
+as SI metres. Arguments the structured signature types as `Real` or `Int` —
+weights, knots, degrees, counts, and direction components — stay dimensionless.
 
 **3D solids:**
 
@@ -398,7 +404,9 @@ convention changes:
 
 `cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
 `wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
-`translate(primitive(...), 0, 0, -h/2)` workaround.
+`translate(primitive(...), 0mm, 0mm, -h/2)` workaround — note the dimensioned zeros: `translate`'s
+components are length-semantic, so a bare `0` is rejected rather than read as 0 SI metres. (`-h/2`
+needs no change; dividing a length by a bare number preserves the length.)
 
 `rounded_box`/`rounded_rect` additionally require `corner_r > 0` and
 `2*corner_r < min(width, depth)`; a statically-known violation (constant literal
@@ -416,6 +424,8 @@ fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
 // current compiler form: polygon(x1, y1, x2, y2, ...) — variadic flat
 // coordinate pairs, at least 6 args (3 points), even count; see geometry.rs:1570
+// EVERY coordinate is a Length, at every arity, per the section note above:
+// polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm) — a bare number is rejected.
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
 fn rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface
 ```
@@ -440,6 +450,13 @@ fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
 // current compiler form: same list -> flat-args divergence as `interp` above
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
+// current compiler form: nurbs(degree, n_points, coords…, weights…, knots…) —
+// one flat positional stream, with degree FIRST (not last as above) and an
+// explicit n_points that the structured form derives from the list. Only
+// `coords…` is length-semantic and must be dimensioned; degree, n_points,
+// weights and knots are the `Int`/`Real` above and stay dimensionless. Knot
+// count is n_points + degree + 1. e.g.
+// nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
 
 // Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
 // fn nurbs_surface(/* NURBS surface parameters */) -> Surface
@@ -1883,11 +1900,11 @@ fn min_clearance(s: Snapshot, a: BodyId, b: BodyId) -> Length
 
 `min_clearance` computes the minimum separation distance between `a` and `b` using OCCT's `BRepExtrema_DistShapeShape`. Returns `0mm` when the bodies intersect.
 
-**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
+**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
 
 ### 13.6 Worked examples
 
-The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
+The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
 
 **Toolchanger dock-approach clearance check.** A toolhead riding on a gantry that itself rides on a Y-rail sweeps its dock-approach path; the interference query asserts no collision with the parked tool anywhere along the path except at the final dock pose.
 

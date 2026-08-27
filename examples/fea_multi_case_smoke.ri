@@ -32,8 +32,8 @@ structure FeaMultiCaseSmoke {
     let bundle = LoadCase(
         name: "combined",
         loads: [
-            PointLoad(point: "load_face", force: 5000.0, direction: [0.0, -1.0, 0.0]),
-            Gravity(magnitude: STANDARD_GRAVITY(), direction: [0.0, 0.0, -1.0]),
+            PointLoad(point: "load_face", force: 5000.0, direction: vec3(0.0, -1.0, 0.0)),
+            Gravity(magnitude: STANDARD_GRAVITY(), direction: vec3(0.0, 0.0, -1.0)),
         ],
         supports: [FixedSupport(target: "root")],
     )

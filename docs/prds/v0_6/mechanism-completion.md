@@ -17,7 +17,7 @@ froze in:
    by `Engine::post_process_kinematic_queries` (`crates/reify-eval/src/engine_build.rs:1998,2374`,
    task 2531), and task **3906 (done/merged `8cb0bdf79e`)** applies each body's FK
    `world_transform` via `GeometryOp::ApplyTransform` **before** the OCCT probe. The
-   `fk_posed_cubes` case in `crates/reify-eval/tests/mechanism_interference_smoke.rs`
+   `fk_posed_cubes` case in `crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs`
    proves a prismatic-bound cube is probed at its FK-posed position. The survey grepped
    the stub and never traced the post-process. → FK interference is **not** an implement
    target here.

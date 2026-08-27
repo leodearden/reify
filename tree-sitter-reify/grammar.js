@@ -809,6 +809,41 @@ module.exports = grammar({
         optional('aux'),
         'sub',
         field('name', $.identifier),
+        // Indexer clause: `sub idlers[i in 0..4] = Pulley(…)`
+        // (indexed-sub-instantiation.md §3.1, task α). Accepted on THIS arm
+        // only — the collection and specialization arms below deliberately
+        // omit it, pinned by the negative controls in
+        // `tests/indexed_sub_grammar_tests.rs`.
+        //
+        // PRD §9.1 Open Q1 is decided here as: NO binder-omission form. There
+        // is exactly one surface syntax; an unused binder is a matter for the
+        // usual `W_UNUSED` conventions, not a second form. So `[in 0..4]` and
+        // `[4]` are both parse errors (the binder slot is `$.identifier`).
+        //
+        // Arm disambiguation is single-token lookahead after `sub <identifier>`
+        // and needs NO new `conflicts` entry and no `prec(...)`:
+        //   `[` → indexed instantiation (this arm)
+        //   `=` → bare instantiation (this arm, indexer absent)
+        //   `:` → collection / specialization, which then separate by the
+        //         existing `'List'` lexer rule #1 / rule #2 mechanism
+        //         documented at length on the specialization arm below.
+        // The pre-existing `conflicts: [$.sub_declaration]` entry already
+        // covers the shared-prefix GLR split.
+        //
+        // `list_literal` and `index_access` also begin with `[`, but neither is
+        // reachable at this position: the `sub` name slot is `$.identifier`,
+        // not `$._expression`, so no expression rule is live here.
+        //
+        // Shape reuse: the `'in'` contextual keyword + `field(…, $._expression)`
+        // pair mirrors `joint_dof_field`'s `optional(seq('in', field('range',
+        // …)))` and `forall_statement`. `'in'` stays an anonymous contextual
+        // keyword — grammar.js declares no `word:` rule, so `in` is NOT
+        // reserved and `identifier` still matches it elsewhere. Naming a
+        // `field()` over the hidden `$._expression` rule is the same pattern
+        // already used by `field('pose', …)` on all three arms, and
+        // `range_expression` is already a member of `$._expression`, so the
+        // `0..4` domain needs zero new grammar.
+        optional(seq('[', field('binder', $.identifier), 'in', field('domain', $._expression), ']')),
         '=',
         field('structure_name', $.identifier),
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),

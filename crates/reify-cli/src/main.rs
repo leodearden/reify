@@ -1018,6 +1018,98 @@ fn cmd_build(args: &[String]) -> ExitCode {
         //       build() serializes the product bodies, and the bytes are written
         //       verbatim to the `-o` target. =====
         Some(path) => {
+            // Export refusal (task η, PRD
+            // `docs/prds/v0_6/precision-nominal-representation-guarantee.md`
+            // §1.1 / C-SURFACE (2)): a design declaring a `RepresentationWithin`
+            // bound this path cannot demonstrate it honours must REFUSE to write
+            // the artifact rather than write it and report success.
+            //
+            // WHY THE GATE PRECEDES THE WRITE RATHER THAN RIDING THE DIAGNOSTIC
+            // STREAM: `std::fs::write(path, &data)` below runs BEFORE
+            // `has_error_diagnostic` is evaluated, so an Error diagnostic ALONE
+            // cannot withhold the file — it would exit non-zero having already
+            // created (or truncated) the `-o` target. Returning here is what
+            // makes the refusal gate the WRITE itself. (Mode B needs no such
+            // care: the engine withholds the file by emitting an empty-bytes
+            // artifact, which the writer below skips.)
+            //
+            // Refusing BEFORE `engine.build()` also skips realization and OCCT
+            // tessellation entirely, honouring PRD §6's gate-cost rule: η's
+            // refusal is a static module-shape decision taken before any
+            // measurement. The same helper backs the engine-side Mode-B refusal,
+            // so the two surfaces cannot disagree about what counts as bounded.
+            //
+            // Follow-on task θ narrows this refusal to genuinely UNACHIEVABLE
+            // bounds once the export path gains a real measurement (hard-dep on
+            // task 6085); until then it fires for any declared bound.
+            //
+            // KNOWN REPORTING ASYMMETRY WITH MODE B — deliberate, not an
+            // oversight. Returning here means a refused `-o` build prints the
+            // refusal and NOTHING ELSE: no constraint results, no
+            // "No constraints violated (N indeterminate)." summary. Mode B
+            // below prints both, because it MUST realize anyway (it needs the
+            // elaborated `StructureInstance`s to enumerate `: Output`
+            // occurrences at all) and gets the constraint results for free from
+            // the same `build_outputs_with_result` call. Mode A has no such
+            // obligation: `-o` names its destination outright, so realization
+            // buys nothing the refusal needs.
+            //
+            // The two surfaces are unified on WHAT IS REFUSED and on the
+            // diagnostic itself — one shared
+            // `unenforced_representation_bound_diagnostic`, one E_* token, one
+            // typed code, one exit gate — and that is the property η contracts
+            // for (C-SURFACE (2)). They are NOT unified on the surrounding
+            // report, and buying that symmetry costs a full realization plus
+            // OCCT tessellation (5-20 s on the PRD §2.2 measurements) on a build
+            // that is about to write nothing, which is exactly what PRD §6's
+            // gate-cost rule forbids. A user who wants the constraint state runs
+            // `reify check` — which the refusal message itself tells them to do.
+            if let Some(diag) =
+                reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic(&compiled)
+            {
+                // Report through the EXISTING report_eval_output path rather
+                // than a bespoke stderr write, so the refusal lands in the same
+                // order as every other diagnostic (PRD INV-SF-2: "η rides
+                // `cmd_build`'s existing gate rather than adding a per-code
+                // bolt-on").
+                //
+                // THE EXIT CODE IS UNCONDITIONAL, AND THAT IS THE POINT: reaching
+                // this arm means the artifact is BEING REFUSED and the write below
+                // is being skipped outright, so write-suppression and exit code
+                // must not be able to decouple. Deriving it from
+                // `build_is_success(&outcome, has_error_diagnostic)` instead would
+                // couple them to the builder's severity — a contract pinned only
+                // by a unit test in another crate. Were
+                // `unenforced_representation_bound_diagnostic` ever to return a
+                // Warning/Info, `cmd_build` would write NO file at the `-o`
+                // target, print nothing on stdout (`report_constraint_results(&[])`
+                // writes nothing) and exit 0: a silent no-op export, the worst
+                // failure mode a build command has. This is behaviour-preserving
+                // today — the builder returns `Severity::Error` and
+                // `constraint_results` is empty, so `build_is_success` is already
+                // `false` here — and it stays correct if that ever changes.
+                //
+                // The `debug_assert` is the loud half of the same guard: a
+                // severity regression fails the test suite at this line instead of
+                // silently degrading the report (a non-Error diagnostic would print
+                // as a warning while the build still exits non-zero — accurate exit
+                // code, misleading message).
+                debug_assert_eq!(
+                    diag.severity,
+                    Severity::Error,
+                    "the export refusal must be Error-severity: it is what the rest of \
+                     the CLI's reporting treats as a refusal rather than an advisory"
+                );
+                let diagnostics = [diag];
+                let _ = report_eval_output(
+                    &[],
+                    &diagnostics,
+                    &mut std::io::stdout(),
+                    &mut std::io::stderr(),
+                );
+                return ExitCode::FAILURE;
+            }
+
             let format = match path {
                 p if p.ends_with(".step") || p.ends_with(".stp") => ExportFormat::Step,
                 p if p.ends_with(".stl") => ExportFormat::Stl,
@@ -1267,24 +1359,26 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
-/// Register all FEA/buckling/modal and shell-extract compute trampolines on `engine`.
+/// CLI-local alias for
+/// [`Engine::register_production_compute_fns`][reify_eval::Engine::register_production_compute_fns]
+/// (task 5072 / PRD `compute-fea-hardening.md` A1 — see there for the bundle
+/// membership, ordering, and the INV-FEA-1 single-source-of-truth rationale;
+/// this wrapper does not restate them).
 ///
-/// This is the single source of truth for the trampoline set shared between
-/// `cmd_build` (solver-free, calls this directly) and [`configured_eval_engine`]
-/// (full solver).  Adding a new trampoline here automatically covers both paths and
-/// prevents silent drift between them.
+/// Exists to name the `MorphRegistration::Enabled` choice once and keep both
+/// call sites — `cmd_build` (solver-free, calls this directly) and
+/// [`configured_eval_engine`] (full solver) — one-line, with no drift between
+/// them.
+///
+/// The morph producer is dormant-safe (task 4744 β): the dispatch only
+/// attempts a morph when a prior source mesh carries a `BoundaryAssociation`,
+/// which today requires an explicit boundary demand — a plain `reify build`
+/// never triggers the (#4876-crashing) attributed path. Every non-success
+/// morph honestly falls back to a remesh.
 fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
-    reify_eval::compute_targets::register_compute_fns(engine);
-    reify_eval::register_shell_extract_compute_fns(engine);
-    // Task 4744 β (step-22): install the mesh-morph producer so a warm
-    // VolumeMesh rebuild can deform the prior mesh in place instead of remeshing
-    // from scratch. Dormant-safe: the dispatch only attempts a morph when a
-    // prior source mesh carries a `BoundaryAssociation`, which today requires an
-    // explicit boundary demand — a plain `reify build` never triggers the
-    // (#4876-crashing) attributed path. Every non-success morph honestly falls
-    // back to a remesh. Registered here (the shared trampoline hook) so both the
-    // `cmd_build` geometry path and `configured_eval_engine` get it.
-    reify_mesh_morph::register_morph_producer(engine);
+    engine.register_production_compute_fns(reify_eval::MorphRegistration::Enabled(
+        reify_mesh_morph::register_morph_producer,
+    ));
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
@@ -2447,38 +2541,34 @@ fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
 /// populated `achieved_repr_tol` map) or to stay on the existing lightweight
 /// `Engine::new(None)+check()` path for modules with no such assertion.
 ///
-/// Reuses [`reify_eval::tolerance_combine::recognize_representation_within`]
-/// so the recognition gate (UFC name + arity + arg0 ValueRef:StructureRef +
-/// arg1 Literal Scalar LENGTH finite≥0) is the same canonical matcher used by
-/// the engine's dispatch interception — a single gate implementation that
-/// cannot drift (retiring the drift risk that lived in the extractor's TODO
-/// before task 4199 γ).
+/// # Delegation (task #6170)
+///
+/// The walk itself lives in
+/// [`reify_eval::tolerance_combine::module_declares_representation_within`],
+/// which is defined as `!compute_representation_bounds(module).is_empty()` — so
+/// this predicate and the C-BOUND bound table are the same traversal rather than
+/// two that must be kept in sync. It reaches the canonical recognition gate (UFC
+/// name + arity + arg0 ValueRef:StructureRef + arg1 Literal Scalar LENGTH
+/// finite≥0) that the engine's dispatch interception also uses.
+///
+/// This CLI-local name is retained (rather than inlining the call) so
+/// `cmd_check`'s routing reads unchanged.
+///
+/// # Not the export-refusal gate
+///
+/// Both export-refusal sites — `cmd_build`'s `-o` arm above, and
+/// `Engine::build_outputs_with_result` in the engine — need the bound TABLE
+/// rather than a boolean, because the refusal names the unenforced bound. They
+/// therefore call
+/// [`reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic`]
+/// instead of this predicate; its `None` case is exactly this function returning
+/// `false`, so all three sites still share one traversal.
 ///
 /// Non-assertion modules: this function returns `false` and `cmd_check` keeps
 /// the existing path verbatim (C2 — byte-identical behavior for all existing
 /// `reify check` inputs).
 fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> bool {
-    module.templates.iter().any(|t| {
-        // Check direct template constraints first (the common case).
-        let direct = t.constraints.iter().any(|c| {
-            reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
-        });
-        if direct {
-            return true;
-        }
-        // Also check guarded-group constraints (true-branch + else-branch)
-        // so a RepresentationWithin inside a `when ... { constraint ... }` block
-        // is also detected.
-        t.guarded_groups.iter().any(|g| {
-            g.constraints
-                .iter()
-                .chain(g.else_constraints.iter())
-                .any(|c| {
-                    reify_eval::tolerance_combine::recognize_representation_within(&c.expr)
-                        .is_some()
-                })
-        })
-    })
+    reify_eval::tolerance_combine::module_declares_representation_within(module)
 }
 
 /// Returns `true` when `module` contains at least one template whose
@@ -4351,6 +4441,42 @@ mod persistent_cache_cli_wiring_tests {
             Some(tmp.path()),
             "--cache-dir override must make persistent_cache_dir() return the \
              specified tmp path, not the env/default-resolved path"
+        );
+    }
+}
+
+// ── Task 5073 (PRD compute-fea-hardening.md task A2): characterization safety
+// net for `register_compute_trampolines` ────────────────────────────────────
+
+/// Characterization test for `register_compute_trampolines` (task 5073 / PRD
+/// `compute-fea-hardening.md` task A2): pins that the CLI wrapper delegates
+/// to the full production compute-trampoline bundle with the morph producer
+/// enabled. Refactor safety net — GREEN both before and after this task's
+/// migration step, since that migration is behavior-preserving.
+#[cfg(test)]
+mod compute_trampoline_registration_tests {
+    use super::*;
+
+    /// `register_compute_trampolines` must run the production bundle (smoke-
+    /// checked via the `register_compute_fns` leg's `solver::elastic_static`
+    /// target) and must pass `MorphRegistration::Enabled` — the only
+    /// CLI-specific decision — so `morph_producer()` ends up installed. Full
+    /// leg-by-leg bundle coverage is `Engine::register_production_compute_fns`'s
+    /// own suite's job (`compute_targets/mod.rs`).
+    #[test]
+    fn cli_trampolines_install_full_production_bundle() {
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        register_compute_trampolines(&mut engine);
+
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "register_compute_trampolines must run the production bundle \
+             (register_compute_fns leg)"
+        );
+        assert!(
+            engine.morph_producer().is_some(),
+            "register_compute_trampolines must pass MorphRegistration::Enabled, \
+             installing the mesh-morph producer"
         );
     }
 }

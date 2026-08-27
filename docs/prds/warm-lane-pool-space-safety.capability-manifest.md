@@ -9,7 +9,10 @@ assertions are configurable thresholds and a provisioned inode floor. All eviden
 against live source on 2026-06-22.
 
 Evidence vocabulary:
-- `grep:<file>:<line> wired` — symbol/flag present on main at the named line.
+- `grep:<file> <symbol> wired` — symbol/flag present on main, located by grepping the symbol.
+- `grep:<file>:<line> wired` — legacy form. Any line number still written below is **dated
+  evidence from the 2026-06-22 re-verification, not a live breadcrumb**: it records where the
+  symbol stood then. Do not re-anchor it; grep the symbol to find the code today.
 - `host-cap:<facility>` — host facility (XFS reflink, util-linux flock, df/stat) — host-observable.
 - `producer:<label> upstream` — capability delivered by an upstream task in the transitive dep closure.
 
@@ -40,12 +43,12 @@ extents freed); misuse refusal retained.
 
 | Capability asserted | Evidence | Verdict |
 |---|---|---|
-| Single dispatch path to change | `grep:workflow.py:1372 wired` → `create_worktree` | PASS |
-| Pool-attempt + cold-fallthrough site to remove | `grep:git_ops.py:789-809 wired`; cold add `grep:git_ops.py:960 wired` | PASS |
-| Recycled re-seed call sites (degraded-warmth path) to fix | `grep:git_ops.py:1429,1520 wired` | PASS |
+| Single dispatch path to change | `grep:workflow.py git_ops.create_worktree( wired` → `create_worktree` | PASS |
+| Pool-attempt + cold-fallthrough site to remove | `grep:git_ops.py acquire_warm_lane wired`; cold add `grep:git_ops.py create_worktree wired` | PASS |
+| Recycled re-seed call sites (degraded-warmth path) to fix | `grep:git_ops.py _seed_warm_lane wired` | PASS |
 | Requeue/backpressure plumbing (exhaustion, exit-75) exists | `grep:harness.py:3285-3303 wired` | PASS |
 | Escalate plumbing (RuntimeError → blocked + L1) exists | `grep:git_ops.py:907-908 wired`; `harness.py:2797` | PASS |
-| Old-policy docstring/inv to update | `grep:config.py:824-826 wired` ("falls back to the cold path — never blocks") | PASS |
+| Old-policy docstring/inv to update | PRE-CHANGE STATE (2026-06-22): the docstring "falls back to the cold path — never blocks" was then in `config.py`; it is no longer present in DF, so there is no live anchor to grep | PASS |
 | Replace-capable seed it relies on | `producer:α upstream` (reify α; cross-project dep) | PASS |
 
 No FAIL. The only upstream-supplied capability (replace-capable seed) is α, wired as a dep.
@@ -59,7 +62,7 @@ below threshold (overridable source), exit 0 when both healthy.
 
 | Capability asserted | Evidence | Verdict |
 |---|---|---|
-| Merge-side guard precedent to mirror (bytes-only) | `grep:merge_queue.py:552-611 wired`; `config.py:1182 wired` | PASS |
+| Merge-side guard precedent to mirror (bytes-only) | `grep:merge_queue.py merge_verify_min_free_disk_bytes wired`; `grep:config.py merge_verify_min_free_disk_bytes wired` | PASS |
 | Free-bytes + free-inodes are host-observable | `host-cap:df`/`host-cap:stat -f` (df reports both; `df -i`) | PASS |
 | Preflight script to extend or pattern to copy | `grep:scripts/warm-lane-preflight.sh wired` (5 host checks; same fail-closed shape) | PASS |
 | Backpressure exit-code convention (75/EX_TEMPFAIL) exists | `grep:harness.py:3285-3303 wired` (exit-75 transient class) | PASS |
@@ -92,11 +95,11 @@ an ENOSPC build.
 
 | Capability asserted | Evidence | Verdict |
 |---|---|---|
-| Pre-acquire hook point exists | `grep:git_ops.py:789-809 wired` (the create_worktree pool region β also edits) | PASS |
+| Pre-acquire hook point exists | `grep:git_ops.py acquire_warm_lane wired` (the create_worktree pool region β also edits) | PASS |
 | Disk guard primitive to call | `producer:γ upstream` (reify γ; cross-project dep) | PASS |
 | Reclaim primitive to call | `producer:δ upstream` (reify δ; cross-project dep) | PASS |
 | Discriminated outcome to extend with DISK_PRESSURE | `producer:β upstream` (DF β; intra-DF dep) | PASS |
-| Merge-guard reclaim-then-skip pattern to mirror | `grep:merge_queue.py:584-611 wired` (prune → recheck → skip+escalate) | PASS |
+| Merge-guard reclaim-then-skip pattern to mirror | `grep:merge_queue.py _ensure_verify_disk_space wired` (prune → recheck → skip+escalate) | PASS |
 
 No FAIL. All upstream capabilities (γ, δ, β) wired as deps.
 

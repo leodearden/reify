@@ -24,10 +24,19 @@ mod as_printed_material_e2e;
 mod as_printed_r0_trampoline;
 #[path = "harness_fea_solver_e2e/as_printed_trampoline.rs"]
 mod as_printed_trampoline;
+#[path = "harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs"]
+mod fea_bracket_minimize_mass_e2e;
 #[path = "harness_fea_solver_e2e/fea_cold_start_heuristic_e2e.rs"]
 mod fea_cold_start_heuristic_e2e;
+// Carries no `#[test]` — shared wiring for the FEA-in-the-loop design-optimisation
+// modules (see its own doc). Declared here like every other submodule so the
+// harness's `#[path]` layout contract holds uniformly.
+#[path = "harness_fea_solver_e2e/fea_design_loop_support.rs"]
+mod fea_design_loop_support;
 #[path = "harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs"]
 mod fea_face_selector_bc_e2e;
+#[path = "harness_fea_solver_e2e/fea_in_the_loop_producer.rs"]
+mod fea_in_the_loop_producer;
 #[path = "harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs"]
 mod fea_loads_stdlib_smoke;
 #[path = "harness_fea_solver_e2e/fea_stress_reductions_smoke.rs"]
@@ -68,16 +77,6 @@ mod objective_inheritance_e2e;
 mod objective_provenance;
 #[path = "harness_fea_solver_e2e/objective_set_signal.rs"]
 mod objective_set_signal;
-#[path = "harness_fea_solver_e2e/process_dfm_e2e.rs"]
-mod process_dfm_e2e;
-#[path = "harness_fea_solver_e2e/process_dfm_eval.rs"]
-mod process_dfm_eval;
-#[path = "harness_fea_solver_e2e/process_dfm_measure.rs"]
-mod process_dfm_measure;
-#[path = "harness_fea_solver_e2e/process_dfm_metrology_example.rs"]
-mod process_dfm_metrology_example;
-#[path = "harness_fea_solver_e2e/process_dfm_thickness_example.rs"]
-mod process_dfm_thickness_example;
 #[path = "harness_fea_solver_e2e/stress_dimensional_chains.rs"]
 mod stress_dimensional_chains;
 #[path = "harness_fea_solver_e2e/stress_error_messages.rs"]

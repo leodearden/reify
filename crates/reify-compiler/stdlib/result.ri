@@ -40,6 +40,10 @@
 // same-named Option overloads in std.option_recovery; type_compat.rs's
 // head-match disambiguation (#4991) picks the right one per call by the
 // subject's constructor head (some/none → Option, Ok/Err → Result).
+// reify-expr's find_matching_compiled_function applies the same
+// head-narrowing tier (#5685), so eval-time selection agrees with the
+// overload the compiler typechecked; before that it fell back to
+// first-match-wins on table order and always chose the Option half.
 enum Result<T, E> {
     Ok { value: T },
     Err { error: E },

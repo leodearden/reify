@@ -22,7 +22,7 @@
 //! ## How to run the timing bench
 //!
 //! ```text
-//! cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture
+//! cargo test -p reify-compiler --test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture
 //! ```
 
 use std::time::{Duration, Instant};
@@ -88,7 +88,7 @@ fn trait_arg_conformance_correctness_small() {
 /// runs, matching the precedent set by
 /// `crates/reify-lsp/tests/incremental_eval_benchmark.rs`.
 /// Run with:
-///   `cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture`
+///   `cargo test -p reify-compiler --test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`
 #[test]
 #[ignore = "timing benchmark; run explicitly with --ignored"]
 fn compile_large_literal_trait_arg_conformance_timing() {

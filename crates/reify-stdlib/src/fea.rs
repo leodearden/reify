@@ -1018,6 +1018,9 @@ impl TensorProjection {
                 match crate::analysis::compute_eigenvalues_3x3(window) {
                     // eigs sorted ascending; eigs[2] is the largest.
                     Some(eigs) => eigs[2],
+                    // Reached for a non-finite (out-of-solid sentinel) window
+                    // since task #6376 — yields the NaN sentinel the
+                    // downstream is_finite() gates already skip.
                     None => f64::NAN,
                 }
             }
@@ -1025,6 +1028,9 @@ impl TensorProjection {
                 match crate::analysis::compute_eigenvalues_3x3(window) {
                     // eigs sorted ascending; eigs[0] is the smallest.
                     Some(eigs) => eigs[0],
+                    // Reached for a non-finite (out-of-solid sentinel) window
+                    // since task #6376 — yields the NaN sentinel the
+                    // downstream is_finite() gates already skip.
                     None => f64::NAN,
                 }
             }

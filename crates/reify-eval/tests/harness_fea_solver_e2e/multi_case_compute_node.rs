@@ -385,10 +385,13 @@ fn two_case_solve_returns_populated_multi_case_result() {
 // the same `CompiledModule` must dispatch the trampoline exactly once — the
 // §8-η Final-gate (engine_eval.rs:3284-3324) short-circuits the 2nd eval.
 //
-// NOTE: `realization_entries` is NOT asserted here.  The false-premise that
-// `CacheStats.realization_entries` exists has been confirmed; that RED is
-// re-homed to task 4152 (esc-4088-231 decision A).  The DISPATCH_COUNT==1
-// assertion is the proven, directly-observable compute-result reuse signal.
+// NOTE: `realization_entries` is NOT asserted here.  The counter has since
+// landed on `CacheStats` (task 4152), but it counts realization-CACHE entries,
+// which this path never creates: no tolerance contract means no caching at all
+// (`engine_build.rs`: "no tolerance contract -> no caching"), so it would read 0
+// throughout.  Its wiring is pinned in `tests/tolerance_wiring_e2e.rs`.
+// DISPATCH_COUNT==1 remains this test's own proven, directly-observable
+// compute-result reuse signal.
 
 /// Dispatch counter incremented by `mc_counting_wrapper` on every
 /// multi_case trampoline call.  Module-level static so it is callable as a
@@ -477,10 +480,10 @@ fn multi_case_second_eval_reuses_compute_result() {
         "second eval must have no Error diagnostics, got: {errors2:?}"
     );
 
-    // NOTE: realization_entries is NOT asserted here.
-    // CacheStats has no such field (false premise, esc-4088-231 decision A);
-    // that RED is re-homed to task 4152.  DISPATCH_COUNT==1 is the
-    // directly-observable compute-result reuse signal.
+    // NOTE: realization_entries is NOT asserted here.  The field landed with
+    // task 4152, but it counts realization-CACHE entries and this path creates
+    // none (no tolerance contract -> no caching), so it would read 0 throughout.
+    // DISPATCH_COUNT==1 is this test's directly-observable reuse signal.
     assert_eq!(
         MC_DISPATCH_COUNT.load(Ordering::SeqCst),
         1,

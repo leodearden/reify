@@ -123,9 +123,9 @@ fn revolve_720_degrees() {
         profiles: vec![GeomRef::Step(0)],
         args: vec![
             ("profile".into(), mm_literal(5.0)),
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
+            ("ox".into(), mm_literal(0.0)),
+            ("oy".into(), mm_literal(0.0)),
+            ("oz".into(), mm_literal(0.0)),
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)), // z-axis
@@ -304,9 +304,9 @@ fn negative_revolve_angle_is_valid() {
         profiles: vec![GeomRef::Step(0)],
         args: vec![
             ("profile".into(), mm_literal(5.0)),
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
+            ("ox".into(), mm_literal(0.0)),
+            ("oy".into(), mm_literal(0.0)),
+            ("oz".into(), mm_literal(0.0)),
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)), // z-axis

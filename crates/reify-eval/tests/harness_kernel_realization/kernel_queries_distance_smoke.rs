@@ -19,8 +19,8 @@
 //! fails on every runner. The kernel build + assertion is gated on
 //! `reify_kernel_occt::OCCT_AVAILABLE` — skips cleanly on runners without OCCT.
 //!
-//! Modelled on `crates/reify-eval/tests/kernel_queries_contains.rs` (real-OCCT
-//! harness) and `crates/reify-eval/tests/kernel_queries_angle_smoke.rs` (Scalar
+//! Modelled on `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_contains.rs` (real-OCCT
+//! harness) and `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_angle_smoke.rs` (Scalar
 //! epsilon-match assertion shape).
 
 use reify_constraints::SimpleConstraintChecker;

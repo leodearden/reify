@@ -81,6 +81,7 @@ Additional env-only knobs (no dedicated flag):
 | `REIFY_WARM_LANE_AUDIT_DF` | `df` | `df` command override (mirrors `REIFY_WARM_LANE_DISK_GUARD_DF`; testability seam). |
 | `REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB` | `data/queue/*.db*` | Glob (or comma-separated globs) of dirty tracked paths that count as harmless "residue" rather than unrecoverable WIP — today, the `write_queue.db*` fused-memory `DurableWriteQueue` runtime files (sizing-lifecycle §2/D1). |
 | `REIFY_WARM_LANE_AUDIT_STATE_DIR` | `<mount>/.lane-state` | Directory holding the orchestrator's durable per-lane assignment records `<lane>.json` (dark-factory's `LANE_STATE_DIRNAME`, written by `orchestrator/src/orchestrator/lane_lifecycle.py`). May point anywhere, including outside the mount. Read-only; a missing dir is **not** an error — every lane simply reports `assigned=UNKNOWN` (A5). |
+| `REIFY_WARM_LANE_AUDIT_STASH_REPO` | (unset → the **first resident lane** that resolves as a git worktree) | Repo to query for the shared stash stack (see "Trailing STASH block"). `refs/stash` lives in the shared common git dir, so **one** query answers for the whole pool and any resident lane will do. Deliberately **no** fallback to this script's own repo root — that would make the audit's own hermetic tests read the real, live shared stack. Read-only; unresolvable (no resident lane is a git worktree, or the pointed-at path is not one) or a failed query degrades to `stash_entries=0` plus a stderr note, exit still 0. |
 
 ## Output
 
@@ -135,12 +136,22 @@ split, and why only `STRANDED` warns per lane while `REWRITTEN` is counted and o
 *different* diff changes the patch id, and will read `STRANDED`. This is the reason `STRANDED` is
 an investigate-then-escalate signal and never an auto-repair trigger.
 
+**Empty-commit anchors are not a gap in this script.** The standalone `git patch-id` command emits
+no output for a zero-diff commit, but this script never invokes that command — `git cherry`'s own
+internal patch-id computation still treats two empty commits as equivalent (verified empirically
+2026-08-21 against a synthetic empty-commit pair), so an empty-commit anchor whose replay is
+reachable in `HEAD` reads `REWRITTEN` exactly like any other rewritten step. Only a genuinely absent
+empty step — no equivalent commit anywhere in `HEAD`'s history — reads `STRANDED`, which is the
+intended, correct behaviour, not a false positive.
+
 **Trailing HEADROOM line** (table format: one summary line after all per-lane rows; JSON format:
 the `"headroom"` object):
 
 ```
-HEADROOM resident=N live=L pinned=P quarantined=Q free=F assigned=A state_unknown=S reclaimable=R leaked=K leak_unknown=U divergent_gib=D free_gib=G budget_gib=B plan_stranded=X plan_unknown=Y plan_rewritten=Z plan_mismatch=M
+HEADROOM resident=N live=L pinned=P quarantined=Q free=F assigned=A state_unknown=S reclaimable=R leaked=K leak_unknown=U divergent_gib=D free_gib=G budget_gib=B plan_stranded=X plan_unknown=Y plan_rewritten=Z plan_mismatch=M stash_entries=E
 PINNED   total=P pending=X infra-hold=Y blocked=Z terminal=T other=O unknown=V
+STASH    total=E
+STASH    entry ref=… branch=… message=…          (one line per entry)
 ```
 
 The occupancy figures are an **ordered, mutually exclusive partition** of the resident set —
@@ -152,7 +163,9 @@ resident = live + pinned + quarantined + free
 ```
 
 `assigned` and `state_unknown` are **cross-cuts**, not partition members: they may overlap any
-bucket and must never be added into the identity.
+bucket and must never be added into the identity. So are the four `plan_*` fields and
+`stash_entries` — the last of which is not a count of *lanes* at all (see below), and so can exceed
+`resident`.
 
 | Field | Meaning |
 |---|---|
@@ -173,6 +186,7 @@ bucket and must never be added into the identity.
 | `plan_unknown` | **Cross-cut**: lanes whose `plan_sync` could not be evaluated (A6). Same prohibition. Warned by name, with the cause. |
 | `plan_rewritten` | **Cross-cut**: lanes whose anchor was rewritten by a rebase. Same prohibition. **Counter-only — never warned**: it is the expected steady state, and a per-lane line for each would bury the stranded lane under the pool's own background noise. Emitted so `plan_stranded` is readable *in proportion to it* rather than in a vacuum. |
 | `plan_mismatch` | **Cross-cut**: lanes whose `plan_task` is `MISMATCH`. Same prohibition. |
+| `stash_entries` | **Cross-cut, and the only HOST-scoped figure on this line**: entries on the shared `refs/stash` stack, not a count of lanes. Same prohibition — never added into the identity, and it may exceed `resident`. See "Trailing STASH block". |
 
 **Trailing PINNED line** (table format: one line after HEADROOM; JSON format: a sibling
 `"pinned_by_status"` object carrying the six buckets — their total is `headroom.pinned`, so it is
@@ -188,6 +202,41 @@ emitted, zeros included** — a zero must be readable, never an absent line.
 | `infra-hold` | `infra-hold` | Ditto — held pending infrastructure. |
 | `other` | any status outside the buckets above | The residue, so it is **not** one reading: `in-progress` here means a **likely-crashed** consumer, while `deferred` / `review` are not-running states in the same family as `pending`. Read the per-lane `pin` column before acting. |
 | `unknown` | unresolvable | The holder could not be resolved (A3). |
+
+**Trailing STASH block** (table format: a `STASH total=E` count line after PINNED, then one
+`STASH entry ref=… branch=… message=…` detail line per entry — message last, so its spaces are
+unambiguous; JSON format: `headroom.stash_entries` plus a sibling `"stash_stack"` array of
+`{ref, branch, message}` objects). Like PINNED, **always emitted, zeros included** — an empty stack
+must read as a value an operator can see, never as an absent line. The count lives in exactly one
+place: the array carries no total of its own.
+
+`branch` is parsed from the reflog subject git writes (`On <branch>: <msg>` for `stash push -m`,
+`WIP on <branch>: <sha> <subject>` for a bare push). A subject in neither shape reports `branch=-`
+with the raw subject as `message` — never guessed, never dropped.
+
+**How to read it.** `refs/stash` is **ONE ref in the shared `.git`**, not per-worktree (git treats
+only `HEAD`, `refs/worktree/*`, `refs/bisect/*` and `refs/rewritten/*` as per-worktree), so:
+
+- The figure is **HOST-SCOPED**, not per-lane. One query answers for the whole pool, and every lane
+  would report the same number. It is not attributable to the lane it was read through.
+- It **does not self-drain**. Entries accrete until an operator drains them — which is exactly the
+  shape the original incident took (esc-5785-6: nine entries over ~1 month before the 2026-08-02/03
+  drain).
+- It is deliberately **NON-GATING** (A1, PRD §9.5 inv.12). A non-zero value never blocks dispatch,
+  reclaim or merge, and never requeues a task: the condition is host-scoped, so bouncing N tasks
+  one at a time would spin the whole fleet on a warning nobody reads.
+
+A **non-zero value means agents are still stashing in shared checkouts**, which is usually one of
+two things: the never-stash rule (CLAUDE.md → "Warm lanes") is not reaching them, or the
+`hooks/reference-transaction` guard has been **disarmed** by the `core.hooksPath` clobber that
+Claude Code's worktree feature performs on every worktree enter (CLAUDE.md → "Landing on main").
+That second case is why this field exists at all: it is the **backstop that makes a silently
+disarmed guard visible**. Triage in that order — check the guard is live before concluding the rule
+is being ignored.
+
+For the guard's measured reach — including that it covers the **push direction only** — read
+`hooks/reference-transaction`'s header and `tests/infra/test_stash_guard.sh`, which are
+authoritative. Do not re-derive it here.
 
 ## Classification
 
@@ -272,6 +321,66 @@ Folding `STRANDED` into the ranked verdict would either hide it beneath `LIVE` o
   **single read**, so one row never describes two instants of a record the architect and the
   implementer both rewrite mid-run. The script **never repairs** what it finds (A1; PRD §9.5
   inv.12).
+
+## "A plan.json done-step commit SHA is dangling / unreachable" — EXPECTED, not a defect
+
+**If you arrived here because a `plan.json` recorded `done` step's commit SHA does not resolve,
+or is not an ancestor of the lane's `HEAD` — stop before escalating.** That observation, by
+itself, is the steady state of a healthy pool, not evidence that recorded work is missing.
+
+**Why.** A warm-lane reclaim, or a requeue / inter-iteration rebase, replays the task branch
+onto a newer `main`. Every replayed commit gets a fresh SHA; `plan.json` was written against the
+pre-replay ones and is never rewritten to match. The recorded SHA going dangling — or failing an
+ancestor check — is the mechanism **working as designed**, not work being lost: `acquire_lane`
+always re-seeds from the base (CLAUDE.md → "Warm lanes").
+
+**The discriminator is patch-id equivalence, never reachability** — see the "`plan_sync` verdicts"
+table above and invariant A6 for the mechanism (`scripts/warm-lane-audit.sh`'s `git cherry`
+invocation) and full verdict semantics; this section does not restate them. Dark-factory's
+equivalent path is `_reconcile_done_step_commits` → `find_equivalent_commit`, which files only
+`severity='info'`.
+
+A **subject-only** match (comparing commit messages instead of patch content) is *not* a
+substitute for patch-id: on one measured branch, subject-matching scored 0/18 where patch-id
+scored 18/18.
+
+**Evidence, dated and attributed — not a threshold, not an expected value, and not a number to
+diff a fresh run against:**
+
+- **Measured 2026-08-19 on the live reify pool:** of 71 tasks holding 530 unique SHAs still on
+  disk, 52 of 71 had at least one dangling SHA and 43 of 71 were all-dangling (43/71 ≈ 61% of
+  tasks all-dangling). Of 27 non-`done` tasks holding 205 dangling SHAs, 204 were patch-id-present
+  on their own branch; the single miss was an **empty commit** — its replayed twin existed with an
+  identical subject, but the standalone `git patch-id` command used for this finer-grained, ad hoc
+  per-SHA sweep emits no output for a zero-diff commit and so could not match it. This script's own
+  `git cherry`-based discriminator does not share that gap (see the empty-commit note by the
+  `plan_sync` verdicts table above). **Zero** real strands. `scripts/warm-lane-audit.sh` reported
+  `plan_stranded=0 plan_rewritten=28 plan_unknown=1 plan_mismatch=0`.
+- **Corpus-wide (dark-factory task 4032 §4, D6/INV-5; corpus measured by dark-factory task
+  3157's 2026-08-05 addendum):** 991 of 1,973 recorded done-step SHAs (50.2%) no longer exist as
+  git objects; a bare `merge-base --is-ancestor` fires on 185 of 200 live task branches (92.5%);
+  and of those 1,973 done steps, **zero** were confirmed "recorded done, work nowhere" — four
+  candidates, all hand-falsified.
+
+  Dark-factory task 4032's own ruling, quoted verbatim: **"SHA UNRESOLVABLE IS AN EXPECTED
+  STATE, NEVER A DEFECT SIGNAL"** and **"DO NOT write a second, parallel reachability
+  mechanism"**. (Its status is `pending` as of this writing — cite it as a ruling/decision
+  record, not as landed code.)
+
+**The `reify-audit` correction** — the specific false belief that keeps getting re-escalated:
+`crates/reify-audit/src/` has **zero** code references to `plan.json`, `.task-meta`, or
+`steps[].commit` (verified 2026-08-19). An escalation claiming "the reify audit sweep would read
+this as phantom-done" is describing a detector **that does not exist**.
+
+**When to escalate anyway.** This section rules out one specific false alarm; it does not mean
+every `plan_sync` reading is safe to ignore. A non-zero `plan_stranded` (the patch is genuinely
+absent) or a `plan_task=MISMATCH` remains an investigate-then-escalate signal — work the triage
+order in "Reading a STRANDED lane" immediately below.
+
+**Re-escalation history.** Independently rediscovered and re-escalated at least three times:
+esc-5344-3; esc-5866-2 through esc-5866-7 (six auto-filed at once); and esc-5937-5/-6/-7, which
+sat at L2 from 2026-08-09 to 2026-08-19 — esc-5937-5 was filed **ten days after** reify task 5876
+had already shipped the detector that answers it.
 
 ## Reading a STRANDED lane
 
@@ -368,7 +477,12 @@ Expect `plan_rewritten` to dominate — that is a healthy pool, not a finding. A
 `plan_stranded` is an **investigate-then-escalate** signal, never an auto-repair trigger; work the
 triage order in "Reading a STRANDED lane" above. No measured counts are recorded here on purpose: a
 point-in-time number frozen into a runbook is the frozen-constant antipattern D8/G6 reject — the
-recipe belongs in tracked docs, its output does not.
+recipe belongs in tracked docs, its output does not. That prohibition targets a *live pool's current
+counters* presented as a value a future run is expected to reproduce; it does not reach the dated,
+attributed historical measurements recorded elsewhere in this file (e.g. "Reading a PINNED-heavy
+pool" above, and the evidence in `"A plan.json done-step commit SHA is dangling / unreachable"`
+further above) — those record a past incident or a past measurement for context, never a baseline to
+diff a fresh run against, so they are not the antipattern this sentence rejects.
 
 ## Exit codes
 
@@ -412,6 +526,13 @@ timer unit is wired by this task**; a follow-up may implement one.
   consumers matching the `reset=`/`removed=`/`preserved=` prefix keep working
   (`scripts/warm-lane-gc.sh` stdout contract).
 
+  `stash_entries=E` is worth trending in the same place, and is the HEADROOM field most improved
+  by history: it is host-scoped and does not self-drain, so a single snapshot cannot
+  distinguish "one entry, pushed a minute ago" from "one entry that has sat there for a month".
+  **Slow accretion is precisely the shape the original incident took** — nine entries over ~1 month
+  (esc-5785-6) — so a series that only ever climbs is the signal, and any decline is an operator
+  drain rather than the pool healing itself. Trend it; do not gate on it.
+
 ## Pointers
 
 | Topic | Source |
@@ -419,6 +540,9 @@ timer unit is wired by this task**; a follow-up may implement one.
 | Full design (α pillar, invariants, boundary tests B1/B2) | `docs/prds/warm-lane-pool-sizing-lifecycle.md` §9.1, §10 |
 | Sizing/budget formula consuming this script's `free_gib`/`budget_gib` | `docs/prds/warm-lane-pool-sizing-lifecycle.md` §9.2 |
 | The landed script (authoritative CLI/behavior) | `scripts/warm-lane-audit.sh` |
+| Provenance of the `plan_sync` / `plan_task` detector | reify task 5876 (esc-5866-8) |
 | Hard/soft-floor admission gating (the script that actually blocks dispatch) | `scripts/warm-lane-disk-guard.sh` |
 | Reclaim primitives this script's classification informs | `scripts/warm-lane-gc.sh`, `scripts/thin-warm-lane.sh` |
 | Pool lifecycle & invariants (acquire/reset/release) | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5 |
+| Corpus-wide ruling: an unresolvable done-step SHA is expected, never a defect signal | dark-factory task 4032 §4 (D6/INV-5); corpus measured by dark-factory task 3157's 2026-08-05 addendum |
+| The shared-stash guard `stash_entries` backstops (measured reach, push-direction-only) | `hooks/reference-transaction` header, `tests/infra/test_stash_guard.sh` |

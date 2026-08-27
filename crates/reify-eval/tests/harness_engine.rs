@@ -43,6 +43,30 @@ mod flat_sort_kahn_core_delegation;
 // reason as #5196's and #5045's above.
 #[path = "harness_engine/nested_sub_derived_let_e2e.rs"]
 mod nested_sub_derived_let_e2e;
+// Task #5758's dimensioned-ctor SI-value pins land here for the same
+// anti-re-accretion reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/dimensioned_ctor_migration_si_values.rs"]
+mod dimensioned_ctor_migration_si_values;
+// Task #6186's DSL→STEP length-unit-regime round-trip pin lands here for the
+// same anti-re-accretion reason as #5196's, #5045's, #5360's and #5758's above.
+// It is also a topical fit: it drives `Engine::build_outputs`, the engine-level
+// entry point that composes evaluation, kernel realization and export.
+#[path = "harness_engine/export_unit_regime_e2e.rs"]
+mod export_unit_regime_e2e;
+// Scaffolding shared by task #5467's two e2e modules below (review suggestion
+// 5). Declared BEFORE them so the `use crate::underdetermined_support::…` in
+// each reads top-down; both are in this same binary, so the helpers were
+// literal copy-paste across one compilation unit before this module existed.
+#[path = "harness_engine/underdetermined_support.rs"]
+mod underdetermined_support;
+// Task #5467's let-tracing transitive closure e2e lands here for the same
+// anti-re-accretion reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/let_tracing_transitive_e2e.rs"]
+mod let_tracing_transitive_e2e;
+// Task #5467's instance-path W_UNDERDETERMINED regression e2e lands here for the
+// same anti-re-accretion reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/instance_path_underdetermined_e2e.rs"]
+mod instance_path_underdetermined_e2e;
 // Task #5417's DIC γ runtime-half e2e lands here for the same anti-re-accretion
 // reason as #5196's, #5045's and #5360's above.
 #[path = "harness_engine/objective_consumption_e2e.rs"]

@@ -591,3 +591,135 @@ structure def FEABodyMultiCase {
         errors
     );
 }
+
+// ─── Task 5905: load direction fields are dimensionless 3-vectors ────────────
+
+/// Unwrap a numeric literal expression to its `f64` magnitude.
+///
+/// Mirrors the identically-named helper in `fdm_stdlib_compile.rs:502` — a
+/// `vec3(...)` default's components lower to `Literal(Int | Real | Scalar)`
+/// depending on how the source spelled them — and additionally unwraps a
+/// leading unary negation. There is no negative-literal token: `-1.0` lowers to
+/// `UnOp { op: Neg, operand: Literal(Real(1.0)) }`. The fdm.ri precedent never
+/// needed this because its default (`vec3(0, 0, 1)`) has no negative component;
+/// the −Z load defaults here do.
+fn extract_numeric_literal(expr: &CompiledExpr) -> f64 {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Int(n)) => *n as f64,
+        CompiledExprKind::Literal(Value::Real(r)) => *r,
+        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value,
+        CompiledExprKind::UnOp {
+            op: UnOp::Neg,
+            operand,
+        } => -extract_numeric_literal(operand),
+        other => panic!(
+            "extract_numeric_literal: expected Literal(Int|Real|Scalar) or a \
+             negated one, got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Assert that `<structure>.direction` is a dimensionless 3-vector declared
+/// LAST, defaulting to the `vec3(0, 0, -1)` unit −Z direction.
+fn assert_direction_is_dimensionless_neg_z_vec3(structure: &str) {
+    let template = find_structure(structure);
+
+    // (1) Declared type: a DIRECTION takes a dimensionless quantity slot
+    //     (trajectory.ri's direction-field rule, task 5848).
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "direction")
+        .unwrap_or_else(|| panic!("{} missing 'direction' param cell", structure));
+    assert_eq!(
+        cell.cell_type,
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS
+        }),
+        "{}.direction denotes a DIRECTION, so it should be \
+         Type::vec3(Dimensionless) (direction field, task 5848)",
+        structure
+    );
+
+    // (2) Positional-binding guard: structure-def ctors bind arguments by
+    //     DECLARATION ORDER, so `direction` must stay the LAST declared param.
+    //     Promoting it would silently mis-bind every existing caller that
+    //     passes the preceding params positionally.
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        names.last().copied(),
+        Some("direction"),
+        "{}.direction must stay the LAST declared param (positional ctor \
+         binding); declared order is {:?}",
+        structure,
+        names
+    );
+
+    // (3) Default: `vec3(0.0, 0.0, -1.0)` — a FunctionCall, NOT a list literal
+    //     (a list literal cannot satisfy a Vector3 annotation at all).
+    //     Assertion shape mirrors fdm_stdlib_compile.rs:337-400.
+    let expr = require_default(template, "direction");
+    match &expr.kind {
+        CompiledExprKind::FunctionCall { function, args } => {
+            assert_eq!(
+                function.name, "vec3",
+                "{}.direction default should call 'vec3', got function.name: {}",
+                structure, function.name
+            );
+            assert_eq!(
+                args.len(),
+                3,
+                "vec3 call in {}.direction default should have 3 args, got {}",
+                structure,
+                args.len()
+            );
+            let tol = 1e-9_f64;
+            let x = extract_numeric_literal(&args[0]);
+            let y = extract_numeric_literal(&args[1]);
+            let z = extract_numeric_literal(&args[2]);
+            assert!(
+                (z + 1.0).abs() <= tol,
+                "{}.direction z-component (vec3 arg[2]) should be -1 (canonical \
+                 downward/bending direction), got {}",
+                structure,
+                z
+            );
+            assert!(
+                x.abs() <= tol,
+                "{}.direction x-component should be 0, got {}",
+                structure,
+                x
+            );
+            assert!(
+                y.abs() <= tol,
+                "{}.direction y-component should be 0, got {}",
+                structure,
+                y
+            );
+        }
+        other => panic!(
+            "{}.direction default should be FunctionCall {{ name: \"vec3\", .. }}, \
+             got: {:?}",
+            structure, other
+        ),
+    }
+}
+
+/// `PointLoad.direction` and `Gravity.direction` both denote a unit DIRECTION,
+/// so under trajectory.ri's direction-field ruling (task 5848) their quantity
+/// slot is DIMENSIONLESS, not `List<Real>` and not `Vector3<Length>`.
+///
+/// Three things are pinned per structure: the declared `Type::vec3(Dimensionless)`,
+/// the `vec3(0, 0, -1)` default (a list literal cannot satisfy a Vector3
+/// annotation, so the default has to move in lockstep with the type), and
+/// `direction` remaining the LAST declared param.
+///
+/// Assertion shape copied from `joint_direction_params_are_dimensionless_vec3`
+/// (kinematic_stdlib_compile.rs) so the two ruling-conformance pins read alike.
+#[test]
+fn load_direction_params_are_dimensionless_vec3() {
+    assert_direction_is_dimensionless_neg_z_vec3("PointLoad");
+    assert_direction_is_dimensionless_neg_z_vec3("Gravity");
+}

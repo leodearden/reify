@@ -1,0 +1,52 @@
+// Fixture: precision-nominal α (task 6166) — SPLINE probe (non-analytic class).
+//
+// Copies the pnrg_envelope_sphere.ri anchor layout.  READ THAT HEADER FIRST for
+// the OK trap and the validity assertion.
+//
+// ── WHY THE SUBJECT IS A SWEPT BEZIER AND NOT A NURBS SURFACE ──
+//
+// The obvious spline subject is `nurbs_surface(...)`, and it is the one that does
+// NOT work.  Two candidates were considered:
+//
+//  (a) `nurbs(degree, n_pts, coords…, weights…)` returns a WIRE.  A wire has no
+//      facets, therefore no chord deviation, therefore nothing to measure.  It is
+//      not a measurable class at all — excluded on semantics, not on behaviour.
+//
+//  (b) `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree,
+//      v_degree)` [6 args, crates/reify-compiler/src/geometry.rs:2639] returns a
+//      Face and is the right shape — but it does NOT realize.  Measured
+//      2026-08-10 at 5db884e30b with a 3x3 control net, unit weights, clamped
+//      knots [0,0,0,1,1,1] in both directions and u_degree = v_degree = 2:
+//          INDETERMINATE PnrgSplineCheck#constraint[0]
+//      in 0.22 s — a fast fail, i.e. no realization was attempted rather than a
+//      slow kernel failure.  This is consistent with the known latent gap:
+//      `Operation::SurfaceNurbs` is ABSENT from `occt_capability_descriptor()`
+//      (crates/reify-kernel-occt/src/register.rs:101-163), so it resolves only via
+//      the DEFAULT_KERNEL_NAME fallback in engine_build.rs and `plan_output_repr`
+//      returns None for it.  Recorded as measured; not escalated.
+//
+// The subject below is therefore the documented FALLBACK: a circular profile swept
+// along a BEZIER path.  That is a genuinely non-analytic (B-spline-parameterized)
+// surface — the property the spline class is here to exercise — and it measures.
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_envelope_spline
+
+#precision(20mm)
+
+// Subject: a circle swept along a cubic Bezier path — the measurable spline
+// surface.  To reproduce the nurbs_surface non-realization instead, substitute:
+//   let g = nurbs_surface([[0mm,0mm,0mm],[500mm,0mm,300mm],[1000mm,0mm,0mm],
+//                          [0mm,500mm,300mm],[500mm,500mm,800mm],[1000mm,500mm,300mm],
+//                          [0mm,1000mm,0mm],[500mm,1000mm,300mm],[1000mm,1000mm,0mm]],
+//                         [1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0],
+//                         [0.0,0.0,0.0,1.0,1.0,1.0], [0.0,0.0,0.0,1.0,1.0,1.0], 2, 2)
+structure PnrgSpline {
+    let g = sweep(circle(100mm), bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
+}
+
+structure PnrgSplineCheck {
+    param subject : PnrgSpline
+    constraint RepresentationWithin(subject, 0.001mm)
+}

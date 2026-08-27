@@ -1,0 +1,229 @@
+/**
+ * Structural coverage guard (task-6053):
+ * runtime exports of bridge.ts ↔ keys of a target test file's
+ * `vi.mock('../bridge', () => ({ ... }))` factory.
+ *
+ * SINGLE SOURCE OF TRUTH for the bridge-mock contract. The target files carry a
+ * two-line pointer here rather than a copy: this narrative is normative prose
+ * about a vitest mechanism, and four lockstep copies would rot three at a time
+ * with nothing to detect it — unlike the key sets below, which are checked.
+ *
+ * ── Invariant ────────────────────────────────────────────────────────────────
+ * Every runtime export of `../bridge` is either mocked by the target factory or
+ * carries a documented entry in that target's `omissions` allowlist.
+ *
+ * ── Why an omitted key is dangerous rather than merely wrong ─────────────────
+ * The factory is a NON-partial mock, so an omitted export makes vitest throw
+ * `No "X" export is defined on the "../bridge" mock` SYNCHRONOUSLY at property
+ * access. `initApp`'s run of sibling try/catch blocks then gives that ONE defect
+ * two opposite signatures, neither of which fails an assertion:
+ *   - export consumed by `engineStore.subscribeToEvents` -> a DOM toast and ZERO
+ *     stderr. The throw fires while the `Promise.allSettled` argument array is
+ *     still being built, so every engineStore subscription dies at once and
+ *     allSettled's per-listener `console.warn` is never reached.
+ *   - export consumed directly by an `initApp` block -> an stderr flood, with
+ *     every test still green.
+ * Tasks 6035, 6039 and 6045 each fixed one name of this class by hand, one
+ * export at a time. This guard detects the whole class.
+ *
+ * ── Measured truth table, for an export the target's <App /> actually reaches ─
+ *   factory key + beforeEach restore   -> green (correct)
+ *   factory MISSING, beforeEach present -> ALL tests FAIL loudly, before any
+ *       test body runs (`vi.mocked(undefined).mockResolvedValue` throws)
+ *   factory present, beforeEach MISSING -> green, but a per-test
+ *       `mockImplementation` override leaks into every later test
+ *   BOTH missing -> SILENT. This is the 6035/6039/6045 defect class.
+ * Checks (a)-(c) below cover the factory column of that table; check (d) covers
+ * the beforeEach one.
+ *
+ * ── Standing rules for the target files ─────────────────────────────────────
+ * 1. A new bridge.ts runtime export gets a factory key in every target, OR an
+ *    entry in that target's `omissions` with the reason it is unreachable from
+ *    a rendered <App />.
+ * 2. Do NOT convert a target factory to `importOriginal` / a partial mock. That
+ *    would evaluate the real bridge.ts — its `@tauri-apps/api` and
+ *    `@tauri-apps/plugin-dialog` imports and every real implementation — inside
+ *    the most load-bearing mock in the file.
+ *
+ * Shape mirrors `debugParity.test.ts` — the house pattern for "two artifacts
+ * must stay in lockstep, with documented legitimate asymmetries": mock the
+ * runtime deps, read one side authoritatively, parse the other, keep a named
+ * allowlist carrying prose reasons, and add both an extraction-sanity check and
+ * an allowlist-self-check so neither side can rot into a rubber stamp.
+ */
+import { describe, it, expect, vi } from 'vitest';
+
+// These three mocks make bridge.ts importable at collection time without a
+// Tauri runtime. Proven sufficient: bridge.test.ts imports the same module with
+// exactly this set. `@tauri-apps/plugin-dialog` is the reason this guard cannot
+// live inside App.test.tsx — that file does not mock it.
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  save: vi.fn(),
+  open: vi.fn(),
+  ask: vi.fn(),
+}));
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+// REAL module (the three mocks above only stub its Tauri dependencies).
+import * as bridge from '../bridge';
+
+import {
+  extractBridgeFactoryKeys,
+  extractBridgeMockOverrides,
+  missingFactoryKeys,
+  staleOmissions,
+  unrestoredOverrides,
+} from './bridgeMockContract';
+
+/**
+ * Authoritative export list. `Object.keys` on the real ESM namespace needs no
+ * regex and cannot drift: TS types erase, so this is exactly the set of runtime
+ * exports a `vi.mock` factory has to satisfy. Do NOT replace with a source
+ * parse of bridge.ts — the factory side is parsed only because a `vi.mock`
+ * factory is introspectable solely from the file that installs it.
+ */
+const RUNTIME_EXPORTS = Object.keys(bridge);
+
+/**
+ * Runtime exports a factory may legitimately omit, each with the reason it is
+ * unreachable from a rendered `<App />` THROUGH THE MOCKED NAMESPACE. Check (c)
+ * keeps every entry honest in the two directions it can: allowlisting a name
+ * bridge.ts no longer exports, or one the factory in fact mocks, fails.
+ *
+ * TWO GRADES OF JUSTIFICATION — know which one you are relying on:
+ *   MECHANISM (cannot rot): the only caller is inside bridge.ts itself. A
+ *     same-module call resolves against the real binding, never the mocked
+ *     namespace, so no edit to App.tsx or a component can make it reachable.
+ *   PREMISE (can rot silently): "no non-test importer today". Nothing here
+ *     checks that, so if a component starts importing the name, check (c) stays
+ *     green — it only detects the two rot conditions above. Re-verify the
+ *     importer set when you touch one of these, and prefer just adding the key
+ *     to both factories when the export is function-shaped: three entries that
+ *     rested on a premise about ../viewport being mocked were retired that way,
+ *     because one line in each factory beats a premise the guard cannot check.
+ *     The four PREMISE entries that remain are the ones where a `vi.fn()` stub
+ *     would be an active lie: two are data constants (a fake value could be
+ *     silently asserted against, whereas the missing-export throw is loud and
+ *     names itself), and two have no non-test caller at all.
+ *
+ * The bar for adding an entry is "no non-test importer can reach it through the
+ * mocked namespace", NOT "adding the key is inconvenient". `claudePermissionDecision`
+ * is deliberately NOT here: App.tsx imports it and calls it in `createClaudeStore`'s
+ * `onPermissionDecision` handler, so it is genuinely reachable.
+ */
+const BRIDGE_INTERNAL_OMISSIONS: Record<string, string> = {
+  BUILD_CONTEXT_HANDLED_FIELDS:
+    'PREMISE — const array; only importers are __tests__/types.typecheck.ts and __tests__/claudeBridge.test.ts (the ChatPanel.tsx hit is a comment)',
+  MESSAGE_CONTEXT_FIELD_MAP:
+    'MECHANISM — const map iterated by mapContextToWire inside bridge.ts (the ChatPanel.tsx hit is a comment)',
+  lspRequest:
+    'PREMISE — no non-test importer at all; editor/lspClient.ts declares its OWN local lspRequest and calls invoke directly',
+  mapContextToWire: 'MECHANISM — called only by claudeSendMessage within bridge.ts',
+  onFeaCaseChanged: 'MECHANISM — called only by subscribeFeaCaseToStore within bridge.ts',
+  refreshFullState: 'PREMISE — test-only; sole importer is __tests__/bridge.test.ts',
+  validatePayload: "MECHANISM — called only from bridge.ts's own claude/sidecar listeners",
+};
+
+/**
+ * Files subject to the full-coverage contract.
+ *
+ * MEMBERSHIP CRITERION: this file renders `<App />`, so the whole App component
+ * tree — `initApp`, `engineStore.subscribeToEvents`, `createClaudeStore` — reads
+ * the mocked namespace, and ANY gap degrades it silently. That, not "the file
+ * mocks ../bridge", is the test for adding a row here.
+ *
+ * Deliberately an explicit table rather than a glob for `vi.mock('../bridge'`.
+ * Four other test files (engineStore.test.ts, observedDemand.test.ts,
+ * selectiveDemand.test.ts, sidecarPersistence.test.ts) carry deliberately narrow,
+ * subject-scoped bridge factories — correct for a focused unit test — and
+ * viewport/Viewport.test.tsx uses a different specifier ('../../bridge').
+ * Globbing would force them to full coverage or bloat the allowlist with 30+
+ * meaningless entries, destroying its signal.
+ *
+ * `omissions` is per-row, not global, because check (c) fails an entry that the
+ * factory DOES mock: a single shared table therefore forces every target to
+ * carry the same key set. Both rows point at the same table today because both
+ * factories are complete in the same way; a future target with a legitimately
+ * narrower factory gets its own table rather than making this one lie.
+ *
+ * `minFactoryKeys` is a per-target non-vacuity floor. It does NOT protect check
+ * (b) — under-parsing makes (b) report MORE gaps, not fewer, so (b) already
+ * fails loudly on any under-capture. What the floor buys is a clearer failure
+ * for the one case (b) words badly: a mis-targeted or renamed path, where the
+ * parser finds no factory at all and (b) would otherwise dump the entire
+ * 68-name export list as "missing".
+ */
+const TARGETS = [
+  { file: 'App.test.tsx', minFactoryKeys: 55, omissions: BRIDGE_INTERNAL_OMISSIONS },
+  { file: 'contextIntegration.test.tsx', minFactoryKeys: 55, omissions: BRIDGE_INTERNAL_OMISSIONS },
+] as const;
+
+describe.each(TARGETS)(
+  'bridge-mock coverage: bridge.ts runtime exports ↔ $file vi.mock factory',
+  ({ file, minFactoryKeys, omissions }) => {
+    const source = readFileSync(join(__dirname, file), 'utf-8');
+    const factoryKeys = extractBridgeFactoryKeys(source);
+
+    it('(a) extraction sanity — neither side is vacuously empty or over-captured', () => {
+      // Without this, a parser that silently returned [] would make (b) pass.
+      expect(RUNTIME_EXPORTS.length).toBeGreaterThanOrEqual(60);
+      for (const name of [
+        'getInitialState',
+        'onModeShapeFrame',
+        'syncDemand',
+        'claudePermissionDecision',
+      ]) {
+        expect(RUNTIME_EXPORTS, `bridge.ts must export '${name}'`).toContain(name);
+      }
+
+      expect(factoryKeys.length).toBeGreaterThanOrEqual(minFactoryKeys);
+      expect(factoryKeys).toContain('getInitialState');
+      expect(factoryKeys).toContain('onMeshUpdate');
+      // A doubled factory entry is a merge artefact, not a covered export.
+      expect(new Set(factoryKeys).size).toBe(factoryKeys.length);
+      // Catches a parser that leaked the inner keys of a nested object literal
+      // (`file_path`, `meshes`, ...) — and a factory key that is no longer an
+      // export at all.
+      const notExports = factoryKeys.filter((k) => !RUNTIME_EXPORTS.includes(k));
+      expect(notExports).toStrictEqual([]);
+    });
+
+    it('(b) every bridge.ts runtime export is mocked or documented as omitted', () => {
+      expect(missingFactoryKeys(RUNTIME_EXPORTS, factoryKeys, omissions)).toStrictEqual([]);
+    });
+
+    it('(c) the allowlist is self-checking — no entry has rotted', () => {
+      expect(staleOmissions(RUNTIME_EXPORTS, factoryKeys, omissions)).toStrictEqual([]);
+    });
+
+    it('(d) every persistently overridden bridge mock is restored in a beforeEach', () => {
+      // The truth table's third row, which (a)-(c) cannot see: a factory key
+      // with no beforeEach restore is green, but any test that overrides it
+      // leaks that override into every later test — vi.clearAllMocks() resets
+      // call history, not implementations.
+      //
+      // The check is deliberately narrow: it requires a restore only for names
+      // some test actually overrides, NOT for every factory key. A key nobody
+      // overrides cannot leak, so demanding a restore for it would mean ~45
+      // dead lines per target and an allowlist with no signal.
+      const overrides = extractBridgeMockOverrides(source);
+
+      // Non-vacuity: both sets come from one regex, so a parse that broke would
+      // empty them together and pass silently.
+      expect(
+        overrides.restored.length,
+        `no vi.mocked(bridge.X) restores parsed out of ${file} — the parser, not the file, is probably wrong`,
+      ).toBeGreaterThanOrEqual(10);
+
+      expect(unrestoredOverrides(overrides)).toStrictEqual([]);
+    });
+  },
+);

@@ -67,7 +67,7 @@ Depends on α, β (upstream). **PASS.**
 | Capability | Evidence | Verdict |
 |---|---|---|
 | `has_user_label`/`user_label_eq` exist and are removable | `grep:crates/reify-eval/src/selector_vocabulary_v2.rs:774` / `:799` | **PASS** |
-| They are test-only orphans (net-zero behaviour) | callers only in `crates/reify-eval/tests/selector_vocabulary_v2_mock.rs` + `_e2e.rs`; re-exports `crates/reify-eval/src/lib.rs:118/119` — **zero production callers** (verified C-10) | **PASS** (`test-only` is the removal warrant, not a failure here) |
+| They are test-only orphans (net-zero behaviour) | callers only in `crates/reify-eval/tests/harness_topology_selector/selector_vocabulary_v2_mock.rs` + `_e2e.rs`; re-exports `crates/reify-eval/src/lib.rs:118/119` — **zero production callers** (verified C-10) | **PASS** (`test-only` is the removal warrant, not a failure here) |
 | Removal does **not** touch the entangled substrate (§7 / P2) | helpers are isolated from `TopologyAttribute.user_label` (`geometry.rs:3903`), the resolver branch (`topology_attribute_resolver.rs:220`), and `LeafQuery::Named` — those are explicitly **excluded** | **PASS** |
 
 No premise beyond "verified dead." **PASS.**

@@ -1,22 +1,41 @@
-//! Documents an observed gmsh property: `classify_surfaces` plus
-//! `create_geometry` plus `mesh_generate(3)` does NOT preserve the input
-//! discrete surface vertex set. The HXT pipeline re-meshes from the resulting
-//! parametric geometry, so output node positions and indices are gmsh's
-//! choice.
+//! Documents two observed properties of `classify_surfaces` plus
+//! `create_geometry` plus `mesh_generate(3)`, which together are what
+//! `mesh_to_volume` runs:
 //!
-//! This file pins the observation as a runtime diagnostic. It does not assert
-//! "expected" output positions — gmsh may legitimately revise its meshing
-//! choices across versions. The test only verifies that the well-known
-//! re-meshing behaviour is in force (input cube corners are NOT all
-//! coordinate-matchable against the output mesh) so that a future regression
-//! to a different behaviour would surface here rather than silently
-//! invalidate assumptions made by downstream consumers.
+//!  1. The geometric CORNERS of the input solid survive. A complete B-rep
+//!     decomposition emits dim-0 (corner point) entities, and gmsh places a
+//!     node on each, so every one of a cube's 8 corner positions is
+//!     coordinate-matchable in the output mesh.
+//!  2. The input vertex SET as a whole is still not preserved. HXT re-meshes
+//!     from the reconstructed parametric geometry, so output node positions,
+//!     count and indices are gmsh's choice: a 26-vertex input yields far more
+//!     output nodes and no index-identity map.
 //!
-//! Background: the original PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.3
-//! producer plan (task 3591) assumed input vertex `i` maps to output vertex
-//! `i` after meshing. The diagnostic below disproves that premise on a
-//! 2×2-subdivided unit cube and motivates the per-B-rep-entity attribution
-//! redesign captured in the task description.
+//! Measured on this fixture (a 2×2-subdivided unit cube, 26 input vertices):
+//! 8/8 corners recovered, m = 344 output vertices.
+//!
+//! This file pins those properties as a runtime diagnostic. It does not assert
+//! "expected" output positions or an exact node count — gmsh may legitimately
+//! revise its meshing choices across versions — so that a future change to
+//! either property surfaces here rather than silently invalidating assumptions
+//! made by downstream consumers.
+//!
+//! Background: property 1 has not always held. Until #6200, `mesh_to_volume`
+//! passed `classify_surfaces` a feature angle of FRAC_PI_2 (90°); gmsh's
+//! sharp-edge test is strictly-greater-than and a cube's dihedral angle is
+//! exactly 90°, so no edge registered as sharp, the B-rep decomposition
+//! degenerated (dim0/dim1/dim2 = 4/4/2 for a box) and the corners were lost
+//! along with ~26% of the solid's volume. With the production feature angle
+//! now FRAC_PI_4 (`reify_kernel_gmsh::CLASSIFY_FEATURE_ANGLE`) the census is
+//! 8/14/8 and the corners are recovered. Property 1 as witnessed here agrees
+//! with `tests/node_attachment_producer.rs`, which demands exactly the 8
+//! cube-corner handles 301..=308 as `OnVertex` via the `mesh_boundary.rs`
+//! attributed producer — the two producers now behave alike.
+//!
+//! Property 2 is why the per-B-rep-entity attribution design exists at all:
+//! the original PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.3 producer
+//! plan assumed input vertex `i` maps to output vertex `i` after meshing, and
+//! the diagnostic below still disproves that premise.
 //!
 //! Run with `--nocapture` to print the full vertex layout.
 
@@ -106,16 +125,16 @@ fn count_corners_recovered(volume: &reify_ir::VolumeMesh) -> usize {
 }
 
 /// Documents that `classify_surfaces` + `create_geometry` + `mesh_generate(3)`
-/// does NOT preserve the input discrete surface vertex set on a
-/// 2×2-subdivided unit cube. With `--nocapture` the test prints the full
-/// vertex layout for follow-up investigation.
+/// recovers all 8 geometric corners of a 2×2-subdivided unit cube, while still
+/// re-meshing the rest of the vertex set. With `--nocapture` the test prints
+/// the full vertex layout for follow-up investigation.
 ///
 /// This is a *property-witness* test, not a contract test: it pins gmsh's
-/// observed re-meshing behaviour so that a future change that DID preserve
-/// input vertices would surface here, prompting reconsideration of the
-/// NodeAttachment-producer design (task 3591).
+/// observed behaviour under the production classify angles so that a future
+/// change to either half — corners lost, or the output collapsing back onto
+/// the input vertex set — surfaces here.
 #[test]
-fn classify_plus_create_geometry_does_not_preserve_input_vertex_set() {
+fn classify_plus_create_geometry_recovers_corners_but_remeshes_the_rest() {
     let surface = subdivided_unit_cube_surface();
     let report = mesh_surface_to_volume_with_diagnostics(
         &surface,
@@ -142,17 +161,34 @@ fn classify_plus_create_geometry_does_not_preserve_input_vertex_set() {
         }
     }
 
-    // The observed behaviour as of gmsh 4.15: re-meshing throws away the
-    // input discrete vertex set, so few or none of the 8 input corners
-    // survive coordinate-matchable in the output. Assert the "few" bound
-    // (< 8) — a future gmsh release that preserved all 8 would still trip
-    // this test (intentionally, so the producer design assumption can be
-    // revisited). Set REIFY_DUMP_GMSH_DIAG=1 to inspect the layout.
+    // Property 1 — the corners survive. Under the production feature angle
+    // (`CLASSIFY_FEATURE_ANGLE` = FRAC_PI_4) the B-rep decomposition emits
+    // dim-0 corner entities and gmsh nodes each one, so every cube corner is
+    // coordinate-matchable in the output. A regression to a feature angle of
+    // FRAC_PI_2 or above drops these back to 4-or-fewer (that was #6200, and
+    // it cost ~26% of the solid's volume). Set REIFY_DUMP_GMSH_DIAG=1 to
+    // inspect the layout.
+    assert_eq!(
+        recovered, 8,
+        "expected all 8 cube corners to survive classify+create_geometry as \
+         B-rep corner (dim-0) entities, but only {recovered} were \
+         coordinate-matchable in the output (m={m}). A feature angle of \
+         FRAC_PI_2 or above reproduces exactly this (see #6200): gmsh's \
+         sharp-edge test is strictly-greater-than and a cube's dihedral angle \
+         is exactly 90°. Check reify_kernel_gmsh::CLASSIFY_FEATURE_ANGLE."
+    );
+
+    // Property 2 — the rest of the vertex set is still gmsh's choice, not the
+    // input's. Only the direction is pinned, not the measured m=344: HXT is
+    // free to revise node placement across versions, but collapsing back onto
+    // the 26 input vertices would mean the pipeline had stopped re-meshing,
+    // which would invalidate the per-B-rep-entity attribution design that
+    // exists precisely because index-identity does not hold.
     assert!(
-        recovered < 8,
-        "expected gmsh's classify+create_geometry pipeline to drop some input \
-         vertices (per task-3591 diagnostic finding), but found all 8 cube \
-         corners in the output (m={m}). If this is intentional in a newer \
-         gmsh, revisit the NodeAttachment producer redesign in task 3591."
+        m > 26,
+        "expected gmsh to re-mesh from the reconstructed geometry and emit \
+         more nodes than the 26 input vertices, but got m={m}. If the output \
+         now tracks the input vertex set, the NodeAttachment producer's \
+         no-index-identity premise needs revisiting."
     );
 }

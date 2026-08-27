@@ -54,7 +54,7 @@ from the standard library and examples.
   factor: f64, offset: Option<f64> }`. No compound-unit evaluator exists.
 - The gap is documented as a "known limitation" in at least
   `docs/prds/v0_3/kernel-geometry-queries.md:29` and a comment block in
-  `crates/reify-compiler/tests/materials_fea_tests.rs:271`.
+  `crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:271`.
 
 ## 3. Sketch of approach
 
@@ -242,7 +242,7 @@ Labels are PRD-local; task IDs assigned at decompose time.
 | δ | **Value-level `^` operator.** | Crates: `tree-sitter-reify`, `reify-syntax`, `reify-compiler` (typing), `reify-eval`. | *Signal:* `5mm ^ 2` evaluates to a `Scalar` area (dim = LENGTH²); `2.0 ^ 3.0` = `8.0` Real; `5mm ^ 1.5` is a type error (`E_NONINT_EXP_ON_DIMENSIONED`); each pinned in a test. | Prereqs: α (shares `^` token / grammar regen). *Intermediate* (unlocks ε). |
 | ε | **Integration gate (leaf).** | Crates: `reify-eval` (e2e), `examples/`. | *Signal:* `examples/unit_expressions.ri` declares density, acceleration, torque, area, viscosity, conductivity, and a value-level `5mm^2`; a `crates/reify-eval/tests/unit_expressions_e2e.rs` evaluates the file and asserts each resolves to the correct SI `Scalar`. `reify check examples/unit_expressions.ri` is clean. | Prereqs: γ, δ. **Leaf** — the user-observable signal. |
 | ζ | **Tidy-up: migrate workaround sites to the new idiom.** | Crates: `reify-compiler/stdlib`, `examples/`. | *Signal:* the ~9 inventoried lib/example sites (§ below) are rewritten to compound literals; the workspace test suite stays green (values unchanged); a grep for the compositional density idiom (`1m \* 1m \* 1m`) in `stdlib/` and `examples/` returns only files with a stated reason to keep it. **Equivalence tests asserting `mm^2 == mm*mm` are kept** (they have a reason to exist). | Prereqs: ε. **Leaf**. |
-| η | **Companion prose corrections.** | Crates/docs: PRDs + test comments. | *Signal:* the "known grammar limitation" note at `docs/prds/v0_3/kernel-geometry-queries.md:29`, the comment at `crates/reify-compiler/tests/materials_fea_tests.rs:271`, and the `money-dimension.md` workaround references are updated to state compound literals now parse (grep confirms the old text is gone). | Prereqs: ε. **Leaf**. |
+| η | **Companion prose corrections.** | Crates/docs: PRDs + test comments. | *Signal:* the "known grammar limitation" note at `docs/prds/v0_3/kernel-geometry-queries.md:29`, the comment at `crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:271`, and the `money-dimension.md` workaround references are updated to state compound literals now parse (grep confirms the old text is gone). | Prereqs: ε. **Leaf**. |
 
 Dependency edges: α→β→γ; α→δ; γ→ε; δ→ε; ε→ζ; ε→η.
 

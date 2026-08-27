@@ -97,6 +97,9 @@ pub const NO_OPTIONS: ContentHash = ContentHash(0);
 #[derive(Debug, Default)]
 pub struct RealizationCache<V> {
     buckets: HashMap<ReprKind, HashMap<String, HashMap<ContentHash, ToleranceBucket<V>>>>,
+    /// Monotonic lifetime count of NEW *terminal* realization entries.
+    /// See [`RealizationCache::realization_entries`] for the full contract.
+    terminal_entries: usize,
 }
 
 impl<V> RealizationCache<V> {
@@ -104,7 +107,86 @@ impl<V> RealizationCache<V> {
     pub fn new() -> Self {
         Self {
             buckets: HashMap::new(),
+            terminal_entries: 0,
         }
+    }
+
+    /// Number of NEW **terminal** realization entries created over this cache's
+    /// lifetime — the signal behind [`crate::CacheStats::realization_entries`].
+    ///
+    /// # Contract
+    ///
+    /// - **Monotonic.** Incremented only by an *accepted* [`insert_terminal`](Self::insert_terminal)
+    ///   (one that returns `true`, i.e. genuinely realized and cached new geometry).
+    ///   Never decremented — not by [`remove`](Self::remove), not by
+    ///   [`clear_entity`](Self::clear_entity), and not by the whole-cache
+    ///   [`clear`](Self::clear) behind `clear_realization_cache()` (which
+    ///   `edit_param`/`edit_source` perform on every edit, so a reset-on-flush
+    ///   counter would be useless for cross-edit measurement). No method on this
+    ///   type can lower the count — the monotonicity is structural, not a
+    ///   convention imposed on call sites.
+    /// - **Terminal only.** Plain [`insert`](Self::insert) — the intermediate
+    ///   cross-kernel conversion path — is deliberately NOT counted. Conversion
+    ///   intermediates are steps *within* one realization, not realizations.
+    /// - **NOT a live size.** This is deliberately not [`len`](Self::len): each
+    ///   [`ToleranceBucket`] caps at `SOFT_CAPACITY` and evicts its loosest entry
+    ///   inside the same `insert` call, so a genuinely-new insert can be net-zero
+    ///   growth. `len()` would silently under-report realizations by the eviction
+    ///   count; this counter answers "how many times did we actually realize and
+    ///   cache new geometry", which is the re-mesh-avoidance question.
+    pub fn realization_entries(&self) -> usize {
+        self.terminal_entries
+    }
+
+    /// Drops every cached entry, leaving the cache empty.
+    ///
+    /// This is the whole-cache flush behind
+    /// [`Engine::clear_realization_cache`](crate::Engine::clear_realization_cache)
+    /// (and therefore behind every `edit_param` / `edit_source`).
+    ///
+    /// **Monotonicity holds by construction.** The flush clears `buckets`
+    /// in place and structurally cannot reach `terminal_entries`, so the
+    /// lifetime counter documented by
+    /// [`realization_entries`](Self::realization_entries) survives it without
+    /// any save/restore dance at the call site. Reseating the whole struct to
+    /// [`RealizationCache::new`] instead would zero the counter — that is
+    /// exactly what this method exists to make impossible.
+    pub fn clear(&mut self) {
+        self.buckets.clear();
+    }
+
+    /// Inserts a **terminal realization** at `(entity, repr_kind, options_hash, tol)`,
+    /// counting it in [`realization_entries`](Self::realization_entries).
+    ///
+    /// Identical to [`insert`](Self::insert) in every respect except that an
+    /// accepted insert (returning `true`) also increments the monotonic lifetime
+    /// counter. A rejected insert (`false` — an existing entry with a tighter or
+    /// equal tolerance already dominates this one) is a cache *hit*: nothing was
+    /// realized, so nothing is counted.
+    ///
+    /// This is the counted half of a deliberate split. The realization pipeline has
+    /// exactly two cache-insert sites: the cross-kernel *conversion intermediate*
+    /// site uses plain [`insert`](Self::insert) and is uncounted, while the terminal
+    /// realization site (gated on `is_terminal_realization`, in `engine_build.rs`)
+    /// uses this method. Keeping the split in two named methods — rather than a
+    /// boolean parameter — makes it explicit at every call site which side it is on.
+    ///
+    /// # Panics
+    ///
+    /// Forwards [`insert`](Self::insert)'s debug-build precondition on `tol`.
+    pub fn insert_terminal(
+        &mut self,
+        entity: &str,
+        repr_kind: ReprKind,
+        tol: f64,
+        options_hash: ContentHash,
+        val: V,
+    ) -> bool {
+        let inserted = self.insert(entity, repr_kind, tol, options_hash, val);
+        if inserted {
+            self.terminal_entries += 1;
+        }
+        inserted
     }
 
     /// Inserts `val` at `(entity, repr_kind, options_hash, tol)`.
@@ -114,6 +196,12 @@ impl<V> RealizationCache<V> {
     /// `options_hash` bucket — mirroring [`ToleranceBucket::insert`]'s semantics.
     ///
     /// `options_hash = ContentHash(0)` is the "no options" sentinel (PRD §4).
+    ///
+    /// **Uncounted path.** This does NOT move
+    /// [`realization_entries`](Self::realization_entries) — it is the
+    /// intermediate/conversion insert. Use
+    /// [`insert_terminal`](Self::insert_terminal) at the terminal-realization site
+    /// so the realization is counted.
     ///
     /// **Allocation discipline:** the entity `String` key is allocated at most once per
     /// `(entity, repr_kind)` pair, regardless of `options_hash`.  Subsequent inserts at
@@ -790,6 +878,229 @@ mod tests {
             cache.lookup("Bracket", ReprKind::Mesh, 0.01, super::NO_OPTIONS),
             Some(&handle),
             "KernelHandle must round-trip through the value-agnostic cache"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // task 4152 step-01: `realization_entries()` — the monotonic lifetime
+    // count of NEW *terminal* realization cache entries, surfaced through
+    // `CacheStats.realization_entries` (PRD `docs/prds/v0_4/fea-result-model.md`
+    // B9: "the shared volume mesh is realized and cached exactly once across
+    // both load cases").  These tests pin the counter contract at the cache
+    // level, independently of the engine wiring.
+    // ---------------------------------------------------------------------
+
+    /// (a) A fresh cache — via either `new()` or `Default` — starts at zero.
+    #[test]
+    fn realization_entries_starts_at_zero() {
+        let cache = RealizationCache::<u32>::new();
+        assert_eq!(
+            cache.realization_entries(),
+            0,
+            "a freshly constructed cache must have realized nothing yet"
+        );
+
+        let defaulted = RealizationCache::<u32>::default();
+        assert_eq!(
+            defaulted.realization_entries(),
+            0,
+            "`Default` must agree with `new()` on the initial counter value"
+        );
+    }
+
+    /// (b) An accepted `insert_terminal` increments the counter by exactly 1.
+    #[test]
+    fn insert_terminal_increments_realization_entries_once_per_new_entry() {
+        let mut cache = RealizationCache::<u32>::new();
+
+        let accepted = cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 1);
+        assert!(accepted, "first terminal insert must be accepted");
+        assert_eq!(
+            cache.realization_entries(),
+            1,
+            "an accepted terminal insert must increment the counter by exactly 1"
+        );
+
+        // A distinct entity is a distinct realization → 2.
+        assert!(cache.insert_terminal("Other", ReprKind::Mesh, 0.01, ContentHash(0), 2));
+        assert_eq!(
+            cache.realization_entries(),
+            2,
+            "a second, distinct terminal realization must increment again"
+        );
+    }
+
+    /// (c) A dominated re-insert (equal or looser tolerance) is a cache HIT:
+    /// `insert_terminal` returns `false` and the counter does not move.
+    ///
+    /// Mirrors `tolerance_bucket::tests::insert_rejects_equal_tolerance` — an
+    /// equal-tolerance re-insert keeps the existing value and mutates nothing,
+    /// so it did not "realize" anything new.
+    #[test]
+    fn dominated_insert_terminal_is_a_hit_and_does_not_increment() {
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 1));
+        assert_eq!(cache.realization_entries(), 1);
+
+        // Equal tolerance: dominated by the existing entry.
+        let equal = cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 99);
+        assert!(
+            !equal,
+            "equal-tolerance re-insert must be rejected as a hit"
+        );
+        assert_eq!(
+            cache.realization_entries(),
+            1,
+            "a rejected (dominated) insert must NOT increment the counter"
+        );
+
+        // Looser tolerance: also dominated by the tighter cached entry.
+        let looser = cache.insert_terminal("Body", ReprKind::Mesh, 0.1, ContentHash(0), 98);
+        assert!(!looser, "looser re-insert must be rejected as a hit");
+        assert_eq!(
+            cache.realization_entries(),
+            1,
+            "a looser dominated insert must NOT increment the counter"
+        );
+    }
+
+    /// (d) Plain `insert` is the INTERMEDIATE (uncounted) path — it never
+    /// touches the counter, even when it genuinely inserts.
+    ///
+    /// This is the split that makes B9's "exactly 1" achievable: the
+    /// OCCT→gmsh VolumeMesh route caches per-step conversion intermediates
+    /// (`engine_build.rs`, keys `"{entity}#conv-step{N}"`) through `insert`,
+    /// and those are steps *within* one realization, not realizations.
+    #[test]
+    fn plain_insert_never_increments_realization_entries() {
+        let mut cache = RealizationCache::<u32>::new();
+
+        let accepted = cache.insert("Body#conv-step0", ReprKind::BRep, 0.01, ContentHash(0), 1);
+        assert!(accepted, "plain insert of a new entry must be accepted");
+        assert_eq!(
+            cache.realization_entries(),
+            0,
+            "the intermediate-conversion path must not be counted as a realization"
+        );
+
+        // Interleaving a terminal insert leaves the intermediate uncounted.
+        assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 2));
+        assert!(cache.insert("Body#conv-step1", ReprKind::Mesh, 0.01, ContentHash(0), 3));
+        assert_eq!(
+            cache.realization_entries(),
+            1,
+            "only the terminal insert counts, regardless of interleaving"
+        );
+    }
+
+    /// (e) The counter is a LIFETIME metric, not a live size: neither `remove`
+    /// nor `clear_entity` decrements it.
+    #[test]
+    fn remove_and_clear_entity_do_not_decrement_realization_entries() {
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 1));
+        assert!(cache.insert_terminal("Other", ReprKind::Mesh, 0.01, ContentHash(0), 2));
+        assert_eq!(cache.realization_entries(), 2);
+
+        assert_eq!(
+            cache.remove("Body", ReprKind::Mesh, 0.01, ContentHash(0)),
+            Some(1),
+            "exact-key remove must return the cached value"
+        );
+        assert_eq!(
+            cache.realization_entries(),
+            2,
+            "`remove` must NOT decrement the monotonic lifetime counter"
+        );
+
+        cache.clear_entity("Other");
+        assert_eq!(
+            cache.realization_entries(),
+            2,
+            "`clear_entity` must NOT decrement the monotonic lifetime counter"
+        );
+        assert!(cache.is_empty(), "both entries should now be gone");
+    }
+
+    /// (e2) The whole-cache flush behind `Engine::clear_realization_cache`
+    /// empties the cache without touching the lifetime counter.
+    ///
+    /// This is the structural half of the monotonicity invariant: `clear` can
+    /// only reach `buckets`, so there is no save/restore dance at the call site
+    /// that a later edit could reorder or forget. Reseating to
+    /// `RealizationCache::new()` — the shape this replaced — would zero the
+    /// counter on every `edit_param`/`edit_source`.
+    #[test]
+    fn clear_empties_the_cache_but_preserves_realization_entries() {
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 1));
+        assert!(cache.insert_terminal("Other", ReprKind::BRep, 0.02, ContentHash(0), 2));
+        assert_eq!(cache.realization_entries(), 2);
+        assert_eq!(cache.len(), 2);
+
+        cache.clear();
+
+        assert!(cache.is_empty(), "`clear` must drop every cached entry");
+        assert_eq!(cache.len(), 0, "`clear` must leave a zero live size");
+        assert_eq!(
+            cache.lookup("Body", ReprKind::Mesh, 0.01, ContentHash(0)),
+            None,
+            "a flushed entry must no longer be servable"
+        );
+        assert_eq!(
+            cache.realization_entries(),
+            2,
+            "`clear` must NOT reset the monotonic lifetime counter — \
+             edit_param/edit_source flush on every edit"
+        );
+
+        // A post-flush realization is genuinely new, so it still counts.
+        assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 3));
+        assert_eq!(
+            cache.realization_entries(),
+            3,
+            "re-realizing after a flush must increment, not restore"
+        );
+    }
+
+    /// (f) Monotonicity survives `SOFT_CAPACITY` eviction — this is precisely
+    /// why `len()` is NOT the signal.
+    ///
+    /// Seven strictly-tightening terminal inserts into ONE bucket are all
+    /// accepted, so seven new entries were genuinely realized; but the bucket
+    /// evicts its loosest entry on every insert past `SOFT_CAPACITY`, so
+    /// `len()` reports 5.  A `len()`-based metric would silently under-report
+    /// realizations by the eviction count.
+    #[test]
+    fn realization_entries_is_monotonic_across_soft_capacity_eviction() {
+        use crate::tolerance_bucket::SOFT_CAPACITY;
+
+        let mut cache = RealizationCache::<u32>::new();
+
+        // Strictly descending tolerances: each new entry is tighter than every
+        // existing one, so no insert is ever dominated (cf.
+        // `cache_len_caps_at_soft_capacity_per_bucket`).
+        let tols = [0.1_f64, 0.05, 0.04, 0.03, 0.02, 0.01, 0.005];
+        assert_eq!(tols.len(), SOFT_CAPACITY + 2);
+
+        for (i, &t) in tols.iter().enumerate() {
+            let accepted = cache.insert_terminal("E", ReprKind::BRep, t, ContentHash(0), i as u32);
+            assert!(accepted, "terminal insert at tol={t} must be accepted");
+        }
+
+        assert_eq!(
+            cache.realization_entries(),
+            tols.len(),
+            "every accepted terminal insert must be counted, eviction notwithstanding"
+        );
+        assert_eq!(
+            cache.len(),
+            SOFT_CAPACITY,
+            "live `len()` caps at SOFT_CAPACITY — this is why it is NOT the signal"
+        );
+        assert!(
+            cache.realization_entries() > cache.len(),
+            "the lifetime counter must be able to exceed the live cache size"
         );
     }
 }

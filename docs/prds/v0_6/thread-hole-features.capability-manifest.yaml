@@ -170,22 +170,31 @@ tasks:
       - crates/reify-kernel-occt/cpp/occt_wrapper.cpp
       expect: present
   - name: groove-volume-formula
-    binding: 'numeric floor — ΔV ≈ π·r²·L_helix ±15%; basis = #5342 acceptance math
-      (L_helix ≈ 1.359 m for 24/7/63)'
+    binding: 'numeric floor — ΔV ≈ 0.5·π·r²·L_helix ±15%; basis = #5342 acceptance
+      math (L_helix ≈ 1.359 m for 24/7/63); reference value re-spec''d π·r²·L_helix
+      → 0.5·π·r²·L_helix by #5580 (half-round rope seat, arc centre on the land
+      surface — only the radially INNER half of the swept tube is ever stock; the
+      outer half sweeps through air above the land, except where it emerges into the
+      flanges at the band ends), band width and L_helix formula unchanged'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: asserted by δ's e2e volume-delta test
   - name: target-caveat-cleared
-    binding: 'capability→producer (this leaf) — dev_capstan.ri MODELLING CAVEATS header
-      names the gap + #5342'
+    binding: 'capability→producer (this leaf) — the "HELICAL GROOVE itself is
+      not modelled" caveat was retired from dev_capstan.ri''s MODELLING
+      CAVEATS header by this leaf (commit b47aff5eed); the rope channel is
+      modelled for real via groove_profile/groove_path/groove_cutter →
+      difference(drum_blank, groove_cutter) in dev_capstan.ri (helix() +
+      sweep() composition), refined by #5580. #5342 is credited only as the
+      upstream helix-sweep producer — not itself cited in the file'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: HELICAL GROOVE itself is not modelled
+      pattern: difference\(drum_blank, groove_cutter\)
       paths:
       - prj/printer_v01/dev_capstan.ri
-      expect: absent
+      expect: present
 - label: ε
   task_id: 5455
   title: 'thread-hole ε: printer_v01 bore retrofit to FittedBore + first fastener

@@ -184,6 +184,15 @@ use reify_ir::traits::{
     TraitMember as TraitMemberMod, TraitRef as TraitRefMod, TypeParam as TypeParamMod,
 };
 
+// ── ri_literal (flat form) ───────────────────────────────────────────────────
+use reify_ir::{RiLiteralError, value_to_ri_literal, value_to_ri_literal_with_unit};
+
+// ── ri_literal (module-path form) ────────────────────────────────────────────
+use reify_ir::ri_literal::{
+    RiLiteralError as RiLiteralErrorMod, value_to_ri_literal as value_to_ri_literal_mod,
+    value_to_ri_literal_with_unit as value_to_ri_literal_with_unit_mod,
+};
+
 // ── value (flat form) ────────────────────────────────────────────────────────
 use reify_ir::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
@@ -777,4 +786,30 @@ fn ir_gamma_widened_types_in_scope() {
     let _check: fn(CompiledMatchArm) -> Vec<CompiledPattern> = |arm| arm.patterns;
 
     let _ = (wildcard, variant_pat, bind_pat);
+}
+
+#[test]
+fn ri_literal_flat_and_module_path() {
+    // `.ri` source-literal serialization (task #5095). γ's MCP edit path
+    // depends on this surface, so pin it at compile time rather than
+    // incidentally.
+    let v = Value::length(0.08);
+    assert_eq!(value_to_ri_literal(&v).unwrap(), "80mm");
+    assert_eq!(value_to_ri_literal_mod(&v).unwrap(), "80mm");
+    assert_eq!(
+        value_to_ri_literal_with_unit(&v, Some("cm")).unwrap(),
+        "8cm"
+    );
+    assert_eq!(
+        value_to_ri_literal_with_unit_mod(&v, None).unwrap(),
+        "80mm"
+    );
+
+    let e: RiLiteralError = value_to_ri_literal(&Value::Undef).unwrap_err();
+    let e2: RiLiteralErrorMod = value_to_ri_literal_mod(&Value::Undef).unwrap_err();
+    assert_eq!(e, e2);
+    assert_eq!(
+        e,
+        RiLiteralError::UnsupportedValueKind { kind: "Undef" }
+    );
 }

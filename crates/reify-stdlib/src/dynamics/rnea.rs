@@ -22,9 +22,9 @@ use crate::dynamics::spatial::{cross_f, cross_m, SpatialInertia6, SpatialTransfo
 /// Used in the RNEA backward pass to compute additive spring and damping
 /// force contributions per PRD §7.1 (task ι).
 ///
-/// * `spring_rate` — spring stiffness k (N·m/rad for revolute, N/m for
+/// * `spring_rate` — spring stiffness k (N·m/rad² for revolute, N/m for
 ///   prismatic); `None` means no spring force.
-/// * `damping` — viscous damping coefficient c (N·m·s/rad or N·s/m);
+/// * `damping` — viscous damping coefficient c (N·m·s/rad² or N·s/m);
 ///   `None` means no damping force.
 /// * `neutral` — rest joint coordinate (same units as `position`);
 ///   unused when `spring_rate` is `None`.
@@ -42,10 +42,10 @@ use crate::dynamics::spatial::{cross_f, cross_m, SpatialInertia6, SpatialTransfo
 /// `Option<JointCompliance>`).
 #[derive(Clone)]
 pub struct JointCompliance {
-    /// Spring stiffness k: N·m/rad (revolute) or N/m (prismatic).
+    /// Spring stiffness k: N·m/rad² (revolute) or N/m (prismatic).
     /// `None` → no spring contribution.
     pub spring_rate: Option<f64>,
-    /// Viscous damping coefficient c: N·m·s/rad or N·s/m.
+    /// Viscous damping coefficient c: N·m·s/rad² or N·s/m.
     /// `None` → no damping contribution.
     pub damping: Option<f64>,
     /// Rest joint coordinate (same units as `position`).

@@ -442,12 +442,12 @@ The DAG threads through `compute-node-contract.md` η (FEA first real consumer) 
 ### Phase 2 — Vertical slice (BRep→Mesh→Manifold-Boolean end-to-end)
 
 - **Task δ** — OCCT `Convert { from: BRep } → Mesh` capability-descriptor entry added; OCCT `execute` arm dispatches to `tessellate(...)` for the new entry; per-op `TessellateOptions` hashed into `options_hash`.
-  - **Observable signal:** `crates/reify-kernel-occt/tests/dispatcher_integration.rs` test pins: dispatcher returns `DispatchPlan { kernel: "occt", conversions: [("occt", BRep, Mesh)] }` for `(BooleanUnion, Mesh)` with available `{BRep}`; OCCT's `execute` produces a Mesh value from a BRep input via tessellation.
+  - **Observable signal:** `crates/reify-kernel-occt/tests/harness_occt/dispatcher_integration.rs` test pins: dispatcher returns `DispatchPlan { kernel: "occt", conversions: [("occt", BRep, Mesh)] }` for `(BooleanUnion, Mesh)` with available `{BRep}`; OCCT's `execute` produces a Mesh value from a BRep input via tessellation.
   - **Prereqs:** α, β, γ.
   - **Crates touched:** reify-kernel-occt (register.rs, kernel.rs).
 
 - **Task ε** — `Engine.geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>>` shape; `with_registered_kernels` constructor; `execute_realization_ops` consults `dispatcher::dispatch` per op and routes to the named kernel from the BTreeMap.
-  - **Observable signal:** `crates/reify-eval/tests/multi_handle_engine_dispatch.rs` (synthetic registries + recording kernels) pins: `execute_realization_ops` consults `dispatcher::dispatch` per op, routes each op to the named kernel from the `geometry_kernels` BTreeMap, and writes the produced `ReprKind` to each `RealizationNodeData.produced_repr`; re-running hits the realization cache (dispatch-count instrumentation). At the ε baseline (demanded repr = BRep) dispatch returns a 0-conversion plan; non-empty conversion chains are surfaced via a diagnostic rather than executed.
+  - **Observable signal:** `crates/reify-eval/tests/harness_fea_solver_e2e/multi_handle_engine_dispatch.rs` (synthetic registries + recording kernels) pins: `execute_realization_ops` consults `dispatcher::dispatch` per op, routes each op to the named kernel from the `geometry_kernels` BTreeMap, and writes the produced `ReprKind` to each `RealizationNodeData.produced_repr`; re-running hits the realization cache (dispatch-count instrumentation). At the ε baseline (demanded repr = BRep) dispatch returns a 0-conversion plan; non-empty conversion chains are surfaced via a diagnostic rather than executed.
   - **Premise note (G6, esc-3436-210):** ε delivers the dispatch-routing seam *only*. The BRep→Mesh→Manifold-Boolean end-to-end output is **not** observable at ε — the Manifold execute arm is task ζ and the OpenVDB consumer is task η, both of which *depend on* ε. That end-to-end signal is owned by ζ's leaf (`examples/multi_kernel/manifold_boolean.ri`), not ε. The original ε signal demanded a Mesh/Manifold output unbuildable from ε's dependency set (δ supplies the `Convert` *descriptor* only; α supplies the `produced_repr` field) — corrected here per G6's dependency-set trace.
   - **Prereqs:** δ, α (so realization tags populate correctly).
   - **Crates touched:** reify-eval (engine_admin.rs, engine_build.rs, lib.rs).
@@ -497,7 +497,7 @@ Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring boo
   - **Prereqs:** η. Plus the v0.2 imported-field-source PRD's tasks 2667/2668 (parser-side; already wired per M-001).
   - **Crates touched:** reify-eval (engine_eval.rs), reify-kernel-openvdb (ingest.rs API surface stable).
   - **Resolves:** GR-003 (cluster C-17) per the 2026-05-12 contested-ownership disposition.
-  - **Status:** **DELIVERED** — engine arm landed under task 3576; observable signal (example + CLI smoke test) delivered under task 4537. `examples/imported_field/openvdb_stress.ri` exists in the repo; `crates/reify-cli/tests/cli_imported_field_eval.rs` (cfg(has_openvdb)) verifies `reify eval` prints signed SDF scalars. Fixture `fixtures/sample.vdb` is generated at test time (not committed); see `examples/imported_field/README.md`.
+  - **Status:** **DELIVERED** — engine arm landed under task 3576; observable signal (example + CLI smoke test) delivered under task 4537. `examples/imported_field/openvdb_stress.ri` exists in the repo; `crates/reify-cli/tests/harness_cli/cli_imported_field_eval.rs` (cfg(has_openvdb)) verifies `reify eval` prints signed SDF scalars. Fixture `fixtures/sample.vdb` is generated at test time (not committed); see `examples/imported_field/README.md`.
 
 ### Phase 5 — Voxel→Mesh + Sdf→Mesh follow-on convert edges
 

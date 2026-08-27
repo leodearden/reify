@@ -13,6 +13,28 @@
  *   convergence      — a-posteriori convergence status of the active FEA case
  *                       (task 3001); when `converged === false` a warning badge
  *                       shows the termination reason. Omitted/converged:true → no badge.
+ *   viewportId       — optional id of the pane this toolbar belongs to (#5670).
+ *                       Stamped as `data-viewport-id` on the root and on the
+ *                       channel select. It is the disambiguator the debug
+ *                       bridge uses to target one pane's toolbar when several
+ *                       panes are mounted: the bare `data-testid` alone cannot
+ *                       distinguish N toolbars. `set_fea_channel` reads it via
+ *                       `pickFeaChannelSelect`; every generic testid resolver
+ *                       reads it via `resolveByTestId` (#5891).
+ *                       Optional by design — when omitted no attribute is
+ *                       emitted at all, so a single-toolbar caller renders
+ *                       exactly as it did before #5670.
+ *
+ * Every control here is addressable per-viewport (#5891 closed the gap #5670
+ * left): the enable toggle, palette select, range-mode radios, range min/max,
+ * lock-current, show-deformed and warp slider are all reachable by passing
+ * `viewportId` to click_element / focus_element / scroll / dom_query /
+ * element_screenshot / wait_for_selector, which resolve through the bridge's
+ * shared `resolveByTestId`. What it scopes on is the `data-viewport-id` stamped
+ * on the ROOT below: the scoped query is descendant-OR-SELF, so the root
+ * matches by its own `fea-mode-toolbar` testid as well as containing the nine
+ * controls. Omitting `viewportId` still yields the document-wide first match,
+ * so single-pane callers are unaffected.
  */
 import { Show, createSignal, For, type Component } from 'solid-js';
 import type { FeaModeStore } from '../stores';
@@ -42,6 +64,16 @@ export interface FeaModeToolbarProps {
    * `converged === true` renders no badge.
    */
   convergence?: { converged: boolean; reason?: string | null };
+  /**
+   * Id of the pane this toolbar belongs to (#5670), stamped as
+   * `data-viewport-id` on the root and on the channel select so the debug
+   * bridge can address one pane's toolbar among several — `set_fea_channel`
+   * via `pickFeaChannelSelect`, and every generic testid resolver via
+   * `resolveByTestId` (#5891). Omitting it emits no attribute (Solid drops
+   * undefined attribute values), which is what keeps single-toolbar callers
+   * byte-identical and lets the bridge's unscoped resolution path keep working.
+   */
+  viewportId?: string;
 }
 
 /**
@@ -116,6 +148,7 @@ export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
   return (
     <div
       data-testid="fea-mode-toolbar"
+      data-viewport-id={props.viewportId}
       style={{
         position: 'absolute',
         top: '12px',
@@ -179,6 +212,7 @@ export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
             <span>Channel</span>
             <select
               data-testid="fea-mode-channel-select"
+              data-viewport-id={props.viewportId}
               value={props.store.state.channel}
               onChange={handleChannelChange}
             >

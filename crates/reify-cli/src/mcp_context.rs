@@ -1386,7 +1386,7 @@ mod tests {
     /// `bracket_compile_error.ri` parses cleanly so `load_file` succeeds; it
     /// contains an unresolved-name reference (`unknown_name`) that produces a
     /// compile-time Error diagnostic. `check_compile_error_exits_failure` in
-    /// `crates/reify-cli/tests/cli_check.rs` confirms the fixture causes a
+    /// `crates/reify-cli/tests/harness_cli/cli_check.rs` confirms the fixture causes a
     /// non-zero exit — that is informational linkage only (it checks exit
     /// status / stderr, not `Severity::Error` specifically). The `!diags.is_empty()`
     /// and `any(severity == "Error")` assertions below are the authoritative guards

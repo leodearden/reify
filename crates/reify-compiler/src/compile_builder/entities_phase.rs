@@ -91,6 +91,13 @@ pub(crate) fn phase_entities(
     // trait-name fallback.  Collected from local structure/occurrence decls
     // (already in `ctx.seen_entity_names` from pre_pass::collect_decl_refs)
     // and every prelude module's exported templates. See task 1876.
+    //
+    // The module-local `enum N` shadowing rule that reinterprets a name in this
+    // set as `Type::Enum` (task #5429) is NOT installed here: it is installed once
+    // for the whole phase sequence in `compile_with_prelude_context_checked_with_config`,
+    // because `phase_functions`/`phase_traits` run earlier and must agree with this
+    // phase on what the name means (esc-5429-1). See
+    // `enums_phase::build_local_enum_shadow_set`.
     let structure_names: HashSet<String> = ctx
         .seen_entity_names
         .iter()
@@ -1634,7 +1641,7 @@ fn check_expr_struct_ctor_args(
             // type-coercion escape hatches (e.g. `ConstitutiveLawInput.law :
             // ConstitutiveLaw`) and are already covered by the fn-call / sub-
             // component paths. REVISIT this exemption once those escape-hatch call
-            // sites are migrated — see docs/prds/struct-ctor-conformance.md; at that
+            // sites are migrated — see docs/prds/struct-ctor-field-type-conformance.md; at that
             // point the `!matches!(… TraitObject …)` guard can be dropped so bare
             // trait params are checked too.
             let should_check = template

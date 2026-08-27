@@ -35,7 +35,7 @@ const EXAMPLE_PATH: &str = concat!(
 ///   - Bad.pin    = fallback(or_else(parse_length_r("garbage"), parse_length_r("4mm")), 6mm)  = 4mm  (or_else falls to the "4mm" alt, then fallback unwraps it)
 ///
 /// This is the formatter-agnostic integration-gate assertion; the companion
-/// `crates/reify-cli/tests/cli_eval_result_fallback.rs` pins the same signal
+/// `crates/reify-cli/tests/harness_cli/cli_eval_result_fallback.rs` pins the same signal
 /// at the rendered-stdout binary surface.
 #[test]
 fn result_fallback_example_evals_end_to_end() {

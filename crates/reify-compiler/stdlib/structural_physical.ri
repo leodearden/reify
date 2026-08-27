@@ -57,8 +57,9 @@ trait Physical {
 // scalar param.  Three auto-derive lets are injected:
 //
 //   - `body_density` — intermediate binding so `resolve_density_arg`
-//     (geometry_ops.rs:4664, Contract A / task 4486 γ) receives a ValueRef
-//     rather than an IndexAccess expr (pre-type-hygiene-ε constraint; see
+//     (crates/reify-eval/src/geometry_ops.rs, Contract A / task 4486 γ)
+//     receives a ValueRef rather than an IndexAccess expr
+//     (pre-type-hygiene-ε constraint; see
 //     design decision in plan.json).
 //   - `moment_of_inertia` — the 3×3 centroidal inertia tensor, auto-derived
 //     from the body's solid geometry and material density.

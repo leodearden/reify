@@ -3,7 +3,7 @@
 //! Pins the Manifold [`CapabilityDescriptor`] (step-1/step-2) and the
 //! `inventory::submit!` plumbing (step-3/step-4).
 //!
-//! Unlike the OCCT counterpart (`crates/reify-kernel-occt/tests/inventory_registration.rs`),
+//! Unlike the OCCT counterpart (`crates/reify-kernel-occt/tests/harness_occt/inventory_registration.rs`),
 //! these tests are NOT gated on an `OCCT_AVAILABLE`-style flag — manifold's
 //! `inventory::submit!` is unconditional now that real Manifold C++ FFI is
 //! wired via the `manifold3d` cargo dep (no system-library detection
@@ -11,7 +11,7 @@
 //!
 //! # Design template
 //!
-//! `crates/reify-kernel-occt/tests/inventory_registration.rs:1-152`.
+//! `crates/reify-kernel-occt/tests/harness_occt/inventory_registration.rs:1-152`.
 
 use reify_kernel_manifold::register::MANIFOLD_KERNEL_NAME;
 use reify_ir::{GeometryKernel, KernelRegistration, Operation, ReprKind};
@@ -70,7 +70,7 @@ fn manifold_capability_descriptor_lists_mesh_booleans() {
 ///
 /// # Design template
 ///
-/// `crates/reify-kernel-occt/tests/inventory_registration.rs:96-151`.
+/// `crates/reify-kernel-occt/tests/harness_occt/inventory_registration.rs:96-151`.
 #[test]
 fn manifold_kernel_registration_appears_in_inventory_iter() {
     let manifold_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()

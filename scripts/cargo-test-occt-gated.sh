@@ -173,7 +173,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_slot_acquire.sh"
 _ACQUIRED_SLOT=""
 _ELAPSED=""
 
-if slot_acquire "$LOCK" "$_N" "$LOCK_WAIT"; then
+# Empty 4th REASON by design (no @@REIFY_CLOCK_*@@ markers — this standalone
+# runner's wait is not part of any verify's clock-stop accounting). The 5th
+# TIMEOUT_REASON names the deadline sentinel only; WHY they are separate args is
+# stated once, in slot_acquire's TIMEOUT_REASON arg doc (lib_slot_acquire.sh).
+if slot_acquire "$LOCK" "$_N" "$LOCK_WAIT" "" "occt_slot_starvation"; then
     _ACQUIRED_SLOT="$SLOT_ACQUIRE_SLOT"
     _ELAPSED="$SLOT_ACQUIRE_ELAPSED"
 else

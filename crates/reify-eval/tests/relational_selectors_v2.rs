@@ -3,7 +3,7 @@
 //!
 //! Fixture: `examples/selectors/relational_selectors_v2.ri`
 //!
-//! Mirrors `crates/reify-eval/tests/kernel_queries_adjacent_faces.rs` in
+//! Mirrors `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_adjacent_faces.rs` in
 //! structure (unconditional compile assertion + OCCT-gated kernel-layer count
 //! assertion), and mirrors the `examples/kernel_queries/adjacent_faces.ri`
 //! arg-shape.

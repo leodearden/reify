@@ -24,11 +24,20 @@
 // Geometry is a parametric rectangular mounting plate.  Loads attach to opaque
 // string selectors — accepted as selector-target placeholders per
 // `validate_selector_target`; the runtime FEA solver maps them to the actual
-// geometry once topology-kind validation lands (PRD task 16).  The full
-// `param thickness=auto` + `minimize mass(bracket) where peak_stress < yield`
-// auto-resolve design loop and the body.face()-load bracket-geometry variant
-// are deferred to task 2930 (FEA-in-the-loop optimization + P1=4091/P2=4092
-// arbitrary-geometry producers not yet wired).
+// geometry once topology-kind validation lands (PRD task 16).
+//
+// This example keeps `thickness` a FIXED param: it demonstrates the multi-case
+// envelope, not the design loop.  For the `auto` thickness + `minimize mass` +
+// FEA-stress-constraint auto-resolve loop, see
+// `examples/fea_bracket_minimize_mass.ri` (task 2930), which converges a real
+// thickness through the solver's cost loop.  Two spellings to avoid when
+// reaching for that shape, both of which earlier drafts of this comment used:
+// `minimize <expr> where <cond>` parses but the compiler DISCARDS the guard
+// silently, so the objective runs unopposed (task 6575, ruled reject
+// 2026-08-25 -- objectives take no guard, in either form); and `mass(body)` is
+// not a callable at all.  The landed example therefore spells it
+// `let mass = volume(bracket) * material.density`, a separate
+// `constraint peak_stress < yield`, and a bare `minimize mass`.
 //
 // After SIR-α (task 3540) stdlib struct constructors evaluate to
 // `Value::StructureInstance`.  The `let operating = LoadCase(...)`,
@@ -69,19 +78,19 @@ structure MultiLoadBracket {
 
     let operating = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: [0.0, -1.0, 0.0])],
+        loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: vec3(0.0, -1.0, 0.0))],
         supports: [mount],
     )
 
     let overload = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "load_face", force: 10000.0, direction: [0.0, -1.0, 0.0])],
+        loads:    [PointLoad(point: "load_face", force: 10000.0, direction: vec3(0.0, -1.0, 0.0))],
         supports: [mount],
     )
 
     let transport = LoadCase(
         name:     "transport",
-        loads:    [Gravity(magnitude: 5 * STANDARD_GRAVITY(), direction: [0.0, -1.0, 0.0])],   // 5 g downward (-Y); see STANDARD_GRAVITY() in std.units
+        loads:    [Gravity(magnitude: 5 * STANDARD_GRAVITY(), direction: vec3(0.0, -1.0, 0.0))],   // 5 g downward (-Y); see STANDARD_GRAVITY() in std.units
         supports: [mount],
     )
 
@@ -96,7 +105,7 @@ structure MultiLoadBracket {
     // `ShellForce.Auto` would classify this bracket as a shell (thickness/
     // in-plane ratio 6/80 = 0.075 < shell_threshold=0.2), but the shell
     // kernel only applies transverse (Z-axis) loads.  Our loads are in the
-    // Y direction (`direction: [0,−1,0]`), so the shell path would silently
+    // Y direction (`direction: vec3(0,−1,0)`), so the shell path would silently
     // discard them (shell in-plane loading is out of scope; see task 4245).
     // The tet/solid path handles all three force-vector components and
     // produces Regular3D Sampled stress fields that `envelope_von_mises`
@@ -121,11 +130,22 @@ structure MultiLoadBracket {
     // has no precedent in the stdlib .ri files, so keeping the literal avoids
     // a zero-Error-diagnostics risk.
     //
-    // The full `param thickness=auto` + `minimize mass(bracket) where
-    // max(envelope_von_mises(results)) < material.yield_stress` auto-resolve
-    // design loop is deferred to task 2930 (FEA-in-the-loop optimization is
-    // not wired: the dimensional solver evaluates @optimized ComputeNodes as
-    // Value::Undef inside the constraint-cost loop — see PRD §6 decision #5).
+    // `peak_stress` here is a REPORTED quantity, computed once at the fixed
+    // `thickness` above.  To make it DRIVE the design instead, the predicate has
+    // to become a `constraint` member alongside an `auto` param and a `minimize`
+    // objective — the shape `examples/fea_bracket_minimize_mass.ri` demonstrates
+    // (task 2930), wired by task 4880's compute-dispatch hook, which lets the
+    // dimensional solver evaluate @optimized ComputeNodes for real inside the
+    // constraint-cost loop rather than as Value::Undef.
+    //
+    // Note the predicate must be a separate `constraint` MEMBER.  The tempting
+    // one-liner `minimize mass(bracket) where <predicate>` does not work: the
+    // parser accepts the guard but the compiler's Minimize lowering arm never
+    // reads it, so the predicate is silently discarded and the optimiser runs
+    // unopposed (task 6575, ruled reject 2026-08-25 — objectives take no guard,
+    // in either form).  (`mass(...)` is likewise not a function — mass is a
+    // derived `let`; and `material.yield_stress` is an `Option<Pressure>`,
+    // which is why the `yield_limit` literal below exists.)
     let peak_stress  = max(envelope)
     let yield_limit  = 310MPa
     let within_yield = peak_stress < yield_limit

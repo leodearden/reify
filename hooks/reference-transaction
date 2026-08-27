@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# hooks/reference-transaction — tripwire for moves of refs/heads/main.
+# hooks/reference-transaction — tripwire with TWO arms:
+#   refs/heads/main  — moves of the landing branch (the original arm, below).
+#   refs/stash       — `git stash push` in a shared checkout (task 5981).
+# Both are lightweight tripwires over the same staged warn → enforce →
+# break-glass rollout, with INDEPENDENT switches; neither is a verify-runner.
 #
 # This is the ONLY git hook that fires on a *local* `git reset` / `git update-ref`
 # / fast-forward of a branch ref — the exact operations that pre-commit and
@@ -60,6 +64,82 @@ fi
 
 # stdin: one "<old-oid> <new-oid> <ref-name>" line per ref in this transaction.
 while read -r _old _new _ref; do
+    # ── refs/stash arm (task 5981) ────────────────────────────────────────
+    # refs/stash is ONE ref in the shared .git. Git treats only HEAD,
+    # refs/worktree/*, refs/bisect/* and refs/rewritten/* as per-worktree, so
+    # every warm lane — a linked worktree of one common git dir — pushes onto
+    # ONE host-wide LIFO stack. esc-5785-6: nine entries from different tasks
+    # accreted there over ~1 month before an operator drained them.
+    #
+    # Placed BEFORE the refs/heads/main filter below so the fast-return property
+    # of this tripwire costs exactly one extra string compare per ref line.
+    if [ "$_ref" = "refs/stash" ]; then
+        # CREATE/UPDATE direction ONLY. A DELETION (new all-zero) is
+        # `git stash clear` or a last-entry drop, and stays DELIBERATELY
+        # UNGATED for three measured reasons:
+        #   1. Refusing it cannot prevent the injection it looks like it would:
+        #      `git stash pop` applies to the WORKING TREE before its ref
+        #      deletion transaction fires, and a pop/drop of a NON-LAST entry
+        #      fires no reference-transaction hook at all (git rewrites the
+        #      stash reflog rather than the ref). The pop direction is
+        #      unreachable from here — see the COVERAGE LIMIT in the refusal.
+        #   2. An aborted last-entry drop leaves a PARTIAL state: git had
+        #      already emptied the stash reflog while refs/stash still pointed
+        #      at the entry.
+        #   3. It would block exactly the operator cleanup that drained the
+        #      nine accreted entries on 2026-08-02/03.
+        [ -z "${_new//0/}" ] && continue
+
+        # NO zero-OLD filter here — and that asymmetry with the refs/heads/main
+        # arm below (which skips `[ -z "${_old//0/}" ]` as pack-refs/gc churn)
+        # is LOAD-BEARING, not an oversight. Measured twice (2026-08-03 and
+        # re-measured 2026-08-06, git 2.43.0): `git stash push` presents
+        # old=0000000000... on refs/stash even onto a NON-EMPTY stack — a 2nd
+        # push onto a 1-entry stack logged old=0000000 new=c213482. Tidying the
+        # two arms into symmetry by copying that filter here would make this
+        # guard SILENTLY NEVER FIRE while still logging as installed: a dead
+        # instrument that reads as protection. tests/infra/test_stash_guard.sh
+        # scenario (f) is the anti-regression net.
+        if stash_guard_bypass_on; then
+            main_gate_log "stash-guard: BYPASS refs/stash push ${_old} -> ${_new}"
+            continue
+        fi
+
+        main_gate_log "stash-guard: refs/stash push ${_old} -> ${_new}"
+        if stash_guard_enforce_on; then
+            main_gate_log "stash-guard: ENFORCE on — aborting the stash push"
+            cat >&2 <<'STASH_REFUSAL'
+
+reify: REFUSING `git stash` — refs/stash is SHARED, it is not per-worktree.
+
+  Git keeps only HEAD, refs/worktree/*, refs/bisect/* and refs/rewritten/*
+  per-worktree. Every warm lane is a linked worktree of ONE shared .git, so
+  every checkout on this host pushes onto ONE LIFO stack: an entry you push can
+  be popped out from under you by another lane, and a bare `git stash pop` in
+  your lane applies whatever another task pushed — cross-task WIP injection into
+  your branch. Nine entries accreted that way over ~1 month (esc-5785-6).
+
+  YOUR WORKING TREE IS UNTOUCHED. This refusal preserved your changes exactly as
+  they were and left the stash stack unchanged. Nothing was lost.
+
+  INSTEAD: commit the WIP on your task branch — a commit is per-worktree and
+  safe, and you can amend, reword or drop it later.
+
+  COVERAGE LIMIT (deliberate — do not misread this guard as broader than it is):
+  it gates the PUSH direction ONLY. `git stash pop` and a non-last
+  `git stash drop` fire no reference-transaction hook at all, so a pop that
+  injects another task's WIP CANNOT be blocked here. Do not pop.
+
+  Break-glass, if you genuinely must: REIFY_STASH_GUARD_BYPASS=1 <command>, or
+  `git config reify.stashGuard.bypass true`.
+
+STASH_REFUSAL
+            exit 1
+        fi
+        # warn-only default: allow the push (logged above).
+        continue
+    fi
+
     [ "$_ref" = "refs/heads/main" ] || continue
 
     # Only a GENUINE move of an existing main to a DIFFERENT existing commit is a

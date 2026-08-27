@@ -1,0 +1,22 @@
+module shear_angles_vec3_wrongq_ctrl
+
+// Adversary CONTROL fixture (γ decompose-phase, PRD angle-dimension-completion
+// leaf σ): non-vacuity control for the Prover's "resolves" premise.
+//
+// The Prover's evidence that `Vector3<Angle>` fn-param resolution is live
+// substrate is an ACCEPT probe (`f(vec3(a, a, a))` with a : Angle, exit 0).
+// That evidence is vacuous if the checker accepts ANY vector in that position
+// (erasing coercion). This control passes a Length-component vector to the
+// same signature and expects REJECTION (exit != 0) under the post-5766
+// Vector quantity-slot checks.
+//
+// If this control is silently accepted, the enumerated "resolves" premise
+// proves only "call sites type-check", not "Vector3<Angle> is enforced".
+
+fn f(v : Vector3<Angle>) -> Real { 1.0 }
+
+structure def ShearAnglesVec3WrongQCtrl {
+    param d : Length = 1mm
+    let axis = vec3(d, d, d)
+    let out  = f(axis)
+}

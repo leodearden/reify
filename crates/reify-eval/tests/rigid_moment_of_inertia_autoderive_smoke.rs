@@ -19,7 +19,7 @@
 //!
 //! Tolerance: 1e-9 kg·m² (OCCT Gauss quadrature on a planar box is essentially exact).
 //!
-//! Modelled on `crates/reify-eval/tests/kernel_queries_moment_of_inertia_smoke.rs`
+//! Modelled on `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_moment_of_inertia_smoke.rs`
 //! (same SingleKernelHolder + OcctKernelHandle::spawn harness, same OCCT_AVAILABLE
 //! gating, same 1e-9 tolerance).
 

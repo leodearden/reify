@@ -18,14 +18,14 @@ Five workstreams; cross-repo seams follow "reify ships the primitive, DF wires t
 
 **W1 — restart-collateral elimination (Defect A residual; DF-owned, one reify config leaf).**
 - W1a (DF): startup survivor barrier — before the merge worker's first `reset_persistent_merge_worktree`, scan for live processes with cwd/fd/maps under `_merge-verify` and reap (killpg + bounded wait) or defer dispatch. Reify already ships the scan idiom (thin-warm-lane T-checks).
-- W1b (reify yaml + DF sweep): enable `verify_use_cgroup_scope` for reify (`config.py:2481` default False; mechanism shipped, `verify.py:2890-2911`) + DF startup sweep of leftover `df-verify-*.scope` units. Kills the GNU-timeout pgroup-escape strands (`verify.py:2846-2849`).
-- W1c (DF): contended-lease fail-open (`git_ops.py:1902-1911`) ⇒ bounded longer wait, then DEFER dispatch (requeue), never run unprotected.
-- W1d (DF): converge laptop CLI verify span onto `lane_lock_path` (`cli.py:495-503`) — the 2685 treatment for the remote host (5034/5187 class).
+- W1b (reify yaml + DF sweep): enable `verify_use_cgroup_scope` for reify (`config.py` default False; mechanism shipped in `verify.py`) + DF startup sweep of leftover `df-verify-*.scope` units. Kills the GNU-timeout pgroup-escape strands (`verify.py`, the "setpgid'd cargo into a separate group" path that defeats `killpg`-on-spawn-pgid).
+- W1c (DF): contended-lease fail-open (`git_ops.py` `merge_verify_lease`) ⇒ bounded longer wait, then DEFER dispatch (requeue), never run unprotected.
+- W1d (DF): converge laptop CLI verify span onto `lane_lock_path` (in `cli.py`) — the 2685 treatment for the remote host (5034/5187 class).
 
 **W2 — honest categorization (Defect B; DF-owned, dep on in-flight DF 2821).**
-- W2a: dep edge on DF 2821 (positive-anchor `semaphore_timeout` on wrapper-emitted markers; the module docstring's own proposal at `verify_classify.py:198-203`). Do not duplicate.
-- W2b (DF): extend DF 2756's `_VERIFY_ENV_BROKEN_RE` (`verify_classify.py:160-163`) with the A-collateral shapes (`couldn't read <file>`, `verify.sh: No such file or directory`, sub-second lint rc=127) — MUST land with/before W2a (A↔B interaction: today the mislabel's free retry self-heals restart collateral; after W2a, unextended patterns would hard-blame innocent branches).
-- W2c (DF, conditional): if 2821 ships classifier-only, deterministic-red circuit-breaker at the retry seam (`merge_queue.py:1800-1812`): identical failing-set on retry (reuse `parse_per_test_results` + `^FAILED \S+\.sh` matcher) ⇒ deterministic; same set across different tasks/SHAs ⇒ main-health probe + loud escalation, not infra-hold.
+- W2a: dep edge on DF 2821 (positive-anchor `semaphore_timeout` on wrapper-emitted markers; the module docstring's own proposal in `verify_classify.py`, since landed as `_has_fatal_slot_timeout_sentinel`). Do not duplicate.
+- W2b (DF): extend DF 2756's `_VERIFY_ENV_BROKEN_RE` (in `verify_classify.py`) with the A-collateral shapes (`couldn't read <file>`, `verify.sh: No such file or directory`, sub-second lint rc=127) — MUST land with/before W2a (A↔B interaction: today the mislabel's free retry self-heals restart collateral; after W2a, unextended patterns would hard-blame innocent branches).
+- W2c (DF, conditional): if 2821 ships classifier-only, deterministic-red circuit-breaker at the retry seam (`CategoryPolicy.is_infra_transient` as consulted by `merge_queue.py`'s `_run_post_merge_verify`): identical failing-set on retry (reuse `parse_per_test_results` + `^FAILED \S+\.sh` matcher) ⇒ deterministic; same set across different tasks/SHAs ⇒ main-health probe + loud escalation, not infra-hold.
 
 **W3 — gate-bypass closure (reify-owned).**
 - W3a: trivial-pass hole — `scripts/verify-pipeline-guard.sh requires-full-gate` must exit 0 for any `tests/infra/test_*.sh` path (manifest addition or glob special-case). Adding/renaming an infra test changes the gate suite itself — definitionally never config-only. Coordinate as dep/amendment of in-flight task 5252 (its files already neighbor the guard); do NOT file a competing task if 5252 absorbs it.

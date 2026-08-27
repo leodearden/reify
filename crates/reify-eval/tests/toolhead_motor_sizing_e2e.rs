@@ -31,6 +31,7 @@
 //! list-aggregate `max` or `report()` builtin in .ri.
 
 use reify_core::ValueCellId;
+use reify_core::dimension::DimensionVector;
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::Value;
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
@@ -138,7 +139,29 @@ fn toolhead_motor_sizing_peak_force_is_2_5_n() {
 
         // prismatic ⇒ JointForce { value: ScalarForce { magnitude } }
         let value = field(&forces[0], "JointForce", "value");
-        let magnitude = num(field(value, "ScalarForce", "magnitude"));
+        let raw = field(value, "ScalarForce", "magnitude");
+
+        // Task 6098: `ScalarForce.magnitude` is declared `: Force` in
+        // stdlib/dynamics.ri, so the value that reaches a consumer must be
+        // newton-dimensioned rather than a bare Real.  `num` below deliberately
+        // accepts both shapes (it is the shared numeric-cell reader), so the
+        // variant is asserted here explicitly — otherwise the whole point of
+        // the retype would be invisible to this fixture.
+        match raw {
+            Value::Scalar { dimension, .. } => assert_eq!(
+                *dimension,
+                DimensionVector::FORCE,
+                "sample {i}: ScalarForce.magnitude must carry the FORCE dimension"
+            ),
+            other => panic!(
+                "sample {i}: ScalarForce.magnitude must be a dimensioned \
+                 Value::Scalar, not a bare Real (task 6098); got {other:?}"
+            ),
+        }
+
+        // Same number as before the retype — the 1 µN pin below is the
+        // fixture's own already-validated bound, reused verbatim.
+        let magnitude = num(raw);
         peak = peak.max(magnitude.abs());
     }
 

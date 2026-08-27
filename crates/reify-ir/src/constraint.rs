@@ -506,6 +506,32 @@ pub trait OptimizedImpl: Send + Sync {
     fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput;
 }
 
+/// Callback for dispatching an `@optimized`-annotated function call to its
+/// registered ComputeNode implementation from *inside* the constraint solver's
+/// cost/constraint/objective evaluator (task #4880).
+///
+/// Lives in reify-ir (alongside [`ConstraintSolver`]) for the same dependency-inversion
+/// reason as [`OptimizedImpl`]: reify-constraints' `DimensionalSolver` threads an
+/// `Option<&dyn ComputeDispatch>` down through its `reify_expr::eval_expr` call sites
+/// without depending on reify-eval's concrete `Engine`; reify-eval supplies the real
+/// implementation (`OptimizedComputeDispatcher`) at the handful of sites where it invokes
+/// the solver.
+///
+/// # Scope
+///
+/// Distinct from [`OptimizedImpl`], which dispatches *checker*-path `constraint def`
+/// constraints. `ComputeDispatch` dispatches *function-call* expressions (i.e.
+/// `CompiledFunction::optimized_target`) reached while evaluating a constraint,
+/// objective, or bound expression inside the solver's per-candidate cost loop.
+pub trait ComputeDispatch: Send + Sync {
+    /// Attempt to resolve `target` (a `CompiledFunction::optimized_target` string,
+    /// e.g. `"solver::elastic_static"`) against `args` (the function's already-evaluated,
+    /// determined arguments). Returns `None` when `target` has no registered
+    /// implementation, or when the underlying dispatch failed/was cancelled — callers
+    /// fall back to ordinary body evaluation in either case.
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value>;
+}
+
 /// Trait for constraint solving. Lives in reify-types for dependency inversion —
 /// implemented in reify-constraints, consumed by reify-eval.
 pub trait ConstraintSolver: Send + Sync {
@@ -562,6 +588,42 @@ pub trait ConstraintSolver: Send + Sync {
                 .into_ranked_pass_through()
                 .expect("Solved arm already handled above"),
         }
+    }
+
+    /// `solve`, but with a compute-dispatch hook available to the evaluator for
+    /// `@optimized` function calls reached inside the solve (task #4880).
+    ///
+    /// # Default implementation
+    ///
+    /// Solvers that do not override this method ignore `dispatch` entirely and
+    /// delegate unchanged to [`Self::solve`] — back-compat for every existing
+    /// `ConstraintSolver` implementation and mock. Only an overriding solver (e.g.
+    /// `DimensionalSolver`) threads `dispatch` down into its internal evaluator.
+    fn solve_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> SolveResult {
+        let _ = dispatch;
+        self.solve(problem)
+    }
+
+    /// `solve_ranked`, but with a compute-dispatch hook available to the evaluator
+    /// for `@optimized` function calls reached inside the solve (task #4880).
+    ///
+    /// # Default implementation
+    ///
+    /// Solvers that do not override this method ignore `dispatch` entirely and
+    /// delegate unchanged to [`Self::solve_ranked`] — back-compat for every existing
+    /// `ConstraintSolver` implementation and mock. Only an overriding solver (e.g.
+    /// `DimensionalSolver`) threads `dispatch` down into its internal evaluator.
+    fn solve_ranked_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> crate::ranked::RankedSolveResult {
+        let _ = dispatch;
+        self.solve_ranked(problem)
     }
 }
 
@@ -1083,6 +1145,59 @@ mod tests {
             }
             _ => panic!("expected NoProgress, got {:?}", ranked),
         }
+    }
+
+    // ---- ComputeDispatch default-method back-compat tests (step-1 RED / step-2 GREEN) ----
+
+    /// A `ComputeDispatch` that never resolves anything — used to prove the
+    /// `*_with_dispatch` default methods on `ConstraintSolver` ignore the dispatch
+    /// argument entirely and delegate unchanged to `solve`/`solve_ranked`.
+    struct NoopDispatch;
+
+    impl ComputeDispatch for NoopDispatch {
+        fn dispatch(&self, _target: &str, _args: &[Value]) -> Option<Value> {
+            None
+        }
+    }
+
+    /// I1-style back-compat invariant (task #4880): adding the dispatch hook must not
+    /// change the observable behaviour of a non-overriding `ConstraintSolver`.
+    /// `MockSolvedSolver` does not override `solve_with_dispatch`/`solve_ranked_with_dispatch`,
+    /// so it must inherit the default methods, which ignore `dispatch` and delegate to
+    /// `solve`/`solve_ranked` unchanged.
+    #[test]
+    fn default_dispatch_methods_delegate_to_solve_and_solve_ranked() {
+        let mut solved_values = HashMap::new();
+        solved_values.insert(ValueCellId::new("Part", "z"), Value::length(0.03));
+
+        let solver = MockSolvedSolver {
+            values: solved_values,
+            unique: true,
+        };
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+            dependent_cells: Vec::new(),
+        };
+
+        let direct = solver.solve(&problem);
+        let via_dispatch = solver.solve_with_dispatch(&problem, Some(&NoopDispatch));
+        assert_eq!(
+            format!("{:?}", direct),
+            format!("{:?}", via_dispatch),
+            "solve_with_dispatch(Some(NoopDispatch)) must be identical to solve() for a non-overriding solver"
+        );
+
+        let direct_ranked = solver.solve_ranked(&problem);
+        let via_dispatch_ranked = solver.solve_ranked_with_dispatch(&problem, Some(&NoopDispatch));
+        assert_eq!(
+            format!("{:?}", direct_ranked),
+            format!("{:?}", via_dispatch_ranked),
+            "solve_ranked_with_dispatch(Some(NoopDispatch)) must be identical to solve_ranked() for a non-overriding solver"
+        );
     }
 
     // ---- objective_terms_coherent / dimension_of / DimensionIncoherence

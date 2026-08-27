@@ -1,6 +1,23 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+// Mirror gui/src/__tests__/debugParity.test.ts:12-23 — these three mocks make
+// bridge.ts importable at collection time without a Tauri runtime. Proven
+// sufficient there (buildHandlers() is already called from that file); reused
+// here for task-5934 case (c), which needs the real buildHandlers() key set.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("html-to-image", () => ({
+  toPng: vi.fn().mockResolvedValue("data:image/png;base64,STUB"),
+}));
+
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as bridge from "../../src/debug/bridge.js";
+import { extractToolDefNames, readDebugServerSource } from "../../src/__tests__/toolDefNames.js";
 import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario, KNOWN_DEBUG_TOOL_NAMES } from "./assertions.js";
 import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions.js";
 import type { RpcResult } from "./rpc.js";
@@ -459,5 +476,37 @@ describe("F1 VALUE_SCENARIOS (task-4303)", () => {
         expect(KNOWN_TOOLS.has(step.tool), `${name}: setup step tool '${step.tool}' is unknown`).toBe(true);
       }
     }
+  });
+});
+
+// task-5934: KNOWN_DEBUG_TOOL_NAMES must be a superset of every tool
+// advertised by tool_defs() in debug_server.rs — any advertised debug tool
+// may legitimately appear as a VALUE_SCENARIOS setup step, so an
+// under-populated set would silently reject a valid setup tool (case (a)).
+// Case (b) closes the reverse direction: every KNOWN_DEBUG_TOOL_NAMES entry
+// must resolve to a real tool_defs() or bridge.ts buildHandlers() name, so a
+// typo'd or stale entry added directly to KNOWN_DEBUG_TOOL_NAMES cannot
+// silently widen the allowlist past what actually exists. (debugParity.test.ts's
+// (d)+(e) constrain buildHandlers() against tool_defs()/REST_ONLY_HANDLERS, but
+// neither touches KNOWN_DEBUG_TOOL_NAMES — it is a hand-written superset, not a
+// derived set, so nothing else in the suite checks it.)
+describe("KNOWN_DEBUG_TOOL_NAMES ↔ tool_defs() parity (task-5934)", () => {
+  // The debug_server.rs read and the extraction regex live in
+  // gui/src/__tests__/toolDefNames.ts (task 6065), shared with debugParity.test.ts.
+  // Extraction sanity (exact count vs raw `ToolDef {` literals, no duplicates) is
+  // asserted once there, by debugParity.test.ts case (b).
+  const toolDefNames = extractToolDefNames(readDebugServerSource());
+
+  it("(a) every tool_defs() name is present in KNOWN_DEBUG_TOOL_NAMES", () => {
+    const missing = toolDefNames.filter((n) => !KNOWN_DEBUG_TOOL_NAMES.has(n));
+    expect(missing).toStrictEqual([]);
+  });
+
+  it("(b) every KNOWN_DEBUG_TOOL_NAMES entry is a real tool_defs() or buildHandlers() name", () => {
+    const bridgeHandlerNames = Object.keys(bridge.buildHandlers({} as any));
+    const unknown = [...KNOWN_DEBUG_TOOL_NAMES].filter(
+      (n) => !toolDefNames.includes(n) && !bridgeHandlerNames.includes(n),
+    );
+    expect(unknown).toStrictEqual([]);
   });
 });

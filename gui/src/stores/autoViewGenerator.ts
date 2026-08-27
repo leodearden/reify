@@ -141,9 +141,10 @@ export function defaultVisibilityFor(
   // MUST STAY ADDITIVE — do not "simplify" a miss back to 'hidden'.
   // `DisplayOutput` is OVERLOADED: the same occurrence carries layer-3
   // appearance overrides (`AppearanceDirective`) AND multi-pane routing, and
-  // `collect_display_routing` (engine.rs:4080-4086) emits a `DisplayDirective`
-  // for EVERY DisplayDeferred occurrence, reading `pane` from the hydrated
-  // instance (engine.rs:4048-4055) where it is ALWAYS present, defaulted to 0.
+  // `collect_display_routing` (gui/src-tauri/src/engine.rs) emits a
+  // `DisplayDirective` for EVERY DisplayDeferred occurrence, reading `pane`
+  // from the hydrated instance (also in gui/src-tauri/src/engine.rs) where it
+  // is ALWAYS present, defaulted to 0.
   // A directive therefore proves NOTHING about visibility intent: an
   // appearance-only `DisplayOutput(subject:, style:)` is byte-identical on the
   // wire to an explicit `pane: 0`. An exhaustive `subject ? 'show' : 'hidden'`

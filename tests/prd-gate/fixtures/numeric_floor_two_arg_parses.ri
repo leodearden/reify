@@ -1,0 +1,10 @@
+// Fixture (γ decompose-phase premise, tau1-numeric): the NEW two-arg form
+// `floor(2.7mm, 0.5mm)` is ordinary call syntax and PARSES today —
+// tree-sitter produces 0 ERROR nodes on this file. Grammar-only assertion:
+// this fixture is not required to resolve/type-check, only to parse.
+
+module numeric_floor_two_arg_parses
+
+structure def NumericFloorTwoArgParses {
+    let f = floor(2.7mm, 0.5mm)
+}

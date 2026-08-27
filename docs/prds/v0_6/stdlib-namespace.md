@@ -287,6 +287,7 @@ references. N3/N4 consume resolution-unification substrate (§5).
 | `conditional-compilation.md` (landed) | consumes | `#cfg` on `std.*` imports becomes meaningful under strict (gates visibility, same `import_cfg_satisfied` mechanism) | this PRD (κ) | semantics unchanged, one boundary row |
 | `module-and-visibility-hardening.md` | extends | stdlib files gain `module` headers; std-skip of `attach_module_path_diag` removed (NS-V3, ζ) | this PRD (ζ) | extension of landed mechanism |
 | tree-sitter-reify / lezer grammars | produces | qualified-ref production (μ) in tree-sitter + reify-syntax lowering + GUI lezer highlighting | this PRD (μ) | grammar-gate fixtures committed with μ |
+| `docs/prds/v0_6/enum-shadow-coherence.md` (2026-08-20) | feeds this PRD | N0-interim owner of the local-enum-vs-prelude-structure shadow instance (#5429's `LocalEnumShadowScope` + its obligation-collision Error): α absorbs `build_local_enum_shadow_set` + its shared entity-name filter helper into the NS-P1/P3 policy point; κ's D-2 stage 2 supersedes the obligation Error post-N3; ν owns the de-shadowing surface; its D7 defers the type-vs-value namespace question to α/#5920 — tracked, not dropped | α/κ/ν as listed | amendment recorded 2026-08-20 |
 
 ---
 

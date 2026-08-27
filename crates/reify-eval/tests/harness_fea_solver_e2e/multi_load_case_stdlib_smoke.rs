@@ -958,20 +958,37 @@ fn get_two_case_shared_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value 
 /// # What this does NOT verify (and why the name was corrected)
 ///
 /// This test was originally named `solve_load_cases_two_case_reuse_no_extra_realization`
-/// and framed as a mesh cache-reuse regression guard. That framing was misleading:
-/// the required `CacheStats.realization_entries` API does not exist in the current
-/// `reify_eval::CacheStats` (which only exposes `cache_hits`, `cache_misses`,
-/// `early_cutoffs`), and `invoke_solve_elastic_static` evaluates the contract body
-/// DIRECTLY without routing through the `@optimized` trampoline, so no volume-mesh
-/// ComputeNode is created. The 1-case/2-case entry-count comparison is the only
-/// observable assertion available with `make_simple_engine()`, and it is fully
-/// covered by `solve_load_cases_two_cases_returns_mcr_shape` — this test adds the
-/// 1-case baseline count for completeness.
+/// and framed as a mesh cache-reuse regression guard. That framing was misleading,
+/// and remains so even though option (b) below has since landed.
 ///
-/// True mesh-reuse verification requires either:
-///   (a) Routing the per-case solve through the `@optimized` trampoline, OR
-///   (b) A new `CacheStats.realization_entries` counter.
-/// Both are out of scope for task 3005 and deferred to a follow-up task.
+/// `CacheStats.realization_entries` now EXISTS (task 4152) — a monotonic count of
+/// new terminal realization-cache entries. But it still cannot be asserted HERE:
+/// `make_simple_engine()` is kernel-less, and `invoke_solve_elastic_static`
+/// evaluates the contract body DIRECTLY without routing through the `@optimized`
+/// trampoline, so no volume-mesh ComputeNode is created and no realization occurs.
+/// The counter would read 0 before and after — a vacuous assertion. The
+/// 1-case/2-case entry-count comparison remains the only observable signal
+/// available here, and it is fully covered by
+/// `solve_load_cases_two_cases_returns_mcr_shape` — this test adds the 1-case
+/// baseline count for completeness.
+///
+/// The counter's own wiring is pinned in
+/// `crates/reify-eval/tests/tolerance_wiring_e2e.rs`
+/// (`realization_entries_counts_terminal_cache_entry_once_and_not_on_cache_hit`
+/// and `realization_entries_survives_clear_realization_cache`), which uses a
+/// demanded-tolerance contract — the precondition for the realization cache to be
+/// populated at all. A `.ri` fixture carrying no tolerance contract caches
+/// nothing (`engine_build.rs`: "no tolerance contract → no caching").
+///
+/// That precondition is satisfiable on the FEA `.ri` path: a `RepresentationWithin`
+/// bound declared in the structure that OWNS the realization does make the counter
+/// move there — asserted green (delta exactly 1 across a 2-case body solve, with a
+/// one-case control) by `non_prismatic_two_case_build_realizes_body_exactly_once`
+/// in `crates/reify-eval/tests/solve_elastic_static_body_e2e.rs`. What is not
+/// usable end-to-end yet is the per-case RESULT half, because that same bound
+/// silently empties the solve's `cases` map (#5951); it is parked verbatim as the
+/// `#[ignore]`d `multi_case_non_prismatic_body_caches_one_realization_for_both_cases`
+/// in the same file, whose doc carries the full 2×2 measurement.
 #[test]
 fn solve_load_cases_one_vs_two_cases_entry_count() {
     // ── 1-case baseline ───────────────────────────────────────────────────────

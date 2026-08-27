@@ -1,0 +1,17 @@
+module shear_angles_field_decl_pre
+
+// Adversary fixture (γ decompose-phase, PRD angle-dimension-completion leaf σ):
+// PRE-STATE probe for the CHANNEL-DECL type spelling.
+//
+// Leaf σ's actual deliverable is a `.ri` declaration in solver_elastic.ri:
+//   `param shear_angles : Field<Point3<Length>, Vector3<Angle>>`
+// (PRD §3.3 / D5). The Prover probed only the fn-param `Vector3<Angle>`
+// spelling; this fixture probes the Field-decl spelling — an Angle codomain
+// inside the `Field<D, C>` arm of resolve_parameterized_builtin_type, a slot
+// existing stdlib exercises only with Length/Dimensionless/Real/Tensor/Matrix.
+//
+// Expect: parses (tree-sitter exit 0) and resolves (`reify check` exit 0).
+
+structure def ShearAnglesFieldDeclPre {
+    param shear_angles : Field<Point3<Length>, Vector3<Angle>>
+}

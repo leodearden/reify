@@ -12,34 +12,9 @@
 
 #![cfg(has_occt)]
 
+use crate::common::{self, BBox};
 use reify_kernel_occt::OcctKernel;
 use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
-
-/// Parse the full bounding box from the JSON string returned by
-/// `GeometryQuery::BoundingBox`.
-///
-/// Expected format:
-/// `{"xmin":<f>,"ymin":<f>,"zmin":<f>,"xmax":<f>,"ymax":<f>,"zmax":<f>}`
-fn parse_bbox(s: &str) -> (f64, f64, f64, f64, f64, f64) {
-    let (mut xmin, mut ymin, mut zmin) = (f64::NAN, f64::NAN, f64::NAN);
-    let (mut xmax, mut ymax, mut zmax) = (f64::NAN, f64::NAN, f64::NAN);
-    let trimmed = s.trim_start_matches('{').trim_end_matches('}');
-    for pair in trimmed.split(',') {
-        let mut parts = pair.splitn(2, ':');
-        let key = parts.next().unwrap().trim().trim_matches('"');
-        let val: f64 = parts.next().unwrap().trim().parse().unwrap();
-        match key {
-            "xmin" => xmin = val,
-            "ymin" => ymin = val,
-            "zmin" => zmin = val,
-            "xmax" => xmax = val,
-            "ymax" => ymax = val,
-            "zmax" => zmax = val,
-            _ => {}
-        }
-    }
-    (xmin, ymin, zmin, xmax, ymax, zmax)
-}
 
 /// Helper: create a kernel with a 5mm-radius `CircleProfile` (disk at z=0)
 /// as the profile for `ExtrudeInfinite`.
@@ -114,14 +89,14 @@ fn extrude_infinite_intersected_with_box_yields_finite_clipped_solid() {
         .expect("Intersection of infinite prism with box should succeed");
 
     // Query and parse the bounding box.
-    let bbox_val = kernel
-        .query(&GeometryQuery::BoundingBox(intersection_h.id))
-        .expect("BoundingBox query should succeed");
-    let bbox_str = match bbox_val {
-        Value::String(s) => s,
-        other => panic!("expected BoundingBox to return a String, got {:?}", other),
-    };
-    let (xmin, ymin, zmin, xmax, ymax, zmax) = parse_bbox(&bbox_str);
+    let BBox {
+        xmin,
+        ymin,
+        zmin,
+        xmax,
+        ymax,
+        zmax,
+    } = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(intersection_h.id)));
 
     // OCCT adds a small positive padding to bounding boxes (~1e-7 m scale).
     let tol = 1.0e-6_f64;

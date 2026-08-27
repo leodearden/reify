@@ -8,3 +8,5 @@
 pub mod schema;
 pub mod fixtures;
 pub mod git_env;
+pub mod net;
+pub mod index_fixture;

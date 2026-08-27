@@ -11,7 +11,7 @@
 // traits in the sibling stdlib modules.
 //
 // Note on enum-typed param pattern: the `HardnessScale` enum + `Hard` trait
-// in materials_mechanical.ri lines 88-94 establishes the precedent for
+// in materials_mechanical.ri establishes the precedent for
 // enum-typed params in material traits. The chemical traits follow the same
 // syntax: `param field : EnumName`.
 

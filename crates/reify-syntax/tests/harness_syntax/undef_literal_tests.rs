@@ -10,7 +10,7 @@
 //!   `ExprKind::Undef` exists. Verifies that the AST lowerer maps `undef_literal`
 //!   CST nodes to `ExprKind::Undef`.
 //!
-//! User-observable signal: `cargo test -p reify-syntax --test undef_literal_tests`
+//! User-observable signal: `cargo test -p reify-syntax --test harness_syntax -- undef_literal_tests::`
 
 use crate::common::{find_cst_node, make_ts_parser};
 

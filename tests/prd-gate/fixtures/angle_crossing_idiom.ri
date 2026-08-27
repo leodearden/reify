@@ -1,0 +1,14 @@
+// PRD gate fixture (angle-dimension-completion leaf γ): the ×1rad crossing
+// idiom the doctrine teaches. Pre-state: parses AND evaluates today
+// (probed 2026-08-10: theta = 2.5 rad; ratio = 2.5 dimensionless).
+// Grammar gate target: tree-sitter parse --quiet exit 0.
+
+module angle_crossing_idiom
+
+structure AngleCrossingIdiom {
+    param s : Length = 5mm
+    param r : Length = 2mm
+    let theta : Angle = (s / r) * 1rad
+    let ratio = theta / 1rad
+    let omega = 6.283185 * 1rad / 1s
+}

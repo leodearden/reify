@@ -500,3 +500,59 @@ describe('FeaModeToolbar — convergence badge (task 3001 step-13)', () => {
     expect(screen.queryByTestId('fea-mode-convergence-badge')).toBeNull();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FeaModeToolbar viewport identity (#5670)
+//
+// Once every pane owns a keyed FeaModeStore, every pane renders its own
+// toolbar — so N toolbars stop being N duplicates driving one state and become
+// N legitimate per-pane controls. What they still lack is *addressability*: the
+// debug bridge resolves the channel select by a document-wide
+// querySelectorAll('[data-testid="fea-mode-channel-select"]') and hard-fails on
+// more than one match. Stamping data-viewport-id makes each one individually
+// targetable, which is what set_fea_channel's new viewportId param selects on.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('FeaModeToolbar viewport identity (#5670)', () => {
+  /** Same shape as renderEnabled, plus the new optional id. */
+  function renderEnabledWithId(viewportId?: string) {
+    const store = createFeaModeStore();
+    store.setEnabled(true); // the channel select is gated behind store.state.enabled
+    render(() => <FeaModeToolbar store={store} viewportId={viewportId} />);
+    return store;
+  }
+
+  it('(a) viewportId stamps data-viewport-id on the root AND on the channel select', () => {
+    renderEnabledWithId('pane-1');
+    // The root carries it for query_selector-style DOM inspection...
+    expect(screen.getByTestId('fea-mode-toolbar').getAttribute('data-viewport-id')).toBe('pane-1');
+    // ...and the select carries it because that is the element the bridge
+    // resolves and drives; keying the store lookup off the element actually
+    // written to is what prevents reading some other pane's store.
+    expect(screen.getByTestId('fea-mode-channel-select').getAttribute('data-viewport-id')).toBe(
+      'pane-1',
+    );
+  });
+
+  it('(b) the attribute tracks the prop rather than being hard-coded to design-main', () => {
+    renderEnabledWithId('design-main');
+    expect(screen.getByTestId('fea-mode-toolbar').getAttribute('data-viewport-id')).toBe(
+      'design-main',
+    );
+    expect(screen.getByTestId('fea-mode-channel-select').getAttribute('data-viewport-id')).toBe(
+      'design-main',
+    );
+  });
+
+  it('(c) omitting viewportId emits NO data-viewport-id attribute at all', () => {
+    renderEnabledWithId(undefined);
+    // Solid omits an attribute whose value is undefined, so an id-less toolbar
+    // renders byte-identically to before #5670. That is what keeps the eight
+    // existing describes above — and debugBridge.test.tsx's
+    // renderToolbarWithErrorIndicator, which drives the legacy no-id fallback
+    // path — valid without a single edit.
+    expect(screen.getByTestId('fea-mode-toolbar').hasAttribute('data-viewport-id')).toBe(false);
+    expect(screen.getByTestId('fea-mode-channel-select').hasAttribute('data-viewport-id')).toBe(
+      false,
+    );
+  });
+});

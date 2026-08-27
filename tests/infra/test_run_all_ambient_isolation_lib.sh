@@ -107,6 +107,20 @@ else
     assert "isolation-bug: does not emit the derivative SKIP marker (coverage preserved)" true
 fi
 
+# The FAIL marker line itself, pinned symmetrically with Sub-case C's PASS pin.
+# Without this, nothing in-tree asserts that line at all: Sub-case D's
+# non-vacuity check is satisfied by the `  | `-prefixed dump alone, so renaming
+# or deleting the marker outright would leave this whole suite green while the
+# lib header and the FAIL branch's own comment both promise it stays greppable.
+# Anchored at BOTH ends deliberately:
+#   ^   -- the marker is NOT itself `  | `-prefixed; the prefix filter applies
+#          to the re-emitted capture only.
+#   …$  -- the capture FOLLOWS the marker on its own lines rather than being
+#          interpolated INTO it, which is the pre-6353 shape this task removed
+#          (`… [hostile rc=$_amb_rc; hostile out: $_amb_out]`).
+assert "isolation-bug: emits the FAIL marker line, un-prefixed, with the capture not inlined into it" \
+    plan_match "$_out" '^AMBIENT-ISOLATION FAIL: .*\[hostile rc=1\]$'
+
 # ---------------------------------------------------------------------------
 # Sub-case C "green happy-path": a fake test_run_all.sh that is GREEN
 # regardless of env. Hostile GREEN => PASS immediately (no baseline run) =>
@@ -139,5 +153,76 @@ fi
 
 assert "green happy-path: emits the hostile-green PASS line" \
     plan_match "$_out" 'AMBIENT-ISOLATION PASS:'
+
+# ---------------------------------------------------------------------------
+# Sub-case D "hostile-red target whose output carries a sentinel": Sub-case B's
+# shape (green at baseline, red under the hostile ambient) PLUS a column-0
+# slot-timeout sentinel on the hostile run. This is the real hazard: the lib's
+# FAIL branch re-emits $_amb_out — the COMBINED stdout+stderr of a
+# deadline-capable child (the real target, test_run_all.sh, forces a
+# REIFY_RUN_ALL_POOL_WAIT deadline on every green run) — so a bare
+# interpolation puts that child's sentinel at COLUMN 0, where dark-factory's
+# `^[ \t]*`-anchored classifier misreads the whole merge verify as semaphore
+# starvation (task 6353).
+#
+# The sentinel is assembled from a SPLIT literal, so neither this file nor the
+# fake ever carries the contiguous token: test_slot_timeout_marker.sh scans
+# sibling tests/infra suites for exactly that anchored shape, and this suite's
+# own stdout is re-emitted into the merge-gate verify log.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case D: hostile-red target carrying a sentinel (FAIL line must not re-emit it column-anchored) ---"
+
+FAKE_SENTINEL="$FAKE_DIR/fake_sentinel.sh"
+cat > "$FAKE_SENTINEL" <<'SH'
+#!/usr/bin/env bash
+# Red ONLY when the ambient var is present (Sub-case B's isolation-bug shape),
+# and on that red run it emits a slot-timeout sentinel at column 0.
+#
+# The PREAMBLE line matters: it puts the sentinel on line >=2 of the captured
+# output, which is what actually reproduces the hazard. A sentinel on line 1
+# of the capture lands mid-line inside the FAIL message ("... hostile out: ")
+# and is already unanchored by accident, which would make the absence assert
+# below pass vacuously on base.
+if [ -n "${REIFY_RUN_ALL_EXCLUDE_HOST_INFRA:-}" ]; then
+    echo "fake target: preamble line before the deadline"
+    printf '%sTIMEOUT@@ reason=run_all_pool_starvation slots=1 waited=1800 disposition=soft lock=x\n' '@@REIFY_SLOT_'
+    echo "Results: 2 passed, 1 failed"
+    exit 1
+fi
+echo "Results: 3 passed, 0 failed"
+exit 0
+SH
+chmod +x "$FAKE_SENTINEL"
+
+_D_SP='@@REIFY_SLOT_'
+_D_TOK="${_D_SP}TIMEOUT@@"
+_D_ANCHOR="^[[:blank:]]*${_D_TOK}"
+
+_rc=0
+_out="$(ambient_isolation_check_one "$FAKE_SENTINEL" REIFY_RUN_ALL_EXCLUDE_HOST_INFRA 1 "$MKEYS" 2>&1)" || _rc=$?
+
+# --- D4/D3 FIRST: the probe's own controls. D2 below asserts an ABSENCE, so a
+# typo'd anchor (D4) or a fake that stopped emitting (D3) would make it green
+# forever. Counts only ever reach an assert description through a plain
+# variable; $_out itself is NEVER interpolated — dumping it would BE the leak.
+_d_probe_out="$(REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 bash "$FAKE_SENTINEL" 2>&1 || true)"
+_d_probe_anchored="$(printf '%s\n' "$_d_probe_out" | grep -cE "$_D_ANCHOR" || true)"
+assert "D4: live-probe control -- the anchored predicate FIRES on the fake target's OWN unfiltered output (got ${_d_probe_anchored:-0}, want >=1)" \
+    test "${_d_probe_anchored:-0}" -ge 1
+
+_d_present="$(printf '%s\n' "$_out" | grep -cF -- "$_D_TOK" || true)"
+assert "D3: non-vacuity -- the sentinel token IS present in the lib's FAIL output, just unanchored (got ${_d_present:-0}, want >=1)" \
+    test "${_d_present:-0}" -ge 1
+
+# D1: the verdict is preserved — sanitizing the re-emission must not change the
+# FAIL classification.
+assert "D1: sentinel-bearing isolation bug still returns verdict rc 1 [rc=$_rc]" \
+    test "$_rc" -eq 1
+
+# D2 THE LEAK ASSERT.
+_d_anchored="$(printf '%s\n' "$_out" | grep -cE "$_D_ANCHOR" || true)"
+assert "D2: the FAIL line does not re-emit the captured sentinel \`^[[:blank:]]*\`-anchored (got ${_d_anchored:-0}, want 0)" \
+    test "${_d_anchored:-0}" -eq 0
 
 test_summary

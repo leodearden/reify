@@ -1267,7 +1267,7 @@ pub fn solve_modal_analysis_trampoline(
 /// message so that users can locate the offending joint.
 #[derive(Debug, Clone, Copy)]
 enum StiffnessSkipKind {
-    /// `ROTATIONAL_STIFFNESS` (N·m/rad) — `k_θ / m` is dimensionally wrong;
+    /// `ROTATIONAL_STIFFNESS` (N·m/rad²) — `k_θ / m` is dimensionally wrong;
     /// the correct eigenvalue is `k_θ / I_body` (moment of inertia).
     Rotational,
     /// A finite scalar dimension that is neither `TRANSLATIONAL_STIFFNESS`
@@ -1285,7 +1285,7 @@ enum StiffnessSkipKind {
 /// accepted by the lumped model where `λ = k / m_body`.
 ///
 /// Returns `(None, Some(StiffnessSkipKind::Rotational))` when the dimension is
-/// `ROTATIONAL_STIFFNESS` (N·m/rad) — the caller should emit a warning because
+/// `ROTATIONAL_STIFFNESS` (N·m/rad²) — the caller should emit a warning because
 /// `k_θ / m` is dimensionally wrong; the correct eigenvalue is `k_θ / I_body`.
 ///
 /// Returns `(None, Some(StiffnessSkipKind::UnexpectedDimension))` for any other
@@ -1436,7 +1436,7 @@ fn assemble_mechanism_km(
                 Some(StiffnessSkipKind::Rotational) => {
                     diagnostics.push(Diagnostic::warning(format!(
                         "W_MechanismModalRotationalDOF: body {i}{body_id_tag} has a \
-                         spring_rate with RotationalStiffness dimension (N·m/rad). The \
+                         spring_rate with RotationalStiffness dimension (N·m/rad²). The \
                          lumped generalized-coordinate model computes λ = k / m_body \
                          (translational DOF). A revolute/notch flexure requires \
                          λ = k_θ / I_body — using k_θ / m gives a dimensionally wrong \
@@ -6010,7 +6010,7 @@ mod tests {
     }
 
     /// Build a minimal rotational flexure joint `Value::Map` with a
-    /// `spring_rate` in `ROTATIONAL_STIFFNESS` (N·m/rad).
+    /// `spring_rate` in `ROTATIONAL_STIFFNESS` (N·m/rad²).
     ///
     /// Mirrors a notch/revolute flexure — `assemble_mechanism_km` should warn
     /// and skip this contribution (treating the joint as rigid) because the

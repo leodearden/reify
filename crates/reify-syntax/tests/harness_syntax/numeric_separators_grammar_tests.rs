@@ -1,6 +1,6 @@
 //! Rust integration tests for task 3909: `_` digit-separator support in `number_literal`.
 //!
-//! User-observable signal: `cargo test -p reify-syntax --test numeric_separators_grammar_tests`
+//! User-observable signal: `cargo test -p reify-syntax --test harness_syntax -- numeric_separators_grammar_tests::`
 //! passes (GREEN after grammar.js is patched; RED before).
 //!
 //! These tests assert **CST shape only** — the raw tree-sitter tree — and are

@@ -11,7 +11,7 @@ import std.ports.mechanical
 // A generic shaft coupling that connects a driver port to a driven port.
 // D and N are type parameters constrained to RotaryPort; no concrete
 // RotaryPort conformer is instantiated here (a conformer would need
-// torque_capacity, max_speed, and direction literals — avoidable risk
+// max_torque, max_speed, and direction literals — avoidable risk
 // for this zero-Error signal per PRD §4 decision 4).
 //
 // Named ShaftCoupling (not Coupling) to avoid colliding with the unrelated

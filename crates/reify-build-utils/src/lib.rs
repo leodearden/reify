@@ -55,6 +55,14 @@ impl NativeDep {
     }
 
     /// Canonical include-dir candidates in priority order.
+    ///
+    /// The OCCT arm below is MIRRORED verbatim — order included — in the
+    /// `occt-candidates` marker block of `scripts/check-manifold-deps.sh`,
+    /// whose preflight has to reach the same verdict this function feeds into
+    /// `has_occt`. This side stays the single source of truth; parity is
+    /// pinned by `tests/infra/test_occt_deps_preflight.sh`, so an edit here
+    /// without the matching bash edit fails that guard rather than silently
+    /// leaving the gate and the build disagreeing.
     fn include_candidates(self) -> &'static [&'static str] {
         match self {
             NativeDep::Occt => &[
@@ -76,6 +84,12 @@ impl NativeDep {
     /// while we want to link the system OCCT 7.8 — and gmsh/openvdb list
     /// `/opt/reify-deps/lib` first because that's where their canonical install
     /// lives via `scripts/setup-dev.sh`.
+    ///
+    /// That ordering is precisely what the bash mirror in
+    /// `scripts/check-manifold-deps.sh`'s `occt-candidates` block must
+    /// preserve, which is why `tests/infra/test_occt_deps_preflight.sh`
+    /// compares the two lists order-sensitively. See the note on the
+    /// include-dir candidates above.
     fn lib_candidates(self) -> &'static [&'static str] {
         match self {
             NativeDep::Occt => &[
@@ -136,12 +150,21 @@ fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBu
 
 /// Resolution core of [`find_dir`] with the override passed in as a value, so
 /// precedence is testable without `env::set_var` racing libtest's threads.
+///
+/// An EMPTY override counts as UNSET. `env::var(..).ok()` hands back
+/// `Some("")` for an exported-but-empty var, and taking that on trust would
+/// resolve the dir to the empty path, still set `has_occt`, and link against
+/// nothing — while `scripts/check-manifold-deps.sh`'s OCCT preflight, reading
+/// the same environment, fell through to the candidate list and went green
+/// describing a resolution this function would not perform. Both halves of
+/// that mirror now agree; the bash half is the `[ -n "$override" ]` test in
+/// that script's `occt_find_dir`.
 fn find_dir_with_override(
     override_dir: Option<&str>,
     candidates: &[&str],
     sentinel: &str,
 ) -> Option<PathBuf> {
-    if let Some(dir) = override_dir {
+    if let Some(dir) = override_dir.filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }
     for p in candidates {
@@ -345,8 +368,8 @@ mod tests {
         assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.9.3".to_string()));
     }
 
-    /// An override outranks a candidate that would otherwise match, and is
-    /// taken on trust — it is returned even without the sentinel present,
+    /// A non-empty override outranks a candidate that would otherwise match,
+    /// and is taken on trust — it is returned even without the sentinel present,
     /// which is what lets an operator point a build at a lib dir we do not
     /// know about.
     #[test]
@@ -369,6 +392,28 @@ mod tests {
         );
 
         assert_eq!(found.as_deref(), Some(override_dir));
+    }
+
+    /// An exported-but-EMPTY override counts as unset here, matching the
+    /// `[ -n "$override" ]` half of the mirror in
+    /// `scripts/check-manifold-deps.sh`'s `occt_find_dir`. Without the filter
+    /// this resolved to the empty path and set `has_occt` while the preflight,
+    /// reading the same environment, went green — exactly the guard/build
+    /// disagreement that arm exists to prevent.
+    #[test]
+    fn find_dir_ignores_exported_but_empty_override() {
+        let guard = tempdir();
+        let tmp = guard.path();
+        fs::write(tmp.join("libgmsh.so"), b"").unwrap();
+
+        let tmp_str = tmp.to_string_lossy().into_owned();
+        let found = find_dir_with_override(Some(""), &[tmp_str.as_str()], "libgmsh.so");
+
+        assert_eq!(
+            found.as_deref(),
+            Some(tmp),
+            "empty override must fall through"
+        );
     }
 
     #[test]

@@ -748,6 +748,42 @@ assert "H3: retired gen.1 dir GONE (reaped by GC)" test ! -d "$H3_GEN1"
 assert "H3: retired gen.1 .buildroot GONE (reaped with its gen — no orphan)" \
     test ! -f "${H3_GEN1}.buildroot"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — the provenance WIP refusal message (task 5981)
+#
+# This refusal fires INSIDE a warm lane (the advancing dir is a lane's target/),
+# so whatever remedy it names is read by exactly the population that filled the
+# shared stash stack: refs/stash is ONE ref in the shared .git, not per-worktree,
+# so every lane on this host pushes onto one LIFO stack (esc-5785-6, nine entries
+# over ~1 month). The guard's REFUSAL PATH had no coverage at all before this
+# block — behavioural asserts on the script's real stderr, in the shape of
+# test_land_script.sh's "dirty tree -> error says 'dirty'".
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: WIP refusal advises committing, never stashing ---"
+
+I_TMP="$(mktemp -d /tmp/test-refresh-warm-base-i-XXXXXX)"
+_TMPDIRS+=("$I_TMP")
+I_LANE="$(mk_git_advancing "$I_TMP")"
+I_ADV="$I_LANE/advancing"
+I_HEAD="$(git -C "$I_LANE" rev-parse HEAD)"
+# Dirty a TRACKED file. The guard runs `git status --porcelain
+# --untracked-files=no`, so untracked content (the advancing subdir itself)
+# would NOT trip it — this must be the committed .placeholder.
+printf 'uncommitted WIP\n' >> "$I_LANE/.placeholder"
+
+reset_calls
+run_helper "$I_ADV" "$I_TMP/base" --landed-commit "$I_HEAD"
+assert "I1: advancing worktree with tracked WIP is refused (non-zero)" test "$RC" -ne 0
+assert "I2: refusal names the WIP condition" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "WIP"' _ "$ERR_OUT"
+assert "I3: refusal advises committing" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "commit"' _ "$ERR_OUT"
+# Bare-token check, same rationale as test_land_script.sh's: a reworded advisory
+# that reaches for the word again should fail here and be reconsidered.
+assert "I4: refusal does NOT advise stashing" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
 # kept as two independently-reported signals: TRASH2 can realistically only ever

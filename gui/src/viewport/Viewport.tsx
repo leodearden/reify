@@ -55,6 +55,13 @@ export interface ViewportProps {
    * overlay and bridges store state changes into the meshManager colorize
    * pipeline. When absent, no FEA UI is rendered (existing behaviour).
    *
+   * **Any pane may be handed one** (#5670). The store is no longer a
+   * design-main singleton: App owns a viewportId-keyed registry and gives
+   * each pane its own instance, so several `<Viewport>`s can render FEA UI
+   * simultaneously without sharing state. The toolbar this Viewport renders is
+   * scoped with `viewportId` (stamped as `data-viewport-id`) so the debug
+   * bridge can address one pane's controls unambiguously among N.
+   *
    * **Captured at mount** — captured once inside `onMount`. Swap by
    * unmounting and remounting the `<Viewport>`.
    */
@@ -115,7 +122,7 @@ export function Viewport(props: ViewportProps) {
     const width = rect.width || 800;
     const height = rect.height || 600;
 
-    const { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels, disposeAxisLabels } = createScene(canvasRef, width, height);
+    const { scene, camera, renderer, resize, adjustClipping, fitHelpers, grid, axes, axisLabels, disposeAxisLabels } = createScene(canvasRef, width, height);
     const controls = createControls(camera, renderer.domElement);
     const meshManager = createMeshManager(scene);
     const wireManager = createWireManager(scene);
@@ -371,6 +378,16 @@ export function Viewport(props: ViewportProps) {
       }
       adjustClipping(bounds);
 
+      // Size the grid/axes/label helpers to the SAME bounds (#6588). The helpers are
+      // built at absolute sizes tuned for the ~10 m CAD default scene noted below;
+      // without this call a sub-metre .ri model sits inside a 20 m grid whose far
+      // lines converge into a dark horizon band, and a 2 m axes triad that draws a
+      // hard diagonal across every part in frame. Sharing one Box3 with
+      // adjustClipping is deliberate: helper sizing and camera framing must agree on
+      // one measurement, including the ghost meshes folded in above. The effect
+      // already ends with requestRender(), so no extra invalidation is needed.
+      fitHelpers(bounds);
+
       if (!hasAutoFit && meshManager.getSceneMeshes().size > 0) {
         selection.fitToView();
         hasAutoFit = true;
@@ -547,6 +564,7 @@ export function Viewport(props: ViewportProps) {
       <Show when={props.feaModeStore}>
         <FeaModeToolbar
           store={props.feaModeStore!}
+          viewportId={props.viewportId}
           availableChannels={feaToolbarChannels(props.meshes)}
           onLockCurrent={() => {
             const r = activeScalarRange();

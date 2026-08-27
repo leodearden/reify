@@ -1,0 +1,35 @@
+// Fixture: precision-nominal α (task 6166) — PIPE probe (non-analytic class).
+//
+// Copies the pnrg_envelope_sphere.ri anchor layout.  READ THAT HEADER FIRST for
+// the OK trap and the validity assertion.
+//
+// `pipe(path, radius)` — PATH FIRST, no profile argument.  (Contrast
+// `sweep(profile, path)`, profile first.)  Getting this order wrong is a compile
+// error, not a silent misread, but it is easy to write backwards.
+//
+// REGIME PARAMETER: pipe radius / path curvature radius.  A helix path bends in
+// two directions at once, so the pipe wall is non-analytic everywhere — this is
+// the most demanding of the four non-analytic classes that still measures inside
+// the 90 s per-run budget.
+//
+// Measured 2026-08-10 at 5db884e30b: pipe(helix(300mm,200mm,900mm), 60mm) at
+// #precision(20mm) -> 1.159e-2 m.  Note this contradicts a pre-session probe that
+// recorded a timeout for the same construct; the committed spelling measures.
+// A bezier path is the cheaper alternative if the helix rung gets too expensive:
+// pipe(bezier(0mm,0mm,0mm, 500mm,800mm,0mm, 1000mm,0mm,0mm), 80mm) -> 9.266e-3 m.
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_envelope_pipe
+
+#precision(20mm)
+
+// Subject: a 60 mm-radius pipe following a helical path.
+structure PnrgPipe {
+    let g = pipe(helix(300mm, 200mm, 900mm), 60mm)
+}
+
+structure PnrgPipeCheck {
+    param subject : PnrgPipe
+    constraint RepresentationWithin(subject, 0.001mm)
+}

@@ -1,0 +1,60 @@
+// Fixture: a `RepresentationWithin` bound PAIRED WITH an `: Output` occurrence.
+//
+// What it is for
+// ──────────────
+// The Mode-B (no `-o`) half of the export refusal — PRD
+// `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, task eta /
+// C-SURFACE (2): a design that declares a `RepresentationWithin` bound the
+// export path cannot demonstrate it honours must REFUSE to write the artifact
+// rather than write it and report success.
+//
+// Before this fixture, ZERO tracked `.ri` files paired a bound with an output
+// occurrence, which is exactly why the declarative Mode-B export path had never
+// been exercised against a bounded module. It is consumed by
+// `crates/reify-cli/tests/harness_cli/cli_representation_within.rs` and pairs
+// the two halves already on main:
+//   - the checker shape of `representation_within_satisfied.ri` (a structure
+//     owning geometry + a separate `structure Check { param subject : X
+//     constraint RepresentationWithin(subject, <bound>) }`), and
+//   - the occurrence shape of `output_driver_single.ri`
+//     (`sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")`).
+//
+// The declared path is DESIGN-FILE-RELATIVE
+// ─────────────────────────────────────────
+// `path: "o.stl"` resolves against the *design file's* directory (io-export B7),
+// NOT the cwd. A test that runs `reify build` on this file in-place would write
+// `o.stl` into `tests/fixtures/`. Consumers therefore COPY this file into a
+// `tempfile::tempdir()` first and run the CLI on the copy (the
+// `cli_build_outputs.rs` pattern), so the artifact — or, once eta lands, its
+// absence — is observed inside the tempdir.
+//
+// The bound value is deliberately arbitrary
+// ─────────────────────────────────────────
+// `1mm` here carries no measured meaning and must not be retuned against an
+// achieved deviation: eta's refusal is a STATIC module-shape decision taken
+// before any deviation is measured, so it fires identically for any bound,
+// achievable or not. (Narrowing the refusal to genuinely unachievable bounds is
+// deferred to the follow-on task tracked in the PRD's task table; it depends on
+// the export path gaining a real measurement first.) Contrast
+// `representation_within_satisfied.ri`, whose 1mm bound IS load-bearing and
+// whose `#precision` must not be retuned casually.
+//
+// Geometry is deliberately CHEAP
+// ──────────────────────────────
+// A `box(10mm, 20mm, 5mm)` like `output_driver_single.ri`, NOT a 1 m sphere:
+// the refusal fires before any measurement, so this fixture must not import the
+// 5–20 s OCCT tessellation cost that the PRD §6 gate-cost rule warns about.
+
+structure def D {
+    let part = box(10mm, 20mm, 5mm)
+
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+}
+
+// Declares the bound. `param subject : D` types the subject as
+// StructureRef("D") — the same shape `SphereCheck` uses in
+// `representation_within_satisfied.ri`.
+structure DCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}

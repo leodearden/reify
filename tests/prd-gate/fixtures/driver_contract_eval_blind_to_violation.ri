@@ -1,0 +1,19 @@
+// driver-contract PRD, baseline B1: a violated NON-GEOMETRY constraint is invisible
+// to `reify eval`.
+//
+// Measured at main 9a992fc2f2 (2026-08-26), target/debug/reify:
+//   reify check   -> exit 1, "VIOLATED Beam#constraint[0]"
+//   reify build   -> exit 1, "VIOLATED Beam#constraint[0]"
+//   reify eval    -> exit 0, NO constraint output at all
+//   reify explain -> exit 0, "No objective provenance recorded"
+//
+// Post-fix (leaf ι): eval runs check() and exits 1 naming the violated constraint.
+module driver_contract_eval_blind_to_violation
+pub structure Beam {
+    param width : Length = 10mm
+    param height : Length = 4mm
+    constraint height >= width
+}
+pub structure Top {
+    sub b = Beam()
+}

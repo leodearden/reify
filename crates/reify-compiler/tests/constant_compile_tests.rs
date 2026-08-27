@@ -2,23 +2,9 @@
 
 use reify_core::Type;
 use reify_ir::{BinOp, CompiledExprKind, Value};
-use reify_test_support::{compile_source, errors_only, parse_and_compile};
-
-/// Helper: get the default_expr for a value cell by member name.
-fn get_cell_expr<'a>(
-    compiled: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &compiled.templates[0];
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("should have '{}' value cell", member));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{}' should have a default expr", member))
-}
+use reify_test_support::{
+    compile_source, errors_only, get_let_expr, get_let_expr_in, parse_and_compile,
+};
 
 // ─── step-1: pi and tau resolve to literal Real constants ────────────────────
 
@@ -27,7 +13,7 @@ fn pi_compiles_to_literal_real() {
     let compiled = compile_source("structure S { let x = pi }");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::Literal(Value::Real(v)) => {
             assert!(
@@ -45,7 +31,7 @@ fn tau_compiles_to_literal_real() {
     let compiled = compile_source("structure S { let x = tau }");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::Literal(Value::Real(v)) => {
             assert!(
@@ -65,7 +51,7 @@ fn pi_in_multiplication() {
     let compiled = compile_source("structure S { let y = 2 * pi }");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "y");
+    let expr = get_let_expr(&compiled, "y");
     match &expr.kind {
         CompiledExprKind::BinOp { op, .. } => {
             assert_eq!(*op, BinOp::Mul, "expected Mul, got {:?}", op);
@@ -79,7 +65,7 @@ fn pi_in_division() {
     let compiled = compile_source("structure S { let z = pi / 2 }");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "z");
+    let expr = get_let_expr(&compiled, "z");
     match &expr.kind {
         CompiledExprKind::BinOp { op, .. } => {
             assert_eq!(*op, BinOp::Div, "expected Div, got {:?}", op);
@@ -93,7 +79,7 @@ fn pi_plus_tau_expression() {
     let compiled = compile_source("structure S { let w = pi + tau }");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "w");
+    let expr = get_let_expr(&compiled, "w");
     match &expr.kind {
         CompiledExprKind::BinOp { op, .. } => {
             assert_eq!(*op, BinOp::Add, "expected Add, got {:?}", op);
@@ -110,7 +96,7 @@ fn user_let_pi_shadows_builtin() {
     let compiled = compile_source(src);
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     // x should be a ValueRef to the user-defined pi cell, NOT a Literal(Real(PI)).
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
@@ -122,7 +108,7 @@ fn user_let_pi_shadows_builtin() {
         other => panic!("expected ValueRef to user 'pi', got {:?}", other),
     }
     // The pi cell itself should hold the user-provided literal 42, not the builtin Real constant.
-    let pi_expr = get_cell_expr(&compiled, "pi");
+    let pi_expr = get_let_expr(&compiled, "pi");
     match &pi_expr.kind {
         CompiledExprKind::Literal(Value::Int(42)) => {}
         other => panic!(
@@ -142,7 +128,7 @@ fn user_param_pi_shadows_builtin() {
     let compiled = compile_source(src);
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     // x should be a ValueRef to the parameter's cell, NOT the builtin literal.
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
@@ -158,7 +144,10 @@ fn user_param_pi_shadows_builtin() {
         other => panic!("expected ValueRef to param 'pi', got {:?}", other),
     }
     // The pi param cell should hold the user-provided default 1.5, not the builtin pi ≈ 3.14159.
-    let pi_expr = get_cell_expr(&compiled, "pi");
+    // NOTE: `pi` here is a *param* cell, not a let binding. `get_let_expr` resolves any value
+    // cell carrying a `default_expr`, which a defaulted param does; it would panic on a
+    // defaultless param (e.g. `auto`), which is why this source declares `= 1.5`.
+    let pi_expr = get_let_expr(&compiled, "pi");
     match &pi_expr.kind {
         CompiledExprKind::Literal(Value::Real(v)) => {
             assert!(
@@ -190,21 +179,9 @@ structure S {
   let x = pi
 }";
     let compiled = parse_and_compile(src);
-    // Find template S (not PiPart).
-    let template = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("should have template 'S'");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("should have 'x' value cell");
-    let expr = cell
-        .default_expr
-        .as_ref()
-        .expect("'x' should have a default expr");
+    // Two templates here (PiPart and S), so target S explicitly rather than relying on
+    // `get_let_expr`'s first-template resolution.
+    let expr = get_let_expr_in(&compiled, "S", "x");
     // x must resolve to the collection list ValueRef, NOT Literal(Real(PI)).
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
@@ -357,7 +334,7 @@ fn e_compiles_to_literal_real() {
     let compiled = compile_source("structure S { let x = e }");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::Literal(Value::Real(v)) => {
             assert!(
@@ -395,7 +372,7 @@ fn user_let_e_shadows_builtin() {
     let compiled = compile_source(src);
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     // x should be a ValueRef to the user-defined e cell, NOT a Literal(Real(E)).
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
@@ -407,7 +384,7 @@ fn user_let_e_shadows_builtin() {
         other => panic!("expected ValueRef to user 'e', got {:?}", other),
     }
     // The e cell itself should hold the user-provided literal 42, not E ≈ 2.718.
-    let e_expr = get_cell_expr(&compiled, "e");
+    let e_expr = get_let_expr(&compiled, "e");
     match &e_expr.kind {
         CompiledExprKind::Literal(Value::Int(42)) => {}
         other => panic!(
@@ -428,7 +405,7 @@ fn pi_works_under_no_prelude() {
         "pi should resolve even with #no_prelude, got: {:?}",
         errors
     );
-    let expr = get_cell_expr(&compiled, "x");
+    let expr = get_let_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::Literal(Value::Real(v)) => {
             assert!(

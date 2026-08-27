@@ -225,7 +225,7 @@ Tests live in `crates/reify-eval/tests/` (engine-level integration) and `crates/
 | **`value_type_kind_matches` arm.** `Value::GeometryHandle` matches `Type::Geometry`; mismatches all other type variants. | Variant shipped; arm added. | Unit test in `crates/reify-expr/src/lib.rs::tests` (alongside existing `value_type_kind_matches_*` tests). |
 | **`is_representable_cell_type` admits Type::Geometry.** | Sweep done. | Pre-existing test that asserts `Type::Geometry → false` is **flipped** to assert `→ true`. The companion rejection-comment in the source code is removed. |
 | **Cache-key serialization.** Two `Value::GeometryHandle` values with same realization_ref + same upstream_values_hash serialize to the same cache key; different upstream_values_hash produces different keys; different realization_ref produces different keys. kernel_handle is excluded. | Cache-key arm shipped. | Unit test in `crates/reify-eval/src/cache.rs::tests`. |
-| **Engine-restart cache-key stability.** Cache key for a `box(10mm, 20mm, 30mm)`-backed handle is byte-identical across two independent Engine instances built from the same source. | Cache-key uses realization_ref + upstream_values_hash, not kernel_handle. | `crates/reify-eval/tests/geometry_handle_persistent_cache_round_trip.rs` (GHR-ε, esc-3607-59 relaxed): two fresh Engines, byte-identical `content_hash()` + `PartialEq`. Changed dimension → different key. |
+| **Engine-restart cache-key stability.** Cache key for a `box(10mm, 20mm, 30mm)`-backed handle is byte-identical across two independent Engine instances built from the same source. | Cache-key uses realization_ref + upstream_values_hash, not kernel_handle. | `crates/reify-eval/tests/harness_geometry/geometry_handle_persistent_cache_round_trip.rs` (GHR-ε, esc-3607-59 relaxed): two fresh Engines, byte-identical `content_hash()` + `PartialEq`. Changed dimension → different key. |
 | **Lazy revalidation: stale kernel_handle re-resolves.** Construct handle in Engine A; drop A; reconstruct in Engine B with the same source program; first read of the cloned/persisted handle re-resolves kernel_handle from realization_ref. | Revalidation logic shipped. | Engine integration test pins re-resolution behavior; instrumentation confirms the slow path fires only once per snapshot/reload boundary. |
 | **Lazy revalidation: missing realization returns Undef.** Construct handle in Engine A; drop A; reconstruct in Engine B with a *modified* source program where the originating realization no longer exists; first read returns Undef rather than panicking. | Revalidation logic shipped. | Engine integration test. Negative-path coverage. |
 | **Freshness walk: Realization → ValueCell edge.** A value cell holding a `Value::GeometryHandle`; mark the upstream Realization as Intermediate; observe the cell becomes Pending. | dependency_trace extension shipped; derive_output_freshness updated. | Engine integration test in `crates/reify-eval/tests/`. Mirrors existing VC-VC pending-cause tests. |
@@ -258,15 +258,15 @@ Filing happens in a **separate session** after this PRD is committed (per `feedb
 ### Phase 1 — Stdlib registrations + Physical spec-shape restoration
 
 - **Task GHR-α** — `units.rs` stdlib geometry-query registrations + Curvature dimensional alias + `structural_physical.ri` rewritten to spec shape + downstream-FEA-test #[ignore] markers.
-  - **Observable signal:** `reify check crates/reify-compiler/stdlib/structural_physical.ri` succeeds (no "unresolved type" / "member access not yet supported" diagnostics). The integration test `crates/reify-compiler/tests/structural_physical_spec_shape.rs` (new) parses + typechecks a fixture that uses spec-shape Physical with `material.density` access and `volume(geometry)` / `centroid(geometry)` calls. The existing structural-physical conformance tests pass against the new shape. `cargo test --workspace` green.
+  - **Observable signal:** `reify check crates/reify-compiler/stdlib/structural_physical.ri` succeeds (no "unresolved type" / "member access not yet supported" diagnostics). The integration test `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_spec_shape.rs` (new) parses + typechecks a fixture that uses spec-shape Physical with `material.density` access and `volume(geometry)` / `centroid(geometry)` calls. The existing structural-physical conformance tests pass against the new shape. `cargo test --workspace` green.
   - **Priority:** medium (no critical-path racing; ships when SIR-α is done).
   - **Prereqs:** **SIR-α (structure-instance-runtime.md Task SIR-α)** — hard dep, wired via `add_dependency` at decompose-mode filing time per `preferences_cross_prd_deps_real_edges`.
   - **Crates touched:**
     - `crates/reify-types/src/dimension.rs` (add `Curvature` to `NAMED_DIMENSIONS`)
     - `crates/reify-compiler/src/units.rs` (~12 new function entries in the name → return-type table)
     - `crates/reify-compiler/stdlib/structural_physical.ri` (rewrite to spec shape; delete flat-scalar params)
-    - `crates/reify-compiler/tests/structural_physical_spec_shape.rs` (new integration test)
-    - `crates/reify-compiler/tests/structural_physical_tests.rs` (update existing tests against the new shape)
+    - `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_spec_shape.rs` (new integration test)
+    - `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs` (update existing tests against the new shape)
     - Downstream FEA test files (under `crates/reify-eval/tests/`) — search for `bracket.mass` / `bracket.centroid` reads and either #[ignore] with `Phase 6 will revive` comment OR adapt to the new shape if SIR-α's StructureInstance shape supports the read at compile time.
 
 ### Phase 2 — `Value::GeometryHandle` variant + adapter sweep + side-table
@@ -307,7 +307,7 @@ Filing happens in a **separate session** after this PRD is committed (per `feedb
 ### Phase 4 — Freshness walk + edit donation cascade
 
 - **Task GHR-δ** — Extend `dependency_trace` for Realization → ValueCell edges; update `derive_output_freshness_for_node_with_cause`; extend edit donation hook for cross-kind cascade; lazy-revalidation logic.
-  - **Observable signal:** Integration test in `crates/reify-eval/tests/geometry_handle_freshness.rs` (new): construct a structure with `param geometry : Solid = box(width, ...)`; mark `width` dirty; observe the GeometryHandle ValueCell transitions to Pending; observe the downstream StructureInstance ValueCell also transitions to Pending (cascade through SIR's recursive cache_key_of via field-level dependency). Re-eval: cells return to Final with new values. Snapshot clone with stale kernel_handle: first read re-resolves (instrumentation confirms slow-path fires).
+  - **Observable signal:** Integration test in `crates/reify-eval/tests/harness_geometry/geometry_handle_freshness.rs` (new): construct a structure with `param geometry : Solid = box(width, ...)`; mark `width` dirty; observe the GeometryHandle ValueCell transitions to Pending; observe the downstream StructureInstance ValueCell also transitions to Pending (cascade through SIR's recursive cache_key_of via field-level dependency). Re-eval: cells return to Final with new values. Snapshot clone with stale kernel_handle: first read re-resolves (instrumentation confirms slow-path fires).
   - **Prereqs:** GHR-γ.
   - **Crates touched:**
     - `crates/reify-eval/src/cache.rs` (extend `dependency_trace` schema; update `derive_output_freshness_for_node_with_cause`)
@@ -323,13 +323,13 @@ Filing happens in a **separate session** after this PRD is committed (per `feedb
   - **Observable signal** *(amended per esc-3607-59 relaxation)*:
     - `cache.rs::tests::geometry_handle_cache_key` (5 tests): pins `CachedResult::Value(gh,_).content_hash()` — same rr+hash → same key; different hash/rr → different key; kernel_handle excluded (load-bearing).
     - `significance_filter.rs::tests::geometry_handle` (5 tests): `geometry_handle_significance()` — rr+hash equality → Equivalent; mismatch or non-GH input → Different; kernel_handle difference → Equivalent (excluded).
-    - `crates/reify-eval/tests/geometry_handle_persistent_cache_round_trip.rs` (2 integration tests, no disk I/O): two fresh Engine instances built from the same source → byte-identical `content_hash()` (= in-session cache key) + `PartialEq`; changed box dimension → different key (invalidation fires).
+    - `crates/reify-eval/tests/harness_geometry/geometry_handle_persistent_cache_round_trip.rs` (2 integration tests, no disk I/O): two fresh Engine instances built from the same source → byte-identical `content_hash()` (= in-session cache key) + `PartialEq`; changed box dimension → different key (invalidation fires).
     - The full disk restart→persist round-trip, `examples/spec-shape-physical.ri`, `PersistentlyCacheable`-for-geometry, and the Engine cache-dir constructor are **re-homed to GHR-ζ** (Phase 6) by esc-3607-59.
   - **Prereqs:** GHR-δ.
   - **Crates touched:**
     - `crates/reify-eval/src/cache.rs` (contract-lock tests + doc-comment on `content_hash`)
     - `crates/reify-eval/src/significance_filter.rs` (`geometry_handle_significance` fn + tests)
-    - `crates/reify-eval/tests/geometry_handle_persistent_cache_round_trip.rs` (new; in-session cross-Engine key stability)
+    - `crates/reify-eval/tests/harness_geometry/geometry_handle_persistent_cache_round_trip.rs` (new; in-session cross-Engine key stability)
     - `docs/prds/v0_3/geometry-handle-runtime.md` (this file; §8/§9.2 amendments)
     - `persistent_cache.rs` intentionally NOT touched — geometry persistence is GHR-ζ.
   - **Boundary tests:** §7.1 "Cache-key serialization," "Engine-restart cache-key stability" (in-session scope); significance filter unit tests.
@@ -353,7 +353,7 @@ Filing happens in a **separate session** after this PRD is committed (per `feedb
     - `crates/reify-stdlib/src/geometry.rs` or `snapshot.rs` (eval-time dispatch: when `volume()` / `centroid()` / etc. are called with a `Value::GeometryHandle` argument, route to the kernel query)
     - `crates/reify-eval/src/geometry_ops.rs` or similar (kernel-query post-process integration)
     - `examples/spec-shape-physical.ri` (new fixture; produces the terminal observable)
-    - `crates/reify-eval/tests/geometry_query_kernel_dispatch.rs` (new — pins each query's numerical output against analytic expected values for box/sphere/cylinder fixtures)
+    - `crates/reify-eval/tests/harness_geometry/geometry_query_kernel_dispatch.rs` (new — pins each query's numerical output against analytic expected values for box/sphere/cylinder fixtures)
   - **Boundary tests:** §7.2 "Real `bracket.mass` and `bracket.centroid` evaluate."
 
 ### Phase 7 — Companion gap-register + cross-PRD sweeps

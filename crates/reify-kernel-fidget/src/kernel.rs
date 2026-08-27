@@ -345,10 +345,77 @@ impl Default for FidgetKernel {
 }
 
 /// Extract an `f64` from a `Value` (Int/Real/Scalar). Mirrors the OCCT
-/// adapter's `extract_f64` (`crates/reify-kernel-occt/src/lib.rs:140-143`).
+/// adapter's `extract_f64` (`crates/reify-kernel-occt/src/lib.rs:224`).
+///
+/// # Why this stays after the C4 tripwire landed (task #5751)
+///
+/// All four of fidget's numeric extraction sites are length-semantic and now
+/// go through [`extract_length_f64`]; fidget's catch-all arm rejects every
+/// other op, so no production caller remains. It is kept as the *ungated*
+/// shape mirrored from the OCCT adapter — which still has five deliberately
+/// ungated sites (3 dimensionless unit-normal components, 2 ANGLE) — and as
+/// the reference side of the C4 accept/reject parity test, which asserts
+/// `extract_length_f64` and `extract_f64` agree on disposition and payload for
+/// every `Value` shape.
+#[allow(dead_code)]
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
     v.as_f64()
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
+}
+
+/// Length-semantic numeric extraction + the C4 kernel LENGTH tripwire.
+///
+/// Identical accept/reject disposition and `Ok` payload to [`extract_f64`];
+/// the only differences are (a) a `tracing::warn!` naming op kind and field
+/// when a non-LENGTH value arrives, (b) the opt-in debug assertion, and (c) an
+/// `Err` string that names op kind and field instead of the bare
+/// `"expected numeric value"`.
+///
+/// **A tripwire, not a gate** (PRD D5 / ratified decision 4): a violation is
+/// *reported* and execution proceeds exactly as before. A fired tripwire means
+/// a hole in the eval-layer gate (`required_length_value` /
+/// `required_length_values`, `crates/reify-eval/src/geometry_ops.rs:482`/`:523`),
+/// not a kernel bug. Canonical rationale, plus the C2 corollary about
+/// `GeometryOp` construction routes, lives with the shared classifier in
+/// `crates/reify-ir/src/kernel_validation.rs`. Contract:
+/// `docs/prds/v0_6/units-length-gate-completion.md` C4/D5, boundary rows 13-14.
+///
+/// It is the SECOND, INDEPENDENT detection layer: the first is the closure
+/// guard (leaf ι), which is not yet landed. The closure guard reasons about
+/// where a value came from; this observes what actually arrived at the kernel
+/// boundary. Neither subsumes the other, so this one keeps working if the
+/// first is bypassed or has a hole.
+///
+/// All FOUR fidget numeric-extraction sites are length-semantic
+/// (`Sphere.radius`, `Box.width`/`height`/`depth`), so fidget has no
+/// deliberately-ungated site; the OCCT adapter keeps five (3 dimensionless
+/// unit-normal components, 2 ANGLE), enumerated in `kernel_validation.rs`.
+///
+/// The warn is emitted HERE rather than from `reify-ir` because the house
+/// pattern for a kernel diagnostic is a `tracing::warn!` whose `target:` names
+/// the emitting crate (`reify_kernel_gmsh::repair`,
+/// `reify_kernel_manifold::kernel`), and because it keeps `reify-ir` — a
+/// dependency of 13+ crates — free of a `tracing` edge. The message string
+/// still comes from the single `kernel_validation.rs` formatter, so the two
+/// kernels cannot drift.
+fn extract_length_f64(
+    v: &Value,
+    op: &GeometryOp,
+    field: &'static str,
+) -> Result<f64, GeometryError> {
+    let op_kind = op.kind_name();
+    if let Some(msg) = reify_ir::check_length_field(op_kind, field, v) {
+        tracing::warn!(
+            target: "reify_kernel_fidget::length_tripwire",
+            reason = "non_length_field",
+            op_kind = op_kind,
+            field = field,
+            "{msg}"
+        );
+    }
+    v.as_f64().ok_or_else(|| {
+        GeometryError::OperationFailed(reify_ir::non_numeric_kernel_field_message(op_kind, field))
+    })
 }
 
 /// Returns `true` iff `v` is both finite and strictly positive.
@@ -368,7 +435,7 @@ impl GeometryKernel for FidgetKernel {
             // Input validation runs at the boundary so `sphere_tree` can
             // assume a finite positive radius.
             GeometryOp::Sphere { radius } => {
-                let r = extract_f64(radius)?;
+                let r = extract_length_f64(radius, op, "radius")?;
                 if !is_positive_finite(r) {
                     return Err(GeometryError::OperationFailed(
                         SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
@@ -382,9 +449,9 @@ impl GeometryKernel for FidgetKernel {
                 height,
                 depth,
             } => {
-                let w = extract_f64(width)?;
-                let h = extract_f64(height)?;
-                let d = extract_f64(depth)?;
+                let w = extract_length_f64(width, op, "width")?;
+                let h = extract_length_f64(height, op, "height")?;
+                let d = extract_length_f64(depth, op, "depth")?;
                 // Combined check: all three dimensions validated together so
                 // a single shared const covers any failure.  Using
                 // `BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE` (from
@@ -1000,5 +1067,288 @@ mod tests {
                 bogus_left, other
             ),
         }
+    }
+
+    // ── C4 kernel LENGTH tripwire (task #5751) ───────────────────────────────
+    //
+    // Boundary rows 13/14 of `docs/prds/v0_6/units-length-gate-completion.md`
+    // through the real fidget kernel path. The tripwire is a DETECTOR, never
+    // a gate: every one of these asserts the `execute` result is unchanged.
+
+    /// A bare `Value::Real` at each of Box's three length fields emits one
+    /// diagnostic per field, naming the op kind and that field — and `execute`
+    /// still returns `Ok`.
+    #[test]
+    fn fidget_kernel_execute_box_bare_length_emits_tripwire_diagnostic() {
+        // Inoculate against tracing's per-callsite Interest cache — the
+        // documented requirement at `crates/reify-kernel-occt/src/lib.rs:6344-6361`.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = FidgetKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::Real(2.0),
+                height: Value::Real(2.0),
+                depth: Value::Real(2.0),
+            })
+        });
+
+        capture.assert_count_and_any_message_contains(3, "Box");
+        capture.assert_any_event_field_contains("field", "width");
+        capture.assert_any_event_field_contains("field", "height");
+        capture.assert_any_event_field_contains("field", "depth");
+        assert!(
+            result.is_ok(),
+            "the tripwire is a detector, not a gate: {result:?}"
+        );
+    }
+
+    /// The single-field case: the diagnostic names BOTH the op kind and the
+    /// field in one message.
+    #[test]
+    fn fidget_kernel_execute_sphere_bare_radius_names_op_kind_and_field() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = FidgetKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+        });
+
+        capture.assert_count(1);
+        let msg = &capture.messages()[0];
+        assert!(msg.contains("Sphere"), "{msg}");
+        assert!(msg.contains("radius"), "{msg}");
+        capture.assert_any_event_field_contains("op_kind", "Sphere");
+        capture.assert_any_event_field_contains("field", "radius");
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// Negative control: a properly dimensioned LENGTH value emits ZERO
+    /// diagnostics. Without this, a formatter that always fires would pass
+    /// every other assertion here.
+    #[test]
+    fn fidget_kernel_execute_dimensioned_length_emits_no_tripwire_diagnostic() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut kernel = FidgetKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::length(0.002),
+                height: Value::length(0.002),
+                depth: Value::length(0.002),
+            })
+        });
+
+        capture.assert_count(0);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// Boundary row 13 through the real kernel path, half 1 (op kind).
+    ///
+    /// `#[cfg(debug_assertions)]` is mandatory: in release the assertion is
+    /// compiled out and an ungated `#[should_panic]` would falsely pass.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Sphere")]
+    fn fidget_armed_bare_length_panics_naming_the_op_kind() {
+        let _g = reify_ir::arm_length_tripwire_assert();
+        let mut kernel = FidgetKernel::new();
+        let _ = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        });
+    }
+
+    /// Boundary row 13 through the real kernel path, half 2 (field name).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "radius")]
+    fn fidget_armed_bare_length_panics_naming_the_field() {
+        let _g = reify_ir::arm_length_tripwire_assert();
+        let mut kernel = FidgetKernel::new();
+        let _ = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        });
+    }
+
+    /// Completeness: ALL FOUR fidget length fields are gated. A site left on
+    /// the plain context-free `extract_f64` fails here.
+    #[test]
+    fn fidget_length_field_enumeration_is_complete() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        // (op under test, op kind token, field name) — a bare `Value::Real`
+        // in the field under test, dimensioned LENGTH everywhere else, so the
+        // single expected diagnostic is unambiguous.
+        let cases: Vec<(GeometryOp, &str, &str)> = vec![
+            (
+                GeometryOp::Sphere {
+                    radius: Value::Real(1.0),
+                },
+                "Sphere",
+                "radius",
+            ),
+            (
+                GeometryOp::Box {
+                    width: Value::Real(2.0),
+                    height: Value::length(0.002),
+                    depth: Value::length(0.002),
+                },
+                "Box",
+                "width",
+            ),
+            (
+                GeometryOp::Box {
+                    width: Value::length(0.002),
+                    height: Value::Real(2.0),
+                    depth: Value::length(0.002),
+                },
+                "Box",
+                "height",
+            ),
+            (
+                GeometryOp::Box {
+                    width: Value::length(0.002),
+                    height: Value::length(0.002),
+                    depth: Value::Real(2.0),
+                },
+                "Box",
+                "depth",
+            ),
+        ];
+
+        for (op, op_kind, field) in cases {
+            let mut kernel = FidgetKernel::new();
+            let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+            tracing::subscriber::with_default(subscriber, || {
+                let _ = kernel.execute(&op);
+            });
+            capture.assert_count_and_any_message_contains(1, op_kind);
+            capture.assert_any_event_field_contains("field", field);
+            assert_eq!(
+                capture.messages()[0],
+                reify_ir::check_length_field(op_kind, field, &Value::Real(1.0))
+                    .expect("a bare Real is a violation"),
+                "{op_kind}.{field}: the kernel must emit the shared formatter's \
+                 string verbatim, not a re-rolled literal"
+            );
+        }
+    }
+
+    /// C4's "legacy fixtures stay green" half for this kernel: with NO
+    /// subscriber and NO arm, a bare-`Value::Real` Box behaves exactly as it
+    /// did before the tripwire — mirrors `fidget_kernel_execute_box_returns_handle`.
+    #[test]
+    fn fidget_bare_value_fixtures_stay_green_without_subscriber_or_arm() {
+        assert!(!reify_ir::length_tripwire_assert_armed());
+        let mut kernel = FidgetKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(2.0),
+                height: Value::Real(2.0),
+                depth: Value::Real(2.0),
+            })
+            .expect("Box execution must still succeed on FidgetKernel");
+        assert!(handle.repr.is_none());
+        assert_ne!(handle.id, GeometryHandleId::INVALID);
+    }
+
+    /// **C4 accept/reject parity (step-9A).**
+    ///
+    /// For every `Value` shape, `extract_length_f64` and `extract_f64` agree on
+    /// the accept/reject DISPOSITION, and where both accept, on the `f64`
+    /// payload bit-for-bit.
+    ///
+    /// Error STRINGS are deliberately excluded from the parity claim: C4 itself
+    /// requires the length-field error to change from the bare
+    /// `"expected numeric value"` to one naming op kind and field. An error
+    /// message is not accept/reject behaviour — the same inputs are still
+    /// `Err`, only the string improves — so this asserts the upgrade instead.
+    #[test]
+    fn fidget_length_tripwire_never_changes_accept_reject() {
+        let op = GeometryOp::Sphere {
+            radius: Value::Real(2.0),
+        };
+        let cases = vec![
+            Value::Int(2),
+            Value::Real(2.0),
+            Value::length(2.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: reify_core::DimensionVector::MASS,
+            },
+            Value::String("x".into()),
+            Value::Undef,
+        ];
+        for v in cases {
+            let gated = extract_length_f64(&v, &op, "radius");
+            let plain = extract_f64(&v);
+            assert_eq!(
+                gated.is_ok(),
+                plain.is_ok(),
+                "disposition diverged for {v:?}"
+            );
+            match (gated, plain) {
+                (Ok(a), Ok(b)) => assert_eq!(a.to_bits(), b.to_bits(), "payload diverged for {v:?}"),
+                (Err(GeometryError::OperationFailed(s)), Err(_)) => {
+                    assert!(s.contains("Sphere"), "{v:?}: {s}");
+                    assert!(s.contains("radius"), "{v:?}: {s}");
+                    assert!(
+                        !s.contains("expected numeric value"),
+                        "{v:?}: still the bare legacy string: {s}"
+                    );
+                }
+                (g, p) => panic!("unexpected pairing for {v:?}: {g:?} vs {p:?}"),
+            }
+        }
+    }
+
+    /// **Release contract, boundary row 14 (step-9C).**
+    ///
+    /// In a release build the assertion is compiled out entirely, so even with
+    /// the arm held a bare-`Value::Real` `execute` must (i) not panic,
+    /// (ii) still emit the diagnostic naming op kind and field, and (iii) return
+    /// the SAME disposition as the dimensioned control.
+    ///
+    /// This is the half a debug-only test cannot reach. It executes for real on
+    /// the merge gate, which forces `--profile both` (`scripts/verify.sh`,
+    /// `DF_VERIFY_ROLE=merge`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn fidget_release_armed_bare_length_reports_without_panicking() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let _g = reify_ir::arm_length_tripwire_assert();
+        assert!(reify_ir::length_tripwire_assert_armed());
+
+        let mut kernel = FidgetKernel::new();
+        let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
+        let bare = tracing::subscriber::with_default(subscriber, || {
+            kernel.execute(&GeometryOp::Box {
+                width: Value::Real(0.002),
+                height: Value::Real(0.002),
+                depth: Value::Real(0.002),
+            })
+        });
+
+        capture.assert_count_and_any_message_contains(3, "Box");
+        capture.assert_any_event_field_contains("field", "width");
+
+        // Same SI magnitudes, properly dimensioned: the disposition must match.
+        let control = kernel.execute(&GeometryOp::Box {
+            width: Value::length(0.002),
+            height: Value::length(0.002),
+            depth: Value::length(0.002),
+        });
+        assert_eq!(
+            bare.is_ok(),
+            control.is_ok(),
+            "armed release build changed the accept/reject disposition: \
+             bare={bare:?} control={control:?}"
+        );
     }
 }

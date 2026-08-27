@@ -30,7 +30,9 @@
 #     verdict is returned via EXIT CODE (0 = PASS/SKIP, 1 = FAIL) and the
 #     PASS/SKIP/FAIL line is emitted to STDOUT, so a unit test can capture
 #     both in a $(...) subshell while the consumer maps rc -> a single assert.
-#     The function never calls assert() itself.
+#     The function never calls assert() itself. On the FAIL branch the hostile
+#     run's captured output follows that line, every line `  | `-prefixed —
+#     see the branch's own comment for why bare re-emission is unsafe.
 #
 # Designed to be sourced, not executed directly:
 #   source "$(dirname "${BASH_SOURCE[0]}")/run_all_ambient_isolation_lib.sh"
@@ -103,6 +105,21 @@ ambient_isolation_check_one() {
 
     # Baseline is GREEN but the hostile run is RED => the hostile ambient env
     # ALONE flipped the target red => a GENUINE ambient-isolation bug => FAIL.
-    echo "AMBIENT-ISOLATION FAIL: $_key flips test_run_all.sh red only under the hostile ambient env (genuine isolation bug) [hostile rc=$_amb_rc; hostile out: $_amb_out]"
+    #
+    # The hostile capture is re-emitted through the sanctioned `  | ` prefix
+    # filter, NOT interpolated bare. $_amb_out is the COMBINED stdout+stderr of
+    # a deadline-capable child (test_run_all.sh forces a REIFY_RUN_ALL_POOL_WAIT
+    # deadline on every green run), so a bare `$_amb_out` puts any
+    # @@REIFY_SLOT_TIMEOUT@@ sentinel it carries at COLUMN 0, where
+    # dark-factory's `^[ \t]*`-anchored classifier misreads the whole merge
+    # verify as semaphore starvation. `  | ` is a NON-whitespace prefix, which
+    # is what defeats that anchor -- indentation alone does not (task 6353).
+    #
+    # The marker line keeps its wording up to the bracketed rc so it stays
+    # greppable, and the explicit `return 1` below still governs the function's
+    # exit status under the consumer's `set -euo pipefail` (the pipeline is not
+    # the last statement).
+    echo "AMBIENT-ISOLATION FAIL: $_key flips test_run_all.sh red only under the hostile ambient env (genuine isolation bug) [hostile rc=$_amb_rc]"
+    printf '%s\n' "$_amb_out" | sed 's/^/  | /'
     return 1
 }

@@ -21,8 +21,9 @@
 
 #![cfg(has_occt)]
 
+use crate::common::{self, BBox};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery};
 
 /// Build a closed circular wire profile of the given radius at the given
 /// z height (centred on the Z-axis) via `GeometryOp::Arc` (full 2π).
@@ -37,26 +38,6 @@ fn make_circle_profile(kernel: &mut OcctKernelHandle, radius: f64, z: f64) -> Ge
         })
         .expect("Arc (full circle) creation should succeed")
         .id
-}
-
-/// Parse a JSON-encoded bounding box string
-/// `{"xmin":…,"ymin":…,"zmin":…,"xmax":…,"ymax":…,"zmax":…}` into
-/// (zmin, zmax). We only need Z for the span assertion.
-fn parse_bbox_z(s: &str) -> (f64, f64) {
-    let mut zmin = f64::NAN;
-    let mut zmax = f64::NAN;
-    let trimmed = s.trim_start_matches('{').trim_end_matches('}');
-    for pair in trimmed.split(',') {
-        let mut parts = pair.splitn(2, ':');
-        let key = parts.next().unwrap().trim().trim_matches('"');
-        let val: f64 = parts.next().unwrap().trim().parse().unwrap();
-        match key {
-            "zmin" => zmin = val,
-            "zmax" => zmax = val,
-            _ => {}
-        }
-    }
-    (zmin, zmax)
 }
 
 /// `BRepOffsetAPI_ThruSections` history exposes per-profile-section
@@ -104,13 +85,8 @@ fn loft_with_history_reports_caps_and_lofted_face_records() {
         "lofted solid must have positive volume, got {vol_si}"
     );
     // Bounding box spans the two profile z heights (0 → 0.1m).
-    let bbox = kernel
-        .query(&GeometryQuery::BoundingBox(result_handle))
-        .expect("bbox query should succeed");
-    let (zmin, zmax) = match bbox {
-        Value::String(s) => parse_bbox_z(&s),
-        other => panic!("expected bbox String, got {:?}", other),
-    };
+    let BBox { zmin, zmax, .. } =
+        common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(result_handle)));
     assert!(
         zmin.is_finite() && zmax.is_finite(),
         "loft bbox z-extent must be finite, got [{zmin}, {zmax}]"

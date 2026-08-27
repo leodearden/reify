@@ -77,7 +77,7 @@ no-default trait param — conformance machinery: `crates/reify-compiler/src/con
 |---|---|---|
 | `RigidPost` | `examples/structural_traits_dimensioned.ri:17-24` | `param … : MomentOfInertia = 0.04 * 1kg*1m*1m` (geometry: 100×100×300 mm box, steel) |
 | `BoltFlange` | `examples/m5_geometry_flange.ri:3-25` | `param … : MomentOfInertia = 0.002 * 1kg*1m*1m` (geometry: CSG flange) |
-| test fixture | `crates/reify-compiler/tests/structural_physical_tests.rs:1111` | scalar param |
+| test fixture | `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs:1111` | scalar param |
 | test fixture | `crates/reify-compiler/tests/material_struct_tests.rs:265` | scalar param |
 | LSP probe fixtures | `crates/reify-lsp/src/analysis.rs:753-756`, `crates/reify-lsp/src/diagnostics.rs:403-406` | scalar param |
 
@@ -86,7 +86,7 @@ widening): `structural_physical_tests.rs:417-469` (`rigid_refines_physical_with_
 asserts `Param` kind + `Scalar{MOMENT_OF_INERTIA}`) and `:1334-1335` (member dimension).
 
 **Out of blast radius** (they define a *local* `trait Rigid` that shadows the stdlib name):
-`examples/m5_trait_rigid.ri:1-10`, `crates/reify-compiler/tests/trait_bounds_tests.rs:94-97, 192-196`
+`examples/m5_trait_rigid.ri:1-10`, `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:94-97, 192-196`
 (and siblings), `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1518-1520`.
 
 **Break-loudness, by trait-member shape (probes 7, 8):**

@@ -13,6 +13,38 @@
 //! keyed on all inputs — diverge automatically. No new cache-key field is
 //! needed; the existing `volume_mesh_cache_key` derivation already covers this.
 //!
+//! # Global mesh-size clamp: inherits nothing, leaves nothing
+//!
+//! Gmsh's option table is process-global and survives `gmshClear()`. Since
+//! task #6211 this function
+//!
+//! * **inbound**: sets `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` itself on every
+//!   call rather than inheriting whatever a sibling entry point last left
+//!   behind, so its output is a function of its own arguments alone and not of
+//!   call order within the process; and
+//! * **outbound**: restores that same option pair to gmsh's documented
+//!   defaults before returning (see `MeshSizeClampReset` below), so a later
+//!   *defaults-relying* call — e.g. `mesh_plane_2d` with no requested size,
+//!   which deliberately writes no clamp — is not silently pinned to a fine
+//!   `MeshSizeMax` left over from an adaptive-refinement iteration.
+//!
+//! Each half has its own guard in `tests/refine_volume_tests.rs`, so neither
+//! can rot into a comment: inbound is
+//! `uniform_size_field_refines_monotonically_under_leaked_global_clamp`
+//! (assertion 2) and `non_uniform_size_field_refines_marked_region_and_caps_
+//! the_rest`; outbound is
+//! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
+//! which straddles a refine with exactly the `mesh_plane_2d` call named above.
+//!
+//! Scope of that guarantee: it covers the `MeshSizeMin`/`MeshSizeMax` pair
+//! only. The `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+//! `MeshSizeExtendFromBoundary` writes below are still left behind for a later
+//! caller to inherit — the same defect class in the same direction, tracked as
+//! task #6212 because closing it means a shared save/restore discipline across
+//! the four entry points that write those options (and an `option_get_number`
+//! FFI getter to restore *as found* rather than to defaults), not a change
+//! local to this file. See the inline rationale at the option writes below.
+//!
 //! # Cost basis: full remesh from surface
 //!
 //! `gmshModelMeshRefine()` refines uniformly across the entire existing mesh,
@@ -30,6 +62,66 @@ use std::collections::HashMap;
 use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeMesh};
 
 use crate::options::MeshingOptions;
+
+/// Gmsh's documented default for `Mesh.MeshSizeMin` — no floor.
+///
+/// `pub` (like [`crate::init::GMSH_LOCK`], and for the same reason) so this
+/// crate's `tests/` binaries — separate compilation units — can restore the
+/// process-global clamp to gmsh's defaults without re-declaring the literal.
+/// A test-local copy could drift silently away from the value this module
+/// actually writes, which would quietly weaken the "from gmsh's defaults"
+/// leg of `refine_volume_tests.rs`'s inbound-hermeticity assertion rather
+/// than fail it.
+#[cfg(has_gmsh)]
+pub const GMSH_MESH_SIZE_MIN_DEFAULT: f64 = 0.0;
+
+/// Gmsh's documented default for `Mesh.MeshSizeMax` — effectively no cap.
+///
+/// `pub` for the same reason as [`GMSH_MESH_SIZE_MIN_DEFAULT`].
+#[cfg(has_gmsh)]
+pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
+
+/// RAII reset of the process-global `Mesh.MeshSizeMin`/`MeshSizeMax` pair to
+/// gmsh's defaults, covering the early-`?`-return paths as well as success.
+///
+/// Restores DEFAULTS rather than the values found on entry: gmsh's C API
+/// exposes no reader for a numeric option in this crate's FFI surface, so
+/// "as found" is not observable here. Defaults are the right target anyway —
+/// they are what a caller that writes no clamp of its own expects to get, so
+/// leaving them behind means no downstream path inherits state from this one
+/// (task #6211).
+///
+/// # Why it borrows the lock guard
+///
+/// The two FFI writes in `drop` mutate gmsh's process-global option table and
+/// must therefore happen while `init::GMSH_LOCK` is held. The
+/// `PhantomData<&'g MutexGuard<'g, ()>>` makes that structural rather than a
+/// comment a refactor can quietly violate: [`Self::armed`] can only be called
+/// with a live guard in hand, so the binding cannot be hoisted above the
+/// `let _guard = …` line, and because this type has a `Drop` impl (no
+/// `#[may_dangle]`) dropck requires the borrow to still be live when it drops
+/// — which forces the writes to land *before* the lock is released.
+#[cfg(has_gmsh)]
+struct MeshSizeClampReset<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
+
+#[cfg(has_gmsh)]
+impl<'g> MeshSizeClampReset<'g> {
+    /// Arm the reset. Takes the live `GMSH_LOCK` guard by reference purely for
+    /// its lifetime — the guard itself is never touched.
+    fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+#[cfg(has_gmsh)]
+impl Drop for MeshSizeClampReset<'_> {
+    fn drop(&mut self) {
+        // Best-effort, like the trailing `ffi::clear()`: a failure here cannot
+        // be reported from `drop` and must not mask the real result.
+        let _ = crate::ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT);
+        let _ = crate::ffi::option_set_number("Mesh.MeshSizeMax", GMSH_MESH_SIZE_MAX_DEFAULT);
+    }
+}
 
 /// Remesh the volume enclosed by `surface` using per-vertex size hints.
 ///
@@ -145,13 +237,17 @@ pub fn refine_volume_with_size_field(
     // --- Classify and create geometry ---
     //
     // Use a tighter dihedral-angle threshold (PI/12 ≈ 15°) than
-    // `mesh_to_volume`'s PI/2 so that virtually every mesh edge is treated as
-    // a "hard" edge.  For the unit-cube test geometry (90° dihedral angles at
-    // each edge), this ensures all 12 edges become 1D curve entities and all
-    // 8 cube-corner vertices become 0D point entities.  Without this, the
-    // cube corners do NOT become 0D entities under PI/2 threshold (90° is NOT
-    // > PI/2), so we'd only have ~1 corner entity and could not assign
-    // per-vertex size hints.
+    // `mesh_to_volume`'s `CLASSIFY_FEATURE_ANGLE` (PI/4) so that virtually
+    // every mesh edge is treated as a "hard" edge.  For the unit-cube test
+    // geometry (90° dihedral angles at each edge), this ensures all 12 edges
+    // become 1D curve entities and all 8 cube-corner vertices become 0D point
+    // entities.  A PI/2 threshold would emit no corner entities at all (gmsh's
+    // sharp-edge test is strictly-greater-than and 90° is NOT > PI/2), leaving
+    // nowhere to attach per-vertex size hints; that is also what broke
+    // `mesh_to_volume` in #6200, which is why it no longer uses PI/2 either.
+    // PI/12 stays deliberately sharper than PI/4 (this path wants every edge
+    // hard, not just the feature edges), so it is NOT folded into the shared
+    // constant.
     //
     // For the `curveAngle` (4th argument) we use the same PI/12 so that
     // vertices at intersections of curves separated by < 15° are still
@@ -200,6 +296,56 @@ pub fn refine_volume_with_size_field(
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
+
+    // --- Mesh-size clamp: set explicitly, never inherited (task #6211) ---
+    //
+    // INVARIANT: `vertex_sizes` alone decides element size here. Gmsh's option
+    // table is process-global and is NOT reset by `gmshClear()`, and the
+    // sibling entry points `kernel_real::GmshKernel::mesh_to_volume`,
+    // `mesh_profile_2d::mesh_plane_2d` and `mesh_boundary`'s surface remesh all
+    // write `Mesh.MeshSizeMin`/`MeshSizeMax` without restoring them. Without
+    // the two writes below, any of those running earlier in the process pins
+    // every element of THIS remesh to ITS size and the per-vertex field becomes
+    // inert (task #6211: one identical tet count for every hint).
+    //
+    // Both writes are load-bearing, not belt-and-braces: with a leaked
+    // Min == Max, lowering only Max leaves Min > Max (gmsh still floors at the
+    // leaked value) and lowering only Min leaves the leaked Max capping
+    // everything.
+    //
+    // Min = gmsh's default: no floor, so the finest hint is honoured.
+    // Deliberately not `min(vertex_sizes)`, which would forbid gmsh from going
+    // finer than the finest hint anywhere in the domain — a new, untested
+    // constraint on the localized-refinement path for no measured benefit.
+    //
+    // Max = the COARSEST requested hint, because with
+    // `Mesh.MeshSizeExtendFromBoundary = 0` (set above) the 3D mesher is
+    // otherwise free to grow interior elements arbitrarily coarser than
+    // anything the caller asked for. Deliberately not `options.mesh_size`:
+    // that is the baseline target the per-vertex field exists to supersede, and
+    // feeding it back in would re-create the very clamp this defends against.
+    //
+    // The `is_finite` fallback degrades degenerate input to gmsh's "no cap"
+    // default rather than propagating a nonsense clamp. Validating
+    // `vertex_sizes` is the caller's job and is already done at
+    // `reify_solver_elastic::volume_refine`'s entry point.
+    //
+    // `MeshSizeClampReset` closes the outbound direction: this pair is returned
+    // to gmsh's defaults on every exit path, so the same leak does not run from
+    // here into a later defaults-relying call.
+    let max_hint = vertex_sizes
+        .iter()
+        .copied()
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_hint = if max_hint.is_finite() {
+        max_hint
+    } else {
+        GMSH_MESH_SIZE_MAX_DEFAULT
+    };
+    let _clamp_reset = MeshSizeClampReset::armed(&_guard);
+    ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT)?;
+    ffi::option_set_number("Mesh.MeshSizeMax", max_hint)?;
 
     // For each 0D corner entity created by classify_surfaces + create_geometry,
     // map the corner back to its original input surface vertex by **coordinate

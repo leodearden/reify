@@ -2103,6 +2103,100 @@ mod tests {
         );
     }
 
+    /// STEP export must keep its unit DECLARATION and its coordinate PAYLOAD
+    /// in agreement: reify model space is SI metres, the exported file declares
+    /// `SI_UNIT(.MILLI.,.METRE.)`, so the coordinates it carries must be
+    /// millimetres.
+    ///
+    /// The two halves DISAGREE today, and that asymmetry IS the defect. The
+    /// declaration half already passes (OCCT writes the millimetre `SI_UNIT`
+    /// by default); the payload half fails, because reify's SI-metre
+    /// coordinates reach OCCT under a unit regime whose scale factor is 1.0
+    /// and are emitted verbatim. A 30 mm cube is written as 0.030 and read by
+    /// any STEP consumer as 30 µm — a 1000× shrink.
+    ///
+    /// The payload assertion is on the per-axis AABB extent parsed out of the
+    /// `CARTESIAN_POINT` entities rather than on formatted coordinate strings,
+    /// so it is invariant under everything that legitimately varies: OCCT's
+    /// float formatting, entity ordering, box centring, and the
+    /// AP203/AP214/AP242 schema selection the sibling tests flip. The 1e-6 mm
+    /// bound is derived, not tuned: one exactly-representable ×1000 f64
+    /// multiply (≤1 ulp ≈ 3.6e-15 mm at 30) plus OCCT's ≥12-significant-digit
+    /// decimal round-trip (≤5e-11 mm) — about four orders of margin, and still
+    /// four orders tighter than the 0.030-vs-30.0 gap it guards.
+    #[test]
+    fn export_step_declares_millimetres_and_scales_metre_coordinates() {
+        // A 30 mm cube expressed in reify's SI-metre model space.
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(0.030),
+            height: Value::Real(0.030),
+            depth: Value::Real(0.030),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let mut buf = Vec::new();
+        handle
+            .export(gh.id, reify_ir::ExportFormat::Step, &mut buf)
+            .unwrap();
+        let content = String::from_utf8(buf).unwrap();
+
+        // STEP wraps long lines, so `contains` (and any parse) on the raw text
+        // is flaky — drop every ASCII whitespace byte first.
+        let stripped: String = content
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+
+        // (1) DECLARATION half — passes today.
+        assert!(
+            stripped.contains("SI_UNIT(.MILLI.,.METRE.)"),
+            "STEP export should declare millimetres via SI_UNIT(.MILLI.,.METRE.)"
+        );
+
+        // (2) PAYLOAD half — every CARTESIAN_POINT coordinate triple, folded
+        // into a per-axis AABB. Entity body shape: CARTESIAN_POINT('',(x,y,z))
+        // once whitespace is stripped, so the coordinate list is the first
+        // parenthesised group after the entity's opening paren.
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        let mut n_points = 0usize;
+        for tail in stripped.split("CARTESIAN_POINT(").skip(1) {
+            let Some(open) = tail.find('(') else { continue };
+            let Some(close) = tail[open + 1..].find(')') else {
+                continue;
+            };
+            let coords: Vec<f64> = tail[open + 1..open + 1 + close]
+                .split(',')
+                .filter_map(|s| s.parse::<f64>().ok())
+                .collect();
+            if coords.len() != 3 {
+                // Not a 3D point (or an unparsable body) — ignore it.
+                continue;
+            }
+            n_points += 1;
+            for axis in 0..3 {
+                min[axis] = min[axis].min(coords[axis]);
+                max[axis] = max[axis].max(coords[axis]);
+            }
+        }
+        assert!(
+            n_points > 0,
+            "expected at least one 3D CARTESIAN_POINT in the STEP export, found none"
+        );
+
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 30.0).abs() < 1e-6,
+                "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
+                 millimetre-declared STEP file, but the CARTESIAN_POINT AABB extent is {extent} \
+                 (min {}, max {}) — declaration and payload disagree",
+                min[axis],
+                max[axis]
+            );
+        }
+    }
+
     /// Real-OCCT schema selection through the new `export_with_options`.
     ///
     /// Asserts the declared STEP schema reaches the OCCT writer and is

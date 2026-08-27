@@ -1844,3 +1844,183 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
         x_lex - 0.001
     );
 }
+
+// ---- ComputeDispatch forwarding tests (step-11 RED / step-12 GREEN, task #4880) ----
+//
+// `SolverRegistry` overrides only `solve`/`solve_ranked`, so before step-12 it
+// inherits the `ConstraintSolver` trait DEFAULTS for `solve_with_dispatch` /
+// `solve_ranked_with_dispatch` (task #4880 step-2), which discard `dispatch` and
+// re-enter `solve`/`solve_inner` with no hook. This mirrors the DimensionalSolver
+// fixture in `solver.rs`'s `dispatch_hook_steers_convergence_to_fea_binding_point`
+// (step-5) but drives it through the registry's per-component decomposition.
+//
+// This gap is REAL for the production path: the CLI/GUI `configured_eval_engine`
+// wires `SolverRegistry::production()`, so without the override FEA-in-the-loop
+// would work only for callers that use `DimensionalSolver` directly.
+
+/// A [`reify_ir::ComputeDispatch`] that resolves exactly `"test::stress"` to
+/// `K / t` (reading trial `t` from `args[0]`), counting how many times it was
+/// asked to resolve that target. Defers (`None`) for every other target.
+struct CountingDispatch {
+    calls: std::sync::atomic::AtomicUsize,
+    k: f64,
+}
+
+impl reify_ir::ComputeDispatch for CountingDispatch {
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
+        if target != "test::stress" {
+            return None;
+        }
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let t = args.first()?.as_f64()?;
+        Some(Value::Scalar {
+            si_value: self.k / t,
+            dimension: DimensionVector::DIMENSIONLESS,
+        })
+    }
+}
+
+/// Builds the shared `stress(t) < LIMIT`, `minimize t` fixture. `K` / `LIMIT` are
+/// chosen so the binding point `t* = K / LIMIT = 0.25` sits strictly inside the
+/// declared bounds `(0.001, 1.0)` (and away from their `0.5005` midpoint, so a
+/// pass that actually reaches the optimum is distinguishable from one that merely
+/// reports the unmoved initial guess). Mirrors `solver.rs`'s in-crate step-5
+/// fixture, duplicated here because that one is private to the crate's `mod tests`.
+fn fea_binding_problem() -> (reify_core::ValueCellId, ResolutionProblem) {
+    use reify_core::{ConstraintNodeId, ValueCellId};
+    use reify_ir::{CompiledFnBody, CompiledFunction};
+
+    let params = vec![("t".to_string(), Type::length())];
+    let stress_fn = CompiledFunction {
+        name: "stress".to_string(),
+        doc: None,
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::dimensionless_scalar(),
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
+        },
+        content_hash: ContentHash::of(b"step11_registry_fea_binding_stress_stub"),
+        annotations: vec![],
+        optimized_target: Some("test::stress".to_string()),
+        type_params: vec![],
+    };
+
+    let t_id = ValueCellId::new("Bracket", "t");
+    let t_ref = CompiledExpr::value_ref(t_id.clone(), Type::length());
+    let stress_call = CompiledExpr::user_function_call(
+        "stress".to_string(),
+        vec![t_ref.clone()],
+        Type::dimensionless_scalar(),
+    );
+    let limit_lit = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: 4.0, // LIMIT; with K = 1.0 below, t* = K / LIMIT = 0.25
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        Type::dimensionless_scalar(),
+    );
+    let lt_expr = CompiledExpr::binop(BinOp::Lt, stress_call, limit_lit, Type::Bool);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, t_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: t_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 1.0)),
+            free: false,
+        }],
+        constraints: vec![(ConstraintNodeId::new("Bracket", 0), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![stress_fn].into(),
+        dependent_cells: Vec::new(),
+    };
+    (t_id, problem)
+}
+
+/// RED before task #4880 step-12: `SolverRegistry` must FORWARD the compute-dispatch
+/// hook to its inner solver rather than swallowing it in the trait default.
+#[test]
+fn registry_forwards_compute_dispatch_to_inner_solver() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (t_id, problem) = fea_binding_problem();
+    let (lo, hi) = (0.001, 1.0);
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    // (a) WITH the hook, routed through the registry: `stress(t)` resolves to a real,
+    // t-varying value inside the inner solver's cost loop, so the constraint binds at
+    // the interior optimum t* = K / LIMIT.
+    let mock = CountingDispatch {
+        calls: AtomicUsize::new(0),
+        k: 1.0,
+    };
+    match registry.solve_with_dispatch(&problem, Some(&mock)) {
+        SolveResult::Solved { values, .. } => {
+            let t = values
+                .get(&t_id)
+                .expect("t should be in the solution")
+                .as_f64()
+                .expect("t should be numeric");
+            assert!(
+                t > lo && t < hi,
+                "registry solve_with_dispatch should converge to a t strictly interior \
+                 to bounds ({lo}, {hi}); got {t}"
+            );
+        }
+        other => panic!(
+            "expected Solved once SolverRegistry forwards the dispatch hook to its inner \
+             solver; got {other:?}"
+        ),
+    }
+    assert!(
+        mock.calls.load(Ordering::SeqCst) > 0,
+        "expected the dispatch hook to have been invoked from inside the inner solver's \
+         cost loop (registry path)"
+    );
+
+    let mock_ranked = CountingDispatch {
+        calls: AtomicUsize::new(0),
+        k: 1.0,
+    };
+    match registry.solve_ranked_with_dispatch(&problem, Some(&mock_ranked)) {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            let t = candidates
+                .first()
+                .expect("non-empty candidates (invariant I2)")
+                .values
+                .get(&t_id)
+                .expect("t should be in the solution")
+                .as_f64()
+                .expect("t should be numeric");
+            assert!(
+                t > lo && t < hi,
+                "registry solve_ranked_with_dispatch should converge to a t strictly \
+                 interior to bounds ({lo}, {hi}); got {t}"
+            );
+        }
+        other => panic!(
+            "expected Ranked once SolverRegistry forwards the dispatch hook to its inner \
+             solver; got {other:?}"
+        ),
+    }
+    assert!(
+        mock_ranked.calls.load(Ordering::SeqCst) > 0,
+        "expected the dispatch hook to have been invoked from inside the inner solver's \
+         cost loop (registry ranked path)"
+    );
+
+    // (b) WITHOUT the hook: `stress(t)` body-evals to Undef for every t, so the
+    // constraint never decomposes numerically — back-compat with pre-#4880 behaviour
+    // (invariant I1: the historical decomposition path is unchanged).
+    match registry.solve(&problem) {
+        SolveResult::Infeasible { .. } => {}
+        other => panic!(
+            "expected Infeasible for the plain (no-dispatch) registry solve -- stress(t) \
+             is Undef for every t without the hook; got {other:?}"
+        ),
+    }
+}

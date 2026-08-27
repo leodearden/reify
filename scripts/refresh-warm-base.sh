@@ -256,7 +256,16 @@ if [ -n "$_prov_status" ]; then
     printf '%s\n' "$_prov_dirty_head" | while IFS= read -r _line; do
         err "    $_line"
     done
-    err "Refusing to promote a task lane with WIP. Commit or stash tracked changes first."
+    err "Refusing to promote a task lane with WIP. Commit or clean tracked changes first."
+    # This refusal fires INSIDE a warm lane, so the remedy it names is read by
+    # exactly the population that filled the shared WIP stack. Naming the reason
+    # here (not just the remedy) is the point: that stack is ONE ref in the one
+    # shared .git — it is not per-worktree — so parking WIP there hands it to
+    # every other lane on the host (esc-5785-6). Wording deliberately avoids the
+    # bare verb, which tests/infra/test_refresh_warm_base.sh Block I pins.
+    err "  Do NOT park it on the shared LIFO WIP ref either: that ref lives in the one"
+    err "  shared .git and is not per-worktree, so every lane on this host shares it."
+    err "  Rule and reach: CLAUDE.md, \"Warm lanes\"."
     exit 1
 fi
 if [ -z "$LANDED_COMMIT" ]; then

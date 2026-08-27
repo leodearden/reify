@@ -641,7 +641,7 @@ trait T {
 /// The OUTER `|p|` is the field's domain binder; the INNER `|p|` shadows
 /// it. (Lambdas are right-associative — see the existing
 /// `parse_composed_field` test, `|f, g| |p| f(g(p))`, in
-/// `crates/reify-syntax/tests/field_tests.rs:81`.) The shadow is detected
+/// `crates/reify-syntax/tests/harness_syntax/field_tests.rs:81`.) The shadow is detected
 /// naturally by `walk_expr`'s Lambda handling (the outer Lambda pushes a
 /// frame `{p}`; the inner Lambda's `p` lookup in that frame finds it).
 /// Exactly ONE Shadowing warning is expected.
@@ -1324,7 +1324,7 @@ purpose mfg(subject : Structure) {
 /// port-internal `let` sees port-internal binders as a parent scope.
 ///
 /// Source (port syntax: `port <name> : <Type> { <members> }`, see
-/// `crates/reify-syntax/tests/member_span_tests.rs:115`):
+/// `crates/reify-syntax/tests/harness_syntax/member_span_tests.rs:115`):
 ///
 /// ```text
 /// structure S {

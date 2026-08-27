@@ -1,0 +1,193 @@
+// FEA-in-the-loop design optimisation — a cantilever mounting bracket whose
+// thickness is chosen BY THE SOLVER, not by the author.
+//
+// This is the end-to-end demonstration of a design loop that closes through a
+// real finite-element analysis:
+//
+//   - `param thickness : Length = auto(free)` — a free design variable. Nothing
+//     in this file assigns it a number; the constraint solver does.
+//   - `minimize mass` — the objective. Mass is a genuine closed-form function of
+//     the design variable, so it actually pulls thickness DOWN.
+//   - a von-Mises stress `constraint` built on a real `solve_elastic_static`
+//     call — the opposing force. It pushes thickness UP.
+//
+// The resolved thickness is where those two meet: the thinnest bracket whose
+// peak stress still sits under the material's yield limit. Every trial thickness
+// the optimiser proposes runs a real FEA solve — the analysis is a ComputeNode
+// inside the dependency graph, evaluated inside the solver's cost loop, not a
+// post-hoc report on an already-fixed design (wired by task 4880).
+//
+// The eval-layer convergence contract is pinned in
+// `crates/reify-eval/tests/harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs`;
+// the compile-surface contract in
+// `crates/reify-compiler/tests/harness_compilation_surface/fea_bracket_minimize_mass_example.rs`.
+//
+// ── Why the stress predicate is a separate `constraint` member ───────────────
+//
+// The grammar also accepts `minimize <expr> where <cond>`, and it is tempting to
+// write the whole design loop as one line. Do not. The parser lowers that guard
+// into `MinimizeDecl.where_clause`, but the compiler's Minimize/Maximize lowering
+// arms never read that field (every other member kind routes its guard through
+// `compile_per_decl_guard`; these two do not). The predicate is silently
+// DISCARDED — the structure compiles clean with zero constraints, the optimiser
+// runs unopposed, and `thickness` collapses to the ~1 micron auto-param lower
+// bound while still reporting "solved". A separate `constraint` member is the
+// only form the compiler actually honours.
+//
+// ── Sizing basis (closed-form, so the numbers are auditable) ─────────────────
+//
+// Geometry is a prismatic plate: coordinates run [0, length] x [0, width] x
+// [0, thickness], clamped at the root (x_min) face, carrying a point load `P`
+// down the -Z axis at the free end. That is an end-loaded cantilever, so
+// Euler-Bernoulli gives the peak fibre stress at the root:
+//
+//     M_max  = P * length                    (root bending moment)
+//     S      = width * thickness^2 / 6       (section modulus)
+//     sigma  = M_max / S = 6 * P * length / (width * thickness^2)
+//
+// Inverting at sigma = yield gives the thickness the design loop should find:
+//
+//     thickness* = sqrt(6 * P * length / (width * yield))
+//                = sqrt(6 * 750 N * 0.05 m / (0.03 m * 310e6 Pa))
+//                = sqrt(2.419e-5) = 4.9 mm
+//
+// `P = 750 N` is chosen to place that crossing at ~4.9 mm: two orders of
+// magnitude above the 1 micron lower bound and three below the 10 m upper bound
+// of the default `Length` auto-param range, and a clear factor of ~2 away from
+// the solver's ~10 mm default seed, so a converged value cannot be confused with
+// an unmoved starting point. The seed itself is comfortably feasible
+// (sigma(10 mm) = 6 * 750 * 0.05 / (0.03 * 1e-4) = 75 MPa, a 4.1x margin under
+// the 310 MPa yield), which lets the solver take its `initially_feasible` fast
+// path.
+//
+// The 50 mm x 30 mm footprint matches the FEA-in-the-loop producer fixture
+// (`fea_in_the_loop_producer.rs`), keeping the per-candidate mesh cost known.
+//
+// Beam theory is the SIZING BASIS, not an assertion: the FEA solve on a coarse
+// tet mesh of a plate this stubby will not reproduce it exactly, and it is not
+// expected to. Its job is to put the stress/yield crossing in a sane place.
+// MEASURED: the loop converges at 4.52 mm, 8% below the 4.9 mm estimate — close
+// enough to confirm the constraint binds at the stress/yield crossing rather
+// than anywhere incidental, and NOT a threshold anything asserts against.
+
+structure FeaBracketMinimizeMass {
+    // ── Geometry ─────────────────────────────────────────────────────────────
+    //
+    // `length` and `width` are fixed by the mounting envelope. `thickness` is
+    // the one free variable.
+    param length    : Length = 50mm
+    param width     : Length = 30mm
+
+    // `auto(free)` rather than strict `auto`: strict `auto` adds a
+    // perturbation-based uniqueness re-solve (a second full Nelder-Mead run),
+    // roughly DOUBLING the number of real FEA solves. The design loop here is
+    // single-variable and monotone — thinner is lighter, thinner is more
+    // stressed — so the stress-limited optimum is unique by construction and the
+    // re-solve buys no signal for a large runtime cost.
+    param thickness : Length = auto(free)
+
+    let material = Steel_AISI_1045()
+
+    // Geometry realization is deferred — no kernel call at eval time.
+    let body = box(length, width, thickness)
+
+    // ── Loads and supports ───────────────────────────────────────────────────
+    //
+    // A 750 N service load at the free end, bending the bracket about its weak
+    // axis. `PointLoad.direction` defaults to vec3(0, 0, -1) — straight down the
+    // -Z axis, i.e. across the thickness — which is the canonical bending case
+    // and the one the sizing basis above assumes.
+    //
+    // WHY A POINT LOAD AND NOT A `PressureLoad` ON A NAMED FACE: a distributed
+    // pressure would be the nicer physical demo, but neither spelling of its
+    // `face` field survives an auto param today, and both fail SILENTLY.
+    // Measured on this very file:
+    //
+    //   - `face: face(body, "z_max")` (the modern typed-selector form) evaluates
+    //     the `pressure` cell to `{ "magnitude": Real(1000000.0), "face": Undef }`
+    //     — the hoisted selector mints `Value::Undef` instead of a
+    //     `Selector(Leaf { query: Named("z_max") })`, so `parse_pressure_spec`
+    //     reads no face name and DROPS the load. The design loop then runs
+    //     unopposed and thickness collapses to 2.88e-6 m, its lower bound. The
+    //     control is decisive: the identical spelling in
+    //     `examples/fea_pressure_smoke.ri`, whose box dims are all concrete,
+    //     mints a real selector. The difference is the unresolved `auto`
+    //     thickness feeding `box(...)`.
+    //   - `face: "z_max"` (the legacy String arm) DOES apply the load and does
+    //     converge — but `PressureLoad.face` is typed `Option<FaceSelector>`, so
+    //     it trips the ctor-field-conformance corpus gate as a true positive.
+    //
+    // Filed as follow-up ticket tkt_0RSVYHGPGEYD2QV9MTGTXPQ86S. Until it lands,
+    // `PointLoad.point` is a plain `String` by declaration — no selector to mint
+    // and no conformance debt — which keeps this example honest end-to-end.
+    let tip_load = PointLoad(point: "tip", force: 750.0)
+
+    // "root" is the face name the synthetic cantilever clamp honours
+    // (`SYNTHETIC_CLAMP_FACE`, elastic_static.rs) — the x_min end.
+    let mount = FixedSupport(target: "root")
+
+    // Mirrors `Steel_AISI_1045.yield_stress = some(310MPa)`. A plain Pressure
+    // literal rather than the field itself: `yield_stress` is `Option<Pressure>`
+    // and Reify has no `.unwrap()` / `?` operator, nor any `match some(x)`
+    // precedent in the stdlib .ri files.
+    let yield_limit = 310MPa
+
+    // ── Objective ────────────────────────────────────────────────────────────
+    //
+    // Closed-form mass. `length` and `width` are fixed, so this is linear and
+    // strictly increasing in `thickness` — a real gradient for the optimiser to
+    // descend, and a real Scalar<Mass> any downstream consumer can read.
+    //
+    // Written out rather than reached for via the `Physical` trait's derived
+    // `mass = volume(geometry) * material.density`: that trait is Phase-1
+    // typecheck-only today and evaluates to Undef, which would leave the
+    // objective with nothing to minimise.
+    let mass = material.density * length * width * thickness
+
+    // ── Design predicate ─────────────────────────────────────────────────────
+    //
+    // Peak von-Mises stress anywhere in the body must stay under yield — the
+    // field reduction this demo exists to show. `.stress` is a Field of rank-2
+    // stress tensors sampled over the body; the peak von-Mises value is the
+    // single worst scalar in it.
+    //
+    // That reduction is read here through the result's own `max_von_mises`
+    // member rather than spelled out as `max(von_mises(result.stress))`. The two
+    // compute the identical quantity — `max_von_mises` is the element-max von
+    // Mises over exactly the same solid stress field — so the reduction still
+    // genuinely happens; only the spelling differs.
+    //
+    // The explicit spelling is currently blocked by a COMPILE-TIME TYPING GAP,
+    // not by a semantic one: `analysis_fn_result_type` derives von_mises's
+    // dimension via `tensor_quantity`, which matches `Type::Tensor`/`Type::Matrix`
+    // but has no `Type::Field` arm. A Field-valued argument therefore falls to
+    // the DIMENSIONLESS default, `von_mises(.stress)` types as `Real`, and
+    // `< yield_limit` fails with "dimension mismatch in comparison: Real vs
+    // Scalar[kg·m^-1·s^-2]" — an Error, so the zero-Error examples gate rejects
+    // it. Filed as follow-up ticket tkt_0RSVXM8TTBE200NJ7HD8BH24Q2; when that
+    // lands, this constraint can move to the explicit form unchanged in meaning.
+    //
+    // The FEA call is INLINED here rather than bound to a top-level
+    // `let fea = solve_elastic_static(...)`. That is not a style choice. A
+    // `let`-bound `@optimized` call is eagerly dispatched by the engine's own
+    // top-level ComputeNode pass as soon as its declaration is reached — BEFORE
+    // the constraint solver has assigned `thickness` a numeric value — feeding
+    // the trampoline an Undef dimension and panicking in `extract_scalar_si`.
+    // Inlining keeps the call inside the constraint's compiled expression tree,
+    // which only the solver's cost loop evaluates, with a numeric trial
+    // thickness substituted on every candidate.
+    //
+    // `ShellForce.Off` pins the tet/solid path. Under the default
+    // `ShellForce.Auto` the thickness/in-plane ratio decides between the solid
+    // and shell formulations — and the optimiser moves thickness across three
+    // orders of magnitude, so that classification would flip mid-solve and the
+    // constraint would change meaning underneath the search. `ElasticOptions` is
+    // passed explicitly because fn-param defaults for same-module struct
+    // constructors are not supported.
+    constraint solve_elastic_static(
+        material, length, width, thickness, [tip_load], [mount],
+        ElasticOptions(shell_force: ShellForce.Off)
+    ).max_von_mises < yield_limit
+
+    minimize mass
+}

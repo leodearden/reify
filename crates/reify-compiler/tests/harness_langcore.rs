@@ -17,6 +17,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "harness_langcore/enum_ctor_param_binding_tests.rs"]
+mod enum_ctor_param_binding_tests;
 #[path = "harness_langcore/let_annotation_type_mismatch_tests.rs"]
 mod let_annotation_type_mismatch_tests;
 #[path = "harness_langcore/let_scope_tests.rs"]
@@ -55,3 +57,5 @@ mod type_error_propagation_tests;
 mod type_expr_kind_dispatch_tests;
 #[path = "harness_langcore/type_hygiene_integration_gate.rs"]
 mod type_hygiene_integration_gate;
+#[path = "harness_langcore/uniform_member_path_tests.rs"]
+mod uniform_member_path_tests;

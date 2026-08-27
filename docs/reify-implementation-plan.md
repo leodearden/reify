@@ -541,7 +541,7 @@ structure def Bracket {
 3. **Guards** — `where` clauses, conditional declarations, structural presence/absence.
 4. **Connect/chain** — port compatibility, frame alignment constraints, connector instantiation.
 5. **Occurrences** — process entities with in/out ports.
-6. **Enums and match** — C-style enums, exhaustive matching, desugaring to guarded declarations.
+6. **Enums and match** — enums whose variants are either bare (no payload) or carry a named-field payload, exhaustive matching, desugaring to guarded declarations. Payload binding in `match` arms landed in v0.6; see `docs/prds/v0_6/data-carrying-enums.md`.
 7. **Fields** — `Field<D, C>` type, analytical/sampled/composed, field composition, differential operators.
 8. **Purposes** — activation/deactivation, scoped constraint injection, output occurrences.
 9. **Functions** — `fn` with type parameters, recursion, overloading, `@optimized` hook.

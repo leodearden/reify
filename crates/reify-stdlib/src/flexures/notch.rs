@@ -232,7 +232,7 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
 ///
 /// Returns a joint `Value::Map` (`kind == "revolute"`) with rotational stiffness
 /// `k_θ = 2·E·b·t^2.5 / (9π·r^0.5)` (PRD §5.2). PRD §10.1 row 2 gate:
-/// r=1mm, t=0.2mm, b=5mm, Steel_AISI_1045 ⇒ k_θ ≈ 1.297 N·m/rad (within 2%).
+/// r=1mm, t=0.2mm, b=5mm, Steel_AISI_1045 ⇒ k_θ ≈ 1.297 N·m/rad² (within 2%).
 fn prb_notch_circular(args: &[Value]) -> Value {
     match parse_notch_inputs(args) {
         Some(inputs) => notch_revolute(&inputs, CIRCULAR_K, CIRCULAR_SIGMA),

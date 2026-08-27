@@ -1,0 +1,13 @@
+module ssc_single_root_free
+// PRD EVIDENCE — docs/prds/v0_6/solution-set-completeness.md (leaf delta; BT4).
+// Exactly ONE solution. The anti-noise control: after this PRD the
+// non-uniqueness warning must NOT fire here. Today it fires unconditionally,
+// which is why it carries no information.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = translate(cylinder(3mm, length), 0mm, 0mm, 0mm - length)
+}
+pub structure SscSingleRootFree {
+    sub rod = Rod(length: auto(free))
+    constraint self.rod.length == 10mm
+}

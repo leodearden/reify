@@ -64,7 +64,12 @@ structure def TotsOptimalPtp {
     // ── Per-joint actuator limit ──────────────────────────────────────────────
     // One JointLimit for the single translational DOF.
     // max_force > 0 ctor constraint (trajectory.ri:530) is satisfied.
-    let jl = JointLimit(joint: 0.0, max_force: 1000.0)
+    // `max_force` is a dimensioned `Scalar<Force>` literal: `1000N` is 1000 N in
+    // SI, exactly what the previous bare `1000.0` was already being read as, so
+    // this spelling is magnitude-preserving.
+    // `joint` stays BARE on purpose — `param joint : Real` (trajectory.ri) is a
+    // dimensionless joint INDEX, not a physical quantity.
+    let jl = JointLimit(joint: 0.0, max_force: 1000N)
 
     // ── TOTS shaper ───────────────────────────────────────────────────────────
     // modes: [] infers List<Mode> from the TOTSShaper.modes param-type context.
@@ -72,11 +77,25 @@ structure def TotsOptimalPtp {
     //   velocity_limit > 0, acceleration_limit > 0,
     //   vibration_tolerance > 0, vibration_tolerance <= 1,
     //   max_iters > 0, tol > 0.
+    //
+    // The kinematic limits are mm-scale, spelled as dimensioned literals at the
+    // `Scalar<Velocity>` / `Scalar<Acceleration>` param slots:
+    // 300 mm/s (= 0.3 m/s) and 5000 mm/s² (= 5 m/s²).
+    //
+    // These were previously the BARE literals `300.0` / `5000.0`. A bare literal
+    // at a dimensioned slot is read as SI, so they denoted 300 m/s and
+    // 5000 m/s² — absurd for a desktop-printer-class mechanism. Leo's
+    // esc-5758-2 option-B ruling is that the mm-scale values are what the design
+    // physically means, so the resulting 1000× change in SI magnitude is
+    // DELIBERATE, not a regression. Its user-visible consequence is that the
+    // optimal second waypoint re-times from t = 0.07745966692423394 s to
+    // t = 0.98 s; that value is pinned in
+    // crates/reify-eval/tests/harness_engine/dimensioned_ctor_migration_si_values.rs.
     let shaper = TOTSShaper(
         modes: [],
         actuator_limits: [jl],
-        velocity_limit: 300.0,
-        acceleration_limit: 5000.0,
+        velocity_limit: 300mm/s,
+        acceleration_limit: 5000mm/s^2,
         vibration_tolerance: 0.02
     )
 

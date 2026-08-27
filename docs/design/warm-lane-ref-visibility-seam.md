@@ -104,23 +104,26 @@ byte-identical `git show-ref` read-only invariant.
 The fault is in the **dark-factory steward's single-shot, no-retry branch
 resolution** racing warm-lane lifecycle branch-ref churn.
 
-### 3a. The resolve call chain (DF file:line anchors)
+### 3a. The resolve call chain (DF symbol anchors)
+
+Cite-by-symbol: each rung below is a verbatim dark-factory source line — grep
+for it rather than for a line number, which goes stale on the next DF commit.
 
 ```
-escalation/src/escalation/server.py:721  merge_request()
-  → git_ops_for_scan.resolve_branch_sha(full_branch)   # server.py:809
+escalation/src/escalation/server.py      async def merge_request(
+  → resolved_tip = await git_ops_for_scan.resolve_branch_sha(full_branch)
 
-orchestrator/src/orchestrator/merge_queue.py:2331  _classify_branch_presence()
-  → git_ops.resolve_queued_branch_ref(branch)          # merge_queue.py:2377
-    → git_ops.resolve_branch_sha(prefixed)             # git_ops.py:2679
-    → git_ops.resolve_branch_sha(branch)               # git_ops.py:2681
+orchestrator/src/orchestrator/merge_queue.py   async def _classify_branch_presence(
+  → if await git_ops.resolve_queued_branch_ref(branch) is not None:
+    → if await self.resolve_branch_sha(prefixed) is not None:   # git_ops.py
+    → if await self.resolve_branch_sha(branch) is not None:     # git_ops.py
 
-orchestrator/src/orchestrator/git_ops.py:2633  resolve_branch_sha()
+orchestrator/src/orchestrator/git_ops.py    async def resolve_branch_sha(
   → rc, sha, _ = await _run(
         ['git', 'rev-parse', '--verify', f'refs/heads/{branch_name}'],
-        cwd=self.project_root,                          # git_ops.py:2643-2646
+        cwd=self.project_root,
     )
-  → return sha if rc == 0 else None                    # git_ops.py:2647
+  → return sha if rc == 0 else None
 ```
 
 `resolve_branch_sha` is **single-shot**: one `git rev-parse --verify` call,

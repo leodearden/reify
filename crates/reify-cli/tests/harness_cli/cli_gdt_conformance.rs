@@ -20,7 +20,7 @@
 //!   `Indeterminate` — no kernel to measure deviation → C1 graceful degradation,
 //!   never a false Violated.
 //!
-//! These mirror `crates/reify-cli/tests/cli_representation_within.rs` (the
+//! These mirror `crates/reify-cli/tests/harness_cli/cli_representation_within.rs` (the
 //! sibling RepresentationWithin OCCT-gated harness).
 
 use crate::common;

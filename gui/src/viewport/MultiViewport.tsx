@@ -71,13 +71,15 @@ export interface MultiViewportProps {
  *
  * **Per-pane prop contract:** every `PanePassthroughProps` key is forwarded
  * verbatim from `PaneConfig` to that pane's `<Viewport>`; this component
- * enforces no pane policy and synthesizes no defaults. Props that are
- * design-main-only in practice — `tensegrityWires`/`tensegritySurfaces`, the
- * `fitToViewRef`/`flyToEntityRef` refs, and the FEA trio
- * `feaModeStore`/`feaDiagnostics`/`feaConvergence` — are restricted by the
- * *caller* populating them for pane 0 and leaving them `undefined` elsewhere
- * (see App.tsx's `panes` mapArray). A pane whose config omits a key receives
- * `undefined`, which is how `<Viewport>` decides not to render the
+ * enforces no pane policy and synthesizes no defaults. Which props a pane
+ * actually carries is entirely the *caller's* choice (see App.tsx's `panes`
+ * mapArray): `tensegrityWires`/`tensegritySurfaces` and the
+ * `fitToViewRef`/`flyToEntityRef` refs remain design-main-only, while the FEA
+ * trio `feaModeStore`/`feaDiagnostics`/`feaConvergence` is populated for EVERY
+ * pane since #5670 — each pane drawing its own store from a viewportId-keyed
+ * registry, and the diagnostics/convergence being global to the model. This
+ * component is itself unchanged by that: a pane whose config omits a key
+ * receives `undefined`, which is how `<Viewport>` decides not to render the
  * corresponding overlay.
  *
  * **Splitter placement:** C-1 Splitters are absolutely positioned (taken out

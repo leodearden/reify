@@ -106,6 +106,17 @@ land "$R" task/foo
 assert "dirty tree -> non-zero" test "$LAND_RC" -ne 0
 assert "dirty tree -> error says 'dirty'" \
     bash -c "printf '%s\n' \"\$1\" | grep -qi dirty" _ "$LAND_OUT"
+assert "dirty tree -> refusal offers a commit-or-clean remedy" \
+    bash -c "printf '%s\n' \"\$1\" | grep -qi commit" _ "$LAND_OUT"
+# ...and never a stash remedy (task 5981). refs/stash is ONE ref in the shared
+# .git — not per-worktree — so every linked worktree on this host pushes onto one
+# LIFO stack (esc-5785-6). A refusal message is exactly where an agent looks for
+# its next move, so this is the wording that must not point at that stack; the
+# rule itself lives in CLAUDE.md's "Warm lanes" section. Deliberately a bare-token
+# check: a reworded advisory that reaches for the word again should fail here and
+# be reconsidered, not slip past a cleverer pattern.
+assert "dirty tree -> refusal does NOT advise stashing" \
+    bash -c "! printf '%s\n' \"\$1\" | grep -qi stash" _ "$LAND_OUT"
 assert "dirty-tree refusal leaves no sentinel (mark happens only after guards)" \
     bash -c "! test -e '$R/.git/reify-main-gate-ok'"
 rm -f "$R/untracked.txt"

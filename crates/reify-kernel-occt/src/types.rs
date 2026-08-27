@@ -33,11 +33,16 @@ pub struct Transform3 {
     pub qy: f64,
     /// Quaternion z component.
     pub qz: f64,
-    /// Translation x component (millimetres, same unit as Reify geometry).
+    /// Translation x component (SI metres, same unit as Reify geometry).
+    ///
+    /// Reify model space is SI METRES throughout; only the
+    /// declaration-carrying export writers (STEP, 3MF) convert to millimetres
+    /// at the file boundary. This comment previously claimed millimetres,
+    /// which was never true of reify geometry.
     pub tx: f64,
-    /// Translation y component.
+    /// Translation y component (SI metres).
     pub ty: f64,
-    /// Translation z component.
+    /// Translation z component (SI metres).
     pub tz: f64,
 }
 

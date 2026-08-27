@@ -1,0 +1,907 @@
+prd: docs/prds/v0_6/gui-on-demand-measurement.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6740
+  title: 'gui-on-demand-measurement α: extract the measurement seam from cmd_check;
+    split capture from refine'
+  note: 'A1/A2/A3 amendments: the four module_has_* kind detectors are PRIVATE free
+    fns in the reify-cli BINARY crate and must move to reify-eval; cmd_check --purpose
+    never enters the kernel arm; tessellate_snapshot already honours capture_repr_tol.'
+  capabilities:
+  - name: reference-arm-sequence-is-wired-and-line-exact
+    binding: 'capability→producer (wired) — cmd_check''s kernel arm is the reference
+      implementation and is live on main; the PRD''s cited :598-651 range was re-verified
+      exact 2026-08-26. Sequence: kind detection → Engine::with_registered_kernel
+      → set_capture_repr_tol(true) → build(&compiled, ExportFormat::Step) → tessellate_realizations
+      → ensure_openvdb_kernel() → check(). Probe-verified end to end this session
+      (see the .md twin''s probe table).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: let has_geometric_conforms = module_has_geometric_conforms
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: absent
+  - name: kind-detectors-are-private-to-the-reify-cli-binary
+    binding: 'PASS-WITH-AMENDMENT (A1). FALSIFIES the PRD §4/§8 implication that the
+      seam extraction is a pure move of engine calls. All four detectors — module_has_geometric_conforms,
+      module_has_representation_within, module_has_dfm_rule, module_has_thickness_dfm_rule
+      — are PRIVATE free fns in crates/reify-cli/src/main.rs (the binary crate), not
+      importable from reify-eval or the GUI. Each takes only &reify_compiler::CompiledModule,
+      so the move is mechanical, but it IS a move, and C-SEAM says kind gating lives
+      inside the seam. Second-order: module_has_thickness_dfm_rule''s body is literally
+      module_has_dfm_rule(module), so ensure_openvdb_kernel fires for EVERY DFM module
+      today — preserve or fix deliberately, never accidentally.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn module_has_geometric_conforms\(
+      paths:
+      - crates/reify-eval/src
+      expect: present
+  - name: capture-flag-and-its-complete-read-chain
+    binding: capability→producer (wired) — Engine.capture_repr_tol is a private bool
+      field on Engine (crates/reify-eval/src/lib.rs) with exactly TWO self-reads in
+      the workspace, both forwarding into tessellate_from_values → surface_subtree's
+      tessellate callback. Public setter Engine::set_capture_repr_tol (crates/reify-eval/src/engine_admin.rs).
+      The gate `if capture_repr_tol` in crates/reify-eval/src/geometry_ops.rs is the
+      unique achieved_repr_tol write site.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn set_capture_repr_tol\(
+      paths:
+      - crates/reify-eval/src/engine_admin.rs
+      expect: present
+  - name: refine-flag-and-refine-loop-are-genuinely-absent
+    binding: 'G6 branch 4 / vacuity half. Grep-verified 2026-08-26: NO refine field,
+      flag or setter on Engine, and NO representation-tolerance measure-and-refine
+      loop anywhere in tracked source. Every `refine` hit in crates/reify-eval/src/
+      is trait refinement, FEA a-posteriori adaptive refinement, or FDM progressive
+      refinement — all unrelated. The only references to a repr-tolerance refine loop
+      are two forward-looking docstrings in crates/reify-eval/src/tolerance_combine.rs
+      naming #6171/#6168. D2''s flag split therefore introduces the gate BEFORE the
+      loop exists, which is exactly the ordering D2 rules for.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '#6171'
+      paths:
+      - crates/reify-eval/src/tolerance_combine.rs
+      expect: present
+  - name: inert-refine-flag-carries-a-ptodo-cite
+    binding: 'G7 / INV-SF-5 placeholders-owned-and-loud. The refine flag ships INERT
+      (no loop consumes it until #6171 lands), which is a placeholder surface under
+      the PTODO grammar. It must carry a live non-terminal cite in the canonical `#NNNN`
+      form naming #6171 (pending), or reify-audit --pattern PTODO and the tests/infra
+      verify step go red on a bare placeholder.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: vacuous as a grep — `#6171` already appears in two crates/reify-eval/src
+        docstrings, so a tree-scoped check passes without the cite ever being written,
+        and the cite's site is in code not yet authored. PTODO enforcement is the
+        real gate.
+  - name: names-run-measurement-pass-and-MeasureOptions-are-free
+    binding: anti-collision — git grep for `MeasureOptions` and `run_measurement_pass`
+      returns hits ONLY inside docs/prds/v0_6/gui-on-demand-measurement.md. Zero occurrences
+      in crates/, gui/ or tests/. Both names are claimable; PRD Open Question 3 leaves
+      the final spelling tactical.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the seam's final name is PRD Open Question 3 (tactical), so a grep pinned
+        to a provisional spelling would be a false check.
+  - name: reset-choke-point-must-absorb-the-new-flag
+    binding: 'capability→producer (wired) — Engine::reset_per_build_state (crates/reify-eval/src/engine_build.rs)
+      destructures the WHOLE Engine exhaustively with no `..`, classifying capture_repr_tol
+      as config (preserved). INV-BUILD-1: a new refine flag lands as a sibling in
+      that same destructure or the crate does not compile — the invariant is self-enforcing,
+      not a discipline.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'capture_repr_tol: _'
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+      expect: present
+  - name: cmd-check-purpose-branch-bypasses-the-kernel-arm
+    binding: 'PASS-WITH-AMENDMENT (A2). UNSTATED IN THE PRD. cmd_check has a second
+      branch, taken when --purpose values are supplied, that never runs the kernel
+      arm at all: it calls Engine::check_constraints_with_values then Engine::run_gdt_check_passes
+      directly. So under --purpose, ReprWithin/Conforms/DFM are ALREADY unmeasured
+      today. C-SEAM''s "identical verdicts, diagnostics and exit codes" is satisfiable
+      either way, but α must state whether the --purpose branch also routes through
+      the seam rather than leaving it to an implementer to guess.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: run_gdt_check_passes
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: tessellate-snapshot-already-honours-capture
+    binding: PASS-WITH-AMENDMENT (A3). UNSTATED IN THE PRD, and it cheapens β materially.
+      Engine::tessellate_snapshot — the surface build_gui_state already calls — reads
+      self.capture_repr_tol and forwards it down the same tessellate_from_values →
+      surface_subtree wire as tessellate_realizations. The GUI therefore does NOT
+      need tessellate_realizations to populate achieved_repr_tol; C-SEAM as written
+      would make the GUI tessellate TWICE per measurement. α exposes the arm so β
+      can choose; folds into PRD Open Question 4.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn tessellate_snapshot\(
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+      expect: present
+  - name: cli-harness-suites-pin-todays-output
+    binding: 'signal premise — α''s negative signal ("existing reify check CLI harness
+      suites pass unmodified") is bound to suites that exist and exercise all three
+      kinds: crates/reify-cli/tests/harness_cli/cli_determinacy_gate.rs (ReprWithin),
+      cli_dfm_overhang.rs (incl. check_dfm_plus_repr_within_combined_arm, the both-arms
+      case C-SEAM must preserve), cli_dfm_thickness.rs, cli_gdt_conformance.rs, cli_gdt_integration_gate.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: check_dfm_plus_repr_within_combined_arm
+      paths:
+      - crates/reify-cli/tests/harness_cli/cli_dfm_overhang.rs
+      expect: present
+- label: β
+  task_id: 6741
+  title: 'gui-on-demand-measurement β: GUI session measurement pass, Tauri command,
+    debug-MCP surface, measured verdicts in the constraint payload'
+  note: 'A4/A5/A6/A7/A8/A9/A12 amendments. The largest unplanned-work risk in the
+    batch is A5: ConstraintCheckEntry carries no measured value and DFM/GD&T measurements
+    exist only as diagnostic strings, so C-STATUS''s measured(verdict, values, epoch)
+    needs a NEW structured channel.'
+  capabilities:
+  - name: gui-never-measures-today
+    binding: 'G6 branch 4 / vacuity half — the gap β closes is real. Zero hits across
+      the ENTIRE gui/ tree (not just gui/src-tauri, and including untracked files
+      via rg) for set_capture_repr_tol, tessellate_realizations, run_gdt_check_passes,
+      ensure_openvdb_kernel, measure_gdt_conformance, measure_dfm_rules, achieved_repr_tol,
+      capture_repr_tol. Positive control that the grep is non-vacuous: with_registered_kernel
+      returns 4 hits in gui/src-tauri/src/engine.rs, so the GUI session engine IS
+      kernel-registered and the seam does not need a second engine.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_registered_kernel
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: session-measurement-store-cannot-be-achieved-repr-tol
+    binding: 'PASS-WITH-AMENDMENT (A4). LOAD-BEARING AND UNSTATED. Engine::reset_per_build_state
+      CLEARS achieved_repr_tol on both tessellate surfaces — TessellateRealizations
+      AND TessellateSnapshot — and build_gui_state calls tessellate_snapshot on every
+      rebuild. So every GUI rebuild WIPES the engine''s measurement map. D7''s "stale
+      verdicts are retained, flagged and dimmed" is therefore impossible if results
+      live in achieved_repr_tol: the session must own its own measurement-result store,
+      and C-STATE''s "restores … on every exit path" must NOT be read as "clear the
+      map".'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: achieved_repr_tol\.clear\(\)
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+      expect: present
+  - name: measured-values-have-no-structured-channel
+    binding: 'PASS-WITH-AMENDMENT (A5). FALSIFIES C-STATUS''s measured(verdict, values,
+      epoch) as costed. ConstraintCheckEntry is { id, label, satisfaction } — it carries
+      NO measured value. The only structured read-back on main is Engine::achieved_repr_tol(occurrence)
+      -> Option<f64>, for ReprWithin only. Geometric-Conforms and DFM measurements
+      exist ONLY as diagnostic message strings (W_/E_DFM_OVERHANG, _DRAFT, _MIN_WALL,
+      _MIN_FEATURE, and "Conforms VIOLATED: measured deviation X mm exceeds the Y
+      mm tolerance zone"). β must add a structured channel or explicitly scope v1
+      to verdict-only for those two kinds — parsing diagnostic prose is not acceptable
+      as the parity-gate surface.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn achieved_repr_tol
+      paths:
+      - crates/reify-eval/src/engine_admin.rs
+      expect: present
+  - name: demand-roots-have-no-getter
+    binding: 'PASS-WITH-AMENDMENT (A6). C-STATE requires restoring "the selective-demand
+      roots to their pre-pass values". Engine::set_demand_selective REPLACES the root
+      set wholesale (fresh DemandRegistry, full_scope off, rebuild cone, mark pruned
+      pending) and Engine exposes demand_is_full_scope() but NO accessor that reads
+      the root NodeId set back. Restoring roots exactly is NOT possible with today''s
+      public surface: either α adds an accessor, or β caches the last sync_demand
+      argument on EngineSession. Template for the whole save/restore discipline: EngineSession::build_gui_state_full_scene,
+      which brackets full_scope + geometry_derived_cache + both tess caches under
+      catch_unwind and restores on every path.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn set_demand_selective\(
+      paths:
+      - crates/reify-eval/src/engine_demand.rs
+      expect: present
+  - name: debug-mcp-tools-are-tool-defs-not-jsonrpc-methods
+    binding: 'PASS-WITH-AMENDMENT (A7). The JSON-RPC method table has exactly four
+      arms (initialize, notifications/initialized, tools/list, tools/call); measure_constraints
+      and measurement_status are MCP TOOLS, added to tool_defs() plus a dispatch_tool
+      match arm. Same-diff registration obligations: tool_defs() entry, engine-side
+      dispatch_tool arm, engine access via run_on_engine (a 256 MiB spawn_on_large_stack
+      thread — calling the engine on a tokio worker panics), an in-file tool_defs_registers_*
+      test, and a PURE_ENGINE_SIDE entry in gui/src/__tests__/debugParity.test.ts.
+      That allowlist is SELF-CHECKING (assertion (e): every entry must be in tool_defs
+      AND absent from buildHandlers), so an omission reds vitest. Exact precedents:
+      demand_dispatch and set_fea_case.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: measurement_status
+      paths:
+      - gui/src/__tests__/debugParity.test.ts
+      expect: present
+  - name: measurement-status-must-be-a-pure-read
+    binding: signal premise — measurement_status must follow the demand_dispatch_json
+      pure-read shape, NOT engine_state_json, which routes through build_gui_state_full_scene
+      and therefore RE-TESSELLATES. A status read that perturbs the thing it reports
+      would make BT-3 (no perturbation) unobservable through the very surface the
+      parity gate drives. demand_dispatch's ToolDef description already advertises
+      its read as PURE for exactly this reason.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn demand_dispatch_on_engine\(
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: present
+  - name: constraint-payload-has-two-construction-paths
+    binding: 'PASS-WITH-AMENDMENT (A8). ConstraintData (gui/src-tauri/src/types.rs)
+      is built by build_constraints (gui/src-tauri/src/engine.rs) from build_gui_state
+      — AND a second time by EngineSession::set_active_fea_case, which rebuilds from
+      the tess caches with its own build_constraints call and an empty delta. A new
+      payload field populated only at the first site means an FEA case switch silently
+      BLANKS measured verdicts. The event channel itself is generated: the gui_state!
+      schema declares `diffed keyed(key=node_id, item="constraint", update="constraint-update"…)`
+      and delta_to_events emits the full ConstraintData item — so no hand-written
+      emit site needs touching, but both construction sites do.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: update="constraint-update"
+      paths:
+      - gui/src-tauri/src/types.rs
+      expect: present
+  - name: solve-slot-lifecycle-is-reusable-and-single-handle
+    binding: 'PASS-WITH-AMENDMENT (A9). C-CANCEL''s premise holds: with_solve_slot
+      publishes a fresh CancellationHandle, sets it on the engine, runs, clears it,
+      and a SolveFinishedGuard Drop fires solve_finished on every path; cancel_solve_impl
+      takes only pending_solve_cancel and never the session mutex — "cancel locks
+      only the slot" CONFIRMED. Two constraints the PRD does not state: (1) PendingSolveCancelSink
+      debug_asserts AT MOST ONE live handle, so sharing the slot serialises measurement
+      with FEA solves (the session mutex already does) or β needs a second slot; (2)
+      the slot is lifecycle-only — the trampoline ignores its handle, so real mid-pass
+      cancellation requires the handle to be honoured INSIDE the seam.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn with_solve_slot<R>\(
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: set-parameter-uses-edit-check-not-check
+    binding: PASS-WITH-AMENDMENT (A12). FALSIFIES PRD §2/§3's "The GUI runs engine.check()
+      at every mutating entry point". Three of the four production entry points (load_from_source,
+      load_file, update_source) call check_with_solve_slot; set_parameter — the warm-edit
+      path that runs on every slider drag, and the one C-STALE cares most about —
+      calls Engine::edit_check inside with_solve_slot and ?-short-circuits on Err.
+      The solve-slot lifecycle IS uniform across all four, so C-CANCEL survives; C-SEAM's
+      framing does not. The engine.rs doc claiming all four wrap check() is itself
+      stale.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: edit_check\(cell_id, value\)
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: attribution-channel-is-an-upstream-producer
+    binding: 'DAG-direction — β''s four-state surface EXTENDS #6667''s attribution
+      channel, and #6667 is wired as a real add_dependency edge (upstream). #6667
+      in turn depends on #6169 (precision-nominal ζ), which owns the attribution mechanism
+      #6667''s text tells its implementer to "locate"; that edge was MISSING and is
+      wired by this decompose session (A16). Nothing β''s signal needs is owned by
+      a task that depends on β.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a DAG-direction property over live task edges; verified via the wired
+        add_dependency calls, not via any pattern in tracked source.
+  - name: angle-carrying-boundary-declares-its-convention
+    binding: G7 / INV-AD-4 boundaries-declare-angle-convention. DFM overhang and draft
+      measurements are ANGULAR (max_overhang_angle / draft_angle), and β carries them
+      across two new boundaries — the Tauri constraint payload and the debug-MCP tool
+      results. The invariant requires the convention (rad/deg/cycles) be named in
+      a greppable contract comment or schema text; a silent rad=1 SI erasure is a
+      defect even when the number is right. The pre-existing undeclared GUI/MCP channels
+      are chartered elsewhere (angle-dimension-completion leaves ι/υ) — this binding
+      covers only the boundary β newly introduces.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the declaration is a contract comment in code not yet written; its wording
+        is checkable only against the landed payload/tool schema.
+  - name: degradation-diagnostics-are-coded-and-severity-safe
+    binding: G7 / INV-SF-6 + INV-SF-2 severity-hygiene corollary. Every cause β emits
+      for C-STATUS unmeasured(cause) — kernel absent, not(has_openvdb), cancelled,
+      never-ran, seam error — must carry a DiagnosticCode (Diagnostic::with_code,
+      crates/reify-core/src/diagnostics.rs) and must NOT be Error severity, because
+      all of them are reachable on a healthy GUI path. Each cause must also classify
+      expected vs unexpected per Leo's 2026-08-26 Indeterminate doctrine (INV-SF-4).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn with_code
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: measurement-fixtures-produce-measured-verdicts-today
+    binding: 'signal premise, PROBE-VERIFIED 2026-08-26 against target/release/reify
+      on main 4df223e6ac. reify check examples/representation_within.ri → "VIOLATED
+      CurvedBallCheck#constraint[0]" + "error: RepresentationWithin: sampled facet
+      deviation 6.006e-2 m exceeds bound 1.000e-6 m", exit 1. crates/reify-cli/tests/fixtures/representation_within_satisfied.ri
+      → "OK SphereCheck#constraint[0]", exit 0. examples/gdt_conformance_violated.ri
+      → "VIOLATED Conforms#0[0]" + "error: Conforms VIOLATED: measured deviation 0.5000
+      mm exceeds the 0.1000 mm tolerance zone", exit 1; the satisfied twin → OK, exit
+      0. β''s parity oracle therefore has a live, deterministic reference on both
+      polarities for both non-thickness kinds.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: constraint RepresentationWithin\(subject,
+      paths:
+      - examples/representation_within.ri
+      expect: present
+- label: γ
+  task_id: 6742
+  title: 'gui-on-demand-measurement γ: measurement staleness epochs (session edit
+    generation + stale flag through payload and events)'
+  note: 'A10 answers PRD Open Question 2 outright: there is no reusable freshness
+    counter reachable from gui/src-tauri.'
+  capabilities:
+  - name: no-reusable-epoch-machinery-exists
+    binding: 'PASS-WITH-AMENDMENT (A10). RESOLVES PRD Open Question 2 ("reuse existing
+      freshness/hash tracking vs a plain counter") — there is nothing to reuse. No
+      generation/epoch/revision/dirty counter exists on EngineSession or AppState.
+      EngineSession::is_stale() is a reload-FAILURE flag, not freshness; is_idle()
+      is a presence check. Engine::allocate_snapshot_version / last_allocated_version
+      / current_eval_version are all pub(crate), unreachable from gui/src-tauri. CacheStore::version()
+      IS public but bump_version() has only test callers, so it reads VersionId(0)
+      forever in production. Freshness::Intermediate{generation} is deliberately collapsed
+      to a tag string by the GUI. Verdict: add a plain u64 on EngineSession, bumped
+      at the commit points.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn is_stale\(&self\)
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: mutating-entry-points-are-enumerable-and-bounded
+    binding: 'capability→producer (wired) — the generation counter has exactly four
+      production bump sites on EngineSession: load_from_source, set_parameter, load_file,
+      update_source (plus load_from_compiled, pub(crate) test-support). set_active_fea_case
+      mutates presentation without re-eval and must NOT bump. Enumerated by grep over
+      gui/src-tauri/src/engine.rs 2026-08-26.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn check_with_solve_slot\(
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: stale-flag-rides-the-generated-diff-channel
+    binding: 'capability→producer (wired) — adding `stale` + `epoch` to ConstraintData
+      needs no new event plumbing. The gui_state! schema''s `diffed keyed` arm generates
+      the constraint-update / constraint-removed emission into delta_to_events, keyed
+      on node_id, serialising the whole item; main.rs''s emit_delta does the app.emit.
+      The forward-compat idiom for a new field is #[serde(default)], per demand_prune_measurement.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct ConstraintData
+      paths:
+      - gui/src-tauri/src/types.rs
+      expect: present
+  - name: retained-stale-store-is-session-owned
+    binding: DAG-direction + A4 inheritance — γ's "measured verdict retained with
+      stale=true" is only implementable because β homes the measurement-result store
+      on EngineSession rather than in Engine.achieved_repr_tol, which every build_gui_state
+      wipes. β is upstream of γ by a real edge, so the capability γ's signal needs
+      is produced upstream, never downstream.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a DAG-direction property over the batch's own edges, plus a design constraint
+        inherited from β's A4 binding.
+- label: δ
+  task_id: 6743
+  title: 'gui-on-demand-measurement δ: frontend idle trigger, Measure-now, stale rendering,
+    progress — and the constraint-status case fix that unblocks the signal'
+  note: A11 is a LIVE DEFECT discovered at decompose that makes δ's user-observable
+    signal unobservable. It is folded into δ rather than split, because δ owns the
+    constraint panel and its vitest suite, and a split would be exactly the prose-ordered
+    dependency the overlay forbids.
+  capabilities:
+  - name: constraint-status-case-mismatch-blocks-the-signal
+    binding: 'PASS-WITH-AMENDMENT (A11). LIVE DEFECT, verified independently 2026-08-26.
+      build_constraints (gui/src-tauri/src/engine.rs) emits PascalCase "Satisfied"
+      / "Violated" / "Indeterminate"; ConstraintPanel.tsx statusIcon/statusTitle/isExpandable
+      and STATUS_PRIORITY, StatusBar.tsx''s constraintSummary, and ChatPanel.tsx''s
+      hasViolatedConstraints ALL compare lowercase, and no toLowerCase/normalisation
+      exists anywhere in gui/src. Consequences today: every badge renders "?" with
+      the indeterminate tooltip; data-status="Satisfied" matches no CSS rule so no
+      colour; every row is "expandable"; StatusBar counts everything indeterminate;
+      ChatPanel''s violated-constraint context option never enables. δ''s signal ("the
+      constraint panel shows a measured verdict") is therefore VACUOUS until this
+      is fixed — a measured Satisfied would still render "?". Note this ALSO means
+      PRD §2''s "all three kinds render Indeterminate in the constraint panel" is
+      true for a broader reason than the measurement gap. δ owns the fix plus a two-sided
+      pin.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the fix direction is tactical (normalize the frontend to PascalCase,
+        lowercase the backend, or add a shared mapper), so any grep pinned to one
+        side inverts under the other two and would be a false check. Observed 2026-08-26
+        by direct read of both sides.
+  - name: the-entire-constraint-vitest-suite-is-vacuous-on-this
+    binding: 'G6 vacuity — the existing pins cannot catch A11. ConstraintPanel.test.tsx''s
+      makeConstraint factory defaults status: ''satisfied''; StatusBar.test.tsx''s
+      makeConstraint takes lowercase; engineStore.test.ts''s constraint fixtures are
+      lowercase. NO test anywhere feeds PascalCase status into a frontend component,
+      while the Rust side pins PascalCase hard (types_tests.rs, commands_tests.rs,
+      engine_tests.rs, gui_state_parity_tests.rs). δ''s fix must add the missing two-sided
+      pin, not merely flip fixtures.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: same fix-direction dependence as the row above — if delta lowercases
+        the backend, ChatPanel's comparison legitimately stays as written and an expect:absent
+        check would red a correct fix.
+  - name: debounce-plus-idle-gate-precedent-is-in-tree
+    binding: 'capability→producer (wired) — createSelectiveDemandSync (gui/src/stores/engineStore.ts)
+      is the exact shape δ''s idle auto-measure copies: a createEffect(on(…, {defer:
+      true})) with a setTimeout debounce (SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS = 150)
+      and — load-bearing — an onCleanup(clearTimeout), whose absence caused esc-4853-42
+      (task 4856) via a post-teardown vitest race. The complementary idle GATE (fire
+      only when phase === ''idle'') is the App.tsx syncObservedDemand effect. δ wants
+      both. Also reusable: engineStore''s 1 s applySolverProgress visibility debounce,
+      the shape C-STATUS''s `measuring` state needs so sub-second passes never flash
+      a spinner. No requestIdleCallback or throttle exists in gui/src.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function createSelectiveDemandSync\(
+      paths:
+      - gui/src/stores/engineStore.ts
+      expect: present
+  - name: stale-render-ux-precedent-exists-but-carries-no-css
+    binding: capability→producer, PARTIAL. ProbeSystem (gui/src/viewport/ProbeSystem.tsx)
+      is the in-tree stale + re-affordance precedent — MARKER_COLOR_STALE / MARKER_OPACITY_STALE
+      for the 3D marker, a `probe-stale` class on the DOM row, and a "Re-pin" button
+      gated on probe.stale, with probeStore's markStale/updateSample clearing it.
+      BUT `.probe-stale` has NO CSS rule anywhere in gui/src or global.css — the visible
+      dimming is 3D-material-only. δ inherits the UX SHAPE (grey, reduced emphasis,
+      explicit re-do button, boolean cleared by a fresh result) and must author the
+      DOM dim style from scratch. ConstraintPanel.module.css already keys colour off
+      .statusBadge[data-status="…"], which is the natural hook.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MARKER_OPACITY_STALE
+      paths:
+      - gui/src/viewport/ProbeSystem.tsx
+      expect: present
+  - name: vitest-runner-is-self-provisioning
+    binding: capability→producer (wired) — δ's signal names vitest via scripts/gui-test.sh,
+      the canonical self-provisioning runner (npm ci --prefer-offline first, so it
+      works in a warm lane where gui/node_modules is absent). A bare `cd gui && npm
+      test` FAILS in a fresh lane at the pretest build:grammar hook (esc-5232-3).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: prefer-offline
+      paths:
+      - scripts/gui-test.sh
+      expect: present
+- label: ε
+  task_id: 6744
+  title: 'gui-on-demand-measurement ε: thickness-DFM / OpenVDB measurement leg under
+    the GUI configuration'
+  note: A14 homes BT-1's thickness parity row here rather than on ζ; A15 corrects
+    the feature-vs-cfg gating claim.
+  capabilities:
+  - name: thickness-dfm-measures-today-under-check
+    binding: 'signal premise, PROBE-VERIFIED 2026-08-26 against target/release/reify.
+      reify check crates/reify-cli/tests/fixtures/dfm_thickness.ri → "warning: W_DFM_MIN_WALL…"
+      + "warning: W_DFM_MIN_FEATURE…", exit 0; dfm_thickness_error.ri → the E_ twins,
+      exit 1. Both drive the OpenVDB SDF path (realize_solid_sdf → Voxel demand) via
+      ensure_openvdb_kernel. ε''s parity reference is live and deterministic.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: min_feature_size
+      paths:
+      - crates/reify-cli/tests/fixtures/dfm_thickness.ri
+      expect: present
+  - name: openvdb-gating-is-a-build-script-cfg-not-a-cargo-feature
+    binding: 'PASS-WITH-AMENDMENT (A15). CORRECTS PRD §3''s "no-op without the openvdb
+      feature". There is no `openvdb` cargo feature. Engine::ensure_openvdb_kernel
+      is always compiled and is never #[cfg]-gated; gating is entirely via the kernel
+      REGISTRY inventory, whose submission is gated on has_openvdb — a build-script
+      cfg emitted by crates/reify-eval/build.rs from NATIVE OpenVDB library availability.
+      Without it the registry lookup misses and the method returns false (no-op, leaving
+      default_kernel_name unchanged). BT-7''s "no openvdb" leg must therefore gate
+      on #[cfg(not(has_openvdb))], not a feature flag.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: has_openvdb
+      paths:
+      - crates/reify-eval/build.rs
+      expect: present
+  - name: ensure-openvdb-kernel-has-a-second-production-caller
+    binding: 'capability→producer (wired), scope note. ensure_openvdb_kernel is called
+      from cmd_check''s thickness arm AND from cmd_build''s isosurface arm — the method''s
+      own docstring claiming sole cmd_check ownership is STALE SOURCE (worth a drive-by
+      fix). The seam must not assume sole ownership. It is idempotent (early return
+      when the kernel is already present) and registry-driven, so the seam calling
+      it after #6666 has already registered it is a no-op, not a conflict.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn ensure_openvdb_kernel\(
+      paths:
+      - crates/reify-eval/src/engine_admin.rs
+      expect: present
+  - name: isosurface-substrate-exists-for-the-fixture
+    binding: 'capability→producer (wired) — D9 requires an isosurface design that
+      #6666 makes realizable in the viewport. The authoring idiom exists on main:
+      examples/multi_kernel/voxel_to_mesh_iso.ri, with cmd_build''s module_has_isosurface
+      arm and crates/reify-eval/tests/isosurface_iso_option_e2e.rs as the engine-level
+      precedent. ε adds a min_feature_size DFM rule to an isosurface subject; no novel
+      .ri syntax.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: isosurface
+      paths:
+      - examples/multi_kernel/voxel_to_mesh_iso.ri
+      expect: present
+  - name: gui-openvdb-registration-is-an-upstream-producer
+    binding: 'DAG-direction — #6666 (GUI OpenVDB kernel registration for viewport
+      realization) is wired as a real add_dependency edge and is UPSTREAM of ε. The
+      measurement leg itself does not strictly need it (the seam calls ensure_openvdb_kernel),
+      but ε''s signal is end-to-end — the isosurface design must realize in the viewport
+      AND measure — so the edge is load-bearing for the signal as written, per D9.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a DAG-direction property over a live cross-batch task edge; verified
+        via the wired add_dependency, not via tracked source.
+  - name: bt1-thickness-row-is-homed-here-not-on-zeta
+    binding: 'PASS-WITH-AMENDMENT (A14). Anti-inversion. PRD §9 gives ζ a BT-1 corpus
+      that INCLUDES thickness-DFM, while §10 wires ζ to β and γ only — so ζ would
+      assert a capability its sibling ε produces (producer-downstream). Resolved by
+      homing the thickness/min-wall/min-feature parity row on ε, whose own signal
+      already IS that assertion, and scoping ζ''s BT-1 to ReprWithin + geometric Conforms
+      + DFM overhang/draft. This also keeps ζ off #6666''s dependency chain. The split
+      line is exactly the ensure_openvdb_kernel gating boundary, not an arbitrary
+      cut.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a scope-partition property between two sibling leaves; expressible only
+        as task text, not as a pattern in tracked source.
+- label: ζ
+  task_id: 6745
+  title: 'gui-on-demand-measurement ζ: differential-oracle + no-perturbation gate
+    tests (BT-1..BT-4, BT-8)'
+  note: A13 replaces the PRD's drift-guard registration list wholesale; A14 removes
+    the thickness row from BT-1.
+  capabilities:
+  - name: heavy-partition-is-not-in-nextest-toml
+    binding: PASS-WITH-AMENDMENT (A13). CORRECTS the PRD's ζ text and the overlay's
+      own wording. The heavy/smoke partition is a hand-maintained or-joined filterset,
+      REIFY_HEAVY_NEXTEST_FILTER in scripts/heavy-test-filter-lib.sh — the single
+      place membership can change; verify.sh derives the gate view by negating it
+      under REIFY_GATE_EXCLUDE_HEAVY=1. .config/nextest.toml governs only concurrency
+      group (occt), slow-timeout ceilings and LPT priority. A new heavy test in crates/reify-eval/tests/
+      adds an ATOM there (test-scoped preferred, per esc-6368-2), and a .config/nextest.toml
+      override only if it genuinely needs >1200 s or is a makespan straggler.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: REIFY_HEAVY_NEXTEST_FILTER
+      paths:
+      - scripts/heavy-test-filter-lib.sh
+      expect: present
+  - name: gui-src-tauri-tests-cannot-be-heavy-excluded
+    binding: 'PASS-WITH-AMENDMENT (A13), and it constrains WHERE the BT tests may
+      land. The reify-gui verify pass runs `cargo nextest run -p reify-gui --features
+      gui` with NO -E filterset BY DESIGN, pinned by assertion (b8) of tests/infra/test_compute_trampoline_registration_wired.sh
+      ("gui-feature pass carries no '' -E '' filterset"), so REIFY_GATE_EXCLUDE_HEAVY
+      never reaches it. Separately, tests/infra/test_heavy_filter_atoms.sh resolves
+      every atom as crates/$pkg/tests/$bin.rs, so a package(reify-gui) atom would
+      false-fail. CONSEQUENCE: any BT test landing in gui/src-tauri/tests/ is PERMANENTLY
+      gate-resident and must be fast. The seconds-class measurement tests (§2: ~10.6
+      s for one bounded sphere) belong in crates/reify-eval/tests/.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: gui-feature pass carries no
+      paths:
+      - tests/infra/test_compute_trampoline_registration_wired.sh
+      expect: present
+  - name: reify-eval-tests-must-be-harness-submodules
+    binding: 'PASS-WITH-AMENDMENT (A13), UNLISTED by the overlay rule. reify-eval
+      is one of the five consolidatable crates in tests/infra/harness-layout-lib.sh,
+      so a standalone crates/reify-eval/tests/<f>.rs that is neither harness_*.rs
+      nor one of the seven override stems FAILS scripts/check-harness-baseline-registration.sh
+      with reason=unregistered-standalone — an early plan gate, before any compile.
+      Grandfathering a harness-layout-baseline.manifest row is SUPERSEDED (Leo 2026-07-22,
+      esc-5056-11): the manifest is a shrinking ratchet. The BT tests must land as
+      a #[path] submodule under crates/reify-eval/tests/harness_<subsystem>/. Watch
+      the 20000-raw-line per-compile-unit cap (tests/infra/test_harness_kloc_cap.sh);
+      harness_fea_solver_e2e has only ~1.4 kLOC of headroom.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: unregistered-standalone
+      paths:
+      - scripts/check-harness-baseline-registration.sh
+      expect: present
+  - name: run-all-classification-covers-only-infra-shell-tests
+    binding: PASS-WITH-AMENDMENT (A13). tests/infra/run-all-classification.manifest
+      is one row per discovered tests/infra/test_*.sh, bucket ∈ {pool, intra-run-serial,
+      host-exclusive}, drift-checked by tests/infra/test_run_all_classification.sh
+      (declared union == live discovered set) and by the pure-bash early gate scripts/check-infra-classification-manifest.sh.
+      RUST INTEGRATION TESTS NEED NO ROW. ζ owes a bucket row only if it also adds
+      a tests/infra/test_*.sh.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: host-exclusive
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: wallclock-guard-does-not-reach-rust
+    binding: PASS-WITH-AMENDMENT (A13). tests/infra/test_no_new_wallclock_upper_bounds.sh
+      scans tests/infra/*.sh ONLY and has no allowlist file — the escape is an inline
+      `# wallclock:allow` comment on the assert line. A Rust elapsed-time assertion
+      in BT-1..BT-8 is OUTSIDE the guard entirely, so "no new wall-clock upper bounds"
+      is a deliberate ζ DECISION, not a registration. Assert structurally, as precision-δ
+      (#6168) does with its achieved_repr_tol key-set assertion.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: wallclock:allow
+      paths:
+      - tests/infra/test_no_new_wallclock_upper_bounds.sh
+      expect: present
+  - name: new-ri-fixtures-need-rust-coupled-registration
+    binding: capability→producer (wired) — a NEW .ri fixture under tests/prd-gate/fixtures/
+      does not escalate verify scope, but the moment a compiled Rust target reads
+      it, its basename must join _RUST_COUPLED_RI_FIXTURES in scripts/verify.sh or
+      tests/infra/test_verify_scope.sh's PG-DRIFT scenario goes RED — it re-derives
+      the coupled set by git grep over tracked sources on every infra run. Same-diff
+      obligation, self-enforcing.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: _RUST_COUPLED_RI_FIXTURES
+      paths:
+      - scripts/verify.sh
+      expect: present
+  - name: bt4-capture-is-observation-only-by-construction
+    binding: signal premise — BT-4 is a cheap pin, not a risk. In surface_subtree's
+      tessellate callback the mesh is produced by kernel.tessellate(placed_id, budget)
+      BEFORE the `if capture_repr_tol` gate and is pushed into `meshes` unconditionally;
+      the capture branch only READS it to call measure_mesh_deviation. Capture-on/capture-off
+      mesh byte-identity therefore holds structurally.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: achieved_repr_tol\.insert\(
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: bt3-no-perturbation-has-an-exact-in-tree-template
+    binding: 'capability→producer (wired) — EngineSession::build_gui_state_full_scene
+      already brackets a full-scope read the way BT-3 requires: save demand_is_full_scope()
+      + geometry_derived_cache + tess_mesh_cache + tess_diag_cache, run under catch_unwind(AssertUnwindSafe(…)),
+      restore all four on every path, resume_unwind the payload. Its own doc argues
+      why a leaked cache entry is a CORRECTNESS leak, not a perf leak. ζ asserts against
+      this discipline; β implements it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn build_gui_state_full_scene\(
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: bt8-kind-gating-negative-is-observable
+    binding: 'G6 branch 4 — the required negative. Kind gating is observable at two
+      independent points: cmd_check''s else-branch takes the lightweight Engine::new
+      path for a module with none of the three kinds, and dispatch_constraints'' fast-path
+      guard (`if self.achieved_repr_tol.is_empty() && self.optimization_registry.is_empty()`)
+      early-returns with zero rw_slots allocation. BT-8 asserts no pass is scheduled
+      and behaviour is byte-identical; both anchors are live.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: self\.achieved_repr_tol\.is_empty\(\)
+      paths:
+      - crates/reify-eval/src/engine_constraints.rs
+      expect: present
+  - name: bt1-corpus-already-exists-with-two-caveats
+    binding: 'capability→producer (wired), with named gaps. Committed fixtures cover
+      every kind ζ owns: ReprWithin satisfied (crates/reify-cli/tests/fixtures/representation_within_satisfied.ri)
+      and violated (examples/representation_within.ri); geometric Conforms both polarities
+      (examples/gdt_conformance_satisfied.ri / _violated.ri); DFM overhang both severities
+      (crates/reify-cli/tests/fixtures/dfm_overhang.ri / _error.ri); the combined-kind
+      case (dfm_with_repr_within.ri) and the three-kind ordering weave (examples/tolerancing/gdt_pass_weave.ri).
+      TWO GAPS: (1) _DFM_DRAFT has no focused CLI-harness fixture, only the broad
+      examples/process/std_process_dfm_metrology.ri; (2) the nine tests/prd-gate/fixtures/pnrg_*.ri
+      probes are consumed by NO automated test and carry a documented "OK trap" —
+      an OK verdict there means NOTHING WAS MEASURED, not deviation≈0 — so if ζ reuses
+      them it must assert on the presence of the measured-deviation diagnostic line,
+      never on exit code.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: gdt_conformance_violated
+      paths:
+      - crates/reify-cli/tests/harness_cli
+      expect: present
+- label: η
+  task_id: 6746
+  title: 'gui-on-demand-measurement η: docs-truth surface — GUI measurement workflow
+    in the constraint/stdlib chunks and the reify-design index'
+  capabilities:
+  - name: target-chunks-exist-and-this-is-an-add
+    binding: capability→producer (wired) — crates/reify-mcp/src/tools/chunks/ holds
+      17 chunks registered by include_str! in crates/reify-mcp/src/tools/language_chunks.rs.
+      constraints.md and stdlib.md are the relevant surfaces (stdlib.md names `std.process
+      — manufacturing process traits, DFM rules`). Neither carries any GUI-measurement
+      workflow prose today, so the discoverability acceptance cannot pass vacuously
+      against pre-existing text.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const CONSTRAINTS
+      paths:
+      - crates/reify-mcp/src/tools/language_chunks.rs
+      expect: present
+  - name: cheatsheet-index-site-exists
+    binding: capability→producer (wired) — .claude/skills/reify-design/SKILL.md carries
+      the one-line-per-idiom index convention and already points at examples/best_practices/INDEX.md.
+      Docs-truth arm 3 is a one-line index entry, never an inline playbook.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Best-practices corpus
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+  - name: no-exemplar-corpus-leaf-is-the-correct-disposition
+    binding: docs-truth arm 2 is CONDITIONAL ("if the change introduces or alters
+      an authoring idiom"). This PRD introduces no new .ri authoring idiom — the three
+      constraint kinds already exist and are already exemplified; only WHERE they
+      get measured changes. Recording the disposition explicitly rather than filing
+      a vacuous exemplar leaf.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the absence of a required deliverable is a scoping judgment against
+        the overlay's conditional arm; nothing in tracked source expresses it.
+  - name: ordered-after-the-mechanism-it-documents
+    binding: DAG-direction — η carries real add_dependency edges on δ (the user-facing
+      affordances) and ε (the thickness leg), satisfying the docs-truth decompose
+      rule that doc leaves are wired same-diff or as real edges, never ordered by
+      prose.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a DAG-direction property over the batch's own edges.
+- label: θ
+  task_id: 6747
+  title: 'gui-on-demand-measurement θ: companion corrections — precision PRD §4.6
+    note + amend #6171 to gate on the refine flag'
+  note: 'A16 — the #6667 → #6169 edge named in PRD §6/§10 was wired by the decompose
+    session itself, not deferred to θ; θ verifies it.'
+  capabilities:
+  - name: the-superseded-4.6-rows-are-present-verbatim
+    binding: 'capability→producer (wired) — docs/prds/v0_6/precision-nominal-representation-guarantee.md
+      §4.6 carries both texts θ must annotate: the surface table''s GUI-viewport row
+      ("No | Same attributable Indeterminate (task ζ). Revisit if a use case contradicts.")
+      and the rationale bullet "F''s scoping is structural, not new gating code. `capture_repr_tol`
+      is set only by `cmd_check` … GUI and `reify build` never set it, so they remain
+      byte-identical by construction." Both re-read 2026-08-26. θ adds a DATED correction
+      note beside the original text — never a rewrite of the as-authored rationale.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: F's scoping is structural
+      paths:
+      - docs/prds/v0_6/precision-nominal-representation-guarantee.md
+      expect: present
+  - name: 6171-gates-the-loop-on-bare-capture-today
+    binding: 'signal premise — #6171''s filed C-LOOP pseudocode reads `if !capture_repr_tol
+      || mesh.indices.is_empty(): push(mesh); return`, and its user-observable signal
+      asserts the unbounded-module negative is "structurally guaranteed because set_capture_repr_tol(true)
+      has exactly one production call site". D2 breaks exactly that premise the moment
+      the GUI starts capturing. θ''s amendment retargets the gate to the refine flag
+      and records that byte-identity now rests on C-FLAGS/BT-4 rather than on single-call-site
+      scoping. Task record re-read 2026-08-26; #6171 is pending with deps 6166, 6167,
+      6168.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is an edit to a fused-memory task record, not to tracked
+        source; verifiable only via get_task.
+  - name: 6667-to-6169-edge-was-missing
+    binding: 'PASS-WITH-AMENDMENT (A16). #6667 tells its implementer to "locate the
+      zeta mechanism the precision PRD introduced for ReprWithin and reuse it — do
+      not invent a parallel attribution channel", but that mechanism is #6169 (precision-nominal
+      ζ, pending) and #6667 carried NO dependency edge (dependencies: [] at decompose
+      read). Since β depends on #6667, leaving the edge to θ would let #6667 dispatch
+      with no channel to reuse — the exact outcome its own text forbids. The edge
+      is therefore wired by THIS decompose session, and θ''s item (3) is reduced to
+      verifying it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a DAG property over live task edges; verified via get_task, not via
+        tracked source.
+  - name: cite-task-ids-never-task-status
+    binding: 'process capability — θ''s docs edit cites #NNNN only and says nothing
+      about done/pending/deferred, per the overlay''s terminal-status rule. The pre-fix
+      kernel-seam-contracts.md defect (#6355) is the worked counterexample.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a prose-discipline requirement about what a docs edit may say; not mechanically
+        expressible.
+- label: ι
+  task_id: 6748
+  title: 'gui-on-demand-measurement ι: PRD close — leaf-ID backfill, terminal stamp,
+    AS-AUTHORED freeze'
+  capabilities:
+  - name: terminal-stamp-per-the-closed-vocabulary
+    binding: process capability — overlay decompose-close obligation (2). Terminal
+      vocabulary is closed to exactly SHIPPED / SUPERSEDED / WITHDRAWN, matched case-insensitively
+      on the first token after the Status label within the first ~10 lines. Header
+      shape is copied from docs/prds/v0_6/data-carrying-enums.md and docs/prds/kernel-seam-contracts.md
+      — terminal token + landed leaf IDs, the AS-AUTHORED freeze sentence, and an
+      explicit LIVE vs AS-AUTHORED map. The same header goes on the .capability-manifest.md.
+      Cancelled sibling leaves count as satisfied for ι's dependency edges.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Status.*SHIPPED
+      paths:
+      - docs/prds/v0_6/gui-on-demand-measurement.md
+      expect: present
+  - name: leaf-ids-are-backfilled-at-decompose-not-at-close
+    binding: 'process capability — overlay decompose-close obligation (1) is discharged
+      by the DECOMPOSE session, not by ι: every §10 leaf row carries its real #NNNN
+      in the same commit as the stamped sidecar. ι''s own deliverable is the terminal
+      header. This closes the esc-6232-5 defect where a decomposition section read
+      "task IDs assigned at decompose time" while containing none.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: discharged by the decompose session's own commit; ι inherits it rather
+        than producing it.

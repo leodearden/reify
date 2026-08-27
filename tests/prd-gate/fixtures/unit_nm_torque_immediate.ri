@@ -18,12 +18,13 @@
 //   5NM / 5MM / 5Kg / 5RAD -> error: unknown unit
 // Leaf θ PINS that distinctness with a test rather than building it.
 //
-// `Torque` resolves today only via the stdlib alias
-// `pub type Torque = Force * Length / Angle` (stdlib/ports_mechanical.ri:29), whose
-// own header (:9-11) records that it exists *because* Torque is absent from
+// `Torque` resolved, pre-η, only via the stdlib alias
+// `pub type Torque = Force * Length / Angle` (formerly stdlib/ports_mechanical.ri:29), whose
+// own header recorded that it existed *because* Torque was absent from
 // NAMED_DIMENSIONS and because `unit` declarations take a named dimension, never a
-// compound expression. Leaf η promotes Torque to a named dimension and retires the
-// alias; θ then declares `pub unit Nm : Torque = 1`.
+// compound expression. Leaf η (task 5785, merge 61300d09) promoted Torque to a named
+// dimension and retired the alias — `ports_mechanical.ri:17-29` is now a pointer comment,
+// not an alias declaration; θ then declared `pub unit Nm : Torque = 1`.
 //
 // Expected after θ: `5Nm` evaluates identically to `5N*m/rad`, and `5nm` still
 // evaluates to 5e-9 m.

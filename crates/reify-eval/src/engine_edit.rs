@@ -49,8 +49,9 @@ use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::warm_pool::WarmStatePool;
 use crate::{
-    CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup, build_meta_map,
-    eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
+    CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
+    OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
+    merge_functions,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -1450,6 +1451,20 @@ impl Engine {
         let mut resolved_params = HashMap::new();
         let mut diagnostics = Vec::new();
 
+        // task #4880: an OWNED compute-dispatch snapshot so `@optimized` ComputeNodes
+        // (e.g. `solve_elastic_static`) reached from inside the solver's per-candidate
+        // cost loop dispatch through the real Engine trampoline instead of hardcoding to
+        // `Value::Undef`. Without it this WARM edit path diverges from the COLD
+        // `Engine::eval` path (engine_eval.rs), which does wire it: an FEA-in-the-loop
+        // model would resolve on load and then silently revert to Infeasible/Undef on
+        // the first GUI slider move, with no diagnostic. `from_registry(&self.compute_registry)`
+        // — NOT `from_engine(self)`: these are `&mut self` methods, and `edit_source`
+        // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
+        // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
+        // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
+        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
+
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
@@ -1528,7 +1543,7 @@ impl Engine {
                     functions: Arc::clone(&functions),
                 };
 
-                match solver.solve(&problem) {
+                match solver.solve_with_dispatch(&problem, Some(&dispatcher)) {
                     SolveResult::Solved {
                         values: solver_values,
                         unique,
@@ -3598,6 +3613,20 @@ impl Engine {
         let mut resolved_params: HashMap<ValueCellId, Value> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
+        // task #4880: an OWNED compute-dispatch snapshot so `@optimized` ComputeNodes
+        // (e.g. `solve_elastic_static`) reached from inside the solver's per-candidate
+        // cost loop dispatch through the real Engine trampoline instead of hardcoding to
+        // `Value::Undef`. Without it this WARM edit path diverges from the COLD
+        // `Engine::eval` path (engine_eval.rs), which does wire it: an FEA-in-the-loop
+        // model would resolve on load and then silently revert to Infeasible/Undef on
+        // the first GUI slider move, with no diagnostic. `from_registry(&self.compute_registry)`
+        // — NOT `from_engine(self)`: these are `&mut self` methods, and `edit_source`
+        // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
+        // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
+        // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
+        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
+
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
@@ -3676,7 +3705,7 @@ impl Engine {
                     functions: Arc::clone(&functions),
                 };
 
-                match solver.solve(&problem) {
+                match solver.solve_with_dispatch(&problem, Some(&dispatcher)) {
                     SolveResult::Solved {
                         values: solver_values,
                         unique,

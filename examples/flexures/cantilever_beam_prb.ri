@@ -9,7 +9,7 @@
 //
 // Geometry (§10.1 row 1): a 20 mm × 5 mm × 0.5 mm AISI-1045 steel beam.
 //   I       = b·h³/12      = 5 mm · (0.5 mm)³ / 12  ≈ 5.21e-14 m⁴
-//   k_θ     = 2.65·E·I / L = 2.65 · 205 GPa · I / 20 mm  ≈ 1.42 N·m/rad
+//   k_θ     = 2.65·E·I / L = 2.65 · 205 GPa · I / 20 mm  ≈ 1.42 N·m/rad²
 // θ_yield ≈ 6.93° > 5°, so the prb_validity range is the ±5° PRB cap.
 //
 // The flexure is positional-only (native builtin, no .ri signature):

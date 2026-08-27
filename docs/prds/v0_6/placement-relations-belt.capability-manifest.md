@@ -88,9 +88,9 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
 - `grammar-surface` → PASS. `.world_frame` member access + `in_frame` call
   parse (grammar fixture, exit 0; `sub.member` in relate operands proven by
   probe p2a / `examples/geometric_relations/bolt_plate.ri` on main).
-- `frame-conversion-substrate` → PASS. `frame_to_frame`
-  (`crates/reify-stdlib/src/geometry.rs:3183`); relate_solve writes
-  `Value::Frame` poses (§4 table, re-verified).
+- `frame-conversion-substrate` → PASS. The `frame_to_frame` arm of
+  `eval_geometry` (`crates/reify-stdlib/src/geometry.rs:512-575`);
+  relate_solve writes `Value::Frame` poses (§4 table, re-verified).
 - `cell-dep-graph-substrate` → PASS. `build_dependent_cells`
   (`crates/reify-eval/src/engine_eval.rs:1553`, #5188 done — same evidence
   DIC's manifest binds); §7.1.3's cycle check extends this graph with

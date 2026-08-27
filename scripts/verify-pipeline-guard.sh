@@ -29,6 +29,23 @@
 #   sourced:  scripts/<lib> for each 'source "$SCRIPT_DIR/<lib>"' line in verify.sh
 #             (auto-derived live; self-healing — future sourced libs are
 #             automatically load-bearing without any manifest edit)
+#   emitted:  every repo-relative *.sh path invoked by an EMITTED plan line in
+#             verify.sh — i.e. an add() / add_tool() argument — whatever
+#             directory it lives in (scripts/, tests/, …)
+#             (auto-derived live; self-healing — a future lint/gate script
+#             wired into the plan is automatically load-bearing without any
+#             manifest edit). These gate scripts are never `source`d, so the
+#             'sourced' clause above cannot see them; without this clause a
+#             gate-script-only diff is fast-path eligible and lands without
+#             ever having been run (task 6320; the #4618/#4624 -> #4288
+#             ambush class, doc-side analogue in 'doc-sync' below).
+#             LIMITATION (deliberate, pinned by Pair E's LIMITATION case in
+#             tests/infra/test_verify_pipeline_guard.sh): this reads verify.sh's
+#             SOURCE TEXT, so it sees only paths written LITERALLY in a plan
+#             line. A plan line assembled through a variable
+#             (`_cmd="./scripts/x.sh"; add_tool "$_cmd"` — the shape used for
+#             _gui_cmd / _sidecar_cmd / _ts_cmd) derives nothing and still
+#             needs a verify-pipeline-paths.txt row (or a rewrite to a literal).
 #   doc-sync: docs cross-referenced by tests/infra doc-sync checks, from
 #             scripts/doc-sync-paths.txt (the doc-side analogue of the
 #             manifest source above — see that file's header for the
@@ -45,8 +62,11 @@
 #
 # Environment knobs:
 #   REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — override path to verify.sh used for
-#             live sourced-lib derivation (testability / operator override; mirrors
-#             the REIFY_* knob idiom used throughout verify.sh and its libs).
+#             BOTH live derivations that read verify.sh: the sourced-lib clause
+#             and the emitted-gate clause (testability / operator override;
+#             mirrors the REIFY_* knob idiom used throughout verify.sh and its
+#             libs). One knob, both clauses — a synthetic verify.sh injected
+#             here drives sourced-lib and emitted-gate coverage alike.
 #   REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS — override path to the doc-sync
 #             manifest (testability / synthetic-injection + operator override;
 #             mirrors REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH above). Defaults to
@@ -120,7 +140,67 @@ if [ -f "$_verify_sh" ]; then
              | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p')
 fi
 
-# 4. Doc-sync manifest: non-comment/non-blank lines from doc-sync-paths.txt —
+# 4. Live emitted-gate derivation (task 6320): append every repo-relative
+#    *.sh path invoked by verify.sh's EMITTED plan lines (add()/add_tool(),
+#    the only two PLAN+= sites). These gate scripts are never `source`d, so
+#    clause 3 cannot see them; without this clause a gate-script-only diff is
+#    fast-path eligible (measured exit 1 at HEAD fee75336ca for
+#    check-manifold-deps.sh and six siblings, while task 6243's two hand-added
+#    manifest rows were the only covered ones). Self-healing: a future emitted
+#    gate needs no verify-pipeline-paths.txt row.
+#    Ordered immediately after clause 3 because the two live verify.sh
+#    derivations share the $_verify_sh resolved just above, so the
+#    REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH override applies to both with no
+#    second env knob.
+#    NOT scripts/-only: tests/sync_comments_test.sh (verify.sh:2627) is an
+#    emitted gate of the identical ambush class living outside scripts/, and a
+#    prefix-restricted clause missed it (measured exit 1). Deriving any
+#    directory-qualified *.sh keeps the clause honest about the whole class.
+#    tests/infra/*.sh paths so derived (run_all.sh) are a harmless duplicate of
+#    the in-code infra-test glob clause at the dispatch site below — the set is
+#    sort -u'd here, and that clause matches by regex regardless.
+#    LIMITATION: literal paths only — see the header's 'emitted' bullet.
+if [ -f "$_verify_sh" ]; then
+    while IFS= read -r _gate; do
+        [ -z "$_gate" ] && continue
+        _SET="${_SET}"$'\n'"${_gate}"
+    #    Both greps below are load-bearing, not decoration. Do not simplify
+    #    either away. (This block sits at the TAIL of the loop body, not above
+    #    the `if`, so it is adjacent to the pipeline it documents — where a
+    #    future simplifier actually looks. Bash admits no comment between
+    #    `done` and its `< <(...)` redirect, so this is as close as the syntax
+    #    allows; please keep it here rather than hoisting it.)
+    #
+    #    (i) '^[[:space:]]*add(_tool)?[[:space:]]+' is a STATEMENT anchor: it
+    #    matches real plan-emission statements only, never a '#'-prefixed
+    #    comment mention — the same hardening clause 3's source-statement grep
+    #    carries. The exclusion comes from the leading-'add' anchor ALONE, which
+    #    is why no quote character is required here: `add './scripts/x.sh'` is
+    #    a live idiom (cf. verify.sh:2610) and demanding a '"' silently dropped
+    #    it while costing no precision (pinned both ways in Pair E (c)).
+    #
+    #    (ii) the '(^|[^A-Za-z0-9_./-])' LEFT and '([^A-Za-z0-9_.-]|$)' RIGHT
+    #    path boundaries. Without the left one, grep -o matches the
+    #    'scripts/x.sh' TAIL of an emitted 'other/scripts/x.sh' and collapses it
+    #    to the top-level 'scripts/x.sh', promoting an unrelated script. Without
+    #    the right one — the character class contains '.' — an emitted
+    #    'scripts/x.sha256sums' backtracks to a 'scripts/x.sh' match, the same
+    #    over-match on the other side. (The in-code infra-test glob clause
+    #    carries the left property via its '^' anchor; both are pinned by
+    #    Pair E (c) in
+    #    tests/infra/test_verify_pipeline_guard.sh.) Each class consumes one
+    #    adjacent character, which the fully-anchored sed capture then strips
+    #    along with any './' prefix.
+    #
+    #    The '+(/…)+' shape requires the path to be DIRECTORY-QUALIFIED, which
+    #    is what keeps a bare basename inside a plan line's diagnostic string
+    #    ("WARNING: sync_comments_test.sh not found") out of the derived set.
+    done < <(grep -E '^[[:space:]]*add(_tool)?[[:space:]]+' "$_verify_sh" \
+             | grep -oE '(^|[^A-Za-z0-9_./-])(\./)?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh([^A-Za-z0-9_.-]|$)' \
+             | sed -E 's|^[^A-Za-z0-9_./-]?(\./)?([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh)[^A-Za-z0-9_.-]?$|\2|')
+fi
+
+# 5. Doc-sync manifest: non-comment/non-blank lines from doc-sync-paths.txt —
 #    operational docs cross-referenced by tests/infra doc-sync checks (see
 #    that file's header for the full rationale and the tradeoff breadcrumb).
 #    REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS overrides the manifest path

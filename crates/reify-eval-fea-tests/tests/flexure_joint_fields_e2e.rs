@@ -20,7 +20,7 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 fn revolute_spring_rate_some_round_trips() {
     const SOURCE: &str = r#"
 structure def Probe {
-    let r = Revolute(axis: vec3(0.0, 0.0, 1.0), spring_rate: some(1N*m/rad))
+    let r = Revolute(axis: vec3(0.0, 0.0, 1.0), spring_rate: some(1N*m/rad^2))
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(SOURCE);
@@ -37,7 +37,7 @@ structure def Probe {
         Value::StructureInstance(data) => {
             assert_eq!(data.type_name, "Revolute");
 
-            // spring_rate = some(1 N·m/rad) → Value::Option(Some(Scalar))
+            // spring_rate = some(1 N·m/rad²) → Value::Option(Some(Scalar))
             match field(&data.fields, "spring_rate") {
                 Some(Value::Option(Some(inner))) => match inner.as_ref() {
                     Value::Scalar {

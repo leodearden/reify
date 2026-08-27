@@ -28,6 +28,27 @@
   text-transform: uppercase;
 }
 
+/* ── Loop-state chip ────────────────────────────────────────────────── */
+
+/* Keyed off the ROOT's data-loop-state (not the chip's own), following the
+   .statusMarker attribute-selector pattern, so the chip's colour and the
+   panel's recorded state cannot drift apart. */
+
+.loopState {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+[data-loop-state="running"] .loopState {
+  color: var(--text-muted, #888);
+}
+
+[data-loop-state="complete"] .loopState {
+  color: var(--status-ok, #4caf50);
+}
+
 /* ── Section ────────────────────────────────────────────────────────── */
 
 .section {
@@ -138,6 +159,20 @@
   font-size: 10px;
   fill: var(--text-muted, #888);
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+/* ── Honest fallbacks for sub-plottable sample counts ───────────────── */
+
+.emptyNote,
+.singleSampleNote {
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  padding: 2px 0;
+  font-style: italic;
+}
+
+.singleSampleNote {
+  font-size: 11px;
 }
 
 /* ── Sparkline rows ─────────────────────────────────────────────────── */

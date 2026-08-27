@@ -27,8 +27,9 @@
 # (mirrors its args-or-stdin input contract + leading-./ normalization) and
 # structured like task 5252's scripts/check-infra-classification-manifest.sh (a
 # cheap pure-bash early verify gate). Shares the 5 consolidatable crates, 7
-# override stems, and baseline predicates with test_harness_kloc_cap.sh via
-# tests/infra/harness-layout-lib.sh (single source of truth — cannot diverge).
+# override stems, the baseline predicates, and the `crate=` path derivation
+# with test_harness_kloc_cap.sh via tests/infra/harness-layout-lib.sh (single
+# source of truth — cannot diverge).
 #
 # INPUT
 #   positional args   repo-relative added-file paths (git diff --name-only form)
@@ -98,7 +99,7 @@ _hint() {
 # REPO_ROOT before running plan entries; the tests cd into their fixture tree).
 _check_candidates() {
     local added=0 violations=0
-    local raw path crate rest
+    local raw path crate
     for raw in "$@"; do
         [ -n "$raw" ] || continue
         # Defensive leading-./ normalization (git diff --name-only emits clean
@@ -115,8 +116,13 @@ _check_candidates() {
         if harness_layout_baseline_contains "$path"; then
             continue
         fi
-        rest="${path#crates/}"
-        crate="${rest%%/*}"
+        # `crate=` via the shared derivation (contract + sentinel rationale:
+        # harness-layout-lib.sh). Its `-` sentinel is unreachable from here —
+        # the in-scope predicate above already constrained $path — so the value
+        # is that a future widening of that predicate changes `crate=` for every
+        # harness guard at once rather than only here.
+        _harness_layout_row_crate "$path"
+        crate="$_HL_ROW_CRATE"
         _emit FAIL "crate=$crate" "file=$path" "reason=unregistered-standalone"
         violations=$((violations + 1))
     done

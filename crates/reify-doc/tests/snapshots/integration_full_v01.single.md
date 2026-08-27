@@ -30,6 +30,7 @@ Comprehensive v0.1 language feature integration.
 
 - [`Positive`](#Positive)
 - [`Pressure`](#Pressure)
+- [`Rate`](#Rate)
 - [`mil`](#mil)
 - [`minimize_area`](#minimize_area)
 
@@ -38,6 +39,12 @@ Comprehensive v0.1 language feature integration.
 Pressure is Force per Area (SI unit: Pa).
 
 = `Force / Area`
+
+## `pub type Rate<Q: Dimension>` <a id="Rate"></a>
+
+Rate of change of a quantity per unit time.
+
+= `Q / Time`
 
 ## `pub unit mil` <a id="mil"></a>
 

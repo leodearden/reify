@@ -18,7 +18,7 @@ use faer::sparse::{SparseRowMat, Triplet};
 pub struct JointStiffness {
     /// Global DOF index of the joint's spring degree of freedom.
     pub dof: usize,
-    /// Spring rate [N/m or N·m/rad]; must be finite.
+    /// Spring rate [N/m or N·m/rad²]; must be finite.
     pub stiffness: f64,
 }
 

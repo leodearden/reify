@@ -46,7 +46,7 @@ const EXAMPLE_PATH: &str = concat!(
 ///   - MountBad.bore_fb   = fallback(parse_len("garbage"), 6mm)                = 6mm (Err -> default)
 ///
 /// This is the formatter-agnostic integration-gate assertion; the companion
-/// `crates/reify-cli/tests/cli_eval_result_recovery.rs` pins the same signal
+/// `crates/reify-cli/tests/harness_cli/cli_eval_result_recovery.rs` pins the same signal
 /// at the rendered-stdout binary surface.
 #[test]
 fn result_recovery_example_evals_end_to_end() {

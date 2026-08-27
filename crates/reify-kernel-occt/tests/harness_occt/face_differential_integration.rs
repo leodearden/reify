@@ -15,6 +15,7 @@
 
 use std::f64::consts::PI;
 
+use crate::common::{Xyz, parse_xyz};
 use reify_kernel_occt::OcctKernel;
 use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
@@ -213,6 +214,10 @@ fn face_outward_unit_normal_for_test_returns_unit_outward_normal_for_sphere_face
         Ok(Value::String(s)) => s,
         other => panic!("FaceNormal returned unexpected value: {other:?}"),
     };
+    // Deliberately hand-decoded — see assertion (c)'s rationale above. This
+    // decode IS the contract: it must stay INDEPENDENT of the harness's shared
+    // `crate::common::parse_xyz`, because routing both sides of the cross-check
+    // through one decoder would hollow out the assertion. Do not consolidate.
     let v: serde_json::Value = serde_json::from_str(&json)
         .unwrap_or_else(|e| panic!("FaceNormal JSON parse failed: {e}; raw = {json:?}"));
     let from_json = [
@@ -1337,11 +1342,7 @@ fn geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal() {
         Value::String(s) => s,
         other => panic!("FaceNormalAt reply should be Value::String, got {other:?}"),
     };
-    let parsed: serde_json::Value =
-        serde_json::from_str(&json).expect("FaceNormalAt reply should be valid JSON");
-    let x = parsed["x"].as_f64().expect("reply JSON should have 'x'");
-    let y = parsed["y"].as_f64().expect("reply JSON should have 'y'");
-    let z = parsed["z"].as_f64().expect("reply JSON should have 'z'");
+    let Xyz { x, y, z } = parse_xyz(&json);
 
     assert!(
         x.abs() < 1e-9 && y.abs() < 1e-9 && (z - 1.0).abs() < 1e-9,

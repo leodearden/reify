@@ -45,11 +45,18 @@ pub fn length(m: f64) -> Value {
     scalar(m, DimensionVector::LENGTH)
 }
 
-/// `vec3(x,y,z)` as a `Vector3<Length>` — mirrors the FDMProcess
-/// `build_direction` representation produced by the stdlib evaluator.
+/// `vec3(x,y,z)` as a `Vector3<Length>`.
 #[allow(dead_code)]
 pub fn vec3_length(v: [f64; 3]) -> Value {
     Value::Vector(vec![length(v[0]), length(v[1]), length(v[2])])
+}
+
+/// `vec3(x,y,z)` as a `Vector3<Dimensionless>` — mirrors the FDMProcess
+/// `build_direction` representation produced by the stdlib evaluator, whose
+/// quantity slot is dimensionless because it denotes a DIRECTION (task 5848).
+#[allow(dead_code)]
+pub fn vec3_dimensionless(v: [f64; 3]) -> Value {
+    Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
 }
 
 /// A box surface mesh covering `[BOX_MIN, BOX_MAX]`. Only the vertex extent
@@ -133,7 +140,9 @@ pub fn fdm_process() -> Value {
     structure(
         "FDMProcess",
         vec![
-            ("build_direction", vec3_length([0.0, 0.0, 0.001])),
+            // A DIRECTION, so dimensionless (task 5848). `unit3` normalises it
+            // anyway, so this reads identically to the former [0, 0, 0.001].
+            ("build_direction", vec3_dimensionless([0.0, 0.0, 1.0])),
             ("layer_height", length(0.0002)),
             ("walls", Value::Int(3)),
             ("top_bottom_layers", Value::Int(4)),

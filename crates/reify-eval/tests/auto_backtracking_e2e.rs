@@ -54,7 +54,7 @@ use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_a
 /// Build the `(template_registry, trait_registry)` pair from a compiled module.
 ///
 /// Mirrors `build_registries` from
-/// `crates/reify-compiler/tests/auto_type_param_backtracking_tests.rs` and
+/// `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_backtracking_tests.rs` and
 /// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`.
 /// Lifted verbatim so each test in this file is self-contained.
 fn build_registries(

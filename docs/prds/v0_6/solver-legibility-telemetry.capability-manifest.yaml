@@ -1,0 +1,668 @@
+prd: docs/prds/v0_6/solver-legibility-telemetry.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6721
+  title: 'P4-alpha: carry objective_provenance through CheckResult and BuildResult'
+  capabilities:
+  - name: provenance-populated-on-cold-eval
+    binding: capability→producer (anti-orphan) — Engine::eval populates objective_provenance
+      at two production sites (the per-template Solved arm and dispatch_merged_cluster_solve).
+      Not test-only. This is the data alpha stops discarding.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: objective_provenance
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      expect: present
+  - name: narrowing-site-is-real
+    binding: 'signal premise (the defect alpha closes) — Engine::check builds CheckResult
+      from five fields and objective_provenance is not among them, so the field is computed
+      by the inner eval() and dropped at the EvalResult->CheckResult boundary. Verified by
+      reading the CheckResult construction 2026-08-26 (git grep for objective_provenance in
+      engine_constraints.rs returns nothing today). The delivered_check is the POST-delivery
+      state: after alpha the symbol must be present at that seam.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: objective_provenance
+      paths:
+      - crates/reify-eval/src/engine_constraints.rs
+      expect: present
+  - name: buildresult-lacks-field
+    binding: signal premise — BuildResult declares values/constraint_results/geometry_output/diagnostics/resolved_params
+      only.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a struct-field-absence property across a definition alpha itself edits; asserting
+        absence post-alpha would be wrong, and asserting presence pre-alpha would fail. Pinned
+        by alpha's own Rust test instead.
+- label: ε
+  task_id: 6722
+  title: 'P4-epsilon: key per-inequality slack by ConstraintNodeId and carry margin on ConstraintCheckEntry'
+  capabilities:
+  - name: slack-decomposition-exists
+    binding: capability→producer (anti-orphan) — collect_slack_terms builds signed-slack CompiledExprs
+      for Ge/Gt/Le/Lt with And-recursion, on the production centrality-objective path in reify-constraints.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn collect_slack_terms
+      paths:
+      - crates/reify-constraints/src/solver.rs
+      expect: present
+  - name: op-rule-pact-members-exist
+    binding: G7 no-lockstep-duplication — the same decomposition lives in collect_floor_terms
+      and derive_from_expr in-crate plus the cross-crate mirror has_inequality_slack. epsilon
+      must edit all members in lockstep, not add a fifth copy.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn collect_floor_terms|fn has_inequality_slack
+      paths:
+      - crates/reify-constraints/src/solver.rs
+      - crates/reify-eval/src/engine_eval.rs
+      expect: present
+  - name: equality-has-no-signed-slack
+    binding: G6 branch 4 (honest absence) — Eq/Ne/Or are explicitly skipped by the decomposition,
+      so margin is None for an equality. epsilon's signal asserts n/a, never 0. Verified by
+      reading the collect_slack_terms doc contract.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a negative semantic property of a match arm; the assertion is that epsilon's
+        fixture reports n/a for an equality row, which is a test postcondition rather than
+        a repo pattern.
+  - name: tolerance-upstream
+    binding: capability→producer via dependency closure — toleranced Scalar equality verdicts
+      are delivered by task 6653, wired UPSTREAM of epsilon. Without it a correctly-solved
+      model reports false-VIOLATED and the slack column would decorate a wrong verdict.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream task delivery, verified by the wired dependency edge to 6653, not by
+        a repo pattern.
+- label: β
+  task_id: 6723
+  title: 'P4-beta: verdict wire contract — fix the status casing and pin it with a two-way
+    boundary test'
+  capabilities:
+  - name: backend-emits-lowercase-after-fix
+    binding: 'signal premise + delivery assertion — build_constraints maps Satisfaction to
+      TitleCase tokens at two sites TODAY (verified 2026-08-26; that is the defect), and build_constraints
+      is the production feed for GuiState.constraints. The delivered_check is the POST-delivery
+      state: after beta the lower-case token the six frontend consumers already compare must
+      be what the backend emits.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"satisfied"'
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: frontend-compares-lowercase
+    binding: signal premise (the other half) — StatusBar and ConstraintPanel both switch on
+      lower-case tokens.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '''satisfied'''
+      paths:
+      - gui/src/panels/StatusBar.tsx
+      - gui/src/panels/ConstraintPanel.tsx
+      expect: present
+  - name: no-normaliser-exists
+    binding: rejection-mechanism (anti-silent-accept) — there is no case normalisation on
+      the path between them; the only toUpperCase in the frontend formats a file extension.
+      Observed absence is what makes the badge dead rather than merely inconsistent.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: toLowerCase
+      paths:
+      - gui/src/stores/engineStore.ts
+      - gui/src/bridge.ts
+      - gui/src/panels/ConstraintPanel.tsx
+      - gui/src/panels/StatusBar.tsx
+      expect: absent
+- label: γ
+  task_id: 6724
+  title: 'P4-gamma: eval-time diagnostics reach the GUI under a solve source tag'
+  capabilities:
+  - name: checkresult-carries-diagnostics
+    binding: capability→producer — Engine::check seeds its diagnostics from eval_result.diagnostics
+      and returns them on CheckResult, so the data exists at the GUI boundary.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: diagnostics
+      paths:
+      - crates/reify-eval/src/engine_constraints.rs
+      expect: present
+  - name: no-gui-reader-today
+    binding: signal premise (the defect) — EngineSession never reads CheckResult.diagnostics;
+      build_gui_state sources compile diagnostics from compiled.diagnostics and tessellation
+      diagnostics from tess_result.diagnostics.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an absence-of-reader property over a whole crate; a bare pattern-absent check
+        would be satisfied trivially by unrelated files. Pinned by gamma's own e2e assertion
+        that the warning reaches the panel.
+  - name: wire-type-already-carries-code
+    binding: capability→producer (anti-orphan) — DiagnosticInfo carries an Option<String>
+      code across the IPC boundary and DiagnosticsPanel already filters by source, so gamma
+      adds a source tag, not a wire format.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: code
+      paths:
+      - gui/src-tauri/src/types.rs
+      expect: present
+  - name: optimality-warning-is-coded
+    binding: capability→producer — W_SOLVER_OPTIMALITY_UNPROVEN is emitted with DiagnosticCode::SolverOptimalityUnproven,
+      so gamma's renderer can key on the code rather than message text (INV-SF-6).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SolverOptimalityUnproven
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+- label: δ
+  task_id: 6725
+  title: 'P4-delta: AutoResolvePanel lifecycle — mount on data, render a single sample honestly'
+  capabilities:
+  - name: mount-no-longer-gated-on-active
+    binding: 'signal premise + delivery assertion — the panel is mounted under a Show gated
+      on autoResolve.active TODAY, while the backend fires start/iteration/complete synchronously
+      in one call and endAutoResolveLoop clears iterations, so the gate can never be observed
+      true (that is the defect). The delivered_check is the POST-delivery state: after delta
+      the mount no longer keys on that flag.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      # Pattern narrowed 2026-08-27 (esc-6739-1): the bare token matched the implementer's
+      # own explanatory comment at App.tsx:786, falsely re-blocking dependents. This shape
+      # still catches the historical defect (`<Show when={...autoResolve.active}>`) but not
+      # the comment. Known trade-off (watcher-validated): misses a regression reintroduced
+      # via indirection (e.g. aliasing the flag before the Show).
+      pattern: when=\{[^}]*autoResolve\.active
+      paths:
+      - gui/src/App.tsx
+      expect: absent
+  - name: emitter-fires-single-synchronous-trio
+    binding: signal premise — emit_auto_resolve_if_any builds one AutoResolveIteration with
+      iteration 0 and calls start, iteration, complete back to back.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn emit_auto_resolve_if_any
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+- label: ζ
+  task_id: 6726
+  title: 'P4-zeta: ConstraintPanel — true verdicts plus a slack column'
+  capabilities:
+  - name: margin-upstream
+    binding: DAG-direction (anti-inversion) — the margin field is delivered by epsilon, wired
+      UPSTREAM of zeta; the verdict fix is delivered by beta, also upstream.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream task delivery, verified by wired dependency edges to epsilon and beta.
+  - name: panel-renders-constraint-rows-today
+    binding: capability→producer (anti-orphan) — ConstraintPanel already renders a row per
+      constraint with a status badge, so zeta adds a column to a live surface.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ConstraintPanel
+      paths:
+      - gui/src/panels/index.ts
+      expect: present
+- label: η
+  task_id: 6727
+  title: 'P4-eta: PropertyEditor per-auto provenance chip'
+  capabilities:
+  - name: chip-surface-exists
+    binding: capability→producer (anti-orphan) — PropertyEditor already renders per-cell determinacy,
+      freshness and an undef-reason chip driven by ValueData, so eta extends a live, plumbed
+      surface.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: undef-reason
+      paths:
+      - gui/src/panels/PropertyEditor.tsx
+      expect: present
+  - name: provenance-reaches-the-gui-load-path
+    binding: DAG-direction (anti-inversion) — alpha, upstream, carries provenance onto CheckResult,
+      which is what the GUI load path returns.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream task delivery, verified by the wired edge to alpha.
+  - name: edit-path-parity-is-upstream-not-here
+    binding: G6 branch 3 (capability in the dependency set) — the warm/edit half requires
+      P1 kappa (task 6699), wired UPSTREAM. eta must not assert edit-path provenance without
+      it; before 6699 the warm map is structurally empty.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream cross-PRD task delivery, verified by the wired edge to 6699.
+- label: θ
+  task_id: 6728
+  title: 'P4-theta: StatusBar solve-summary chip'
+  capabilities:
+  - name: statusbar-already-counts-constraints
+    binding: capability→producer (anti-orphan) — StatusBar already renders constraint counts
+      and diagnostic badges and already owns a toggle into the Problems panel, so theta adds
+      a chip to a live surface with an existing drill-in idiom.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: StatusBar
+      paths:
+      - gui/src/panels/index.ts
+      expect: present
+  - name: resolution-profile-is-upstream
+    binding: G6 branch 3 — the budget and staleness axes the chip renders are delivered by
+      P1 alpha (task 6689), wired UPSTREAM. theta must not assert a staleness marker before
+      it.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream cross-PRD task delivery, verified by the wired edge to 6689.
+  - name: never-asserts-proven-optimal
+    binding: G6 branch 1/3 (false-premise guard) — SolverRegistry::production leaves the Logical
+      slot None and CP-SAT is unregistered, so every production objective solve returns BestFound.
+      The chip must never render ProvenOptimal.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ProvenOptimal
+      paths:
+      - gui/src/panels/StatusBar.tsx
+      expect: absent
+- label: ι
+  task_id: 6730
+  title: 'P4-iota: DOF badge in StatusBar rendering task 4388''s ledger'
+  capabilities:
+  - name: ledger-producer-upstream
+    binding: DAG-direction (anti-inversion) — the DOF ledger, conflict sets and W_UNDERDETERMINED
+      extension are delivered by task 4388, wired UPSTREAM. 4388's scope was narrowed on 2026-08-26
+      to drop the badge and name this leaf as its owner, so there is exactly one owner.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream task delivery, verified by the wired edge to 4388 and by 4388's rewritten
+        description.
+  - name: residual-dof-data-already-computed
+    binding: capability→producer — RelateSolution carries spent/free/driving/redundant, populated
+      on the relate-solve path today; it currently has no reader, which is the orphan 4388
+      plus this leaf close.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub free
+      paths:
+      - crates/reify-eval/src/relate_solve.rs
+      expect: present
+  - name: dof-zero-is-not-a-fact
+    binding: G6 branch 1 (numeric honesty) — SystemBuilder::solve's empty-constraint early
+      return of dof 0 is a known lie for sketches; libslvs reports an honest dof 4 for two
+      free 2D points. The badge must not render that zero as measured.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a negative rendering obligation; asserted by iota's own test that a constraint-free
+        sketch does not display a measured zero.
+- label: κ
+  task_id: 6731
+  title: 'P4-kappa: constraint-solver producer on SolverProgressSink plus overlay visibility'
+  capabilities:
+  - name: progress-pipeline-wired-end-to-end
+    binding: capability→producer (anti-orphan) — SolverProgressSink, the thread-local SOLVE_DISPATCH_CONTEXT,
+      the solver-progress IPC channel, the bridge listener, the engineStore ring buffer and
+      SolverProgressOverlay are all live on main.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SolverProgressSink
+      paths:
+      - crates/reify-eval/src/solver_progress.rs
+      expect: present
+  - name: only-fea-cg-produces-today
+    binding: signal premise (the gap) — the only solver_kind in the tree is "cg", emitted
+      by the FEA elastic-static CG loop. The constraint solver emits nothing on this channel.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'solver_kind: "cg"'
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: present
+  - name: no-iteration-count-is-asserted
+    binding: G6 branch 1 (false-premise guard) — no iteration count, wall-clock or exit residual
+      escapes reify-constraints; SolveMeta is private and one bit wide. kappa's signal is
+      a residual TRACE from the per-iteration sink, never a count read off a result type.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a scoping obligation on the signal wording; verified by kappa's test asserting
+        a trace of samples rather than a terminal count.
+- label: λ
+  task_id: 6732
+  title: 'P4-lambda: solve_report debug-MCP tool'
+  capabilities:
+  - name: tool-registration-surface-exists
+    binding: capability→producer (anti-orphan) — tool_defs and dispatch_tool are the live
+      registration and routing pair in debug_server.rs.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn tool_defs
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: present
+  - name: both-allowlists-must-be-updated
+    binding: anti-mismatch — a new tool must be added to PURE_ENGINE_SIDE and to KNOWN_DEBUG_TOOL_NAMES
+      or the parity and assertions suites go red. This fourth edit is undocumented in the
+      contract's own defining-a-new-tool section.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PURE_ENGINE_SIDE
+      paths:
+      - gui/src/__tests__/debugParity.test.ts
+      expect: present
+  - name: value-scenario-harness-exists
+    binding: capability→producer — VALUE_SCENARIOS is the committed declarative e2e catalogue
+      and its own doc names downstream tool-leaf tasks as its extenders.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: VALUE_SCENARIOS
+      paths:
+      - gui/test/visual/assertions.ts
+      expect: present
+  - name: last-check-accessor-must-be-added
+    binding: capability→producer (producer-absent TODAY, delivered BY this leaf) — EngineSession
+      exposes last_check only under cfg(test); reaching CheckResult needs a new pub(crate)
+      observational accessor, precedented by EngineSession::engine.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the capability is absent today and is delivered by lambda itself; asserting
+        presence pre-lambda would fail and post-lambda is lambda's own test.
+  - name: signal-is-not-ci-gated
+    binding: G6 branch 3 (honest signal scope) — scripts/verify.sh references no test:e2e,
+      test:visual, test:smoke, REIFY_DEBUG or 3939, so the debug-MCP e2e harness is not CI-gated.
+      lambda's signal says green via npm --prefix gui run test:e2e against a live reify-gui,
+      never green in CI.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: test:e2e|test:visual|REIFY_DEBUG
+      paths:
+      - scripts/verify.sh
+      expect: absent
+- label: ξ
+  task_id: 6733
+  title: 'P4-xi: reify explain — the dropped fields, slack, and a failure vocabulary'
+  capabilities:
+  - name: explain-surface-shipped
+    binding: capability→producer (anti-orphan) — cmd_explain is wired into the CLI dispatch
+      table and pinned by seven tests; xi extends a live surface.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn cmd_explain
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: term-contributions-already-computed
+    binding: capability→producer — TermContribution carries sense, weight, realized_value
+      and contribution, computed per scope and Arc-shared; explain currently drops it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct TermContribution
+      paths:
+      - crates/reify-ir/src/constraint.rs
+      expect: present
+  - name: infeasible-and-no-autos-are-indistinguishable-today
+    binding: signal premise (the defect) — explain prints the same no-provenance sentinel
+      for an infeasible model and for a model with no autos; only stderr and the exit code
+      separate them.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: No objective provenance recorded
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: stale-anchor-is-repaired-here
+    binding: code-anchor hygiene — cmd_explain's own rustdoc cites engine_eval.rs:3884 for
+      the provenance rationale; that line is now an unrelated field-elaboration arm. xi re-cites
+      by symbol.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: engine_eval.rs:3884
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: absent
+  - name: completeness-field-owner-is-p3-zeta
+    binding: 'G7 co-tenancy ruling — canonical text is PRD section 8.2 items 1-3 (written by
+      #6751); this is a pointer, not a fifth copy. The rule: xi renders the P4-owned fields
+      only and neither adds nor re-renders the completeness field, which is P3 zeta #6711''s;
+      no dependency edge either way. The pattern anchors on section 8.2''s own ruling sentence
+      rather than on the id #6711, which by itself now occurs in sections 4.1, 8, 11 and 12.5
+      and so would stay green with the ruling deleted. Zero hits at baseline HEAD cdc501a3f1,
+      so this is a real RED-to-GREEN check; GREEN on #6751''s own diff, not a post-delivery
+      assertion.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: neither add nor re-render the completeness field
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present
+- label: ο
+  task_id: 6735
+  title: 'P4-omicron: docs-truth for the observable legibility surface'
+  capabilities:
+  - name: chunk-directory-exists
+    binding: capability→producer (anti-orphan) — the doc-chunk corpus is a live include_str-backed
+      directory served by the reference tool.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: language_chunks|chunks
+      paths:
+      - crates/reify-mcp/src/tools/
+      expect: present
+  - name: documented-signatures-verified-against-registries
+    binding: docs-truth gate — every documented signature must compile as written and be checked
+      against the compiler arms and unit registries, not against prose.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a per-signature verification obligation discharged by omicron's smoke .ri compiling
+        as written.
+  - name: discoverability-acceptance
+    binding: docs-truth gate item 4 — an author who knows the goal but not the feature name
+      must reach slack and provenance from the chunks or the corpus index.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an intent-level findability judgement; not mechanically expressible.
+- label: φ
+  task_id: 6736
+  title: 'P4-phi: two-way solve-record parity gate (INTEGRATION GATE)'
+  capabilities:
+  - name: names-the-boundary-sketch
+    binding: G5 B+H closure — phi's signal is the PRD section 5 boundary-test table in full,
+      facing both the producer and the consumer side of every seam this PRD touches.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the signal is a committed test target enumerating the ten sketch rows; verified
+        by the target existing and passing.
+  - name: upstream-leaves-deliver-every-row
+    binding: DAG-direction (anti-inversion) — every row's capability is delivered by a leaf
+      wired UPSTREAM of phi (beta, gamma, zeta, eta, theta, kappa, lambda, xi), plus P1 6689
+      and 6699 for the two cross-PRD rows.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream task delivery, verified by the wired dependency edges.
+- label: μ
+  task_id: 6737
+  title: 'P4-mu: author opt-in to the robustness floor for non-Money objectives'
+  capabilities:
+  - name: special-form-precedent-exists
+    binding: capability→producer (anti-orphan) — cost_robustness_tradeoff plus the ObjectiveSet.cost_robustness_lambda
+      marker field is the shipped, grammar-free author-side solver opt-in precedent, with
+      compile-time typing and coded diagnostics.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: cost_robustness_lambda
+      paths:
+      - crates/reify-ir/src/constraint.rs
+      expect: present
+  - name: no-novel-grammar-required
+    binding: grammar reality (anti-mismatch) — the default route adds no syntax. The probed
+      alternative, a scope-level pragma, also parses today with zero ERROR nodes, so neither
+      route is a grammar fiction.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pragma:'
+      paths:
+      - tree-sitter-reify/grammar.js
+      expect: present
+  - name: floor-flag-exists-but-is-hardwired
+    binding: signal premise — apply_robustness_floor already exists as a parameter of the
+      solve core but is hard-wired by its caller, and ResolutionProblem carries no field for
+      it. mu threads it from the DSL.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: apply_robustness_floor
+      paths:
+      - crates/reify-constraints/src/solver.rs
+      expect: present
+  - name: eval-side-twin-must-move-in-lockstep
+    binding: G7 no-lockstep-duplication — objective_is_money is duplicated in reify-eval to
+      gate the Info diagnostic, deliberately, to preserve dependency inversion. mu must edit
+      both.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: objective_is_money
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      - crates/reify-constraints/src/solver.rs
+      expect: present
+  - name: clamp-box-coupling-is-upstream
+    binding: G6 branch 3 — un-gating the floor also un-gates the constraint-derived clamp
+      box, which is blocked on the uniqueness-contract ruling owned by task 5711, wired UPSTREAM.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream task delivery, verified by the wired edge to 5711.
+- label: π
+  task_id: 6738
+  title: 'P4-pi: docs-truth for the robustness opt-in'
+  capabilities:
+  - name: exemplar-corpus-is-compile-gated
+    binding: capability→producer (anti-orphan) — examples under the best-practices corpus
+      are auto-compile-gated by the examples smoke test, so a worked example cannot silently
+      rot.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: examples_smoke
+      paths:
+      - crates/reify-compiler/tests/
+      expect: present
+  - name: discoverability-acceptance
+    binding: docs-truth gate item 4 — an author who knows the goal, stop my optimum parking
+      on the clearance bound, but not the feature name must reach it from the chunks or the
+      corpus index.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an intent-level findability judgement; not mechanically expressible.
+- label: ω
+  task_id: 6739
+  title: 'P4-omega: PRD close — terminal status stamp and the AS-AUTHORED freeze'
+  capabilities:
+  - name: terminal-vocabulary-is-closed
+    binding: docs-truth / PRD-status contract — the terminal token must be exactly one of
+      SHIPPED, SUPERSEDED or WITHDRAWN, matched case-insensitively as the first token after
+      the Status label, with the landed leaf IDs named on the same line.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SHIPPED|SUPERSEDED|WITHDRAWN
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present
+  - name: cancelled-sibling-counts-as-satisfied
+    binding: dependency disposition — a cancelled sibling leaf satisfies omega's edge; if
+      the scheduler treats it as unmet the decompose steward removes the edge by hand rather
+      than leaving omega permanently blocked.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a scheduler-disposition rule, not a repo pattern.
+  - name: p3-multimodality-slot-cites-6706
+    binding: 'G7 / INV-SF-5 posture, half one of two — the PRD section 11 multimodality slot
+      must name #6706, the Completeness vocabulary carrier, never "a future PRD". As first
+      landed the section 12.5 G7 row promised the citation was "stamped at decompose" and NO P3
+      id appeared anywhere in the document; #6751 stamped it in section 4.1 (the reserved
+      slot), section 8 (the seam row plus 8.2) and section 11. omega is dep-wired behind #6751
+      and is the leaf that applies the terminal status stamp, so this check re-verifies the
+      citation immediately before that stamp: a G7 justification that defers to a decompose-time
+      action must be re-checked at decompose-close, or the invariant walk certifies its own
+      intention. TWO checks, not one alternation: the requirement is conjunctive (both ids), and
+      an ERE alternation is satisfied by either id alone. The pattern is anchored to section
+      11''s own role line rather than to the bare id, because #6706 now also occurs in sections
+      4.1, 8 and 12.5 — including in 12.5''s account of this very correction, so a bare id-grep
+      would stay green with section 11 regressed to "a future PRD". NON-VACUITY: paths is the
+      single PRD file and this pattern had ZERO hits in it at baseline HEAD cdc501a3f1, so grep
+      is the honest kind — unlike gui-on-demand-measurement.capability-manifest.yaml lines
+      80-85, demoted to manual because its pattern already matched elsewhere in its search
+      paths. Unlike beta''s verdict token and delta''s mount gate, this binding is GREEN on
+      #6751''s own diff rather than asserting a post-delivery state.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Vocabulary carrier for the slot.*#6706
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present
+  - name: p3-multimodality-slot-cites-6711
+    binding: 'G7 / INV-SF-5 posture, half two of two — the same section 11 slot must also name
+      #6711, the first leaf that populates it. Rationale, conjunctive-not-alternation reasoning
+      and non-vacuity are as for p3-multimodality-slot-cites-6706 above; this pattern likewise
+      had ZERO hits at baseline HEAD cdc501a3f1 and is anchored to section 11''s own role line,
+      because #6711 alone now occurs in sections 4.1, 8, 8.2, 11 and 12.5. Both halves must pass
+      for the INV-SF-5 row to be certified.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: First leaf that populates the slot.*#6711
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present

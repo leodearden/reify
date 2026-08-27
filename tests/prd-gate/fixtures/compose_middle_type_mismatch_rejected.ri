@@ -1,0 +1,20 @@
+// Fixture (γ decompose-phase premise, negative assertion / adversary probe):
+// the typed stdlib generic fn compose<A,B,C>(f: Field<B,C>, g: Field<A,B>)
+// requires a shared middle type B: f's domain must unify with g's codomain.
+// Here f expects Real input but g produces Bool — the composition is
+// ill-typed and must be REJECTED (4219-S2 reviewer note in units.rs: "a
+// mis-composed call must not be silently typed"). Silent acceptance would
+// mean compose's generic params are not actually enforced, undercutting the
+// tau7 "resolves via the TYPED stdlib .ri generic fn" premise.
+//
+// Expectation: `reify check` exits 1 (rejected).
+
+// f_double : Real -> Real
+field def f_double : Real -> Real { source = analytical { |x| 2.0 * x } }
+
+// g_bool : Real -> Bool  (codomain Bool != f_double's Real domain)
+field def g_bool : Real -> Bool { source = analytical { |x| x > 1.0 } }
+
+structure def ComposeMiddleTypeMismatchRejected {
+    let bad = sample(compose(f_double, g_bool), 3.0)
+}

@@ -404,8 +404,15 @@ fn buckling_options_constrains_positivity_invariants() {
 /// `BucklingMode` is a single buckling eigenpair. It must declare exactly the two
 /// PRD §4 params with the canonical types:
 ///
-///   - `eigenvalue : Real`                                       (load multiplier)
-///   - `mode_shape : Field<Point3<Length>, Vector3<Length>>`     (displacement field)
+///   - `eigenvalue : Real`                                          (load multiplier)
+///   - `mode_shape : Field<Point3<Length>, Vector3<Dimensionless>>` (mode-shape field)
+///
+/// The codomain is DIMENSIONLESS (task 5905): a buckling eigenvector is defined
+/// only up to scalar multiplication, so it denotes a direction rather than a
+/// physical displacement. The domain keeps Length — it indexes sample positions,
+/// and a position is not a direction (trajectory.ri's rule, task 5848).
+/// In-repo precedent for a dimensionless Field codomain:
+/// `curl : Field<Point3<Length>, Vector3<Dimensionless>>` in solver_elastic.ri.
 ///
 /// The PRD's "Real placeholder for mode_shape per #3117 workaround" footnote
 /// is stale — task #3117 landed and the `Field<D, C>` resolver arm at
@@ -436,8 +443,12 @@ fn buckling_mode_struct_has_eigenvalue_and_mode_shape_params() {
                 domain: Box::new(Type::point3(Type::Scalar {
                     dimension: DimensionVector::LENGTH,
                 })),
+                // Dimensionless codomain (task 5905): a buckling eigenvector is
+                // defined only up to scalar multiplication, so it denotes a
+                // DIRECTION, not a displacement. The `domain` stays Length — a
+                // position is not a direction (trajectory.ri's rule, task 5848).
                 codomain: Box::new(Type::vec3(Type::Scalar {
-                    dimension: DimensionVector::LENGTH,
+                    dimension: DimensionVector::DIMENSIONLESS,
                 })),
             },
         ),
@@ -765,8 +776,12 @@ fn buckling_mode_renamed_and_modal_mode_coexist_at_compile() {
                 domain: Box::new(Type::point3(Type::Scalar {
                     dimension: DimensionVector::LENGTH,
                 })),
+                // Dimensionless codomain (task 5905): a buckling eigenvector is
+                // defined only up to scalar multiplication, so it denotes a
+                // DIRECTION, not a displacement. The `domain` stays Length — a
+                // position is not a direction (trajectory.ri's rule, task 5848).
                 codomain: Box::new(Type::vec3(Type::Scalar {
-                    dimension: DimensionVector::LENGTH,
+                    dimension: DimensionVector::DIMENSIONLESS,
                 })),
             },
         ),

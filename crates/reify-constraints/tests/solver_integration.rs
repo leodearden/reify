@@ -1891,7 +1891,7 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
 /// Build the `(template_registry, trait_registry)` pair from a compiled module.
 ///
 /// Mirrors the same helper in `crates/reify-eval/tests/auto_backtracking_e2e.rs`
-/// and `crates/reify-compiler/tests/auto_type_param_backtracking_tests.rs`.
+/// and `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_backtracking_tests.rs`.
 fn build_atp_registries(
     module: &CompiledModule,
 ) -> (

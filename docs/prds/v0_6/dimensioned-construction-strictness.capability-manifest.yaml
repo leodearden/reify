@@ -104,14 +104,20 @@ tasks:
     binding: 'probe:beta-fix-form (α harness, PASS) — `Limit(velocity_limit: 300mm/s,
       acceleration_limit: 5000mm/s^2)` at `Scalar<Velocity>`/`Scalar<Acceleration>`
       ctor fields: `reify check` exit 0, zero diagnostics. The registry-less compositional
-      alternative is documented at stdlib/units.ri:141-148 with its guard at expr.rs:1455-1462.'
+      alternative is documented at stdlib/units.ri:141-148 with its guard at expr.rs:1455-1462.
+      SCOPE NARROWED 2026-08-07: this check originally also covered examples/trajectory/printer_print_envelope.ri,
+      but Leo''s esc-5758-4 option-D1 ruling (2026-07-30) deferred that file''s two limit
+      sites OUT of β and INTO task 5847, which cannot dimension them independently of
+      the Waypoint values it owns. β landed (589b005c67) correctly NOT touching them,
+      so the un-narrowed check asserted a post-state β was ruled not to deliver and
+      reported FAILED on delivered work. The printer_print_envelope.ri half now rides
+      5847''s own delivered_check, transferred with the responsibility.'
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: 'velocity_limit: 300\.0'
       paths:
       - examples/trajectory/tots_optimal_ptp.ri
-      - examples/trajectory/printer_print_envelope.ri
       expect: absent
   - name: migration-set-anchors-live-at-head
     binding: 'signal premise — each of the 17 bare arg-sites re-read at HEAD: tots_optimal_ptp.ri:67/78/79,

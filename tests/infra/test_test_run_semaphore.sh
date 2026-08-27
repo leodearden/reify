@@ -846,7 +846,17 @@ env -u REIFY_TEST_SEMAPHORE_LOCK -u REIFY_TEST_SEMAPHORE_DISABLE \
     bash -c 'source "$1" >/dev/null 2>&1; test_semaphore_acquire; rc=$?; test_semaphore_release; exit $rc' \
     _ "$LIB" 2>"$_HG2_ERR" || true
 
-assert "Test HG-2: test_semaphore_acquire's own LOCK= diagnostic resolves to the fixed default (${_HG2_EXPECTED}), not the private TMPDIR (stderr: $(cat "$_HG2_ERR"))" \
+# The description deliberately does NOT interpolate $_HG2_ERR. Under the merge
+# gate the parent verify.sh holds the host-global lock across every test pass,
+# so WAIT=0 takes the deadline branch and this file's first lines are
+# @@REIFY_CLOCK_STOP@@ then a column-0 slot-timeout sentinel -- and assert()
+# prints $desc RAW (test_helpers.sh:44/47), so lines 2+ of an interpolation
+# start at column 0 even on PASS, putting that sentinel into the verify log
+# where dark-factory reads it as SEMAPHORE_TIMEOUT for the whole run (task
+# 6024). Nothing is lost: the checker already greps $_HG2_ERR, so on FAIL
+# assert's own dump surfaces the same evidence through its `  | ` filter
+# (test_helpers.sh:54) -- a non-whitespace prefix that breaks DF's anchor.
+assert "Test HG-2: test_semaphore_acquire's own LOCK= diagnostic resolves to the fixed default (${_HG2_EXPECTED}), not the private TMPDIR" \
     grep -qF "LOCK=${_HG2_EXPECTED}" "$_HG2_ERR"
 
 rm -f "$_HG2_ERR"

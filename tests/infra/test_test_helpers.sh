@@ -164,6 +164,261 @@ else
     check "test_summary prints results line (got: $summary_output)" "false"
 fi
 
+# -- Test (l): assert() survives a mktemp failure and reaches test_summary ----
+# (task 6363). assert()'s fallback path (mktemp fails -> _f="" -> /dev/null
+# redirect) exists so a suite doesn't spuriously die when TMPDIR is
+# unwritable/full. But assert()'s last statement,
+# `[ -n "$_f" ] && rm -f "$_f"`, returns the exit status of that `[ -n ]`
+# test when _f is empty -- i.e. assert() itself returns 1 -- and every
+# caller runs assert as a bare simple command under `set -euo pipefail`, so
+# the shell exits at the very first assertion, before test_summary ever
+# runs. This test forces a REAL mktemp failure and checks the suite reaches
+# a sentinel between two asserts, calls test_summary, prints a "Results:"
+# line, and exits 0.
+#
+# Forced via TMPDIR=/dev/null/nope (the same idiom test_portable_timeout.sh
+# Test 10/11 uses), NOT a `mktemp() { return 1; }` shell-function stub: a
+# stub only shadows mktemp for callers that invoke it as a bare `mktemp`, so
+# it silently stops covering anything the moment assert() is hardened to
+# `command mktemp`, `\mktemp`, or an absolute path -- at which point mktemp
+# would quietly succeed, $_f would be non-empty, and every check below would
+# still pass, but vacuously (exercising the mktemp-succeeds path instead of
+# the fallback this test exists to cover). TMPDIR=/dev/null/nope breaks
+# mktemp itself, so it cannot be bypassed that way.
+#
+# BROKEN_TMPDIR and mktemp_failure_observed are shared with Test (l2) below and
+# the liveness control in Test (l4): ONE definition of each, so the forcing
+# mechanism and the non-vacuity discriminator cannot silently drift out of
+# step with each other across several hand-copied call sites (task 6363
+# amendment).
+BROKEN_TMPDIR=/dev/null/nope
+
+# Reads the captured sub-shell output on stdin. Matches the forced template
+# PATH ($BROKEN_TMPDIR), not the bare word "mktemp" and not mktemp's English
+# message text ("failed to create file..."): Test (l4) below proved the bare
+# word is inert -- it self-matches an assert *description* that merely
+# mentions "mktemp", not just a genuine mktemp failure. The path beats the
+# message text too: it is interpolated by mktemp and never translated, while
+# the message is a translatable coreutils string that a locale probe
+# (LC_ALL=C / en_US.UTF-8 / de_DE.UTF-8) showed varying in its surrounding
+# quote glyphs. Tying the needle to $BROKEN_TMPDIR also keeps needle and
+# forcing-mechanism in lockstep. Task 6363 amendment.
+mktemp_failure_observed() {
+    grep -qF -- "$BROKEN_TMPDIR"
+}
+
+echo ""
+echo "--- Test l: assert() survives mktemp failure, reaches test_summary (task 6363) ---"
+
+rc=0
+mtf_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'first assert under tmpfile fallback' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    check "assert survives mktemp failure: test_summary exits 0 (got rc=$rc)" "true"
+else
+    check "assert survives mktemp failure: test_summary exits 0 (got rc=$rc, output: $mtf_out)" "false"
+fi
+
+if echo "$mtf_out" | grep -q "REACHED-SECOND-STATEMENT"; then
+    check "assert survives mktemp failure: suite reaches the statement after the first assert" "true"
+else
+    check "assert survives mktemp failure: suite reaches the statement after the first assert (got: $mtf_out)" "false"
+fi
+
+if echo "$mtf_out" | grep -q "Results: 2 passed, 0 failed"; then
+    check "assert survives mktemp failure: test_summary prints Results line" "true"
+else
+    check "assert survives mktemp failure: test_summary prints Results line (got: $mtf_out)" "false"
+fi
+
+# Non-vacuity control: proves the sub-shell's mktemp genuinely failed (mktemp
+# prints its own "mktemp: failed to create file..." diagnostic to stderr,
+# captured above by the outer `2>&1`), so the three checks just above are
+# known to have exercised the fallback path and not a mktemp-succeeded path
+# that happens to look the same.
+if echo "$mtf_out" | mktemp_failure_observed; then
+    check "assert survives mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity)" "true"
+else
+    check "assert survives mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity) (got: $mtf_out)" "false"
+fi
+
+# -- Test (l2): assert() FAIL branch survives the same mktemp failure --------
+# (task 6363 amendment). Test (l) only exercises the PASS branch under the
+# mktemp-failure fallback. The FAIL branch has its own branch-specific logic
+# -- the `[ -n "$_f" ] && [ -s "$_f" ]` evidence-dump guard, which must be
+# skipped (not error) when $_f is empty, plus the FAIL counter and
+# test_summary's `exit 1` -- none of which Test (l)'s all-PASS run touches.
+# A regression that made the dump guard fire on an empty $_f would either
+# abort before REACHED-AFTER-FAIL (already caught by the same shape of check
+# as Test (l)) or wrongly print a dump marker with nothing to dump.
+echo ""
+echo "--- Test l2: assert() FAIL branch survives mktemp failure, dump guard skips cleanly (task 6363) ---"
+
+rc=0
+mtf_fail_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'passing assert under tmpfile fallback' true
+    _l2_boom() { printf 'l2 stderr needle\n' >&2; return 1; }
+    assert 'failing assert under tmpfile fallback' _l2_boom
+    echo 'REACHED-AFTER-FAIL'
+    test_summary
+" 2>&1) || rc=$?
+
+# test_summary exits 1 whenever FAIL>0 -- expected here, since the second
+# assert above is deliberately failing. The regression this closes is dying
+# at the assert call itself (before REACHED-AFTER-FAIL / test_summary), not
+# this expected nonzero exit -- the next check distinguishes the two.
+if [ "$rc" -eq 1 ]; then
+    check "assert FAIL under mktemp failure: test_summary still runs and exits 1 (got rc=$rc)" "true"
+else
+    check "assert FAIL under mktemp failure: test_summary still runs and exits 1 (got rc=$rc, output: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -q "REACHED-AFTER-FAIL"; then
+    check "assert FAIL under mktemp failure: suite reaches the statement after the failing assert" "true"
+else
+    check "assert FAIL under mktemp failure: suite reaches the statement after the failing assert (got: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -qF "  FAIL: failing assert under tmpfile fallback"; then
+    check "assert FAIL under mktemp failure: byte-identical FAIL line still emitted" "true"
+else
+    check "assert FAIL under mktemp failure: byte-identical FAIL line still emitted (got: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -q "Results: 1 passed, 1 failed"; then
+    check "assert FAIL under mktemp failure: test_summary prints the correct Results line" "true"
+else
+    check "assert FAIL under mktemp failure: test_summary prints the correct Results line (got: $mtf_fail_out)" "false"
+fi
+
+# The dump guard must be FALSE when $_f is empty, so no captured-output dump
+# is attempted (mechanically, none is even possible: there is no tmpfile).
+if echo "$mtf_fail_out" | grep -qF "assert: captured output"; then
+    check "assert FAIL under mktemp failure: no captured-output dump is attempted (no tmpfile exists) (got: $mtf_fail_out)" "false"
+else
+    check "assert FAIL under mktemp failure: no captured-output dump is attempted (no tmpfile exists)" "true"
+fi
+
+if echo "$mtf_fail_out" | mktemp_failure_observed; then
+    check "assert FAIL under mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity)" "true"
+else
+    check "assert FAIL under mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity) (got: $mtf_fail_out)" "false"
+fi
+
+# -- Test (l3): assert() survives an rm failure on the mktemp-SUCCEEDED path -
+# (task 6363 amendment). Test (l)/(l2) force mktemp itself to fail, so $_f is
+# always empty and `[ -n "$_f" ] && rm -f "$_f"` short-circuits before ever
+# calling rm. A separate failure mode reaches the rm call: mktemp succeeds
+# ($_f is non-empty) but the subsequent `rm -f "$_f"` itself fails -- e.g. a
+# read-only or immutable TMPDIR. `rm -f "$_f"` is the command following the
+# final `&&` in that list, so under `set -e` ITS failure alone used to abort
+# the caller right there, before assert()'s trailing `return 0` was ever
+# reached -- the same class of bug as Test (l), on a different trigger.
+# Stubs `rm` as a shell function (not TMPDIR=/dev/null/nope, which forces
+# mktemp -- not rm -- to fail) to force exactly this path. The stub emits a
+# unique sentinel to stderr before failing so a non-vacuity check below can
+# prove assert() genuinely reached and invoked it -- the same class of
+# defence Test (l)/(l2)'s mktemp_failure_observed control gives the
+# TMPDIR=/dev/null/nope idiom, applied to this test's own stub-based trigger
+# (task 6363 amendment).
+echo ""
+echo "--- Test l3: assert() survives an rm failure after a successful mktemp (task 6363) ---"
+
+rc=0
+rmf_out=$(bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    rm() { printf 'RM-STUB-INVOKED\n' >&2; return 1; }
+    assert 'first assert with failing rm' true
+    echo 'REACHED-AFTER-RM-FAILURE'
+    test_summary
+" 2>&1) || rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    check "assert survives rm failure: test_summary exits 0 (got rc=$rc)" "true"
+else
+    check "assert survives rm failure: test_summary exits 0 (got rc=$rc, output: $rmf_out)" "false"
+fi
+
+if echo "$rmf_out" | grep -q "REACHED-AFTER-RM-FAILURE"; then
+    check "assert survives rm failure: suite reaches the statement after the assert" "true"
+else
+    check "assert survives rm failure: suite reaches the statement after the assert (got: $rmf_out)" "false"
+fi
+
+if echo "$rmf_out" | grep -q "Results: 1 passed, 0 failed"; then
+    check "assert survives rm failure: test_summary prints the correct Results line" "true"
+else
+    check "assert survives rm failure: test_summary prints the correct Results line (got: $rmf_out)" "false"
+fi
+
+# Non-vacuity control: proves the sub-shell's rm stub was genuinely invoked
+# (not silently bypassed, e.g. by a future hardening of assert()'s rm call to
+# `command rm`/`\rm`/an absolute path -- at which point rm would quietly
+# succeed, and the three checks above would still pass, but vacuously). The
+# sentinel cannot self-match: no assert description or other helper output
+# contains it.
+if echo "$rmf_out" | grep -qF "RM-STUB-INVOKED"; then
+    check "assert survives rm failure: sub-shell's rm stub was genuinely invoked (non-vacuity)" "true"
+else
+    check "assert survives rm failure: sub-shell's rm stub was genuinely invoked (non-vacuity) (got: $rmf_out)" "false"
+fi
+
+# -- Test (l4): mktemp_failure_observed discriminator is live ----------------
+# (task 6363 amendment). The non-vacuity controls in Test (l)/(l2) above can,
+# by construction, only ever report "the fallback path was genuinely
+# exercised" -- indistinguishable from a discriminator that has stopped
+# discriminating anything (e.g. one that would match ANY assert output,
+# broken or not). assert_shared_trash_litter_detector_live
+# (test_helpers.sh:420-459) is the in-repo precedent for closing exactly this
+# gap: prove the checker fires on a synthetic positive AND stays quiet on a
+# clean input, so it cannot silently become a dead instrument. This runs Test
+# (l)'s EXACT sub-shell body twice -- once forced broken via $BROKEN_TMPDIR,
+# once under the ambient (working) TMPDIR where mktemp genuinely succeeds --
+# and checks that mktemp_failure_observed fires on the first and not the
+# second.
+echo ""
+echo "--- Test l4: mktemp_failure_observed discriminator is live, not a dead instrument (task 6363) ---"
+
+_l4_broken_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'first assert under tmpfile fallback' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || true
+
+_l4_ok_out=$(bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'first assert under tmpfile fallback' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || true
+
+if echo "$_l4_broken_out" | mktemp_failure_observed; then
+    check "mktemp_failure_observed: fires on a genuinely mktemp-broken run" "true"
+else
+    check "mktemp_failure_observed: fires on a genuinely mktemp-broken run (got: $_l4_broken_out)" "false"
+fi
+
+if echo "$_l4_ok_out" | mktemp_failure_observed; then
+    check "mktemp_failure_observed: stays quiet on a genuinely mktemp-working run (got: $_l4_ok_out)" "false"
+else
+    check "mktemp_failure_observed: stays quiet on a genuinely mktemp-working run" "true"
+fi
+
 # ==============================================================================
 # Test: assert dumps captured output on FAIL (evidence preservation)
 # esc-4959-57: assert() historically discarded the asserted command's
@@ -244,6 +499,125 @@ if [ "$_eb_subshell_result" = "1" ]; then
 else
     check "no-subshell invariant: checker's parent-shell global mutation survives assert (got: $_eb_subshell_result)" "false"
 fi
+
+# ==============================================================================
+# Test: assert sanitizes a MULTI-LINE description (task 6353)
+# assert() historically echoed "  PASS: $desc" / "  FAIL: $desc" with no
+# sanitizing, so lines 2+ of a multi-line description printed at COLUMN 0.
+# dark-factory's slot-timeout/semaphore classifier is `^[ \t]*`-anchored, so a
+# description that interpolates a nested deadline-capable child's COMBINED
+# capture put that child's slot-timeout sentinel at column 0 and misclassified
+# the whole merge verify as semaphore starvation (task 6353; two live sites --
+# test_verify_env_ambient_isolation.sh and run_all_ambient_isolation_lib.sh).
+# The fix is structural, in assert() itself: line 1 stays byte-identical and
+# lines 2+ carry the same `  | ` prefix assert already applies to a failing
+# checker's captured output. `  | ` is a NON-whitespace prefix, which is what
+# actually defeats that anchor -- indentation alone does NOT.
+#
+# These checks use the LOCAL self-hosting check() helper (not assert(), which
+# is the unit under test) and drive assert() through the nested
+# `bash -c "source '$HELPER_FILE'; ..."` idiom used above, so the nested
+# PASS/FAIL counters never pollute this suite's own.
+# ==============================================================================
+
+echo ""
+echo "--- Test: assert prefixes lines 2+ of a multi-line description (6353) ---"
+
+# Sub-check 1: MULTI-LINE FAIL. Every output line after line 1 that came from
+# $desc must begin with the literal `  | `; none may start at column 0. The
+# checker is quiet (no output), so assert's own FAIL dump stays absent and the
+# only multi-line source is $desc itself.
+_ad_fail_out=$(bash -c "
+    source '$HELPER_FILE'
+    _ad_boom() { return 1; }
+    assert \"\$1\" _ad_boom
+" _ "$(printf 'line1\nNEEDLE_L2\nNEEDLE_L3')" 2>&1 || true)
+
+_ad_f_col0="$(printf '%s\n' "$_ad_fail_out" | grep -c '^NEEDLE_L' || true)"
+_ad_f_pfx="$(printf '%s\n' "$_ad_fail_out" | grep -c '^  | NEEDLE_L' || true)"
+_ad_f_l1="$(printf '%s\n' "$_ad_fail_out" | grep -c '^  FAIL: line1$' || true)"
+if [ "${_ad_f_col0:-1}" -eq 0 ] && [ "${_ad_f_pfx:-0}" -eq 2 ] && [ "${_ad_f_l1:-0}" -eq 1 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "6353-a: multi-line FAIL desc keeps line 1 byte-identical and prefixes lines 2+ with '  | ' (col0=$_ad_f_col0 want 0; prefixed=$_ad_f_pfx want 2; line1=$_ad_f_l1 want 1)" "$ok"
+
+# Sub-check 2: MULTI-LINE PASS. The leak fires on a PASSING assertion too
+# (test_slot_timeout_marker.sh's Section E preamble records exactly this --
+# cited by section, not line number, so the cite survives edits there), so
+# fixing only the FAIL branch would leave the channel wide open.
+_ad_pass_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$(printf 'line1\nNEEDLE_L2\nNEEDLE_L3')" 2>&1 || true)
+
+_ad_p_col0="$(printf '%s\n' "$_ad_pass_out" | grep -c '^NEEDLE_L' || true)"
+_ad_p_pfx="$(printf '%s\n' "$_ad_pass_out" | grep -c '^  | NEEDLE_L' || true)"
+_ad_p_l1="$(printf '%s\n' "$_ad_pass_out" | grep -c '^  PASS: line1$' || true)"
+if [ "${_ad_p_col0:-1}" -eq 0 ] && [ "${_ad_p_pfx:-0}" -eq 2 ] && [ "${_ad_p_l1:-0}" -eq 1 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "6353-b: multi-line PASS desc keeps line 1 byte-identical and prefixes lines 2+ with '  | ' (col0=$_ad_p_col0 want 0; prefixed=$_ad_p_pfx want 2; line1=$_ad_p_l1 want 1)" "$ok"
+
+# Sub-check 3: SENTINEL-SHAPED NEEDLE -- the property that actually matters to
+# dark-factory. The token is assembled at runtime from a SPLIT literal so this
+# file never carries the contiguous sentinel: test_slot_timeout_marker.sh scans
+# sibling tests/infra suites for exactly that anchored shape, and this suite's
+# own stdout is re-emitted into the merge-gate verify log, so a literal here
+# would be self-inflicted pollution.
+#
+# NOTE: the captured output is NEVER interpolated into a check description --
+# dumping it would BE the leak this sub-check guards. Counts only.
+_ad_sp='@@REIFY_SLOT_'
+_ad_tok="${_ad_sp}TIMEOUT@@"
+_ad_sent_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$(printf 'sentinel desc\n%sTIMEOUT@@ reason=x slots=1 waited=1800 disposition=soft lock=y' "$_ad_sp")" 2>&1 || true)
+
+_ad_s_anchored="$(printf '%s\n' "$_ad_sent_out" | grep -cE "^[[:blank:]]*${_ad_tok}" || true)"
+_ad_s_present="$(printf '%s\n' "$_ad_sent_out" | grep -cF -- "$_ad_tok" || true)"
+# Non-vacuity first: the token really is in the output, so a zero anchored
+# count means "unanchored", never "absent".
+if [ "${_ad_s_present:-0}" -ge 1 ]; then ok=true; else ok=false; fi
+check "6353-c1: non-vacuity control -- the sentinel token IS present in assert's output (present=$_ad_s_present want >=1)" "$ok"
+
+if [ "${_ad_s_anchored:-1}" -eq 0 ]; then ok=true; else ok=false; fi
+check "6353-c2: a sentinel-shaped line inside \$desc is NOT emitted \`^[[:blank:]]*\`-anchored (anchored=$_ad_s_anchored want 0)" "$ok"
+
+# Sub-check 4: REGRESSION -- single-line byte identity, both branches. Line 1 of
+# assert's output is parsed by test_run_all.sh / dark-factory's cause_hint
+# (run_all.sh's `^[[:space:]]*FAIL:` grep), so the common path must stay
+# byte-for-byte what it was.
+_ad_sl_fail=$(bash -c "
+    source '$HELPER_FILE'
+    _ad_quiet_boom() { return 1; }
+    assert 'boom desc' _ad_quiet_boom
+" 2>&1 || true)
+if [ "$_ad_sl_fail" = "  FAIL: boom desc" ]; then ok=true; else ok=false; fi
+check "6353-d1: single-line FAIL output is byte-identical to '  FAIL: <desc>' (got: $_ad_sl_fail)" "$ok"
+
+_ad_sl_pass=$(bash -c "
+    source '$HELPER_FILE'
+    assert 'ok desc' true
+" 2>&1 || true)
+if [ "$_ad_sl_pass" = "  PASS: ok desc" ]; then ok=true; else ok=false; fi
+check "6353-d2: single-line PASS output is byte-identical to '  PASS: <desc>' (got: $_ad_sl_pass)" "$ok"
+
+# Sub-check 5: REGRESSION -- literal-safety of the single-line path. A desc
+# carrying backslashes and a percent sign must be emitted VERBATIM, proving the
+# common path did not silently switch from `echo "$label$desc"` to a printf
+# FORMAT string (where `%` and `\n` would be interpreted).
+_ad_lit_desc='has \n backslash and 100% pct'
+_ad_lit_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$_ad_lit_desc" 2>&1 || true)
+if [ "$_ad_lit_out" = "  PASS: $_ad_lit_desc" ]; then ok=true; else ok=false; fi
+check "6353-e: single-line desc with backslashes and '%' is emitted verbatim, not as a printf format (got: $_ad_lit_out)" "$ok"
 
 # ==============================================================================
 # Consumer refactoring verification tests
@@ -1615,7 +1989,83 @@ check "WL-j7: assert_shared_trash_litter_detector_live returns 0 and never reads
 # could ever create is "<stem>-lane-XXXX.<pid>"; anything else new is another
 # process's and is reported informationally instead of failing.
 _WL_SELFTEST_STEM="selftest-stem"
-ls -A /tmp/.reseed-trash 2>/dev/null | sort > "$_WL_DIR/real-trash-before"
+
+# _WL_REAL_TRASH_DIR: the machine-shared trash dir this block observes.
+# Defaults to the real path; the override hook exists solely so this file's
+# own absent-dir regression guard (WL-j13 below) can point it at a path
+# guaranteed not to exist, making that branch reachable deterministically on
+# any host (#6299). Under override, WL-j9 degrades to a vacuous pass (nothing
+# can litter a dir that does not exist), while WL-j8 keeps its full meaning
+# because assert_shared_trash_litter_detector_live is hermetic and mktemps
+# its own scratch dir — the default (non-overridden) run retains both checks'
+# full meaning.
+_WL_REAL_TRASH_DIR="${_WL_REAL_TRASH_DIR:-/tmp/.reseed-trash}"
+
+# _wl_snapshot_real_trash <dir> <outfile>: mirrors the already-correct
+# _list_trash_entries contract documented in tests/infra/test_helpers.sh ("An
+# absent or unreadable dir emits nothing and is NOT an error"). Duplicated
+# here rather than called there, to keep this suite's own observation
+# scaffolding independent of the module under test — see the file header's
+# no-circular-dependency note (#6299). Before this helper existed, this block
+# read the dir with a bare `ls -A ... | sort` under errexit+pipefail:
+# `2>/dev/null` suppresses only ls's diagnostic, not its exit 2 on an absent
+# dir, which pipefail then propagates into errexit, aborting the whole suite.
+# An empty before/after pair is the semantically correct reading of an absent
+# dir: this block only diffs before-vs-after for NEW litter, and an absent
+# dir has none. The trailing `|| : > "$_out"` also closes a TOCTOU window —
+# /tmp/.reseed-trash is machine-shared and another worktree may remove it
+# between the `[ -d ]` check and the read.
+_wl_snapshot_real_trash() {
+    local _dir="$1" _out="$2"
+    : > "$_out"
+    [ -d "$_dir" ] || return 0
+    ls -A "$_dir" 2>/dev/null | sort > "$_out" || : > "$_out"
+    return 0
+}
+
+# _wl_classify_new_trash <before-file> <after-file> <stem>: sets the globals
+# _wl_new_real/_wl_new_other to the space-separated entries new in <after-file>
+# that do/don't match <stem>, extracted verbatim (#6299) from what this block
+# used to run inline, so WL-j14..j18 can unit-check the classification that
+# decides WL-j9's verdict. `comm -13` requires sorted input, which is exactly
+# what _wl_snapshot_real_trash's `| sort` guarantees for its two outfiles —
+# keep the two coupled.
+#
+# MUST be called as a plain statement, NEVER as $(_wl_classify_new_trash ...):
+# a command substitution runs the body in a subshell and silently discards
+# both global assignments, the same subshell-safety hazard this file already
+# documents for make_isolated_lane's _TMPDIRS+= (see WL-g above). For the same
+# reason the loop below reads via `< <(comm ...)` process substitution rather
+# than a `comm ... | while` pipe, which would put the loop itself in a
+# subshell and lose the globals the same way.
+_wl_classify_new_trash() {
+    local _before="$1" _after="$2" _stem="$3" _wl_e
+    _wl_new_real=""
+    _wl_new_other=""
+    # Precondition: a missing/unreadable snapshot file must be an explicit
+    # failure, not a vacuous "no new litter" pass (#6299). Without this, a
+    # process substitution's failure never propagates under errexit: `comm
+    # -13` on a nonexistent file just prints to stderr, the loop reads
+    # nothing, and both globals come back empty — the same vacuous-pass shape
+    # WL-j4 exists to prevent elsewhere in this file. The globals are reset to
+    # "" above (never left unset) so a caller referencing them under `set -u`
+    # cannot hit an unbound-variable error on this early-return path either;
+    # callers MUST still check this function's return code — an empty global
+    # alone no longer means "clean".
+    [ -f "$_before" ] && [ -f "$_after" ] || {
+        echo "ERROR: _wl_classify_new_trash: missing snapshot file (before=$_before after=$_after)" >&2
+        return 1
+    }
+    while IFS= read -r _wl_e; do
+        [ -n "$_wl_e" ] || continue
+        case "$_wl_e" in
+            "$_stem"*) _wl_new_real="$_wl_new_real$_wl_e " ;;
+            *)         _wl_new_other="$_wl_new_other$_wl_e " ;;
+        esac
+    done < <(comm -13 "$_before" "$_after")
+}
+
+_wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-before"
 cat > "$_WL_DIR/litter-live-real.sh" <<'PROBE'
 set -uo pipefail
 source "$1"
@@ -1623,16 +2073,12 @@ source "$1"
 assert_shared_trash_litter_detector_live
 PROBE
 _wl_run "$_WL_DIR/litter-live-real.sh"
-ls -A /tmp/.reseed-trash 2>/dev/null | sort > "$_WL_DIR/real-trash-after"
-_wl_new_real=""
-_wl_new_other=""
-while IFS= read -r _wl_e; do
-    [ -n "$_wl_e" ] || continue
-    case "$_wl_e" in
-        "$_WL_SELFTEST_STEM"*) _wl_new_real="$_wl_new_real$_wl_e " ;;
-        *)                     _wl_new_other="$_wl_new_other$_wl_e " ;;
-    esac
-done < <(comm -13 "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after")
+_wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-after"
+# Plain-statement call (never $(...) — see the subshell-safety note above);
+# rc captured via `|| _wl_classify_rc=$?` so a precondition failure (#6299)
+# reports as a WL-j9 FAIL instead of aborting the whole suite under errexit.
+_wl_classify_rc=0
+_wl_classify_new_trash "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after" "$_WL_SELFTEST_STEM" || _wl_classify_rc=$?
 if [ -n "${_wl_new_other// /}" ]; then
     echo "note: /tmp/.reseed-trash gained entries not attributable to $_WL_SELFTEST_STEM (other worktrees; not a failure): $_wl_new_other"
 fi
@@ -1640,8 +2086,253 @@ fi
 if [ "$_WL_RC" -eq 0 ]; then ok=true; else ok=false; fi
 check "WL-j8: the liveness control returns 0 against the real default _SHARED_TRASH_DIR (rc=$_WL_RC out: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
 
-if [ -z "${_wl_new_real// /}" ]; then ok=true; else ok=false; fi
-check "WL-j9: ... and adds no entry of its OWN stem ($_WL_SELFTEST_STEM) to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real])" "$ok"
+if [ "$_wl_classify_rc" -eq 0 ] && [ -z "${_wl_new_real// /}" ]; then ok=true; else ok=false; fi
+check "WL-j9: ... and adds no entry of its OWN stem ($_WL_SELFTEST_STEM) to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real] classify_rc=$_wl_classify_rc)" "$ok"
+
+echo ""
+echo "--- Warm-lane isolation: shared-trash read tolerates an absent real-trash dir (#6299) ---"
+
+# WL-j10..j13 close the gap this task exists to fix: before #6299, the two
+# real-trash reads above were a bare `ls -A /tmp/.reseed-trash | sort` under
+# errexit+pipefail, which abort this whole suite (exit 2, no Results: summary)
+# whenever /tmp/.reseed-trash happens to be absent on the host — mistaken by
+# the main-tip integrity sweep for main being broken. _wl_snapshot_real_trash
+# mirrors the already-correct _list_trash_entries contract documented in
+# tests/infra/test_helpers.sh ("An absent or unreadable dir emits nothing and
+# is NOT an error"). It is duplicated here rather than called there, to keep
+# this suite's own observation scaffolding independent of the module under
+# test — see the file header's no-circular-dependency note.
+
+# (a) WL-j10: an ABSENT dir must be tolerated, not aborted. declare -F guards
+# the call so that until _wl_snapshot_real_trash is defined, this reports a
+# clean FAIL instead of an undefined-command abort.
+_wl_j10_dir="$_WL_DIR/no-such-real-trash"
+_wl_j10_out="$_WL_DIR/absent-trash-snapshot"
+rm -f "$_wl_j10_out"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j10_rc=0
+    _wl_snapshot_real_trash "$_wl_j10_dir" "$_wl_j10_out" || _wl_j10_rc=$?
+    if [ "$_wl_j10_rc" -eq 0 ] && [ -f "$_wl_j10_out" ] && [ ! -s "$_wl_j10_out" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j10: _wl_snapshot_real_trash tolerates an absent dir — rc=0, outfile exists and is empty (#6299)" "$ok"
+
+# (b) WL-j11: a PRESENT dir with several entries, including a dotfile, pins
+# the exact 'ls -A ... | sort' format that the comm -13 classification below
+# depends on.
+_wl_j11_dir="$_WL_DIR/present-trash-with-entries"
+mkdir -p "$_wl_j11_dir"
+touch "$_wl_j11_dir/.dotfile-entry" "$_wl_j11_dir/zeta-entry" "$_wl_j11_dir/alpha-entry" "$_wl_j11_dir/mid-entry"
+_wl_j11_out="$_WL_DIR/present-trash-snapshot"
+_wl_j11_expected="$_WL_DIR/present-trash-expected"
+rm -f "$_wl_j11_out"
+ls -A "$_wl_j11_dir" | sort > "$_wl_j11_expected"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j11_rc=0
+    _wl_snapshot_real_trash "$_wl_j11_dir" "$_wl_j11_out" || _wl_j11_rc=$?
+    if [ "$_wl_j11_rc" -eq 0 ] && cmp -s "$_wl_j11_out" "$_wl_j11_expected"; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j11: _wl_snapshot_real_trash on a present dir with entries byte-matches an independently computed 'ls -A | sort', dotfiles included (#6299)" "$ok"
+
+# (c) WL-j12: a PRESENT but EMPTY dir must not be confused with the absent
+# case — both produce an empty outfile, but this path must not error either.
+_wl_j12_dir="$_WL_DIR/present-trash-empty"
+mkdir -p "$_wl_j12_dir"
+_wl_j12_out="$_WL_DIR/present-empty-trash-snapshot"
+rm -f "$_wl_j12_out"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j12_rc=0
+    _wl_snapshot_real_trash "$_wl_j12_dir" "$_wl_j12_out" || _wl_j12_rc=$?
+    if [ "$_wl_j12_rc" -eq 0 ] && [ -f "$_wl_j12_out" ] && [ ! -s "$_wl_j12_out" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j12: _wl_snapshot_real_trash on a present-but-empty dir writes an empty outfile with rc=0 (#6299)" "$ok"
+
+# (d) WL-j13: the end-to-end regression barrier. The real /tmp/.reseed-trash
+# is a hardcoded machine-shared path no test may create or delete, so an
+# absent-dir check against it alone would pass vacuously on any host where the
+# dir happens to exist — exactly the intermittency that let this bug survive
+# four sweep failures. Re-running this whole suite with _WL_REAL_TRASH_DIR
+# pointed at a guaranteed-absent path makes the absent-dir branch reachable
+# deterministically on ANY host. Sentinel-gated so the inner run skips this
+# block entirely and recursion is bounded to one level. No EXIT trap is added
+# here: $_WL_DIR already sits under $_robust_tmpdir and is reclaimed by the
+# suite's single existing trap.
+if [ -z "${_WL_ABSENT_TRASH_SELFTEST:-}" ]; then
+    _wl_j13_tmpdir="$(mktemp -d "$_WL_DIR/selftest-tmp-XXXXXX")"
+    _wl_j13_log="$_WL_DIR/selftest.log"
+    _wl_j13_rc=0
+    _WL_ABSENT_TRASH_SELFTEST=1 _WL_REAL_TRASH_DIR="$_WL_DIR/no-such-trash" TMPDIR="$_wl_j13_tmpdir" \
+        bash "${BASH_SOURCE[0]}" > "$_wl_j13_log" 2>&1 || _wl_j13_rc=$?
+    _wl_j13_summary_ok=false
+    if grep -qE '^Results: [0-9]+ passed, 0 failed' "$_wl_j13_log"; then
+        _wl_j13_summary_ok=true
+    fi
+    # Require a CLEAN inner run, not merely "reached the summary" (#6299): the
+    # override only makes WL-j9 vacuous, it must never make any check actually
+    # FAIL, so rc must be exactly 0 — an inner rc=1 (some check failed) is a
+    # real regression that this guard must not wave through as acceptable.
+    if [ "$_wl_j13_summary_ok" = "true" ] && [ "$_wl_j13_rc" -eq 0 ]; then
+        ok=true
+    else
+        ok=false
+    fi
+    if [ "$ok" = "false" ]; then
+        # The nested run's log lives under $_WL_DIR and is reclaimed by the
+        # suite's single EXIT trap — surface its tail now so the failure is
+        # diagnosable from this run's own output instead of vanishing with it.
+        echo "  WL-j13 nested run log (tail -20):"
+        tail -20 "$_wl_j13_log" 2>/dev/null | sed 's/^/    /' || true
+    fi
+    check "WL-j13: re-running this suite with _WL_REAL_TRASH_DIR pointed at a guaranteed-absent path still reaches a CLEAN Results: summary (0 failed, rc=0), never aborting or failing a check (#6299) (rc=$_wl_j13_rc)" "$ok"
+fi
+
+echo ""
+echo "--- Warm-lane isolation: shared-trash NEW-litter classification is unit-tested (#6299) ---"
+
+# WL-j14..j18 close the MUST-NOT-REGRESS gap this task also requires: the
+# comm -13 + stem-attribution classification that decides WL-j9's verdict is
+# exercised only end-to-end by WL-j8/WL-j9 today. WL-j3/WL-j6/WL-j7 cover the
+# LIBRARY functions in test_helpers.sh, not this suite's own driver-level
+# classification block. _wl_classify_new_trash names that classification so
+# it can be driven directly over synthetic before/after listings written
+# under $_WL_DIR — never the real trash path. Each check below guards its
+# call with declare -F so, while the function is undefined, it reports a
+# clean FAIL rather than an undefined-command abort under errexit.
+
+# (a) WL-j14: a NEW entry matching the stem, shaped "<stem>-lane-XXXX.<pid>",
+# must land in _wl_new_real and NOT in _wl_new_other.
+_wl_j14_before="$_WL_DIR/clsfy-j14-before"
+_wl_j14_after="$_WL_DIR/clsfy-j14-after"
+_wl_j14_stem="wl14stem"
+printf '%s\n' "other-preexisting-entry" | sort > "$_wl_j14_before"
+printf '%s\n' "other-preexisting-entry" "${_wl_j14_stem}-lane-0007.12345" | sort > "$_wl_j14_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real=""
+    _wl_new_other=""
+    _wl_classify_new_trash "$_wl_j14_before" "$_wl_j14_after" "$_wl_j14_stem"
+    if [[ "$_wl_new_real" == *"${_wl_j14_stem}-lane-0007.12345"* ]] && [[ "$_wl_new_other" != *"${_wl_j14_stem}-lane-0007.12345"* ]]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j14: _wl_classify_new_trash puts a NEW stem-matching entry, shaped '<stem>-lane-XXXX.<pid>', in _wl_new_real and not in _wl_new_other (#6299)" "$ok"
+
+# (b) WL-j15: a NEW entry NOT matching the stem must land in _wl_new_other and
+# NOT in _wl_new_real — another worktree's concurrent litter stays
+# informational and never fails the suite.
+_wl_j15_before="$_WL_DIR/clsfy-j15-before"
+_wl_j15_after="$_WL_DIR/clsfy-j15-after"
+_wl_j15_stem="wl15stem"
+printf '%s\n' "other-preexisting-entry" | sort > "$_wl_j15_before"
+printf '%s\n' "other-preexisting-entry" "otherstem-lane-0009.54321" | sort > "$_wl_j15_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real=""
+    _wl_new_other=""
+    _wl_classify_new_trash "$_wl_j15_before" "$_wl_j15_after" "$_wl_j15_stem"
+    if [[ "$_wl_new_other" == *"otherstem-lane-0009.54321"* ]] && [[ "$_wl_new_real" != *"otherstem-lane-0009.54321"* ]]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j15: _wl_classify_new_trash puts a NEW non-stem-matching entry in _wl_new_other and not in _wl_new_real, so other worktrees' litter stays informational (#6299)" "$ok"
+
+# (c) WL-j16: an entry present in BOTH before and after (pre-existing) lands
+# in neither global — including a stem-matching pre-existing entry, which
+# must not be misreported as new.
+_wl_j16_before="$_WL_DIR/clsfy-j16-before"
+_wl_j16_after="$_WL_DIR/clsfy-j16-after"
+_wl_j16_stem="wl16stem"
+printf '%s\n' "other-preexisting-entry" "${_wl_j16_stem}-lane-0001.111" | sort > "$_wl_j16_before"
+printf '%s\n' "other-preexisting-entry" "${_wl_j16_stem}-lane-0001.111" | sort > "$_wl_j16_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    # Pre-seeded with a stale marker, not "" (#6299): otherwise a completely
+    # no-op or early-returning _wl_classify_new_trash would pass this check
+    # vacuously by merely leaving the globals untouched, rather than by
+    # actively producing emptiness. Matches the WL-j17 precedent below for
+    # the identical hazard.
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
+    _wl_classify_new_trash "$_wl_j16_before" "$_wl_j16_after" "$_wl_j16_stem"
+    if [ -z "${_wl_new_real// /}" ] && [ -z "${_wl_new_other// /}" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j16: _wl_classify_new_trash reports neither global for an entry present in BOTH before and after, stem-matching pre-existing entry included (#6299)" "$ok"
+
+# (d) WL-j17: the absent-dir composition. Two EMPTY before/after files (what
+# _wl_snapshot_real_trash writes for an absent dir) must yield both globals
+# empty — pinning that an absent dir reads as "no new litter", not as an
+# error or a false positive. Both globals are pre-seeded with a stale marker
+# so the check actually exercises the function producing emptiness, rather
+# than merely observing untouched globals.
+_wl_j17_before="$_WL_DIR/clsfy-j17-before"
+_wl_j17_after="$_WL_DIR/clsfy-j17-after"
+: > "$_wl_j17_before"
+: > "$_wl_j17_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
+    _wl_classify_new_trash "$_wl_j17_before" "$_wl_j17_after" "wl17stem"
+    if [ -z "${_wl_new_real// /}" ] && [ -z "${_wl_new_other// /}" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j17: _wl_classify_new_trash on two EMPTY before/after listings (the absent-dir composition) yields both globals empty (#6299)" "$ok"
+
+# (e) WL-j18: subshell safety. Called as a plain statement (never inside a
+# $( ) command substitution — see the make_isolated_lane precedent this file
+# already documents for the same hazard), the function must visibly mutate
+# _wl_new_real in the calling (main) shell, not merely appear to succeed
+# while leaving the caller's globals untouched.
+_wl_j18_before="$_WL_DIR/clsfy-j18-before"
+_wl_j18_after="$_WL_DIR/clsfy-j18-after"
+_wl_j18_stem="wl18stem"
+: > "$_wl_j18_before"
+printf '%s\n' "${_wl_j18_stem}-lane-0002.222" | sort > "$_wl_j18_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
+    _wl_classify_new_trash "$_wl_j18_before" "$_wl_j18_after" "$_wl_j18_stem"
+    if [[ "$_wl_new_real" == *"${_wl_j18_stem}-lane-0002.222"* ]] && [ "$_wl_new_real" != "stale-marker" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j18: _wl_classify_new_trash called as a plain statement visibly mutates _wl_new_real in the caller's shell, not silently discarded as inside \$( ) (#6299)" "$ok"
 
 # -- Summary -------------------------------------------------------------------
 echo ""

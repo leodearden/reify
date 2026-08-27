@@ -3,6 +3,7 @@
 **Status:** active · version-agnostic infrastructure foundation · authored 2026-07-11 · durable-fix layer for the recurring warm-lane ENOSPC wedge (2026-07-10 esc-5078-2). Complements — does **not** duplicate — the in-flight acute fixes **task 5167** (terminal-task rebase-orphan lane reclaim) and **task 5168** (GC free-before-reseed ENOSPC deadlock), and the landed `warm-lane-pool-space-safety.md` PRD.
 **Source:** live lane/GC telemetry audit (2026-07-11, this PRD's G6 investigation) + spawn brief `warm-lane-pool-sizing-audit.md`. Memory: `project_warm_lane_accretion_falsepreserve_rca`.
 **Scope guard (inherited, load-bearing):** warmth never narrows the gate (verify-scope-contract C2). This PRD bounds the pool's *disk footprint* and makes accretion *observable + admission-gated*; it never trades verify coverage.
+**Code anchors:** any `path:line` below is dated evidence from the 2026-07-11 audit, not a live breadcrumb — do not re-anchor it; grep the symbol or source literal named beside it to find the code today.
 
 ---
 
@@ -14,7 +15,7 @@ The XFS-reflink warm-lane pool (`/dev/loop29`, 6.0 TB, mounted `/home/leo/src/wa
 
 | Axis | Today | With this PRD |
 |---|---|---|
-| Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB mean footprint; `df`-measured 5.6 TB/6.0 TB used ⇒ 93% full — §6) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target |
+| Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB mean footprint; `df`-measured 5.6 TB/6.0 TB used ⇒ 93% full — §6) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target — unless a live process reference refuses the release-thin (exit 75, since #5823), in which case that lane's `target/` is PRESERVED until the next release-thin, gc pass, **or acquire-time reseed** reclaims it (acquire always re-seeds from base — cow-seeding D10/§9.5 — so re-acquisition is in practice the most common of the three) |
 | Accretion visibility | none until the disk-guard trips at the 50 GiB cliff (which *is* the wedge) | `warm-lane-audit.sh` reports resident/free/reclaimable/leaked/stale + projected headroom on demand and on a timer |
 | Dispatch under disk pressure | allocates new divergent lanes straight into the hard floor → ENOSPC | throttles new-lane allocation at a **soft floor** (prefers reclaim/reuse) before the hard floor is reached |
 | Pool capacity | fixed 6.0 TB image, hand-grown in incidents | budget-derived sizing + a supported online-grow operation (insurance, not the primary lever) |
@@ -237,7 +238,7 @@ dispatch/acquire admission                               (θ — new soft-floor 
     hard floor unchanged: space-safety ε check → reclaim → requeue exit-75
 ```
 **Invariants (additive to cow-seeding §9.5 inv.1–9):**
-10. **Release-thin safety** — `release_lane`'s thin removes only `target/`; the lane's branch + uncommitted source WIP are untouched and recoverable (T1). A lane is never thinned while ASSIGNED (T3).
+10. **Release-thin safety** — `release_lane`'s thin removes only `target/`; the lane's branch + uncommitted source WIP are untouched and recoverable (T1). T3's `flock -x` excludes only a consumer that **holds** the lane lock — the ACQUIRE reseed and `run_scoped_verification` — and an `ASSIGNED` lane whose agent is mid-build holds none; what protects *that* lane is `thin-warm-lane.sh`'s live-process-reference gate (task 5823), which refuses with `EX_TEMPFAIL` 75 and **PRESERVES** `target/`. *(Amended 2026-08-07 — task 6063: this invariant previously derived "a lane is never thinned while `ASSIGNED`" from T3 alone. The 2026-07-26 root cause (esc-5334-6) **falsified** that derivation — the lane lock is not held across the implement phase — and task 5615 amended the identical claim in place in `warm-lane-pool-cow-seeding.md` §9.5 inv.10, which remains the normative home for the falsification, its live evidence, and the 5823 closure. The gate's mechanism, ordering and cost are recorded once in `warm-lane-pool-space-safety.md` §8.4. Neither is restated here; this invariant states only the scope guarantee (T1) and the corrected exclusivity consequence.)*
 11. **Soft-floor precedence** — soft-floor throttling is *backpressure* (defer dispatch), never an escalation or a fault; only the *hard* floor requeues (exit-75) and only genuine seed/worktree faults escalate (space-safety D2/D3 unchanged).
 12. **Observability is non-gating** — the audit (α) never blocks dispatch, reclaim, or merge; it informs. Only the guard (ε) gates.
 

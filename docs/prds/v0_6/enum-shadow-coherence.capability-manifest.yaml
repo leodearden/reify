@@ -1,0 +1,605 @@
+prd: docs/prds/v0_6/enum-shadow-coherence.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6394
+  title: 'enum-shadow-coherence α: hoist the LocalEnumShadowScope over the whole resolving
+
+    pipeline (D1/M1)'
+  capabilities:
+  - name: shadow-scope-substrate-wired
+    binding: 'capability→producer (substrate) — LocalEnumShadowScope (RAII guard over
+      the
+
+      RESOLUTION_SHADOWING_ENUM_NAMES thread-local, type_resolution.rs) +
+
+      build_local_enum_shadow_set (compile_builder/enums_phase.rs), installed at exactly
+
+      one PRODUCTION site inside compile_with_prelude_context_checked_with_config
+
+      (reify-compiler/src/lib.rs). Not test-only, not declared-only.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: LocalEnumShadowScope::new
+      paths:
+      - crates/reify-compiler/src/lib.rs
+      expect: present
+  - name: hoist-target-inputs-final
+    binding: 'signal premise (D1) — build_local_enum_shadow_set reads ctx.enum_defs
+      +
+
+      ctx.seen_entity_names; its own doc comment states both are final from
+
+      pre_pass::collect_decl_refs onward. The hoist target is the statement immediately
+
+      after the collect_decl_refs call.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an ordering property between two call sites in one function; not expressible
+        as
+
+        a pattern present/absent check without a line anchor, which the overlay forbids.
+
+        Pinned instead by α''s own boundary row 5 fixture test.'
+  - name: payload-resolution-reaches-shadow-override
+    binding: 'capability→producer (G6 branch 3, the load-bearing one) —
+
+      resolve_enum_variant_payloads resolves each named payload field via
+
+      resolve_type_expr_with_aliases, which is a thin delegator to
+
+      resolve_type_expr_with_aliases_kinded, the function hosting the shadow override.
+
+      Moving the install earlier therefore genuinely reaches R4; it is not a no-op.
+
+      Verified by code read 2026-08-20.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: shadow_payload_binder
+      paths:
+      - crates/reify-compiler/tests
+      expect: present
+  - name: stale-placement-comment-rewritten
+    binding: 'anti-orphan (M1) — the in-code comment currently justifying the pre-payload
+
+      install cites "resolve_enum_variant_payloads has already run"; after the hoist
+
+      that justification is false and M1 rewrites it. A surviving copy is the tell
+      that
+
+      the hoist was faked.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: resolve_enum_variant_payloads. has already run
+      paths:
+      - crates/reify-compiler/src/lib.rs
+      expect: absent
+  - name: red-baseline-real
+    binding: 'signal premise — shadow_payload_binder.ri fails today with "no matching
+      overload
+
+      for use_fit(Fit), candidates: use_fit(Enum(Fit))" (probe 2026-08-19/20 against
+
+      branch tip 22b45744aa = the merged content). Merge-base 5df2f9f1f1 was clean:
+      a
+
+      genuine silent→error regression, not a pre-existing failure. Staleness re-checked
+
+      2026-08-20 — no commit since merge bc8f74a4d4 touches type_resolution.rs, lib.rs,
+
+      compile_builder/ or conformance/.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a pre-state measurement; after α lands the pre-state no longer exists,
+        so no
+
+        post-delivery pattern can observe it. The post-state (exit 0) is asserted
+        by α''s
+
+        own boundary row 5 test.'
+  - name: grammar-fixture
+    binding: 'grammar-fixture:docs/prds/v0_6/fixtures/shadow_payload_binder.ri — tree-sitter
+
+      parse --quiet from tree-sitter-reify/, exit 0, 0 ERROR nodes (2026-08-20)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'grammar gate run at decompose; the fixture is already committed and
+        introduces
+
+        no novel syntax, so there is nothing for a dispatch-time gate to re-observe.'
+- label: β
+  task_id: 6395
+  title: 'enum-shadow-coherence β: shadow-set hygiene — generic filter, assertion
+    strength,
+
+    shared entity-name filter helper (M2 / S1-S3)'
+  capabilities:
+  - name: generic-filter-gap-real
+    binding: 'signal premise (S1) — build_local_enum_shadow_set collects ctx.enum_defs
+      names
+
+      filtered only against local structure/occurrence names, with no
+
+      type_params.is_empty() filter, so a bare generic-enum name collapses to
+
+      arity-erased Type::Enum(N) and bypasses resolve_enum_type_with_args. EnumDef
+
+      already carries type_params (populated by collect_decl_refs), so the filter
+      is a
+
+      one-predicate addition.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: type_params\.is_empty\(\)
+      paths:
+      - crates/reify-compiler/src/compile_builder/enums_phase.rs
+      expect: present
+  - name: s1-is-latent-not-live
+    binding: 'signal premise — measured 2026-08-20: Result is the ONLY generic enum
+      in the
+
+      stdlib prelude, and the intersection of stdlib enum names with the 127 stdlib
+
+      `structure def` names is EMPTY. No live stdlib collision exists; the hazard
+      is a
+
+      user generic enum colliding with a prelude structure name. Result<T,E> is what
+      the
+
+      S1/S2 guard tests protect.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a corpus-absence fact about the stdlib as of decompose, not a property
+        β
+
+        delivers.'
+  - name: s2-assertion-weakness-real
+    binding: 'signal premise (S2) — applied_form_is_not_shadowed case (a) asserts
+
+      !matches!(result, Some(Type::Enum(_))) while its own doc comment states the
+
+      contract as "must stay unresolved here"; Some(Type::Error) passes today. β
+
+      strengthens it to result.is_none().'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '!matches!\(result, Some\(Type::Enum\(_\)\)\)'
+      paths:
+      - crates/reify-compiler/src/type_resolution.rs
+      expect: absent
+  - name: filter-idiom-four-sites-exact
+    binding: 'signal premise (S3) — the seen_entity_names structure/occurrence filter
+      idiom
+
+      appears at exactly FOUR sites, measured 2026-08-20: compile_builder/{defs_phase,
+
+      entities_phase, enums_phase, names_phase}.rs. CompilationCtx
+
+      (compile_builder/ctx.rs) is the natural helper home.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the post-state is "one definition", a count property; and OQ#5 leaves
+        open
+
+        whether the three prelude-chained sites take one signature or two, so an absence
+
+        check on any particular site could false-fail.'
+  - name: shadow-set-must-not-subtract-prelude-templates
+    binding: 'design constraint (S3) — ctx.resolution_structure_names chains prelude
+      template
+
+      names, so reusing it would empty the shadow set for exactly the motivating cases
+
+      (Fit, Appearance). β''s helper is the LOCAL-ONLY half; the prelude-inclusive
+      sites
+
+      need an explicit chained variant.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a negative design constraint on the helper''s contract; β documents
+        it once at
+
+        the extraction site per M2.'
+  - name: downstream-consumer-named
+    binding: 'DAG-direction (G2 intermediate) — γ is the named downstream consumer:
+      γ''s C2
+
+      predicate consults the set β finalizes. β is upstream of γ by a real
+
+      add_dependency edge.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a DAG property, enforced by the wired dependency edge rather than by
+        a repo
+
+        pattern.'
+- label: γ
+  task_id: 6396
+  title: 'enum-shadow-coherence γ: obligation-aware conformance diagnostic, redeclared
+    and
+
+    omitted (D2/D3, M3+M4)'
+  capabilities:
+  - name: obligation-table-exact
+    binding: 'signal premise (§2) — verified 2026-08-20 against the stdlib: Visual.appearance
+      :
+
+      Appearance (defaulted, = Appearance()), Physical.material : Material (required),
+
+      LocatedPort.frame : Frame3 (required), ThreadedPort.thread_spec : ThreadSpec
+
+      (required), Input.provenance : Provenance (required), SurfaceTreated.coating
+      :
+
+      Coating and SurfaceTreated.treatment : Treatment (both defaulted). All 7 obligated
+
+      type names are among the 127 prelude `structure def` names (count re-measured,
+
+      matches the PRD).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a stdlib-corpus fact γ consumes rather than delivers; γ''s own fixtures
+        exercise
+
+        three of the seven.'
+  - name: scope-live-throughout-conformance
+    binding: 'capability→producer (D2 feasibility) — the RAII guard is installed before
+
+      phase_functions/phase_traits/phase_entities and drops at the end of
+
+      compile_with_prelude_context_checked_with_config; the chain phase_entities →
+
+      compile_entity → check_trait_conformance →
+
+      check_phase_check_members_against_requirements runs entirely inside it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a call-graph containment property; asserted behaviourally by γ''s boundary
+        rows
+
+        1-3 (the diagnostic can only fire if the set is readable at conformance time).'
+  - name: membership-accessor-mintable
+    binding: 'capability→producer (M3) — RESOLUTION_SHADOWING_ENUM_NAMES is a thread_local!
+
+      RefCell<HashSet<String>> in type_resolution.rs with a LocalEnumShadowScope guard
+
+      and no reader outside the override itself. Adding a pub(crate) membership fn
+      is
+
+      purely additive.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the accessor''s name is undecided (OQ#1/OQ#4 neighbourhood), so no
+        stable pattern
+
+        exists to bind; its use is implied by the fixture checks below.'
+  - name: emission-sites-locatable
+    binding: 'capability→producer (M4) — DiagnosticCode::TypeMismatchForTraitMember
+      is emitted
+
+      at FOUR sites in conformance/checker.rs. M4 targets three of them plus the two
+
+      silent arms: the requirements-loop explicit-member mismatch arm; the
+
+      requirements-loop available_defaults wrong-type arm AND its silent
+
+      same-kind-matching-default arm (R2 omitted path); the collision loop mismatch
+      arm
+
+      AND its `let Some(conformer_type) = … else { continue }` (second R2 omitted
+      path).
+
+      The fourth site — trait-let annotation drift inside the default-injection phase
+      —
+
+      is OUT of γ scope.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: shadow_oblig_redeclared
+      paths:
+      - crates/reify-compiler/tests
+      expect: present
+  - name: omitted-path-widened
+    binding: 'rejection-mechanism, pre-state OBSERVED (G6 branch 4, D3) —
+
+      shadow_oblig_omitted.ri today emits ZERO diagnostics and the member silently
+
+      lowers to StructureRef(Appearance) (probe 2026-08-19/20; pinned in the fixture
+
+      header). The rejection is observed ABSENT, and that absence is recorded here
+      as
+
+      the R2 DEFECT D3 closes, not as test motivation. Rows 1/3 by contrast show the
+
+      pre-state rejection firing as a hard TypeMismatchForTraitMember.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: shadow_oblig_omitted
+      paths:
+      - crates/reify-compiler/tests
+      expect: present
+  - name: enum-decl-spans-available
+    binding: 'capability→producer (M3) — reify_ast::EnumDecl carries span: SourceSpan;
+
+      reserved_name_lint already consumes it as Declaration::Enum(e) => (…, e.span)
+      and
+
+      is invoked with `parsed` from the same compile fn. The lint''s own doc note
+      records
+
+      that these decls expose no name_span, so D2''s secondary label points at the
+      whole
+
+      `enum N` declaration — OQ#3 is a placement question, not a feasibility one.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'span plumbing is internal; its user-visible consequence (a secondary
+        label on
+
+        the enum declaration) is asserted by γ''s boundary rows 1-3.'
+  - name: enum-display-leak-real-and-d5-scoped
+    binding: 'signal premise (R1/D5) — Type''s Display renders Type::Enum(name) as
+      "Enum({name})"
+
+      and Type::StructureRef(name) bare (reify-core/src/ty.rs), producing "expected
+
+      Appearance, got Enum(Appearance)" where both sides print the same user-visible
+
+      name. D5 fixes it AT THIS SEAM via D2''s wording; Display itself is untouched.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the deliverable is message wording at one seam, asserted by boundary
+        row 1''s
+
+        negative clause (the message must NOT read "expected Appearance, got
+
+        Enum(Appearance)").'
+  - name: diagnostic-code-mintable
+    binding: 'capability→producer (INV-SF-6, M4) — DiagnosticCode is a pub enum in
+
+      reify-core/src/diagnostics.rs; the two-label with_code + with_label idiom is
+
+      established by units_phase''s "duplicate unit declaration — already defined
+      in
+
+      stdlib prelude" diagnostic, which M4 names as its house template.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the variant''s name is OQ#1, decided during γ, so no stable pattern
+        exists to
+
+        bind at decompose.'
+  - name: d3-blast-radius-zero
+    binding: 'signal premise (D3) — measured 2026-08-20 over all 631 tracked .ri files:
+      the ONLY
+
+      files declaring an enum whose name is an obligation type are this PRD''s own
+      three
+
+      shadow_oblig_*.ri fixtures. No existing tracked design collides, so D3''s widening
+
+      from silent to Error breaks nothing.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a corpus-absence fact as of decompose; C3''s conservation half is asserted
+        by
+
+        boundary row 8''s green regression floor.'
+  - name: grammar-fixtures
+    binding: 'grammar-fixture — shadow_oblig_redeclared.ri, shadow_oblig_omitted.ri
+      and
+
+      shadow_oblig_required.ri each parse with 0 ERROR nodes (tree-sitter parse --quiet
+
+      from tree-sitter-reify/, 2026-08-20)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'grammar gate run at decompose; the fixtures are committed and introduce
+        no novel
+
+        syntax.'
+  - name: c3-regression-floor-exists
+    binding: 'capability→producer (C3) — member_enum_ctor.ri is already wired into
+
+      harness_langcore/enum_ctor_param_binding_tests.rs via include_str!, alongside
+
+      #5429''s conformance and overload oracles. The floor is an existing green suite,
+
+      not one γ must build.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: member_enum_ctor
+      paths:
+      - crates/reify-compiler/tests
+      expect: present
+- label: δ
+  task_id: 6397
+  title: 'enum-shadow-coherence δ: docs — prelude-name shadowing rule, obligation
+    collision,
+
+    remedy (M5, docs-truth gate)'
+  capabilities:
+  - name: chunk-gap-real
+    binding: 'signal premise — crates/reify-mcp/src/tools/chunks/ holds 17 chunks
+      and ZERO of
+
+      them contain the string "shadow" (case-insensitive, measured 2026-08-20). The
+
+      rule, the obligation collision and the remedy are undocumented across the whole
+
+      chunk corpus.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '[Ss]hadow'
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+  - name: cheatsheet-index-target-exists
+    binding: 'capability→producer — .claude/skills/reify-design/SKILL.md is tracked
+      and
+
+      currently has ZERO "shadow" hits (2026-08-20). δ adds a one-line index entry
+
+      pointing at the chunk, not an inline playbook.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '[Ss]hadow'
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+  - name: signature-verification-vacuous-here
+    binding: 'docs-truth gate deliverable 1, scoped — the "every documented signature
+      verified
+
+      against the compiler arms/registries" clause has no subject here: this PRD
+
+      documents a name-resolution RULE and a DIAGNOSTIC, not builtins or stdlib
+
+      signatures. Recorded so the δ implementer does not manufacture a check.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: deliberately vacuous; recorded rather than skipped silently.
+  - name: exemplar-corpus-na-with-reason
+    binding: 'docs-truth gate deliverable 2, N/A — M5 states it explicitly: no new
+      authoring
+
+      idiom is introduced, only a rule + diagnostic, so examples/best_practices/ and
+      its
+
+      INDEX.md are untouched. Deliverables 1, 3 and 4 (chunk, cheatsheet index,
+
+      discoverability acceptance) are all in δ''s scope.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an N/A disposition with a stated reason, not a mechanical property.
+  - name: discoverability-acceptance
+    binding: 'docs-truth gate deliverable 4 — an author who hits the collision by
+      GOAL ("my enum
+
+      name errors against a stdlib trait") finds the rule and the remedy from the
+      chunk
+
+      corpus or the cheatsheet index, without knowing the feature name.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an intent-level findability judgement; δ''s own acceptance runs the
+        intent query
+
+        against the chunks.'
+- label: ω
+  task_id: 6398
+  title: 'enum-shadow-coherence ω: PRD close — terminal SHIPPED stamp + AS-AUTHORED
+    freeze on
+
+    the PRD and its capability manifest'
+  capabilities:
+  - name: terminal-vocabulary-and-header-shape-fixed
+    binding: 'capability→producer — the overlay''s closed three-value terminal set
+      (SHIPPED /
+
+      SUPERSEDED / WITHDRAWN) plus the ratified three-part freeze header, exemplified
+      by
+
+      the headers of docs/prds/v0_6/data-carrying-enums.md and
+
+      docs/prds/kernel-seam-contracts.md. ω copies that shape, NOT #4438''s or #3847''s
+
+      non-conformant output.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^Status.*SHIPPED
+      paths:
+      - docs/prds/v0_6/enum-shadow-coherence.md
+      expect: present
+  - name: manifest-carries-matching-freeze-header
+    binding: 'capability→producer — the overlay requires the same AS-AUTHORED header
+      on the
+
+      PRD''s .capability-manifest.md. Currently absent (0 hits, 2026-08-20).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: AS-AUTHORED
+      paths:
+      - docs/prds/v0_6/enum-shadow-coherence.capability-manifest.md
+      expect: present
+  - name: d7-tracking-pins-live
+    binding: 'signal premise (D7) — #5920 (the type-vs-value namespace question) and
+      #5493
+
+      (stdlib-namespace α, the NS-P3 policy point) are both live non-terminal tasks
+      as
+
+      of 2026-08-20. The §7 rows and the stdlib-namespace.md §6 amendment landed in
+      the
+
+      PRD''s own commit 4a1f082ed0. Per the overlay, ω cites the IDs and never their
+
+      status.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'task liveness is not greppable, and writing a status word into prose
+        is exactly
+
+        what the overlay''s "cite task IDs, never task status" rule forbids.'
+  - name: leaf-ids-backfilled
+    binding: 'DAG-direction / decompose-close obligation (1) — the real leaf IDs are
+      backfilled
+
+      into §8''s decomposition rows by the decompose session and committed beside
+      the
+
+      stamped sidecar; ω re-verifies the rows carry IDs before stamping.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'discharged by the decompose session itself, so it is already satisfied
+        before ω
+
+        dispatches; a present-check would pass vacuously.'
+  - name: cancelled-dependency-disposition
+    binding: 'DAG-direction — ω depends on α/β/γ/δ by real add_dependency edges. Per
+      the
+
+      overlay, a cancelled sibling counts as satisfied for ω''s edge; if the scheduler
+
+      treats such an edge as unmet, the decompose steward removes it by hand and applies
+
+      the stamp in a docs-only commit rather than leaving ω permanently blocked.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a scheduler-behaviour contingency with a named human fallback, not
+        a repo
+
+        property.'

@@ -75,6 +75,12 @@ const mockMeshSetDeformation = vi.fn();
 const mockMeshGetDeformedOverlays = vi.fn(() => new Map());
 const mockMeshSetDisplayAppearance = vi.fn();
 
+// adjustClipping and fitHelpers are named spies (not inline vi.fn()s) so the two
+// calls can be COMPARED: #6588's contract is that helper sizing and camera clipping
+// agree on one bounds measurement, which is only assertable if both are observable.
+const mockAdjustClipping = vi.fn();
+const mockFitHelpers = vi.fn();
+
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
 const mockAxisLabels = { type: 'Group', visible: true };
@@ -103,7 +109,8 @@ vi.mock('../../viewport/scene', () => ({
       domElement: document.createElement('canvas'),
     },
     resize: mockResize,
-    adjustClipping: vi.fn(),
+    adjustClipping: mockAdjustClipping,
+    fitHelpers: mockFitHelpers,
     grid: mockGrid,
     axes: mockAxes,
     axisLabels: mockAxisLabels,
@@ -225,6 +232,8 @@ beforeEach(() => {
   mockMeshSetDeformation.mockClear();
   mockMeshGetDeformedOverlays.mockClear();
   mockBakeColours.mockClear();
+  mockAdjustClipping.mockClear();
+  mockFitHelpers.mockClear();
 });
 
 // Module-scope FEA mesh factory — shared by 'Viewport FEA auto-range' and
@@ -778,6 +787,33 @@ describe('Viewport FEA wiring', () => {
   it('(b) does NOT render fea-mode-toolbar when feaModeStore prop is absent', () => {
     render(() => <Viewport meshes={{}} viewportId="test-vp" />);
     expect(screen.queryByTestId('fea-mode-toolbar')).toBeNull();
+  });
+
+  // ── (b2)/(b3): per-pane toolbar addressability (#5670) ────────────────────
+  // Every pane now owns a keyed FeaModeStore, so every pane renders its own
+  // toolbar. Viewport must forward its viewportId into <FeaModeToolbar> or the
+  // resulting N selects are indistinguishable to the debug bridge, which
+  // resolves them with a document-wide querySelectorAll and hard-fails on >1.
+  it('(b2) forwards viewportId into the FEA toolbar as data-viewport-id', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true); // the channel select is gated behind store.state.enabled
+    render(() => <Viewport meshes={{}} viewportId="pane-1" feaModeStore={store as any} />);
+    expect(screen.getByTestId('fea-mode-toolbar').getAttribute('data-viewport-id')).toBe('pane-1');
+    expect(screen.getByTestId('fea-mode-channel-select').getAttribute('data-viewport-id')).toBe(
+      'pane-1',
+    );
+  });
+
+  it('(b3) the forwarded id tracks the prop — not hard-coded to design-main', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => <Viewport meshes={{}} viewportId="design-main" feaModeStore={store as any} />);
+    expect(screen.getByTestId('fea-mode-toolbar').getAttribute('data-viewport-id')).toBe(
+      'design-main',
+    );
+    expect(screen.getByTestId('fea-mode-channel-select').getAttribute('data-viewport-id')).toBe(
+      'design-main',
+    );
   });
 
   it('(c) setColorize called with correct MeshColorize when feaModeStore.enabled toggles true', () => {
@@ -1508,5 +1544,73 @@ describe('Viewport feaDiagnosticOverlay integration (#2966)', () => {
     unmount();
 
     expect(mockDiagnosticOverlayDispose).toHaveBeenCalled();
+  });
+});
+
+
+// ── fitHelpers wiring (#6588) ────────────────────────────────────────────────
+// The viewport helpers carry absolute sizes tuned for a ~10 m CAD scene. scene.ts
+// can resize them, but only if Viewport actually hands it the scene bounds - and
+// it must be the SAME bounds the camera clips against, or the helpers and the
+// framing disagree about how big the model is.
+
+describe('Viewport fitHelpers wiring (#6588)', () => {
+  const meshesA: Record<string, MeshData> = {
+    'bracket/plate': {
+      entity_path: 'bracket/plate',
+      vertices: new Float32Array([0, 0, 0]),
+      indices: new Uint32Array([0]),
+      normals: null,
+    },
+  };
+  const meshesB: Record<string, MeshData> = {
+    'bracket/plate': {
+      entity_path: 'bracket/plate',
+      vertices: new Float32Array([1, 1, 1]),
+      indices: new Uint32Array([0]),
+      normals: null,
+    },
+  };
+
+  it('feeds scene bounds to fitHelpers on the mesh-sync tick', () => {
+    render(() => <Viewport meshes={meshesA} viewportId="test-vp" />);
+    expect(mockFitHelpers).toHaveBeenCalled();
+  });
+
+  it('hands fitHelpers the SAME Box3 instance the camera clips against', () => {
+    render(() => <Viewport meshes={meshesA} viewportId="test-vp" />);
+
+    expect(mockAdjustClipping).toHaveBeenCalled();
+    expect(mockFitHelpers).toHaveBeenCalled();
+    // Object identity, not deep equality: one measurement, shared. This is what
+    // guarantees the helpers are sized against the same extent the camera frames -
+    // including the ghost meshes the mesh-sync effect folds into the bounds.
+    expect(mockFitHelpers.mock.calls[0][0]).toBe(mockAdjustClipping.mock.calls[0][0]);
+  });
+
+  it('re-fits the helpers when the mesh set changes', () => {
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>(meshesA);
+    render(() => <Viewport meshes={meshes()} viewportId="test-vp" />);
+
+    const before = mockFitHelpers.mock.calls.length;
+    setMeshes(meshesB);
+
+    // A model that grows or shrinks between evaluations must re-size the helpers,
+    // not keep the extent measured on first open.
+    expect(mockFitHelpers.mock.calls.length).toBeGreaterThan(before);
+
+    // And the LATEST helper sizing must have used the LATEST measurement, i.e. the
+    // one the camera is currently clipping against.
+    //
+    // Deliberately NOT an exact call-count equality between the two spies:
+    // adjustClipping is genuinely camera-dependent (it derives near/far from
+    // camera.position.distanceTo(center)), so a future, correct orbit- or
+    // resize-driven call site for it would break a count check while the fitHelpers
+    // wiring this test exists to guard was never touched. Object identity is the
+    // contract; the preceding test already pins it for the first call.
+    const lastFit = mockFitHelpers.mock.calls[mockFitHelpers.mock.calls.length - 1][0];
+    const lastClip =
+      mockAdjustClipping.mock.calls[mockAdjustClipping.mock.calls.length - 1][0];
+    expect(lastFit).toBe(lastClip);
   });
 });

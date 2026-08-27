@@ -1060,7 +1060,7 @@ pub fn resolve<K: GeometryKernel + ?Sized>(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     // Back-compat wrapper (task 4536): the table-free entry point that external
-    // callers (`crates/reify-eval/tests/selector_boundary_gate.rs`) and the
+    // callers (`crates/reify-eval/tests/harness_topology_selector/selector_boundary_gate.rs`) and the
     // legacy in-crate caller (`eval_selector_feature_datum`) keep. Delegates
     // with an empty default attribute table, so a `LeafQuery::ByRole` leaf
     // resolves to empty here — harmless, since those callers never build a

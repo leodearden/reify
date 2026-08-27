@@ -481,15 +481,28 @@ export async function runValueScenario(
  *
  * Mirrors the handler keys registered by `buildHandlers()` in
  * gui/src/debug/bridge.ts (frontend-mediated tools) and `tool_defs()` in
- * gui/src-tauri/src/debug_server.rs (Rust-dispatched tools).
+ * gui/src-tauri/src/debug_server.rs (Rust-dispatched tools). The tool_defs()
+ * half of that invariant (KNOWN_DEBUG_TOOL_NAMES ⊇ tool_defs()) is
+ * mechanically checked by the parity test in assertions.test.ts (task-5934).
  *
  * Exported so assertions.test.ts can derive its KNOWN_TOOLS check from a single
- * source rather than maintaining an inline literal.  Update here when a new tool
- * is added to VALUE_SCENARIOS setup steps.
+ * source rather than maintaining an inline literal.  Every name in tool_defs()
+ * MUST appear here — enforced by assertions.test.ts's parity test (b); add the
+ * entry here when you add a ToolDef, whether or not any VALUE_SCENARIOS setup
+ * step uses it yet. Frontend-only handler names (bridge.ts buildHandlers()) are
+ * still added on demand, when a VALUE_SCENARIOS setup step first uses them.
  */
 export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
-  // Rust-dispatched tools (debug_server.rs dispatch_tool)
+  // Rust-dispatched tools (debug_server.rs dispatch_tool, incl. its
+  // dispatch_stateless_tool delegate for health/morph_stats/mesh_morph_stats)
+  "health",
+  "engine_state",
+  "demand_dispatch",
+  "mesh_stats",
+  "morph_stats",
+  "mesh_morph_stats",
   "load_fixture",
+  "set_fea_case",
   "open_file",
   // Frontend-mediated tools (bridge.ts buildHandlers)
   "wait_for_idle",
@@ -507,6 +520,8 @@ export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   "screenshot_window",
   "type_in_editor",
   "keyboard",
+  "focus_element",
+  "scroll",
   "select_entity",
   "clear_selection",
   "fit_to_view",
@@ -530,5 +545,19 @@ export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   "get_computed_style",
   "get_window_state",
   "ui_outline",
-  "health",
+  "active_element",
+  "apply_gui_state",
+  "click_at",
+  "drag",
+  "editor_content",
+  "focus_editor",
+  "get_local_storage",
+  "hover",
+  "menu_state",
+  "open_menu",
+  "press_tab",
+  "set_fea_channel",
+  "set_window_size",
+  "tab_order",
+  "toggle_select",
 ] as const);

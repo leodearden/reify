@@ -1,7 +1,7 @@
 //! Runtime evaluation tests for the cost-aggregation stdlib idiom (task 2381).
 //!
 //! Compile-side structural assertions live in
-//! `crates/reify-compiler/tests/cost_aggregation_tests.rs`; this binary locks
+//! `crates/reify-compiler/tests/harness_units_materials/cost_aggregation_tests.rs`; this binary locks
 //! the runtime end-to-end behaviour: two `Costed`-conforming structures'
 //! `line_cost`s aggregate via `[ ... ].sum` into a `Scalar<MONEY>` total on
 //! the assembly.
@@ -20,7 +20,7 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the canonical cost-aggregation example fixture.
 /// Mirrors the CARGO_MANIFEST_DIR pattern from
-/// `crates/reify-eval/tests/stress_large_assembly.rs:21–25`.
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_large_assembly.rs:21–25`.
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/cost_aggregation.ri"

@@ -23,6 +23,7 @@ use std::borrow::Cow;
 use reify_ir::Mesh;
 
 use crate::auto_size::{AutoSizeConfig, auto_mesh_size_from_features};
+use crate::fill_metrics::TetFillReport;
 use crate::options::MeshingOptions;
 use crate::repair::{RepairConfig, repair_surface_mesh};
 use crate::through_thickness::{
@@ -35,9 +36,10 @@ use crate::through_thickness::{
 
 /// Output of [`mesh_surface_to_volume_with_diagnostics`].
 ///
-/// Bundles the produced volume mesh with any through-thickness under-resolution
-/// warnings collected by the post-stage. Callers that don't need the warnings
-/// can simply destructure `report.volume`.
+/// Bundles the produced volume mesh with the diagnostics gathered around it:
+/// any through-thickness under-resolution warnings from the post-stage, and the
+/// fill / coverage measurement of the mesh that is being handed back. Callers
+/// that need neither can simply destructure `report.volume`.
 #[derive(Debug, Clone)]
 pub struct MeshSurfaceToVolumeReport {
     /// The produced volume mesh (tetrahedral).
@@ -46,6 +48,29 @@ pub struct MeshSurfaceToVolumeReport {
     /// Empty when the post-stage was skipped (`thickness_cfg = None`) or when
     /// no under-resolved regions were found.
     pub through_thickness_warnings: Vec<ThroughThicknessWarning>,
+    /// Fill / coverage report for [`Self::volume`], as measured by
+    /// [`crate::fill_metrics::tet_fill_report`] over that same mesh.
+    ///
+    /// `None` exactly when that function finds the mesh not measurable as tets:
+    /// non-tet (`Hex` / `Wedge`) connectivity, a vertex or index buffer whose
+    /// length is not a whole number of elements, or an out-of-range index.
+    /// That case is *also* logged at `warn!`, so it leaves a trace even for the
+    /// callers that keep only [`Self::volume`] and drop this wrapper.
+    ///
+    /// **Reported, never enforced.** No threshold is applied here and a low
+    /// fill is never an `Err`, because no fill floor exists that is
+    /// simultaneously scale-free and shape-free — a guessed constant would
+    /// reject legitimate curved geometry (a cylinder reads ≈ π/4 on
+    /// `aabb_fill_fraction`). See [`crate::fill_metrics`]' module docs for
+    /// which of the two ratios is meaningful for which geometry:
+    /// `aabb_fill_fraction` is a prismatic-only invariant, while
+    /// `surface_match_ratio` against the input surface is the geometry-agnostic
+    /// one.
+    ///
+    /// Plumbed through by #6200, where a degenerate B-rep decomposition let
+    /// gmsh return a structurally valid tet mesh that covered only 74–86% of
+    /// the solid it was asked to fill — a defect no per-element check can see.
+    pub fill: Option<TetFillReport>,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +182,10 @@ pub fn compute_thickness_warnings(
 /// 3. `GmshKernel::mesh_to_volume` — produce the volume mesh.
 /// 4. Through-thickness check (if `thickness_cfg = Some(cfg)`) — post-process
 ///    the produced volume mesh.
+/// 5. Fill measurement — `fill_metrics::tet_fill_report` over the very mesh
+///    being returned, surfaced as [`MeshSurfaceToVolumeReport::fill`].
+///    Unconditional and purely diagnostic: it never gates the result (see that
+///    field's docs for why no threshold is applied).
 #[cfg(has_gmsh)]
 // Un-orphaned by task #4743 (α): the gmsh `mesh_surface_to_volume` GeometryKernel
 // trait method (kernel_real.rs) now delegates to this wrapper as its production
@@ -191,8 +220,39 @@ pub fn mesh_surface_to_volume_with_diagnostics(
     let through_thickness_warnings =
         compute_thickness_warnings(&volume, repaired.as_ref(), thickness_cfg);
 
+    // Stage 5: fill / coverage measurement. Deliberately computed from the SAME
+    // `volume` binding that is moved into the report below, so the reported
+    // numbers can never describe a different mesh than the caller receives.
+    // Diagnostic only — a low fill is logged, never an error.
+    //
+    // The two arms are at deliberately different levels. A measured fill is
+    // routine bookkeeping (`debug!`). A `None`, on a mesh gmsh has just
+    // produced, is not: it means non-tet connectivity, a ragged index buffer,
+    // or an out-of-range node index — a corrupt readback, strictly more
+    // alarming than any low fill, and the case a human reading the log most
+    // wants to see. It is also the case a caller is likeliest to miss, since
+    // the trait method at `kernel_real.rs` discards the report wrapper and
+    // keeps only `volume`, so the field alone would leave no trace.
+    let fill = crate::fill_metrics::tet_fill_report(&volume);
+    match fill.as_ref() {
+        Some(f) => tracing::debug!(
+            target: "reify_kernel_gmsh::mesh_volume",
+            n_tets = f.n_tets,
+            n_nodes = f.n_nodes,
+            aabb_fill_fraction = f.aabb_fill_fraction(),
+            "volume mesh fill measured"
+        ),
+        None => tracing::warn!(
+            target: "reify_kernel_gmsh::mesh_volume",
+            n_nodes = volume.vertices.len() / 3,
+            "produced volume mesh is not measurable as tets — non-tet \
+             connectivity, a ragged index buffer, or an out-of-range node index"
+        ),
+    }
+
     Ok(MeshSurfaceToVolumeReport {
         volume,
         through_thickness_warnings,
+        fill,
     })
 }

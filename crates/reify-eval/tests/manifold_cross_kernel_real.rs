@@ -29,9 +29,9 @@
 //! - Linker anchor pattern: `crates/reify-kernel-manifold/tests/dispatcher_integration.rs:66-97`
 //! - Engine routing pattern: `crates/reify-eval/tests/cross_kernel_handoff.rs:196-381`
 //! - OCCT-available gate + include_str! + parse_and_compile_with_stdlib:
-//!   `crates/reify-eval/tests/geometry_query_kernel_dispatch.rs:28-52`
-//! - manufacturing_purpose injection: `crates/reify-eval/tests/geometry_query_kernel_dispatch.rs:406-420`
-//! - Kernel-direct box/translate/tessellate: `crates/reify-kernel-occt/tests/interference_integration.rs:29-58`
+//!   `crates/reify-eval/tests/harness_geometry/geometry_query_kernel_dispatch.rs:28-52`
+//! - manufacturing_purpose injection: `crates/reify-eval/tests/harness_geometry/geometry_query_kernel_dispatch.rs:406-420`
+//! - Kernel-direct box/translate/tessellate: `crates/reify-kernel-occt/tests/harness_occt/interference_integration.rs:29-58`
 //! - unit_cube_manifold non-degeneracy probe: `crates/reify-kernel-manifold/src/kernel.rs:1686-1695`
 
 use reify_constraints::SimpleConstraintChecker;

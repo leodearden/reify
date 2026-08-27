@@ -8,7 +8,10 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
-import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections, makeNode } from './test-utils';
+// Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
+// App-level buckling assertions pin the rendered payload rather than a literal.
+import { formatEigenvalue } from '../panels/BucklingPanel';
 import { createEditorStore } from '../stores/editorStore';
 import { createViewportStore } from '../stores/viewportStore';
 
@@ -96,7 +99,18 @@ vi.mock('../editor/FileTabs', () => ({
   },
 }));
 
-// Mock bridge functions
+// --- Mock bridge functions: a NON-partial factory; every key here is load-bearing ---
+//
+// STANDING RULE: a new bridge.ts runtime export gets a key here, OR an entry in
+// bridgeMockCoverage.test.ts's `omissions` allowlist with the reason it is
+// unreachable from a rendered <App />. Do NOT convert this factory to
+// importOriginal / a partial mock.
+//
+// bridgeMockCoverage.test.ts is both the mechanical detector and the single
+// source of truth for the rules above, for why an omitted key fails SILENTLY
+// rather than loudly, and for the measured truth table that makes the beforeEach
+// restore below load-bearing rather than cosmetic. Deliberately not restated
+// here: unlike the key sets, prose has nothing to detect it going stale.
 const emptyState: GuiState = { fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
@@ -122,6 +136,12 @@ vi.mock('../bridge', () => ({
   onCompileDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onFeaDiagnosticsChanged: vi.fn().mockResolvedValue(() => {}),
   onFeaConvergenceChanged: vi.fn().mockResolvedValue(() => {}),
+  // Not reached by <App /> today — Viewport-only, and ../viewport is mocked
+  // wholesale. Mocked anyway rather than allowlisted: one line each is cheaper
+  // than a premise the coverage guard cannot check, and either could become
+  // reachable silently.
+  setActiveFeaCase: vi.fn().mockResolvedValue(undefined),
+  subscribeFeaCaseToStore: vi.fn().mockResolvedValue(() => {}),
   onTensegrityWiresUpdate: vi.fn().mockResolvedValue(() => {}),
   onTensegritySurfacesUpdate: vi.fn().mockResolvedValue(() => {}),
   onDisplayPanesUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -134,6 +154,7 @@ vi.mock('../bridge', () => ({
   claudeSendMessage: vi.fn().mockResolvedValue(undefined),
   claudeAbort: vi.fn().mockResolvedValue(undefined),
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
+  claudePermissionDecision: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
   onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
@@ -151,8 +172,10 @@ vi.mock('../bridge', () => ({
   onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
   onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
   onSolverProgress: vi.fn().mockResolvedValue(() => {}),
+  onModeShapeFrame: vi.fn().mockResolvedValue(() => {}),
   cancelSolve: vi.fn().mockResolvedValue(undefined),
   syncObservedDemand: vi.fn().mockResolvedValue(undefined),
+  syncDemand: vi.fn().mockResolvedValue(undefined),
   ask: vi.fn().mockResolvedValue(false),
 }));
 
@@ -180,6 +203,7 @@ import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import * as viewPersistence from '../stores/viewPersistence';
+import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
@@ -221,6 +245,7 @@ beforeEach(() => {
   vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
   vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
+  vi.mocked(bridge.claudePermissionDecision).mockResolvedValue(undefined);
   vi.mocked((bridge as any).subscribeToSidecarCrashed).mockResolvedValue(() => {});
   vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
   // Persistence module mocks
@@ -230,10 +255,31 @@ beforeEach(() => {
   vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
   vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([]);
   vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onModeShapeFrame).mockResolvedValue(() => {});
+  vi.mocked(bridge.syncDemand).mockResolvedValue(undefined);
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
   vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
   vi.mocked((bridge as any).ask).mockResolvedValue(false);
+  // Below: names some test overrides persistently but nothing used to restore,
+  // so the override leaked into every later test (truth table row 3). Added
+  // with task 6053's check (d), which fails on any override without a restore.
+  // setParameter/updateSource really return Promise<GuiState>, but the factory
+  // default resolves undefined. Restoring to that exact default (via the file's
+  // usual `bridge as any` spelling) keeps behaviour identical; substituting
+  // emptyState here would quietly change what every test sees.
+  vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).updateSource).mockResolvedValue(undefined);
+  vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+  vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+  vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
+  vi.mocked((bridge as any).openFileEngine).mockResolvedValue(emptyState);
+  vi.mocked((bridge as any).getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
+  vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
+  vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).onAutoResolveStart).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onAutoResolveIteration).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onAutoResolveComplete).mockResolvedValue(() => {});
 });
 
 afterEach(() => {
@@ -1720,6 +1766,277 @@ describe('App handleSetParameter error handling', () => {
         'setParameter failed:',
         expect.any(Error),
       );
+    });
+  });
+});
+
+/**
+ * CONTRACT PIN — the reconciled parameter-input contract (task #5757).
+ *
+ * This block was the task-#6028 CHARACTERIZATION of a deliberately accepted
+ * degradation: the typed-input gate admitted every curated ladder label, while
+ * the commit path parsed only a hard-coded five-entry suffix table, so
+ * `5mm^3` and `5L` were accepted by the panel and then refused by the engine
+ * with `Cannot parse value '<input>'` — the typed text discarded and replaced
+ * by an async error toast. Its clause (d) was named in-source as "the clause
+ * the eventual UNIT_TABLE fix must flip". Task #5757 is that fix, so the block
+ * is rewritten here to state the contract that now HOLDS rather than the gap
+ * that used to.
+ *
+ * What changed underneath: `parse_value_string` (gui/src-tauri/src/engine.rs)
+ * no longer carries its own table. It scans an index composed from
+ * `reify_core::display_units::unit_ladders()` — the very table this panel's
+ * accept-alphabet is derived from, fetched over `get_unit_ladders` — unioned
+ * with `reify_core::BUILTIN_UNITS`. Advertised and parseable are now the same
+ * set by construction, not by two tables kept in lockstep.
+ *
+ * The block pins BOTH directions of the reconciled contract, because widening
+ * what is accepted and narrowing it are the same edit and each can break the
+ * other:
+ *
+ *   * a curated ladder unit commits cleanly, with no toast;
+ *   * a BARE number in a dimensioned cell is refused INLINE and never reaches
+ *     the bridge at all (PRD ratified decision (1), §6 row 16).
+ *
+ * ON CLAUSE (d), read carefully. The original asserted that the typed text was
+ * GONE after commit, and called that the regression to flip. It cannot flip
+ * literally: `PropertyEditor`'s input reads
+ * `editingCellId() === cell_id ? editValue() : primaryDisplay(val)`, so text is
+ * held on screen for exactly as long as the row is still being edited. A
+ * SUCCESSFUL commit ends the edit, and the panel then correctly shows what the
+ * engine says the cell is — the mocked bridge here does not push a new value
+ * back, so that is still `7045002.24`. The same assertion therefore reads the
+ * same but MEANS the opposite: the text is gone because the value landed, not
+ * because a rejection threw it away. What the original clause was really
+ * protecting — typed text preserved for correction — is asserted where it now
+ * genuinely belongs, on the bare-number case below, which is refused and does
+ * keep the text.
+ *
+ * Mocking discipline is unchanged (see the standing rule on the `vi.mock('../bridge')`
+ * factory): no conversion to a partial mock, per-test overrides via `vi.mocked`,
+ * and the `waitFor` on the unit picker stays the synchronization point because
+ * the ladder fetch is fire-and-forget.
+ */
+describe('App parameter input: the reconciled unit/bare-number contract (task #5757)', () => {
+  /** The task #5199 Volume-ladder cell, rebuilt per test so no case can mutate another's fixture. */
+  function capacityState(): GuiState {
+    return { fea_convergence: null,
+      meshes: [],
+      values: [
+        {
+          cell_id: 'Tank.capacity',
+          name: 'capacity',
+          value: '7045002.24',
+          unit: 'mm³',
+          determinacy: 'determined',
+          entity_path: 'Tank.capacity',
+          kind: 'let',
+          freshness: 'final',
+          dimension: 'Volume',
+          si_value: 0.00704500224,
+        },
+      ],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+      tensegrity_surfaces: [],
+      display_panes: [],
+      display_appearance: [],
+      fea_diagnostics: []
+    };
+  }
+
+  /**
+   * Render <App /> over the Volume cell and hand back its input, ready to type
+   * into.
+   *
+   * The `waitFor` on the picker is the synchronization point: the ladder fetch
+   * is fire-and-forget (App.tsx), and the picker only renders once it resolves —
+   * so waiting on it also proves the widened, ladder-derived alphabet is live
+   * here rather than the static five-unit floor.
+   */
+  async function renderCapacityInput(): Promise<HTMLInputElement> {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(capacityState());
+    vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
+      {
+        dimension: 'Volume',
+        units: [
+          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'L', si_scale: 1e-3, is_default: false },
+        ],
+      },
+    ]);
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('unit-select-Tank.capacity')).toBeTruthy();
+    });
+
+    const row = screen.getByTestId('prop-row-Tank.capacity');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.value).toBe('7045002.24');
+    return input;
+  }
+
+  // `mm^3` is the ASCII spelling of the ladder's own default rung; `L` is the
+  // second rung. Both are advertised by `get_unit_ladders`, and since #5757 the
+  // engine resolves both — `L` notably being reachable ONLY through the display
+  // ladders, since reify-compiler/stdlib/units.ri declares no SI volume units.
+  it.each([
+    ['5mm^3'],
+    ['5L'],
+  ])('submits %s to the engine cleanly, with no inline rejection and no error toast', async (typed) => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      // RESOLVES. The pre-#5757 version of this test hand-mocked a
+      // `Cannot parse value '<input>'` rejection here — a failure the engine no
+      // longer produces for these literals.
+      vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+
+      const input = await renderCapacityInput();
+
+      fireEvent.focus(input);
+      fireEvent.input(input, { target: { value: typed } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // (a) the frontend gate accepted it — no inline invalid marker.
+      expect(input.hasAttribute('data-invalid')).toBe(false);
+
+      // (b) it was submitted to the backend verbatim: the panel never rewrites
+      // a literal by the picked unit's conversion factor.
+      expect(bridge.setParameter).toHaveBeenCalledWith('Tank.capacity', typed);
+
+      // (c) THE FLIP. No error toast arrives, because nothing rejects.
+      await flushMacrotasks();
+      expect(screen.queryByTestId('toast')).toBeNull();
+
+      // (d) the edit ended and the row reverted to the engine-derived display
+      // value. Reverting is now the CORRECT outcome — the value landed. See the
+      // block doc above for why this assertion reads the same as the one it
+      // replaces while meaning the opposite.
+      expect(input.value).toBe('7045002.24');
+    });
+  });
+
+  it('refuses a bare number on a dimensioned cell inline, never calling the bridge', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+
+      const input = await renderCapacityInput();
+
+      // `20` in a Volume cell is ambiguous — 20 what? The engine used to answer
+      // that silently, reading it as 20 CUBIC METRES on a cell whose SI value is
+      // 0.00704500224. `parse_value_string_for_cell` now refuses it, and the
+      // frontend mirrors that refusal so the feedback is immediate.
+      fireEvent.focus(input);
+      fireEvent.input(input, { target: { value: '20' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Inline, on the cell itself.
+      expect(input.hasAttribute('data-invalid')).toBe(true);
+
+      // The bridge is mocked, so ONLY the frontend gate can stop this call —
+      // which is what makes this an end-to-end check of the panel's own rule
+      // rather than of the engine's.
+      expect(bridge.setParameter).not.toHaveBeenCalled();
+
+      // No toast: the whole point of gating inline is that the user is not sent
+      // an async failure for something the panel already knew was wrong.
+      await flushMacrotasks();
+      expect(screen.queryByTestId('toast')).toBeNull();
+
+      // AND THE TYPED TEXT SURVIVES for correction — the row is still in edit
+      // mode, so the user adds a unit rather than retyping the number. This is
+      // the feedback quality the #6028 characterization block recorded as lost.
+      expect(input.value).toBe('20');
+    });
+  });
+
+  /**
+   * The same fixture plus a cell whose dimension NO curated ladder covers — the
+   * real in-tree `Money` shape, badge and all.
+   *
+   * Same mocking discipline as `renderCapacityInput`: the non-partial
+   * `vi.mock('../bridge')` factory with per-test `vi.mocked` overrides, the
+   * ladder map supplied through `getUnitLadders`, and the `waitFor` on the
+   * Volume picker as the synchronization point — which also proves the fetch
+   * resolved, so the uncovered cell below is genuinely uncovered rather than
+   * merely un-fetched.
+   */
+  async function renderWithUncoveredCell(): Promise<{
+    covered: HTMLInputElement;
+    uncovered: HTMLInputElement;
+  }> {
+    const state = capacityState();
+    state.values.push({
+      cell_id: 'Tank.unit_cost',
+      name: 'unit_cost',
+      value: '5',
+      unit: 'USD',
+      determinacy: 'determined',
+      entity_path: 'Tank.unit_cost',
+      kind: 'param',
+      freshness: 'final',
+      dimension: 'Money',
+      si_value: 5,
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(state);
+    vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
+      {
+        dimension: 'Volume',
+        units: [
+          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'L', si_scale: 1e-3, is_default: false },
+        ],
+      },
+    ]);
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('unit-select-Tank.capacity')).toBeTruthy();
+    });
+
+    const inputFor = (cellId: string) =>
+      screen
+        .getByTestId(`prop-row-${cellId}`)
+        .querySelector('input[type="text"]') as HTMLInputElement;
+    return { covered: inputFor('Tank.capacity'), uncovered: inputFor('Tank.unit_cost') };
+  }
+
+  it('sends a bare number straight through for a cell no curated ladder covers', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+
+      const { covered, uncovered } = await renderWithUncoveredCell();
+
+      // The Money cell: `USD` is reachable only through the compiler's
+      // per-module `UnitRegistry`, which the engine's composed index excludes,
+      // so the bare number is the ONLY input either end accepts. Gating it would
+      // brick the row — 16 such declarations exist across examples/*.ri.
+      fireEvent.focus(uncovered);
+      fireEvent.input(uncovered, { target: { value: '6' } });
+      fireEvent.keyDown(uncovered, { key: 'Enter' });
+
+      expect(uncovered.hasAttribute('data-invalid')).toBe(false);
+      expect(bridge.setParameter).toHaveBeenCalledWith('Tank.unit_cost', '6');
+
+      await flushMacrotasks();
+      expect(screen.queryByTestId('toast')).toBeNull();
+
+      // The LADDERED neighbour in the same panel is discriminated, in the same
+      // render: still refused inline, still never reaching the bridge. Without
+      // this the test could pass by the gate having been removed outright.
+      vi.mocked((bridge as any).setParameter).mockClear();
+      fireEvent.focus(covered);
+      fireEvent.input(covered, { target: { value: '20' } });
+      fireEvent.keyDown(covered, { key: 'Enter' });
+
+      expect(covered.hasAttribute('data-invalid')).toBe(true);
+      expect(bridge.setParameter).not.toHaveBeenCalled();
     });
   });
 });
@@ -6195,12 +6512,17 @@ function countGridTracks(template: string): number {
 // ── AutoResolvePanel integration (step-13) ────────────────────────────────────
 
 describe('App AutoResolvePanel integration', () => {
-  it('AutoResolvePanel auto-promotes when state.autoResolve.active is true', async () => {
+  it('AutoResolvePanel mounts on DATA and stays readable after the loop completes', async () => {
     // Capture the auto-resolve bridge callbacks registered by engineStore.subscribeToEvents
     let startCb: (() => void) | undefined;
+    let iterCb: ((iter: any) => void) | undefined;
     let completeCb: (() => void) | undefined;
     vi.mocked((bridge as any).onAutoResolveStart).mockImplementation(async (cb: () => void) => {
       startCb = cb;
+      return () => {};
+    });
+    vi.mocked((bridge as any).onAutoResolveIteration).mockImplementation(async (cb: (iter: any) => void) => {
+      iterCb = cb;
       return () => {};
     });
     vi.mocked((bridge as any).onAutoResolveComplete).mockImplementation(async (cb: () => void) => {
@@ -6212,22 +6534,47 @@ describe('App AutoResolvePanel integration', () => {
 
     // Wait for subscribeToEvents to register the callbacks
     await waitFor(() => expect(startCb).toBeDefined());
+    await waitFor(() => expect(iterCb).toBeDefined());
     await waitFor(() => expect(completeCb).toBeDefined());
 
-    // Panel should NOT be visible before any loop starts
+    // (1) Nothing has happened yet — no panel.
     expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
 
-    // Fire the auto-resolve-start event — panel should auto-promote
+    // (2) The loop starts but has reported nothing. The mount is data-gated,
+    // not active-gated, so an empty panel must NOT be promoted.
     startCb!();
+    await Promise.resolve();
+    expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
+
+    // (3) The first iteration arrives — shaped exactly as
+    // `emit_auto_resolve_if_any` emits it today: iteration 0, one parameter,
+    // one constraint, and no driving metric at all.
+    iterCb!({
+      iteration: 0,
+      parameters: { 'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' } },
+      constraints: {
+        max_von_mises: { name: 'max_von_mises', value: 180, unit: 'MPa', target_upper: 200, satisfied: true },
+      },
+    });
     await waitFor(() => {
       expect(screen.queryByTestId('auto-resolve-panel')).toBeTruthy();
     });
 
-    // Fire the auto-resolve-complete event — panel should be hidden again
+    // (4) The leaf signal: the loop completes and the panel STAYS. Before this
+    // change the panel unmounted here, so the result of the loop the user just
+    // ran vanished the instant it landed.
     completeCb!();
-    await waitFor(() => {
-      expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
-    });
+    await Promise.resolve();
+    expect(screen.queryByTestId('auto-resolve-panel')).toBeTruthy();
+    const parameters = screen.getByTestId('auto-resolve-parameters');
+    expect(within(parameters).getByText('Bracket.thickness')).toBeTruthy();
+    expect(within(parameters).getByText('4.2mm')).toBeTruthy();
+    expect(screen.getAllByText('max_von_mises').length).toBeGreaterThanOrEqual(1);
+
+    // (5) While the panel is mounted, the side-panel grid must still have one
+    // track per child — a desync collapses the chat pane into a 4px strip.
+    const sidePanel = screen.getByTestId('side-panel');
+    expect(countGridTracks(sidePanel.style.gridTemplateRows)).toBe(sidePanel.children.length);
   });
 });
 
@@ -6460,6 +6807,362 @@ describe('App SolverProgressOverlay integration', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── Buckling mode-shape-frame subscription (task 6035) ─────────────────────
+//
+// Covers the App-level buckling wiring end-to-end: initApp -> subscribeModeShapeFrames
+// -> bucklingStore.ingestFrame -> the <Show> gate that mounts BucklingPanel -> the
+// onCleanup detach. Before task 6035 the `../bridge` mock factory omitted
+// `onModeShapeFrame`, so subscribeModeShapeFrames threw on every mount and initApp's
+// catch swallowed it — leaving this whole path dead under App.test.tsx.
+
+describe('App buckling mode-shape-frame subscription (task 6035)', () => {
+  let modeShapeCallback: ((f: any) => void) | undefined;
+  let modeShapeUnlisten: ReturnType<typeof vi.fn>;
+  // Structural type: `ReturnType<typeof vi.spyOn>` erases the generic to
+  // `unknown` args and does not accept the HTMLCanvasElement.getContext
+  // overload set. We only ever call mockRestore on it.
+  let getContextSpy: { mockRestore: () => void } | undefined;
+
+  /**
+   * Force `canvas.getContext` to return null for the remainder of the current
+   * test. Only case (b) mounts BucklingPanel, whose onMount probes getContext
+   * to decide whether a WebGL path is available; jsdom has no canvas backend,
+   * so it returns null *and* emits a multi-line "Not implemented:
+   * HTMLCanvasElement.prototype.getContext" jsdomError to stderr. Returning
+   * null explicitly takes the identical guard branch (hasWebGL === false ->
+   * early return, no three.js work) with no log.
+   *
+   * Installed per-test rather than in `beforeEach` so cases (a), (c) and (d) —
+   * none of which mount BucklingPanel — run against the unmodified canvas
+   * prototype instead of forcing a null-context branch on every other
+   * component the App mounts. Restored in `afterEach` so it cannot leak.
+   */
+  function stubNullCanvasContext() {
+    getContextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+  }
+
+  beforeEach(() => {
+    modeShapeCallback = undefined;
+    modeShapeUnlisten = vi.fn();
+    vi.mocked((bridge as any).onModeShapeFrame).mockImplementation(
+      async (cb: (f: any) => void) => {
+        modeShapeCallback = cb;
+        return modeShapeUnlisten;
+      },
+    );
+  });
+
+  afterEach(() => {
+    getContextSpy?.mockRestore();
+    getContextSpy = undefined;
+  });
+
+  it('(a) initApp establishes the mode-shape-frame subscription', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+    expect(vi.mocked((bridge as any).onModeShapeFrame)).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) emitted mode-shape frames route into the buckling store and reveal BucklingPanel', async () => {
+    stubNullCanvasContext();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+
+    // Gate is closed until the store has ingested at least one frame.
+    expect(screen.queryByTestId('buckling-panel')).toBeNull();
+
+    // Same fixture vectors + phase convention as bucklingStore.test.ts (BASE/PEAK):
+    // phase < 0.5 -> base frame, phase >= 0.5 -> peak frame for that mode index.
+    modeShapeCallback!({ mode_index: 0, phase: 0.0, displaced_positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] });
+    modeShapeCallback!({
+      mode_index: 0,
+      phase: 1.0,
+      displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+      eigenvalue: 1000,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('buckling-panel')).toBeTruthy();
+      expect(screen.getByTestId('buckling-mode-row-0')).toBeTruthy();
+    });
+
+    // Payload fidelity, not just frame arrival. Row existence alone is carried
+    // by the phase-0 base frame (it opens the <Show> gate on state.base), so
+    // without these two the peak frame's own fields would go unobserved:
+    //   - eigenvalue: rendered as `λ = <formatted>` (same assertion shape as
+    //     BucklingPanel.test.tsx case (g)); a wiring bug that dropped it would
+    //     render the '—' placeholder and still keep the row present.
+    //   - thumbnail: computeModeThumbnail only returns non-null when BOTH the
+    //     base and the peak displaced_positions arrays are present and
+    //     non-empty, so its presence pins that both frames' geometry landed.
+    // Mutation-checked: forcing `eigenvalue: null` in bucklingStore.ingestFrame
+    // renders 'Mode 1 · λ = —' and fails the first assertion; removing the
+    // App-level subscribe wiring fails both.
+    const modeRow = screen.getByTestId('buckling-mode-row-0');
+    expect(modeRow.textContent).toContain(formatEigenvalue(1000));
+    expect(within(modeRow).getByTestId('buckling-mode-thumbnail-0')).toBeTruthy();
+  });
+
+  it('(c) unmount detaches the mode-shape-frame listener', async () => {
+    const { unmount } = await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+    // The unsub is assigned one microtask after the callback is captured; let
+    // initApp's await settle so we assert against the live subscription.
+    await flushMacrotasks();
+
+    expect(modeShapeUnlisten).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(modeShapeUnlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it('(d) unmounting while the subscription is still in flight still detaches the late listener', async () => {
+    // Case (c) covers the settled subscription, where onCleanup detaches via
+    // the assigned `bucklingFrameUnsub`. This case covers the race the other
+    // side of that assignment: if the component unmounts while
+    // `await subscribeModeShapeFrames(...)` is still pending, the assignment
+    // never happens, so onCleanup has nothing to call — initApp's own
+    // `if (!alive) { unlistenBuckling(); return; }` guard (App.tsx:1673-1676)
+    // is the ONLY thing that can detach it. Deleting that guard leaks a live
+    // Tauri listener per mount, and case (c) would not notice.
+    const gate = deferred<() => void>();
+    vi.mocked((bridge as any).onModeShapeFrame).mockImplementation((cb: (f: any) => void) => {
+      modeShapeCallback = cb;
+      return gate.promise;
+    });
+
+    // NOT renderAndWaitForReady(): initApp parks on the pending subscribe
+    // promise, so setInitPhase('ready') (App.tsx:1706) is downstream of the
+    // very await this case suspends and `app-layout` would never appear.
+    // Waiting on the subscribe call itself is the correct sync point here.
+    const { unmount } = render(() => <App />);
+    await waitFor(() =>
+      expect(vi.mocked((bridge as any).onModeShapeFrame)).toHaveBeenCalledTimes(1),
+    );
+
+    // Unmount with the subscribe promise deliberately still pending.
+    unmount();
+    expect(modeShapeUnlisten).not.toHaveBeenCalled();
+
+    // Now let the subscription land, too late to be stored.
+    gate.resolve(modeShapeUnlisten);
+    await flushMacrotasks();
+
+    expect(modeShapeUnlisten).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Deliberately a SIBLING describe, not a fifth `it` inside the block above:
+// this case must observe the plain factory / global-beforeEach default rather
+// than the describe-scoped capturing mockImplementation, because it installs a
+// rejecting implementation of its own.
+describe('App buckling mode-shape-frame subscription — failure path (task 6035)', () => {
+  it('a rejected subscription degrades gracefully: App still reaches ready, no BucklingPanel', async () => {
+    // Positive assertion on the catch arm at App.tsx:1678-1680. The buckling
+    // subscription is best-effort: a bridge that cannot deliver mode-shape
+    // frames must not abort initApp or wedge the App short of ready.
+    //
+    // Deliberately NOT written as a negative match on the console.error
+    // wording (`not.toHaveBeenCalledWith('[buckling] subscribeModeShapeFrames
+    // failed:', ...)`). That shape is unfalsifiable on a reword of the log
+    // literal — it would keep reporting green while asserting nothing — and it
+    // is already subsumed by case (a): if `onModeShapeFrame` is ever dropped
+    // from the `../bridge` mock factory again (the original task-6035 defect,
+    // which emitted this stderr line 148 times in one App.test.tsx run), the
+    // global beforeEach's `mockResolvedValue` throws on `undefined` before any
+    // test in this file runs.
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked((bridge as any).onModeShapeFrame).mockRejectedValue(
+        new Error('mode-shape channel unavailable'),
+      );
+
+      await renderAndWaitForReady();
+
+      // Non-vacuity anchor: the rejecting path really was exercised.
+      await waitFor(() =>
+        expect(vi.mocked((bridge as any).onModeShapeFrame)).toHaveBeenCalledTimes(1),
+      );
+      await flushMacrotasks();
+
+      // initApp swallowed the rejection and carried on past the buckling block:
+      // the App is mounted and the later init work still ran.
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+      expect(vi.mocked(bridge.isDebugEnabled)).toHaveBeenCalled();
+
+      // …and with no frames ever ingested the <Show> gate stays shut.
+      expect(screen.queryByTestId('buckling-panel')).toBeNull();
+    });
+  });
+});
+
+// ── App selective-demand enforcement sync (task 6045) ───────────────────────
+//
+// Covers the App-level selective-demand ENFORCEMENT wiring end-to-end:
+// initApp -> createSelectiveDemandSync -> engineStore.syncDemand ->
+// bridge.syncDemand. Before task 6045 the `../bridge` mock factory carried
+// the passive-measurement `syncObservedDemand` but omitted the distinct,
+// genuine `syncDemand` export (`bridge.ts`), so any test that let the
+// 150ms debounce elapse threw "No 'syncDemand' export is defined" — 5 times
+// across a full App.test.tsx run — leaving this whole enforcement path
+// unexercised.
+
+// waitFor's default budget already covers the debounce with margin; naming
+// the wait timeout off the exported constant ties correctness to the real
+// debounce value instead of a hardcoded guess that could silently drift.
+const DEMAND_SYNC_WAIT_TIMEOUT_MS = SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 850;
+
+describe('App selective-demand enforcement sync (task 6045)', () => {
+  it('(a) the visible-realization set is synced to bridge.syncDemand, excluding non-realization mesh keys', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [
+        makeMesh('Bracket#realization[0]'),
+        makeMesh('Bracket#realization[1]'),
+        makeMesh('Bracket.geometry'),
+      ],
+    });
+    // getEntityTree stays at the factory default `[]`: with an empty tree,
+    // viewStateStore's `nodeByPath.size === 0` short-circuit makes
+    // `getEffectiveVisibility` return 'show' for every path, so the payload
+    // below is a pure function of engineStore's '#realization[' key filter.
+
+    await renderAndWaitForReady();
+
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+
+    // Non-realization exclusion is the non-vacuity anchor: a regression that
+    // echoed the whole mesh key set would satisfy a realizations-only
+    // membership assertion but fails this exact-set assertion.
+    const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
+    expect([...payload].sort()).toEqual(['Bracket#realization[0]', 'Bracket#realization[1]']);
+  });
+
+  // Case (b) was authored under task 6045 (commit 72951c2d9f) and dropped as
+  // out-of-scope there: it failed for a live-code reason, not a mock-factory
+  // one — the demand-sync selector took its first tracked read before the entity
+  // tree loaded, hitting the same empty-tree short-circuit case (a) relies on,
+  // and so subscribed to nothing (esc-6045-1). Restored and re-attributed to task
+  // #6052, which threads tree-readiness into the selector; the full rationale is
+  // the `treeGeneration` @param on `createSelectiveDemandSync`.
+  it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
+    });
+    // Unlike case (a), this case needs a POPULATED tree: the eye icon must
+    // render, and effective visibility must resolve per node rather than via
+    // the empty-tree short-circuit. `defaultVisibilityFor` returns 'show' for a
+    // plain realization node, so both start visible and the sibling genuinely
+    // survives the pruning assertion below.
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode({ entity_path: 'Bracket#realization[0]', kind: 'realization', has_mesh: true }),
+      makeNode({ entity_path: 'Bracket#realization[1]', kind: 'realization', has_mesh: true }),
+    ]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('eye-icon-Bracket#realization[0]')).toBeTruthy());
+
+    // Let the initial 0 -> N mesh-set sync land...
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+    // ...and THEN wait for quiescence before snapshotting the baseline. Do not
+    // "simplify" this wait away: there are two distinct mount-time triggers
+    // (meshes 0->N, then the tree-ready readiness change) which may or may not
+    // coalesce inside the 150ms debounce. Snapshotting between them would let
+    // the all-visible tree-ready payload satisfy the `count > before` anchor
+    // below and then fail the pruning assertion — a flake, not a real signal.
+    await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
+    const before = vi.mocked(bridge.syncDemand).mock.calls.length;
+
+    // viewStateStore's `cycleCascading`: show -> ghost -> hidden.
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    // DesignTree renders aria-label from App's `effectiveVisibility` memo, so
+    // this also proves the click actually reached the view-state store.
+    expect(
+      screen.getByTestId('eye-icon-Bracket#realization[0]').getAttribute('aria-label'),
+    ).toBe('hidden');
+
+    // One waitFor over the LAST payload, so the assertion is order-robust
+    // rather than dependent on exactly one trailing call.
+    await waitFor(
+      () => {
+        expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBeGreaterThan(before);
+        const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
+        expect(payload).not.toContain('Bracket#realization[0]');
+        // Non-vacuity anchor: an implementation that pushed an EMPTY demand set
+        // would satisfy the exclusion above on its own.
+        expect(payload).toContain('Bracket#realization[1]');
+      },
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+  });
+});
+
+// Deliberately a SIBLING describe, not a third `it` inside the block above:
+// this case must observe the plain factory / global-beforeEach default
+// rather than a describe-scoped mockImplementation, because it installs a
+// rejecting implementation of its own (same precedent as the task-6035
+// sibling failure-path describe above).
+describe('App selective-demand enforcement sync — failure path (task 6045)', () => {
+  it('a rejected sync degrades gracefully: App stays healthy, no unhandled rejection', async () => {
+    // The enforcement sync runs on createSelectiveDemandSync's own debounced
+    // timer, strictly after renderAndWaitForReady() (and initApp) has already
+    // resolved — unlike task 6035's onModeShapeFrame subscription, this
+    // rejection is never on initApp's own await chain, so it cannot abort
+    // init. What this test verifies is narrower and downstream of that: the
+    // catch arm in engineStore.syncDemand consumes the rejection, so it never
+    // escapes as a genuine unhandled promise rejection (asserted for real by
+    // expectNoUnhandledRejections below, not merely suppressed) and is logged
+    // rather than silently dropped.
+    //
+    // Deliberately NOT asserted via a match on the console.warn wording — see
+    // the design decision recorded for this task: an argument-matched
+    // assertion is unfalsifiable on a reword of the log literal and is
+    // already subsumed by (i) case (a) above, which fails outright if
+    // `syncDemand` is missing from the factory, and (ii) the
+    // global-beforeEach `mockResolvedValue`, which throws before any test in
+    // this file runs if the factory entry is ever dropped again.
+    await expectNoUnhandledRejections(async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        vi.mocked(bridge.syncDemand).mockRejectedValue(new Error('demand channel unavailable'));
+        vi.mocked(bridge.getInitialState).mockResolvedValue({
+          ...emptyState,
+          meshes: [makeMesh('Bracket#realization[0]')],
+        });
+
+        await renderAndWaitForReady();
+
+        // Non-vacuity anchor: the rejecting path really was exercised.
+        await waitFor(
+          () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+          { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+        );
+        await flushMacrotasks();
+
+        // Positive assertion that the catch arm actually ran — existence
+        // only, not a match on the log wording (see above). Deleting the
+        // catch arm would make this fail (nothing left to log) as well as
+        // trip expectNoUnhandledRejections above.
+        expect(warnSpy).toHaveBeenCalled();
+
+        // Sanity: the render tree is still mounted after the rejection
+        // resolved.
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 });
 
@@ -7201,7 +7904,7 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(pane1.onHover).toBeDefined();
   });
 
-  it('#5668: FEA props reach pane 0 only', async () => {
+  it('#5670: the FEA trio reaches EVERY pane, each with its own keyed store', async () => {
     // Non-empty fea_diagnostics + non-null fea_convergence so the forwarded values
     // are distinguishable from engineStore's empty/null defaults.
     const feaDiagnostics = [{ kind: 'ProblemElements' as const, ids: [3, 5] }];
@@ -7232,27 +7935,47 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(mainPane.feaModeStore.state.enabled).toBe(false);
     expect(mainPane.feaDiagnostics).toHaveLength(feaDiagnostics.length);
     expect(mainPane.feaConvergence).toEqual(feaConvergence);
+    const panes0Store = mainPane.feaModeStore;
 
-    // ── Pane 1 (model pane) gets none of it ───────────────────────────────────
-    // Pane-0-only carve-out: <Viewport> renders its own <FeaModeToolbar> whenever
-    // feaModeStore is present, so a second FEA-capable pane would spawn a second
-    // toolbar (and trip the debug bridge's selectAmbiguous guard). Pinned here so
-    // a future "just share it with every pane" edit fails loudly.
+    // ── Pane 1 (model pane) gets the trio too ─────────────────────────────────
+    // The old pane-0-only carve-out existed because <Viewport> renders its own
+    // <FeaModeToolbar> whenever feaModeStore is present, and N toolbars all
+    // driving ONE store tripped the bridge's selectAmbiguous guard. #5670
+    // dissolves that: each pane gets its OWN store, and each toolbar is stamped
+    // with data-viewport-id so the bridge can address it individually.
     const pane1 = capturedMultiViewportProps.panes[1];
     expect(pane1.viewportId).toBe('pane-1');
-    expect(pane1.feaModeStore).toBeUndefined();
-    expect(pane1.feaDiagnostics).toBeUndefined();
-    expect(pane1.feaConvergence).toBeUndefined();
+    expect(pane1.feaModeStore).toBeDefined();
+    expect(typeof pane1.feaModeStore.setEnabled).toBe('function');
+    expect(pane1.feaModeStore.state.enabled).toBe(false);
 
-    // NOTE: "the store is App-scope, not built inside the mapArray mapper" is NOT
-    // assertable from `panes[0].feaModeStore` alone, however many reactive pulses
-    // you push through it. computePaneGroups always emits a pane-0 bucket, so key
-    // 0 never leaves the mapArray key list, so the mapper never re-runs and a
-    // mapper-local store would be exactly as stable. The only discriminator is a
-    // second reference to the store that does NOT come through the mapper —
-    // <FeaModeDebugRegistrar> is handed `paneFeaModeStore` directly, so the
-    // identity assertion in 'App feaMode debug-context registration (multi-pane)'
-    // below is what actually pins it.
+    // fea_diagnostics/fea_convergence are GLOBAL to the model, not per-pane.
+    // Withholding them from pane ≥ 1 was the concrete defect #5670 closes: a
+    // display_panes directive routing an FEA-relevant subject to a model pane
+    // made that entity's overlay silently vanish, because pane 0's
+    // diagnosticOverlay.sync intersects the global diagnostics with pane 0's
+    // OWN meshes and finds none, while no other pane was handed them at all.
+    expect(pane1.feaDiagnostics).toEqual(mainPane.feaDiagnostics);
+    expect(pane1.feaDiagnostics).toHaveLength(feaDiagnostics.length);
+    expect(pane1.feaConvergence).toEqual(feaConvergence);
+
+    // ── Keyed, not shared ─────────────────────────────────────────────────────
+    // The failure mode a naive "just delete the carve-out" fix produces is one
+    // shared instance handed to everyone: every pane would then render a toolbar
+    // driving the SAME state, so switching pane 1's channel would silently
+    // switch pane 0's too. The registry is keyed by viewportId precisely to
+    // prevent that.
+    expect(panes0Store).not.toBe(pane1.feaModeStore);
+
+    // NOTE: "the registry is App-scope, not built inside the mapArray mapper" is
+    // NOT assertable from `panes[0].feaModeStore` alone, however many reactive
+    // pulses you push through it. computePaneGroups always emits a pane-0
+    // bucket, so key 0 never leaves the mapArray key list, the mapper never
+    // re-runs, and a mapper-local registry would be exactly as stable. The
+    // discriminator is a reference that does NOT come through the mapper:
+    // <FeaModeDebugRegistrar> is handed the registry directly, so the
+    // `ctx.feaModes` identity assertions in 'App feaMode debug-context
+    // registration' below are what actually pin it.
   });
 
   it('step-9 case B: empty display_panes → DualViewport renders, MultiViewport absent (back-compat inv.2)', async () => {
@@ -7490,15 +8213,22 @@ describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)',
   });
 });
 
-// ─── App feaMode debug-context registration (#5668) ──────────────────────────
-// `__REIFY_DEBUG__.feaMode` is a single top-level slot, and the debug bridge's
-// set_fea_channel resolves the toolbar through it. App owns a FeaModeStore for
-// the MultiViewport branch only, so its registration must be scoped to that
-// branch: registering unconditionally would, in single-pane mode, land after
-// DualViewport's own registration (Solid runs child onMount before parent
-// onMount) and leave the slot pointing at a store no rendered toolbar drives.
+// ─── App feaMode debug-context registration (#5670) ──────────────────────────
+// `__REIFY_DEBUG__.feaModes` is a viewportId-keyed map (mirroring the existing
+// `viewports` map), and the debug bridge's set_fea_channel resolves a pane's
+// store through it. App owns the ONE FeaModeStore registry serving both render
+// branches, so its registration is unconditional and branch-independent: the
+// registered value is the registry's live backing record, so entries the panes
+// mapper adds later are visible through the same reference.
+//
+// The old branch-scoping rationale — that an unconditional registration would,
+// in single-pane mode, land after DualViewport's own (Solid runs child onMount
+// before parent onMount) and leave the slot pointing at a store no rendered
+// toolbar drives — dissolved with #5670: DualViewport neither creates nor
+// registers a store, so there is exactly one writer and nothing to clobber.
+// `ctx.feaMode` survives as the legacy scalar mirror of feaModes['design-main'].
 
-describe('App feaMode debug-context registration (multi-pane)', () => {
+describe('App feaMode debug-context registration (keyed, #5670)', () => {
   beforeEach(() => {
     // Minimal stub — registerDebugPanel only checks for the global's presence.
     (window as any).__REIFY_DEBUG__ = { stores: {} as any, testMode: () => false };
@@ -7508,7 +8238,7 @@ describe('App feaMode debug-context registration (multi-pane)', () => {
     delete (window as any).__REIFY_DEBUG__;
   });
 
-  it('multi-pane: registers the SAME store instance that pane 0 renders with', async () => {
+  it('(a) multi-pane: EVERY rendered pane is addressable by its viewportId', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue({
       ...emptyState,
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
@@ -7520,36 +8250,40 @@ describe('App feaMode debug-context registration (multi-pane)', () => {
 
     await renderAndWaitForReady();
 
-    const registered = (window as any).__REIFY_DEBUG__.feaMode;
-    expect(registered).toBeDefined();
-    expect(typeof registered.setChannel).toBe('function');
+    const feaModes = (window as any).__REIFY_DEBUG__.feaModes;
+    expect(feaModes).toBeDefined();
+    expect(typeof feaModes['design-main'].setChannel).toBe('function');
+
     // Identity, not mere presence: a registration pointing at a different store
     // than the one driving the rendered toolbar is exactly the didNotReachStore
-    // failure the debug bridge's store guard exists to catch.
-    //
-    // This is also the only assertion in the suite that pins the store as
-    // App-scope rather than mapper-local: the registrar receives
-    // `paneFeaModeStore` directly while pane 0 receives it through the `panes`
-    // mapArray, so a `createFeaModeStore()` moved inside the mapper makes these
-    // two references diverge.
-    expect(registered).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
+    // failure the debug bridge's store guard exists to catch. Asserting it for
+    // pane 1 as well as pane 0 is what pins the map as keyed-per-viewport —
+    // under the old single-slot design pane 1 was unaddressable entirely.
+    const panes = capturedMultiViewportProps.panes;
+    expect(feaModes['design-main']).toBe(panes[0].feaModeStore);
+    expect(feaModes['pane-1']).toBe(panes[1].feaModeStore);
+    expect(feaModes['design-main']).not.toBe(feaModes['pane-1']);
   });
 
-  it('single-pane: App does not touch the slot (DualViewport owns it)', async () => {
+  it('(b) single-pane: the DualViewport branch is served by the SAME App registry', async () => {
     // Default mock has display_panes: [] → DualViewport fallback branch.
     await renderAndWaitForReady();
 
     expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
     expect(capturedMultiViewportProps.panes).toBeUndefined();
-    // DualViewport is mocked in this suite, so nothing else registers — an
-    // App-level registration here would be App clobbering the real
-    // DualViewport's own store in production.
-    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+
+    // The unification proof (#5670). DualViewport used to create and register
+    // its own store here, so App deliberately left the slot alone; now App owns
+    // the one registry and hands DualViewport its 'design-main' entry, so the
+    // registered store and the one the rendered branch drives are one object.
+    const feaModes = (window as any).__REIFY_DEBUG__.feaModes;
+    expect(feaModes['design-main']).toBeDefined();
+    expect(feaModes['design-main']).toBe(capturedDualViewportProps.feaModeStore);
   });
 
-  it('branch flip: the slot is released on the way out and re-acquired on the way back', async () => {
+  it('(c) branch flip: the SAME store — and its state — survives multi → single → multi', async () => {
     // hasModelPanes() is live — onDisplayPanesUpdate can flip the layout
-    // mid-session — so the registrar's scoping claim has to survive a real
+    // mid-session — so the registry's cross-branch claim has to survive a real
     // transition, not just a fixed initial render. Capture the subscription so
     // we can drive display_panes after mount.
     let displayPanesCallback: ((panes: DisplayDirective[]) => void) | undefined;
@@ -7569,29 +8303,55 @@ describe('App feaMode debug-context registration (multi-pane)', () => {
     });
 
     await renderAndWaitForReady();
-    const appStore = (window as any).__REIFY_DEBUG__.feaMode;
-    expect(appStore).toBeDefined();
-    expect(appStore).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
+    const designMain = (window as any).__REIFY_DEBUG__.feaModes['design-main'];
+    expect(designMain).toBeDefined();
+    expect(designMain).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
+
+    // Mutate before the flip: losing this on a layout change is the concrete
+    // user-visible regression the two-singleton design caused.
+    designMain.setChannel('errorIndicator');
 
     // ── Flip out: no directives → every mesh collapses onto pane 0 →
-    // hasModelPanes() false → <Show> disposes the true branch → the registrar's
-    // onCleanup runs.
+    // hasModelPanes() false → <Show> swaps to the DualViewport branch.
     displayPanesCallback!([]);
     await flushMacrotasks();
     expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
     expect(screen.queryByTestId('multi-viewport')).toBeNull();
-    // The slot must be released, not left pointing at App's now-orphaned store.
-    // DualViewport is mocked here so nothing re-claims it — a leftover value
-    // could only be App's own store, driving no rendered toolbar, which is
-    // precisely the didNotReachStore failure set_fea_channel's guard catches.
-    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+    // The entry must SURVIVE, not be released: the registrar lives outside the
+    // <Show>, registry entries are never evicted, and the DualViewport branch is
+    // now handed that very store — so the slot keeps driving a rendered toolbar.
+    expect((window as any).__REIFY_DEBUG__.feaModes['design-main']).toBe(designMain);
+    expect(capturedDualViewportProps.feaModeStore).toBe(designMain);
+    expect(designMain.state.channel).toBe('errorIndicator');
 
-    // ── Flip back: the branch is re-created, so a fresh registrar mounts and
-    // re-claims the slot with the same App-scope store.
+    // ── Flip back: the MultiViewport branch is re-created and draws the same
+    // keyed entry from the registry, state intact.
     displayPanesCallback!(twoPanes);
     await flushMacrotasks();
     expect(screen.queryByTestId('multi-viewport')).toBeTruthy();
-    expect((window as any).__REIFY_DEBUG__.feaMode).toBe(appStore);
+    expect((window as any).__REIFY_DEBUG__.feaModes['design-main']).toBe(designMain);
+    expect(capturedMultiViewportProps.panes[0].feaModeStore).toBe(designMain);
+    expect(designMain.state.channel).toBe('errorIndicator');
+  });
+
+  it('(d) legacy scalar slot mirrors feaModes[design-main]', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
+      display_panes: [
+        { subject: 'A#realization[0]', pane: 0 },
+        { subject: 'B#realization[0]', pane: 1 },
+      ],
+    });
+
+    await renderAndWaitForReady();
+
+    // `feaMode` is retained beside `feaModes` exactly as `viewport` is retained
+    // beside `viewports`: the debug bridge's fallback path and the
+    // direct-stub-injection tests in debugBridge.test.tsx resolve through it.
+    const ctx = (window as any).__REIFY_DEBUG__;
+    expect(ctx.feaMode).toBeDefined();
+    expect(ctx.feaMode).toBe(ctx.feaModes['design-main']);
   });
 });
 

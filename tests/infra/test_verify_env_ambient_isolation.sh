@@ -183,6 +183,16 @@ assert "test_occt_flock_gate.sh exits 0 under the real verify_env ambient (got r
 # Anchored line match (not a substring grep) so an inner mock's own
 # "0 failed"-shaped output could never false-pass this assertion -- only the
 # nested test_occt_flock_gate.sh's OWN test_summary line qualifies.
+#
+# $amb_out below is the COMBINED stdout+stderr of a DEADLINE-CAPABLE child:
+# test_occt_flock_gate.sh reaches a real REIFY_OCCT_LOCK_WAIT deadline and
+# emits a column-0 @@REIFY_SLOT_TIMEOUT@@ sentinel. Interpolating it into an
+# assert description is safe ONLY because test_helpers.sh's assert() prefixes
+# lines 2+ of $desc with `  | ` (_assert_emit_desc, task 6353) -- a
+# NON-whitespace prefix, which is what defeats dark-factory's `^[ \t]*`-anchored
+# classifier; indentation alone does not. Do NOT "simplify" that emitter back
+# to a bare echo, and do not add a second local filter here: the structural fix
+# is the fix. Behavioural pin: test_slot_timeout_marker.sh E4.
 if printf '%s\n' "$amb_out" | grep -qE '^Results: [0-9]+ passed, 0 failed$'; then
     assert "test_occt_flock_gate.sh reports 0 failed under the real verify_env ambient" true
 else

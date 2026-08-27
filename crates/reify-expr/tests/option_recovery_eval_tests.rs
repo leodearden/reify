@@ -11,7 +11,8 @@
 //! the CANONICAL MECHANISM NOTE referenced next for what they guard).
 //!
 //! The `e2e_*_with_stdlib` tests instead compile the real stdlib and evaluate
-//! under `EvalContext::new(&values, &module.functions)` — task 5410, PRD
+//! under a prelude-backed function table built by
+//! `reify_test_support::prelude_backed_functions` — tasks 5410 and 5593, PRD
 //! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §8 task ζ / BT10.
 //! What they do and do not guard is explained ONCE, in the CANONICAL MECHANISM
 //! NOTE above `e2e_or_default_some_with_stdlib` below; the sibling files
@@ -295,43 +296,60 @@ fn fallback_undef_subject_returns_undef() {
 // item 10, §8 task ζ, BT10.
 //
 // Every `e2e_*_with_stdlib` test compiles the REAL stdlib via
-// `compile_source_with_stdlib` and evaluates against `module.functions`, so the
-// compiler-emitted `UserFunctionCall` runs on the same path a real program
-// takes.
+// `compile_source_with_stdlib`, so the compiler-emitted `UserFunctionCall` runs
+// on the same path a real program takes, and evaluates against
+// `reify_test_support::prelude_backed_functions(&module)` — task 5593.
 //
-// WHAT THEY GUARD, MEASURED — *not* what the `.ri` placeholder body returns.
-// `module.functions` is USER-SOURCE-ONLY: reify-compiler routes prelude/stdlib
-// `.ri` functions through `merge_prelude_functions` into `resolution_functions`
-// for compile-time overload dispatch, but stores only user-source functions in
-// `CompiledModule`. So in THIS harness the stdlib bodies are never registered;
-// with the intercept removed each call falls through to reify-expr's
-// `eval_user_function_call`, finds no matching entry, and returns
-// `Value::Undef`.
+// WHY THE TABLE IS BUILT BY A HELPER. `module.functions` is USER-SOURCE-ONLY:
+// only the module's own AST fns reach `ctx.functions`
+// (compile_builder/functions_phase.rs:79-92); prelude/stdlib `.ri` fns are
+// routed to a DIFFERENT field, `ctx.resolution_functions`
+// (functions_phase.rs:101-105), which exists for compile-time overload dispatch
+// and is dropped at ctx.rs:201 when the `CompiledModule` is built. Evaluating
+// against `module.functions` therefore uses a table in which no stdlib body is
+// registered at all. `prelude_backed_functions` restores it by reproducing the
+// PRODUCTION runtime dispatch table (`reify_eval::merge_functions`,
+// reify-eval/src/lib.rs:1425-1432).
 //
-// MEASURED (task 5410 step-11; the three gates in reify-expr's
-// `UserFunctionCall` arm — `option_recovery::is_combinator`, `map_or`/3 and
-// `map_err`/2 — locally set to `if false && …`): every `e2e_*_with_stdlib` test
-// across the three files fails with `left: Undef`.  Never a placeholder value.
+// WHAT THEY GUARD, MEASURED. The stdlib `.ri` bodies ARE registered here and DO
+// compete: each generic placeholder is the candidate
+// `find_matching_compiled_function` selects, via its generic-wildcard pass
+// (reify-expr/src/lib.rs:1546-1574). So intercept removal now yields the
+// placeholder's WRONG VALUE, which is the PRD's silent-wrong-value drift mode —
+// not merely `Undef`.
 //
-// SCOPE, stated honestly: these guard "THE INTERCEPT FIRES", the drift mode
-// this harness can observe. They do NOT reproduce the PRD's silent-WRONG-VALUE
-// mode (intercept gone → placeholder body silently returns `dflt` / `true` /
-// the subject), which needs a prelude-backed function table. Deferred to #5593
-// (originally filed as ticket tkt_0RRQDAY187DZW2V1Q5N5P9679F): a prelude-backed
-// eval harness via reify-eval's `merge_functions`, or a new public
-// reify-compiler prelude accessor.
+// MEASURED (task 5593; the three gates in reify-expr's `UserFunctionCall` arm —
+// `option_recovery::is_combinator`, `map_or`/3 and `map_err`/2 — locally set to
+// `if false && …`): 0 of the 17 `e2e_*_with_stdlib` guards across the three
+// files report `Undef`; 16 report the placeholder value (`0mm` from `{ dflt }`,
+// `true` from `{ true }`, `false` from `{ false }`, the subject from `{ o }` /
+// `{ r }`, `String("e")` from `{ err }`) and one passes. The full per-guard
+// table is in crates/reify-expr/tests/prelude_backed_harness_tests.rs, which
+// also CI-enforces both halves of the claim: that `.ri` bodies execute under
+// this table, and that every intercepted (name, arity) pair has a live prelude
+// candidate.
 //
-// Consequently the `.ri` placeholder values quoted in the per-test "FIXTURE
-// RATIONALE" notes are TRUE ABOUT THE `.ri` SOURCE — they are the PRD linkage
-// and the reason each fixture was chosen — but this harness does not observe
-// them.
+// This supersedes task 5410's measurement — "every `e2e_*_with_stdlib` test
+// fails with `left: Undef`, never a placeholder value". That was true, and only
+// true, of 5410's user-source-only harness.
+//
+// TWO GUARDS ARE COINCIDENCE-LIMITED even here, named because this file's whole
+// hazard is a harness that looks like it proves more than it measures:
+//   - `e2e_get_or_absent_key_with_stdlib` expects 0mm and `{ dflt }` also yields
+//     0mm, so intercept removal cannot make it fail — it is the one guard that
+//     PASSES above. `get_or` coverage survives via
+//     `e2e_get_or_present_key_with_stdlib` (expects 1mm vs the placeholder's 0mm).
+//   - `e2e_get_or_undef_map_with_stdlib`'s `v` assertion expects `Undef`, and
+//     the any-arg-undef short-circuit at reify-expr/src/lib.rs:1610 returns
+//     `Undef` BEFORE lookup, so the placeholder cannot diverge there. Its `w`
+//     liveness witness is the discriminating half.
 //
 // SEEDED SUBJECT, one exception — every guard above evaluates under an EMPTY
 // `ValueMap`; `e2e_or_else_none_subject_with_stdlib` (task 5584) seeds
 // `ValueCellId::new("S", "o") -> Value::Option(None)` instead (see that test's
-// own doc comment for why a seeded subject is required). Seeding does not
-// change the fallthrough mechanism described above: the function table is
-// still user-source-only, so intercept removal still yields `Undef`.
+// own doc comment for why a seeded subject is required). Seeding is orthogonal
+// to the table: with the prelude-backed table it yields `Option(None)` from
+// `or_else`'s `{ o }` placeholder under intercept removal.
 //
 // These are deliberate REGRESSION LOCKS, not RED-first tests: the intercept is
 // already live, so they are GREEN the moment they are written.
@@ -339,13 +357,12 @@ fn fallback_undef_subject_returns_undef() {
 /// End-to-end: `or_default(some(5mm), 0mm)` compiled with the real stdlib must
 /// evaluate to 5mm — the unboxed inner value.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the
-/// mechanism note above for why the fallthrough, not the placeholder, is what
-/// this harness observes).
+/// MEASURED under intercept removal: fails with `left: 0mm` — `or_default`'s
+/// `.ri` placeholder body `{ dflt }` (see the mechanism note above).
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
 /// `pub fn or_default<T>(o: Option<T>, dflt: T) -> T { dflt }`, so under
-/// #5593's prelude-backed harness the `some` subject is what makes this
+/// the prelude-backed harness the `some` subject is what makes this
 /// discriminate: a `none` subject makes `0mm` the correct answer, agreeing with
 /// the placeholder's `dflt`.
 ///
@@ -362,13 +379,14 @@ fn e2e_or_default_some_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         val_5mm(),
         "e2e: or_default(some(5mm), 0mm) compiled via stdlib must evaluate to 5mm — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ dflt }}` placeholder \
+         wins and this yields 0mm"
     );
 }
 
@@ -381,12 +399,12 @@ fn e2e_or_default_some_with_stdlib() {
 /// body `{ dflt }` returns 0mm.  After step-2 impl the UserFunctionCall
 /// intercept fires before the body and returns 5mm."
 ///
-/// TASK 5410 CORRECTION — that mechanism is not what this harness observes.
-/// `module.functions` is user-source-only, so the `.ri` placeholder body is
-/// never registered here. MEASURED under intercept removal: this test fails
-/// with `left: Undef`, from the `eval_user_function_call` fallthrough — not
-/// with `0mm` from the placeholder. It is a real drift guard either way; only
-/// the stated reason changes. See the section banner above
+/// That historical note is again accurate, and is now MEASURED (task 5593):
+/// under the prelude-backed harness the `.ri` body IS registered, so with the
+/// intercept removed this test fails with `left: 0mm` from `{ dflt }` — the
+/// silent-wrong-value mode — rather than with `Undef` from the
+/// `eval_user_function_call` lookup miss, which is what #5410's
+/// user-source-only harness observed. See the section banner above
 /// `e2e_or_default_some_with_stdlib`.
 #[test]
 fn e2e_unwrap_or_some_5mm_with_stdlib() {
@@ -395,7 +413,8 @@ fn e2e_unwrap_or_some_5mm_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     let result = reify_expr::eval_expr(expr, &ctx);
     assert_eq!(
         result,
@@ -472,12 +491,12 @@ fn or_else_undef_subject_returns_undef() {
 /// subject param `o` seeded to `Value::Option(None)`, must evaluate to
 /// `some(3mm)` — the intercept's `alt` branch.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
-/// above `e2e_or_default_some_with_stdlib`).
+/// MEASURED under intercept removal: fails with `left: Option(None)` — `or_else`'s `.ri` placeholder `{ o }` returns the `none` subject
+/// (mechanism note above `e2e_or_default_some_with_stdlib`).
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri:42` ships the typecheck-only
 /// `pub fn or_else<T>(o: Option<T>, alt: Option<T>) -> Option<T> { o }`, which
-/// returns the SUBJECT, so under #5593's prelude-backed harness the `none`
+/// returns the SUBJECT, so under the prelude-backed harness the `none`
 /// subject is what makes this discriminate (it would yield `Option(None)`),
 /// whereas a `some` subject coincides with the placeholder exactly.
 ///
@@ -499,13 +518,15 @@ fn e2e_or_else_none_subject_with_stdlib() {
     let expr = reify_test_support::get_let_expr(&module, "v");
     let mut values = ValueMap::new();
     values.insert(ValueCellId::new("S", "o"), Value::Option(None));
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         Value::Option(Some(Box::new(val_3mm()))),
         "e2e: or_else(o, some(3mm)) compiled via stdlib, with subject param o seeded to \
-         none, must evaluate to some(3mm) — if the intercept stops firing this falls \
-         through to eval_user_function_call and yields Undef"
+         none, must evaluate to some(3mm) — if the intercept stops firing, \
+         option_recovery.ri's `{{ o }}` placeholder wins and this yields the seeded \
+         subject, Option(None)"
     );
 }
 
@@ -624,12 +645,12 @@ fn is_none_undef_returns_undef() {
 /// End-to-end: `is_some(none)` compiled with the real stdlib must evaluate to
 /// `false`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
-/// above `e2e_or_default_some_with_stdlib`).
+/// MEASURED under intercept removal: fails with `left: Bool(true)` — `is_some`'s `.ri` placeholder `{ true }`
+/// (mechanism note above `e2e_or_default_some_with_stdlib`).
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
-/// `pub fn is_some<T>(o: Option<T>) -> Bool { true }`, so under #5593's
-/// prelude-backed harness the `none` subject is what makes this discriminate:
+/// `pub fn is_some<T>(o: Option<T>) -> Bool { true }`, so under the prelude-backed
+/// harness the `none` subject is what makes this discriminate:
 /// a `some` subject coincides with the placeholder's hardcoded `true`.
 ///
 /// Note a bare `none` DOES type-infer here — `is_some` has a single type
@@ -642,26 +663,27 @@ fn e2e_is_some_none_with_stdlib() {
         reify_test_support::compile_source_with_stdlib("structure S { let v = is_some(none) }");
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         Value::Bool(false),
         "e2e: is_some(none) compiled via stdlib must evaluate to false — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ true }}` placeholder \
+         wins and this yields true"
     );
 }
 
 /// End-to-end: `is_none(none)` compiled with the real stdlib must evaluate to
 /// `true`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (mechanism note
-/// above `e2e_or_default_some_with_stdlib`).
+/// MEASURED under intercept removal: fails with `left: Bool(false)` — `is_none`'s `.ri` placeholder `{ false }`
+/// (mechanism note above `e2e_or_default_some_with_stdlib`).
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
 /// `pub fn is_none<T>(o: Option<T>) -> Bool { false }`. Shares the `none`
-/// subject with `e2e_is_some_none_with_stdlib` above, because under #5593's
-/// prelude-backed harness one subject discriminates BOTH predicates: the two
+/// subject with `e2e_is_some_none_with_stdlib` above, because under the prelude-backed
+/// harness one subject discriminates BOTH predicates: the two
 /// placeholder constants are the exact inverses of the correct answers for a
 /// `none`, whereas a `some` subject would coincide with both.
 #[test]
@@ -670,13 +692,14 @@ fn e2e_is_none_none_with_stdlib() {
         reify_test_support::compile_source_with_stdlib("structure S { let v = is_none(none) }");
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         Value::Bool(true),
         "e2e: is_none(none) compiled via stdlib must evaluate to true — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ false }}` placeholder \
+         wins and this yields false"
     );
 }
 
@@ -777,17 +800,22 @@ fn get_or_undef_map_returns_undef() {
 /// End-to-end: `get_or(map{"k" => 1mm}, "absent", 0mm)` compiled with the
 /// stdlib must evaluate to 0mm (absent key recovers to default).
 ///
-/// CORRECTED BY TASK 5410 (this comment previously called the test
-/// "coincidentally correct" and therefore a no-op — that premise was WRONG for
-/// this harness). MEASURED under intercept removal: this test FAILS with
-/// `left: Undef`. It is a real, working drift guard for `get_or`'s ABSENT-KEY
-/// path (PRD ζ / BT10), proving the compiler-emitted `UserFunctionCall`
-/// function_name+arity reaches the intercept.
+/// MEASURED under intercept removal (task 5593): this test PASSES — the only
+/// one of the 17 guards that does. COINCIDENCE-LIMITED; see the mechanism note
+/// above `e2e_or_default_some_with_stdlib` for why, and for what preserves
+/// `get_or` coverage regardless.
 ///
-/// The old note reasoned about `option_recovery.ri`'s `{ dflt }` body returning
-/// `0mm` and so agreeing with the expected value — true of the `.ri` SOURCE,
-/// but this harness never registers that body. See the mechanism note above
-/// `e2e_or_default_some_with_stdlib` (and #5593 for the scope residue).
+/// HISTORY, unique to this guard and kept here so the correction is not
+/// re-litigated a fourth time. The original note called the expected 0mm
+/// "coincidentally correct" because it agrees with `option_recovery.ri`'s
+/// `{ dflt }`; #5410 called that premise WRONG. Both were right, about
+/// different harnesses — #5410's was user-source-only, so the body was absent
+/// and this test failed with `Undef`; under the prelude-backed harness the body
+/// is registered and the original note holds again.
+///
+/// The guard is kept because it still pins that the compiler-emitted
+/// `UserFunctionCall` name+arity reaches the intercept at all (PRD ζ / BT10);
+/// it is simply not the guard that proves the intercept BEATS the placeholder.
 #[test]
 fn e2e_get_or_absent_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
@@ -795,7 +823,8 @@ fn e2e_get_or_absent_key_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     let result = reify_expr::eval_expr(expr, &ctx);
     assert_eq!(
         result,
@@ -809,17 +838,16 @@ fn e2e_get_or_absent_key_with_stdlib() {
 /// End-to-end: `get_or(map{"k" => 1mm}, "k", 0mm)` compiled with the stdlib
 /// must evaluate to 1mm (present key → intercept fires → returns map value).
 ///
-/// CORRECTED BY TASK 5410: this comment previously said the absent-key e2e
-/// (`e2e_get_or_absent_key_with_stdlib`) was "coincidentally GREEN ... and does
-/// NOT prove the intercept fires". That is FALSE for this harness. MEASURED
-/// under intercept removal: BOTH tests fail, each with `left: Undef`. Both are
-/// real drift guards; this present-key case additionally pins the map-lookup
-/// RESULT (1mm), which the absent-key case cannot.
+/// THIS IS THE DISCRIMINATING `get_or` GUARD. MEASURED under intercept removal
+/// (task 5593): fails with `left: 0mm` — `option_recovery.ri`'s `{ dflt }`
+/// placeholder — against the expected 1mm. Its sibling
+/// `e2e_get_or_absent_key_with_stdlib` is coincidence-limited and PASSES, so
+/// `get_or` coverage of the silent-wrong-value mode rests entirely here. See
+/// the mechanism note above `e2e_or_default_some_with_stdlib`.
 ///
-/// The `.ri` reasoning behind the old claim remains true of the `.ri` SOURCE —
-/// `option_recovery.ri`'s `{ dflt }` body would return `0mm`, agreeing with the
-/// absent-key expectation — it is just not what this harness observes. See the
-/// mechanism note above `e2e_or_default_some_with_stdlib`.
+/// Beyond drift, this case also pins the map-lookup RESULT (1mm), which the
+/// absent-key case cannot. See the mechanism note above
+/// `e2e_or_default_some_with_stdlib`.
 #[test]
 fn e2e_get_or_present_key_with_stdlib() {
     let module = reify_test_support::compile_source_with_stdlib(
@@ -827,7 +855,8 @@ fn e2e_get_or_present_key_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     let result = reify_expr::eval_expr(expr, &ctx);
     assert_eq!(
         result,
@@ -853,15 +882,18 @@ fn e2e_get_or_present_key_with_stdlib() {
 /// propagation genuinely regressed. Without `w` this test pins no behaviour a
 /// broken harness would not also satisfy.
 ///
-/// MEASURED (task 5410 step-11, three intercept gates disabled): the `w`
-/// assertion FAILS with `left: Undef` — so, unlike the single-cell version this
-/// replaces, the test as a whole is RED under intercept removal. The `v`
-/// assertion alone would stay GREEN, because the `eval_user_function_call`
-/// fallthrough value and the correct INV-2 answer are both `Undef`.
+/// MEASURED (task 5593, three intercept gates disabled): the `w` assertion
+/// FAILS with `left: 0mm` — `option_recovery.ri`'s `{ dflt }` placeholder —
+/// against the expected 1mm, so the test as a whole is RED under intercept
+/// removal.
+///
+/// THE `v` ASSERTION CANNOT DISCRIMINATE, even under the prelude-backed table,
+/// which is what makes `w` load-bearing rather than decorative: `w` is the only
+/// half of this test that can go RED. See the mechanism note above
+/// `e2e_or_default_some_with_stdlib` for the short-circuit that limits `v`.
 ///
 /// The absent-KEY path's own drift coverage lives in
-/// `e2e_get_or_absent_key_with_stdlib` (above), which also fails with
-/// `left: Undef` under intercept removal.
+/// `e2e_get_or_absent_key_with_stdlib` (above).
 ///
 /// The propagation property is worth pinning at a compiled call site even
 /// though `get_or_undef_map_returns_undef` covers it under
@@ -879,7 +911,8 @@ fn e2e_get_or_undef_map_with_stdlib() {
         r#"structure S { let v = get_or(undef, "k", 0mm)  let w = get_or(map{"k" => 1mm}, "k", 0mm) }"#,
     );
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
 
     // Liveness witness first: a non-Undef expectation on the same compiled
     // module, so the Undef assertion below cannot pass on a dead harness.
@@ -1057,7 +1090,8 @@ fn map_or_non_option_subject_degrades_to_undef() {
 /// End-to-end: `map_or(some(5mm), 0mm, |x: Length| x * 2)` compiled with the
 /// real stdlib must evaluate to 10mm — the lambda APPLIED to the inner value.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef`. This one covers
+/// MEASURED under intercept removal: fails with `left: 0mm` — `map_or`'s `.ri`
+/// placeholder body `{ dflt }`, with `f` never applied. This one covers
 /// the SECOND gate — the bare `map_or`/3 branch in reify-expr's
 /// `UserFunctionCall` arm, which is NOT in `option_recovery::is_combinator`
 /// (mechanism note above `e2e_or_default_some_with_stdlib`).
@@ -1069,7 +1103,7 @@ fn map_or_non_option_subject_degrades_to_undef() {
 ///
 /// FIXTURE RATIONALE — `option_recovery.ri` ships the typecheck-only
 /// `pub fn map_or<T, U>(o: Option<T>, dflt: U, f: (T) -> U) -> U { dflt }`
-/// (returns `dflt`, `f` never applied), so under #5593's prelude-backed harness
+/// (returns `dflt`, `f` never applied), so under the prelude-backed harness
 /// the `some` subject is what makes this discriminate: a `none` subject makes
 /// `dflt` the correct answer, agreeing with the placeholder.
 ///
@@ -1084,13 +1118,14 @@ fn e2e_map_or_some_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = reify_expr::EvalContext::new(&values, &functions);
     assert_eq!(
         reify_expr::eval_expr(expr, &ctx),
         val_10mm(),
         "e2e: map_or(some(5mm), 0mm, |x| x * 2) compiled via stdlib must evaluate to 10mm — \
-         if the map_or/3 gate stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the map_or/3 gate stops firing, option_recovery.ri's `{{ dflt }}` placeholder \
+         wins and this yields 0mm"
     );
 }
 

@@ -394,9 +394,9 @@ fn material_frame(build_z: [f64; 3]) -> Value {
         "MaterialFrame",
         vec![
             ("origin", super::point3_length([0.0, 0.0, 0.0])),
-            ("x_axis", vec3_length(x_axis)),
-            ("y_axis", vec3_length(y_axis)),
-            ("z_axis", vec3_length(build_z)),
+            ("x_axis", vec3_dimensionless(x_axis)),
+            ("y_axis", vec3_dimensionless(y_axis)),
+            ("z_axis", vec3_dimensionless(build_z)),
         ],
     )
 }
@@ -442,22 +442,15 @@ fn mass_density(si: f64) -> Value {
     }
 }
 
-/// A `Vector3<Length>` of SI-metre components (mirrors `MaterialFrame`'s axis
-/// representation and the stdlib `vec3(..)` axis literals).
-fn vec3_length(v: [f64; 3]) -> Value {
+/// A `Vector3<Dimensionless>` — the representation `MaterialFrame`'s three
+/// axes declare (task 5848) and what the stdlib `vec3(0, 0, 1)` axis literals
+/// evaluate to. Components are `Value::Real`, the house spelling for a
+/// dimensionless quantity (Invariant V), matching `default_frame3()`'s axes.
+pub(crate) fn vec3_dimensionless(v: [f64; 3]) -> Value {
     Value::Vector(vec![
-        Value::Scalar {
-            si_value: v[0],
-            dimension: DimensionVector::LENGTH,
-        },
-        Value::Scalar {
-            si_value: v[1],
-            dimension: DimensionVector::LENGTH,
-        },
-        Value::Scalar {
-            si_value: v[2],
-            dimension: DimensionVector::LENGTH,
-        },
+        Value::Real(v[0]),
+        Value::Real(v[1]),
+        Value::Real(v[2]),
     ])
 }
 
@@ -547,5 +540,42 @@ mod iota_tests {
                 "rung {rung:?} key {key:?} must be registered in compute dispatch"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task 5848 retypes `FDMProcess.build_direction` from `Vec3<Length>` to a
+    /// dimensionless 3-vector, moving its default from `vec3(0mm, 0mm, 1mm)` to
+    /// `vec3(0, 0, 1)`. That is behaviour-preserving for the knockdown path
+    /// because [`field_vec3`] reads components through `as_f64()` — blind to
+    /// the dimension AND to the `Value` variant — and [`unit3`] normalises
+    /// immediately, so `[0, 0, 0.001]` and `[0, 0, 1]` both reduce to the same
+    /// `build_unit`.
+    #[test]
+    fn build_unit_is_identical_for_the_length_and_dimensionless_spellings() {
+        let process = |build_direction: Value| StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "FDMProcess".to_string(),
+            version: 1,
+            fields: [("build_direction".to_string(), build_direction)]
+                .into_iter()
+                .collect(),
+        };
+        let millimetres = Value::Vector(vec![
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 1e-3, dimension: DimensionVector::LENGTH },
+        ]);
+        let dimensionless = vec3_dimensionless([0.0, 0.0, 1.0]);
+
+        let build_unit = |v: Value| {
+            unit3(field_vec3(&process(v), "build_direction").expect("build_direction must read"))
+                .expect("a non-degenerate build direction must normalise")
+        };
+        assert_eq!(build_unit(millimetres), build_unit(dimensionless));
+        assert_eq!(build_unit(vec3_dimensionless([0.0, 0.0, 1.0])), [0.0, 0.0, 1.0]);
     }
 }

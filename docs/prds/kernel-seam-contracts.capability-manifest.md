@@ -1,5 +1,14 @@
 # Capability Manifest — kernel-seam-contracts
 
+> **AS-AUTHORED GATE ARTIFACT (2026-07-06) — do not refresh.** This manifest records the
+> **pre-decomposition** evidence check that cleared this PRD's leaves to queue; its `PASS` verdicts
+> are statements about *binding quality at author time*, not about landed state. All 16 leaves have
+> since landed (α #5102 … ξ #5116, plus #4876) — see the parent PRD's SHIPPED header. Consequently
+> its forward-looking phrasings ("post-landing grep", "red on current main", "the leaf must
+> establish") and its hard `file:line` / `@NNNN` anchors are 2026-07-06 provenance and have drifted.
+> Rewriting them would destroy the record of what was actually gated. Parent:
+> `docs/prds/kernel-seam-contracts.md`.
+
 Mechanizes G3+G6 per leaf (`gates.md` → *Capability Manifest*). This PRD is **near-pure Rust wiring**:
 its only `.ri` fixture uses existing grammar, so the executable `.ri` D3 substrate-verify workflow is
 **N/A** (`procedural_prd_d3_verify_workflow_is_ri_only`) and the binding-of-record is **wired-on-main

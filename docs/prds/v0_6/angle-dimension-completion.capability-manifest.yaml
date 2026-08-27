@@ -1,0 +1,236 @@
+prd: docs/prds/v0_6/angle-dimension-completion.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6179
+  title: Re-dimension CURVATURE to rad·m⁻¹ (const + pins + drift-pin + doc corrections)
+  capabilities:
+  - name: curvature-const-exists-m1-today
+    binding: capability→producer (this leaf) — grep:crates/reify-core/src/dimension.rs:259
+      from_exps(&[(0, -1)]); doc :248-258 carries the 3603 alias rationale this leaf
+      re-adjudicates
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \(0, ?-1\), ?\(7, ?1\)
+      paths:
+      - crates/reify-core/src/dimension.rs
+      expect: present
+  - name: rejection-mechanism-fires-pre-state
+    binding: 'rejection-check (G6 branch 4) — probe: param t : Angle = 5mm → reify
+      check exit 1 with the declared-vs-initializer diagnostic (control, 2026-08-10);
+      fixture tests/prd-gate/fixtures/curvature_rad_literal.ri (param kc : Curvature
+      = 0.2rad/1mm) is rejected pre-α, accepted post-α; D3 workflow probes the pre-state
+      empirically'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is the check-time FLIP of the committed fixture; the
+        leaf's own tests assert both directions — no stable single grep expresses
+        a flip
+  - name: production-duplicate-drift-pinned
+    binding: silent-divergence hazard — grep:crates/reify-eval/src/geometry_ops.rs:9166-9170
+      hand-built CURVATURE_DIM; no drift test exists today (value_type_kind_matches
+      is kind-only); this leaf adds the drift-pin equating it to DimensionVector::CURVATURE
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: CURVATURE
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+      expect: present
+  - name: no-corpus-migration
+    binding: 'grep: zero `: Curvature` declarations in stdlib/examples/tests; zero
+      radius-of-curvature algebra sites; all numeric pins raw f64 (η = 1, byte-identical)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: absence-of-usage measurement, re-measure at implementation per G6
+- label: β
+  task_id: 6180
+  title: 'Doctrine artifacts: invariants.md INV-DIM row + design-invariants.md INV-AD
+    family'
+  capabilities:
+  - name: design-invariant-family-appendable
+    binding: grep:docs/legibility/design-invariants.md:21 "Other invariant families
+      may be appended later; keep slugs stable"; G7 + /review read the file at run
+      time
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: INV-AD-1
+      paths:
+      - docs/legibility/design-invariants.md
+      expect: present
+  - name: idiom-substrate-real
+    binding: 'probe: (s/r) * 1rad → 2.5 rad; theta / 1rad → dimensionless; : Angle
+      annotation checks; spaced form `1 rad` is a parse error (teach no-space form)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: probe-verified substrate; doctrine text quality is a human judgment
+  - name: task-5825-carve-out-discharged
+    binding: 'producer:task-5825 (done, decision gate) — its text: "arc = r · theta
+      … needs its own task"; this leaf is that owner for the teaching half'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: arc
+      paths:
+      - docs/legibility/design-invariants.md
+      - docs/invariants.md
+      expect: present
+- label: γ
+  task_id: 6181
+  title: 'Docs-truth four-pack: units chunk section, corpus example, skill index,
+    discoverability'
+  capabilities:
+  - name: crossing-idiom-fixture-parses
+    binding: grammar-fixture:tests/prd-gate/fixtures/angle_crossing_idiom.ri — tree-sitter
+      parse --quiet exit 0 (measured 2026-08-10); also evaluates today
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: angle_crossings
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: docs-truth-slots-disjoint
+    binding: 'pending #5790/#5792/#5793/#5794 (angle-units ξ/ο/π/ρ) own the angle-surface
+      teaching slots; this leaf adds disjoint crossing-doctrine content (PRD D9) —
+      same files, different sections/rows, file-lock serialization only'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: content-disjointness is a review judgment, not a grep
+- label: δ
+  task_id: 6182
+  title: ANGULAR_ACCELERATION named dimension + rotational-closure exemplar
+  capabilities:
+  - name: closure-identities-true-under-rad2-moi
+    binding: 'closed-form dimension identities (G6 branches 1-2), pinned via TYPED
+      PARAM (D3 adjudication 2): tests/prd-gate/fixtures/rotational_closure_prestate.ri
+      declares param rot_ke : Energy = ½·(1kg·1m·1m/(1rad·1rad))·(1rad/1s)² — reify
+      check exit 0 (probed 2026-08-10); the : Torque control exits 1 (non-vacuous);
+      τ/I = rad·s^-2 and L/t = TORQUE probed as prose evidence (harness ir-kind cannot
+      read stdout)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ANGULAR_ACCELERATION
+      paths:
+      - crates/reify-core/src/dimension.rs
+      expect: present
+  - name: moi-rad2-delivered-upstream
+    binding: 'producer:task-5844 (pending) — MOI → kg·m²·rad⁻² per ruling #5825; DAG-direction
+      upstream (edge δ → 5844 wired at decompose); pre-state probed (today ½Iω² →
+      m^2·kg·rad^2·s^-2, not Energy — the dep is load-bearing)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivery is task 5844's; this leaf's example is RED until it lands (dep-gated)
+  - name: angular-momentum-not-chartered
+    binding: 'orphan-guard (G1) — grep: ANGULAR_MOMENTUM surfaced nowhere typed or
+      raw; deferred bookmark in PRD §11, algebra recorded in doctrine only'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: scope-honesty record
+- label: σ
+  task_id: 6183
+  title: ElasticResult.shear_angles channel + worked consumer example
+  capabilities:
+  - name: producer-data-on-production-path
+    binding: field-population — grep:crates/reify-eval/src/compute_targets/elastic_static.rs:282
+      fea.nodal_gradient stored; wrap-time projections :1127-1179 (divergence/gradient/curl)
+      are the exact pattern; no Undef sentinel on the path
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: shear_angles
+      paths:
+      - crates/reify-compiler/stdlib/solver_elastic.ri
+      expect: present
+  - name: declared-codomain-wrap-exists
+    binding: grep:crates/reify-expr/src/sampled.rs:137-193 stride-n sampling from
+      declared Type::Vector{quantity}; :297-305 wraps non-dimensionless scalars with
+      their dimension — Angle codomain needs zero new sampling machinery. D3-verified
+      additionally — the channel-decl spelling Field<Point3<Length>, Vector3<Angle>>
+      parses AND resolves (fixture tests/prd-gate/fixtures/shear_angles_field_decl_pre.ri),
+      and the fn-param accept probe is non-vacuous (wrong-quantity vector rejected,
+      fixture shear_angles_vec3_wrongq_ctrl.ri)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sampled_shear
+      paths:
+      - crates/reify-eval/src/compute_targets
+      expect: present
+  - name: component-comparison-routed-to-rust-e2e
+    binding: 'D3 adjudication 3 — no in-language Vector3 component extraction exists
+      (.x / v[0] / norm-compare all reject, adversary-probed); component-value deg
+      comparisons live in crates/reify-eval/tests/differential_field_ops_e2e.rs (same
+      home as #6164 pins); the .ri example scopes to sampling + typed passing (PRD
+      §9 B4, §12 Q6)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: routing decision recorded; the Rust e2e pins are the leaf's own tests
+  - name: sibling-channel-upstream
+    binding: producer:task-6164 (pending) — the .rotation designated-crossing channel;
+      σ → 6164 edge wired at decompose (shared files solver_elastic.ri / compute_targets;
+      pattern coherence)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ordering edge, verified by the dependency graph not a grep
+  - name: consumer-shipped-same-diff
+    binding: G1 — zero current corpus demand for shear-angle readings (swept); the
+      worked shear-limit example ships in σ's own diff as the named consumer (C-as-integration-gate)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the example lands in the same diff; its CI compile gate is the check
+- label: ι
+  task_id: 6184
+  title: IO angular-bridge declarations (STEP, OCCT FFI, SolveSpace, MCP, dynamics
+    erasure)
+  capabilities:
+  - name: angular-boundaries-enumerated
+    binding: investigation table (PRD §2.6/D8) — STEP cone semi-angle raw radians
+      under OCCT default unit (probe-verified); OCCT angle_rad FFI; SolveSpace angle_deg
+      degrees; MCP set_parameter inbound bare f64 → SI radians silently (mcp_context.rs:499-530);
+      compliance_cell_f64 silent erasure (dynamics/eval.rs:98-110)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: declarations are comments/schema text across five crates; per-site greps
+        would pin drifting anchors — the leaf's own diff is the record
+  - name: length-mislabel-filed-separately
+    binding: the STEP/3MF 1000× length-unit defect (probe-verified) is a standalone
+      bug task, not owned here (PRD §11); ι coordinates per §12 Q4
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: scope boundary record
+- label: υ
+  task_id: 6185
+  title: GUI channel bridge — unit/dimension tag on scalar_channels + signed range
+  capabilities:
+  - name: wire-format-gap-bound
+    binding: grep:gui/src-tauri/src/types.rs:731 scalar_channels HashMap<String, Vec<f32>>
+      has no unit slot; producers today are Pa-only (engine.rs:6785-6847); the range
+      computation drops negatives (scalarRange.ts) — task-6164 .rotation would be
+      the first signed Angle channel
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: tag field name is a υ-time design choice; no stable pre-commitment grep
+  - name: consumer-named
+    binding: 'consumer: #6164 .rotation channel (ruled, pending) + honest legends
+      for existing Pa channels; recommend Leo wire 6164 → υ (session cannot mutate
+      6164)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-task recommendation recorded in the hand-back

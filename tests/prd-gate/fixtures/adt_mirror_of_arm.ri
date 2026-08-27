@@ -1,0 +1,15 @@
+// PRD evidence fixture: docs/prds/v0_6/assembly-derivation-toolbox.md (G3 grammar gate).
+// DELIBERATE-FAILURE evidence for leaf A-alpha (grammar producer): the fourth sub arm
+// does NOT parse today. Probe-verified 2026-08-26 @ main 96041f850b:
+//   tree-sitter parse --quiet -> ERROR [3,0]-[9,1], exit 1.
+// Post-A-alpha: parses with 0 ERROR nodes (the leaf's user-observable signal).
+module adt_mirror_of_arm
+pub structure Unit { param z : Length = 80mm
+    let body = box(10mm, 10mm, z) }
+pub structure Pair {
+    sub unit_a = Unit() at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+    sub unit_b = mirror of unit_a across plane_yz {
+        z = 55mm
+        keep capstan
+    }
+}

@@ -1016,6 +1016,13 @@ pub(crate) fn unify(
 /// - The catch-all is `param == arg` (plain equality) rather than `unify`'s
 ///   permissive `Ok(())` — a head mismatch (or two leaves) must agree
 ///   exactly to count as "unifiable" here.
+///
+/// This is the CANONICAL copy. `crates/reify-expr/src/lib.rs` carries a local
+/// mirror (reify-compiler is only a dev-dep of reify-expr, so this one cannot
+/// be imported there) which MUST be kept verbatim-synced with it, as the three
+/// `type_carries_*` helpers above already are. Drift reproduces the
+/// esc-4231-120/126 / esc-4093-152 divergence class — compile-time and
+/// eval-time overload selection disagreeing about the same call.
 fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
@@ -4681,6 +4688,72 @@ mod tests {
         }
     }
 
+    /// Compile-side pin for the mixed generic / non-generic overload set that
+    /// eval-side
+    /// `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`
+    /// (crates/reify-expr/tests/find_matching_compiled_function_tests.rs)
+    /// asserts against. That test claims its promotion "is what compile-side
+    /// `resolve_function_overload` resolves to"; since the whole point of #5685
+    /// is compile/eval agreement, the claim is pinned here rather than left as
+    /// prose. `resolve_function_overload` is `pub(crate)` in a private module,
+    /// so this half can only live compiler-side.
+    ///
+    /// Both candidates land in `matches` (the generic one via
+    /// `type_carries_type_param`, the non-generic one via its trait object), so
+    /// table order alone would hand this to the generic candidate declared
+    /// FIRST. `head_matches` drops it — `Option<T>` is not head-compatible with
+    /// `List<PointLoad>` — leaving exactly one candidate, which is what makes
+    /// this `Resolved` rather than `Ambiguous`.
+    #[test]
+    fn overload_mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object() {
+        let generic_first = make_generic_fn(
+            "f",
+            vec![("x", Type::Option(Box::new(tp("T"))))],
+            &["T"],
+            tp("T"),
+        );
+        let non_generic_second = make_fn(
+            "f",
+            vec![(
+                "x",
+                Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+            )],
+        );
+        let fns = vec![generic_first, non_generic_second];
+        let arg = Type::List(Box::new(Type::StructureRef("PointLoad".to_string())));
+
+        match resolve_function_overload("f", &[arg], &fns) {
+            OverloadResolution::Resolved(matched) => {
+                assert!(
+                    matched.type_params.is_empty(),
+                    "a List<PointLoad> arg must select the NON-generic List<Load> \
+                     candidate even though a wildcard-eligible generic Option<T> \
+                     candidate is declared first — only the former head-matches; \
+                     got a candidate with {} type params",
+                    matched.type_params.len()
+                );
+                assert!(
+                    matches!(&matched.params[0].1, Type::List(inner)
+                        if matches!(**inner, Type::TraitObject(_))),
+                    "expected the List<Load> candidate; got params[0] = {:?}",
+                    matched.params[0].1
+                );
+            }
+            OverloadResolution::Ambiguous(candidates) => panic!(
+                "expected Resolved(f(List<Load>)), got Ambiguous({} candidates) — \
+                 the head tier failed to drop the head-mismatched generic candidate, \
+                 so eval-side head narrowing would disagree with compile-side",
+                candidates.len()
+            ),
+            OverloadResolution::NoMatch(_) => {
+                panic!("expected Resolved(f(List<Load>)), got NoMatch")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(f(List<Load>)), got NoUserFunctions")
+            }
+        }
+    }
+
     /// D4 preservation (task-4232 γ): a BARE `TypeParam` arg (a generic fn body
     /// passing a `T`-typed value to a concrete-param overload) must STILL
     /// resolve after the head-exact-tier narrowing — the narrowing only strips
@@ -5678,5 +5751,442 @@ mod tests {
             infer_mul_div_result(BinOp::Mul, &v, &Type::transform(3)),
             None,
         );
+    }
+
+    // ── heads_unifiable: canonical-copy / eval-mirror drift guard (#5685) ────
+
+    /// The corpus behind
+    /// [`sync_drift_check_heads_unifiable_matches_eval_mirror`] below:
+    /// `(param, arg, expected, label)`, with at least one case per match arm of
+    /// [`heads_unifiable`].
+    ///
+    /// Each arm's MATCH case is deliberately paired with a NEAR-MISS that must
+    /// fall to the `_ => param == arg` catch-all, so an implementation that
+    /// accidentally widened an arm (dropped an `n == n` / arity / name guard) is
+    /// caught as readily as one that dropped the arm entirely.
+    ///
+    /// `expected` is the verdict the CANONICAL copy in this file must return,
+    /// asserted directly rather than only compared against the mirror. That
+    /// distinction is the whole point: the realistic way two duplicated copies
+    /// are "kept in sync" is edit-one-then-copy-paste-to-the-other, which moves
+    /// BOTH copies' semantics at once and would keep a pure agreement check
+    /// green. Dropping the `dn == en` guard on the erased-subject arm in both
+    /// copies, for instance, would make every `Applied` param head-match every
+    /// erased `Enum` and silently re-introduce the #5685 Option/Result
+    /// mis-selection — `expected` is what fails in that case.
+    ///
+    /// Keep both verdicts represented: a corpus edited down to all-`true` (or
+    /// all-`false`) rows would agree under implementations that had drifted on
+    /// the arms it no longer covers.
+    fn heads_unifiable_corpus() -> Vec<(Type, Type, bool, &'static str)> {
+        let t = || Type::TypeParam("T".to_string());
+        let q = || Type::ScalarParam("Q".to_string());
+        let result_of = |args: Vec<Type>| Type::Applied {
+            name: "Result".to_string(),
+            args,
+        };
+        let proj = |base: Type, member: &str| Type::Projection {
+            base: Box::new(base),
+            member: member.to_string(),
+        };
+        let func = |params: Vec<Type>, ret: Type| Type::Function {
+            params,
+            return_type: Box::new(ret),
+        };
+        let field = |domain: Type, codomain: Type| Type::Field {
+            domain: Box::new(domain),
+            codomain: Box::new(codomain),
+        };
+
+        // (param, arg, expected, label) — label names the arm the pair exercises.
+        vec![
+            // Type-param / dim-param wildcard leaves.
+            (t(), Type::Int, true, "TypeParam vs anything"),
+            (
+                t(),
+                result_of(vec![Type::Int]),
+                true,
+                "TypeParam vs constructor",
+            ),
+            (q(), Type::length(), true, "ScalarParam vs Scalar"),
+            (
+                q(),
+                Type::Int,
+                false,
+                "ScalarParam vs non-Scalar (catch-all)",
+            ),
+            // Single-inner-Type constructors, match + near-miss.
+            (
+                Type::List(Box::new(t())),
+                Type::List(Box::new(Type::Int)),
+                true,
+                "List recurse",
+            ),
+            (
+                Type::List(Box::new(Type::Int)),
+                Type::List(Box::new(Type::String)),
+                false,
+                "List inner mismatch",
+            ),
+            (
+                Type::List(Box::new(Type::Int)),
+                Type::Set(Box::new(Type::Int)),
+                false,
+                "List vs Set head",
+            ),
+            (
+                Type::Set(Box::new(t())),
+                Type::Set(Box::new(Type::Int)),
+                true,
+                "Set recurse",
+            ),
+            (
+                Type::Keyed(Box::new(t())),
+                Type::Keyed(Box::new(Type::Int)),
+                true,
+                "Keyed recurse",
+            ),
+            (
+                Type::Option(Box::new(t())),
+                Type::Option(Box::new(Type::length())),
+                true,
+                "Option recurse",
+            ),
+            (
+                Type::Option(Box::new(t())),
+                Type::Enum("Option".to_string()),
+                false,
+                "Option vs erased Enum (NOT the Applied rule)",
+            ),
+            (
+                Type::Complex(Box::new(t())),
+                Type::Complex(Box::new(Type::dimensionless_scalar())),
+                true,
+                "Complex recurse",
+            ),
+            (
+                Type::Range(Box::new(t())),
+                Type::Range(Box::new(Type::Int)),
+                true,
+                "Range recurse",
+            ),
+            // Two-inner-Type constructors.
+            (
+                Type::Map(Box::new(Type::String), Box::new(t())),
+                Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+                true,
+                "Map recurse",
+            ),
+            (
+                Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+                Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
+                false,
+                "Map key mismatch",
+            ),
+            (
+                field(t(), t()),
+                field(Type::length(), Type::Int),
+                true,
+                "Field recurse",
+            ),
+            (
+                field(Type::Int, Type::Int),
+                field(Type::String, Type::Int),
+                false,
+                "Field domain mismatch",
+            ),
+            // Function: arity guard + recursion on params and return type.
+            (
+                func(vec![t()], t()),
+                func(vec![Type::Int], Type::String),
+                true,
+                "Function recurse",
+            ),
+            (
+                func(vec![t()], t()),
+                func(vec![Type::Int, Type::Int], Type::Int),
+                false,
+                "Function arity",
+            ),
+            (
+                func(vec![Type::Int], Type::Int),
+                func(vec![Type::String], Type::Int),
+                false,
+                "Function param mismatch",
+            ),
+            // Quantity-bearing aggregates: shape guards + quantity recursion.
+            (
+                Type::Point {
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Point {
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
+                true,
+                "Point recurse",
+            ),
+            (
+                Type::Point {
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Point {
+                    n: 2,
+                    quantity: Box::new(Type::length()),
+                },
+                false,
+                "Point n guard",
+            ),
+            (
+                Type::Vector {
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Vector {
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
+                true,
+                "Vector recurse",
+            ),
+            (
+                Type::Vector {
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Vector {
+                    n: 2,
+                    quantity: Box::new(Type::length()),
+                },
+                false,
+                "Vector n guard",
+            ),
+            (
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
+                true,
+                "Tensor recurse",
+            ),
+            (
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Tensor {
+                    rank: 3,
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
+                false,
+                "Tensor rank guard",
+            ),
+            (
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Tensor {
+                    rank: 2,
+                    n: 2,
+                    quantity: Box::new(Type::length()),
+                },
+                false,
+                "Tensor n guard",
+            ),
+            (
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
+                true,
+                "Matrix recurse",
+            ),
+            (
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Matrix {
+                    m: 2,
+                    n: 3,
+                    quantity: Box::new(Type::length()),
+                },
+                false,
+                "Matrix m guard",
+            ),
+            (
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(t()),
+                },
+                Type::Matrix {
+                    m: 3,
+                    n: 2,
+                    quantity: Box::new(Type::length()),
+                },
+                false,
+                "Matrix n guard",
+            ),
+            // Union: length guard + arm-by-arm recursion.
+            (
+                Type::Union(vec![t(), Type::Int]),
+                Type::Union(vec![Type::String, Type::Int]),
+                true,
+                "Union recurse",
+            ),
+            (
+                Type::Union(vec![t()]),
+                Type::Union(vec![Type::Int, Type::Int]),
+                false,
+                "Union length guard",
+            ),
+            (
+                Type::Union(vec![Type::Int, Type::Int]),
+                Type::Union(vec![Type::Int, Type::String]),
+                false,
+                "Union arm mismatch",
+            ),
+            // Applied: name + arity guards, element-wise recursion.
+            (
+                result_of(vec![t(), t()]),
+                result_of(vec![Type::length(), Type::String]),
+                true,
+                "Applied recurse",
+            ),
+            (
+                result_of(vec![t(), t()]),
+                Type::Applied {
+                    name: "Either".to_string(),
+                    args: vec![Type::Int, Type::Int],
+                },
+                false,
+                "Applied name guard",
+            ),
+            (
+                result_of(vec![t(), t()]),
+                result_of(vec![Type::Int]),
+                false,
+                "Applied arity guard",
+            ),
+            // Erased-subject rule — the arm the whole #5685 fix turns on.
+            (
+                result_of(vec![t(), t()]),
+                Type::Enum("Result".to_string()),
+                true,
+                "Applied vs erased Enum, same name",
+            ),
+            (
+                result_of(vec![t(), t()]),
+                Type::Enum("Option".to_string()),
+                false,
+                "Applied vs erased Enum, different name",
+            ),
+            (
+                Type::Option(Box::new(t())),
+                result_of(vec![Type::length(), Type::String]),
+                false,
+                "Option param vs Applied Result arg (the mis-resolution)",
+            ),
+            // Projection: member guard + base recursion.
+            (
+                proj(t(), "Out"),
+                proj(Type::Int, "Out"),
+                true,
+                "Projection recurse",
+            ),
+            (
+                proj(t(), "Out"),
+                proj(Type::Int, "In"),
+                false,
+                "Projection member guard",
+            ),
+            // Catch-all leaves.
+            (Type::Int, Type::Int, true, "catch-all equal"),
+            (Type::Int, Type::String, false, "catch-all unequal"),
+            (
+                Type::length(),
+                Type::length(),
+                true,
+                "catch-all equal Scalar",
+            ),
+            (
+                Type::TraitObject("Load".to_string()),
+                Type::StructureRef("PointLoad".to_string()),
+                false,
+                "catch-all TraitObject vs StructureRef",
+            ),
+        ]
+    }
+
+    /// `heads_unifiable` is duplicated verbatim into
+    /// `crates/reify-expr/src/lib.rs`, where it is the middle tie-break tier of
+    /// `find_matching_compiled_function`. reify-compiler is only a dev-dep of
+    /// reify-expr, so the mirror cannot be an import — and a ~120-arm match kept
+    /// in sync by nothing but a doc comment on each side is precisely the
+    /// esc-4231-120/126 / esc-4093-152 divergence class those comments warn
+    /// about.
+    ///
+    /// This is a BEHAVIOURAL differential, not a source-text comparison: it runs
+    /// both implementations over [`heads_unifiable_corpus`] and asserts each
+    /// returns the verdict that corpus row pins. A reformat or a renamed binding
+    /// does not trip it; a changed verdict does. Same shape as the
+    /// `sync_drift_check_*` tests guarding `option_recovery::is_combinator`.
+    ///
+    /// Asserting each side against `expected` — rather than only against the
+    /// other side — is what makes this more than a drift guard: it also pins the
+    /// SEMANTICS, so an edit that changes both copies in lockstep (the usual
+    /// copy-paste sync path) fails here instead of sailing through on mutual
+    /// agreement. See [`heads_unifiable_corpus`] for the worked example.
+    ///
+    /// This test lives on the compiler side because `mod type_compat` is private
+    /// in reify-compiler's `lib.rs`: the canonical copy is unreachable from
+    /// outside the crate, whereas the eval mirror is `pub`. `reify-expr` is
+    /// already a `[dev-dependencies]` entry here — no manifest change.
+    #[test]
+    fn sync_drift_check_heads_unifiable_matches_eval_mirror() {
+        for (param, arg, expected, label) in &heads_unifiable_corpus() {
+            assert_eq!(
+                heads_unifiable(param, arg),
+                *expected,
+                "heads_unifiable SEMANTICS changed on `{label}`: the canonical \
+                 copy in this file no longer returns {expected} for \
+                 param={param:?}, arg={arg:?}. If the rule genuinely changed, \
+                 update this corpus row AND the mirror in \
+                 crates/reify-expr/src/lib.rs — but note that relaxing a guard \
+                 here (e.g. the `dn == en` name guard on the erased-subject arm) \
+                 makes unrelated overloads head-match, which is the #5685 \
+                 Option/Result mis-selection."
+            );
+            assert_eq!(
+                reify_expr::heads_unifiable(param, arg),
+                *expected,
+                "heads_unifiable DRIFT on `{label}`: the mirror in \
+                 crates/reify-expr/src/lib.rs does not return {expected} for \
+                 param={param:?}, arg={arg:?}, which the canonical copy here \
+                 does. Re-sync the two verbatim — a divergence here means \
+                 compile-time and eval-time overload selection resolve the same \
+                 call to different overloads."
+            );
+        }
     }
 }

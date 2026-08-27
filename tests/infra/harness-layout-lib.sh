@@ -32,13 +32,36 @@
 #                                          <base> NOT a harness_*.rs unit and its
 #                                          stem NOT one of the 7 overrides. Pure
 #                                          string predicate (no disk access).
+#   harness_layout_baseline_rows [baseline]
+#                                          print the DATA ROWS of [baseline]
+#                                          (default: harness_layout_baseline_path)
+#                                          one per line — every line that is
+#                                          neither a comment nor blank. THE
+#                                          single definition of "a data row of
+#                                          the baseline"; a missing baseline
+#                                          prints nothing and returns 0 (each
+#                                          caller decides what that means); an
+#                                          UNREADABLE baseline returns grep's
+#                                          error status (>= 2), never a vacuous
+#                                          "zero rows".
 #   harness_layout_baseline_contains <p> [baseline]
-#                                          exit 0 iff <p> is a non-comment,
-#                                          non-blank line of [baseline] (default:
-#                                          harness_layout_baseline_path). Same
+#                                          exit 0 iff <p> is a data row of
+#                                          [baseline] (default:
+#                                          harness_layout_baseline_path), i.e. a
+#                                          non-comment, non-blank line. Same
 #                                          comment/blank stripping as
 #                                          run-all-classification-lib.sh; exact
-#                                          full-line fixed-string match.
+#                                          full-line match. O(1) after the first
+#                                          call for a given baseline (memoized —
+#                                          see the MEMO block below).
+#   harness_layout_baseline_cache_reset [baseline]
+#                                          drop the memoized rows for [baseline]
+#                                          (or for every baseline when called
+#                                          with no argument), so the next
+#                                          rows/contains call re-reads from
+#                                          disk. Only needed by a caller that
+#                                          REWRITES a baseline in place at a
+#                                          path it has already queried.
 #   harness_layout_unit_lines <root-harness-rs>
 #                                          print "<total> <root_lines>
 #                                          <module_lines> <module_files>
@@ -73,22 +96,34 @@ _REIFY_HARNESS_LAYOUT_LIB_SOURCED=1
 
 _HARNESS_LAYOUT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# harness_layout_consolidatable_crates — the 5 crates whose top-level tests/*.rs
-# are subject to the C1 layout contract. reify-solver-elastic / reify-eval-fea-tests
-# are deliberately NOT here (they host only override + permanently-standalone
-# binaries — out of the consolidation contract's scope).
+# _HL_CRATES — THE single definition (G7) of the 5 crates whose top-level
+# tests/*.rs are subject to the C1 layout contract. reify-solver-elastic /
+# reify-eval-fea-tests are deliberately NOT here (they host only override +
+# permanently-standalone binaries — out of the consolidation contract's
+# scope). harness_layout_consolidatable_crates (below) prints it verbatim;
+# the MEMO block further down builds _HL_CRATE_SET from it once at source
+# time.
+declare -ga _HL_CRATES=(reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler)
+
+# _HL_OVERRIDE_STEMS — THE single definition (G7) of the 7 standalone
+# integration binaries that are NEVER consolidated (invariant I1), identified
+# by file stem (basename without the .rs extension).
+# harness_layout_override_stems (below) prints it verbatim; the MEMO block
+# further down builds _HL_OVERRIDE_STEM_SET from it once at source time.
+declare -ga _HL_OVERRIDE_STEMS=(
+    determinism analytical_validation modal_benchmarks
+    buckling_smoke fea_diagnostics_e2e
+    tensegrity_t0a representation_within_assertion
+)
+
+# harness_layout_consolidatable_crates — see _HL_CRATES above.
 harness_layout_consolidatable_crates() {
-    printf '%s\n' reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler
+    printf '%s\n' "${_HL_CRATES[@]}"
 }
 
-# harness_layout_override_stems — the 7 standalone integration binaries that are
-# NEVER consolidated (invariant I1), identified by file stem (basename without
-# the .rs extension).
+# harness_layout_override_stems — see _HL_OVERRIDE_STEMS above.
 harness_layout_override_stems() {
-    printf '%s\n' \
-        determinism analytical_validation modal_benchmarks \
-        buckling_smoke fea_diagnostics_e2e \
-        tensegrity_t0a representation_within_assertion
+    printf '%s\n' "${_HL_OVERRIDE_STEMS[@]}"
 }
 
 # harness_layout_baseline_path — the grandfather-baseline manifest path. Honors
@@ -97,6 +132,36 @@ harness_layout_override_stems() {
 harness_layout_baseline_path() {
     printf '%s\n' "${REIFY_HARNESS_LAYOUT_BASELINE:-$_HARNESS_LAYOUT_LIB_DIR/harness-layout-baseline.manifest}"
 }
+
+# MEMO for the two static data lists, consumed by
+# harness_layout_in_scope_standalone below as O(1) associative-array lookups.
+#
+# WHY: harness_layout_in_scope_standalone is the membership predicate
+# test_harness_kloc_cap.sh's whole-tree scan calls once per candidate file —
+# ~495 times against the live tree. Before this MEMO, each call forked a
+# process substitution to walk the crate list, plus a SECOND for the override
+# list on every path that reached the stem check (i.e. every candidate whose
+# crate already matched and whose file was not harness_*.rs) — pure fork
+# overhead over five and seven static strings. Measured in isolation: ~4s of
+# that overhead across 495 calls.
+#
+# Built directly from _HL_CRATES / _HL_OVERRIDE_STEMS above by a plain `for`
+# loop AT SOURCE TIME — no subshell, no fork, no read loop — and
+# unconditionally rather than lazily flag-guarded: populating two 5- and
+# 7-entry sets costs nothing measurable, so there is no first-call branch to
+# maintain. Nothing in this tree mutates either array mid-shell, so no
+# cache_reset escape hatch is provided (unlike
+# harness_layout_baseline_cache_reset below, which exists because a caller
+# CAN rewrite a baseline file in place).
+declare -gA _HL_CRATE_SET=()          # crate name         -> 1
+declare -gA _HL_OVERRIDE_STEM_SET=()  # override file stem -> 1
+for _hl_static_v in "${_HL_CRATES[@]}"; do
+    _HL_CRATE_SET["$_hl_static_v"]=1
+done
+for _hl_static_v in "${_HL_OVERRIDE_STEMS[@]}"; do
+    _HL_OVERRIDE_STEM_SET["$_hl_static_v"]=1
+done
+unset _hl_static_v
 
 # harness_layout_in_scope_standalone <repo-rel-path> — exit 0 iff <repo-rel-path>
 # is an in-scope re-accretion candidate: a TOP-LEVEL crates/<crate>/tests/<base>.rs
@@ -107,6 +172,9 @@ harness_layout_baseline_path() {
 # check on top separately). The explicit component parse (not just the case
 # glob) rejects nested / multi-segment forms: a bash `case` glob's `*` matches
 # `/`, so `crates/*/tests/*.rs` would otherwise accept crates/c/tests/sub/f.rs.
+# The crate/override membership checks below answer from the MEMO above —
+# populated once when this file is sourced (an O(1) associative-array
+# lookup) — rather than looping the two source functions on every call.
 harness_layout_in_scope_standalone() {
     local path="$1"
     case "$path" in
@@ -126,11 +194,7 @@ harness_layout_in_scope_standalone() {
     local base="${tail#tests/}"      # <base>.rs
 
     # <crate> must be one of the 5 consolidatable crates.
-    local _c _crate_ok=0
-    while IFS= read -r _c; do
-        if [ "$_c" = "$crate" ]; then _crate_ok=1; break; fi
-    done < <(harness_layout_consolidatable_crates)
-    [ "$_crate_ok" -eq 1 ] || return 1
+    [ -n "${_HL_CRATE_SET["$crate"]:-}" ] || return 1
 
     # A harness_*.rs compile unit is sanctioned by construction.
     case "$base" in
@@ -138,34 +202,156 @@ harness_layout_in_scope_standalone() {
     esac
 
     # An override binary (by stem) is permanently standalone (I1).
-    local _ov _stem="${base%.rs}"
-    while IFS= read -r _ov; do
-        if [ "$_ov" = "$_stem" ]; then return 1; fi
-    done < <(harness_layout_override_stems)
+    local _stem="${base%.rs}"
+    [ -z "${_HL_OVERRIDE_STEM_SET["$_stem"]:-}" ] || return 1
 
     return 0
 }
 
+# MEMO for the baseline data rows, keyed by baseline PATH. The two accessors
+# below answer from these rather than re-reading and re-filtering the file, and
+# harness_layout_baseline_contains becomes an O(1) associative-array lookup.
+#
+# WHY: the callers ask the membership question once per candidate file — ~495
+# times per run against the ~495-row live baseline — so the un-memoized shape
+# was O(files x rows) plus two grep forks on every single call. Measured on that
+# live loop in isolation: ~19-22s wall / ~5.2s CPU un-memoized, ~0.2-0.7s wall /
+# ~0.1s CPU memoized. Over the whole kLOC guard, A/B'd back-to-back on one box:
+# 18.8s/19.5s wall and 11.3s/12.1s CPU before, 11.2s/12.9s wall and 6.3s/6.6s
+# CPU after — in a guard whose parent PRD (docs/prds/merge-gate-compile-cost.md)
+# exists to CUT merge-gate cost.
+#
+# CACHE CONTRACT: keyed by PATH ONLY, and lives for the shell's lifetime. A
+# caller that REWRITES a baseline in place at a path it has already queried
+# therefore sees the stale rows until it calls
+# harness_layout_baseline_cache_reset. That is deliberate — any content-keyed
+# alternative needs a stat/read fork per call, which is precisely the cost being
+# removed — and safe for every caller today: each fixture baseline gets its own
+# fresh `mktemp` path and is written once before use, and the two gates each run
+# one baseline per process. test_harness_kloc_cap.sh Section 8 pins both halves
+# of that contract (memo is real; reset re-reads).
+declare -gA _HL_ROWS_LOADED=()   # baseline path         -> 1 once parsed
+declare -gA _HL_ROWS_DATA=()     # baseline path         -> rows, newline-joined
+declare -gA _HL_ROWS_MEMBER=()   # "<baseline>\x1f<row>" -> 1
+
+# _harness_layout_baseline_load <baseline-file> — populate the memo for
+# <baseline-file> unless it is already loaded. Returns grep's status on a read
+# error (>= 2) WITHOUT marking the baseline loaded, so a failure is never cached
+# as "this baseline has no rows".
+#
+# The comment/blank stripping is ONE `grep -v` with two anchored alternatives
+# rather than two piped `grep -v`s. Identical semantics — a line is dropped iff
+# it matches either branch; verified over the live manifest and over an
+# indented-comment / whitespace-only / trailing-space fixture — but it halves
+# the forks and, more importantly, yields a SINGLE exit status, so grep's error
+# exit 2 can be told apart from its no-lines-matched exit 1 without reaching for
+# PIPESTATUS (which the `$(…)` assignment would have hidden anyway).
+_harness_layout_baseline_load() {
+    local baseline="$1"
+    [ -z "${_HL_ROWS_LOADED["$baseline"]:-}" ] || return 0
+
+    local raw rc=0 row
+    raw="$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' -- "$baseline")" || rc=$?
+    [ "$rc" -le 1 ] || return "$rc"
+
+    _HL_ROWS_DATA["$baseline"]="$raw"
+    if [ -n "$raw" ]; then
+        while IFS= read -r row; do
+            [ -n "$row" ] || continue
+            _HL_ROWS_MEMBER["$baseline"$'\x1f'"$row"]=1
+        done <<< "$raw"
+    fi
+    _HL_ROWS_LOADED["$baseline"]=1
+    return 0
+}
+
+# harness_layout_baseline_rows [baseline-file] — print the DATA ROWS of
+# [baseline-file] (default: harness_layout_baseline_path), one per line: every
+# line that is neither a comment (`#`, optionally indented) nor blank. Same
+# comment/blank stripping style as run-all-classification-lib.sh.
+#
+# THE SINGLE DEFINITION of "a data row of the baseline" (G7), spelled out in
+# _harness_layout_baseline_load above and consumed by every reader through this
+# accessor or the membership predicate below. The rule used to be written out
+# three times — inside harness_layout_baseline_contains, inline in
+# test_harness_kloc_cap.sh's Section 5 guard-integrity check, and (would have
+# been) inside its orphan-row detector. A divergence between any two of those
+# would mean the membership predicate and the row enumerator disagree about
+# which lines of this file are rows, which is exactly the class of silent drift
+# this lib exists to prevent — and the memo makes that structural: both now read
+# the SAME parsed result, not merely the same rule.
+#
+# A MISSING baseline prints nothing and returns 0 — deliberately NOT an error
+# here, because the two callers want different things from it:
+# harness_layout_baseline_contains keeps its own `[ -f ]` guard and returns 1
+# ("not a member"), while the orphan-row detector reports an explicit
+# `reason=missing-baseline` FAIL. Deciding for them here would force one of the
+# two to unpick the decision.
+#
+# An UNREADABLE baseline (grep exit >= 2) propagates that status. It must NOT
+# collapse into the same answer as "no data rows": a blanket `|| true` used to
+# swallow grep's permission-denied exit 2 alongside its no-lines-matched exit 1,
+# so the orphan-row detector reported a clean `rows=0` PASS on a baseline it
+# could not read at all — exactly the vacuous pass its own missing-baseline
+# branch exists to forbid. Exit 1 IS still swallowed (returned as 0 with no
+# output): an all-comment / empty baseline is a legitimate state of a ratchet
+# that shrinks toward empty, not an error, and a caller running under `set -e`
+# must not abort on it.
+harness_layout_baseline_rows() {
+    local baseline="${1:-$(harness_layout_baseline_path)}"
+    [ -f "$baseline" ] || return 0
+    _harness_layout_baseline_load "$baseline" || return $?
+    local data="${_HL_ROWS_DATA["$baseline"]:-}"
+    # `printf '%s\n' ""` would emit one blank line, i.e. manufacture a phantom
+    # row out of an empty baseline. No rows => no output.
+    [ -n "$data" ] || return 0
+    printf '%s\n' "$data"
+}
+
 # harness_layout_baseline_contains <repo-rel-path> [baseline-file] — exit 0 iff
-# <repo-rel-path> is a non-comment, non-blank line of [baseline-file] (default:
-# harness_layout_baseline_path). Same comment/blank stripping style as
-# run-all-classification-lib.sh; exact full-line fixed-string match.
+# <repo-rel-path> is a data row of [baseline-file] (default:
+# harness_layout_baseline_path), i.e. a non-comment, non-blank line. Exact
+# full-line match.
 #
 # A missing baseline is NOT a member (return 1) — the same "unknown => flag it"
-# posture the callers rely on (a non-member added file is a violation).
+# posture the callers rely on (a non-member added file is a violation). An
+# UNREADABLE baseline is likewise not a member, which is fail-CLOSED: every
+# candidate is flagged, loudly, rather than silently grandfathered.
+#
+# Answered from the memo (see above) as a single associative-array lookup — no
+# subshell, no fork, no re-read. That also retires the esc-5172-1 SIGPIPE hazard
+# this predicate used to carry by construction rather than by comment: there is
+# no pipeline left to early-close, so no upstream stage can be killed to 141
+# under the callers' `set -o pipefail` and report "not a member" for every
+# grandfathered file.
 harness_layout_baseline_contains() {
     local path="$1"
     local baseline="${2:-$(harness_layout_baseline_path)}"
     [ -f "$baseline" ] || return 1
-    # Exact full-line match against non-comment/non-blank lines. NOTE: no
-    # `grep -q` on the final stage — under `set -o pipefail` (which the callers
-    # set) a `-q` early-close SIGPIPEs the upstream `grep -v` (exit 141), making
-    # the pipeline report FAILURE despite a match and flagging every
-    # grandfathered file (the esc-5172-1 SIGPIPE hazard). Reading the whole
-    # stream to /dev/null preserves grep's own 0/1 match exit with no early close.
-    grep -vE '^[[:space:]]*#' "$baseline" \
-        | grep -vE '^[[:space:]]*$' \
-        | grep -xF -- "$path" >/dev/null
+    _harness_layout_baseline_load "$baseline" || return 1
+    [ -n "${_HL_ROWS_MEMBER["$baseline"$'\x1f'"$path"]:-}" ]
+}
+
+# harness_layout_baseline_cache_reset [baseline-file] — drop the memoized rows
+# for [baseline-file], or for EVERY baseline when called with no argument, so
+# the next rows/contains call re-reads from disk. Only a caller that rewrites a
+# baseline in place at an already-queried path needs this (see the MEMO block).
+harness_layout_baseline_cache_reset() {
+    local baseline="${1:-}"
+    if [ -z "$baseline" ]; then
+        _HL_ROWS_LOADED=()
+        _HL_ROWS_DATA=()
+        _HL_ROWS_MEMBER=()
+        return 0
+    fi
+    unset '_HL_ROWS_LOADED["$baseline"]' '_HL_ROWS_DATA["$baseline"]'
+    local k
+    for k in "${!_HL_ROWS_MEMBER[@]}"; do
+        case "$k" in
+            "$baseline"$'\x1f'*) unset '_HL_ROWS_MEMBER["$k"]' ;;
+        esac
+    done
+    return 0
 }
 
 # _harness_layout_norm_path <path> — set the global `_HL_NORM_OUT` to <path>
@@ -209,6 +395,52 @@ _harness_layout_norm_path() {
         esac
     done
     _HL_NORM_OUT="$leading$out"
+}
+
+# _harness_layout_row_crate <repo-rel-path> — set the global `_HL_ROW_CRATE` to
+# the `<c>` of a `crates/<c>/…`-rooted <repo-rel-path>, for the `crate=<c>`
+# field of a structured verdict line.
+#
+# EVERY other shape yields the `-` sentinel — the same "not crate-scoped" value
+# the harness guards already emit for a row they cannot attribute to a crate.
+# The sentinel is written FIRST, before any branch, so no caller can read the
+# global unset under `set -u`.
+#
+# The guard is the TWO-segment `crates/*/*`, not merely `crates/*`, and that is
+# the whole point of routing this through one definition: a bare `crates/<seg>`
+# has no crate-plus-remainder shape, and a naive `${p#crates/}` strip would
+# report `<seg>` as a phantom crate on a row that names no file within one.
+# Likewise a path not rooted at `crates/` yields `-` rather than its own first
+# segment. Guards that disagree here emit contradictory `crate=` attributions
+# for the same path.
+#
+# `crates/*/*` alone does NOT establish that shape, which is why the derived
+# value is re-checked before it is assigned: bash lets each `*` match the EMPTY
+# string, so a doubled-slash row (`crates//foo.rs`) matches the pattern with an
+# empty first segment and a bare `${rest%%/*}` would emit `crate=` — an empty
+# value in a field this grammar documents as `crate=<c>`. That shape is
+# reachable: the kLOC-cap guard's malformed-row detector feeds hand-written
+# manifest rows through here, and a typo'd row must degrade to the sentinel
+# every other unattributable row already uses, not to a blank.
+#
+# RETURNS VIA A GLOBAL, NOT stdout, for consistency with
+# _harness_layout_norm_path above — explicitly NOT a measured hot-path
+# optimization, unlike that helper's fork-avoidance rationale: every caller
+# reaches this only AFTER a path has already been classified a violation, so on
+# a clean tree it runs zero times. Callers read `$_HL_ROW_CRATE` immediately
+# after the call.
+_harness_layout_row_crate() {
+    local row="$1" rest
+    _HL_ROW_CRATE="-"
+    case "$row" in
+        crates/*/*)
+            rest="${row#crates/}"
+            case "${rest%%/*}" in
+                '') ;;                       # `crates//…`: keep the sentinel
+                *) _HL_ROW_CRATE="${rest%%/*}" ;;
+            esac
+            ;;
+    esac
 }
 
 # _harness_layout_mod_decls <file>... — print `<file>|<kind>|<lineno>|<value>`
@@ -365,10 +597,11 @@ _harness_layout_mod_decls() {
 # `find ... -print0` feeds a `while IFS= read -r -d ''` loop via process
 # substitution (not a pipe) that drains the stream to completion — never an
 # early-closing consumer, which under the callers' `set -o pipefail` would
-# reproduce the esc-5172-1 SIGPIPE-141 hazard (harness_layout_baseline_contains
-# above, and test_harness_kloc_cap.sh's Section-1 fixture generator, hit the
-# same class of hazard). `-print0` + `read -r -d ''` keeps the walk correct
-# for any path a plain glob would mangle.
+# reproduce the esc-5172-1 SIGPIPE-141 hazard (test_harness_kloc_cap.sh's
+# Section-1 fixture generator and its orphan-row detector hit the same class;
+# harness_layout_baseline_contains above used to, and now sidesteps it by
+# construction — its memo left it with no pipeline at all). `-print0` +
+# `read -r -d ''` keeps the walk correct for any path a plain glob would mangle.
 harness_layout_unit_lines() {
     local root="$1"
     local root_lines=0 module_lines=0 module_files=0 n f
@@ -416,7 +649,8 @@ harness_layout_unit_lines() {
         # Process substitution (not a pipe) feeding a loop that DRAINS to
         # completion — never an early-closing consumer, which under the
         # callers' `set -o pipefail` would reproduce the esc-5172-1 SIGPIPE-141
-        # hazard (harness_layout_baseline_contains above hits the same class).
+        # hazard (test_harness_kloc_cap.sh's orphan-row detector, which consumes
+        # harness_layout_baseline_rows above, hits the same class).
         # `_ln` (the decl's line number) is unused by the measure — it exists
         # for the C1 mandate detector, which reports it to the developer.
         # Reading the VALUE last is required, not stylistic: `read` gives the

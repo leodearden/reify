@@ -900,7 +900,9 @@ Infrastructure-level diagnostics (tolerance warnings from the geometry engine, s
 
 ### 9.1 Computation Failures as Graph-Level Events
 
-Per design review resolution 4.1: for v0.1, computation failures are evaluation-graph-level events, **NOT** language-level values. There is **no `Result<T, E>` type, no `try`/`catch`, no language-level error propagation.**
+Per design review resolution 4.1: computation failures are evaluation-graph-level events, **NOT** language-level values. This graph-vs-language orthogonality (D1) is load-bearing and still holds — a graph-`Failed` node is uncatchable from `.ri`, is never implicitly reified as a language `none`/`Err`, and a determined `none`/`Err` never marks a node `Failed`. Crossing the two layers is opt-in only and not provided by default. (Pinned by `crates/reify-eval/tests/result_fallback_orthogonality_boundary.rs`.)
+
+**Language-level error handling now exists alongside it (v0.6), orthogonal to this mechanism.** Layer A landed: `Option` recovery via `unwrap_or` / `or_else` / `or_default` / `map_or` / `is_some` / `is_none` / `get_or` (`fallback` is an alias of `unwrap_or`). Layer B landed: `Result<T, E>` as a generic data-carrying prelude enum (`Ok { value: T }` / `Err { error: E }`) with match-on-`Result` payload binding and the Result-specialized recovery combinators. Both operate on *language* values an author constructs and branches on — a may-fail parse or a missing-key lookup recovered via `get_or` — never on graph-`Failed`. **`try`/`catch` and the postfix `?`-propagation operator (fork F-Question) remain deferred.** See spec §9.6 and §18 item 4, and docs/prds/v0_6/result-and-fallback.md.
 
 When a computation fails:
 1. The node's result is marked `Failed` (4th variant in the `Freshness` enum).
@@ -1593,10 +1595,10 @@ Four-level priority ordering for constraint system implementation (applies broad
 | 1 | Default robustness objective | v0.1.1 | Mechanism depends on constraint solver internals |
 | 2 | Rich structural query/traversal (`children`, `members` pseudo-collection) | v0.2 | |
 | 3 | Geometry selector strengthening | v0.2 | |
-| 4 | `Result<T>` or `fallback` expressions | v0.2 | |
+| 4 | `Result<T>` or `fallback` expressions | Realized (v0.6) | Layer A — `Option` recovery combinators (`unwrap_or`/`or_else`/`or_default`/`map_or`/`is_some`/`is_none`/`get_or`, plus the `fallback` alias of `unwrap_or`) shipped in v0.6, orthogonal to graph-`Failed` (§9.1 D1). Layer B — `Result<T,E>` error-handling shipped in v0.6 as a generic data-carrying prelude enum (`enum Result<T, E> { Ok { value: T }, Err { error: E } }`) with `Ok`/`Err` construction, match-on-`Result` payload binding, and the Result-specialized recovery combinators `unwrap_or`/`or_else`/`fallback`/`is_ok`/`is_err`/`map_err`/`ok_or` (the `Option`→`Result` bridge). `try`/`catch` and the postfix `?`-propagation operator (fork F-Question) remain deferred. See docs/prds/v0_6/result-and-fallback.md, docs/prds/v0_6/data-carrying-enums.md, and docs/prds/v0_6/generic-data-carrying-enums.md; runnable example `examples/m6_result_recovery.ri`. |
 | 5 | Associated `fn` in traits | v0.2+ | |
-| 6 | Data-carrying enums | v0.2+ | v0.1 enums are C-style (no associated data) |
-| 7 | Tolerance stack-up analysis (RSS, worst-case, Monte Carlo) | v0.2 | Requires assembly graph + statistical computation |
+| 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
+| 7 | Tolerance stack-up analysis (RSS, worst-case, Monte Carlo) | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
 | 8 | Field-valued material properties | v0.2 | |
 | 9 | Warm-start tier 2 (closest parameter set per node) | Future | Protocol supports without modification |
 | 10 | Warm-start tier 3 (type-level cache across instances) | Future | Protocol supports without modification |

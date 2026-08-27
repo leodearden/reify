@@ -191,12 +191,25 @@ rm -f "$_ERR12" "$_OUT12F"
 echo ""
 echo "--- Test 13: default (WAIT unset) is also fail-fast (does not block) ---"
 
+# Test 12's 45s holder is still alive (reaped below), and the default WAIT is
+# finite/fail-fast (lib_lane_x_flock.sh defaults REIFY_LANE_X_FLOCK_WAIT=0), so
+# this reaches slot_acquire's rc=75 deadline -- and its column-0
+# @@REIFY_SLOT_TIMEOUT@@ sentinel -- on EVERY green run. Capture stderr rather
+# than letting it reach the console: under run_all.sh this file's output is
+# re-emitted into the merge-gate verify log, where dark-factory's
+# presence-anchored classifier would read that sentinel as SEMAPHORE_TIMEOUT for
+# the WHOLE verify (task 6024 Section D pins this; Test 12 above already follows
+# the same in-file precedent with $_ERR12). Nothing asserts on the captured
+# bytes -- the redirect IS the fix.
+_ERR13="$(mktemp)"
 _EXIT13=0
 REIFY_LANE_X_FLOCK_LOCK="$_LOCK12" \
-    timeout 5 "$LIB" true || _EXIT13=$?
+    timeout 5 "$LIB" true 2>"$_ERR13" || _EXIT13=$?
 
 assert "Test 13: default WAIT is fail-fast, exits 75 under timeout 5 (got $_EXIT13)" \
     test "$_EXIT13" -eq 75
+
+rm -f "$_ERR13"
 
 kill "$_HOLDER12" 2>/dev/null || true
 wait "$_HOLDER12" 2>/dev/null || true
@@ -252,9 +265,12 @@ _LOCK15="$(mktemp)"
 _HOLDER15=$!
 sleep 0.2
 
+# Same deadline-sentinel capture as Test 13: an explicit finite WAIT=1 against
+# the 45s holder reaches slot_acquire's rc=75 emit site on every green run.
+_ERR15="$(mktemp)"
 _EXIT15=0
 REIFY_LANE_X_FLOCK_LOCK="$_LOCK15" REIFY_LANE_X_FLOCK_WAIT=1 \
-    timeout 30 "$LIB" true || _EXIT15=$?
+    timeout 30 "$LIB" true 2>"$_ERR15" || _EXIT15=$?
 
 kill "$_HOLDER15" 2>/dev/null || true
 wait "$_HOLDER15" 2>/dev/null || true
@@ -262,6 +278,8 @@ rm -f "$_LOCK15" "${_LOCK15}.slot-1"
 
 assert "Test 15: finite WAIT=1 with held slot exits 75 (EX_TEMPFAIL; got $_EXIT15)" \
     test "$_EXIT15" -eq 75
+
+rm -f "$_ERR15"
 
 echo ""
 echo "--- Test 16: REIFY_LANE_X_FLOCK_WAIT=abc exits 64 with a validation diagnostic (non-integer) ---"

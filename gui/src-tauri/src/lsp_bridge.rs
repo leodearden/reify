@@ -78,6 +78,145 @@ pub async fn lsp_request_impl(
     serde_json::to_string(&result).map_err(|e| format!("serialize error: {e}"))
 }
 
+/// [`lsp_request_impl`], dispatched on the persistent LARGE-STACK LSP lane
+/// instead of on the awaiting tokio worker (task 5772).
+///
+/// `lsp_request` fires on effectively every keystroke and cursor move, and the
+/// work it reaches is compiler-adjacent: `reify-syntax`'s CST-to-AST walk (which
+/// has neither a `stacker` guard nor a depth cap) and `reify-compiler`'s
+/// recursive compile. A tokio worker gives that the default ~2 MiB stack; the
+/// lane gives it [`crate::large_stack::COMPILE_STACK_SIZE`] (256 MiB), amortised
+/// over one thread for the process lifetime rather than a fresh 256 MiB mapping
+/// per keystroke.
+///
+/// # What this hands the lane, and what the lane does with it
+///
+/// A FUTURE, not a closure. The lane thread has no ambient runtime, so the
+/// future does need a driver — [`tokio::runtime::Handle::block_on`], because
+/// four of `InProcessLsp::handle_request`'s arms call
+/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`
+/// — but choosing that driver is [`crate::large_stack::dispatch_async`]'s job,
+/// not this function's. Pre-baking the `block_on` here would break the lane's
+/// degraded arms, which run in the submitting async frame where `block_on`
+/// panics "Cannot start a runtime from within a runtime"; see
+/// [`crate::large_stack::dispatch_async`]'s degradation policy.
+///
+/// # What this does NOT cover
+///
+/// Those same four arms hop to `spawn_blocking`, so their compiler work executes
+/// on tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
+/// under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request` on
+/// a 256 MiB thread gives the big stack only to that thread's OWN frames, so
+/// those four are unaffected by this routing. The arms it does cover are the
+/// other ten — `initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
+/// `completion`, `hover`, `documentSymbol`, `documentHighlight`, `shutdown` —
+/// which are precisely the keystroke/cursor-frequency ones. Closing the four
+/// needs a change in `crates/reify-lsp/src/server.rs`, which would also regress
+/// the stdio `reify lsp` CLI server (it relies on `spawn_blocking` to keep its
+/// 2-worker runtime responsive); tracked as task #6195 rather than overclaimed
+/// here.
+///
+/// # What this COSTS: the request is no longer DROP-CANCELLABLE
+///
+/// Stated alongside the coverage limit above because it is a behaviour change
+/// this routing INTRODUCES, not merely one it fails to fix.
+///
+/// Before task 5772 the body ran inside the Tauri command's own future, so a
+/// frontend `invoke` that was abandoned — window closed, pane navigated away,
+/// a keystroke's request superseded by the next one — dropped that future and
+/// the LSP work stopped at its next `.await` point. Now the future is MOVED
+/// into a lane job and driven by [`tokio::runtime::Handle::block_on`] on a
+/// thread that has no cancellation point at all. Dropping the awaiting side
+/// only drops the `oneshot` receiver; `reply_tx.send` then fails silently
+/// (`let _ = ...`) while the work runs to completion regardless.
+///
+/// That compounds with the single-consumer serialization documented on
+/// [`crate::large_stack::Lane`]: an abandoned request still occupies the lane
+/// for its full duration, so it delays the LIVE requests queued behind it.
+/// Bounding it means threading a cancellation token into the job and checking
+/// it at the lane before driving the future, so an abandoned request is dropped
+/// from the queue instead of executed — same lane, same shape, but a different
+/// job contract than this task specified. Tracked with the serialization it
+/// compounds, on task #6517.
+///
+/// Not a correctness bug in either direction: the work is idempotent
+/// request-handling against the bridge's own state, and every arm still
+/// RESOLVES. It is a wasted-work and latency cost, and the honest statement of
+/// it is this paragraph rather than silence.
+///
+/// # Why this composition lives here, not inline in `main.rs`
+///
+/// `main.rs` is the `--features gui` bin and has no test module, so a wrapper
+/// written there would be untestable. Keeping it in the lib is what lets
+/// `lsp_bridge_tests.rs` prove result parity against a direct
+/// [`lsp_request_impl`] call.
+pub async fn lsp_request_on_worker(
+    bridge: Arc<LspBridge>,
+    method: String,
+    params: String,
+) -> Result<String, String> {
+    crate::large_stack::run_on_lsp_worker(lsp_request_future(bridge, method, params)).await
+}
+
+/// The ONE future both LSP entry points submit: `lsp_request_impl`, owned and
+/// `'static` so a lane can take it.
+///
+/// Factored out so [`lsp_request_on_worker`] (production) and
+/// `lsp_request_on_lane` (the lane-parameterised test seam) submit the SAME
+/// body rather than two independently-written `async move` blocks. Two spellings
+/// of the composition is precisely the divergence hazard the seam exists to
+/// avoid: the tested one could keep resolving while the production one acquired
+/// a defect. With one body, the only thing the seam varies is which lane the
+/// work travels — which is the variable the tests actually mean to control.
+/// Every argument is OWNED, so the returned future is `Send + 'static` — the
+/// bound a lane requires — without spelling either out (clippy rejects the
+/// explicit `-> impl Future` form here as `manual_async_fn`).
+async fn lsp_request_future(
+    bridge: Arc<LspBridge>,
+    method: String,
+    params: String,
+) -> Result<String, String> {
+    lsp_request_impl(&bridge, &method, params).await
+}
+
+/// [`lsp_request_on_worker`] with its "is there a lane?" question turned into a
+/// PARAMETER — the one body both the lane path and the degraded path run.
+///
+/// The lane a request travels is a parameter for the same reason
+/// [`crate::large_stack::dispatch_async`]'s is: it makes the DEGRADED arm
+/// reachable from a test. Provoking a real `pthread_create` failure from a unit
+/// test is not possible, so passing `None` here tests the seam instead of the
+/// OS — and it tests it through the REAL composition. A test that rebuilt the
+/// `dispatch_async(None, async { lsp_request_impl(..) })` composition itself
+/// would only prove that its own copy resolves; the production body could
+/// diverge and stay green. That is exactly how the earlier generic guard went
+/// vacuous: its closure contained no `block_on`, so it could not see that the
+/// real one panicked.
+///
+/// # Relationship to [`lsp_request_on_worker`]
+///
+/// `lsp_request_on_lane(LSP_LANE.sender(), ..)` IS `lsp_request_on_worker`, by
+/// construction rather than by resemblance: both submit
+/// [`lsp_request_future`]'s single body, and
+/// [`crate::large_stack::run_on_lsp_worker`] — which production goes through —
+/// is defined as `dispatch_async(LSP_LANE.sender(), fut)`. So a lane-path test
+/// written against this seam exercises the production path, and the only
+/// difference either side can develop is the lane argument itself.
+///
+/// `#[cfg(test)] pub(crate)` — production reaches the lane through
+/// [`lsp_request_on_worker`], so this seam exists only to vary the lane
+/// argument from a test. Gating it to test builds keeps that honest and adds no
+/// public API surface; `main.rs` is unaffected.
+#[cfg(test)]
+pub(crate) async fn lsp_request_on_lane(
+    sender: Option<&crate::large_stack::JobSender>,
+    bridge: Arc<LspBridge>,
+    method: String,
+    params: String,
+) -> Result<String, String> {
+    crate::large_stack::dispatch_async(sender, lsp_request_future(bridge, method, params)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -36,25 +36,28 @@
 // to constitutive use avoids a future stdlib collision. Cheap to rename now
 // while there are zero downstream consumers.
 //
-// Axis-type convention: axes are stored as `Vector3<Length>` (mirroring
-// `fdm.ri`'s `build_direction`) because `Vector3<T>` requires a *dimension*
-// parameter and the grammar has no dimensionless 3-tuple. The producer's
-// `rotate_voigt` (task α) normalises each axis to unit magnitude before
-// building the 6×6 Voigt transform, so the chosen unit on the Length cells
-// is observationally irrelevant (e.g. `vec3(1mm, 0mm, 0mm)` and
-// `vec3(2m, 0m, 0m)` produce the same `D_global`). Document literals as
-// canonical magnitudes (1mm or 1m) for readability.
+// Axis-type convention (task 5848): the quantity slots are NOT uniform.
+// `origin` is a POSITION, so `Point3<Length>`; the three axes are DIRECTIONS,
+// so dimensionless. The axes were formerly `Vector3<Length>` on the premise
+// that "`Vector3<T>` requires a dimension parameter and the grammar has no
+// dimensionless 3-tuple" — expired: see `Vector3<Dimensionless>` at
+// modal_analysis.ri `ModalOptions.reference_direction`. The ruling itself
+// lives on the `Vec3<Q>` alias in trajectory.ri.
 //
-// Orthonormality is a debug-side invariant the producer enforces; the
-// stdlib surface does not constrain the vectors because doing so requires
-// a cross-product / dot-product expression layer the grammar does not yet
-// admit as a `constraint`. The producer's `rotate_voigt` debug-asserts
-// the basis is orthonormal within tolerance.
+// The frame MUST be supplied ORTHONORMAL, and that is an UNENFORCED
+// precondition — nothing normalises it. `rotate_voigt`
+// (reify-solver-elastic/src/constitutive.rs) consumes the rows raw as
+// direction cosines, and `D_global` is homogeneous of DEGREE 4 in them, so a
+// frame scaled by k scales the stiffness by k⁴. The stdlib surface cannot
+// constrain this either: a cross-product / dot-product `constraint` is not
+// yet admitted by the grammar. It is pinned executably instead, by the
+// non-normalisation fence on `anisotropic_material_from_value`
+// (crates/reify-eval/src/compute_targets/elastic_static.rs tests).
 structure def MaterialFrame {
     param origin : Point3<Length>
-    param x_axis : Vector3<Length>
-    param y_axis : Vector3<Length>
-    param z_axis : Vector3<Length>
+    param x_axis : Vector3<Dimensionless>
+    param y_axis : Vector3<Dimensionless>
+    param z_axis : Vector3<Dimensionless>
 }
 
 // ── ConstitutiveLaw (declared in materials_fea.ri) ───────────────────────────

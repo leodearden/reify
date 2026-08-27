@@ -1142,11 +1142,13 @@ pub mod ffi {
         /// COMPSOLID of the separate solids.
         fn fuse_all(shapes: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
 
-        /// Zero the process-global boolean-op-pass counter (task 5213).
+        /// Zero the calling thread's boolean-op-pass count (task 5213); the
+        /// counter is per-thread, so other threads' counts are untouched.
         fn reset_boolean_pass_count();
 
-        /// Read the process-global count of completed OCCT boolean passes —
-        /// one per boolean_fuse/cut/common Build() and one per fuse_shape_list.
+        /// Read the calling thread's count of completed OCCT boolean passes —
+        /// one per boolean_fuse/cut/common Build() and one per fuse_shape_list,
+        /// counting only the passes this thread performed itself.
         fn boolean_pass_count() -> u64;
 
         /// Return the canonical name of `shape`'s top-level TopAbs shape type

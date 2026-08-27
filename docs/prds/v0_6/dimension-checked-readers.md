@@ -381,9 +381,15 @@ compute-target work stays inside the existing `@optimized` ComputeNode trampolin
    verbatim + `pub use`; `validate_dimensioned_scalar` becomes an adapter, not a rival.
 9. **`analysis.ri`'s `yield_strength : Real` retypes to `Pressure`.** `trait Analysis` and
    `trait AnalysisResult` have **zero conformers** repo-wide, so the migration cost is zero and
-   the `// (Pa, using Real)` comment at `analysis.ri:44` stops lying. `AnalysisResult`'s six
+   the `// (Pa, using Real)` comment at `analysis.ri:44` stops lying. ~~`AnalysisResult`'s six
    `Real` params stay — their doc-comment explicitly declares them a dimension-agnostic
-   structural contract, which is a stated intent, not a silent placeholder.
+   structural contract, which is a stated intent, not a silent placeholder.~~ **SUPERSEDED
+   2026-08-10 (Leo, ruling task 6165):** the five stress params retype to `Stress` too
+   (`safety_factor_value` stays `Real`, genuinely dimensionless). The stated-intent defence was
+   scoped to this PRD's reader seam; as a *signature* posture it rides an erasing conformance
+   check and dies under strict dimension equality (D11 direction) once `Real` ≡
+   `Scalar{DIMENSIONLESS}`. Cross-domain reuse, if ever wanted, goes via per-domain or
+   quantity-parameterized traits (posture-3 breadcrumb in 6165), never by re-weakening to Real.
 10. **The guard's universe is derived, never hand-listed.** Second-universe names come from a
     token scan of `reify-stdlib`'s `eval_builtin` sub-dispatcher match-arm string literals,
     unioned with the LSP's independently-maintained `BUILTIN_FUNCTIONS`
@@ -580,8 +586,10 @@ waiver. No G7 waivers are required.
 - **Wiring `TractionLoad`/`BodyForce` into the solver** — needs the `Vector3<Pressure>` /
   `Vector3<ForceDensity>` surface plus a direction convention; rejected loudly here, filed as a
   follow-up (decision 6).
-- **`AnalysisResult`'s six `Real` params** — a declared dimension-agnostic structural contract
-  (`analysis.ri:23-28`), not a silent placeholder.
+- ~~**`AnalysisResult`'s six `Real` params** — a declared dimension-agnostic structural contract
+  (`analysis.ri:23-28`), not a silent placeholder.~~ **SUPERSEDED 2026-08-10** — ruled in scope
+  of the type-decision programme instead: five stress params → `Stress`, `safety_factor_value`
+  stays `Real` (ruling task 6165; decision 9 amendment above has the rationale).
 - **Consumers for the declared-only `shear_modulus` / `thermal_expansion`** — registered and
   tracked (ο), not built here; there is no thermal or orthotropic-shear solver to consume them.
 - **A Rust/host consumer for `thermal_conductivity`** — not built here for the same reason (no

@@ -1308,3 +1308,220 @@ fn leak(m : GuardHost) -> Length { m.g }
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── Part C: deep-chain enforcement + the `self.<sub>.<member>` bypass ─────────
+//
+// Added by task #5424 (α of PRD docs/prds/v0_6/uniform-member-access.md), which
+// introduced `member_path` as the single member-shape authority and routed both
+// external-access priv verdicts through it. These pin the FLOOR that α's
+// successors (#5425 β, #5430 η) must not regress: `priv` is enforced at EVERY
+// hop of a dotted chain and attributed to the concrete structure at that hop —
+// plus, deliberately, the one shape where it still is not.
+
+/// Boundary row 7 — a `priv param` at the END of a two-hop chain is denied, and
+/// the diagnostic names `Leaf` (the structure the hop was taken FROM), not the
+/// chain root `Mid`.
+#[test]
+fn deep_chain_priv_param_is_denied_and_attributed_to_the_concrete_structure() {
+    let module = compile_source(
+        r#"
+structure def Leaf {
+    priv param secret : Length = 5mm
+    param plain : Length = 6mm
+}
+
+structure def Mid {
+    let leaf = Leaf()
+}
+
+structure def Test {
+    let m = Mid()
+    let deep = m.leaf.secret
+}
+"#,
+    );
+
+    let messages: Vec<&str> = priv_access_errors(&module)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec!["E_PRIV_MEMBER_ACCESS: member 'secret' of structure 'Leaf' is private"],
+        "exactly one E_PRIV_MEMBER_ACCESS, attributed to Leaf (the concrete \
+         structure at that hop) rather than to the chain root Mid; all \
+         diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Boundary row 7 — enforcement at a NON-terminal hop: a `priv sub` in the
+/// middle of the chain is denied there, so the walk never reaches the (public)
+/// member behind it.
+#[test]
+fn deep_chain_priv_sub_is_denied_at_the_intermediate_hop() {
+    let module = compile_source(
+        r#"
+structure def Leaf {
+    param open : Length = 6mm
+}
+
+structure def Mid {
+    priv sub leaf = Leaf()
+}
+
+structure def Test {
+    let m = Mid()
+    let deep = m.leaf.open
+}
+"#,
+    );
+
+    let messages: Vec<&str> = priv_access_errors(&module)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec!["E_PRIV_MEMBER_ACCESS: member 'leaf' of structure 'Mid' is private"],
+        "the priv verdict must fire at the INTERMEDIATE hop — `open` is public, \
+         so a resolver that only checked the terminal would let this through; \
+         all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// The controls for the two pins above: with everything public, the same chain
+/// shapes emit ZERO priv diagnostics. Without these, both pins could pass
+/// vacuously off an unrelated blanket denial.
+#[test]
+fn deep_chain_public_members_emit_no_priv_diagnostic() {
+    let public_sub = compile_source(
+        r#"
+structure def Leaf {
+    param open : Length = 6mm
+}
+
+structure def Mid {
+    sub leaf = Leaf()
+}
+
+structure def Test {
+    let m = Mid()
+    let deep = m.leaf.open
+}
+"#,
+    );
+    assert_eq!(
+        priv_access_errors(&public_sub).len(),
+        0,
+        "a public sub at the intermediate hop must not be denied; all \
+         diagnostics: {:?}",
+        public_sub.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let public_terminal = compile_source(
+        r#"
+structure def Leaf {
+    priv param secret : Length = 5mm
+    param plain : Length = 6mm
+}
+
+structure def Mid {
+    let leaf = Leaf()
+}
+
+structure def Test {
+    let m = Mid()
+    let deep = m.leaf.plain
+}
+"#,
+    );
+    assert_eq!(
+        priv_access_errors(&public_terminal).len(),
+        0,
+        "a public terminal member alongside a priv sibling must not be denied; \
+         all diagnostics: {:?}",
+        public_terminal.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Follow-up task that closes the `self.<sub>.<member>` priv bypass pinned
+/// below. When #5430 (η) routes the two-level `self.<sub>.<member>` matchers
+/// through `member_path`, grep this file for `SELF_SUB_BYPASS_FOLLOWUP` and flip
+/// the assertion from "expect 0 E_PRIV_MEMBER_ACCESS" to "expect exactly 1".
+const SELF_SUB_BYPASS_FOLLOWUP: &str = "#5430";
+
+/// PINNED BYPASS (esc-5424-3) — `self.<sub>.<priv member>` reads the value with
+/// ZERO diagnostics.
+///
+/// # Why this pin is stronger than its two siblings
+///
+/// `external_priv_port_member_access_via_collection_index_not_yet_gated` and
+/// `external_priv_let_in_port_not_gated` are tolerable gaps because the access
+/// still FAILS CLOSED through an unrelated diagnostic. This one does not: the
+/// shape compiles clean and `reify eval` prints `Test.leak = 0.005 m`. So the
+/// assertion has to name the leak explicitly — zero `PrivMemberAccess` AND zero
+/// error-severity diagnostics at all — rather than "some diagnostic fired".
+///
+/// # Why it is a real bug, not a design choice
+///
+/// It is shape-specific and violates the `self.X` ≡ `X` equivalence (spec §8.6,
+/// task 4615): the identical read without the `self.` prefix (`i.secret`) and
+/// the `let`-instance form (`m.secret`) BOTH correctly emit
+/// `E_PRIV_MEMBER_ACCESS`. Only the two-level `self.<sub>.<member>` matcher
+/// misses it, because that path never produces a `Type::StructureRef` receiver
+/// for the outer `.secret`, so the external-access priv gate is never entered.
+///
+/// # Why task #5424 (α) does not fix it
+///
+/// `ExprScope` carries only flattened `name → Type` maps with no visibility
+/// axis, so a point fix needs a parallel `sub_member_visibility` map — exactly
+/// the lockstep duplication contract C1-iv / INV-5 forbids, and exactly what
+/// #5430 (η) exists to delete by routing this site through
+/// `member_path::resolve_member_path`.
+///
+/// The pin exists to turn an invisible landmine into a loud mechanical signal:
+/// η's implementer will see this test fail and read the new diagnostic as the
+/// intended fix, not as a regression they introduced.
+#[test]
+fn self_sub_priv_member_access_is_not_gated_pinned_bypass() {
+    let module = compile_source(
+        r#"
+structure def Inner {
+    priv param secret : Length = 5mm
+}
+
+structure def Test {
+    sub i = Inner()
+    let leak = self.i.secret
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "`self.i.secret` does not reach the external-access priv gate today \
+         (tracked by {SELF_SUB_BYPASS_FOLLOWUP}); when that lands, FLIP this to \
+         expect exactly one E_PRIV_MEMBER_ACCESS rather than weakening it; all \
+         diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    // The load-bearing half: unlike the two sibling pins above, this access does
+    // NOT fail closed. It resolves cleanly and hands back the priv value, so the
+    // pin must assert the leak itself.
+    let errors: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "this is a SILENT leak, not a fail-closed gap: the fixture compiles with \
+         zero errors and evaluates `Test.leak` to the priv value. If errors have \
+         appeared here, the bypass has been closed — flip the assertion above \
+         instead of relaxing this one; errors: {errors:?}"
+    );
+}

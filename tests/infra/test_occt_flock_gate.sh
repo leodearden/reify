@@ -227,9 +227,18 @@ assert "Test 15: background holder confirmed holding slot-1 (causal flock-probe 
 
 _START15="$(date +%s)"
 _EXIT15=0
+# Stderr captured (name distinct from test_lane_x_flock.sh's $_ERR15), mirroring
+# Test 14's own $_ERR14 redirect just above. DEFENCE IN DEPTH: WAIT=10 vs a 6s
+# holder normally acquires, but the note below records that under load the holder
+# can extend past the deadline -- and on that path slot_acquire emits a column-0
+# @@REIFY_SLOT_TIMEOUT@@ sentinel which, unredirected, would ride this file's
+# output into the merge-gate verify log and make dark-factory classify the WHOLE
+# verify as SEMAPHORE_TIMEOUT (task 6024 Section D). Nothing asserts on the
+# captured bytes -- the redirect IS the fix.
+_ERR15O="$(mktemp)"
 # REIFY_OCCT_CONCURRENCY=1 pins N=1 so the single holder on slot-1 blocks the wrapper.
 REIFY_OCCT_LOCK="$_LOCK15" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=10 REIFY_OCCT_TEST_TIMEOUT=1 \
-    "$WRAPPER" sleep 5 || _EXIT15=$?
+    "$WRAPPER" sleep 5 2>"$_ERR15O" || _EXIT15=$?
 _END15="$(date +%s)"
 _ELAPSED15=$(( _END15 - _START15 ))
 
@@ -246,6 +255,8 @@ rm -f "$_LOCK15" "${_LOCK15}.slot-1"
 # (PRD docs/prds/infra-test-wallclock-deflake.md §2/T3 decision D4)
 assert "Test 15: wrapper exits 124 (internal timeout killed the command, got $_EXIT15)" \
     test "$_EXIT15" -eq 124
+
+rm -f "$_ERR15O"
 
 assert "Test 15: elapsed ≥ 4s — timer started post-lock, not at wrapper launch (elapsed=${_ELAPSED15}s)" \
     test "$_ELAPSED15" -ge 4

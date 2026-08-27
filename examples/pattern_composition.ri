@@ -11,12 +11,31 @@
 //   - Boolean fold via union_all over multiple boxes (BooleanFold)
 //
 // Length-semantic pattern args (spacings, arbitrary_pattern offsets) MUST be
-// dimensioned lengths (e.g. `20mm`) — a bare number is rejected at eval as a
-// silent-SI-metres hazard (task 5214).
+// dimensioned lengths (e.g. `20mm`). Task 5214 migrated the bare numbers here to
+// avoid a silent-SI-metres hazard at eval.
+//
+// WHICH LAYER CATCHES A BARE NUMBER depends on the builtin, so do not rely on a
+// green `reify check` alone:
+//   - `linear_pattern` / `linear_pattern_2d` SPACING slots are ALSO checked at
+//     COMPILE time since task 5652 — a bare number there is a hard
+//     ArgTypeMismatch at `reify check`.
+//   - `arbitrary_pattern` offsets (used by PatternComposed below) and
+//     `circular_pattern` / `mirror` origins have NO compile-time slot; task 5652
+//     deliberately deferred them (deferral tracked as #5662), so
+//     a bare number there is caught only by the EVAL-layer gate.
+// The compile check COMPLEMENTS the eval gate, it never replaces it — a
+// dynamically-typed operand is skipped at compile time by design and still
+// relies on eval. Both layers are load-bearing (crates/reify-compiler/src/
+// builtin_signatures.rs, "Relationship to the eval-layer units gate").
 
 // ── 1. BaseElement ────────────────────────────────────────────────────────────
-// Simple box geometry. Not used as a pattern target (geometry lets are not valid
-// pattern targets via the current compiler — see design decisions in plan.json).
+// Simple box geometry. It is deliberately kept as a standalone primitive here —
+// this fixture's template set is what the downstream suites pin, so BaseElement
+// exists to cover the bare-primitive template shape, not because it could not be
+// patterned. Geometry lets ARE valid pattern targets (fixed by task 1715, plus
+// task 5009's nested-target hoisting); that fact is pinned by
+// `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs::
+// linear_pattern_let_bound_ops` and its circular_pattern/mirror siblings.
 
 structure def BaseElement {
     param element_size : Length = 10mm

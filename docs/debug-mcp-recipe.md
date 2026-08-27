@@ -60,14 +60,14 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `wait_for_selector` | `{testId, state}` | `{ok}` — waits until element matches state |
+| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown |
 | `list_console_errors` | `{}` | `{errors:[{message,stack}], count}` |
 
 ### I1 — Editor interaction
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `scroll` | `{target:'editor'\|'preview', top}` | `{ok, scrollTop}` |
+| `scroll` | `{target:'editor'\|'preview', top}` or `{testId, top, viewportId?}` | `{ok, scrollTop}` — `viewportId` applies to the testId (DOM) form only |
 | `type_in_editor` | `{text}` | `{ok}` |
 | `keyboard` | `{key, modifiers?}` | `{ok}` |
 
@@ -85,9 +85,7 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 | Tool | Args | Returns |
 |------|------|---------|
 | `open_menu` | `{name}` | `{ok, open}` — clicks `[data-testid=menu-trigger-<name>]` |
-| `click_element` | `{testId}` | `{ok}` |
-| `expand_tree_node` | `{testId}` | `{ok}` |
-| `collapse_tree_node` | `{testId}` | `{ok}` |
+| `click_element` | `{testId, viewportId?}` | `{ok}` — `viewportId` picks which pane's control to click |
 
 ### C2 — Layout
 
@@ -95,6 +93,8 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 |------|------|---------|
 | `resize_panes` | `{editorWidth?}` | `{ok, layout:{editorWidth,…}}` — writes layoutStore (L0) |
 | `get_computed_style` | `{selector, property}` | `{value}` |
+| `expand_tree_node` | `{path, panel?}` | `{ok, path, expanded}` — `panel` selects `'design'` (default) or `'constraint'`; idempotent, no click dispatched if already expanded. In the constraint panel a non-expandable row never toggles, so requesting expansion still dispatches a click but `expanded` comes back `false` — detect the no-op by checking `expanded === true`. `panel:'constraint'` — any dispatched click also fires the row's `onConstraintSelect`, so the current constraint selection changes as a side effect |
+| `collapse_tree_node` | `{path, panel?}` | `{ok, path, expanded}` — `panel` selects `'design'` (default) or `'constraint'`; idempotent, no click dispatched if already collapsed. `panel:'constraint'` — any dispatched click also fires the row's `onConstraintSelect`, so the current constraint selection changes as a side effect |
 
 ### F1 — Fixtures & state injection
 
@@ -104,7 +104,7 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 | `open_file` | `{path}` | `{ok}` — opens an arbitrary .ri path |
 | `inject_diagnostics` | `{diagnostics:[…], source}` | `{ok}` |
 | `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection |
-| `element_screenshot` | `{testId}` | `{data}` — base64 PNG of a single element |
+| `element_screenshot` | `{testId, viewportId?}` | `{data}` — base64 PNG of a single element; `viewportId` picks which pane to crop. A call matching more than one element also returns `{viewportId, matchCount}` naming the pane it guessed — scoped or not, since a testId can repeat within one pane — delivered over MCP as a second `text` content block after the image |
 | `screenshot` / `screenshot_window` | `{}` | `{data}` — full viewport PNG |
 
 ### F2 — LSP probes

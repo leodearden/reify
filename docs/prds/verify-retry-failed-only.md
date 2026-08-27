@@ -2,6 +2,12 @@
 
 **Status: committed 2026-07-19. Evidence base: `docs/notes/merge-verify-cpu-survey-2026-07.md`. Program milestone: task 5254. Shape: B+H (cross-repo protocol seam).**
 
+**Dark-factory `path:line` anchors below are dated evidence (decompose 2026-07-19, plus the
+2026-07-25 post-landing correction in §12) — not live breadcrumbs.** They record what was
+observed then, which is the whole point of the §12 falsification; do not re-anchor them, grep
+the symbol named beside each. Note this document's header SHA is a **reify** commit and covers
+reify-side anchors only — it makes no claim about DF, whose HEAD has moved independently.
+
 Cross-repo pattern: **reify ships the primitive, dark-factory wires the invocation.** reify owns the verify.sh / run_all / gui *consumption* of a retry-subset; DF owns the `merge_request` API field, retry-set *construction*, budget policy, shadow-baseline merging, and the honest event marker.
 
 ---
@@ -9,8 +15,8 @@ Cross-repo pattern: **reify ships the primitive, dark-factory wires the invocati
 ## §1 — Consumer + user-observable surface (G1)
 
 **Consumers of the reify primitive:**
-- (a) The DF merge worker's **autonomous failure path** — the M1 bounded classified-infra-transient retry (`orchestrator/merge_queue.py:1787-1902`, `CategoryPolicy.is_infra_transient`). On a retryable transient, the worker re-runs the *narrowed* subset instead of the full ~45-min gate.
-- (b) **Operator `merge_request` resubmits** — a new `retry_failed_only: bool` argument on `merge_request` (`escalation/src/escalation/server.py:1093`), following the `verified_green` caller-vouched-bool precedent (`server.py:1099`).
+- (a) The DF merge worker's **autonomous failure path** — the M1 bounded classified-infra-transient retry (`orchestrator/merge_queue.py`, `CategoryPolicy.is_infra_transient`). On a retryable transient, the worker re-runs the *narrowed* subset instead of the full ~45-min gate.
+- (b) **Operator `merge_request` resubmits** — a new `retry_failed_only: bool` argument on `merge_request` (`escalation/src/escalation/server.py`, `verified_green: bool = False`), following the `verified_green` caller-vouched-bool precedent (`server.py:1099`).
 - (c) The reify verify pipeline itself, at the `verify_env` seam — DF sets retry env vars that `scripts/verify.sh` honors.
 - (d) Program milestone **5254** — the terminal integration-gate task wires into it.
 
@@ -150,7 +156,7 @@ verify.sh emits a `@@REIFY_RETRY_SCOPE=failed_only@@` marker plus per-suite subs
 
 | Leaf | Mechanism |
 |---|---|
-| D1 | `retry_failed_only: bool` on `merge_request` + `MergeRequest` threading (`server.py:1093`, `verified_green` precedent) |
+| D1 | `retry_failed_only: bool` on `merge_request` + `MergeRequest` threading (`server.py`, `verified_green: bool = False` precedent) |
 | D2 | worker **retry-set construction** — {did-not-pass} per nextest profile from `parse_per_test_results` + attempt-0 plan; {failed} run_all members; {failed} gui specs; write the filter files + set the reify retry envs in `verify_env`; tree-OID gate |
 | D3 | retry **budget policy** + **M1 autonomous** application, category-gated on DF 2821 |
 | D4 | **shadow-baseline map merge** (attempt-0 ∪ retry per-test maps) before storing the warm baseline (`on_result` / `merge_shadow.py`) |

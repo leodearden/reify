@@ -240,6 +240,452 @@ async fn lsp_request_impl_null_literal_passes_json_parse_step() {
     );
 }
 
+// ── Task 5772: the LSP large-stack seam ──────────────────────────────────────
+//
+// `lsp_request` reaches `reify-syntax`'s CST-to-AST walk (no `stacker` guard, no
+// depth cap) and `reify-compiler`'s recursive compile, on a tokio worker's
+// default ~2 MiB stack, at keystroke frequency. `lsp_request_on_worker` routes
+// that dispatch onto the persistent 256 MiB LSP lane.
+//
+// `main.rs::lsp_request` takes `tauri::State` and cannot be constructed
+// headlessly, so — exactly as the task-5357 and step-8 guards do for the engine
+// commands — these test the COMPOSITION the wrapper performs, not `main.rs`
+// source text.
+//
+// SCOPE, stated honestly and pinned by no assertion here to the contrary: of
+// `InProcessLsp::handle_request`'s fourteen arms, four (`textDocument/definition`,
+// `prepareRename`, `rename`, `references`) hop to `tokio::task::spawn_blocking`,
+// so their compiler work runs on tokio's BLOCKING POOL at the std ~2 MiB default
+// regardless of what thread `handle_request` itself is on. Putting the dispatch
+// on a 256 MiB thread gives the big stack only to that thread's own frames. The
+// arms this seam DOES cover are the other ten — including `didOpen`,
+// `didChange`, `hover`, `completion`, `documentSymbol`, `documentHighlight` —
+// which are precisely the keystroke/cursor-frequency ones. Closing the other
+// four needs `crates/reify-lsp/src/server.rs`, outside this task's scope.
+
+/// Compile-time proof that `T` satisfies the bound the lane rests on. Never
+/// runs; naming the type is the assertion.
+fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+
+/// (a) `Arc<LspBridge>` is `Send + Sync + 'static` — the bound
+/// `run_on_lsp_worker`'s `'static` closure requires.
+///
+/// It must already be true: `main.rs` `app.manage`s the bridge, and Tauri
+/// requires managed state to be `Send + Sync + 'static`. Pinned HERE so the
+/// migration does not silently depend on that staying true — if a future field
+/// makes `LspBridge` non-`Sync`, this fails in the lib test target rather than as
+/// a puzzling error in `main.rs`, which only builds under `--features gui`.
+#[test]
+fn lsp_bridge_arc_is_send_sync_and_static() {
+    assert_send_sync_static::<Arc<LspBridge>>();
+    assert_send_sync_static::<LspBridge>();
+}
+
+/// Drive a bridge to the same state the parity test needs: `initialize`,
+/// `initialized`, and a `didOpen` of the shared bracket fixture.
+async fn init_and_open(bridge: &LspBridge, uri: &str) {
+    lsp_request_impl(
+        bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
+    lsp_request_impl(bridge, "initialized", "{}".to_string())
+        .await
+        .expect("initialized");
+    lsp_request_impl(
+        bridge,
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "reify",
+                "version": 1,
+                "text": reify_test_support::bracket_source()
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("didOpen");
+}
+
+/// (b) RESULT PARITY — for each covered method, the value returned THROUGH the
+/// lane equals the value `lsp_request_impl` returns directly, against an
+/// equivalently-driven bridge.
+///
+/// This is the load-bearing migration guard: the lane hop must be invisible to
+/// the frontend. Two independently-constructed bridges are driven identically,
+/// so equal responses mean the routing changed nothing observable.
+///
+/// # Why the table spans BOTH arm shapes
+///
+/// `hover` / `completion` / `documentSymbol` run INLINE inside `handle_request`,
+/// so the lane thread's own stack carries them. `definition` and `references`
+/// instead hop to [`tokio::task::spawn_blocking`], whose first statement is
+/// `Handle::current()` — and driving them is the entire reason
+/// `dispatch_async` captures a [`tokio::runtime::Handle`] on the submitter and
+/// uses `Handle::block_on` rather than a bare executor such as
+/// `futures::executor::block_on`, which would panic "there is no reactor
+/// running". That justification is stated three times across this module's docs
+/// and was asserted nowhere: an inline-arms-only table leaves a bare-executor
+/// refactor, or a runtime-flavour change, shipping green.
+///
+/// The `must_resolve` column is the anti-vacuity guard for exactly those two: a
+/// `null == null` comparison would satisfy the parity assertion while proving
+/// nothing ran, so the spawn_blocking cases additionally have to produce a real
+/// answer. (No claim is made that those two get the LARGE STACK — their compiler
+/// work runs on the blocking pool's ~2 MiB threads, see this file's header note
+/// and task #6195. What is claimed is that they RESOLVE through the lane.)
+#[tokio::test]
+async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
+    use crate::lsp_bridge::lsp_request_on_worker;
+
+    const URI: &str = "file:///parity.ri";
+
+    let direct = LspBridge::new();
+    init_and_open(&direct, URI).await;
+
+    let worker = Arc::new(LspBridge::new());
+    init_and_open(&worker, URI).await;
+
+    // (method, params, must_resolve): `must_resolve` demands a non-`null`
+    // response, so the case cannot pass by both sides answering "nothing".
+    let cases = [
+        // Inline arms — a hover and a completion are the two the task
+        // description names as firing on effectively every keystroke and cursor
+        // move.
+        (
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 1, "character": 4 }
+            }),
+            false,
+        ),
+        (
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 1, "character": 0 }
+            }),
+            false,
+        ),
+        (
+            "textDocument/documentSymbol",
+            json!({ "textDocument": { "uri": URI } }),
+            false,
+        ),
+        // `spawn_blocking` arms — reached from inside `Handle::block_on` on a
+        // NON-runtime thread, the interaction the lane's driver choice exists
+        // for. Positions match reify-lsp's own handler tests: `thickness` in a
+        // constraint (line 9) and the `width` declaration token (line 1).
+        (
+            "textDocument/definition",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 9, "character": 15 }
+            }),
+            true,
+        ),
+        (
+            "textDocument/references",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 1, "character": 10 },
+                "context": { "includeDeclaration": true }
+            }),
+            true,
+        ),
+    ];
+
+    for (method, params, must_resolve) in cases {
+        let expected = lsp_request_impl(&direct, method, params.to_string())
+            .await
+            .unwrap_or_else(|e| panic!("direct {method} should succeed: {e}"));
+
+        let actual = lsp_request_on_worker(
+            Arc::clone(&worker),
+            method.to_string(),
+            params.to_string(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{method} through the lane should succeed: {e}"));
+
+        assert_eq!(
+            actual, expected,
+            "{method} through the LSP lane must return exactly what a direct \
+             call returns — the lane hop must be invisible to the frontend"
+        );
+
+        if must_resolve {
+            let parsed: serde_json::Value = serde_json::from_str(&actual)
+                .unwrap_or_else(|e| panic!("{method} response must be JSON: {e}"));
+            assert!(
+                !parsed.is_null(),
+                "{method} must produce a real answer through the lane, not \
+                 `null` — a null-vs-null comparison would satisfy the parity \
+                 assertion while proving the arm never ran"
+            );
+        }
+    }
+}
+
+/// (c) The ERROR path is preserved: the lane hop must not turn an `Err` into a
+/// panic (which would unwind the Tauri command and leave the frontend's
+/// `invoke` promise unresolved — a silently dead editor pane).
+#[tokio::test]
+async fn lsp_request_on_worker_preserves_the_error_path() {
+    use crate::lsp_bridge::lsp_request_on_worker;
+
+    let bridge = Arc::new(LspBridge::new());
+
+    // Malformed params: rejected by the JSON parse step in `lsp_request_impl`.
+    let err = lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialize".to_string(),
+        "not json".to_string(),
+    )
+    .await
+    .expect_err("malformed JSON params must still return Err through the lane");
+    assert!(
+        err.contains("invalid JSON params"),
+        "the lane must forward the original parse error verbatim, got: {err}"
+    );
+
+    // Unsupported method: rejected by `handle_request`'s fallthrough arm.
+    let err = lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/notAThing".to_string(),
+        "{}".to_string(),
+    )
+    .await
+    .expect_err("an unsupported method must still return Err through the lane");
+    assert!(
+        !err.is_empty(),
+        "the unsupported-method error must survive the lane hop with a message"
+    );
+}
+
+/// (d) The dispatch genuinely happens ON the lane — not inline on the awaiting
+/// tokio worker.
+///
+/// Asserted via a probe submitted through the SAME lane API the routing uses, so
+/// this pins the mechanism rather than a coincidence: if `lsp_request_on_worker`
+/// were quietly awaiting `lsp_request_impl` directly, the value would still be
+/// right and only this test would notice.
+#[tokio::test]
+async fn the_lsp_lane_runs_its_work_off_the_awaiting_runtime_thread() {
+    use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
+
+    let caller = std::thread::current().id();
+    let (name, id) = run_on_lsp_worker(async {
+        (
+            std::thread::current().name().map(str::to_owned),
+            std::thread::current().id(),
+        )
+    })
+    .await;
+
+    assert_eq!(
+        name.as_deref(),
+        Some(LSP_WORKER_THREAD_NAME),
+        "LSP work must land on the named LSP lane thread"
+    );
+    assert_ne!(
+        id, caller,
+        "LSP work must not run inline on the awaiting tokio worker"
+    );
+}
+
+/// (e) END-TO-END deep nesting: a real `.ri` document with deeply-nested
+/// expressions is opened and hovered THROUGH the lane, and both requests
+/// succeed with well-formed responses.
+///
+/// This is the regression case the routing exists for — the keystroke-frequency
+/// compiler-adjacent path (`reify-syntax`'s CST-to-AST walk, which has neither a
+/// `stacker` guard nor a depth cap, then `reify-compiler`'s recursive compile)
+/// driven over genuinely nested source rather than over a synthetic recursion.
+///
+/// The nesting depth is chosen to stay well under `reify-compiler`'s
+/// `MAX_COMPILE_RECURSION_DEPTH` (256) so the request SUCCEEDS rather than being
+/// refused by the depth cap — a refusal would make the test pass without ever
+/// exercising a deep walk. The synthetic ~16 MiB assertion lives in
+/// `large_stack_tests.rs`; this one proves the real path is wired to the same
+/// lane.
+///
+/// EXERCISES THE INLINE ARMS. `didOpen` and `hover` both run inline inside
+/// `handle_request`, so they are genuinely on the lane. `definition`,
+/// `prepareRename`, `rename` and `references` hop to `spawn_blocking` and are
+/// NOT — no assertion here claims otherwise.
+#[tokio::test]
+async fn deeply_nested_source_opens_and_hovers_through_the_lane() {
+    use crate::lsp_bridge::lsp_request_on_worker;
+
+    /// Comfortably under `MAX_COMPILE_RECURSION_DEPTH` (256), and far above the
+    /// 128 of "realistic-nesting headroom" the compiler's guard is sized for.
+    const NESTING: usize = 100;
+
+    let uri = "file:///deeply_nested.ri";
+    let expr = format!("{}1mm{}", "(".repeat(NESTING), ")".repeat(NESTING));
+    let source = format!("structure Deep {{\n    param width: Length = {expr}\n}}");
+
+    let bridge = Arc::new(LspBridge::new());
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialize".to_string(),
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize through the lane");
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialized".to_string(),
+        "{}".to_string(),
+    )
+    .await
+    .expect("initialized through the lane");
+
+    // didOpen drives the full parse + compile of the nested source.
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/didOpen".to_string(),
+        json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("didOpen of deeply-nested source through the lane");
+
+    // hover on the `width` param — the per-cursor-move request.
+    let hovered = lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/hover".to_string(),
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 10 }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("hover over deeply-nested source through the lane");
+
+    serde_json::from_str::<serde_json::Value>(&hovered)
+        .expect("hover over deeply-nested source must return a well-formed JSON response");
+}
+
+/// (f) The DEGRADED arm of the LSP routing, driven by the REAL production
+/// composition rather than by a stand-in closure.
+///
+/// `dispatch_async`'s `None` arm is what runs when the OS refuses the 256 MiB
+/// mapping. The generic guard for it — `large_stack_tests`'
+/// `async_dispatch_without_a_lane_runs_inline_and_still_resolves` — submits
+/// `|| (77u32, thread::current().id())`, a body that needs no runtime and so
+/// cannot detect the hazard the PRODUCTION body carries: the only real caller
+/// pre-bakes a [`tokio::runtime::Handle::block_on`], and `block_on` called from
+/// inside a runtime panics "Cannot start a runtime from within a runtime". The
+/// degraded arm therefore has to be exercised through the SAME function body
+/// `lsp_request_on_worker` delegates to, or the test rots into testing a COPY of
+/// the composition rather than the composition.
+///
+/// The claim is RESOLVING WITH THE RIGHT VALUE, not merely "did not hang": a
+/// degraded arm that panics unwinds the Tauri command and leaves the frontend's
+/// `invoke` promise unresolved — precisely the silently-dead-editor-pane outcome
+/// the routing exists to prevent.
+#[tokio::test]
+async fn lsp_request_on_lane_without_a_lane_still_resolves_to_the_right_value() {
+    use crate::lsp_bridge::lsp_request_on_lane;
+
+    const URI: &str = "file:///degraded.ri";
+
+    let direct = LspBridge::new();
+    init_and_open(&direct, URI).await;
+
+    let degraded = Arc::new(LspBridge::new());
+    init_and_open(&degraded, URI).await;
+
+    let params = json!({
+        "textDocument": { "uri": URI },
+        "position": { "line": 1, "character": 4 }
+    })
+    .to_string();
+
+    let expected = lsp_request_impl(&direct, "textDocument/hover", params.clone())
+        .await
+        .expect("a direct hover must succeed");
+
+    // `None` is exactly what `LSP_LANE.sender()` yields once the OS has refused
+    // the 256 MiB mapping — the state this arm exists for.
+    let actual = lsp_request_on_lane(
+        None,
+        Arc::clone(&degraded),
+        "textDocument/hover".to_string(),
+        params,
+    )
+    .await
+    .expect("the degraded arm must RESOLVE to Ok, not panic and unwind the command");
+
+    assert_eq!(
+        actual, expected,
+        "with no lane, the LSP seam must still return exactly what a direct \
+         `lsp_request_impl` call returns — degradation is a stack downgrade, not \
+         a behaviour change"
+    );
+}
+
+/// (g) The lane-path counterpart of (f): the SAME seam, handed a REAL lane,
+/// returns the SAME payload.
+///
+/// (f) and (g) together pin that the degradation is BEHAVIOUR-PRESERVING rather
+/// than merely non-crashing — and they keep (f) honest in the other direction
+/// too. A future change that silently sent every request down the degraded arm
+/// would satisfy (f) alone; it fails (d)'s off-thread assertion, which submits
+/// through the same lane API this seam uses.
+#[tokio::test]
+async fn lsp_request_on_lane_with_a_lane_returns_the_same_payload() {
+    use crate::lsp_bridge::lsp_request_on_lane;
+
+    const URI: &str = "file:///lane_parity.ri";
+
+    let direct = LspBridge::new();
+    init_and_open(&direct, URI).await;
+
+    let laned = Arc::new(LspBridge::new());
+    init_and_open(&laned, URI).await;
+
+    let params = json!({
+        "textDocument": { "uri": URI },
+        "position": { "line": 1, "character": 4 }
+    })
+    .to_string();
+
+    let expected = lsp_request_impl(&direct, "textDocument/hover", params.clone())
+        .await
+        .expect("a direct hover must succeed");
+
+    let actual = lsp_request_on_lane(
+        crate::large_stack::LSP_LANE.sender(),
+        Arc::clone(&laned),
+        "textDocument/hover".to_string(),
+        params,
+    )
+    .await
+    .expect("the lane arm must resolve to Ok");
+
+    assert_eq!(
+        actual, expected,
+        "through the real lane the LSP seam must return exactly what a direct \
+         `lsp_request_impl` call returns — the lane hop must be invisible"
+    );
+}
+
 #[tokio::test]
 async fn lsp_request_impl_valid_json_passes_json_parse_step() {
     // Table-driven: each entry is valid JSON that serde_json::from_str accepts.

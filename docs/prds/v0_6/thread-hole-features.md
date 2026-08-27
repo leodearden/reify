@@ -268,11 +268,22 @@ Producer side = generator/compiler/stdlib; consumer side = dogfood/examples via 
 | 8 | TappedHole DFM: depth < D | γ | check() reports the engagement constraint violated |
 | 9 | FittedBore H7-style fit | γ | `fit.tolerance_width` = published IT cell (exact-value pin, iso_it 24.969 µm pattern); seat constraint consumes it at check() |
 | 10 | ThreadSpec.thread_form filled | α, γ | `some(thread_solid(...))` binds; `is_some(spec.thread_form)`; eval prints Some(…) (closes the §2 carrier-slot arc + the untested some(geometry) cell) |
-| 11 | capstan groove | **#5342**, δ | drum volume delta ≈ π·r²·L_helix within ±15%, **computed from dev_capstan's actual parameters** (pitch radius, lead, wrap band, groove profile r), groove fully submerged along the band; end-emergence absorbed by the band (G6 basis: #5342's acceptance *formula*, not its 24/7/63 numbers — D3 refinement) |
+| 11 | capstan groove | **#5342**, δ | drum volume delta ≈ 0.5·π·r²·L_helix within ±15%, **computed from dev_capstan's actual parameters** (pitch radius, lead, wrap band, groove profile r) — the rope seat is a half-round with its arc centre ON the land surface, so only the radially **inner** half of the swept tube is ever stock (the outer half sweeps through air above the land, except where it emerges into the flanges at the band ends). A band and not an equality because two corrections pull opposite ways at dev_capstan's parameters: the seated half's area centroid lies radially inboard of the spine and therefore sweeps a shorter helix (≈ −5.3%), while end-emergence into the flanges adds back the outer half's end lenses (≈ +1.5%) — net ≈ −3.9%, which the band must swallow (G6 basis: #5342's acceptance *formula*, not its 24/7/63 numbers — D3 refinement; reference value re-spec'd π·r²·L → 0.5·π·r²·L by **#5580**) |
 | 12 | printer retrofit invariance | γ, 5426, ε | pure bore→FittedBore retrofit leaves each part volume unchanged (< 0.1%); added clearance holes change volume by computed amount |
 
 The integration-gate task (θ) names this table as its observable signal; rows 1–6 face
 the producer, 7–12 the consumer.
+
+**Amendment (#5580) — row 11's reference value.** As δ landed it (#5454), the capstan's
+rope channel was *submerged* in the land: its mouth was deliberately held narrower than
+the rope, which made the removed stock the whole swept tube, π·r²·L. That model cannot be
+assembled or operated. `docs/projects/printer_v01.md` lists the drive's service model as
+"Hours (re-wind capstans)" and describes a departure tangent that migrates axially across
+the band every revolution, so the rope must leave its seat *radially* at an arbitrary
+mid-band position — which a 2.6 mm mouth on a 6 mm Vectran braid forbids. #5580 therefore
+cut the land back to the rope centreline (a half-round seat, mouth = rope diameter, the
+only depth that admits the rope at all) and re-spec'd this row's reference value
+accordingly. The ±15% band width is unchanged — only the reference moved.
 
 ## 7. Pre-conditions for activating
 

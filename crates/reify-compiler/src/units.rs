@@ -4,7 +4,7 @@ use reify_core::field_calculus::{DifferentialOp, differential_codomain};
 /// The complete set of stdlib geometry constructor names recognised by the
 /// compiler. This is the **source of truth** for both [`is_geometry_function`]
 /// (derived via `.contains(&name)`) and the dispatch coverage test in
-/// `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+/// `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 ///
 /// # Maintenance contract
 ///
@@ -596,8 +596,7 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// ([`AFFINE_MAP_CONSTRUCTOR_NAMES`], [`TOLERANCING_MARKER_NAMES`]).
 ///
 /// These are pure kernel-free value-algebra constructors evaluated in
-/// `reify_stdlib::geometry::eval_geometry`, mirroring the sibling datum
-/// constructors `plane_xy`/`axis_x`/`frame3`/`point3`:
+/// `reify_stdlib::geometry::eval_geometry`:
 ///
 /// ```text
 /// fn midplane(a: Plane, b: Plane)                  -> Plane
@@ -605,13 +604,42 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// fn plane_through(a: Point, b: Point, c: Point)   -> Plane
 /// fn offset(p: Plane, δ: Length)                   -> Plane   (ARITY-2 overload)
 /// fn frame_at(o: Point, x: Direction, z: Direction)-> Frame(3)
+/// fn plane_xy(δ: Length)                           -> Plane   (also plane_xz/plane_yz)
+/// fn axis_x(o: Point3)                             -> Axis    (also axis_y/axis_z)
 /// ```
 ///
 /// Each name resolves to its datum codomain:
-/// - `midplane` / `plane_through` → `Type::Plane`
-/// - `axis_through`               → `Type::Axis`
-/// - `frame_at`                   → `Type::Frame(3)`
-/// - `offset`                     → `Type::Plane` ONLY at arity 2 (see below)
+/// - `midplane` / `plane_through`          → `Type::Plane`
+/// - `plane_xy` / `plane_xz` / `plane_yz`  → `Type::Plane`
+/// - `axis_through`                        → `Type::Axis`
+/// - `axis_x` / `axis_y` / `axis_z`        → `Type::Axis`
+/// - `frame_at`                            → `Type::Frame(3)`
+/// - `offset`                              → `Type::Plane` ONLY at arity 2 (see below)
+///
+/// **Neighbour audit (task 5344).** The six axis-aligned constructors
+/// `plane_xy`/`plane_xz`/`plane_yz` and `axis_x`/`axis_y`/`axis_z` — which this
+/// comment previously merely name-checked as "sibling datum constructors" — are
+/// now claimed HERE. They had the same first-arg-fallback defect as the
+/// orientation family: `plane_xy(10mm)` typed as its offset's `Scalar<Length>`
+/// and `axis_x(o)` as its origin's type. Unlike the zero-arg orientation
+/// constructors they mistyped SILENTLY, because each takes exactly ONE argument
+/// (`reify_stdlib::geometry`'s `make_plane`/`make_axis` hard-check
+/// `args.len() != 1`), so the fallback never reached its zero-arg warning.
+///
+/// Two names that comment also listed are deliberately NOT claimed here:
+/// - `frame3` (and the rest of the orientation/transform/frame family) belongs
+///   to `crate::orientation_signatures` — a separate, name-only resolver whose
+///   slice is pinned disjoint from this vocabulary.
+/// - `point3` / `point2` / `vec3` / `vec2` belong to
+///   `crate::math_signatures::MATH_CONSTRUCTION_NAMES` (vec3/vec2 since task
+///   4622, point3/point2 since task 5344). `Type::Point` and `Type::Vector`
+///   carry an argument-DEPENDENT quantity slot (the "Point / Vector
+///   quantity-slot convention" in `reify_core::ty`), so they need a resolver
+///   that derives the quantity from the arguments — a different shape than this
+///   arity-blind table. The four are twins in eval too (`construct_point_or_vector`
+///   serves all of them, one bool apart), so keeping them together is what
+///   one-vocabulary-one-resolver requires. `math_typed_fn_names_are_disjoint_from_other_families`
+///   pins that THIS resolver returns `None` for every one of them.
 ///
 /// Called from the `expr.rs` `NoUserFunctions` ladder before the first-arg
 /// fallback; resolving here replaces the wrong first-arg fallback type (e.g.
@@ -639,6 +667,8 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// args). This mirrors the sibling affine-map constructor family, which is
 /// likewise arity-blind at the type level. Pinned by
 /// `datum_constructor_tests::wrong_arity_constructor_still_types_as_codomain`.
+/// The six axis-aligned neighbours inherit that contract unchanged: a
+/// wrong-arity `plane_xy()` still types `Plane` and errors at eval.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) fn datum_constructor_result_type(
@@ -649,6 +679,12 @@ pub(crate) fn datum_constructor_result_type(
         "midplane" | "plane_through" => Some(reify_core::Type::Plane),
         "axis_through" => Some(reify_core::Type::Axis),
         "frame_at" => Some(reify_core::Type::Frame(3)),
+        // Axis-aligned construction datums (task 5344 neighbour audit). Same
+        // datum vocabulary, same codomains — `make_plane`/`make_axis` in
+        // `reify_stdlib::geometry` are the eval side. Arity-blind by design like
+        // their siblings above; the one-argument shape is enforced at eval.
+        "plane_xy" | "plane_xz" | "plane_yz" => Some(reify_core::Type::Plane),
+        "axis_x" | "axis_y" | "axis_z" => Some(reify_core::Type::Axis),
         // Arity overload: the construction-datum `offset` is the arity-2 form
         // only; arity-3 `offset(Plane, Plane, Length)` is γ's relation, claimed
         // by the earlier relation arm.
@@ -1697,6 +1733,11 @@ mod tests {
     // the newest family, so its disjointness test below checks against ALL
     // existing sibling slices, not just those that preceded it).
     use crate::parse_signatures::PARSE_FN_NAMES;
+    // Orientation/transform/frame constructor family (task 5344) — single
+    // source of truth in `crate::orientation_signatures`, imported here to pin
+    // disjointness from every sibling family (regression-lock: catches any
+    // future colliding name added to EITHER slice).
+    use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
 
     // Local fixtures for name families that have no pub single-source slice —
     // they are hardcoded match arms in `affine_map_algebra_result_type` and
@@ -2317,6 +2358,15 @@ mod tests {
     #[test]
     fn geometry_query_names_are_disjoint_from_other_families() {
         for name in GEOMETRY_QUERY_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
@@ -2380,6 +2430,15 @@ mod tests {
     #[test]
     fn dynamics_query_names_are_disjoint_from_other_families() {
         for name in DYNAMICS_QUERY_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
@@ -2440,17 +2499,54 @@ mod tests {
 
     /// Disjointness invariant for the math-linalg construction family (task
     /// 4179). Every `MATH_CONSTRUCTION_NAMES` entry (`vec` / `matrix` / `diag`
-    /// / `identity`) must be absent from all five geometry families AND the
-    /// dynamics-query family, so a name can satisfy at most one classification
-    /// predicate in `expr.rs::resolve_function_overload`'s `NoUserFunctions`
+    /// / `identity` / `vec3` / `vec2` / `point3` / `point2`) must be absent from
+    /// all five geometry families AND the dynamics-query family, so a name can
+    /// satisfy at most one classification predicate in
+    /// `expr.rs::resolve_function_overload`'s `NoUserFunctions`
     /// ladder. Forward sibling to `is_math_typed_fn_rejects_other_family_…`
     /// (the predicate-level reverse direction lives in `math_signatures.rs`);
     /// the converse asserts in the geometry / dynamics disjointness tests above
     /// pin the other direction. Because the names are pinned disjoint from
     /// every other family, the new arm's position in the ladder is unobservable.
+    ///
+    /// The loop also pins disjointness from [`datum_constructor_result_type`],
+    /// which is a RESOLVER rather than a name slice and so cannot be covered by
+    /// a `.contains` assert (same reason step-5's orientation lock spells out
+    /// `frame_at` by hand). This matters for the task-5344 `point3`/`point2`
+    /// additions: the datum vocabulary's own doc comment used to name-check
+    /// `point3` as a sibling it might one day claim, and claiming it in BOTH
+    /// places would silently make the ladder's arm order observable.
     #[test]
     fn math_typed_fn_names_are_disjoint_from_other_families() {
         for name in MATH_CONSTRUCTION_NAMES {
+            // Resolver-level (not slice-level) disjointness — see doc comment.
+            // Probed at arities 1..=3 so `offset`'s arity-2 gate and the
+            // three-argument `point3`/`vec3` shapes are all covered.
+            for arity in 1..=3 {
+                let probe_args = vec![
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Undef,
+                        reify_core::Type::dimensionless_scalar(),
+                    );
+                    arity
+                ];
+                assert!(
+                    datum_constructor_result_type(name, &probe_args).is_none(),
+                    "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be claimed by \
+                     datum_constructor_result_type (construction-datum vocabulary) — \
+                     probed at arity {arity}; double-classification would make the \
+                     expr.rs ladder's arm order observable"
+                );
+            }
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
@@ -2543,6 +2639,15 @@ mod tests {
         // AFFINE_ALGEBRA_NAMES / LIST_HELPER_NAMES are hoisted to module level
         // (shared with `math_transcendental_fn_names_are_disjoint_from_other_families`).
         for name in MATH_OPERATION_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
@@ -2651,6 +2756,15 @@ mod tests {
     #[test]
     fn math_transcendental_fn_names_are_disjoint_from_other_families() {
         for name in MATH_TRANSCENDENTAL_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
@@ -3247,6 +3361,13 @@ mod tests {
     #[test]
     fn tolerancing_marker_names_are_disjoint_from_other_families() {
         for &name in TOLERANCING_MARKER_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !is_orientation_typed_fn(name),
+                "{name} in ORIENTATION_TYPED_FN_NAMES"
+            );
             assert!(
                 !is_geometry_function(name),
                 "{name} in GEOMETRY_FUNCTION_NAMES"
@@ -3635,6 +3756,15 @@ mod tests {
     #[test]
     fn joint_typed_fn_names_are_disjoint_from_other_families() {
         for name in JOINT_TYPED_FN_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
@@ -3705,6 +3835,15 @@ mod tests {
     #[test]
     fn analysis_fn_names_are_disjoint_from_other_families() {
         for name in ANALYSIS_FN_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
@@ -4040,6 +4179,15 @@ mod tests {
     #[test]
     fn dynamics_constructor_names_are_disjoint_from_other_families() {
         for name in DYNAMICS_CONSTRUCTOR_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
@@ -4203,6 +4351,15 @@ mod tests {
     #[test]
     fn fea_envelope_names_are_disjoint_from_other_families() {
         for name in FEA_ENVELOPE_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in GEOMETRY_FUNCTION_NAMES"
@@ -4317,6 +4474,15 @@ mod tests {
         const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
 
         for name in FIELD_OP_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "FIELD_OP_NAMES entry {name:?} must NOT also be in \
@@ -4409,6 +4575,15 @@ mod tests {
     #[test]
     fn relation_fn_names_are_disjoint_from_other_families() {
         for name in RELATION_FN_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "RELATION_FN_NAMES entry {name:?} must NOT also be in \
@@ -5023,6 +5198,15 @@ mod tests {
     #[test]
     fn parse_fn_names_are_disjoint_from_other_families() {
         for name in PARSE_FN_NAMES {
+            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
+            // (task 5344) — pins the OTHER direction so a collision is caught
+            // whichever slice it is added to.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 constructor family, task 5344)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "PARSE_FN_NAMES entry {name:?} must NOT also be in \
@@ -5121,5 +5305,268 @@ mod tests {
                  ladder would shadow it)"
             );
         }
+    }
+
+    /// Disjointness regression-lock for the orientation/transform/frame
+    /// constructor family (task 5344): every `ORIENTATION_TYPED_FN_NAMES` entry
+    /// must be absent from every sibling classification family so the
+    /// `is_orientation_typed_fn` arm in `expr.rs`'s `NoUserFunctions` ladder is
+    /// the sole claimant. Mirrors `parse_fn_names_are_disjoint_from_other_families`,
+    /// and — since this is the newest family — checks against EVERY sibling slice
+    /// that exists today, not just the ones that preceded it. The reciprocal
+    /// direction is pinned by an `!ORIENTATION_TYPED_FN_NAMES.contains(name)`
+    /// assert added to each of those 13 sibling tests, so a collision is caught
+    /// whichever slice it is added to.
+    ///
+    /// GREEN on arrival — a regression lock that fails if a colliding name is
+    /// later added to either slice. The only pre-existing mentions of these
+    /// names elsewhere in this file are NEGATIVE assertions
+    /// (`assert!(!is_affine_map_constructor("transform3"))`), which encode the
+    /// rigid-vs-general-affine distinction and now agree with the new family.
+    ///
+    /// Because the names are pinned disjoint from every other family, the new
+    /// arm's position in the ladder is unobservable.
+    #[test]
+    fn orientation_typed_fn_names_are_disjoint_from_other_families() {
+        for name in ORIENTATION_TYPED_FN_NAMES {
+            assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
+            assert!(!GEOMETRY_QUERY_HELPER_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_HELPER_NAMES");
+            assert!(!GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_KINEMATIC_QUERY_NAMES");
+            assert!(!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name), "{name:?} in GEOMETRY_TOPOLOGY_SELECTOR_NAMES");
+            assert!(!GEOMETRY_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_NAMES");
+            assert!(!DYNAMICS_QUERY_NAMES.contains(name), "{name:?} in DYNAMICS_QUERY_NAMES");
+            assert!(!DYNAMICS_CONSTRUCTOR_NAMES.contains(name), "{name:?} in DYNAMICS_CONSTRUCTOR_NAMES");
+            assert!(!AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name), "{name:?} in AFFINE_MAP_CONSTRUCTOR_NAMES");
+            assert!(!TOLERANCING_MARKER_NAMES.contains(name), "{name:?} in TOLERANCING_MARKER_NAMES");
+            assert!(!MATH_CONSTRUCTION_NAMES.contains(name), "{name:?} in MATH_CONSTRUCTION_NAMES");
+            assert!(!MATH_OPERATION_NAMES.contains(name), "{name:?} in MATH_OPERATION_NAMES");
+            assert!(!MATH_TRANSCENDENTAL_NAMES.contains(name), "{name:?} in MATH_TRANSCENDENTAL_NAMES");
+            assert!(!JOINT_TYPED_FN_NAMES.contains(name), "{name:?} in JOINT_TYPED_FN_NAMES");
+            assert!(!ANALYSIS_FN_NAMES.contains(name), "{name:?} in ANALYSIS_FN_NAMES");
+            assert!(!RELATION_FN_NAMES.contains(name), "{name:?} in RELATION_FN_NAMES");
+            assert!(!PARSE_FN_NAMES.contains(name), "{name:?} in PARSE_FN_NAMES");
+            assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
+            assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
+        }
+
+        // The DATUM constructor family is typed by `datum_constructor_result_type`
+        // — a RESOLVER, not a name slice — so the generic loop above cannot cover
+        // it. `frame_at` is the one name where the two families could plausibly
+        // collide (it already resolves to `Type::Frame(3)` there), so pin its
+        // absence explicitly: claiming it here too would double-classify it.
+        assert!(
+            !ORIENTATION_TYPED_FN_NAMES.contains(&"frame_at"),
+            "'frame_at' must NOT be in ORIENTATION_TYPED_FN_NAMES — \
+             datum_constructor_result_type already types it Type::Frame(3)"
+        );
+        assert_eq!(
+            datum_constructor_result_type("frame_at", &[]),
+            Some(reify_core::Type::Frame(3)),
+            "guards the premise of the assert above: frame_at is genuinely \
+             claimed by the datum family"
+        );
+    }
+
+    /// Disjointness regression-lock for the DATUM constructor vocabulary — the
+    /// sibling of `orientation_typed_fn_names_are_disjoint_from_other_families`
+    /// directly above, for the family this change extended with the six
+    /// axis-aligned neighbours.
+    ///
+    /// The datum family has no name SLICE (it is a resolver,
+    /// `datum_constructor_result_type`), so the fixture below is the local stand-in
+    /// for one. Without this lock the six new names had no disjointness cover at
+    /// all: if a future task added e.g. `axis_x` to `GEOMETRY_QUERY_NAMES` or any
+    /// other slice whose arm sits EARLIER in the `expr.rs` `NoUserFunctions`
+    /// ladder, that arm would silently win and the datum arm would go dead with no
+    /// failing test. This vocabulary already carries one deliberate cross-family
+    /// overlap (`offset`, below), so that is a live hazard class rather than a
+    /// theoretical one.
+    ///
+    /// **`offset` is deliberately NOT in the fixture.** It is genuinely in BOTH
+    /// this vocabulary and `RELATION_FN_NAMES`; the collision is resolved by an
+    /// arity gate (arity-2 → `Type::Plane` here, arity-3 → `Type::Relation`
+    /// there), pinned by `datum_constructor_vocabulary_survives_the_neighbour_extension`
+    /// below. Asserting blanket absence for it would contradict that design.
+    #[test]
+    fn datum_constructor_names_are_disjoint_from_other_families() {
+        // The arity-blind datum names — every entry of the resolver's match
+        // except the arity-gated `offset`.
+        const DATUM_NAMES: &[&str] = &[
+            "midplane",
+            "plane_through",
+            "axis_through",
+            "frame_at",
+            "plane_xy",
+            "plane_xz",
+            "plane_yz",
+            "axis_x",
+            "axis_y",
+            "axis_z",
+        ];
+        for name in DATUM_NAMES {
+            // Premise guard: each fixture entry really is claimed by the datum
+            // resolver, so an absence assert below is meaningful.
+            assert!(
+                datum_constructor_result_type(name, &[]).is_some(),
+                "fixture drift: {name:?} is no longer claimed by \
+                 datum_constructor_result_type"
+            );
+            assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
+            assert!(!GEOMETRY_QUERY_HELPER_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_HELPER_NAMES");
+            assert!(!GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_KINEMATIC_QUERY_NAMES");
+            assert!(!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name), "{name:?} in GEOMETRY_TOPOLOGY_SELECTOR_NAMES");
+            assert!(!GEOMETRY_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_NAMES");
+            assert!(!DYNAMICS_QUERY_NAMES.contains(name), "{name:?} in DYNAMICS_QUERY_NAMES");
+            assert!(!DYNAMICS_CONSTRUCTOR_NAMES.contains(name), "{name:?} in DYNAMICS_CONSTRUCTOR_NAMES");
+            assert!(!AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name), "{name:?} in AFFINE_MAP_CONSTRUCTOR_NAMES");
+            assert!(!TOLERANCING_MARKER_NAMES.contains(name), "{name:?} in TOLERANCING_MARKER_NAMES");
+            assert!(!MATH_CONSTRUCTION_NAMES.contains(name), "{name:?} in MATH_CONSTRUCTION_NAMES");
+            assert!(!MATH_OPERATION_NAMES.contains(name), "{name:?} in MATH_OPERATION_NAMES");
+            assert!(!MATH_TRANSCENDENTAL_NAMES.contains(name), "{name:?} in MATH_TRANSCENDENTAL_NAMES");
+            assert!(!JOINT_TYPED_FN_NAMES.contains(name), "{name:?} in JOINT_TYPED_FN_NAMES");
+            assert!(!ANALYSIS_FN_NAMES.contains(name), "{name:?} in ANALYSIS_FN_NAMES");
+            assert!(!RELATION_FN_NAMES.contains(name), "{name:?} in RELATION_FN_NAMES");
+            assert!(!PARSE_FN_NAMES.contains(name), "{name:?} in PARSE_FN_NAMES");
+            assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
+            assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_TYPED_FN_NAMES — the reciprocal of the \
+                 frame_at assert in \
+                 orientation_typed_fn_names_are_disjoint_from_other_families"
+            );
+        }
+    }
+
+    // ── Datum-neighbour audit (task 5344) ────────────────────────────────────
+    //
+    // The six axis-aligned construction datums `plane_xy`/`plane_xz`/`plane_yz`
+    // and `axis_x`/`axis_y`/`axis_z` share the orientation family's defect —
+    // they fall through `expr.rs`'s `NoUserFunctions` ladder to the first-arg
+    // fallback — but they belong to the DATUM vocabulary, so they are claimed by
+    // `datum_constructor_result_type` (whose own doc comment already name-checks
+    // them as "sibling datum constructors") rather than added to
+    // `ORIENTATION_TYPED_FN_NAMES`. One datum vocabulary, one resolver.
+    //
+    // ARITY IS ONE, NOT ZERO. `reify_stdlib::geometry::make_plane` and
+    // `make_axis` both hard-check `args.len() != 1`, so these six mistype
+    // SILENTLY through the first-arg fallback and never trip the zero-arg
+    // "cannot infer return type" warning that made the orientation family
+    // visible: `plane_xy(10mm)` adopted `Scalar<Length>` from its offset
+    // argument, and `axis_x(origin)` adopted the origin's own type. (Measured
+    // end-to-end, `axis_x(point3(0mm,0mm,0mm))` typed `Scalar<Length>` rather
+    // than `Point3<Length>`, because the fallback CHAINS: `point3` is itself
+    // unclaimed and adopts `0mm`'s type first.)
+    //
+    // The LSP completion table (`crates/reify-lsp/src/completion.rs`) declares
+    // `plane_xy() -> Frame` and `axis_x() -> Vector` — wrong in BOTH arity and
+    // return type. The evaluator's `make_plane`/`make_axis`, not that table, is
+    // the source of truth for this audit.
+
+    /// Build a typed placeholder argument for the arg-aware datum resolver.
+    /// Only `result_type` is read, so a `Value::Undef` literal suffices —
+    /// mirrors the `arg` fixture in `relation_signatures`' test module.
+    fn datum_arg(ty: reify_core::Type) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, ty)
+    }
+
+    /// A `Length` scalar — the offset argument `plane_xy(10mm)` passes, and the
+    /// exact type the first-arg fallback wrongly adopted as the call's own.
+    fn length_arg() -> reify_ir::CompiledExpr {
+        datum_arg(reify_core::Type::Scalar {
+            dimension: reify_core::DimensionVector::LENGTH,
+        })
+    }
+
+    /// A `Point3<Length>` — the origin argument `axis_x(point3(..))` passes, and
+    /// the exact type the first-arg fallback wrongly adopted as the call's own.
+    fn point3_length_arg() -> reify_ir::CompiledExpr {
+        datum_arg(reify_core::Type::point3(reify_core::Type::Scalar {
+            dimension: reify_core::DimensionVector::LENGTH,
+        }))
+    }
+
+    /// `plane_xy` / `plane_xz` / `plane_yz` each take ONE offset argument and
+    /// return a `Type::Plane` — not the `Scalar<Length>` of that offset.
+    #[test]
+    fn axis_aligned_plane_constructors_resolve_to_plane() {
+        for name in ["plane_xy", "plane_xz", "plane_yz"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[length_arg()]),
+                Some(reify_core::Type::Plane),
+                "{name}(offset) must resolve to Type::Plane, not the offset's \
+                 Scalar<Length> (the old first-arg fallback)"
+            );
+        }
+    }
+
+    /// `axis_x` / `axis_y` / `axis_z` each take ONE `Point3` origin and return a
+    /// `Type::Axis` — not the `Point3<Length>` of that origin.
+    #[test]
+    fn axis_aligned_axis_constructors_resolve_to_axis() {
+        for name in ["axis_x", "axis_y", "axis_z"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[point3_length_arg()]),
+                Some(reify_core::Type::Axis),
+                "{name}(origin) must resolve to Type::Axis, not the origin's \
+                 Point3<Length> (the old first-arg fallback)"
+            );
+        }
+    }
+
+    /// Regression lock: extending the resolver with the six axis-aligned
+    /// neighbours must not perturb the vocabulary it already claimed (η/4387),
+    /// and in particular must leave `offset`'s arity-2 gate exactly as-is — the
+    /// arity-3 form is γ's relation and must keep returning `None` here.
+    #[test]
+    fn datum_constructor_vocabulary_survives_the_neighbour_extension() {
+        for name in ["midplane", "plane_through"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[]),
+                Some(reify_core::Type::Plane),
+                "{name} must still resolve to Type::Plane"
+            );
+        }
+        assert_eq!(
+            datum_constructor_result_type("axis_through", &[]),
+            Some(reify_core::Type::Axis),
+            "axis_through must still resolve to Type::Axis"
+        );
+        assert_eq!(
+            datum_constructor_result_type("frame_at", &[]),
+            Some(reify_core::Type::Frame(3)),
+            "frame_at must still resolve to Type::Frame(3)"
+        );
+        // `offset` arity gate, both sides — the construction-datum form is
+        // arity 2; arity 3 is γ's `offset(Plane, Plane, Length) -> Relation`,
+        // claimed by the earlier relation arm and NOT by this resolver.
+        assert_eq!(
+            datum_constructor_result_type("offset", &[length_arg(), length_arg()]),
+            Some(reify_core::Type::Plane),
+            "arity-2 offset must still resolve to Type::Plane"
+        );
+        assert_eq!(
+            datum_constructor_result_type("offset", &[length_arg(), length_arg(), length_arg()]),
+            None,
+            "arity-3 offset must still fall through to γ's relation arm"
+        );
+    }
+
+    /// `project` is deliberately claimed by NEITHER new arm: it mirrors its
+    /// first argument by design (`reify_stdlib::geometry::eval_geometry` →
+    /// `project`), so the first-arg fallback is already CORRECT for it and an
+    /// arm here would be a regression rather than a fix.
+    #[test]
+    fn project_is_claimed_by_neither_the_datum_nor_the_orientation_family() {
+        assert_eq!(
+            datum_constructor_result_type("project", &[point3_length_arg()]),
+            None,
+            "project must fall through to the first-arg fallback, which \
+             deliberately mirrors arg 0"
+        );
+        assert!(
+            !ORIENTATION_TYPED_FN_NAMES.contains(&"project"),
+            "project must not be claimed by the orientation family either"
+        );
     }
 }

@@ -3214,6 +3214,7 @@ impl Engine {
             solvers: _,            // named solver registry
             warm_pool: _,          // warm-start state pool (cross-edit)
             realization_cache: _,  // task 2874 engine-scoped realization cache
+            cumulative_eval_cache_totals: _, // task 4152 lifetime eval-cache totals
             solver_progress_sink: _, // per-iteration progress hook
             active_solve_cancel: _,  // in-flight solve cancellation hook
             morph_producer: _,     // mesh-morph producer hook
@@ -5121,6 +5122,80 @@ impl Engine {
         let default_kernel_name = self.default_kernel_name.clone();
         let mut artifacts: Vec<crate::ExportArtifact> = Vec::new();
 
+        // (2a) Export refusal (task η, PRD
+        //      `docs/prds/v0_6/precision-nominal-representation-guarantee.md`
+        //      §1.1 / C-SURFACE (2)): a module declaring a `RepresentationWithin`
+        //      bound this path cannot demonstrate it honours must REFUSE its
+        //      artifacts rather than write them and report success.
+        //
+        //      Computed ONCE here rather than inside the loop: it is a static,
+        //      module-level scan of compiled IR, so the cost is paid per build
+        //      and not per occurrence. `None` — the overwhelmingly common case —
+        //      leaves every existing unbounded design byte-identical (PRD C2).
+        //
+        //      The same helper backs the `reify build -o <file>` refusal in
+        //      reify-cli's `cmd_build`, so the two export surfaces cannot word
+        //      themselves differently or disagree about what counts as bounded.
+        //
+        //      THE MODULE-GLOBAL POSTURE IS DELIBERATE, NOT AN OVERSIGHT. One
+        //      bound anywhere in the module refuses EVERY Output occurrence,
+        //      including occurrences of structures that carry no bound. Refusing
+        //      only the "related" occurrences is not available here, and the
+        //      reason is structural rather than a matter of effort:
+        //
+        //        * `compute_representation_bounds` keys the table by the bound's
+        //          declared `StructureRef` TYPE — `D` for the canonical
+        //          `structure DCheck { param subject : D; constraint
+        //          RepresentationWithin(subject, 1mm) }` idiom.
+        //        * an occurrence's `subject` ARG is a `ValueRef` into the
+        //          hydrated value map (see (4) below) — `part`, a box handle in
+        //          that same fixture. It carries no declared structure name, and
+        //          in the canonical idiom the bounded type is the ENCLOSING
+        //          structure, not the subject's own.
+        //
+        //      So a key-membership test on the occurrence's subject would refuse
+        //      NOTHING for exactly the designs η targets. The real question —
+        //      "does this occurrence's subject belong to a realization of a
+        //      bounded structure?" — is C-BOUND's `realization_belongs_to`, which
+        //      answers it against `achieved_repr_tol` keys AFTER realization, not
+        //      from static IR at this point in the build. Narrowing therefore
+        //      needs the realization graph, which is a design change rather than
+        //      a local edit; it is filed as **#6531** ("Narrow the
+        //      RepresentationWithin export refusal from module-global to
+        //      subject-related occurrences") and is orthogonal to task θ (#6173,
+        //      which narrows on achievability, not on subject relatedness), so
+        //      θ landing will not close #6531. Until then the broad posture is
+        //      the safe direction: it can refuse an export that would have been
+        //      fine, never ship one whose bound is unenforced (PRD §1.1).
+        //
+        //      THE SAME BREADTH APPLIES TO **WHERE** THE BOUND IS DECLARED, and
+        //      two of those places are not the checker-structure idiom discussed
+        //      above. `compute_representation_bounds` walks ALL of
+        //      `module.templates`, so:
+        //
+        //        * a bound declared only inside an `@test` template refuses every
+        //          PRODUCTION export of that design (the table is deliberately
+        //          `templates`, not `non_test_templates()`); and
+        //        * a bound declared on the `: Output` OCCURRENCE TEMPLATE ITSELF
+        //          — the v0_2 per-purpose-tolerance idiom for DEMANDING an export
+        //          tolerance (`occurrence def TightSTL : Output { param subject :
+        //          D  constraint RepresentationWithin(subject, 1um) }`) — is
+        //          refused too, so the design that asks for a tolerance the
+        //          supported way is the one η blocks.
+        //
+        //      Both are the intended verdict, for the same reason as the
+        //      module-global posture: nothing on this path reads either bound
+        //      yet (task 6085 has not landed export-side honouring), so exempting
+        //      either would ship §1.1 verbatim rather than fix it. The full
+        //      rationale — and why narrowing the `@test` axis would fork the
+        //      traversal back into the hand-synced mirror #6170 retired — lives
+        //      on `unenforced_representation_bound_diagnostic` under
+        //      "What counts as a declared bound". Both are pinned by tests
+        //      (`build_outputs_refuses_a_bound_declared_on_the_output_occurrence_itself`
+        //      in `tests.rs`; the `@test` case in `tolerance_combine.rs`), so
+        //      changing either is a deliberate edit against a red test.
+        let refusal = crate::tolerance_combine::unenforced_representation_bound_diagnostic(module);
+
         // (2) Deterministic declaration-order walk of every occurrence sub:
         //     emit one artifact per recognized Output occurrence (step-10).
         for template in &module.templates {
@@ -5185,6 +5260,65 @@ impl Engine {
                 // (5) Resolve the destination (design-relative / --out-dir) up
                 //     front so any failure diagnostic below can name the path.
                 let path = resolve_artifact_path(&spec.path, design_dir, out_dir_override);
+
+                // (5a) η's refusal gate. Placed AFTER path resolution — so the
+                //      refused artifact carries the TRUE declared destination —
+                //      but BEFORE subject-handle resolution, colour resolution
+                //      and `export_with_options`, so nothing is serialized.
+                //
+                //      IT IS ALSO DELIBERATELY AFTER THE `DisplayDeferred` ARM
+                //      ABOVE, WHICH `continue`s. A DisplayOutput writes no file
+                //      at all, so there is no artifact for η to withhold:
+                //      refusing it would flip a previously exit-0 build to
+                //      exit-1 and print a refusal naming an EMPTY path (a
+                //      viewport sink has no destination). η's contract is
+                //      "refuse the WRITE", and a deferred viewport sink is not
+                //      a write. Moving this block above that arm would keep
+                //      every file-target test green while silently swallowing
+                //      the info-severity I_DISPLAY_OUTPUT_DEFERRED signal, so
+                //      the ordering is pinned by
+                //      `build_outputs_defers_display_output_even_in_a_bounded_module`
+                //      in `tests.rs` rather than left to comment discipline.
+                //
+                //      A recognized-but-empty-bytes artifact, not an early
+                //      return with zero artifacts: with zero artifacts the CLI
+                //      prints "No output files written: the design declares no
+                //      `: Output` occurrences", which is FALSE for exactly the
+                //      modules η targets. Emitting the refused occurrence
+                //      selects the accurate "all N `: Output` occurrence(s) were
+                //      deferred or failed" branch instead, with no CLI change at
+                //      all. This is the same empty-bytes error-artifact idiom the
+                //      subject-unresolved and kernel-export-failed paths below
+                //      already use.
+                //
+                //      ATTRIBUTION GOES IN THE MESSAGE, NOT ONLY IN `path`. The
+                //      shared refusal is module-level, so a design with N Output
+                //      occurrences would otherwise print the SAME ~300-char line
+                //      N times with nothing distinguishing the copies: `cmd_build`
+                //      surfaces `artifact.diagnostics` and never `artifact.path`,
+                //      so the path alone is unreachable to the reader. Appending
+                //      the occurrence + destination mirrors the subject-unresolved
+                //      and kernel-export-failed wording below, which both name the
+                //      occurrence and the path for exactly this reason.
+                //      Pinned by `build_outputs_refuses_every_output_occurrence_
+                //      with_per_occurrence_attribution` in `tests.rs`.
+                if let Some(d) = &refusal {
+                    let mut d = d.clone();
+                    d.message = format!(
+                        "{} (refused Output occurrence `{}.{}` → {})",
+                        d.message,
+                        template.name,
+                        sub.name,
+                        path.display()
+                    );
+                    artifacts.push(crate::ExportArtifact {
+                        path: path.clone(),
+                        format: export_format,
+                        bytes: Vec::new(),
+                        diagnostics: vec![d],
+                    });
+                    continue;
+                }
 
                 // (4) Resolve `subject` → live kernel handle via the sub's
                 //     `subject` ARG: a ValueRef into the post-build hydrated map
@@ -8097,6 +8231,20 @@ impl Engine {
                                                     ),
                                                     id: handle.id,
                                                 };
+                                                // **Task 4152: this is the UNCOUNTED
+                                                // insert.** Plain `insert`, so it does
+                                                // not move
+                                                // `CacheStats::realization_entries`.
+                                                // These are per-step conversion
+                                                // intermediates *within* one
+                                                // realization (keyed
+                                                // `"{entity}#conv-step{N}"`), not
+                                                // realizations — the OCCT→gmsh
+                                                // VolumeMesh route passes through here,
+                                                // so counting them would break the
+                                                // "one body, one entry" contract. The
+                                                // terminal site below uses
+                                                // `insert_terminal`.
                                                 realization_cache.insert(
                                                     &intermediate_entity,
                                                     terminal_to,
@@ -9060,7 +9208,25 @@ impl Engine {
                                 false, // require_hex_wedge
                                 &realization_ops,
                                 &realization_step_ids,
-                                |_swept| unreachable!("gmsh_2d unreachable: force_tet=true"),
+                                // Task 5218: de-stub the swept 2-D producer edge
+                                // — wire the real op-stream cross-section
+                                // producer as gmsh_2d. Still gated: swept_kind is
+                                // None and force_tet is true, so dispatch
+                                // short-circuits to tet_path before this closure
+                                // is ever invoked. The edge-selection activation
+                                // (swept_kind lookup, force_tet/require_hex_wedge
+                                // from ElementTypePref, sweep_step wiring, storing
+                                // the Swept outcome) is contract C-5, owned by
+                                // task 4746.
+                                |swept| {
+                                    crate::sweep_classifier::build_swept_2d_mesh(
+                                        swept,
+                                        &realization_ops,
+                                        &realization_step_ids,
+                                        reify_solver_elastic::SweepElementTarget::HexPreferred,
+                                        &reify_solver_elastic::Mesh2dOptions::default(),
+                                    )
+                                },
                                 |_params, _mesh| {
                                     unreachable!("sweep_step unreachable: force_tet=true")
                                 },
@@ -9271,7 +9437,15 @@ impl Engine {
                     // the entity+tol key — intermediate lets are intra-build
                     // scratch and must not pollute the cross-build cache.
                     let resolved_repr = last_produced_repr.unwrap_or(cache_repr);
-                    realization_cache.insert(
+                    // **Task 4152: this is the COUNTED insert.** `insert_terminal`
+                    // is `insert` plus a bump of the monotonic
+                    // `CacheStats::realization_entries` lifetime counter when the
+                    // insert is accepted. This site is the one the counter is
+                    // defined by: a terminal realization that genuinely produced
+                    // and cached new geometry. The conversion-intermediate insert
+                    // (search `intermediate_cache_inserts`) stays on plain
+                    // `insert` and is deliberately NOT counted.
+                    realization_cache.insert_terminal(
                         &realization_id.entity,
                         resolved_repr,
                         tol,
@@ -12984,6 +13158,7 @@ mod reset_per_build_state_tests {
                 axis_origin: [0.0, 0.0, 0.0],
                 axis_dir: [0.0, 0.0, 1.0],
                 angle_rad: 1.0,
+                profile: GeometryHandleId(0),
             },
         );
 

@@ -2,7 +2,7 @@
 //! the §5.4 capability-kind table for every extant `GeometryQuery` variant.
 //!
 //! These are the durable seam tests KGQ-ο/π/ρ depend on. Modelled on
-//! `crates/reify-eval/tests/realization_produced_repr_pinning.rs`.
+//! `crates/reify-eval/tests/harness_kernel_realization/realization_produced_repr_pinning.rs`.
 
 use reify_core::DiagnosticCode;
 use reify_ir::{GeometryHandleId, GeometryQuery, QueryCapability};

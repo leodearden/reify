@@ -1,0 +1,15 @@
+// PRD gate fixture (angle-dimension-completion leaf δ, PRE-STATE premise):
+// hand-constructed rad⁻² inertia — dimension-vector arithmetic closes
+// ½Iω² → ENERGY WITHOUT task 5844's MOMENT_OF_INERTIA constant.
+// The typed param IS the machine gate: the declared-vs-initializer dimension
+// equality check makes `reify check` exit 0 iff the product lands exactly on
+// ENERGY (non-vacuity control: the same initializer declared `: Torque`
+// exits 1 — probed 2026-08-10).
+// POST-STATE (real MOI constant, dep-gated on #5844) is deliberately NOT
+// encoded here — not probe-able until 5844 lands.
+
+module rotational_closure_prestate
+
+structure def RotationalClosurePrestate {
+    param rot_ke : Energy = 0.5 * (1kg * 1m * 1m / (1rad * 1rad)) * (1rad / 1s) * (1rad / 1s)
+}

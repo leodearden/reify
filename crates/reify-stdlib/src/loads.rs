@@ -289,7 +289,7 @@ mod tests {
     // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
     // `TractionLoad(...)` calls now lower to `CompiledExprKind::StructureInstanceCtor`
     // and eval to a `Value::StructureInstance` (end-to-end coverage:
-    // `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs::
+    // `crates/reify-eval/tests/harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs::
     //  traction_load_in_source_lowers_to_structure_instance`).
     //
     // The Rust API contract — `eval_builtin("traction_load", ...)` returns
@@ -310,7 +310,7 @@ mod tests {
     // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
     // `BodyForce(...)` calls now lower to `CompiledExprKind::StructureInstanceCtor`
     // and eval to a `Value::StructureInstance` (end-to-end coverage:
-    // `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs::
+    // `crates/reify-eval/tests/harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs::
     //  body_force_in_source_lowers_to_structure_instance`).
     //
     // The Rust API contract — `eval_builtin("body_force", ...)` returns

@@ -202,73 +202,55 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
-/// Returns `true` if `template` declares a member named `name` in any of the
-/// three member categories: value cells, ports, or sub-components.
+/// The **acceptance policy** for an external `obj.member` projection: is it safe
+/// to LOWER this member name to a `Value::StructureInstance` field read?
 ///
-/// This is the single source of truth for "is this member name known?" used at
-/// both the purpose-subject concrete-subject validation path (task-2200) and the
-/// SIR-α entity-scope StructureRef member-access path (task-3540 / ds-sentinel
-/// L4, task #4649). Keeping the two sites in lockstep prevents a future member
-/// category addition (e.g. a new declarable member kind) from silently diverging
-/// between the two diagnostics.
+/// Deliberately NOT the membership authority. That is
+/// [`member_path::resolve_hop`] (task #5424, contract C1-iv), which scans the
+/// full five-container union `value_cells ∪ guarded_groups[].members ∪
+/// sub_components ∪ ports ∪ realizations`. This predicate is narrower on
+/// purpose: it accepts `value_cells ∪ ports ∪ sub_components` only.
+///
+/// The two containers it omits are genuine members the resolver knows about,
+/// but accepting them here would lower to a projection the runtime cannot
+/// materialise — `StructureInstanceData.fields` excludes them, so the read
+/// silently evaluates to `Value::Undef`, exactly the pre-existing class already
+/// documented for ports/subs at the `member_known` note below. Trading today's
+/// loud `StructureMemberNotFound` for a silent undef is what PRD decision D9
+/// forbids, so the widening waits on the constructor/eval materialization half
+/// (#5935). #5425 (β) and #5430 (η) convert this site to the resolver; neither
+/// may widen acceptance before #5935 lands.
+///
+/// Used at both the purpose-subject concrete-subject validation path (task-2200)
+/// and the SIR-α entity-scope StructureRef member-access path (task-3540 /
+/// ds-sentinel L4, task #4649), so the two diagnostics stay in lockstep.
 fn template_has_member(template: &TopologyTemplate, name: &str) -> bool {
     template.value_cells.iter().any(|vc| vc.id.member == name)
         || template.ports.iter().any(|p| p.name == name)
         || template.sub_components.iter().any(|sc| sc.name == name)
 }
 
-/// Returns `true` if `name` resolves to a `priv` member of `template`: a
-/// `priv param` (a `Param`-kind value cell marked `Visibility::Private`), a
-/// `priv sub` (`Visibility::Private`), a `priv port` (`is_priv == true`), or a
-/// `priv param` nested inside a block-form `where` guarded group
-/// (`guarded_groups[].members`, task #5171). Sibling to
-/// [`template_has_member`]; gates the E_PRIV_MEMBER_ACCESS check on the
-/// external StructureRef member-access path (task #3978 δ).
-///
-/// The `kind == Param` guard is load-bearing: `value_cells` (and
-/// `guarded_groups[].members`) also hold `let` bindings, and a default
-/// (non-`pub`) `let` is `Visibility::Private` too — but `let`s are never
-/// externally accessible by name, so reporting them here would be an
-/// out-of-scope behaviour change. Only a `priv param` carries `Param` +
-/// `Private`.
-fn template_member_is_priv(template: &TopologyTemplate, name: &str) -> bool {
-    template.value_cells.iter().any(|vc| {
-        vc.id.member == name
-            && vc.kind == ValueCellKind::Param
-            && vc.visibility == Visibility::Private
-    }) || template
-        .sub_components
-        .iter()
-        .any(|sc| sc.name == name && sc.visibility == Visibility::Private)
-        || template.ports.iter().any(|p| p.name == name && p.is_priv)
-        || template.guarded_groups.iter().any(|g| {
-            g.members.iter().any(|vc| {
-                vc.id.member == name
-                    && vc.kind == ValueCellKind::Param
-                    && vc.visibility == Visibility::Private
-            })
-        })
-}
-
 /// Returns `true` if `template` declares a port named `port_name` with a
 /// nested `priv param` member named `member` (task #5171). Companion to
-/// [`template_member_is_priv`], but keyed by the port-qualified composite
-/// name `CompiledPort::members` cells actually carry
+/// [`member_path::resolve_hop`]'s `PrivateMember` verdict, but keyed by the
+/// port-qualified composite name `CompiledPort::members` cells actually carry
 /// (`ValueCellId.member == "<port_name>.<member>"`, set in entity.rs's
 /// port-member compilation), rather than a bare top-level member name.
 ///
 /// A separate helper is needed because the two-level `<sub>.<port>.<member>`
-/// access shape never reaches `template_member_is_priv`: the intermediate
-/// `<sub>.<port>` access does not resolve to a `Type::StructureRef` (ports
-/// are absent from `value_cells`), so the `Type::StructureRef` member-access
-/// block's priv gate is never entered for the outer `.<member>`. The
-/// AST-pattern branch in `compile_expr_guarded` (mirroring the cluster /
-/// keyed-sub branches) calls this directly instead.
+/// access shape never reaches the resolver: the intermediate `<sub>.<port>`
+/// access does not resolve to a `Type::StructureRef` (ports are absent from
+/// `value_cells`), so the `Type::StructureRef` member-access block's priv gate
+/// is never entered for the outer `.<member>`. The AST-pattern branch in
+/// `compile_expr_guarded` (mirroring the cluster / keyed-sub branches) calls
+/// this directly instead. Retiring that shape — and with it this helper — is
+/// task η's (#5430), which routes the two-level matchers through
+/// `member_path::resolve_member_path`.
 ///
 /// The `kind == Param` guard mirrors the load-bearing guard on
-/// `template_member_is_priv`'s `value_cells` arm: a port may also declare
-/// `let` members, which default to `Visibility::Private` but are never
-/// externally accessible by name.
+/// `member_path::value_cell_visibility`: a port may also declare `let` members,
+/// which default to `Visibility::Private` but are never externally accessible
+/// by name.
 fn port_member_is_priv(template: &TopologyTemplate, port_name: &str, member: &str) -> bool {
     template.ports.iter().any(|p| {
         // Short-circuit on the name check first so the `format!` allocation
@@ -1064,7 +1046,11 @@ const STRUCTURAL_QUERY_ACCESSORS: &[&str] = &["children", "members", "descendant
 /// If a sibling wildcard kind is ever added (e.g., `"Occurrence"` gains first-class
 /// wildcard status), add it here alongside this constant rather than embedding
 /// another bare string literal at the call site.
-const WILDCARD_STRUCTURE_KIND: &str = "Structure";
+///
+/// `pub(crate)` so `member_path::resolve_hop` — the single member-shape
+/// authority (task 5424) — applies the same wildcard skip rather than
+/// re-embedding the bare `"Structure"` literal.
+pub(crate) const WILDCARD_STRUCTURE_KIND: &str = "Structure";
 
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
@@ -2726,6 +2712,74 @@ fn compile_expr_guarded_with_expected_inner(
                     .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
                     .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
                     .collect();
+                // ── Two read-only VIEWS for the ε diagnostics below ───────────
+                // Both are deliberately NOT the `params` binding vec above, which
+                // answers a third question ("which cells can a positional bind
+                // to?"). `param x : T = auto` / `auto(free)` lowers to
+                // `ValueCellKind::Auto { free }` (`entity.rs`,
+                // `build_param_value_cell_decl`), so an auto-declared param is a
+                // param the author WROTE but not a slot a positional can bind to.
+                //
+                // THE IR CANNOT DISTINGUISH AN AUTO PARAM FROM AN AUTO LET.
+                // `let m : T = auto` inside a structure lowers to the SAME
+                // `ValueCellKind::Auto { free }` cell (`entity.rs`, the auto-let
+                // branch) — verified by probe, not assumed. `visibility` is the
+                // only discriminator carried today, and it is a heuristic, not a
+                // proof: a param defaults to `Public`
+                // (`priv_flag_to_visibility(param.is_priv)`) and a let defaults to
+                // `Private`, but `priv param x : T = auto` and
+                // `pub let m : T = auto` both compile and both invert it. The
+                // durable fix is to carry the origin explicitly (a `from_param`
+                // discriminant on the `Auto` variant, or a declared-param name list
+                // built alongside `value_cells` in `entity.rs`) — an IR change
+                // across ~86 `ValueCellKind::Auto` sites in six crates, outside ε's
+                // diagnostics-only remit and outside this task's declared file set.
+                // A follow-up task is filed for it (steward, esc-5303-9).
+                //
+                // Because no single predicate is right for every shape, the two
+                // diagnostics take the view that is SAFE IN THEIR OWN DIRECTION.
+
+                // (a) The externally-settable member set — WIDE on purpose, and
+                // evaluated LAZILY at its single use site rather than materialized
+                // here (see `is_settable_member` below). Used only to SUPPRESS
+                // `CtorUnknownField`, so over-inclusion can only make the
+                // diagnostic stay silent; it can never make it assert a falsehood.
+                // Every ambiguous `Auto` cell is included, so neither
+                // `priv param x : T = auto` nor an auto let can produce a false
+                // "has no parameter with that name". This is the same predicate
+                // already used by `connect.rs` and `traits.rs`. Matching on the
+                // VARIANT, not on `free`, covers strict `auto` and `auto(free)`.
+
+                // (b) The declared-param COUNT — the number `CtorArity` prints as
+                // its ceiling, so unlike (a) it must be a number the source
+                // actually supports. An `Auto` cell counts only when its
+                // `visibility` says param (`Public`); a `Private` `Auto` cell is
+                // read as an auto LET and excluded. That is what keeps the ceiling
+                // off an auto let — counting one inflated the ceiling into a claim
+                // the source contradicts (`expects at most 2 arguments` on a
+                // structure declaring ONE param plus an auto let) and silenced the
+                // param-less case entirely.
+                //
+                // KNOWN RESIDUAL, pinned by
+                // `priv_auto_param_is_read_as_an_auto_let_by_the_arity_ceiling`:
+                // `priv param x : T = auto` is `Private` `Auto` and is therefore
+                // read as a let, understating the ceiling by one. No predicate over
+                // today's IR can be right for both that shape and a plain auto let
+                // — they are byte-identical cells — so this picks the reading that
+                // is correct for every shape in the corpus (`examples/*.ri` contains
+                // auto lets and zero `priv param … = auto`) and the one that matches
+                // `priv`'s own meaning: a private member is not part of the
+                // constructor's externally-settable surface. Only the origin-carrying
+                // IR change described above removes the ambiguity for good.
+                let declared_count = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| match vc.kind {
+                        ValueCellKind::Param => true,
+                        ValueCellKind::Auto { .. } => vc.visibility == Visibility::Public,
+                        _ => false,
+                    })
+                    .count();
                 // --- By-name binder (task-4522) ---
                 // Named arg `p` binds to the template param named `p`;
                 // positional (None) args fill the next declaration-order
@@ -2806,17 +2860,158 @@ fn compile_expr_guarded_with_expected_inner(
                             .push(((*pname).to_string(), compiled_args[call_idx].clone()));
                     }
                 }
-                // Lenient fallback: unknown named args (no matching param)
-                // are appended as __arg{i} to preserve existing IR handling.
+                // Unknown named args (no matching param): diagnose, then keep the
+                // pre-existing lenient __arg{i} fallback so the IR shape is
+                // unchanged. This site's staging and severity schedule live in
+                // `docs/prds/struct-ctor-field-type-conformance.md` §7 (row 11) —
+                // not restated here, so a later stage flip cannot leave a stale
+                // claim behind. The severity itself is read from the knob below.
+                //
+                // The unknown arg is diagnosed but NOT bound to a param slot: pass
+                // 2 above already let a following positional take the slot the
+                // typo'd name failed to claim. Pinned by
+                // `unknown_named_argument_does_not_consume_a_param_slot`.
+                //
+                // One diagnostic per unknown named arg: a typo'd field name is a
+                // per-argument author error and each needs its own span to be
+                // actionable (PRD §6 C2(ii)). No type anti-cascade guard — an
+                // unknown NAME is decidable without reference to any argument's
+                // type, and suppressing it on a poisoned arg would hide the typo
+                // behind the downstream error the typo itself often caused.
+                //
+                // The DIAGNOSTIC and the lenient push deliberately carry DIFFERENT
+                // predicates. The push is keyed on `params` (no slot bound it, so
+                // the arg still needs somewhere to go) and stays unconditional, so
+                // the IR is byte-for-byte what it was before ε — ε is
+                // diagnostics-only, and β's corpus survey must measure diagnostics,
+                // not behaviour drift. The diagnostic is keyed on the WIDE view
+                // (a), evaluated inline as `is_settable_member` below, because
+                // "could this name be a member the author wrote?" is the only
+                // question this message may safely answer — a false "no parameter
+                // with that name" is the one failure mode this code must never
+                // have.
+                //
+                // A named arg naming an `Auto` cell therefore compiles to the same
+                // `__arg{i}` member it always did, SILENTLY — whether that cell is
+                // an auto param or an auto let. Silence is leniency, not a false
+                // claim, and it is the deliberate ε posture: the residual binding
+                // gap (positional and named args skipping `Auto` slots into garbage
+                // `__arg{i}` members) is owned by #6705, which also decides whether
+                // a diagnostic is owed for it; ε cannot state a true fact about it
+                // without changing the IR. Pinned by
+                // `named_argument_for_an_auto_let_is_leniently_accepted`.
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
                     if let Some(pname) = arg_name
                         && !params.iter().any(|(n, _)| *n == pname.as_str())
                     {
+                        // View (a), evaluated inline. Deliberately NOT hoisted
+                        // into a `Vec` above: this branch runs only for a named
+                        // argument that already failed to bind, so a hoisted view
+                        // would allocate on every well-formed structure-ctor call
+                        // in the program to serve a lookup that almost never
+                        // happens. The scan is O(cells) against an O(cells) `Vec`
+                        // build plus an O(cells) `contains`, so the lazy form is
+                        // never slower even when it does fire.
+                        let is_settable_member = template.value_cells.iter().any(|vc| {
+                            vc.id.member == pname.as_str()
+                                && matches!(
+                                    vc.kind,
+                                    ValueCellKind::Param | ValueCellKind::Auto { .. }
+                                )
+                        });
+                        if !is_settable_member {
+                            diagnostics.push(
+                                crate::conformance::diag_at(
+                                    crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
+                                    format!(
+                                        "E_CTOR_UNKNOWN_FIELD: unknown named argument '{}' \
+                                         in call to '{}'; '{}' has no parameter with that name",
+                                        pname, name, name
+                                    ),
+                                )
+                                .with_code(DiagnosticCode::CtorUnknownField)
+                                .with_label(DiagnosticLabel::new(
+                                    args[call_idx].span,
+                                    "unknown named argument",
+                                )),
+                            );
+                        }
                         ordered_args.push((
                             format!("__arg{}", call_idx),
                             compiled_args[call_idx].clone(),
                         ));
                     }
+                }
+                // Over-arity positional args: diagnose once for the call, then keep
+                // the pre-existing lenient __arg{call_idx} fallback. The `defaults`
+                // computation that follows is untouched: under-arity covered by param
+                // defaults stays legal, and only the SURPLUS direction is diagnosed.
+                // Staging and severity schedule: PRD §7 (row 12), as above.
+                //
+                // Exactly ONE diagnostic per call site, not one per surplus arg:
+                // arity is a call-LEVEL fact (`W("a","b","c")` against a 1-param def
+                // is one mistake), matching arg_check.rs, which emits one arity
+                // diagnostic per call. Anchored at the FIRST surplus arg.
+                //
+                // The reported `got` count is `args.len()` — the WHOLE call's arg
+                // count, including any unknown named arg diagnosed above, even though
+                // the fact being reported concerns surplus POSITIONALS. That is the
+                // number the author can match against their own source. Pinned by
+                // `unknown_named_argument_is_still_counted_in_the_arity_got_total`.
+                //
+                // Wording and the label text are lifted from arg_check.rs — including
+                // its singular/plural rule, keyed on the EXPECTED count — so ctor
+                // arity reads identically to builtin arity. Its helper fns cannot be
+                // called here: all three hard-code `Diagnostic::error`, and this site
+                // must emit at the ctor-conformance knob.
+                //
+                // The CEILING is the declared-param COUNT view (b), while the
+                // SLOTS a positional can bind to still come from `params`. The two
+                // views answer different questions, and this message asserts the
+                // first: reporting the slot count as the declared count is exactly
+                // the false-message defect view (b) exists to fix
+                // (`WidgetAutoSurplus() expects at most 1 argument` on a structure
+                // that visibly declares two).
+                //
+                // The `args.len() > declared_count` conjunct is what makes a call
+                // WITHIN the declared arity silent. It is provably a no-op when the
+                // template has no `Auto` cell — there `declared_count == nparams`,
+                // and a non-empty `extra_positional_idxs` already implies
+                // `args.len() > nparams`: if any positional overflows then all
+                // `nparams` slots are filled, so `args.len() == named +
+                // positionals_placed + extra >= nparams + 1`. It therefore cannot
+                // suppress a pre-ε-remediation diagnostic.
+                //
+                // `extra_positional_idxs` itself is untouched, so the label still
+                // anchors where it did. A call within the declared count that
+                // nonetheless overflows the bindable slots (because `Auto` params
+                // are not positionally bindable today) is deliberately NOT
+                // diagnosed here — that is the binding defect owned by #6705.
+                if let Some(&first_extra) = extra_positional_idxs.first()
+                    && args.len() > declared_count
+                {
+                    let noun = if declared_count == 1 {
+                        "argument"
+                    } else {
+                        "arguments"
+                    };
+                    diagnostics.push(
+                        crate::conformance::diag_at(
+                            crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
+                            format!(
+                                "E_CTOR_ARITY: {}() expects at most {} {}, got {}",
+                                name,
+                                declared_count,
+                                noun,
+                                args.len()
+                            ),
+                        )
+                        .with_code(DiagnosticCode::CtorArity)
+                        .with_label(DiagnosticLabel::new(
+                            args[first_extra].span,
+                            "wrong number of arguments",
+                        )),
+                    );
                 }
                 // Lenient fallback: over-arity positional args appended as
                 // __arg{call_idx}, matching the unknown-named-arg fallback above.
@@ -3148,7 +3343,7 @@ fn compile_expr_guarded_with_expected_inner(
                     // the user's return type wins. This shadow-by-user-fns precedence
                     // is intentional and pinned by the
                     // `user_defined_length_shadows_stdlib_geometry_query` regression
-                    // test in `crates/reify-compiler/tests/structural_physical_spec_shape.rs`.
+                    // test in `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_spec_shape.rs`.
                     //
                     // **Internal-arm precedence (within `NoUserFunctions`).** The arms
                     // below are checked in order: `is_geometry_query_helper` →
@@ -3159,7 +3354,8 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
                     // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
-                    // `is_field_op` →
+                    // `is_field_op` → `is_parse_typed_fn` →
+                    // `is_orientation_typed_fn` (task 5344) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
@@ -3412,7 +3608,20 @@ fn compile_expr_guarded_with_expected_inner(
                         // The math-linalg family, routed via three sibling
                         // single-source-of-truth slices in `math_signatures`:
                         //   • CONSTRUCTION (task 4179, MATH_CONSTRUCTION_NAMES):
-                        //     vec / matrix / diag / identity.
+                        //     vec / matrix / diag / identity, plus the
+                        //     fixed-`n` aggregate constructors vec3 / vec2
+                        //     (task 4622) and point3 / point2 (task 5344).
+                        //     The four fixed-`n` names are eval twins — one
+                        //     `construct_point_or_vector(args, n, is_point)`
+                        //     helper serves all of them — so they share one
+                        //     resolver rather than being split across families.
+                        //     Typing `point3(..)` as a real `Type::Point` is
+                        //     also what makes `t * origin` well-typed once the
+                        //     orientation family (below) gives `transform3(..)`
+                        //     a real `Type::Transform(3)`: `type_compat`'s
+                        //     `(Transform(n), Point{n})` Mul rule was
+                        //     previously unreachable because `point3(..)` fell
+                        //     through to its first argument's `Scalar[m]`.
                         //   • OPERATION / FUNCTION (task 4182 δ,
                         //     MATH_OPERATION_NAMES): the §3 table — sqrt/abs/…,
                         //     dot/cross/normalize/magnitude/outer,
@@ -3579,6 +3788,38 @@ fn compile_expr_guarded_with_expected_inner(
                         // `parse_signatures.rs`'s own two-name spot-check), so
                         // this arm's position in the ladder is unobservable.
                         parse_fn_result_type(name)
+                    } else if is_orientation_typed_fn(name) {
+                        // Orientation / transform / frame constructor family
+                        // (task 5344) — 18 names, each with a FIXED nominal
+                        // result type. Eval dispatch is name-based in
+                        // reify_stdlib (orientation::eval_orientation for
+                        // orient_*, geometry::eval_geometry for the
+                        // frame/transform names); the call STAYS a FunctionCall.
+                        //
+                        // Set the cell type up-front. This REPLACES the wrong
+                        // first-arg fallback below, which mistyped every call
+                        // site in the family — the zero-arg members (typed Real
+                        // PLUS a "cannot infer return type" warning per site, 25
+                        // of them in prj/printer_v01/printer.ri) and the n-arg
+                        // ones alike (orient_axis_angle silently adopted its
+                        // rotation-AXIS argument's Vector{3}).
+                        //
+                        // Cell TYPE matches the eval VALUE KIND exactly
+                        // (Type::Orientation(3) ⇄ Value::Orientation, Frame ⇄
+                        // Frame, Transform ⇄ Transform), so unlike the joint
+                        // StructureRef arm this needs no escape hatch. Note this
+                        // makes reify_eval::value_type_kind_matches AGREE where
+                        // it previously did not: eval was already producing a
+                        // Value::Orientation into a cell statically typed Real.
+                        //
+                        // Membership and its rationale (why an explicit list and
+                        // never a prefix rule; the four excluded decomposers;
+                        // the frame_at exclusion; the two traps) are documented
+                        // ONCE, on ORIENTATION_TYPED_FN_NAMES. The family is
+                        // pinned disjoint from all sibling families by the
+                        // units.rs disjointness test, so this arm's position in
+                        // the ladder is unobservable.
+                        orientation_typed_fn_result_type(name)
                     } else {
                         compiled_args
                             .first()
@@ -6505,18 +6746,19 @@ fn member_access_on_structure_like(
                 // `obj.member` dot-access (sibling check at the StructureRef
                 // branch). The wildcard "Structure" subject is already excluded
                 // by the enclosing `struct_name != WILDCARD_STRUCTURE_KIND` guard.
-                if template_member_is_priv(template, member) {
-                    return make_poison_literal(
-                        diagnostics,
-                        Diagnostic::error(format!(
-                            "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            span,
-                            "private member accessed here",
-                        ))
-                        .with_code(DiagnosticCode::PrivMemberAccess),
-                    );
+                //
+                // The verdict AND its rendering both come from the single
+                // member-shape authority (task #5424, C1-iv): this site decides
+                // only what to DO with a `PrivateMember` error, never what
+                // counts as one. `resolve_hop` maps an unknown member to
+                // `UnknownMember` and a wildcard / registry-miss / trait-object
+                // receiver to `Indeterminate`, so neither is treated as priv —
+                // identical to the helper this replaced.
+                if let Err(err @ member_path::MemberPathError::PrivateMember { .. }) =
+                    member_path::resolve_hop(&compiled_obj.result_type, member, scope)
+                    && let Some(diagnostic) = err.to_diagnostic(span)
+                {
+                    return make_poison_literal(diagnostics, diagnostic);
                 }
             }
             // Per-param stamp: encode `purpose_name::param_name` as the entity
@@ -6648,21 +6890,20 @@ fn member_access_on_structure_like(
         // every OTHER priv member kind (top-level param / sub / port): those
         // are already `member_known`, so StructureMemberNotFound never fired
         // for them regardless of order.
+        //
+        // The verdict and its rendering both come from the single member-shape
+        // authority (task #5424, C1-iv). The two explicit guards below are kept
+        // even though `resolve_hop` would independently answer "not priv" for
+        // both (a `TraitObject` receiver → `Indeterminate(TraitObjectReceiver)`,
+        // the wildcard → `Indeterminate(WildcardStructure)`): they document the
+        // ordering contract at this site rather than delegating it.
         if matches!(&compiled_obj.result_type, Type::StructureRef(_))
             && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
-            && template.is_some_and(|t| template_member_is_priv(t, member))
+            && let Err(err @ member_path::MemberPathError::PrivateMember { .. }) =
+                member_path::resolve_hop(&compiled_obj.result_type, member, scope)
+            && let Some(diagnostic) = err.to_diagnostic(span)
         {
-            return make_poison_literal(
-                diagnostics,
-                Diagnostic::error(format!(
-                    "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
-                ))
-                .with_label(DiagnosticLabel::new(
-                    span,
-                    "private member accessed here",
-                ))
-                .with_code(DiagnosticCode::PrivMemberAccess),
-            );
+            return make_poison_literal(diagnostics, diagnostic);
         }
         if !member_known
             && matches!(&compiled_obj.result_type, Type::StructureRef(_))

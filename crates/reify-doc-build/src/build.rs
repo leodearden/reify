@@ -336,7 +336,10 @@ fn lower_trait(t: &CompiledTrait) -> ItemDoc {
             annotations: lower_annotations(&t.annotations),
             pragmas: lower_pragmas(&t.pragmas),
         },
-        kind: ItemKind::Trait { members },
+        kind: ItemKind::Trait {
+            type_params: render_type_params(&t.type_params),
+            members,
+        },
     }
 }
 
@@ -344,15 +347,31 @@ fn lower_trait(t: &CompiledTrait) -> ItemDoc {
 // CompiledFunction → ItemKind::Function
 // ---------------------------------------------------------------------------
 
+/// Lower a `CompiledFunction`, splicing its type parameters into the rendered
+/// signature as `fn {name}<{generics}>({params}) -> {ret}` (task #6342).
+///
+/// Deliberately NO model change here, unlike `ItemKind::TypeAlias`:
+/// `ItemKind::Function { signature }` is already a single rendered DISPLAY
+/// string, so the generics fold into it with no new variant field and no
+/// literal churn across the doc crates.  `header.name` — the join key for
+/// anchors, TOC hrefs and split-mode filenames — stays the bare identifier,
+/// which is the same identity invariant the alias heading preserves.
 fn lower_function(f: &CompiledFunction) -> ItemDoc {
     let params_str: Vec<String> = f
         .params
         .iter()
         .map(|(name, ty)| format!("{name}: {}", type_to_string(ty)))
         .collect();
+    // Empty for a non-generic fn, so its signature renders byte-identically to
+    // before — no stray `<>`.
+    let generics = match render_type_params(&f.type_params) {
+        params if params.is_empty() => String::new(),
+        params => format!("<{}>", params.join(", ")),
+    };
     let signature = format!(
-        "fn {}({}) -> {}",
+        "fn {}{}({}) -> {}",
         f.name,
+        generics,
         params_str.join(", "),
         type_to_string(&f.return_type)
     );
@@ -499,7 +518,10 @@ fn lower_type_alias(a: &CompiledTypeAlias) -> ItemDoc {
             annotations: vec![],
             pragmas: vec![],
         },
-        kind: ItemKind::TypeAlias { type_repr },
+        kind: ItemKind::TypeAlias {
+            type_params: render_type_params(&a.type_params),
+            type_repr,
+        },
     }
 }
 
@@ -617,6 +639,45 @@ fn lower_module_pragmas(pragmas: &[Pragma]) -> Vec<PragmaDoc> {
 /// Render a `Type` to a human-readable string.
 fn type_to_string(ty: &Type) -> String {
     format!("{ty}")
+}
+
+/// Render a declaration's type parameters to display strings, one per param,
+/// in declaration order (task #6342).
+///
+/// Each param renders as `name`, then `": "` followed by its bounds joined
+/// with `" + "` when it has any, then `" = "` followed by its default when it
+/// has one — e.g. `T`, `Q: Dimension`, `T: A + B`, `T = Real`.
+///
+/// `reify-doc` is a pure-data crate with no `reify-ir` dependency, so the
+/// rendering has to happen here rather than in a `Display` impl consumed by
+/// the formatters.
+///
+/// `TraitBound.trait_ref.type_args` is intentionally NOT rendered: the only
+/// production construction site, `convert_type_params`
+/// (`crates/reify-compiler/src/type_resolution.rs:3839-3852`), always builds
+/// it as `vec![]`, so a `<…>` arm here would be dead code.
+fn render_type_params(params: &[reify_ir::TypeParam]) -> Vec<String> {
+    params
+        .iter()
+        .map(|p| {
+            let mut rendered = p.name.clone();
+            if !p.bounds.is_empty() {
+                rendered.push_str(": ");
+                rendered.push_str(
+                    &p.bounds
+                        .iter()
+                        .map(|b| b.trait_ref.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" + "),
+                );
+            }
+            if let Some(default) = &p.default {
+                rendered.push_str(" = ");
+                rendered.push_str(&type_to_string(default));
+            }
+            rendered
+        })
+        .collect()
 }
 
 /// Slice `source` at the byte offsets of `span`. Returns an empty string if

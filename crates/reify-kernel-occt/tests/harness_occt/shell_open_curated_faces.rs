@@ -16,6 +16,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common::{self, Xyz};
 use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
 
@@ -39,28 +40,6 @@ fn build_noncube_box() -> (OcctKernel, GeometryHandleId) {
         })
         .expect("30×20×10 mm box should build");
     (kernel, box_h.id)
-}
-
-/// Parse a `Value::String` of the form `{"x":0,"y":0,"z":1}` into `[f64; 3]`.
-/// This is the wire format returned by `GeometryQuery::FaceNormal`.
-fn parse_xyz(val: &Value) -> [f64; 3] {
-    let s = match val {
-        Value::String(s) => s,
-        other => panic!("expected Value::String from FaceNormal, got {:?}", other),
-    };
-    // Minimal parser: strip `{`, `}`, split on `,`, extract the numeric part
-    // after each `:`.
-    let inner = s.trim_start_matches('{').trim_end_matches('}');
-    let mut parts = inner.split(',');
-    let parse_component = |part: Option<&str>| -> f64 {
-        let p = part.expect("FaceNormal JSON must have x, y, z components");
-        let colon = p.find(':').expect("FaceNormal JSON field must contain ':'");
-        p[colon + 1..].trim().parse::<f64>().expect("FaceNormal component must be a float")
-    };
-    let x = parse_component(parts.next());
-    let y = parse_component(parts.next());
-    let z = parse_component(parts.next());
-    [x, y, z]
 }
 
 /// Query the SI volume (m³) of a solid handle.
@@ -123,10 +102,11 @@ fn shell_solid_faces_top_face_volume_pins_face_identity() {
 
     let mut top_face: Option<GeometryHandleId> = None;
     for &fh in &faces {
-        let normal_val = kernel
-            .query(&GeometryQuery::FaceNormal(fh))
-            .expect("FaceNormal query should succeed on a box face");
-        let [nx, ny, nz] = parse_xyz(&normal_val);
+        let Xyz {
+            x: nx,
+            y: ny,
+            z: nz,
+        } = common::xyz_of(kernel.query(&GeometryQuery::FaceNormal(fh)), "FaceNormal");
         // +Z top face: normal ≈ (0, 0, 1); use a generous tolerance
         // (axis-aligned box face normals are exact from OCCT).
         if (nz - 1.0).abs() < 0.01 && nx.abs() < 0.01 && ny.abs() < 0.01 {

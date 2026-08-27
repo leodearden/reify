@@ -1,0 +1,17 @@
+// Adversary fixture (γ decompose-phase premise, builtin-signature-registry
+// leaf tau2-orientation): PRD §8 boundary #1 PRE-state — `frame_to_frame(a,b)`
+// is typed Frame(3) today, so passing the result to a Transform3-typed user
+// function parameter produces a FALSE NoMatch diagnostic (`reify check`
+// exit != 0). This is the user-observable defect the leaf fixes; if this
+// probe observes exit 0 the leaf's signal #1 pre-state has evaporated.
+
+module frame_to_frame_transform3_nomatch
+
+fn takes_t3(t: Transform3) -> Real { 1.0 }
+
+structure FrameToFrameTransform3NoMatch {
+    param a : Frame
+    param b : Frame
+    let t = frame_to_frame(a, b)
+    let r = takes_t3(t)
+}

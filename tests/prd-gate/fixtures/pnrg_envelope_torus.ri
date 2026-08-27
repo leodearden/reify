@@ -1,0 +1,38 @@
+// Fixture: precision-nominal α (task 6166) — TORUS regime probe.
+//
+// Copies the pnrg_envelope_sphere.ri layout verbatim.  READ THAT FIXTURE'S
+// HEADER FIRST — the OK trap and the validity assertion apply here unchanged.
+//
+// REGIME PARAMETER: minor_r / major_r, walked toward 0 (a thin ring) and up
+// toward 1 (a horn torus).  `torus(major_r, minor_r)`.  The second, independent
+// regime coordinate is d / minor_r: PRD §2's "knife-edge at 1.956" lives where
+// the requested deflection is COMPARABLE TO the minor radius, i.e. where the
+// tessellator has almost no facets to spend across the tube's cross-section.
+// The sweep must walk BOTH — that is the whole point of this fixture.
+//
+// Measured 2026-08-10 at 5db884e30b: torus(1000mm, 100mm) @10 mm -> 5.665e-3 m,
+// ratio 0.567 — deterministic (identical across 3 runs).  Note this contradicts a
+// pre-session probe that recorded 2.175e-3 / 0.2175 for the same construct; the
+// committed spelling measures 5.665e-3.
+//
+// A spot value on this class is actively misleading, so the note tabulates the
+// SUPREMUM over the regime instead: 0.978, at minor/major = 0.02 and d/minor =
+// 0.015, which sits right at PRD §2's 0.982.  The default point above is roughly
+// HALF the supremum — sampling this one point understates the envelope ~2x.
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_envelope_torus
+
+#precision(10mm)
+
+// Subject: a torus.  Default point: major_r = 1000 mm, minor_r = 100 mm
+// -> minor/major = 0.1, d/minor_r = 0.1.
+structure PnrgTorus {
+    let t = torus(1000mm, 100mm)
+}
+
+structure PnrgTorusCheck {
+    param subject : PnrgTorus
+    constraint RepresentationWithin(subject, 0.001mm)
+}

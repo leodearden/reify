@@ -18,6 +18,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common::{self, BBox};
 use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
@@ -133,30 +134,15 @@ fn chamfer_edges_with_history_curated_subset_volume_ordering_and_seam() {
 const D1_M: f64 = 1.0e-3;
 const D2_M: f64 = 2.0e-3;
 
-/// Parse the JSON `Value::String` produced by `BoundingBox` queries into
-/// `(xmin, ymin, zmin, xmax, ymax, zmax)` (mirrors `topology_extract_integration.rs`).
-fn parse_bbox(v: &Value) -> (f64, f64, f64, f64, f64, f64) {
-    let s = match v {
-        Value::String(s) => s,
-        other => panic!("expected Value::String, got {:?}", other),
-    };
-    let parsed: serde_json::Value =
-        serde_json::from_str(s).unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
-    let xmin = parsed["xmin"].as_f64().expect("missing xmin");
-    let ymin = parsed["ymin"].as_f64().expect("missing ymin");
-    let zmin = parsed["zmin"].as_f64().expect("missing zmin");
-    let xmax = parsed["xmax"].as_f64().expect("missing xmax");
-    let ymax = parsed["ymax"].as_f64().expect("missing ymax");
-    let zmax = parsed["zmax"].as_f64().expect("missing zmax");
-    (xmin, ymin, zmin, xmax, ymax, zmax)
-}
-
-/// Query a handle's `BoundingBox` and return the parsed extents tuple.
-fn bbox_of(kernel: &OcctKernelHandle, id: GeometryHandleId) -> (f64, f64, f64, f64, f64, f64) {
-    let v = kernel
-        .query(&GeometryQuery::BoundingBox(id))
-        .expect("BoundingBox query should succeed");
-    parse_bbox(&v)
+/// Query a handle's `BoundingBox` and return the parsed [`BBox`].
+///
+/// A thin delegating adapter carrying zero parsing logic: this file makes four
+/// bbox queries, so inlining the full `common::bbox_of(kernel.query(...))`
+/// expression at each would be noisier than the code it replaces. Named
+/// `bbox_of_id` rather than `bbox_of` so it does not read as a shadow of
+/// [`common::bbox_of`].
+fn bbox_of_id(kernel: &OcctKernelHandle, id: GeometryHandleId) -> BBox {
+    common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(id)))
 }
 
 /// Identify the 4 TOP edges of `box_id`: horizontal (z-extent ≈ 0) AND sitting
@@ -166,7 +152,7 @@ fn bbox_of(kernel: &OcctKernelHandle, id: GeometryHandleId) -> (f64, f64, f64, f
 fn top4_edges(kernel: &OcctKernelHandle, box_id: GeometryHandleId) -> Vec<GeometryHandleId> {
     // Top z-plane of the box (orientation-agnostic; we only assume the kernel's
     // width→x / height→y / depth→z axis mapping, pinned by topology tests).
-    let (_, _, _, _, _, box_zmax) = bbox_of(kernel, box_id);
+    let box_zmax = bbox_of_id(kernel, box_id).zmax;
     // Flatness / position tolerance: OCCT's BRepBndLib enlarges the bbox by the
     // shape's stored tolerance (~1e-7), so 1e-6 m comfortably resolves a flat
     // axis (extent ≈ 0) and a face/edge sitting on the top z-plane.
@@ -177,7 +163,7 @@ fn top4_edges(kernel: &OcctKernelHandle, box_id: GeometryHandleId) -> Vec<Geomet
         .expect("extract_edges should succeed on a solid box");
     let mut top4: Vec<GeometryHandleId> = Vec::new();
     for e in &edges {
-        let (_, _, zmin, _, _, zmax) = bbox_of(kernel, *e);
+        let BBox { zmin, zmax, .. } = bbox_of_id(kernel, *e);
         if (zmax - zmin).abs() < flat_tol && (zmax - box_zmax).abs() < pos_tol {
             top4.push(*e);
         }
@@ -205,7 +191,7 @@ fn measure_top_chamfer_setbacks(
     box_id: GeometryHandleId,
     result_id: GeometryHandleId,
 ) -> Vec<f64> {
-    let (_, _, _, _, _, box_zmax) = bbox_of(kernel, box_id);
+    let box_zmax = bbox_of_id(kernel, box_id).zmax;
     let flat_tol = 1e-6;
     let pos_tol = 1e-6;
     // A genuine vertical side face spans most of the 15 mm depth (≈13–14 mm after
@@ -217,11 +203,9 @@ fn measure_top_chamfer_setbacks(
         .expect("extract_faces should succeed on the chamfered result");
     let mut setbacks: Vec<f64> = Vec::new();
     for f in &faces {
-        let (xmin, ymin, zmin, xmax, ymax, zmax) = bbox_of(kernel, *f);
-        let dx = xmax - xmin;
-        let dy = ymax - ymin;
-        let dz = zmax - zmin;
-        if dz < flat_tol && (zmax - box_zmax).abs() < pos_tol {
+        let bb = bbox_of_id(kernel, *f);
+        let (dx, dy, dz) = bb.spans();
+        if dz < flat_tol && (bb.zmax - box_zmax).abs() < pos_tol {
             // Shrunken top face (horizontal, on the top z-plane).
             setbacks.push((BOX_W_M - dx) / 2.0);
             setbacks.push((BOX_H_M - dy) / 2.0);

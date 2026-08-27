@@ -15,7 +15,7 @@ mod solver;
 mod solvespace;
 
 pub use classifier::ConstraintClassifier;
-pub use cpsat::CpSatSolver;
+pub use cpsat::{CpSatSolver, SolveAllResult};
 pub use decompose::{SubProblem, decompose_into_components};
 // Loop-closure Newton solver was relocated to reify-stdlib (task 2678) to
 // resolve a would-be cycle: `reify_stdlib::snapshot` needs to invoke the

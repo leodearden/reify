@@ -441,6 +441,160 @@ mod tests {
         );
     }
 
+    /// §8.1 lane δ-A end-to-end through `check()` — the user-observable signal
+    /// this task exists to deliver, shaped after
+    /// `crates/reify-eval/src/engine_build.rs:12891`.
+    ///
+    /// A cited deferral rationale on an `#[allow(dead_code)]` attribute routes
+    /// through the UNCHANGED β liveness lane: with the cite seeded `done` it is
+    /// a High `orphaned:` finding. An uncited deferral rationale is High
+    /// `untracked:` (SCOPE-1). A benign rationale — the dominant class among
+    /// the 68 measured candidates — yields nothing.
+    #[test]
+    fn check_allow_dead_code_deferral_lane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(
+            root,
+            "cited.rs",
+            "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)\nfn f() {}\n",
+        );
+        write_file(
+            root,
+            "uncited.rs",
+            "#[allow(dead_code)] // wiring pending the morph rewrite\nfn g() {}\n",
+        );
+        write_file(
+            root,
+            "benign.rs",
+            "#[allow(dead_code)] // used by some, but not all, test binaries\nfn h() {}\n",
+        );
+
+        // #4744 is `done` (terminal) → the cited line resolves to `orphaned`.
+        crate::common::schema::seed_tasks_db_at(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 4744, "done")],
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec![
+            "cited.rs".to_string(),
+            "uncited.rs".to_string(),
+            "benign.rs".to_string(),
+        ]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        let for_path = |p: &str| -> Option<&Finding> {
+            findings.iter().find(|f| {
+                f.evidence
+                    .iter()
+                    .any(|e| matches!(e, EvidenceRef::File { path: q } if q == p))
+            })
+        };
+
+        let cited = for_path("cited.rs")
+            .unwrap_or_else(|| panic!("expected orphaned finding for cited.rs; got {findings:?}"));
+        assert_eq!(cited.pattern, Pattern::PTodo);
+        assert_eq!(cited.severity, Severity::High);
+        assert!(
+            cited.summary.starts_with("orphaned:"),
+            "summary must start with 'orphaned:': {}",
+            cited.summary
+        );
+        assert!(
+            cited.summary.contains("#4744"),
+            "summary must carry the cite id: {}",
+            cited.summary
+        );
+
+        let uncited = for_path("uncited.rs")
+            .unwrap_or_else(|| panic!("expected untracked finding for uncited.rs; got {findings:?}"));
+        assert_eq!(uncited.pattern, Pattern::PTodo);
+        assert_eq!(uncited.severity, Severity::High);
+        assert!(
+            uncited.summary.starts_with("untracked:"),
+            "summary must start with 'untracked:': {}",
+            uncited.summary
+        );
+
+        assert!(
+            for_path("benign.rs").is_none(),
+            "a non-deferral allow-rationale must yield NO finding; got {findings:?}"
+        );
+        assert_eq!(
+            findings.len(),
+            2,
+            "exactly two δ-A findings expected (cited + uncited); got {findings:?}"
+        );
+    }
+
+    /// FP guard at the fixture level, per the esc-6087-1 ruling: the committed
+    /// `scenario14_allow_dead_code_deferral.rs` fixture is entirely NEGATIVE —
+    /// every line is an `#[allow(dead_code)]` whose rationale must NOT classify.
+    ///
+    /// The real class-(a) identifier sites (`mark_pending_with_cause`) are not
+    /// δ-A candidates in-tree — they carry no allow-attribute — so guard 3
+    /// cannot be pinned against live code at this level. This SYNTHETIC fixture
+    /// supplies that pin. It lives under the already-allowlisted
+    /// `crates/reify-audit/` prefix, so it is invisible to the live sweep and
+    /// cannot pollute the §6.6 baseline; copied here into a temp root, its path
+    /// is NOT allowlisted, so it is genuinely swept.
+    ///
+    /// `tests/cli.rs`'s whole-fixture-tree sweep gives this a second,
+    /// independent enforcement point: because the fixture contributes zero
+    /// findings, that test's exact `4 findings / exit 2` assertions stay true
+    /// and go red if δ-A ever over-fires.
+    #[test]
+    fn committed_allow_dead_code_fixture_contributes_zero_findings() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ptodo/scenario14_allow_dead_code_deferral.rs");
+        let content = std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|e| panic!("read committed fixture {}: {e}", fixture.display()));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "scenario14_allow_dead_code_deferral.rs", &content);
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["scenario14_allow_dead_code_deferral.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "the δ-A negative fixture must contribute ZERO findings; got {findings:?}"
+        );
+    }
+
     /// ζ inverse lane: end-to-end `check()` integration. Seeds an on-disk DB
     /// with a non-terminal (pending) task whose metadata.files lists:
     ///   - a DELETED path (mock: absent from tracked, git has history)
@@ -834,6 +988,185 @@ mod tests {
             f.summary.starts_with("bare-ignore:"),
             "summary must start with bare-ignore: {}",
             f.summary
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // §6.6 scan evidence — `check_with_stats` / `ScanStats` (task #6241)
+    //
+    // These pin the RUN evidence the §6.6 vacuity floor keys on. The
+    // rationale lives in docs/prds/reify-audit-ptodo-detector.md §6.6;
+    // it is deliberately not restated here.
+    // ---------------------------------------------------------------
+
+    /// Build the standard tempdir-backed `AuditContext` fixture pieces used by
+    /// the scan-stats tests. Returns owned `(git, conn, jc)`; the caller
+    /// assembles the `AuditContext` so the borrows stay local to the test.
+    fn mock_ops(paths: &[&str]) -> (MockGitOps, Connection, MockJCodemunchOps) {
+        let mut git = MockGitOps::new();
+        git.set_ls_files(paths.iter().map(|s| s.to_string()).collect());
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        (git, conn, MockJCodemunchOps::new())
+    }
+
+    /// Stage the mixed fixture shared by the counting-contract and delegation
+    /// tests: two marker-bearing swept files, one allowlisted-prefix path, one
+    /// non-swept path, one marker-free swept file, and one tracked path that is
+    /// deliberately NOT written to disk (unreadable → skipped fail-safe).
+    ///
+    /// Ground truth for the assertions below:
+    ///   swept & non-allowlisted & readable = { alpha.rs, beta.rs, clean.rs } → 3
+    ///   scan_file-classified marker lines   = 2 (alpha) + 1 (beta) + 0 (clean) → 3
+    fn write_mixed_fixture(root: &Path) -> Vec<&'static str> {
+        // alpha.rs: two classified lines — one Structural(Untracked), one Cited.
+        write_file(root, "alpha.rs", "// TODO: wire this up\n// TODO(#4553): already cited\n");
+        // beta.rs: one classified line, plus a plain line that classifies to nothing.
+        write_file(root, "beta.rs", "fn beta() {}\n// FIXME: broken here\n");
+        // Allowlisted prefix (§6.8) → never read, never counted.
+        write_file(root, "crates/reify-audit/allowlisted.rs", "// TODO: allowlisted self\n");
+        // Non-swept extension → never read, never counted.
+        write_file(root, "notes.md", "// TODO: in a non-swept doc\n");
+        // Swept and read, but carries zero markers → counted as scanned, 0 markers.
+        write_file(root, "clean.rs", "fn clean() -> u32 { 7 }\n");
+        // NOTE: "missing.rs" is intentionally absent from disk.
+        vec![
+            "alpha.rs",
+            "beta.rs",
+            "crates/reify-audit/allowlisted.rs",
+            "notes.md",
+            "clean.rs",
+            "missing.rs",
+        ]
+    }
+
+    /// (i) COUNTING CONTRACT — `files_scanned` counts exactly the tracked paths
+    /// that survived `is_swept_ext && !is_allowlisted` AND were read
+    /// successfully (so it excludes the allowlisted path, the non-swept path
+    /// and the missing one, and INCLUDES the marker-free file);
+    /// `markers_examined` counts every `scan_file`-classified line (Structural
+    /// and Cited alike) across exactly those files.
+    #[test]
+    fn check_with_stats_counts_scanned_files_and_examined_markers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let paths = write_mixed_fixture(root);
+
+        let (git, conn, jc) = mock_ops(&paths);
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let (_findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
+
+        assert_eq!(
+            stats.files_scanned, 3,
+            "files_scanned must count exactly the swept, non-allowlisted, readable \
+             paths (alpha.rs, beta.rs, clean.rs) — excluding the allowlisted prefix, \
+             the non-swept .md and the tracked-but-missing path; got {stats:?}"
+        );
+        assert_eq!(
+            stats.markers_examined, 3,
+            "markers_examined must count every scan_file-classified line \
+             (2 in alpha.rs + 1 in beta.rs + 0 in clean.rs); got {stats:?}"
+        );
+    }
+
+    /// (ii) DECOUPLING PROPERTY — the load-bearing one for task #6241: a tree
+    /// of swept files carrying NO markers yields zero findings yet still proves
+    /// the detector RAN (`files_scanned >= 1`, `markers_examined == 0`). This is
+    /// the "detector ran, tree is clean" partition that a floor on the live
+    /// finding count cannot distinguish from "detector did not run".
+    #[test]
+    fn check_with_stats_proves_the_run_on_a_clean_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "clean_a.rs", "fn a() -> u32 { 1 }\n");
+        write_file(root, "clean_b.rs", "pub fn b() {}\n");
+
+        let (git, conn, jc) = mock_ops(&["clean_a.rs", "clean_b.rs"]);
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let (findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
+
+        assert!(
+            findings.is_empty(),
+            "a marker-free tree must yield zero findings; got {findings:?}"
+        );
+        assert_eq!(
+            stats.files_scanned, 2,
+            "both marker-free swept files must still count as scanned: {stats:?}"
+        );
+        assert!(
+            stats.files_scanned >= 1,
+            "scan evidence must be non-vacuous on a clean tree: {stats:?}"
+        );
+        assert_eq!(
+            stats.markers_examined, 0,
+            "a marker-free tree examines no markers: {stats:?}"
+        );
+    }
+
+    /// (iii) DELEGATION — `check` stays a pure projection of `check_with_stats`,
+    /// so the four existing call sites see byte-identical behaviour.
+    ///
+    /// Today `check` is literally `check_with_stats(ctx).0`, so this can only
+    /// go RED if someone reimplements it as a SEPARATE sweep — which is exactly
+    /// the drift it guards, and the only shape that could diverge silently.  It
+    /// therefore compares whole `Finding`s (`Finding: PartialEq`), not just
+    /// their summaries: a second sweep could agree on every summary while
+    /// diverging on `severity`, `task_id`, `pattern` or `evidence`, and a
+    /// summaries-only assert would wave that through.
+    #[test]
+    fn check_is_the_findings_projection_of_check_with_stats() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let paths = write_mixed_fixture(root);
+
+        let (git, conn, jc) = mock_ops(&paths);
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let (with_stats, _stats) = reify_audit::ptodo::check_with_stats(&ctx);
+        let plain = reify_audit::ptodo::check(&ctx);
+
+        // Whole-value equality: same order, same count, and every field of
+        // every Finding — not just the summaries.
+        assert_eq!(
+            with_stats, plain,
+            "check() must be the exact findings projection of check_with_stats()"
+        );
+        // Guard against a vacuous comparison: the fixture does produce findings.
+        assert!(
+            !plain.is_empty(),
+            "fixture must yield at least one finding or this assertion is vacuous"
         );
     }
 }

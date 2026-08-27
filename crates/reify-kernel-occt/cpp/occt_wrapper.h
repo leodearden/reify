@@ -174,13 +174,14 @@ std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes);
 
 // --- Boolean-op-pass counter (task 5213) ---
 
-/// Zero the process-global boolean-op-pass counter.
+/// Zero the CALLING THREAD's boolean-op-pass count.  The counter is per-thread;
+/// other threads' counts are untouched.
 void reset_boolean_pass_count();
 
-/// Read the process-global count of completed OCCT boolean passes.  Incremented
-/// once per successful Build() in boolean_fuse/boolean_cut/boolean_common and
-/// once per single-pass fuse_shape_list — so a K-instance pattern reads as
-/// exactly 1, not K−1.
+/// Read the calling thread's count of completed OCCT boolean passes — only the
+/// passes this thread performed itself.  Incremented once per successful Build()
+/// in boolean_fuse/boolean_cut/boolean_common and once per single-pass
+/// fuse_shape_list — so a K-instance pattern reads as exactly 1, not K−1.
 uint64_t boolean_pass_count();
 
 /// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
@@ -929,6 +930,18 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
 /// constraining orientation (BRepOffsetAPI_MakePipeShell + SetMode).
 /// `spine` is the path the section follows; `guide` biases section
 /// orientation via SetMode(guide, /*KeepContact=*/Standard_False).
+///
+/// `profile` must be a wire, a vertex, or a single-wire face — a face is
+/// reduced to its outer wire before `Add`, since BRepFill_Section accepts only
+/// a wire or a vertex (an EDGE is rejected). A face with any other wire count
+/// is rejected too: a holed face (>1 wire) has no single-wire representation
+/// and dropping the holes would silently produce the wrong part, while an
+/// unbounded face (0 wires, as from make_half_space) has no bounding wire to
+/// sweep at all. `spine` and `guide` must each be a Wire; both are checked by
+/// role up front so a mistyped handle is diagnosed by name instead of through
+/// OCCT's argument-less TopoDS::Wire downcast failure. The result follows
+/// BRepOffsetAPI_MakePipe's convention: a face profile yields a SOLID, a wire
+/// profile a SHELL.
 std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide);
@@ -938,6 +951,14 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
 /// profile is added as a section via `.Add(...)`. If a second guide is
 /// present, it is applied via `SetMode(aux, /*KeepContact=*/false)`
 /// as an auxiliary-orientation constraint.
+///
+/// Each profile is normalized to a section wire before `Add` (a face is
+/// reduced to its outer wire; a holed or unbounded face is rejected), since
+/// BRepFill_Section accepts only a wire or a vertex. Each guide must be a Wire
+/// and is checked by role, as in make_pipe_shell. As there, the result is
+/// solidified when every section was a face, and left as the raw SHELL for
+/// mixed or all-wire section sets. Rejection diagnostics are attributed to
+/// `loft_guided_profiles`, not to make_pipe_shell.
 std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
                                                 const OcctShapeVec& guides);
 

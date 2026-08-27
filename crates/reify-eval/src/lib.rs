@@ -51,6 +51,12 @@ mod realization_read_gamma;
 mod realization_read_test_support;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::ComputeDispatchRegistry;
+// `pub(crate)`, not `pub`: `OptimizedComputeDispatcher`'s only constructor
+// (`from_engine`) is `pub(crate)` by design, so a `pub` re-export would name a type
+// no external crate can ever build. Re-exported at all only so this crate's own
+// engine_eval.rs / engine_edit.rs can reach it as `crate::OptimizedComputeDispatcher`
+// alongside the other engine items they import (task #4880).
+pub(crate) use engine_compute::OptimizedComputeDispatcher;
 // task A (#4934): ComputeFn/ComputeOutcome/DispatchError/RealizationReadHandle/
 // RealizedContent/StructuredComputeDetail moved to the OCCT-free
 // reify-compute-contract foundation crate; re-exported here so the
@@ -954,6 +960,17 @@ pub struct Engine {
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    /// Running totals of the per-call eval-cache counters, folded in at the end
+    /// of every [`Engine::eval_cached`] call (task 4152).
+    ///
+    /// Deliberately NOT a [`CacheStats`]: the public struct's fourth field,
+    /// `realization_entries`, has no meaning here (it is a lifetime count
+    /// already owned by [`Engine::realization_cache`], so accumulating it too
+    /// would double-count). Storing only the three fields this actually
+    /// accumulates makes that a compile error rather than a silently-discarded
+    /// write. [`Engine::cache_stats`] assembles the public [`CacheStats`]
+    /// field-by-field from this plus the live realization counter.
+    cumulative_eval_cache_totals: EvalCacheTotals,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///
@@ -1105,12 +1122,49 @@ pub struct Engine {
     persistent_miss_count: u64,
 }
 
+/// Engine-lifetime running totals of the three eval-cache counters (task 4152).
+///
+/// Private accumulator behind `Engine::cumulative_eval_cache_totals`, folded
+/// in at the end of every [`Engine::eval_cached`] call and read back out by
+/// [`Engine::cache_stats`].
+///
+/// This exists so the accumulator can hold ONLY the counters that are genuinely
+/// accumulable. The public [`CacheStats`] additionally carries
+/// `realization_entries`, which is a lifetime count owned by the
+/// [`RealizationCache`] and read live — accumulating it here would double-count,
+/// so there is deliberately no field for it to be written into.
+#[derive(Debug, Clone, Default)]
+struct EvalCacheTotals {
+    hits: usize,
+    misses: usize,
+    early_cutoffs: usize,
+}
+
 /// Statistics about cache behavior during a cached evaluation.
 #[derive(Debug, Clone, Default)]
 pub struct CacheStats {
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub early_cutoffs: usize,
+    /// Number of NEW geometry-[`RealizationCache`] **terminal** entries created
+    /// over the engine's lifetime — incremented when a realization genuinely
+    /// produced and cached new geometry, NOT on a cache hit.
+    ///
+    /// This is the re-mesh-avoidance signal (PRD
+    /// `docs/prds/v0_4/fea-result-model.md` B9): two load cases sharing one body
+    /// must move it by exactly 1, because the second case reuses the first's
+    /// cached volume mesh rather than re-meshing.
+    ///
+    /// **Monotonic lifetime count, not a live cache size.** It is never
+    /// decremented — not by cache eviction, not by
+    /// [`Engine::clear_realization_cache`], and not across the implicit
+    /// invalidation that `edit_param`/`edit_source` perform. See
+    /// [`RealizationCache::realization_entries`] for the full contract and for
+    /// why `RealizationCache::len()` is deliberately not this signal.
+    ///
+    /// Only [`Engine::build`]-family entry points can move it: `eval_cached`
+    /// dispatches no compute nodes, so it realizes no geometry.
+    pub realization_entries: usize,
 }
 
 /// Result of a cached evaluation, wrapping EvalResult with stats.
@@ -1218,6 +1272,30 @@ pub const W_STEP_AP242_FALLBACK: &str = "W_STEP_AP242_FALLBACK";
 /// Embedded in the diagnostic message so callers can match on it without a typed
 /// variant.
 pub const W_3MF_NO_MATERIALS: &str = "W_3MF_NO_MATERIALS";
+
+/// Machine-stable error code for the export refusal raised when a module
+/// declares a `RepresentationWithin` bound the export path cannot demonstrate it
+/// honours (task η, PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1 /
+/// C-SURFACE (2)). Built by
+/// [`crate::tolerance_combine::unenforced_representation_bound_diagnostic`] and
+/// emitted from BOTH export surfaces — `reify build -o <file>` and
+/// [`Engine::build_outputs_with_result`].
+///
+/// This is the message-embedded TWIN of the typed
+/// [`reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport`], and
+/// both are needed: the typed code serves programmatic consumers and the unit
+/// tests (which match on `Diagnostic.code`, so rewording the message cannot
+/// break them), while this string serves the CLI integration tests, which spawn
+/// the binary as a subprocess and observe only captured stderr TEXT — they have
+/// no access to the typed code and would otherwise have to pin arbitrary prose.
+///
+/// Unlike [`I_DISPLAY_OUTPUT_DEFERRED`] / [`W_STEP_AP242_FALLBACK`] /
+/// [`W_3MF_NO_MATERIALS`] above, this code is NOT string-only: their stated
+/// reason for skipping a typed variant ("which would touch the out-of-scope
+/// `reify-core` crate") does not apply here, because `reify-core` is in η's
+/// scope and the variant was minted alongside this const.
+pub const E_REPR_BOUND_UNENFORCED_ON_EXPORT: &str = "E_REPR_BOUND_UNENFORCED_ON_EXPORT";
 
 /// One file artifact produced by the occurrence-driven export driver
 /// [`Engine::build_outputs`] (io-export δ).

@@ -603,15 +603,6 @@ export async function onDisplayAppearanceUpdate(
   });
 }
 
-/** Subscribe to diagnostic events. */
-export async function onDiagnostics(
-  callback: (data: unknown) => void,
-): Promise<UnlistenFn> {
-  return listen('diagnostics', (event) => {
-    callback(event.payload);
-  });
-}
-
 /** Subscribe to file change events. */
 export async function onFileChanged(
   callback: (data: FileData) => void,

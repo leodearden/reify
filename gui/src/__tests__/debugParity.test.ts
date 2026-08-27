@@ -22,27 +22,19 @@ vi.mock('html-to-image', () => ({
   toPng: vi.fn().mockResolvedValue('data:image/png;base64,STUB'),
 }));
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 // Namespace import — a missing export surfaces as a clean assertion
 // (bridge.buildHandlers === undefined) rather than a module-load error.
 import * as bridge from '../debug/bridge';
 
 // --- source parsing ---
 
-// Path: gui/src/__tests__ → ../../src-tauri/src/debug_server.rs
-const RUST = readFileSync(
-  join(__dirname, '../../src-tauri/src/debug_server.rs'),
-  'utf-8',
-);
+// The read, the extraction regex and the raw-count cross-check live in
+// ./toolDefNames (task 6065) — one home, shared with
+// gui/test/visual/assertions.test.ts, which held a byte-identical copy.
+import { analyzeToolDefs, readDebugServerSource } from './toolDefNames';
 
-// Captures 56 ToolDef literals.  \s spans the newline between `ToolDef {`
-// and `name:`.  `struct ToolDef {`'s field `name: &'static str` is unquoted
-// so it is NOT captured — only the string-literal name fields are.
-const toolDefNames = [...RUST.matchAll(/ToolDef\s*\{\s*name:\s*"([a-z0-9_]+)"/g)].map(
-  (m) => m[1],
-);
+const extraction = analyzeToolDefs(readDebugServerSource());
+const toolDefNames = extraction.names;
 
 // --- documented allowlists ---
 
@@ -103,15 +95,20 @@ describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
   });
 
   it('(b) extraction sanity — exact count matches raw ToolDef literals, no duplicates', () => {
+    // The single real-file drift guard for the extraction (./toolDefNames.test.ts
+    // pins the regex semantics on synthetic sources only, deliberately).
+    //
     // Cross-check against the raw `ToolDef {` literal count minus the struct
     // definition itself.  If a future tool name contains chars outside
     // [a-z0-9_] (e.g. uppercase or hyphen), the name regex silently drops it
     // while the raw count still includes it — surfacing drift rather than
     // masking it behind a >= floor.
-    const rawToolDefCount = RUST.match(/ToolDef\s*\{/g)?.length ?? 0;
-    expect(toolDefNames.length).toBe(rawToolDefCount - 1); // -1 for `struct ToolDef {` itself
-    // No duplicate tool_def names in debug_server.rs.
-    expect(new Set(toolDefNames).size).toBe(toolDefNames.length);
+    // expectedNameCount discounts the `struct ToolDef {` declaration(s) that
+    // analyzeToolDefs counts in the source — not a hardcoded -1.
+    expect(extraction.names.length).toBe(extraction.expectedNameCount);
+    // No duplicate tool_def names in debug_server.rs — a failure names the
+    // offending tool rather than reporting a bare count mismatch.
+    expect(extraction.duplicates).toStrictEqual([]);
   });
 
   it('(c) every frontend-mediated tool_def has a handler (no runtime "unknown command")', () => {

@@ -127,7 +127,7 @@ diagnostics carry codes by construction (§3.6).
   — filed as independent task #5492) and the corpus is not CI-run — α's
   regression signal is therefore the four committed baselines + the
   reify-syntax parser suites (incl.
-  `crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs`,
+  `crates/reify-syntax/tests/harness_syntax/sub_decl_specialization_body_parser_tests.rs`,
   the List-disambiguation pins), NOT blanket `tree-sitter test` exit 0.
 - `at-clause-grammar-substrate` → PASS. The `at <pose>` clause exists on
   all three sub arms (task 3899 lineage); the indexer rides the existing

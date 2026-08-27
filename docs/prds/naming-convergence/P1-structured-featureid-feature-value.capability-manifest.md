@@ -53,7 +53,7 @@ DAG: `α ─┬─► β ─────────► ε` / `└─► γ ─�
 | shell-extract structure-instance produces the `feature_id` field on the **production** path | `grep:crates/reify-eval/src/shell_extract_compute.rs:757` · `:815` (production construction-from-String, sweep D) | PASS (wired on main) |
 | `engine_admin` consumes that structure-instance | `grep:crates/reify-eval/src/engine_admin.rs:2266` · `:2317-2328` (sweep C) | PASS |
 | field-population: the field carries a **real** `FeatureId` (non-`Undef`) | `field-pop grep:shell_extract_compute.rs:757` writes a constructed `FeatureId` (→ `Value::Feature`), not `Value::Undef` | PASS |
-| end-to-end (G6 branch 3): all required capabilities upstream of δ | `producer:task-α,γ upstream`; `grep:crates/reify-eval/tests/topology_attribute_e2e.rs` exists | PASS (no downstream-owner inversion) |
+| end-to-end (G6 branch 3): all required capabilities upstream of δ | `producer:task-α,γ upstream`; `grep:crates/reify-eval/tests/harness_topology_selector/topology_attribute_e2e.rs` exists | PASS (no downstream-owner inversion) |
 
 ## ε — Boundary-test suite B1–B11 (B+H integration gate)  *(leaf)*
 

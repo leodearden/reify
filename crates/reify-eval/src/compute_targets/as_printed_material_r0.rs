@@ -180,9 +180,9 @@ fn r0_material_frame(build_z: [f64; 3], bead_dir: [f64; 3]) -> Value {
         "MaterialFrame",
         vec![
             ("origin", super::point3_length([0.0, 0.0, 0.0])),
-            ("x_axis", super::vec3_length(x)),
-            ("y_axis", super::vec3_length(y)),
-            ("z_axis", super::vec3_length(z)),
+            ("x_axis", super::as_printed_material::vec3_dimensionless(x)),
+            ("y_axis", super::as_printed_material::vec3_dimensionless(y)),
+            ("z_axis", super::as_printed_material::vec3_dimensionless(z)),
         ],
     )
 }
