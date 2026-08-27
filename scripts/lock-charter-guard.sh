@@ -94,25 +94,42 @@
 #   This block used to argue it was SAFE to lead because γ's Tier-2
 #   cross-source drift test (fused-memory/tests/test_lock_charter_guard.py
 #   ::test_extension_drift_guard_vs_reify_script) was live and comparing
-#   against this script.  MEASURED 2026-08-07 (#6067): that premise is FALSE.
-#   That test resolves this script's path relative to its own file location;
-#   the resolution does not land on a real file, so its skipif marker drops
-#   the test AT COLLECTION on every run — it has never compared anything.
-#   Repair is dark-factory's, not reify's.  The measured paths, the confirming
-#   SKIPPED line, and the located-symptom hypothesis are recorded in
-#   escalation esc-6067-2 (which also carries the dark-factory tracking
+#   against this script.  MEASURED 2026-08-07 (#6067), SUPERSEDED 2026-08-27
+#   (#6856, below): that premise was FALSE at the time.  That test resolved
+#   this script's path relative to its own file location; the resolution did
+#   not land on a real file, so its skipif marker dropped the test AT
+#   COLLECTION on every run — it had never compared anything.  Repair was
+#   recorded as dark-factory's, not reify's.  The measured paths, the
+#   confirming SKIPPED line, and the located-symptom hypothesis are recorded
+#   in escalation esc-6067-2 (which also carries the dark-factory tracking
 #   ticket) and are deliberately NOT restated here: foreign-repo line cites
 #   and host paths rot on the next edit to that file, and nothing on either
 #   side gates them — which is exactly the failure this seam exists to catch.
-#   CONSEQUENCE, plainly: while that guard skips, this seam has NO live
-#   automated cross-source check on EITHER vector — γ's Tier-1 drift test
-#   compares γ only to γ, and α's Cycle 4 in
-#   tests/infra/test_lock_charter_guard.sh compares α only to a pin inside α.
-#   Today's csv drift (α at 58 while γ had already moved to 59) was found by
-#   human/reconciliation review, not by a gate, and the next one will be too
-#   until this is fixed.  The new --list-extensionless emitter still gives
-#   3248 the vector it needs to add the matching comparison for the second
-#   vector, once the path resolution works.
+#   CONSEQUENCE AT THE TIME, plainly: while that guard skipped, this seam had
+#   NO live automated cross-source check on EITHER vector — γ's Tier-1 drift
+#   test compared γ only to γ, and α's Cycle 4 in
+#   tests/infra/test_lock_charter_guard.sh compared α only to a pin inside α.
+#   The csv drift that motivated #6067 (α at 58 while γ had already moved to
+#   59) was found by human/reconciliation review, not by a gate.
+#
+#   MEASURED 2026-08-27 (#6856): the premise above is stale, not current.
+#   dark-factory tasks 3843 and 4080 replaced the broken parents[5] path
+#   arithmetic with a layout-independent shared.reify_checkout resolver
+#   (REIFY_ROOT env override), which re-armed the Tier-2 test.  A single
+#   -rs run against dark-factory main so a skip could not hide confirms both
+#   that the guard now runs (baseline: all its `drift`/`tracked`-keyed cases
+#   pass, none skipped) and that it fires (pointing REIFY_ROOT at a reify
+#   worktree missing an extension γ carries reds the extension-vector
+#   comparison).  So: the extension vector now HAS a live automated
+#   cross-source check, running from γ's side.  A unilateral α widening is
+#   therefore no longer silent — it reds dark-factory's suite as soon as the
+#   new tracked file reaches reify main, the same fleet-time incident shape
+#   recorded 2026-07-29 in dark_factory task 3226.  That makes the α-first +
+#   prompt-γ-mirror discipline in this block MORE important, not less: a lag
+#   between an α widening landing and its γ mirror landing is now a live DF
+#   main-red window, not a quiet gap.  The extensionless vector (the STATUS
+#   2026-07-31 note above) is unaffected by this and still has no live
+#   cross-source check on either side.
 
 set -euo pipefail
 
