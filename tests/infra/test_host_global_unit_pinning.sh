@@ -52,14 +52,26 @@ cleanup() {
     for d in "${_TMPDIRS[@]:-}"; do
         [ -n "$d" ] && rm -rf "$d"
     done
+    # MANDATORY. This runs from the EXIT trap, so its return value BECOMES the
+    # suite's exit status: with an empty _TMPDIRS the loop's last command is a
+    # false `[ -n "" ]`, and the suite would exit 1 with every assertion green.
+    return 0
 }
 trap cleanup EXIT
 
 echo "=== host-global systemd unit ExecStart pinning ==="
 
 # ---------------------------------------------------------------------------
-# _mk_two_checkout_fixture <stem> — mints a temp MAIN checkout with a REAL
-# linked worktree beside it and echoes "<root>|<main>|<lane>".
+# _mk_two_checkout_fixture <stem> — MAIN-SHELL ONLY. Mints a temp MAIN checkout
+# with a REAL linked worktree beside it, and sets FIX_ROOT / FIX_MAIN /
+# FIX_LANE.
+#
+# MUST NOT be called from a command substitution. It registers its mktemp root
+# in _TMPDIRS for the EXIT trap, and an append performed inside a
+# command-substitution SUBSHELL is silently discarded when that subshell exits
+# — leaking the whole fixture tree (git repo + linked worktree) on every run.
+# That is why this sets globals instead of echoing them, the same subshell trap
+# test_helpers.sh's make_isolated_lane documents.
 #
 # A real `git worktree add` (not a simulated directory layout) is what makes
 # this reproduce the bug rather than model it: the linked worktree is the only
@@ -69,19 +81,20 @@ echo "=== host-global systemd unit ExecStart pinning ==="
 # git's own absolute output.
 # ---------------------------------------------------------------------------
 _mk_two_checkout_fixture() {
-    local stem="$1" root main lane
+    local stem="$1" root
     root="$(mktemp -d "${TMPDIR:-/tmp}/${stem}-XXXXXX")" || return 1
     root="$(cd "$root" && pwd -P)" || return 1
     _TMPDIRS+=("$root")
-    main="$root/main"
-    lane="$root/lane"
-    mkdir -p "$main/sub/deep" || return 1
-    git init -q -b main "$main" || return 1
-    git -C "$main" -c user.name=t -c user.email=t@example.invalid \
+    FIX_ROOT="$root"
+    FIX_MAIN="$root/main"
+    FIX_LANE="$root/lane"
+    mkdir -p "$FIX_MAIN/sub/deep" || return 1
+    git init -q -b main "$FIX_MAIN" || return 1
+    git -C "$FIX_MAIN" -c user.name=t -c user.email=t@example.invalid \
         -c commit.gpgsign=false commit -q --allow-empty -m init || return 1
-    git -C "$main" worktree add -q --detach "$lane" >/dev/null 2>&1 || return 1
-    mkdir -p "$lane/sub/deep" || return 1
-    printf '%s|%s|%s\n' "$root" "$main" "$lane"
+    git -C "$FIX_MAIN" worktree add -q --detach "$FIX_LANE" >/dev/null 2>&1 || return 1
+    mkdir -p "$FIX_LANE/sub/deep" || return 1
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -129,12 +142,16 @@ assert "sourcing scripts/lib_main_checkout.sh defines reify_main_checkout" \
 echo ""
 echo "--- A1: two-checkout fixture (real linked worktree) ---"
 
-_FIX="$(_mk_two_checkout_fixture reify-mainck)"
-FIX_ROOT="${_FIX%%|*}"
-FIX_LANE="${_FIX##*|}"
-FIX_MAIN="${_FIX#*|}"; FIX_MAIN="${FIX_MAIN%%|*}"
+FIX_ROOT=""; FIX_MAIN=""; FIX_LANE=""
+_mk_two_checkout_fixture reify-mainck   # main shell, NOT $( ) — see the header
 FIX_NOREPO="$FIX_ROOT/outside"
 mkdir -p "$FIX_NOREPO"
+
+# The fixture's own registration is what the EXIT trap reclaims; assert it
+# happened rather than trusting it, so a future refactor that reintroduces the
+# command-substitution form fails here instead of leaking a git repo per run.
+assert "fixture: the mktemp root is registered in _TMPDIRS for the EXIT trap" \
+    bash -c '[ "$1" = "$2" ] && [ -n "$2" ]' _ "${_TMPDIRS[0]:-}" "$FIX_ROOT"
 
 # NON-VACUITY CONTROL, asserted BEFORE any resolver case: if these two paths
 # were equal, every "resolves to the main checkout, not the lane" assertion
