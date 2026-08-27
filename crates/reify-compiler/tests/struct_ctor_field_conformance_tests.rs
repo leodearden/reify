@@ -3864,3 +3864,212 @@ fn named_argument_for_a_priv_auto_param_is_not_an_unknown_field() {
          visibility, got: {diags:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// NON-PARAM MEMBERS ARE NOT CTOR-SETTABLE (esc-5303-10, suggestion A)
+//
+// The suite exercised the `Param` and `Auto` sides of the suppressing predicate
+// heavily, but never the NEGATIVE side: a named argument whose name matches a
+// member the structure genuinely has, but which is not externally settable.
+// That is the same predicate axis that produced the esc-5303-9 blocking defect,
+// so it is guarded explicitly here rather than left implied.
+//
+// The rule is keyed on the CELL KIND, not on visibility or on member existence:
+// only `Param` and `Auto { .. }` cells suppress. A `Let` cell does not, at any
+// visibility, and a `sub` is not a value cell at all.
+// ---------------------------------------------------------------------------
+
+const SRC_NAMED_ARG_FOR_PLAIN_LET: &str = r#"module test.named_arg_plain_let
+structure def WLetMember {
+    param p : Real
+    let k = 1
+}
+structure def Root {
+    let x = WLetMember(k: 2.0)
+}
+"#;
+
+const SRC_NAMED_ARG_FOR_AUX_LET: &str = r#"module test.named_arg_aux_let
+structure def WAuxLet {
+    param p : Real
+    aux let k = 1
+}
+structure def Root {
+    let x = WAuxLet(k: 2.0)
+}
+"#;
+
+const SRC_NAMED_ARG_FOR_PUB_LET: &str = r#"module test.named_arg_pub_let
+structure def WPubLet {
+    param p : Real
+    pub let k = 1
+}
+structure def Root {
+    let x = WPubLet(k: 2.0)
+}
+"#;
+
+const SRC_NAMED_ARG_FOR_GEOMETRY_LET: &str = r#"module test.named_arg_geometry_let
+structure def WGeomLet {
+    param p : Real
+    let g = box(1mm, 1mm, 1mm)
+}
+structure def Root {
+    let x = WGeomLet(g: 2.0)
+}
+"#;
+
+const SRC_NAMED_ARG_FOR_SUB: &str = r#"module test.named_arg_sub
+structure def SubInner { param q : Real }
+structure def WSubMember {
+    param p : Real
+    sub inner = SubInner(q: 1.0)
+}
+structure def Root {
+    let x = WSubMember(inner: 2.0)
+}
+"#;
+
+/// A named argument naming a NON-settable member is an unknown field.
+///
+/// Table-driven across every internal-member shape the language admits: a plain
+/// `let`, an `aux let`, a `pub let`, a geometry-typed `let`, and a `sub`. All
+/// five must report `CtorUnknownField` — a constructor sets parameters, and an
+/// internal member is not one, however visible it is.
+///
+/// `pub let` is the load-bearing row. The esc-5303-9 arity fix keys on
+/// `visibility`, but ONLY for `Auto` cells; a `Let` cell is excluded by KIND, so
+/// making it `Public` must not smuggle it into the settable set. Without this row
+/// a future simplification that hoists the visibility test out of the `Auto` arm
+/// would pass the suite while silently making every `pub let` ctor-settable.
+///
+/// `priv let` is deliberately absent: the compiler rejects it upstream with
+/// `E_PRIV_REDUNDANT` ("'let' bindings are already private to the structure
+/// body"), so it is not a reachable shape and a probe for it would be asserting
+/// on a compile error, not on this predicate.
+#[test]
+fn named_argument_for_a_non_param_member_is_an_unknown_field() {
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("plain let", SRC_NAMED_ARG_FOR_PLAIN_LET, "WLetMember", "k"),
+        ("aux let", SRC_NAMED_ARG_FOR_AUX_LET, "WAuxLet", "k"),
+        ("pub let", SRC_NAMED_ARG_FOR_PUB_LET, "WPubLet", "k"),
+        (
+            "geometry let",
+            SRC_NAMED_ARG_FOR_GEOMETRY_LET,
+            "WGeomLet",
+            "g",
+        ),
+        ("sub component", SRC_NAMED_ARG_FOR_SUB, "WSubMember", "inner"),
+    ];
+    for &(label, source, ctor, field) in cases {
+        let module = compile_source_with_stdlib(source);
+        let diags = ctor_conformance_diags(&module);
+        assert_eq!(
+            diags.len(),
+            1,
+            "[{label}] a named arg for a non-settable member must emit exactly one \
+             ctor-conformance diagnostic, got: {diags:#?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::CtorUnknownField),
+            "[{label}] must be CtorUnknownField, not CtorArity"
+        );
+        assert_eq!(
+            diags[0].message,
+            format!(
+                "E_CTOR_UNKNOWN_FIELD: unknown named argument '{field}' in call to \
+                 '{ctor}'; '{ctor}' has no parameter with that name"
+            ),
+            "[{label}] the message must name the offending field and the ctor"
+        );
+    }
+}
+
+const SRC_REPEATED_UNKNOWN_NAME: &str = r#"module test.repeated_unknown_name
+structure def WRepeat { param p : Real }
+structure def Root {
+    let x = WRepeat(labl: 1.0, labl: 2.0)
+}
+"#;
+
+/// MULTIPLICITY BOUNDARY — the SAME unknown name supplied twice yields TWO
+/// `CtorUnknownField` diagnostics, one per argument.
+///
+/// This is the deliberate consequence of the two guards having disjoint
+/// domains: the pre-existing duplicate-named-arg Error runs only inside the
+/// KNOWN-param branch (it fires when a param slot is already bound), so it never
+/// sees a repeated unknown name. `CtorUnknownField` is per-argument by design
+/// (PRD §6 C2(ii) — each typo needs its own span to be actionable), and two
+/// arguments are two typos to fix.
+///
+/// Pinned because it is the natural place for a future "collapse duplicate
+/// diagnostics" change to alter behaviour silently, and because it fixes the
+/// contrast with the known-name case asserted below.
+#[test]
+fn the_same_unknown_named_argument_twice_emits_two_diagnostics() {
+    let module = compile_source_with_stdlib(SRC_REPEATED_UNKNOWN_NAME);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        2,
+        "one CtorUnknownField per offending argument, not one per distinct name, \
+         got: {diags:#?}"
+    );
+    for d in &diags {
+        assert_eq!(d.code, Some(DiagnosticCode::CtorUnknownField));
+        assert!(
+            d.message.contains("unknown named argument 'labl'"),
+            "each diagnostic names the repeated field, got: {:?}",
+            d.message
+        );
+    }
+    // The two diagnostics must anchor at DIFFERENT spans — that is the whole
+    // reason the multiplicity is per-argument rather than per-name.
+    assert_ne!(
+        diags[0].labels[0].span.start, diags[1].labels[0].span.start,
+        "the two diagnostics must anchor at the two distinct arguments"
+    );
+}
+
+const SRC_REPEATED_KNOWN_NAME: &str = r#"module test.repeated_known_name
+structure def WKnown { param p : Real }
+structure def Root {
+    let x = WKnown(p: 1.0, p: 2.0)
+}
+"#;
+
+/// CONTRAST — a repeated KNOWN name stays the pre-existing duplicate-named-arg
+/// Error and produces NO `CtorUnknownField`.
+///
+/// Together with the test above this pins the domain split: the duplicate guard
+/// owns known names, `CtorUnknownField` owns unknown ones, and neither doubles
+/// up on the other's case. Note the duplicate diagnostic carries no
+/// `DiagnosticCode` at all, so it is invisible to `ctor_conformance_diags` —
+/// asserted here against the raw diagnostic list.
+#[test]
+fn a_repeated_known_named_argument_is_a_duplicate_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_REPEATED_KNOWN_NAME);
+    assert!(
+        ctor_conformance_diags(&module).is_empty(),
+        "a duplicate of a KNOWN param is not an unknown field"
+    );
+    let dupes: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("duplicate named argument"))
+        .collect();
+    assert_eq!(
+        dupes.len(),
+        1,
+        "the pre-existing duplicate-named-arg guard must still fire exactly once, \
+         got: {:#?}",
+        module.diagnostics
+    );
+    assert_eq!(
+        dupes[0].severity,
+        Severity::Error,
+        "the duplicate guard is a hard Error and is NOT behind the ctor-conformance \
+         knob — it must not move with the δ flip"
+    );
+}

@@ -2739,22 +2739,16 @@ fn compile_expr_guarded_with_expected_inner(
                 // Because no single predicate is right for every shape, the two
                 // diagnostics take the view that is SAFE IN THEIR OWN DIRECTION.
 
-                // (a) The externally-settable member set — WIDE on purpose. Used
-                // only to SUPPRESS `CtorUnknownField`, so over-inclusion can only
-                // make the diagnostic stay silent; it can never make it assert a
-                // falsehood. Every ambiguous `Auto` cell is included, so neither
+                // (a) The externally-settable member set — WIDE on purpose, and
+                // evaluated LAZILY at its single use site rather than materialized
+                // here (see `is_settable_member` below). Used only to SUPPRESS
+                // `CtorUnknownField`, so over-inclusion can only make the
+                // diagnostic stay silent; it can never make it assert a falsehood.
+                // Every ambiguous `Auto` cell is included, so neither
                 // `priv param x : T = auto` nor an auto let can produce a false
                 // "has no parameter with that name". This is the same predicate
                 // already used by `connect.rs` and `traits.rs`. Matching on the
                 // VARIANT, not on `free`, covers strict `auto` and `auto(free)`.
-                let settable_member_names: Vec<&str> = template
-                    .value_cells
-                    .iter()
-                    .filter(|vc| {
-                        matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto { .. })
-                    })
-                    .map(|vc| vc.id.member.as_str())
-                    .collect();
 
                 // (b) The declared-param COUNT — the number `CtorArity` prints as
                 // its ceiling, so unlike (a) it must be a number the source
@@ -2890,11 +2884,12 @@ fn compile_expr_guarded_with_expected_inner(
                 // the arg still needs somewhere to go) and stays unconditional, so
                 // the IR is byte-for-byte what it was before ε — ε is
                 // diagnostics-only, and β's corpus survey must measure diagnostics,
-                // not behaviour drift. The diagnostic is keyed on the WIDE
-                // `settable_member_names` view (a), because "could this name be a
-                // member the author wrote?" is the only question this message may
-                // safely answer — a false "no parameter with that name" is the one
-                // failure mode this code must never have.
+                // not behaviour drift. The diagnostic is keyed on the WIDE view
+                // (a), evaluated inline as `is_settable_member` below, because
+                // "could this name be a member the author wrote?" is the only
+                // question this message may safely answer — a false "no parameter
+                // with that name" is the one failure mode this code must never
+                // have.
                 //
                 // A named arg naming an `Auto` cell therefore compiles to the same
                 // `__arg{i}` member it always did, SILENTLY — whether that cell is
@@ -2909,7 +2904,22 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some(pname) = arg_name
                         && !params.iter().any(|(n, _)| *n == pname.as_str())
                     {
-                        if !settable_member_names.contains(&pname.as_str()) {
+                        // View (a), evaluated inline. Deliberately NOT hoisted
+                        // into a `Vec` above: this branch runs only for a named
+                        // argument that already failed to bind, so a hoisted view
+                        // would allocate on every well-formed structure-ctor call
+                        // in the program to serve a lookup that almost never
+                        // happens. The scan is O(cells) against an O(cells) `Vec`
+                        // build plus an O(cells) `contains`, so the lazy form is
+                        // never slower even when it does fire.
+                        let is_settable_member = template.value_cells.iter().any(|vc| {
+                            vc.id.member == pname.as_str()
+                                && matches!(
+                                    vc.kind,
+                                    ValueCellKind::Param | ValueCellKind::Auto { .. }
+                                )
+                        });
+                        if !is_settable_member {
                             diagnostics.push(
                                 crate::conformance::diag_at(
                                     crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
