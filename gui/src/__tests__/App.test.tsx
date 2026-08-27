@@ -278,6 +278,7 @@ beforeEach(() => {
   vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
   vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onAutoResolveStart).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onAutoResolveIteration).mockResolvedValue(() => {});
   vi.mocked((bridge as any).onAutoResolveComplete).mockResolvedValue(() => {});
 });
 
@@ -6511,12 +6512,17 @@ function countGridTracks(template: string): number {
 // ── AutoResolvePanel integration (step-13) ────────────────────────────────────
 
 describe('App AutoResolvePanel integration', () => {
-  it('AutoResolvePanel auto-promotes when state.autoResolve.active is true', async () => {
+  it('AutoResolvePanel mounts on DATA and stays readable after the loop completes', async () => {
     // Capture the auto-resolve bridge callbacks registered by engineStore.subscribeToEvents
     let startCb: (() => void) | undefined;
+    let iterCb: ((iter: any) => void) | undefined;
     let completeCb: (() => void) | undefined;
     vi.mocked((bridge as any).onAutoResolveStart).mockImplementation(async (cb: () => void) => {
       startCb = cb;
+      return () => {};
+    });
+    vi.mocked((bridge as any).onAutoResolveIteration).mockImplementation(async (cb: (iter: any) => void) => {
+      iterCb = cb;
       return () => {};
     });
     vi.mocked((bridge as any).onAutoResolveComplete).mockImplementation(async (cb: () => void) => {
@@ -6528,22 +6534,47 @@ describe('App AutoResolvePanel integration', () => {
 
     // Wait for subscribeToEvents to register the callbacks
     await waitFor(() => expect(startCb).toBeDefined());
+    await waitFor(() => expect(iterCb).toBeDefined());
     await waitFor(() => expect(completeCb).toBeDefined());
 
-    // Panel should NOT be visible before any loop starts
+    // (1) Nothing has happened yet — no panel.
     expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
 
-    // Fire the auto-resolve-start event — panel should auto-promote
+    // (2) The loop starts but has reported nothing. The mount is data-gated,
+    // not active-gated, so an empty panel must NOT be promoted.
     startCb!();
+    await Promise.resolve();
+    expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
+
+    // (3) The first iteration arrives — shaped exactly as
+    // `emit_auto_resolve_if_any` emits it today: iteration 0, one parameter,
+    // one constraint, and no driving metric at all.
+    iterCb!({
+      iteration: 0,
+      parameters: { 'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' } },
+      constraints: {
+        max_von_mises: { name: 'max_von_mises', value: 180, unit: 'MPa', target_upper: 200, satisfied: true },
+      },
+    });
     await waitFor(() => {
       expect(screen.queryByTestId('auto-resolve-panel')).toBeTruthy();
     });
 
-    // Fire the auto-resolve-complete event — panel should be hidden again
+    // (4) The leaf signal: the loop completes and the panel STAYS. Before this
+    // change the panel unmounted here, so the result of the loop the user just
+    // ran vanished the instant it landed.
     completeCb!();
-    await waitFor(() => {
-      expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
-    });
+    await Promise.resolve();
+    expect(screen.queryByTestId('auto-resolve-panel')).toBeTruthy();
+    const parameters = screen.getByTestId('auto-resolve-parameters');
+    expect(within(parameters).getByText('Bracket.thickness')).toBeTruthy();
+    expect(within(parameters).getByText('4.2mm')).toBeTruthy();
+    expect(screen.getAllByText('max_von_mises').length).toBeGreaterThanOrEqual(1);
+
+    // (5) While the panel is mounted, the side-panel grid must still have one
+    // track per child — a desync collapses the chat pane into a 4px strip.
+    const sidePanel = screen.getByTestId('side-panel');
+    expect(countGridTracks(sidePanel.style.gridTemplateRows)).toBe(sidePanel.children.length);
   });
 });
 
