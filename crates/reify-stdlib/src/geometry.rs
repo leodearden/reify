@@ -2885,6 +2885,57 @@ mod tests {
         assert!(eval_builtin("bbox", &[pt3, vec3]).is_undef());
     }
 
+    // ── bbox is Length-valued by construction (task 6081) ────────────────────
+    // A bounding box is spatial: both corners must be `Point3<Length>`. Agreeing
+    // non-Length corners (two Angle points, two dimensionless points) used to
+    // slip through the old `min_dim != max_dim` gate and construct a
+    // quantity-polymorphic BoundingBox; they are now rejected outright.
+
+    /// Build a `Point3<Angle>` — the polymorphism escape hatch the old gate
+    /// admitted, since `point3` is dimension-polymorphic at eval.
+    fn make_point3_angle(x: f64, y: f64, z: f64) -> Value {
+        Value::Point(
+            [x, y, z]
+                .into_iter()
+                .map(|si_value| Value::Scalar {
+                    si_value,
+                    dimension: DimensionVector::ANGLE,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn bbox_angle_corners_returns_undef() {
+        let min = make_point3_angle(0.0, 0.0, 0.0);
+        let max = make_point3_angle(1.0, 2.0, 3.0);
+        assert!(
+            eval_builtin("bbox", &[min, max]).is_undef(),
+            "two agreeing Angle corners must be rejected: a BoundingBox is Length-valued"
+        );
+    }
+
+    #[test]
+    fn bbox_dimensionless_corners_returns_undef() {
+        let min = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let max = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert!(
+            eval_builtin("bbox", &[min, max]).is_undef(),
+            "two agreeing dimensionless corners must be rejected: a BoundingBox is Length-valued"
+        );
+    }
+
+    #[test]
+    fn bbox_length_corners_still_constructs() {
+        // Positive guard: the narrowing must not over-reject the valid case.
+        let result = eval_builtin("bbox", &[make_point3_min(), make_point3_max()]);
+        assert!(
+            matches!(result, Value::BoundingBox { .. }),
+            "metre-valued corners must still construct a BoundingBox, got {:?}",
+            result
+        );
+    }
+
     // ── bbox_size / bbox_center tests (step-11) ──────────────────────────────
 
     fn make_bbox() -> Value {
