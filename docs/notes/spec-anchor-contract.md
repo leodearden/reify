@@ -70,7 +70,10 @@ An ID matches `sc-[0-9a-f]{6}` — six hexadecimal digits.
   fenced block the paragraph introduces.
 - An anchor never goes **inside** a fenced code block. The lint skips fenced
   regions when scanning, so an anchor placed inside one is not a live anchor
-  at all — it is a dangling cite waiting to happen.
+  at all — it is a dangling cite waiting to happen. The lint REPORTS one
+  rather than ignoring it (rule 7), so writing an anchor-shaped example with
+  a real hex id inside a fence is a violation; write examples with the
+  metavariable id `sc-XXXXXX`, which is not anchor-shaped.
 
 A corollary of the fence rule: prose that DISCUSSES the anchor mechanism
 belongs in this note, not in the spec body. The lint treats any spec line
@@ -119,11 +122,14 @@ visible.
 
 ## Enforcement
 
-`scripts/spec-anchor-lint.sh` checks six rules: ID format, uniqueness across
+`scripts/spec-anchor-lint.sh` checks seven rules: ID format, uniqueness across
 the spec, live/tombstone disjointness, tombstone row grammar and sortedness,
-anchor placement, and deletion-implies-tombstone. It **hard-fails** — there is
-no warn mode, no strict-promotion flag, and no path that gracefully skips a
-check it could not run.
+anchor placement, deletion-implies-tombstone, and no swallowed anchors — every
+anchor-shaped line in the file is either live or reported, tallied with fence
+state ignored, so neither an in-fence anchor nor a desynchronised fence toggle
+can silently remove a region from the scan. It **hard-fails** — there is no
+warn mode, no strict-promotion flag, and no path that gracefully skips a check
+it could not run.
 
 Exit codes: `0` clean, `1` at least one violation, `2` usage error,
 missing-or-empty input, or an internal failure. `1` and `2` are strictly

@@ -331,6 +331,16 @@ scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
 # line IN the spec, so a spec-only edit (a deletion without a same-diff
 # tombstone, a hand-typed anchor, an anchor stranded before a blank line) is
 # exactly the diff that can break the substrate.
+#
+# SCOPE of what these rows buy TODAY: rules 1-4, 6 and 7 (format, uniqueness,
+# live/tombstone disjointness, tombstone grammar + sortedness, placement, and
+# no swallowed anchors) in full, plus rule 5 (deletion => same-diff tombstone)
+# only for an UNCOMMITTED working-tree deletion. The lint's default base is
+# HEAD, and by the time a task/merge verify runs, the branch's commits are
+# already in HEAD -- so base == current and the deletion comparison is a file
+# against itself. Rule 5 becomes effective at branch scope when leaf theta
+# (#6766) wires the merge-gate invocation and passes `--base <merge-base>`
+# explicitly; that wiring is theta's deliverable, not a defect in these rows.
 docs/reify-language-spec.md          tests/infra/test_spec_anchor_lint.sh
 docs/reify-language-spec.tombstones  tests/infra/test_spec_anchor_lint.sh
 docs/notes/spec-anchor-contract.md   tests/infra/test_spec_anchor_lint.sh

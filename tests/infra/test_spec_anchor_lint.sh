@@ -22,9 +22,10 @@
 #   than the silence of a broken one.
 #
 # Scenarios
-#   (a) spec hygiene — living-document front matter, heading-number
-#       uniqueness, the §15 renumber, and a regression guard on the one
-#       compiled spec consumer.
+#   (a) spec hygiene — the stale front-matter pins are ABSENT, heading
+#       numbers are unique at every level, the §15 renumber landed, and the
+#       one compiled spec consumer's split keys still resolve. It pins no
+#       front-matter WORDING — see the (a) banner for why.
 #   (b) LIVE control — the SHIPPED spec + tombstone sidecar scan CLEAN.
 #   (c) duplicate anchor ID — flagged, BOTH sites named.
 #   (d) malformed anchor ID (non-hex / too long / missing space) — flagged.
@@ -48,11 +49,17 @@
 #   (o) §9.2 is ACTUALLY anchored in the shipped spec — structurally
 #       (every heading present is anchored) rather than by a pinned count,
 #       so leaf η's later graduation edits to §9.2 cannot red it.
-#   (p) the NORMATIVE authoring note EXISTS, the spec front matter's link to
-#       it RESOLVES, it contains no valid-format anchor ID (a copy-paste
-#       collision hazard), and every repo-relative path it cites resolves
-#       (p5 live control / p6 seeded mutant). It pins no WORDING — see the
-#       (p) banner for why.
+#   (p) the NORMATIVE authoring note EXISTS, the spec front matter's markdown
+#       link to it RESOLVES the way a renderer resolves it (p2 control / p3
+#       mutant), it contains no valid-format anchor ID (a copy-paste collision
+#       hazard), and every repo-relative path it cites resolves (p5 control /
+#       p6 mutant). It pins no WORDING — see the (p) banner for why.
+#   (q) rule 5 through the GIT-materialised DEFAULT base, end to end — the
+#       flagless invocation shape production actually uses, which (j)/(k)
+#       reach only via --base-spec (q0/q2 are the clean halves).
+#   (r) rule 7 — an anchor the fence walk would swallow, whether written
+#       inside a fence (r1) or hidden by a fence DESYNC (r2), is REPORTED
+#       rather than silently dropped; (r3) is the discriminator's clean half.
 #
 # NO-SILENT-GREEN FLOOR: a $RAN counter is incremented by every scenario and
 # checked after test_summary. A future guard condition that skipped every
@@ -78,10 +85,27 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 SPEC_REL="docs/reify-language-spec.md"
 TOMB_REL="docs/reify-language-spec.tombstones"
+# NOTE_REL is spelled as a separate variable, and joined below, for the same
+# reason SPEC_REL/TOMB_REL are — but here it is load-bearing rather than
+# stylistic. tests/infra/test_verify_pipeline_guard.sh's ANTI-DRIFT sweep
+# derives "the set of doc-sync docs" by grepping tests/infra/*.sh for the
+# INLINE literal `$REPO_ROOT/docs/[some-doc].md` form (written here with the
+# bracket the sweep's own character class excludes, so this comment does not
+# enrol itself), and asserts every path it finds
+# is registered in scripts/doc-sync-paths.txt (i.e. routes to the full gate).
+# Writing the join inline would enrol this note in that set by textual
+# coincidence: this file is not a doc-sync check, and the note is deliberately
+# NOT a doc-sync doc — its coupling to this suite is registered surgically, as
+# a scripts/verify-pipeline-infra-tests.txt row keyed on the note's path, which
+# SELECTS this test at task scope instead of routing the whole diff to the full
+# --scope all gate. Do not "tidy" this back into one line without first
+# resolving which of the two registries the note belongs in (escalated as an
+# observation by this task; scripts/doc-sync-paths.txt is not in its scope).
+NOTE_REL="docs/notes/spec-anchor-contract.md"
 SPEC="$REPO_ROOT/$SPEC_REL"
 TOMBSTONES="$REPO_ROOT/$TOMB_REL"
 LINT="$REPO_ROOT/scripts/spec-anchor-lint.sh"
-NOTE="$REPO_ROOT/docs/notes/spec-anchor-contract.md"
+NOTE="$REPO_ROOT/$NOTE_REL"
 TS_CONSUMER="$REPO_ROOT/tree-sitter-reify/tests/spec_purpose_example_grammar.rs"
 
 # Did ANY scenario actually execute?  Consulted after test_summary; a run that
@@ -196,6 +220,37 @@ _out_line_count_is() {
     [ "$_n" -eq "$1" ] && return 0
     echo "expected $1 output line(s), got $_n; output was:"
     printf '%s\n' "$LINT_OUT"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Same global-capture idiom, for the checker functions this file defines
+# itself rather than for the lint script. `assert` dumps a FAILING checker's
+# output, so a DELIBERATELY-failing one (every seeded mutant of an in-file
+# check) has to be captured separately for its rc and message to be assertable.
+# ---------------------------------------------------------------------------
+_CHK_RC=0
+_CHK_OUT=""
+
+_run_chk() {
+    _CHK_OUT=""
+    _CHK_RC=0
+    _CHK_OUT="$("$@" 2>&1)" || _CHK_RC=$?
+}
+
+_chk_rc_nonzero() {
+    [ "$_CHK_RC" != "0" ] && return 0
+    echo "expected a NON-ZERO rc from the checker, got $_CHK_RC; output was:"
+    printf '%s\n' "$_CHK_OUT"
+    return 1
+}
+
+_chk_out_has() {
+    case "$_CHK_OUT" in
+        *"$1"*) return 0 ;;
+    esac
+    echo "expected the checker output to contain '$1'; output was:"
+    printf '%s\n' "$_CHK_OUT"
     return 1
 }
 
@@ -326,6 +381,20 @@ _last_line_of() { grep -nF -- "$2" "$1" | tail -n 1 | cut -d: -f1; }
 # the general assertion goes green at exactly the same edit while guarding the
 # recurrence CLASS — which matters precisely because the anchor contract
 # exists so consumers stop keying on section numbers.
+#
+# What (a) deliberately does NOT assert: the front matter's WORDING. An
+# earlier revision pinned `^\*\*Language version:\*\*.*0\.6` and a literal
+# `§14`. Apply the discriminator and both fail it — rewording the header while
+# leaving it semantically identical (`**Language version (0.6)**`, or `§14`
+# becoming a `[Language Versioning and Stability](#...)` link) turns them RED
+# with no defect present, and neither goes red if the version is wrong
+# everywhere else in the document. The `0.6` pin additionally forced a test
+# edit on every legitimate language-version bump — maintenance by deletion.
+# What survives here is structural or referential: an ABSENT stale pin
+# (a1/a2), heading-number uniqueness (a5), the renumber (a6), and the one
+# compiled consumer's split keys (a7). The front matter's one machine-checkable
+# property — that its link to the authoring note RESOLVES — is asserted by
+# (p2)/(p3), where it can be given a live control and a seeded mutant.
 # ===========================================================================
 echo ""
 echo "--- (a) spec hygiene: living-document front matter + heading-number uniqueness ---"
@@ -338,12 +407,6 @@ assert "(a1) the stale '**Version:** 0.1' pin is GONE from the spec front matter
 
 assert "(a2) the stale '**Date:** 2026-03-13' pin is GONE from the spec front matter" \
     bash -c '! grep -qE "^\*\*Date:\*\* 2026-03-13" "$1"' -- "$SPEC"
-
-assert "(a3) the front matter names the current language version on a '**Language version:**' line mentioning 0.6" \
-    bash -c 'head -n 10 "$1" | grep -qE "^\*\*Language version:\*\*.*0\.6"' -- "$SPEC"
-
-assert "(a4) the front matter points readers at §14 for the versioning scheme" \
-    bash -c 'head -n 15 "$1" | grep -qF "§14"' -- "$SPEC"
 
 assert "(a5) NO duplicate heading number at any level in the spec" \
     _no_duplicate_heading_numbers
@@ -865,26 +928,23 @@ _no_anchor_inside_9_2_fence() {
     return 1
 }
 
-# o6 — cheap smell check that IDs carry NO positional information. Not a
-# statistical test: two structural tells, both of which a sequential or
-# section-derived minting scheme would trip immediately.
-_ids_are_opaque() {
-    local ids positional
-    ids="$(grep -oE '^<!-- sc-anchor: sc-[0-9a-f]{6} -->$' "$SPEC" \
-            | sed -E 's/^<!-- sc-anchor: sc-//; s/ -->$//' || true)"
-    if [ -z "$ids" ]; then
-        echo "no anchor IDs found — the check would be vacuous"
-        return 1
-    fi
-    positional="$(printf '%s\n' "$ids" | grep '92' || true)"
-    if [ -n "$positional" ]; then
-        echo "anchor ID(s) contain the section digits '92' — IDs must not correlate with section numbers:"
-        printf '%s\n' "$positional"
-        return 1
-    fi
-    return 0
-}
-
+# o6 — cheap smell check that IDs carry NO positional information: the file
+# order of the IDs is not the sorted order, which a sequential or otherwise
+# derived minting scheme would trip immediately.
+#
+# A sibling tell — "no ID contains the digits 92" — was REMOVED rather than
+# kept. An ID is 6 random hex digits, so it contains `92` with probability
+# ~2% (5 positions x 1/256); the 24 IDs shipped here merely happened to miss.
+# That makes every future mint a ~1-in-50 coin flip that reds a HARD GATE with
+# no defect present, misdiagnosed as "IDs must not correlate with section
+# numbers" when a random ID containing `92` carries no positional information
+# at all. The false-red probability compounds as later waves anchor the rest
+# of the spec (~35% cumulative at 24 IDs, effectively certain within a few
+# hundred), and the tell was hardcoded to §9.2's digits, so it covered no
+# other section's anchors anyway. Do not reintroduce it: a positional-encoding
+# check has to compare an ID against a DERIVATION of its own section to mean
+# anything, and the sortedness tell below already catches the failure mode
+# that actually occurs (sequential or derived minting).
 _ids_are_not_sorted() {
     local ids n
     ids="$(grep -oE '^<!-- sc-anchor: sc-[0-9a-f]{6} -->$' "$SPEC" \
@@ -917,18 +977,17 @@ assert "(o4) the §9.2 range holds strictly MORE anchors than headings (seeding 
 assert "(o5) no anchor lands inside a fenced code block within §9.2" \
     _no_anchor_inside_9_2_fence
 
-assert "(o6) anchor IDs carry no section digits" _ids_are_opaque
-
 assert "(o6) anchor IDs are NOT in ascending order down the file" _ids_are_not_sorted
 
 # ===========================================================================
 # (p) THE NORMATIVE AUTHORING NOTE.
 #
 # What this scenario covers: the note EXISTS and is non-empty (p1); the spec
-# front matter's link to it RESOLVES, so p1+p2 together red on a dangling
-# link (p2); it carries no copy-pasteable anchor ID (p4); and every
-# repo-relative path it cites resolves under $REPO_ROOT — live control (p5)
-# plus a seeded mutant proving that check can actually fire (p6).
+# front matter's markdown link to it RESOLVES the way a renderer resolves it
+# (p2), with a seeded mutant proving that check fires on the dir-relative
+# defect a substring grep cannot see (p3); it carries no copy-pasteable anchor
+# ID (p4); and every repo-relative path it cites resolves under $REPO_ROOT —
+# live control (p5) plus a seeded mutant proving that check can fire (p6).
 #
 # What this scenario deliberately does NOT cover: the note's WORDING. An
 # earlier revision grepped one English phrase per contract clause
@@ -952,8 +1011,66 @@ RAN=$((RAN + 1))
 
 assert "(p1) docs/notes/spec-anchor-contract.md exists and is non-empty" test -s "$NOTE"
 
-assert "(p2) the spec front matter LINKS the authoring note" \
-    bash -c 'head -n 15 "$1" | grep -qF "docs/notes/spec-anchor-contract.md"' -- "$SPEC"
+# p2/p3 — the front matter's link to the note must RESOLVE, not merely MENTION
+# the path. A relative markdown target resolves against the CONTAINING file's
+# directory, and the spec lives in docs/, so the natural-looking
+# `](docs/notes/spec-anchor-contract.md)` target resolves to
+# docs/docs/notes/... and 404s in every renderer (GitHub, mdbook, IDE
+# preview) — while a substring grep for that same literal stays green either
+# way, because the LABEL carries it. That is the exact defect this pair
+# replaced a substring grep to catch; (p3) seeds it back as a mutant so the
+# instrument is proven able to fire.
+_front_matter_link_resolves() {
+    local spec="$1" target resolved
+    if [ ! -s "$spec" ]; then
+        echo "$spec is missing or empty — this check would be vacuous"
+        return 1
+    fi
+    target="$(head -n 15 "$spec" \
+        | grep -oE '\]\([^)]*spec-anchor-contract\.md\)' \
+        | head -n 1 | sed -E 's/^\]\(//; s/\)$//' || true)"
+    if [ -z "$target" ]; then
+        echo "the front matter (first 15 lines) of $spec carries NO markdown link to the authoring note"
+        return 1
+    fi
+    case "$target" in
+        /*) resolved="$REPO_ROOT$target" ;;
+        *)  resolved="$(dirname "$spec")/$target" ;;
+    esac
+    if [ ! -e "$resolved" ]; then
+        echo "the front-matter link target '$target' does not resolve: $resolved does not exist"
+        echo "(a relative markdown target resolves against the linked-FROM file's directory, $(dirname "$spec"))"
+        return 1
+    fi
+    return 0
+}
+
+assert "(p2) the spec front matter's markdown link to the authoring note RESOLVES" \
+    _front_matter_link_resolves "$SPEC"
+
+# (p3) SEEDED MUTANT for p2, built in a mirror of docs/ so the mutant's failure
+# is attributable to the REWRITTEN TARGET and not to the fixture's location: a
+# copy under $TMPWORK alone would fail for either spelling and discriminate
+# nothing.
+LINKMIRROR="$TMPWORK/docs_mirror"
+mkdir -p "$LINKMIRROR/notes"
+cp "$NOTE" "$LINKMIRROR/notes/spec-anchor-contract.md"
+cp "$SPEC" "$LINKMIRROR/reify-language-spec.md"
+SPEC_BADLINK="$LINKMIRROR/badlink.md"
+sed 's|](notes/spec-anchor-contract\.md)|](docs/notes/spec-anchor-contract.md)|' \
+    "$LINKMIRROR/reify-language-spec.md" >"$SPEC_BADLINK"
+
+assert "(p3) meta: the docs/ mirror is faithful — the UNMUTATED copy still resolves there" \
+    _front_matter_link_resolves "$LINKMIRROR/reify-language-spec.md"
+assert "(p3) meta: the mutation actually rewrote the link target" \
+    bash -c '! cmp -s "$1" "$2"' -- "$LINKMIRROR/reify-language-spec.md" "$SPEC_BADLINK"
+assert "(p3) meta: the mutant still MENTIONS the note path, so a substring grep would stay GREEN on it" \
+    bash -c 'head -n 15 "$1" | grep -qF "docs/notes/spec-anchor-contract.md"' -- "$SPEC_BADLINK"
+
+_run_chk _front_matter_link_resolves "$SPEC_BADLINK"
+assert "(p3) a docs/-prefixed (renderer-404) link target FAILS the resolution check" _chk_rc_nonzero
+assert "(p3) the failure output NAMES the unresolvable target" \
+    _chk_out_has "docs/notes/spec-anchor-contract.md"
 
 # p4 — COLLISION SAFETY. A realistic-looking example ID in normative
 # documentation is a live hazard the moment someone copies it: it either
@@ -1012,33 +1129,6 @@ _note_paths_resolve() {
     return 1
 }
 
-# Same global-capture idiom as _run_lint: assert dumps a FAILING checker's
-# output, so a DELIBERATELY-failing one has to be captured separately for its
-# message to be assertable.
-_PATHS_RC=0
-_PATHS_OUT=""
-_run_note_paths() {
-    _PATHS_OUT=""
-    _PATHS_RC=0
-    _PATHS_OUT="$(_note_paths_resolve "$1" 2>&1)" || _PATHS_RC=$?
-}
-
-_paths_rc_nonzero() {
-    [ "$_PATHS_RC" != "0" ] && return 0
-    echo "expected a NON-ZERO rc from the link-rot check, got $_PATHS_RC; output was:"
-    printf '%s\n' "$_PATHS_OUT"
-    return 1
-}
-
-_paths_out_has() {
-    case "$_PATHS_OUT" in
-        *"$1"*) return 0 ;;
-    esac
-    echo "expected the link-rot output to contain '$1'; output was:"
-    printf '%s\n' "$_PATHS_OUT"
-    return 1
-}
-
 # (p5) LIVE CONTROL — the shipped note's citations all resolve.
 assert "(p5) every repo-relative path the shipped note cites RESOLVES" \
     _note_paths_resolve "$NOTE"
@@ -1057,9 +1147,175 @@ assert "(p6) meta: the bogus path is in the MUTANT and absent from the shipped n
 assert "(p6) meta: the bogus path really does not exist in the repo" \
     bash -c '[ ! -e "$1/$2" ]' -- "$REPO_ROOT" "$BOGUS_PATH"
 
-_run_note_paths "$NOTE_BAD"
-assert "(p6) a note citing an unresolvable path FAILS the link-rot check" _paths_rc_nonzero
-assert "(p6) the failure output NAMES the unresolvable path" _paths_out_has "$BOGUS_PATH"
+_run_chk _note_paths_resolve "$NOTE_BAD"
+assert "(p6) a note citing an unresolvable path FAILS the link-rot check" _chk_rc_nonzero
+assert "(p6) the failure output NAMES the unresolvable path" _chk_out_has "$BOGUS_PATH"
+
+# ===========================================================================
+# (q) THE GIT-MATERIALISED BASE, END TO END — rule 5 through the invocation
+# shape PRODUCTION actually uses.
+#
+# (j)/(k) fire rule 5 through --base-spec. The git path — --base <rev> →
+# _spec_rel derivation → `git show "$BASE_REV:$_spec_rel"` → scratch file — is
+# otherwise exercised ONLY on corpora where nothing was deleted ((n), and
+# (m2)'s failure arm), and a scan-nothing base produces exactly the green (n)
+# asserts. So a regression in that branch (a wrong relative-path derivation, a
+# `git show` silently yielding an empty scratch file, an early
+# BASE_TEXT_PATH="") would leave rule 5 PERMANENTLY NON-FIRING on the flagless
+# run the gate uses, with every existing scenario still green.
+#
+# Hermetic: its own throwaway repo under $TMPWORK, mirroring docs/ so the
+# default --spec/--tombstones paths resolve, and no --base flag at all.
+# ===========================================================================
+echo ""
+echo "--- (q) the git-materialised default base fires rule 5 end to end ---"
+RAN=$((RAN + 1))
+
+QREPO="$TMPWORK/qrepo"
+mkdir -p "$QREPO/docs"
+
+# Environment-proof: GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE inherited from an
+# outer git invocation would silently retarget every command below at the REAL
+# repo. Identity and gpgsign are passed per-invocation rather than written to
+# config, so the fixture never depends on the host's ~/.gitconfig.
+_q_git() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+        git -C "$QREPO" \
+            -c user.email=spec-anchor-fixture@example.invalid \
+            -c user.name='spec-anchor fixture' \
+            -c commit.gpgsign=false \
+            "$@"
+}
+
+Q_SPEC="$QREPO/docs/reify-language-spec.md"
+Q_TOMB="$QREPO/docs/reify-language-spec.tombstones"
+_spec_copy_with_anchors "$Q_SPEC" 4
+cp "$TOMBSTONES" "$Q_TOMB"
+
+env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git init -q -b main "$QREPO" >/dev/null 2>&1
+_q_git add -A >/dev/null 2>&1
+_q_git commit -q --no-verify -m 'fixture: spec + sidecar at the base' >/dev/null 2>&1
+
+assert "(q) meta: the fixture repo has a commit to serve as the default base" \
+    bash -c 'env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$1" rev-parse --verify --quiet HEAD >/dev/null' -- "$QREPO"
+
+# (q0) the fixture is CLEAN before the deletion, so (q1)'s rc 1 is
+# attributable to the deletion rather than to anything the fixture carries.
+_run_lint --repo-root "$QREPO"
+assert "(q0) the untouched fixture repo scans CLEAN through the git base (rc 0)" _rc_is 0
+assert "(q0) the untouched fixture repo produces NO output" _out_empty
+
+Q_GONE="$(_first_anchor_id "$Q_SPEC")"
+_delete_anchored_paragraph "$Q_SPEC" "$Q_GONE"
+
+assert "(q) meta: the vanished ID is still in the COMMITTED blob" \
+    bash -c 'env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$1" show "HEAD:docs/reify-language-spec.md" | grep -qF -- "$2"' -- "$QREPO" "$Q_GONE"
+assert "(q) meta: the vanished ID is GONE from the working tree" \
+    bash -c '! grep -qF -- "$1" "$2"' -- "$Q_GONE" "$Q_SPEC"
+
+# (q1) THE POINT: no --base flag, no --spec, no --tombstones — the flagless
+# shape — and rule 5 fires off the git-materialised base.
+_run_lint --repo-root "$QREPO"
+assert "(q1) a working-tree deletion with no tombstone is FLAGGED through the DEFAULT git base (rc 1)" _rc_is 1
+assert "(q1) output NAMES the vanished ID ($Q_GONE)" _out_has "$Q_GONE"
+assert "(q1) output labels the base as the git rev:path it materialised (pins the _spec_rel derivation)" \
+    _out_has "HEAD:docs/reify-language-spec.md"
+assert "(q1) output points at the fixture's tombstone sidecar" _out_has "$Q_TOMB"
+
+# (q2) the converse control — same working tree, tombstone row added. Without
+# it, (q1) is satisfied by a lint that reds on any git-base deletion.
+printf '%s 2026-08-27 paragraph deleted in this very diff; no forwarding anchor\n' "$Q_GONE" >>"$Q_TOMB"
+assert "(q2) meta: the fixture sidecar now carries a row for the vanished ID" \
+    bash -c 'grep -qF -- "$1" "$2"' -- "$Q_GONE" "$Q_TOMB"
+
+_run_lint --repo-root "$QREPO"
+assert "(q2) the SAME deletion with a tombstone row is CLEAN through the git base (rc 0)" _rc_is 0
+assert "(q2) the converse control produces NO output" _out_empty
+
+# ===========================================================================
+# (r) RULE 7, NO SWALLOWED ANCHORS.
+#
+# The fence walk skips fenced regions, which leaves two ways for an
+# anchor-shaped line to become invisible while the gate still reports "clean":
+# an anchor written INSIDE a fence (r1), and a fence DESYNC — a nested
+# construct that toggles fence state an odd number of times and silently
+# removes every following line from the scan (r2). Neither is visible from the
+# live set alone: "scanned everything, clean" and "stopped scanning at line
+# 900" produce byte-identical output, which is the exact conflation the
+# script's exit-code separation exists to prevent. (r3) is the discriminator's
+# clean half — the SAME trailing anchor without the desync block is live and
+# clean, so (r2)'s red is attributable to the desync and not to the anchor.
+# ===========================================================================
+echo ""
+echo "--- (r) rule 7: an anchor the fence walk would swallow is REPORTED ---"
+RAN=$((RAN + 1))
+
+# (r1) an anchor-shaped line inside a fenced block.
+R1="$TMPWORK/r1_infence.md"
+_spec_copy_with_anchors "$R1" 4
+R1_ID="$(_fresh_ids "$R1" 1)"
+R1_ANCHOR="<!-- sc-anchor: $R1_ID -->"
+_R1_BEFORE="$(wc -l <"$R1")"
+{
+    printf '\n```text\n'
+    printf '%s\n' "$R1_ANCHOR"
+    printf 'an example paragraph inside the fence\n'
+    printf '```\n\nTrailing prose so nothing dangles.\n'
+} >>"$R1"
+_R1_AFTER="$(wc -l <"$R1")"
+R1_LINE="$(_line_of "$R1" "$R1_ANCHOR")"
+
+assert "(r1) meta: the mutation actually added the fenced block" _lt "$_R1_BEFORE" "$_R1_AFTER"
+assert "(r1) meta: the seeded ID does not collide with a live one" \
+    bash -c '[ "$(grep -cF -- "$1" "$2")" = "1" ]' -- "$R1_ID" "$R1"
+
+_run_lint --spec "$R1" --tombstones "$TOMBSTONES"
+assert "(r1) an anchor-shaped line INSIDE a fence is FLAGGED (rc 1)" _rc_is 1
+assert "(r1) output names the swallowed site ($R1:$R1_LINE)" _out_has "$R1:$R1_LINE"
+assert "(r1) output explains it is inside a fenced code block" _out_has "fenced code block"
+
+# (r2) FENCE DESYNC — a 4-backtick block containing a single ``` line toggles
+# fence state an ODD number of times, so everything after it goes unscanned.
+# The anchor below is authored OUTSIDE any fence and is a perfectly good
+# anchor; the desync is what hides it, and rule 7 is what says so.
+R2="$TMPWORK/r2_desync.md"
+_spec_copy_with_anchors "$R2" 4
+R2_ID="$(_fresh_ids "$R2" 1)"
+R2_ANCHOR="<!-- sc-anchor: $R2_ID -->"
+R2_TAIL="$TMPWORK/r2_tail.md"
+{
+    printf '\n%s\n' "$R2_ANCHOR"
+    printf 'A perfectly ordinary anchored paragraph, after the desync.\n'
+} >"$R2_TAIL"
+{
+    printf '\n````markdown\n'
+    printf 'A documented example that itself opens a fence:\n'
+    printf '```\n'
+    printf '````\n'
+} >>"$R2"
+cat "$R2_TAIL" >>"$R2"
+R2_LINE="$(_line_of "$R2" "$R2_ANCHOR")"
+
+assert "(r2) meta: the seeded block really is odd-toggled (3 fence markers)" \
+    bash -c '[ "$(sed -n "$2,\$p" "$1" | grep -c "^[[:space:]]*\`\`\`")" -ge 3 ]' -- "$R2" "$((R2_LINE - 6))"
+assert "(r2) meta: the trailing anchor is present in the mutant" \
+    bash -c 'grep -qF -- "$1" "$2"' -- "$R2_ANCHOR" "$R2"
+
+_run_lint --spec "$R2" --tombstones "$TOMBSTONES"
+assert "(r2) an anchor hidden by a DESYNCHRONISED fence is FLAGGED, not silently skipped (rc 1)" _rc_is 1
+assert "(r2) output names the swallowed site ($R2:$R2_LINE)" _out_has "$R2:$R2_LINE"
+
+# (r3) THE DISCRIMINATOR'S CLEAN HALF — the same trailing anchor, no desync.
+R3="$TMPWORK/r3_control.md"
+_spec_copy_with_anchors "$R3" 4
+cat "$R2_TAIL" >>"$R3"
+
+assert "(r3) meta: the control carries the SAME trailing anchor as (r2)" \
+    bash -c 'grep -qF -- "$1" "$2"' -- "$R2_ANCHOR" "$R3"
+
+_run_lint --spec "$R3" --tombstones "$TOMBSTONES"
+assert "(r3) the same anchor WITHOUT the desync block is live and CLEAN (rc 0)" _rc_is 0
+assert "(r3) the control produces NO output" _out_empty
 
 # ---------------------------------------------------------------------------
 # Summary.

@@ -3,7 +3,7 @@
 **Language version:** 0.6 -- the version of the LANGUAGE this document specifies. (Not the toolchain crate version, which is versioned separately and independently.)
 **Scope:** A living specification tracking the current language version, not a dated snapshot -- so there is deliberately no date pin here. See §14 (Language Versioning and Stability) for the versioning scheme and its terminology.
 **Status:** Draft -- synthesized from 16 design decision documents and design review resolutions. Clauses remain subject to change and carry no backwards-compatibility guarantee (§14.3).
-**Anchor contract:** Paragraph-level cite targets for the conformance suite are defined in [docs/notes/spec-anchor-contract.md](docs/notes/spec-anchor-contract.md). Resolve one only by grepping its literal id -- never by parsing a section number.
+**Anchor contract:** Paragraph-level cite targets for the conformance suite are defined in [docs/notes/spec-anchor-contract.md](notes/spec-anchor-contract.md). Resolve one only by grepping its literal id -- never by parsing a section number.
 
 ---
 

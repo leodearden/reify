@@ -34,7 +34,7 @@
 #   Relative paths resolve against --repo-root, NOT the caller's CWD, so the
 #   gate behaves identically from any directory.
 #
-# RULES (all six HARD-FAIL; there is no --warn, no --strict promotion, and no
+# RULES (all seven HARD-FAIL; there is no --warn, no --strict promotion, and no
 # skip path anywhere in this script)
 #   1. FORMAT       — any line containing `sc-anchor` outside a fenced code
 #                     block must match `^<!-- sc-anchor: sc-[0-9a-f]{6} -->$`
@@ -62,12 +62,36 @@
 #                     the SAME diff turns every consumer's cite into a silent
 #                     dangling reference, which is strictly worse than citing a
 #                     section number (a stale section number is visibly stale).
+#   7. NO SWALLOWED — every anchor-SHAPED line in the file is either LIVE or
+#                     REPORTED. Anchor-shaped lines are tallied over the whole
+#                     file with fence state IGNORED and reconciled against the
+#                     live set, so a line the fence walk skipped is named
+#                     rather than silently dropped. See NO SWALLOWED ANCHORS
+#                     below for the two holes this closes.
 #
 #   Fenced code blocks are skipped when scanning for anchors, so a fenced
 #   EXAMPLE anchor in some future spec section is never mistaken for a live
 #   one. Prose that DISCUSSES the mechanism therefore belongs in the authoring
 #   note (docs/notes/spec-anchor-contract.md), not in the spec body — or
-#   inside a fence.
+#   inside a fence, written with the non-hex metavariable id `sc-XXXXXX` so it
+#   is not anchor-SHAPED at all (rule 7 reports a hex-id anchor in a fence).
+#
+# NO SWALLOWED ANCHORS (rule 7) — why a fence-skipping scan needs a tally
+#   The fence walk toggles on any ``` line, which leaves two ways for a real
+#   anchor to become invisible while the gate still reports "clean":
+#     - DESYNC. A nested construct — a 4-backtick block that itself contains a
+#       ``` line, routine when documenting markdown — flips the toggle an odd
+#       number of times and leaves fence state stuck ON for an ARBITRARY
+#       trailing region. Rules 1/2/6 go inert there and nothing says so.
+#     - IN-FENCE ANCHOR. A well-formed anchor written inside a fence is not a
+#       live anchor, so a consumer greps its id and finds nothing — the same
+#       silent-dangling-cite failure rule 1 exists to prevent, one level up.
+#   Neither is detectable from the LIVE set alone: "scanned everything, found
+#   nothing" and "stopped scanning at line 900" produce byte-identical output.
+#   The whole-file tally is what distinguishes them, and its reconciliation
+#   (live + swallowed == total) is checked as an INTERNAL invariant, so a
+#   future divergence between the two arms' regexes is exit 2 rather than a
+#   quiet under-count.
 #
 # BASE SEMANTICS — stated honestly rather than implied
 #   The default base is HEAD, which gives a PER-COMMIT posture: it catches
@@ -204,9 +228,15 @@ _add_violation() { _violations+=("$1:$2: $3"); }
 # (id, line) pairs for rules 2/3, and resolves the one-line lookahead that
 # rule 6 needs.
 #
+# It also implements rule 7 in the same pass: `total` tallies anchor-SHAPED
+# lines with fence state IGNORED, so a line the fence walk skipped is reported
+# (and reconciled below) instead of vanishing. See NO SWALLOWED ANCHORS in the
+# header for the desync and in-fence holes that closes.
+#
 # Emits TAB-separated records:
-#   A <line> <id>       a well-formed anchor
-#   V <line> <message>  a format or placement violation
+#   A <line> <id>          a well-formed, LIVE anchor
+#   V <line> <message>     a format, placement, or swallowed-anchor violation
+#   C <total> <live> <sw>  the rule-7 tally, emitted exactly once at END
 # ═══════════════════════════════════════════════════════════════════════════
 _scan_spec() {
     awk '
@@ -224,15 +254,34 @@ _scan_spec() {
                 pending = 0
             }
 
+            # RULE 7, arm 1 — the whole-file tally. Deliberately evaluated
+            # BEFORE the fence bookkeeping and with fence state ignored: it is
+            # the ONLY reading of the file that a desynchronised fence toggle
+            # cannot suppress, which is what makes it a check rather than a
+            # second opinion from the same broken walk.
+            is_anchor = ($0 ~ /^<!-- sc-anchor: sc-[0-9a-f]{6} -->$/)
+            if (is_anchor) total++
+
             if ($0 ~ /^[[:space:]]*```/) { fence = !fence; next }
-            if (fence) next
+            if (fence) {
+                # RULE 7, arm 2 — an anchor-shaped line the fence walk is
+                # about to skip. Named here, where its line number is known.
+                # A MALFORMED `sc-anchor` mention inside a fence is left
+                # alone: that is exactly the documented-example form.
+                if (is_anchor) {
+                    swallowed++
+                    printf "V\t%d\tanchor-shaped line is inside a fenced code block, so it is NOT a live anchor and no consumer can resolve its id; move it out of the fence, or write the example with the non-hex metavariable id `sc-XXXXXX`. (If this line looks like it should be OUTSIDE a fence, an unbalanced or nested ``` fence earlier in the file has desynchronised fence tracking and everything after it is going unscanned.)\n", FNR
+                }
+                next
+            }
             if (index($0, "sc-anchor") == 0) next
 
-            if ($0 ~ /^<!-- sc-anchor: sc-[0-9a-f]{6} -->$/) {
+            if (is_anchor) {
                 id = $0
                 sub(/^<!-- sc-anchor: /, "", id)
                 sub(/ -->$/, "", id)
                 printf "A\t%d\t%s\n", FNR, id
+                live++
                 pending = 1
                 pending_line = FNR
             } else {
@@ -243,6 +292,7 @@ _scan_spec() {
             if (pending) {
                 printf "V\t%d\tanchor is the LAST line of the file and anchors nothing\n", pending_line
             }
+            printf "C\t%d\t%d %d\n", total, live, swallowed
         }
     ' "$1"
 }
@@ -318,10 +368,16 @@ fi
 declare -A ANCHOR_LINES=()   # id -> space-separated line numbers
 ANCHOR_ORDER=()              # ids in first-occurrence order
 
+_A_SEEN=0                    # A records this loop actually consumed
+_SCAN_TOTAL=""               # rule-7 tally: anchor-shaped lines, fence ignored
+_SCAN_LIVE=""                # rule-7 tally: anchors the fence walk accepted
+_SCAN_SWALLOWED=""           # rule-7 tally: anchor-shaped lines inside a fence
+
 while IFS=$'\t' read -r _kind _line _payload; do
     [[ -z "$_kind" ]] && continue
     case "$_kind" in
         A)
+            _A_SEEN=$((_A_SEEN + 1))
             if [[ -z "${ANCHOR_LINES[$_payload]:-}" ]]; then
                 ANCHOR_ORDER+=("$_payload")
                 ANCHOR_LINES["$_payload"]="$_line"
@@ -330,9 +386,37 @@ while IFS=$'\t' read -r _kind _line _payload; do
             fi
             ;;
         V) _add_violation "$SPEC_PATH" "$_line" "$_payload" ;;
+        C)
+            _SCAN_TOTAL="$_line"
+            _SCAN_LIVE="${_payload%% *}"
+            _SCAN_SWALLOWED="${_payload##* }"
+            ;;
         *) echo "ERROR: internal — unrecognised spec-scan record kind '$_kind'" >&2; exit 2 ;;
     esac
 done <<<"$SPEC_RECORDS"
+
+# ── RULE 7's RECONCILIATION. Every anchor-shaped line in the file must be
+# accounted for as either LIVE or SWALLOWED, and the live count the scanner
+# reported must equal the number of A records this loop actually consumed. A
+# mismatch means the two arms disagree — a divergent regex, or a truncated
+# record stream (the task-4586 failure mode this script's single-pass shape is
+# written against). That is an INTERNAL failure (exit 2), never "clean": a
+# gate that lost records mid-stream looks exactly like a clean one from here.
+if [[ -z "$_SCAN_TOTAL" ]]; then
+    echo "ERROR: internal — the spec scan of $SPEC_PATH emitted no tally record" >&2
+    exit 2
+fi
+if [[ "$_A_SEEN" -ne "$_SCAN_LIVE" ]]; then
+    echo "ERROR: internal — spec scan reported $_SCAN_LIVE live anchor(s) but $_A_SEEN record(s) arrived ($SPEC_PATH)" >&2
+    exit 2
+fi
+if [[ $((_SCAN_LIVE + _SCAN_SWALLOWED)) -ne "$_SCAN_TOTAL" ]]; then
+    echo "ERROR: internal — anchor tally does not reconcile for $SPEC_PATH:" >&2
+    echo "       $_SCAN_TOTAL anchor-shaped line(s) whole-file, but $_SCAN_LIVE live + $_SCAN_SWALLOWED swallowed" >&2
+    echo "       Some anchor-shaped line was neither accepted nor reported; refusing to" >&2
+    echo "       report a verdict over a corpus that was not fully accounted for." >&2
+    exit 2
+fi
 
 # ── RULE 2: uniqueness. Emit one `file:line:` per occurrence so BOTH (all)
 # sites are named — "id X is duplicated" without the sites makes the reader
