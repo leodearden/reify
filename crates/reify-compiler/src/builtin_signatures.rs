@@ -182,7 +182,7 @@
 //! doubled: `unresolved name` and every other diagnostic family emitted from
 //! that walk is untouched by a drop scoped to `ArgTypeMismatch`. De-duplicating
 //! the walk itself belongs in `expr.rs`, outside this file, and is filed as
-//! follow-up work.
+//! follow-up work (task #6627).
 //!
 //! # Arity awareness (task 5652)
 //!

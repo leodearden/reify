@@ -306,9 +306,17 @@ fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
 /// A geometry-`let` routes through `entity.rs -> compile_geometry_call`, but its
 /// value expression is ALSO compiled as a value cell via
 /// `compile_expr -> resolve_function_overload`, which is where
-/// `check_builtin_arg_types` is wired (expr.rs). Adding a second call site in
-/// `compile_geometry_call_inner` would therefore DOUBLE-emit here. This test is
-/// what makes that regression loud.
+/// `check_builtin_arg_types` is wired (expr.rs).
+///
+/// SCOPE OF THIS PIN, post-dedup: it no longer proves single-WIRING. Since this
+/// task's `emit_mismatch` drops any `ArgTypeMismatch` whose (code, span,
+/// message) triple is already in the sink, a second call site in
+/// `compile_geometry_call_inner` emitting at the same call span would now be
+/// SWALLOWED and this test would stay green. What it still pins is the
+/// user-visible contract — exactly one diagnostic reaches the author — which is
+/// the property that matters at the CLI. The underlying walk is still doubled;
+/// de-duplicating it belongs in `expr.rs` and is tracked as task #6627. Do not
+/// cite this test as evidence that the walk is single-wired.
 #[test]
 fn nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic() {
     let compiled = compile_struct_body(
