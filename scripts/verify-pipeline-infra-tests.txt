@@ -312,3 +312,27 @@ scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
 scripts/check-manifold-deps.sh          tests/infra/test_occt_deps_preflight.sh
 crates/reify-build-utils/src/lib.rs     tests/infra/test_occt_deps_preflight.sh
 scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
+
+# Task 6758 (spec-conformance leaf α): the sc-anchor substrate for
+# docs/reify-language-spec.md — the opaque, randomly-minted paragraph-level
+# cite targets the conformance suite quantifies over, their tombstone sidecar,
+# the normative authoring note, and the lint that keeps all three well-formed.
+# Same one-artifact-multiple-rows pattern as check-infra-classification-
+# manifest.sh above; the guard's self-test is hermetic (pure bash/awk/git, no
+# cargo), so it is cheap enough to run as a per-task fail-fast pole.
+#
+# These rows are what make the self-test run at TASK scope at all:
+# scripts/verify.sh emits the wholesale tests/infra/run_all.sh pool suite only
+# at DF_VERIFY_ROLE=merge/background, so without them a diff touching only the
+# spec or the lint would select ZERO infra poles and the substrate's guard
+# would first fire at the merge gate.
+#
+# Note the spec ITSELF is a row key here, not just the tooling: an anchor is a
+# line IN the spec, so a spec-only edit (a deletion without a same-diff
+# tombstone, a hand-typed anchor, an anchor stranded before a blank line) is
+# exactly the diff that can break the substrate.
+docs/reify-language-spec.md          tests/infra/test_spec_anchor_lint.sh
+docs/reify-language-spec.tombstones  tests/infra/test_spec_anchor_lint.sh
+docs/notes/spec-anchor-contract.md   tests/infra/test_spec_anchor_lint.sh
+scripts/spec-anchor-lint.sh          tests/infra/test_spec_anchor_lint.sh
+tests/infra/test_spec_anchor_lint.sh tests/infra/test_spec_anchor_lint.sh
