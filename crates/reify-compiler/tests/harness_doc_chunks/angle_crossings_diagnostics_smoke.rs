@@ -32,8 +32,10 @@
 //!
 //! What is pinned here:
 //!
-//! - the scraped block's shape and content — exactly four entries, each with
-//!   the measured declaration / renderer / message triple;
+//! - the scraped block's shape and identity — exactly four entries, each
+//!   identified by its measured declaration / renderer pair. The message
+//!   bodies are deliberately not reproduced in that table; they are checked
+//!   executably, below, against the thing that emits them;
 //! - the three compile-layer transcriptions, asserted EQUAL to the real
 //!   compiler's `Diagnostic::message` for a minimal fixture, together with the
 //!   expected `DiagnosticCode` — `LetAnnotationTypeMismatch` for the two `let`
@@ -80,39 +82,32 @@ const UNITS_CHUNK: &str = include_str!(concat!(
     "/../reify-mcp/src/tools/chunks/units.md"
 ));
 
-/// The exemplar's `CANONICAL COPY` block transcribes exactly these four
-/// diagnostics, in this order, with this wording.
+/// The exemplar's `CANONICAL COPY` block transcribes a diagnostic for exactly
+/// these four declarations, in this order, under these renderers.
 ///
-/// This table is the ONE place in the module where the expected text is typed
-/// out rather than scraped. It exists so that a silent *deletion* from the
-/// block cannot pass: the scraper alone would happily return three entries and
-/// every downstream test would still be green. Everything else compares
-/// scraped text against the real compiler, never against a literal.
+/// This table pins exactly three things: how MANY entries the block has, which
+/// declaration IDENTIFIES each one, and which renderer rendered it. That is
+/// what a silent *deletion* needs — the scraper alone would happily return
+/// three entries and leave every downstream test green.
 ///
-/// Each row is `(declaration, renderer, message)`. `declaration` keeps the
-/// exemplar's column-alignment padding verbatim (`let   theta`, `arc   :`) —
-/// the scraper does not normalize it away, so a reflow of the block is visible
-/// here rather than silently absorbed.
-const TRANSCRIBED: [(&str, &str, &str); 4] = [
-    (
-        "let   theta : Angle = s / r",
-        "error",
-        "let binding 'theta' declared `Scalar[rad]` but its initializer evaluates to \
-         `Real`; declared type and initializer type must agree",
-    ),
-    (
-        "param theta : Angle = s / r",
-        "error",
-        "parameter 'theta' declared `Scalar[rad]` but its initializer evaluates to \
-         `Real`; declared type and initializer dimension must agree",
-    ),
-    (
-        "let   arc   : Length = r * theta",
-        "error",
-        "let binding 'arc' declared `Scalar[m]` but its initializer evaluates to \
-         `Scalar[m·rad]`; declared type and initializer type must agree",
-    ),
-    ("let   x = 2.5 * 1 rad", "Parse error", "syntax error: rad"),
+/// The diagnostic MESSAGES are deliberately not reproduced here. They are
+/// verified executably against the real compiler in
+/// [`transcribed_compile_diagnostics_match_the_real_compiler`] and against the
+/// real parser in [`transcribed_parse_diagnostic_matches_the_real_parser`],
+/// which is this module's whole thesis: everything else compares scraped text
+/// against the thing that emits it, never against a literal.
+///
+/// Each row is `(declaration, renderer)`, with `declaration` stored
+/// WHITESPACE-NORMALIZED — the same key [`fixture_for`] and
+/// [`expected_code_for`] already use. The exemplar's column-alignment padding
+/// (`let   theta`, `arc   :`) is presentation, not doc truth, and is
+/// deliberately NOT pinned; [`canonical_copy_identity_survives_a_cosmetic_reflow`]
+/// is what holds that line.
+const TRANSCRIBED: [(&str, &str); 4] = [
+    ("let theta : Angle = s / r", COMPILE_RENDERER),
+    ("param theta : Angle = s / r", COMPILE_RENDERER),
+    ("let arc : Length = r * theta", COMPILE_RENDERER),
+    ("let x = 2.5 * 1 rad", CLI_PARSE_ERROR_PREFIX),
 ];
 
 /// Marker line that opens the block this module scrapes.
@@ -132,6 +127,15 @@ const CONTINUATION_INDENT: usize = 12;
 
 /// Token that introduces a rendered diagnostic under its declaration.
 const DIAGNOSTIC_ARROW: &str = "-> ";
+
+/// The renderer prefix the exemplar shows on its three COMPILE-layer
+/// transcriptions — `-> error: ...`.
+///
+/// Named rather than repeated, because the same string is both a column of
+/// [`TRANSCRIBED`] and the discriminator that splits the compile-layer entries
+/// from the parse-layer one. A table whose purpose is to remove duplication
+/// should not be surrounded by bare copies of its own contents.
+const COMPILE_RENDERER: &str = "error";
 
 /// The renderer prefix the exemplar shows on its parse-layer transcription.
 ///
@@ -174,7 +178,9 @@ struct TranscribedDiagnostic {
 ///
 /// The block's shape (measured at `examples/best_practices/angle_crossings.ri`
 /// lines 34-62) is regular, and this reader is deliberately strict about it so
-/// that a reflow is *visible* rather than silently absorbed:
+/// that a reflow of the block's INDENTATION is *visible* rather than silently
+/// absorbed (intra-line column padding is a different matter — see
+/// [`normalize_whitespace`]):
 ///
 /// - the block opens at the line whose comment body starts with
 ///   [`CANONICAL_COPY_MARKER`];
@@ -309,16 +315,20 @@ fn canonical_copy_entries() -> Vec<TranscribedDiagnostic> {
     canonical_copy_entries_from(ANGLE_CROSSINGS_EXEMPLAR)
 }
 
-/// The `CANONICAL COPY` block scrapes to exactly the four measured entries.
+/// Assert that `entries` is the set of transcriptions this module knows how to
+/// check: the right NUMBER of them, each carrying the declaration and renderer
+/// its [`TRANSCRIBED`] row names.
 ///
-/// This is the module's foundation: every other test consumes the scraper's
-/// output, so if the block's shape drifts (a reflow, a fifth entry, a deleted
-/// one) it must surface HERE, loudly, rather than as a quietly shrinking set
-/// of downstream assertions.
-#[test]
-fn canonical_copy_block_yields_the_four_transcribed_diagnostics() {
-    let entries = canonical_copy_entries_from(ANGLE_CROSSINGS_EXEMPLAR);
-
+/// The count assertion comes FIRST and stands alone, because it is the one
+/// thing the scraper cannot catch by itself: three entries scrape, compare and
+/// go green exactly as four do, so a silent deletion is invisible everywhere
+/// else in this module.
+///
+/// Identity is keyed on the whitespace-NORMALIZED declaration — the same key
+/// [`fixture_for`] and [`expected_code_for`] use — so what is asserted is that
+/// each entry is still one this module has a fixture for, not that the
+/// exemplar still pads its columns the way it does today.
+fn assert_transcribed_identities(entries: &[TranscribedDiagnostic]) {
     assert_eq!(
         entries.len(),
         TRANSCRIBED.len(),
@@ -331,21 +341,48 @@ fn canonical_copy_block_yields_the_four_transcribed_diagnostics() {
         entries
     );
 
-    for (index, (declaration, renderer, message)) in TRANSCRIBED.iter().enumerate() {
+    for (index, (declaration, renderer)) in TRANSCRIBED.iter().enumerate() {
         let entry = &entries[index];
         assert_eq!(
-            entry.declaration, *declaration,
-            "CANONICAL COPY entry {index}: declaration text drifted"
+            normalize_whitespace(&entry.declaration),
+            *declaration,
+            "CANONICAL COPY entry {index} is transcribed for `{}`, which is not a \
+             declaration this module has a fixture for — it expected `{declaration}`. A \
+             declaration was changed, added, or reordered: update TRANSCRIBED and \
+             `fixture_for` together, in the same diff, so every transcription still gets \
+             compiled for real. (Column-alignment padding is not what is compared here, \
+             so a purely cosmetic reflow will not reach this assertion.)",
+            entry.declaration
         );
         assert_eq!(
             entry.renderer, *renderer,
-            "CANONICAL COPY entry {index}: renderer prefix drifted"
-        );
-        assert_eq!(
-            entry.message, *message,
-            "CANONICAL COPY entry {index}: transcribed message drifted"
+            "CANONICAL COPY entry {index}: renderer prefix drifted — expected \
+             `{renderer}`, scraped `{}`.",
+            entry.renderer
         );
     }
+}
+
+/// How many [`TRANSCRIBED`] rows carry `renderer`.
+///
+/// Derived rather than written out, so the compile-layer and parse-layer counts
+/// below cannot disagree with each other or with the table: adding a fifth row
+/// updates both by construction instead of leaving a stale literal to be found
+/// by hand.
+fn transcribed_rows_with(renderer: &str) -> usize {
+    TRANSCRIBED.iter().filter(|(_, r)| *r == renderer).count()
+}
+
+/// The `CANONICAL COPY` block scrapes to exactly the four measured entries.
+///
+/// This is the module's foundation: every other test consumes the scraper's
+/// output, so if the block's shape drifts (a fifth entry, a deleted one, a
+/// declaration rewritten to something no fixture provokes) it must surface
+/// HERE, loudly, rather than as a quietly shrinking set of downstream
+/// assertions.
+#[test]
+fn canonical_copy_block_yields_the_four_transcribed_diagnostics() {
+    assert_transcribed_identities(&canonical_copy_entries_from(ANGLE_CROSSINGS_EXEMPLAR));
 }
 
 /// A COSMETIC REFLOW of the block's column-alignment padding must NOT fail
@@ -396,9 +433,11 @@ fn canonical_copy_identity_survives_a_cosmetic_reflow() {
 /// Collapse every run of whitespace in `text` to a single space.
 ///
 /// Used to key fixtures and expectations off a declaration whose exemplar form
-/// carries column-alignment padding (`let   theta`, `arc   :`). The padding is
-/// preserved in the scraped entry — a reflow must stay visible in the step-1
-/// triple assertion — but it must not be load-bearing for lookup.
+/// carries column-alignment padding (`let   theta`, `arc   :`). The scraper
+/// preserves that padding verbatim, so a failure can quote the exemplar's own
+/// bytes back — but nothing compares against it: identity, fixture lookup and
+/// code lookup all go through here. That is what makes the padding
+/// presentation rather than doc truth.
 fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -511,13 +550,14 @@ fn fixture_for(declaration: &str) -> &'static str {
 fn transcribed_compile_diagnostics_match_the_real_compiler() {
     let compile_layer: Vec<TranscribedDiagnostic> = canonical_copy_entries()
         .into_iter()
-        .filter(|entry| entry.renderer == "error")
+        .filter(|entry| entry.renderer == COMPILE_RENDERER)
         .collect();
     assert_eq!(
         compile_layer.len(),
-        3,
-        "expected three compile-layer transcriptions in the CANONICAL COPY block; \
-         got {compile_layer:#?}"
+        transcribed_rows_with(COMPILE_RENDERER),
+        "expected {} compile-layer transcriptions in the CANONICAL COPY block; \
+         got {compile_layer:#?}",
+        transcribed_rows_with(COMPILE_RENDERER)
     );
 
     for entry in &compile_layer {
@@ -563,13 +603,14 @@ fn transcribed_compile_diagnostics_match_the_real_compiler() {
 fn parse_layer_entry() -> TranscribedDiagnostic {
     let mut parse_layer: Vec<TranscribedDiagnostic> = canonical_copy_entries()
         .into_iter()
-        .filter(|entry| entry.renderer != "error")
+        .filter(|entry| entry.renderer != COMPILE_RENDERER)
         .collect();
     assert_eq!(
         parse_layer.len(),
-        1,
-        "expected exactly one parse-layer transcription in the CANONICAL COPY block; \
-         got {parse_layer:#?}"
+        TRANSCRIBED.len() - transcribed_rows_with(COMPILE_RENDERER),
+        "expected exactly {} parse-layer transcription(s) in the CANONICAL COPY block; \
+         got {parse_layer:#?}",
+        TRANSCRIBED.len() - transcribed_rows_with(COMPILE_RENDERER)
     );
     parse_layer.remove(0)
 }
@@ -746,7 +787,10 @@ fn scraper_discriminates_a_reworded_diagnostic() {
 
     let mut still_matching: Vec<&str> = Vec::new();
     let mut discriminated = 0usize;
-    for entry in entries.iter().filter(|entry| entry.renderer == "error") {
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.renderer == COMPILE_RENDERER)
+    {
         let module = compile_source_with_stdlib(fixture_for(&entry.declaration));
         if errors_only(&module)
             .iter()
