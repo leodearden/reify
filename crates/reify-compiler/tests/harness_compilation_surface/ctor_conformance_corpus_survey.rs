@@ -2163,3 +2163,112 @@ fn survey_output_path_honours_the_scratch_override() {
          must not write the artifact to the current directory"
     );
 }
+
+// ─── step 17/18: a rebase-durable stamp, refused when it would be dishonest ──
+
+/// A full git object name as `git rev-parse`/`git merge-base` print one:
+/// exactly 40 lowercase hexadecimal characters.
+const FULL_SHA_LEN: usize = 40;
+
+#[test]
+fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
+    // The one shape that may be stamped: a fully-resolved anchor, nothing
+    // uncommitted, and no tracked `.ri` differing between the anchor and the
+    // commit actually swept.
+    let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
+    assert_eq!(
+        stamp_decision(anchor, "", ""),
+        Ok(anchor.to_owned()),
+        "a resolved anchor over a clean, undrifted tree is exactly what the \
+         header is allowed to claim"
+    );
+    // git writes a trailing newline even when it has nothing to report, and a
+    // whitespace-only read is an EMPTY read — not a refusal.
+    assert_eq!(
+        stamp_decision(anchor, "\n", "  \n"),
+        Ok(anchor.to_owned()),
+        "whitespace-only git output means clean; it must not be read as dirty"
+    );
+}
+
+#[test]
+fn stamp_decision_refuses_a_dirty_tree_and_names_what_is_dirty() {
+    // Why this refusal exists: the artifact header CLAIMS to be a snapshot at
+    // the stamped commit. That claim is FALSE if the tree carried uncommitted
+    // edits when the sweep ran — the bytes surveyed would not be the bytes at
+    // the stamped commit. Refusing is the only way the header stays honest.
+    //
+    // The refusal must echo the offending `git status --porcelain` payload so
+    // the operator can see WHICH files blocked the stamp. The remedy sentence
+    // itself is deliberately NOT pinned here: asserting on its wording would
+    // test the message rather than the behaviour.
+    let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
+    let err = stamp_decision(anchor, " M crates/reify-compiler/src/lib.rs\n", "")
+        .expect_err("a dirty tree must refuse to stamp");
+    assert!(
+        err.contains("crates/reify-compiler/src/lib.rs"),
+        "the refusal must name the dirty path it read, so the operator can act \
+         on it without re-running git by hand; got: {err}"
+    );
+    // A STAGED addition is still dirty — `--untracked-files=no` suppresses the
+    // `??` rows only, never the `A `/` M` ones.
+    assert!(
+        stamp_decision(anchor, "A  docs/prds/new.md\n", "").is_err(),
+        "a staged-but-uncommitted addition must refuse too"
+    );
+}
+
+#[test]
+fn stamp_decision_refuses_when_a_tracked_ri_drifted_from_the_anchor() {
+    // The anchor is an honest description of the surveyed corpus only while no
+    // tracked `.ri` differs between the anchor and the commit swept. If one
+    // does, the header would name a commit whose corpus is not the one in the
+    // table below it.
+    let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
+    let err = stamp_decision(anchor, "", "examples/one.ri\nexamples/two.ri\n")
+        .expect_err("drifted tracked .ri must refuse to stamp");
+    for path in ["examples/one.ri", "examples/two.ri"] {
+        assert!(
+            err.contains(path),
+            "the refusal must name every drifted path — {path} is missing \
+             from: {err}"
+        );
+    }
+}
+
+#[test]
+fn stamp_decision_rejects_an_anchor_that_is_not_a_full_lowercase_sha() {
+    // Anything but a resolved 40-lowercase-hex object name is garbage in the
+    // header: a failed/empty git read, an abbreviated name that a future repo
+    // could render ambiguous, or a symbolic ref that names a MOVING target
+    // rather than the commit surveyed.
+    let bad_anchors = [
+        ("", "an empty read — git produced nothing"),
+        ("a46387d1f5", "an abbreviated name, not a full object name"),
+        ("ref: refs/heads/main", "a symbolic ref names a moving target"),
+        (
+            "A46387D1F58FB469ED226CC0F2BFBAAFA7CF63BE",
+            "uppercase — git never prints an object name this way",
+        ),
+        (
+            "a46387d1f58fb469ed226cc0f2bfbaafa7cf63bz",
+            "40 characters but not hexadecimal",
+        ),
+        (
+            "a46387d1f58fb469ed226cc0f2bfbaafa7cf63bee",
+            "41 characters — one too many",
+        ),
+    ];
+    for (anchor, why) in bad_anchors {
+        assert!(
+            stamp_decision(anchor, "", "").is_err(),
+            "{anchor:?} must be rejected rather than stamped: {why}"
+        );
+    }
+    // Sanity: the guard rejects for the RIGHT reason — the same inputs with a
+    // well-formed anchor are accepted.
+    assert!(
+        stamp_decision(&"a".repeat(FULL_SHA_LEN), "", "").is_ok(),
+        "40 lowercase hex characters is the accepted shape"
+    );
+}
