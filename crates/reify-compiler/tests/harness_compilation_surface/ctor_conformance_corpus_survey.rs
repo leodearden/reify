@@ -1958,3 +1958,53 @@ fn render_survey_states_the_q6_ruling_and_the_provenance_disclaimers() {
         "limitation 2: compile_with_stdlib is the single-file path"
     );
 }
+
+// ─── step 13/14: output path + the generator entry point ─────────────────────
+
+#[test]
+fn survey_output_path_defaults_to_the_committed_artifact_location() {
+    // The default must match the artifact's real location exactly, so the
+    // regeneration command committed INSIDE the artifact needs no path argument
+    // and cannot drift from where the file actually lives.
+    //
+    // `REIFY_CTOR_SURVEY_OUT` is read per call rather than memoized, but env
+    // vars are process-global and this binary runs tests in parallel — so this
+    // test asserts on the UNSET default without mutating the environment, and
+    // the override is exercised by `survey_output_path_for` below.
+    let path = survey_output_path();
+    let expected = std::path::Path::new(WORKSPACE_ROOT)
+        .join("docs/prds/struct-ctor-field-type-conformance.survey.md");
+    assert_eq!(
+        path, expected,
+        "the default output path must be the committed artifact location"
+    );
+    let parent = path.parent().expect("the artifact path has a parent");
+    assert!(
+        parent.is_dir(),
+        "the artifact's parent directory {} must exist",
+        parent.display()
+    );
+}
+
+#[test]
+fn survey_output_path_honours_the_scratch_override() {
+    // The override exists so the sweep can be re-run into a scratch path and
+    // diffed against the committed copy WITHOUT dirtying the tree — which is
+    // exactly how step 15 proves byte-for-byte reproducibility.
+    assert_eq!(
+        survey_output_path_for(Some("/tmp/scratch-survey.md".to_owned())),
+        std::path::PathBuf::from("/tmp/scratch-survey.md"),
+        "REIFY_CTOR_SURVEY_OUT must override the default"
+    );
+    assert_eq!(
+        survey_output_path_for(None),
+        survey_output_path(),
+        "an unset override must fall back to the committed location"
+    );
+    assert_eq!(
+        survey_output_path_for(Some(String::new())),
+        survey_output_path(),
+        "an EMPTY override must fall back too — an accidental `REIFY_CTOR_SURVEY_OUT=` \
+         must not write the artifact to the current directory"
+    );
+}
