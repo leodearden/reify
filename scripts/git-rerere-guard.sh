@@ -251,10 +251,16 @@ cmd_check() {
 # verdict here is harmless in the way that matters — `arm` writes --local, so it
 # can always clear whatever this reports, unlike the inert-config.worktree case
 # the sweep below has to gate against.
+#
+# --includes EXPLICITLY on both reads: git turns include-following OFF whenever a
+# specific scope is named and ON only for an effective read, so without the flag
+# a shared config that reaches rerere.enabled=true through an `include.path`
+# reads as UNSET here while git's own resolution honours it (measured, git
+# 2.43.0: `--local --get` exit 1, `--local --includes --get` -> true).
 _check_shared_default() {
     local key="$1" shared
 
-    if ! git -C "$TARGET" config --local --get "$key" >/dev/null 2>&1; then
+    if ! git -C "$TARGET" config --local --includes --get "$key" >/dev/null 2>&1; then
         # Unset in the shared config.  Only rerere.enabled has a non-false
         # default: -1 = "enabled iff rr-cache/ exists".  rerere.autoupdate
         # defaults to false, so an unset shared autoupdate is genuinely safe.
@@ -268,7 +274,7 @@ _check_shared_default() {
         return 0
     fi
 
-    shared="$(git -C "$TARGET" config --local --bool --get "$key" 2>/dev/null || true)"
+    shared="$(git -C "$TARGET" config --local --includes --bool --get "$key" 2>/dev/null || true)"
     if [ "$shared" = "true" ]; then
         echo "ARMED: the SHARED config sets $key=true in $COMMON_DIR/config." >&2
         echo "  $TARGET reads disarmed only because its own config.worktree masks it — every" >&2
@@ -325,11 +331,18 @@ _sweep_worktree_configs() {
     # files are still walked and WARNed about below, precisely because grep cannot
     # see them.
     #
-    # 'include' is in the pattern alongside 'rerere' because `git config --file`
-    # HONOURS include.path, so a rerere.* key can reach a config.worktree by
-    # indirection without the string 'rerere' appearing in its bytes.  Matching
-    # the indirection keyword too keeps the prefilter a pure cost optimisation
-    # rather than a second, weaker parser.
+    # 'include' is in the pattern alongside 'rerere' because a rerere.* key can
+    # reach a config.worktree by `include.path` indirection, without the string
+    # 'rerere' appearing anywhere in its own bytes.  Matching the indirection
+    # keyword too keeps the prefilter a pure cost optimisation rather than a
+    # second, weaker parser.  Case-insensitively, it also matches `includeIf`.
+    #
+    # That term is load-bearing ONLY because the read below now passes
+    # --includes EXPLICITLY.  git turns include-following OFF whenever a specific
+    # file or scope is named (--file, --local, --worktree, --global, --system,
+    # --blob) and ON only for an effective read — measured on git 2.43.0, the
+    # exact opposite of what this comment used to assert — so before that flag
+    # was added the term guarded a path the reader never traversed.
     mentions="$(grep -lisE 'rerere|include' -- "$COMMON_DIR/config.worktree" "$WORKTREES_DIR"/*/config.worktree 2>/dev/null || true)"
 
     # The main checkout's own config.worktree is PREPENDED to the linked-worktree
@@ -379,6 +392,12 @@ _sweep_worktree_configs() {
         # ONE fork for BOTH keys.  --bool applies to --get-regexp output, so
         # valueless keys and `yes`/`on`/`1` still normalise to true — the whole
         # reason a grep cannot be trusted with the value.
+        #
+        # --includes is passed EXPLICITLY: with --file naming a specific file git
+        # defaults include-following OFF, so a config.worktree that is nothing
+        # but `[include] path = extra.cfg` returned exit 1 and no output here
+        # while git's own effective read honoured the chain and armed the lane
+        # (measured, git 2.43.0).
         while read -r key value; do
             [ "$value" = "true" ] || continue
             echo "ARMED: worktree '$wt_name' overrides $key=true in its config.worktree." >&2
@@ -386,7 +405,7 @@ _sweep_worktree_configs() {
             echo "  git reads config.worktree FIRST, so this beats the shared .git/config." >&2
             armed=1
         done <<EOF
-$(git config --file "$wt_config" --bool --get-regexp '^rerere\.(enabled|autoupdate)$' 2>/dev/null || true)
+$(git config --file "$wt_config" --includes --bool --get-regexp '^rerere\.(enabled|autoupdate)$' 2>/dev/null || true)
 EOF
     done
 
@@ -412,6 +431,19 @@ cmd_arm() {
         # Compare against the current LOCAL value and skip a redundant write, so
         # a re-run is a byte-level no-op on .git/config.  setup-dev.sh invokes
         # this every time; a rewrite would churn the shared file for nothing.
+        #
+        # DELIBERATELY NO --includes here, in intentional asymmetry with the two
+        # reads in _check_shared_default and the one in _sweep_worktree_configs.
+        # Those ask "what does git resolve?"; this one asks the different
+        # question "is the literal shared FILE already pinned, so this write
+        # would be a byte-level no-op?".  Following an include would answer a
+        # question `arm` is not asking: a shared config whose INCLUDED file
+        # happens to set false would make `arm` skip the write entirely, leaving
+        # .git/config with no direct pin and re-armable the moment another lane
+        # edits or removes that included file.  Do not "tidy" all four reads into
+        # agreement.  (--get is mechanically safe with --includes — measured,
+        # multiple values resolve to the LAST one, exit 0 — so the reason to omit
+        # it here is semantic, not mechanical.)
         before="$(git -C "$TARGET" config --local --get "$key" 2>/dev/null || true)"
         if [ "$before" = "false" ]; then
             continue
