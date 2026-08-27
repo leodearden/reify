@@ -252,5 +252,249 @@ fi
 assert "A5a: same anchor from CWD=/ and CWD=<fixture root> -> same answer, == main checkout" \
     test "$_CWD_INDEP" = yes
 
+# =============================================================================
+# PART B — the GENERATOR contract (setup-dev.sh install_build_services)
+#
+# Asserts on what the installer actually WRITES, in a sandboxed HOME. It does
+# NOT inspect the real ~/.config/systemd/user: the live units were already
+# hand-repointed by operator action on 2026-08-15, so any check against them
+# would pass vacuously and prove nothing about the generator — which is the
+# whole remaining value here. Nothing below runs systemctl (a restart of
+# reify-jobserver.service re-seeds both FIFO pools and every in-flight verify
+# rustc holding a token loses it permanently, fleet-wide), touches a host FIFO,
+# or writes outside its mktemp root.
+# =============================================================================
+echo ""
+echo "--- B0: generator fixture (function extracted into a FAKE LANE) ---"
+
+# ---------------------------------------------------------------------------
+# _mk_generator_fixture <stem> — MAIN-SHELL ONLY (see _mk_two_checkout_fixture
+# for why this sets globals rather than echoing them). Sets GEN_ROOT/GEN_MAIN/
+# GEN_LANE/GEN_HOME/GEN_UNITS.
+#
+# The executable stubs and a copy of lib_main_checkout.sh are COMMITTED before
+# `git worktree add`, so the linked worktree carries them too — the installer
+# must be able to find its executables in whichever tree it ends up pinning,
+# or a passing test could not distinguish "pinned correctly" from "chmod
+# happened to fail".
+#
+# install_build_services() is extracted by column-0 sed anchors and written to
+# <fake lane>/scripts/setup-dev.sh, so ${BASH_SOURCE[0]} inside the function
+# resolves to the FAKE LANE. That is what reproduces the bug's exact trigger
+# condition — an installer invoked from a warm lane — rather than simulating
+# it. setup-dev.sh cannot simply be sourced: it is straight-line and would
+# apt-install, curl rustup and build native deps long before reaching the
+# function.
+# ---------------------------------------------------------------------------
+_mk_generator_fixture() {
+    local stem="$1" root
+    root="$(mktemp -d "${TMPDIR:-/tmp}/${stem}-XXXXXX")" || return 1
+    root="$(cd "$root" && pwd -P)" || return 1
+    _TMPDIRS+=("$root")
+    GEN_ROOT="$root"
+    GEN_MAIN="$root/main"
+    GEN_LANE="$root/lane"
+    GEN_HOME="$root/home"
+    GEN_UNITS="$GEN_HOME/.config/systemd/user"
+
+    mkdir -p "$GEN_MAIN/scripts" "$GEN_HOME/.cargo/bin" "$root/shim" || return 1
+
+    # A no-op `systemctl` earlier on PATH than the real one. The installer runs
+    # `daemon-reload` and `enable --now`; neither may reach the host.
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$root/shim/systemctl" || return 1
+    chmod +x "$root/shim/systemctl" || return 1
+
+    # The two executables the jobserver units name in their ExecStart, plus the
+    # resolver the installer sources.
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$GEN_MAIN/scripts/jobserver-balancer.py" || return 1
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$GEN_MAIN/scripts/jobserver-canary.sh" || return 1
+    cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$GEN_MAIN/scripts/lib_main_checkout.sh" || return 1
+    chmod +x "$GEN_MAIN/scripts/jobserver-balancer.py" "$GEN_MAIN/scripts/jobserver-canary.sh" || return 1
+
+    git init -q -b main "$GEN_MAIN" || return 1
+    git -C "$GEN_MAIN" add -A || return 1
+    git -C "$GEN_MAIN" -c user.name=t -c user.email=t@example.invalid \
+        -c commit.gpgsign=false commit -q -m init || return 1
+    git -C "$GEN_MAIN" worktree add -q --detach "$GEN_LANE" >/dev/null 2>&1 || return 1
+
+    mkdir -p "$GEN_LANE/scripts" || return 1
+    sed -n '/^install_build_services() {$/,/^}$/p' "$REPO_ROOT/scripts/setup-dev.sh" \
+        > "$GEN_LANE/scripts/setup-dev.sh" || return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _run_generator — source the extracted function in a sandboxed environment and
+# invoke it. HOME is the fixture's, PATH is shimmed, and the log helpers
+# setup-dev.sh defines at top level (which the extraction deliberately does not
+# carry) are stubbed. warn/err are echoed to stderr so a fallback taken during
+# the run is visible in the captured-output dump of a failing assert.
+# ---------------------------------------------------------------------------
+_run_generator() {
+    env -u REIFY_MAIN_CHECKOUT -u REIFY_SCCACHE_SIZE \
+        HOME="$GEN_HOME" PATH="$GEN_ROOT/shim:$PATH" \
+        bash -c '
+            set -euo pipefail
+            info() { :; }
+            ok()   { :; }
+            warn() { echo "warn: $*" >&2; }
+            err()  { echo "err: $*" >&2; }
+            source "$1"
+            install_build_services
+        ' _ "$GEN_LANE/scripts/setup-dev.sh"
+}
+
+# ---------------------------------------------------------------------------
+# _exec_lines <unit_dir> — every `Exec*=` line across every emitted *.service,
+# as "<unit basename>|<argv0>".
+#
+# argv[0] ONLY — the first whitespace-separated token, with systemd's `-@+!:`
+# run-time prefix characters stripped. A worktree path passed as a DATA
+# ARGUMENT is legitimate (deploy/systemd/reify-warm-lane-gc.service correctly
+# carries `--mount /home/leo/src/warm-lanes/worktrees`), so a naive grep for
+# the lane path over whole unit files would over-match and make this guard
+# untrustworthy. Only the EXECUTABLE is the defect.
+# ---------------------------------------------------------------------------
+_exec_lines() {
+    local unit_dir="$1" f line val
+    for f in "$unit_dir"/*.service; do
+        [ -f "$f" ] || continue
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                Exec*=*) ;;
+                *) continue ;;
+            esac
+            val="${line#*=}"
+            while [ -n "$val" ]; do
+                case "$val" in
+                    [-@+!:]*) val="${val#?}" ;;
+                    *) break ;;
+                esac
+            done
+            printf '%s|%s\n' "${f##*/}" "${val%%[[:space:]]*}"
+        done < "$f"
+    done
+}
+
+GEN_ROOT=""; GEN_MAIN=""; GEN_LANE=""; GEN_HOME=""; GEN_UNITS=""
+_mk_generator_fixture reify-genfix   # main shell, NOT $( )
+
+# NON-VACUITY GUARDS on the extraction, asserted BEFORE the run. A future
+# refactor of setup-dev.sh must fail this suite loudly rather than silently
+# test an empty snippet.
+_EXTRACT="$GEN_LANE/scripts/setup-dev.sh"
+
+assert "B0a: the extracted snippet is non-empty" \
+    test -s "$_EXTRACT"
+
+assert "B0b: the extracted snippet defines install_build_services" \
+    grep -qF 'install_build_services() {' "$_EXTRACT"
+
+assert "B0c: the extracted snippet carries the balancer ExecStart" \
+    bash -c 'grep -E "^ExecStart=.*jobserver-balancer\.py" "$1" >/dev/null' _ "$_EXTRACT"
+
+assert "B0d: the extracted snippet carries the canary ExecStart" \
+    bash -c 'grep -E "^ExecStart=.*jobserver-canary\.sh" "$1" >/dev/null' _ "$_EXTRACT"
+
+# The bug's trigger condition: the installer is running from a DIFFERENT tree
+# than the one its host-global units must name.
+assert "B0e: the fake lane and the main checkout are DISTINCT paths" \
+    bash -c '[ "$1" != "$2" ]' _ "$GEN_LANE" "$GEN_MAIN"
+
+echo ""
+echo "--- B1: install_build_services() emits units into the sandboxed HOME ---"
+
+_GEN_RC=0
+_GEN_ERR="$GEN_ROOT/generator.err"
+_run_generator >"$GEN_ROOT/generator.out" 2>"$_GEN_ERR" || _GEN_RC=$?
+
+assert "B1a: install_build_services() completes successfully in the sandbox" \
+    bash -c '[ "$1" = "0" ] || { cat "$2" >&2; exit 1; }' _ "$_GEN_RC" "$_GEN_ERR"
+
+assert "B1b: it wrote reify-jobserver.service into the sandboxed unit dir" \
+    test -f "$GEN_UNITS/reify-jobserver.service"
+
+assert "B1c: it wrote reify-jobserver-canary.service into the sandboxed unit dir" \
+    test -f "$GEN_UNITS/reify-jobserver-canary.service"
+
+assert "B1d: it wrote nothing outside the sandbox (real \$HOME untouched by construction)" \
+    bash -c '[ "$(ls -1 "$1"/*.service 2>/dev/null | wc -l)" -ge 3 ]' _ "$GEN_UNITS"
+
+echo ""
+echo "--- B2: both jobserver ExecStarts name the MAIN checkout ---"
+
+_EXEC_BALANCER="$(grep -E '^ExecStart=' "$GEN_UNITS/reify-jobserver.service" 2>/dev/null | head -1 || true)"
+_EXEC_CANARY="$(grep -E '^ExecStart=' "$GEN_UNITS/reify-jobserver-canary.service" 2>/dev/null | head -1 || true)"
+
+assert "B2a: reify-jobserver.service ExecStart == <main checkout>/scripts/jobserver-balancer.py" \
+    test "$_EXEC_BALANCER" = "ExecStart=$GEN_MAIN/scripts/jobserver-balancer.py"
+
+# Asserted SEPARATELY from the balancer on purpose: there are TWO defective
+# ExecStart sites, and a fix that catches only the first leaves the leak canary
+# permanently dead — which is exactly how the depletion self-heal stayed dead
+# through the 2026-08-13 incident.
+assert "B2b: reify-jobserver-canary.service ExecStart == <main checkout>/scripts/jobserver-canary.sh" \
+    test "$_EXEC_CANARY" = "ExecStart=$GEN_MAIN/scripts/jobserver-canary.sh"
+
+echo ""
+echo "--- B3: no emitted unit EXECUTES anything under the invoking lane ---"
+
+_EXEC_ALL="$GEN_ROOT/exec-lines.txt"
+_exec_lines "$GEN_UNITS" > "$_EXEC_ALL"
+_EXEC_COUNT="$(grep -c . "$_EXEC_ALL" || true)"
+
+# Non-vacuity: the sweep must have actually examined something. The four units
+# carry six Exec* lines today (sccache Pre+Start, jobserver Pre+Start+StopPost,
+# canary Start); a lower bound of 3 leaves room for churn without letting an
+# empty sweep report all-clear.
+assert "B3a: the argv0 sweep examined at least 3 Exec* lines (non-vacuity)" \
+    test "$_EXEC_COUNT" -ge 3
+
+# Catches a future FIFTH host-global unit on arrival, not just the two known
+# ones.
+assert "B3b: no Exec* argv[0] in any emitted unit lives under the invoking lane" \
+    bash -c '! cut -d"|" -f2 "$1" | grep -qF "$2/"' _ "$_EXEC_ALL" "$GEN_LANE"
+
+echo ""
+echo "--- B4: ANTI-OVER-PIN — units that were already correct stay untouched ---"
+
+_EXEC_SCCACHE="$(grep -E '^ExecStart=' "$GEN_UNITS/sccache.service" 2>/dev/null | head -1 || true)"
+
+# sccache.service's ExecStart is ${sccache_bin} = $HOME/.cargo/bin/sccache —
+# checkout-independent and therefore NOT part of this defect. "Fixing" it would
+# be a real regression.
+assert "B4a: sccache.service ExecStart still resolves under \$HOME/.cargo/bin" \
+    test "$_EXEC_SCCACHE" = "ExecStart=$GEN_HOME/.cargo/bin/sccache"
+
+echo ""
+echo "--- B5: static anti-over-fix pins on the real scripts/setup-dev.sh ---"
+
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+
+assert "B5a: scripts/setup-dev.sh exists" \
+    test -f "$SETUP_DEV"
+
+# Regression pin. Two-step filter (strip comment lines, then a literal search),
+# the tests/infra/test_setup_dev_no_ldconfig.sh idiom: explanatory comments
+# describing the old shape stay legal, active code cannot reintroduce it.
+assert "B5b: no uncommented line still emits ExecStart=\${repo_dir}/scripts/jobserver-" \
+    bash -c '! grep -Ev "^[[:space:]]*#" "$1" | grep -qF "ExecStart=\${repo_dir}/scripts/jobserver-"' _ "$SETUP_DEV"
+
+# The other half of the contract: ONLY the host-global systemd units get
+# pinned. Everything per-worktree — hooks, the debug port, .cargo config, the
+# warm-lane FS — must stay relative to the INVOKING checkout, or setup-dev.sh
+# silently provisions the wrong tree when run from a lane.
+_assert_worktree_relative() {
+    local script="$1"
+    assert "B5c: $script is still invoked worktree-relative via \$(dirname \"\${BASH_SOURCE[0]}\")" \
+        bash -c 'grep -Ev "^[[:space:]]*#" "$1" | grep -qF "\$(dirname \"\${BASH_SOURCE[0]}\")/$2"' \
+            _ "$SETUP_DEV" "$script"
+}
+_assert_worktree_relative build-manifold-deps.sh
+_assert_worktree_relative provision-warm-lane-fs.sh
+_assert_worktree_relative install-warm-lane-units.sh
+_assert_worktree_relative setup-main-gate-worktree-config.sh
+_assert_worktree_relative setup-agent-cache-redirect.sh
+
 # -- Summary ------------------------------------------------------------------
 test_summary
