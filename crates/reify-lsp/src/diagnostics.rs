@@ -22,7 +22,19 @@ pub struct EvalState {
 }
 
 impl EvalState {
-    /// Create a new evaluation state with SimpleConstraintChecker and no geometry kernel.
+    /// Create a new evaluation state with SimpleConstraintChecker and no
+    /// geometry kernel.
+    ///
+    /// This is the **EVAL-time** checker fed to `reify_eval::Engine::new` —
+    /// a separate instance from the **COMPILE-time** checker that
+    /// [`compute_diagnostics_with_state`] now injects into
+    /// `compile_with_stdlib_checked` (task #6798, PRD leaf pi). The two are
+    /// deliberately independent values of the same zero-sized
+    /// `SimpleConstraintChecker` type: one feeds constraint-satisfaction
+    /// evaluation after eval, the other feeds `auto:` candidate feasibility
+    /// during compile. Collapsing them into a single shared instance would
+    /// obscure that the compile-time injection is the thing task #6798
+    /// changes.
     pub fn new() -> Self {
         let checker = SimpleConstraintChecker;
         Self {
@@ -65,6 +77,29 @@ pub struct DiagnosticsResult {
 /// changed), then `check_snapshot` for constraint results, and convert to
 /// LSP diagnostics.
 ///
+/// ## Compile-time checker: real `SimpleConstraintChecker`, not a stub (task #6798)
+///
+/// The compile stage below calls
+/// `reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)`,
+/// matching `reify check`'s compile path (`crates/reify-cli/src/main.rs:200`,
+/// `:280`) and the GUI (`gui/src-tauri/src/engine.rs:843`) instead of the
+/// compile-time `CompileTimeIndeterminateChecker` stub. So `auto:` candidate
+/// feasibility now sees the same constraint verdicts the CLI does: the LSP no
+/// longer reports `E_AUTO_TYPE_PARAM_AMBIGUOUS` on a constant constraint that
+/// the CLI resolves to `E_AUTO_TYPE_PARAM_NO_CANDIDATE` (PRD
+/// `docs/prds/v0_6/driver-contract-implementation.md` leaf pi / §5 BT8 / §12
+/// premise correction 3).
+///
+/// This is a **compile-time change only**. The eval-time Engine built by
+/// [`EvalState::new`] is untouched: still a bare
+/// `Engine::new(SimpleConstraintChecker, None)`, with no
+/// `register_compute_fns` / `register_compute_trampolines` call, so no
+/// keystroke-time FEA/buckling/form-find solve ever runs — the Leo-ratified
+/// subtraction described in the next section stands unchanged. Locked by two
+/// executable contracts, both below in `mod tests`: the unchanged
+/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass` and the
+/// new `real_checker_injection_preserves_trampoline_free_posture`.
+///
 /// ## Engine posture: deliberately NO compute trampolines
 ///
 /// `EvalState::new` builds a bare `Engine::new(SimpleConstraintChecker,
@@ -103,12 +138,15 @@ pub struct DiagnosticsResult {
 /// trampoline was registered, the other that a constraint was consequently not
 /// evaluated.
 ///
-/// This trampoline-free posture is an executable contract locked by
-/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`
-/// (below, in `mod tests`) — the LSP-side analog of `cmd_check`'s
-/// `check_fea_violated_constraint_is_not_gated` lock
-/// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`); changing this posture
-/// requires updating that test intentionally.
+/// This trampoline-free posture is an executable contract locked by two
+/// tests (both below, in `mod tests`):
+/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass` — the
+/// LSP-side analog of `cmd_check`'s `check_fea_violated_constraint_is_not_gated`
+/// lock (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`) — and
+/// `real_checker_injection_preserves_trampoline_free_posture`, which locks
+/// that task #6798's compile-time checker injection (see the section above)
+/// does not disturb this posture; changing this posture requires updating
+/// both tests intentionally.
 pub fn compute_diagnostics_with_state(
     state: &mut EvalState,
     source: &str,
