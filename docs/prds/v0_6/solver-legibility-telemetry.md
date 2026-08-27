@@ -489,7 +489,9 @@ here rather than left to discovery at dispatch:
    `reify check`". That signal is unachievable while every badge renders `?`, so **#6741
    now depends on β #6723**. Its own A8 amendment is devoted to `build_constraints`' two
    construction paths — the same function — but did not notice the casing defect, which is
-   precisely why the edge is worth stating rather than assuming.
+   precisely why the edge is worth stating rather than assuming. *(Corrected 2026-08-27:
+   "did not notice" is wrong — that PRD's A11, same manifest, is entirely about the casing
+   defect and homes the fix; ownership since ruled to this PRD's β #6723 by `ffe203f338`.)*
 
 2. **`ConstraintCheckEntry` — a collision, deliberately NOT an edge.** Its A5 amendment
    (which it calls "the largest unplanned-work risk in the batch") needs a structured
@@ -901,4 +903,7 @@ now two checks, one per id, each anchored to §11's own wording rather than to a
 6. **Whether ξ adds `--format json` to `reify explain`.** There is no
    machine-readable mode on any subcommand today, and `solve_report` covers the
    agent case. *Suggested:* no — keep the CLI human-facing; revisit if a
-   non-GUI agent consumer appears. Decide during ξ.
+   non-GUI agent consumer appears. Decide during ξ. *(Superseded 2026-08-27: the
+   premise is stale — driver-contract σ #6800 delivers a `--json` driver-result
+   envelope, and driver-contract §8.4 names that PRD as the non-GUI agent consumer;
+   the binding correction lives in #6733's details.)*

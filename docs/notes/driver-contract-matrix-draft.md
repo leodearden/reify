@@ -26,7 +26,7 @@ Legend:
 | 5. Module-header rule (§7.1/7.2) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ADD ★5 | ADD ★5 |
 | 6. Real compile checker (`SimpleConstraintChecker`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ADD (align w/ task 4437 intent; D10) |
 | 7. Purpose activation | ✓ `--purpose` | ★4 | ★4 | ★4 | ★4 | ★4 | — | ★4 (no surface at all today) | — |
-| 8. Solver (`auto` resolution) | ★1 (propose ✓; no recorded rationale for absence) | ✓ | — (ratify isolation) | ✓ RESTORE (esc-4458-87 inverted by `37bafd9acc`; #6631) | ✓ | ✓ | — | ✓ | — (ratify; attributable Indeterminate) |
+| 8. Solver (`auto` resolution) *(implemented by solver-driver-parity P1)* | ★1 (propose ✓; no recorded rationale for absence) | ✓ | — (ratify isolation) | ✓ RESTORE (esc-4458-87 inverted by `37bafd9acc`; #6631) | ✓ | ✓ | — | ✓ | — (ratify; attributable Indeterminate) |
 | 9. Compute trampolines | — (ratified, main.rs:448-474) | ✓ | partial (no-morph, deliberate) | ✓ | ✓ | ✓ | — | ✓ | — (INV-FEA-1, ratified) |
 | 10. Kernel for geometry realization | targeted → ✓* widen (5748) | ✓ | — (ratify) | ✓ | ★2 (kernel-free today; BOM mass cells undef, DV13) | ★2 (same posture) | — | ✓ | — |
 | 11. Kernel-measured constraint arms (ReprWithin / GD&T / DFM) | ✓ | ✓ (via build) | — | ✓ | ★2 | ★2 | — | ReprWithin: ruled attributable-Indeterminate (precision PRD :307); GD&T/DFM: ★6 | — (same pattern) |
@@ -80,11 +80,14 @@ Special rows, outside the table:
 ## RULINGS (Leo, 2026-08-26 — matrix CLOSED; strawman above retained for provenance)
 
 1. **check owes solver: YES.** (build's restore was already ruled — esc-4458-87 / #6631.)
+   *(Implementing PRD: `docs/prds/v0_6/solver-driver-parity.md` — P1, decomposed #6689–#6704.)*
 2. **All-get-all RATIFIED**: default-full-engine — one shared engine constructor, with
    *named ratified subtractions* only. `test` gets kernels+solver (isolation = per-test
    module isolation, NOT capability starvation). `check` gets FEA trampolines —
    REVERSES the locked `check_fea_violated_constraint_is_not_gated` contract; retire
-   that lock as part of implementation. Remaining subtractions: LSP keystroke-latency
+   that lock as part of implementation. *(Implementing PRD:
+   `docs/prds/v0_6/solver-driver-parity.md` — P1, decomposed #6689–#6704; its session's
+   rulings (b) overturned the FEA carve-out consistently with ruling 2 here.)* Remaining subtractions: LSP keystroke-latency
    posture; `doc` compile-only. `explain` prerequisite fix: provenance must survive
    `build()` before it can take the kernel.
    **CITE CORRECTED 2026-08-26** (driver-contract-implementation authoring session,

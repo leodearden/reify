@@ -5,7 +5,8 @@
 the one intervening commit is docs-only — `git diff --name-only a35b11740a..da8091cbe8` touches only
 `docs/**/*.md`)  
 **Batch:** 24 leaves (**#6758–#6791**) · **80 dependency edges** — 72 intra-batch, 8 out-of-batch
-(λ ← #5403 #5404; τ ← #6015; χ ← #5517 #5518 #5519 #5520 #5521)
+(λ ← #5403 #5404; τ ← #6015; χ ← #5517 #5518 #5519 #5520 #5521) *(corrected 2026-08-27: now **11
+out-of-batch / 83 total** after the three cross-PRD wirings — λ ← #6800, χ ← #6806, σ ← #6803)*
 
 | Label | Task | Prio | Prereqs | Kind |
 |---|---|---|---|---|

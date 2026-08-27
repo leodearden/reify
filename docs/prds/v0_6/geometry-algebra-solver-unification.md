@@ -449,7 +449,7 @@ Out-of-batch hard edges wired as real dependencies: ζ ← #6653 · γ ← #5540
 **Companion correction edits**, carried same-diff by the leaf that already touches each file rather than filed separately: `docs/prds/v0_6/constrained-2d-sketch.md` §11's "Solver consolidation" bullet gains the O3-scoped refinement — the sketch path is kept — (leaf π); `crates/reify-constraints/src/solvespace.rs`'s matching doc comment goes with the code it annotates (leaf ξ). **#5588 was rescoped to item 2 only and #6523 was cancelled into ν, both executed at decompose 2026-08-26** rather than left as obligations on a future steward — a pending task is dispatchable, and "close it as absorbed later" is the bookkeeping this document's own terminal-status discipline exists to stop relying on.
 
 **DAG:** α→{β,γ,ο} · β→{γ,δ,ι} · γ→{ξ,π,ρ} · δ→ν · {ε,ζ}→η · η→{θ,λ,μ,ο} · θ→ι · ι→{κ,ν,ο} · κ→{μ,π,ρ} · ν→ξ · ο→{π,ρ} · {π,ρ}→σ · all→τ.
-**Out-of-batch hard edges:** ζ←#6653 · γ←#5540 · ο←#6251. **Soft/coordination:** κ↔#6655 · δ↔#6659 · δ↔#5416 · η→#4388 (produces the null space; no edge). **Executed at decompose:** #6523 cancelled into ν; #5588 rescoped to item 2 and dep-wired onto α.
+**Out-of-batch hard edges:** ζ←#6653 · γ←#5540 · ο←#6251 · ο←#6583 *(summary corrected 2026-08-27: the ο←#6583 edge was already stated above and wired in the store, but omitted here)*. **Soft/coordination:** κ↔#6655 · δ↔#6659 · δ↔#5416 · η→#4388 (produces the null space; no edge). **Executed at decompose:** #6523 cancelled into ν; #5588 rescoped to item 2 and dep-wired onto α.
 
 **G7 walk** against `docs/legibility/design-invariants.md` (INV-SF-1..7, INV-AD-1..4), every task, not only leaves:
 

@@ -560,6 +560,10 @@ tasks:
       kind: manual
       reason: an exemption from the docs-truth exemplar clause, per the gui-on-demand-measurement
         precedent
+# Corrected 2026-08-27: the "file against check-diagnostic-truthfulness" instruction below is
+# superseded — the residue was adopted by driver-contract alpha #6773 as an acceptance clause
+# per driver-contract-implementation.md §8.3 (commit 1d487a7d1f); iota files only if the defect
+# escapes #5748/#6803/#6773. See task #6838 for the revised instruction.
 - label: ι
   task_id: 6838
   title: 'GUI purpose surface ι: companion corrections and the finding handed to PRD

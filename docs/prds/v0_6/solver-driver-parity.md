@@ -482,7 +482,7 @@ regression if absent, because it is what stops correctly-solved models going
 | Other PRD / task | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
 | #6653 verdict tolerance | **depends on** | post-solve Scalar equality verdict fold | #6653 | hard prereq, edge wired |
-| synthetic-centrality bias (filed by this session) | **adjacent** | the synthetic max-min-slack objective biases an equality-pinned `auto` by `1/(2·PENALTY_WEIGHT)` whenever an inequality is also present — an *absolute* 5e-7 offset, scale-invariant, so it is 0.005% at 10 mm and 25% at 2 µm | new task | not blocking; #6653 tolerates the symptom, this removes the cause |
+| synthetic-centrality bias (filed by this session) | **adjacent** | the synthetic max-min-slack objective biases an equality-pinned `auto` by `1/(2·PENALTY_WEIGHT)` whenever an inequality is also present — an *absolute* 5e-7 offset, scale-invariant, so it is 0.005% at 10 mm and 25% at 2 µm | new task | not blocking; #6653 tolerates the symptom, this removes the cause *(2026-08-27: the filed task #6688 was cancelled-absorbed into #6678 — content ported; #6692's pointer repointed)* |
 | `instantiation-value-flow.md` β #6592, κ #6657 | **consumes** | solved values reaching child realization via the full-cell overlay + effective-cells-differ trigger | IVF | B2's geometry half is κ's; this PRD owns whether the solve runs |
 | #6631 (author-surface composite) | **consumes** | its acceptance (a) — build/check resolve autos or refuse loudly — is delivered here; its realization halves ride IVF β | #6631 remains the composite consumer | not absorbed |
 | spec-conformance program | **produces for** | cross-driver agreement as a conformance surface (decision 8); this PRD resolves matrix row 8 and ruling question ★1 | this PRD owns the solver row; the program owns the matrix | see note below |
@@ -502,7 +502,8 @@ regression if absent, because it is what stops correctly-solved models going
 **Spec-conformance seam note.** The program's two source artifacts —
 `docs/notes/driver-contract-matrix-draft.md` and
 `docs/notes/cross-driver-divergence-survey-draft.md` — are **untracked drafts** in
-the working tree as of authoring. This PRD's row-8 claims are consistent with them
+the working tree as of authoring. *(2026-08-27 note: both were committed on main in
+`9a992fc2f2`, 2026-08-26.)* This PRD's row-8 claims are consistent with them
 but do not cite them as committed evidence; if they land, the matrix's row 8 and
 ★1 should be updated to point here.
 
@@ -694,7 +695,8 @@ genuinely not static (guarded, purpose-injected or `forall`-emitted constraints,
 Two out-of-batch edges are load-bearing and real: **#6653** (toleranced equality
 verdicts) gates δ, and **#6665** (delete `reify mcp-server`) gates α. **#6688**
 (synthetic-centrality bias), filed by this session, is deliberately *not* an edge —
-it is a quality follow-up that #6653 renders non-blocking.
+it is a quality follow-up that #6653 renders non-blocking. *(2026-08-27: #6688 was
+cancelled-absorbed into #6678 — content ported; #6692's pointer repointed.)*
 
 ---
 

@@ -187,7 +187,7 @@ reach it.
 | Consumer | What it consumes | Status |
 |---|---|---|
 | **Every reify user** — the CLI/GUI/LSP consistency guarantee | The verdict contract and the capability profile: the answer to "is my design OK?" stops depending on which command asked. The GUI is the primary use case. | live |
-| **The spec-conformance suite** | This contract *is* its Ring-2 substrate (`conformance-scope-boundary-draft.md` §"Ring 2"), and the `--json` envelope (leaf σ) is its named prerequisite. Ring-1 clauses are tested *through* Ring-2 drivers, so the parity/conformance verdict split (leaf ψ) is what makes its results interpretable. | chartered, not yet authored |
+| **The spec-conformance suite** | This contract *is* its Ring-2 substrate (`conformance-scope-boundary-draft.md` §"Ring 2"), and the `--json` envelope (leaf σ) is its named prerequisite. Ring-1 clauses are tested *through* Ring-2 drivers, so the parity/conformance verdict split (leaf ψ) is what makes its results interpretable. | chartered, not yet authored *(landed 2026-08-26: `docs/prds/v0_6/spec-conformance-suite.md`, `a35b11740a`; decomposed #6758–#6791)* |
 | **`reify report` / BOM consumers** | A bill of materials that cannot be emitted for a design that fails its own constraints. | live |
 | **The GUI diagnostics panel and the debug-MCP observation channel** | Diagnostic codes (leaf μ), so panel filtering and the parity gate can key on codes instead of message substrings. The wire contract is `reify_core::DiagnosticInfo`, owned by the landed gui-diagnostics-panel PRD. | live |
 | **`gui-on-demand-measurement`'s parity gate** | Its BT-1 asserts GUI measurement ≡ `reify check`. That oracle is only meaningful once "what `check` measures" is a declared profile rather than a content-gated accident. | chartered (#6740–#6744) |
@@ -351,7 +351,11 @@ would have left an implementer free to pick the severity that breaks the invaria
 gating on **constraint violation**. It is independent of the open question of which
 **Error-severity diagnostics** escalate `reify check`'s exit code — a live collision
 between two tasks with opposing designs, already escalated on one of them, and declined by
-both solver-driver-parity and solver-legibility-telemetry. This PRD depends on neither and
+both solver-driver-parity and solver-legibility-telemetry. *(Resolved 2026-08-26, ruled by
+Leo: #5403 delivers the gate — its `CHECK_ERROR_EXIT_ALLOWLIST` is a bounded migration
+ratchet burned to zero by #5404 — and #6608 now depends on #5403 (edge wired), contributing
+only its new UndefCause variant + coded diagnostics. Mirror records in both tasks' details;
+see solver-driver-parity §8.)* This PRD depends on neither and
 does not resolve it. Once both land, `reify eval` on a violated design exits 1 for the
 violation, whichever way that question goes.
 
@@ -425,7 +429,10 @@ BT10's reverse direction is the anti-vacuity control for the gate itself.
 
 ## §6 — Resolved design decisions
 
-1. **Extend the resolution profile; do not mint a parallel construct.** Three independent
+1. **Build the capability profile that composes (has-a) the resolution profile; do not mint
+   a parallel construct.** *(Corrected 2026-08-27: was "extend" — per §4.1 as repaired by
+   `271e76a577`, the capability profile composes `ResolutionProfile`; it neither widens nor
+   replaces it.)* Three independent
    architecture gates for one property is the failure mode, not the fix. The profile type
    stays capability-declarative and lives where solver-driver-parity's own open question
    suggests (`reify-ir`); `reify-eval` interprets it. (§4.1)
@@ -494,12 +501,15 @@ BT10's reverse direction is the anti-vacuity control for the gate itself.
 Two are hard, one is a coordination obligation with a deadline.
 
 1. **solver-driver-parity's leaf α must land before leaf α here** (real edge). It defines
-   the profile type this PRD widens. Landing them in the other order means widening a type
+   the profile type this PRD's capability profile composes (has-a) *(corrected 2026-08-27:
+   was "widens" — §4.1 / `271e76a577`)*. Landing them in the other order means building the
+   capability profile around a type
    that five driver leaves have already been written against.
 
 2. **§4.1's placement answer must reach that leaf before it dispatches.** Its §13 open
    question 1 asks where `ResolutionProfile` lives and says "decide during α". If α
-   decides in ignorance of this PRD's widening, the decision is made on a stale premise.
+   decides in ignorance of this PRD's composition over it *(corrected 2026-08-27: was
+   "widening" — §4.1 / `271e76a577`)*, the decision is made on a stale premise.
    This is a **message, not a dependency** — it costs one task-description amendment and
    must happen at this PRD's decompose, not at leaf α's dispatch.
 
@@ -513,7 +523,9 @@ Two are hard, one is a coordination obligation with a deadline.
    the arm sequence, which that PRD's D1 forbids.
 
 **Promoted from soft to hard, 2026-08-27.** check-diagnostic-truthfulness's
-kernel-widening leaf is **in-progress** and edits `crates/reify-cli/src/main.rs` — the
+kernel-widening leaf is **in-progress** *(status note 2026-08-27: #5748 is
+pending/unclaimed at merge-phase; statuses in PRD prose rot — see the task store)* and
+edits `crates/reify-cli/src/main.rs` — the
 same file several leaves here touch, and its declared file set also includes the test
 file holding the FEA lock that solver-driver-parity's leaf δ inverts. **Four** PRDs now
 converge on that file: add the GUI purpose PRD, whose seam leaf rewrites `cmd_check`'s
@@ -620,8 +632,9 @@ against a fact that has changed.
 
 Four phases, ordered by what unblocks what.
 
-**Phase 1 — the profile (leaf α).** Widen the resolution profile into the full capability
-profile; move the seven content predicates into the construction path; compose the two
+**Phase 1 — the profile (leaf α).** Build the full capability profile that composes (has-a)
+the resolution profile *(corrected 2026-08-27: was "widen … into" — §4.1 / `271e76a577`)*;
+move the seven content predicates into the construction path; compose the two
 existing canonical mechanisms; widen the existing grep architecture test; update the
 invariant registry row same-diff. Nothing else can start until the profile exists.
 
@@ -659,7 +672,9 @@ real edge is wired, and φ is `pending`. Ω (#6808) is no longer blocked on a pa
 
 - **α (#6773) — Capability profile + profile-taking construction path.** Modules: `reify-ir`
   (the profile type), `reify-eval` (interpretation), plus every construction site.
-  Widens solver-driver-parity's `ResolutionProfile` to the seven axes; adds the `FULL`,
+  Builds the capability profile that composes (has-a) solver-driver-parity's
+  `ResolutionProfile`, carrying the seven axes *(corrected 2026-08-27: was "widens … to the
+  seven axes" — §4.1 / `271e76a577`)*; adds the `FULL`,
   `LSP_KEYSTROKE` and `DOC_COMPILE_ONLY` constants with doc comments citing ruling 2;
   moves the content predicates into the construction path; composes
   `register_production_compute_fns` (sole caller) and the kernel selection; widens the
@@ -812,12 +827,16 @@ Out-of-batch hard edges, as wired: `{#6689, #5748, #6803} → α` · `#6694 → 
 `#5516 → υ` · `{#6700, #5521} → χ` · `#6803 → φ` · `#6837 → ω`. The last of α's, the φ
 edge and the ω edge were added 2026-08-27, once the GUI purpose PRD decomposed (§8.3).
 
-Outbound, into other PRDs: `#6769 → σ` and `#6787 → ψ` — the spec-conformance suite's
-CLI-observable tier and cross-driver tier, whose own task text asked for these edges to
-be wired when this PRD decomposed.
+Outbound, into other PRDs: the spec-conformance suite's #6769 depends on σ (#6800), and
+its #6787 depends on ψ (#6806) — its CLI-observable tier and cross-driver tier, whose own
+task text asked for these edges to be wired when this PRD decomposed. *(Reworded
+2026-08-27: previously written `#6769 → σ`, which read backwards under this section's
+arrow convention.)*
 
 Note π (#6798) and ν (#6795) and τ (#6801) carry no intra-batch upstream: they are
 independent of the profile and of the verdict chain, and can start immediately.
+*(2026-08-27: π #6798 was temporarily blocked on an administrative escalation, since
+resolved.)*
 
 ---
 
@@ -829,7 +848,9 @@ independent of the profile and of the verdict chain, and can start immediately.
   and does none of it.
 - **`reify check`'s Error-severity exit gate**, the `CHECK_ERROR_EXIT_ALLOWLIST`, and the
   collision between the two tasks that own it with opposing designs. Orthogonal to this
-  PRD's violation-gating axis (§4.5); already escalated on one of those tasks.
+  PRD's violation-gating axis (§4.5); already escalated on one of those tasks. *(Resolved
+  2026-08-26, ruled by Leo: #5403 delivers the gate; #6608 depends on #5403 — edge wired,
+  mirror records in both tasks' details; see solver-driver-parity §8.)*
 - **`check`'s kernel-arm widening, `finish_check`, check's exit codes and `--strict`** —
   reserved to check-diagnostic-truthfulness by a binding G4 ruling.
 - **The silent-`@test`-argument hole.** `@test(anything)` compiles today with zero

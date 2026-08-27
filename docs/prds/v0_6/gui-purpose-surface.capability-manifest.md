@@ -23,7 +23,10 @@ One correction is load-bearing and was found by adversarial review before filing
 `check-diagnostic-truthfulness.md`** by a binding G4 ruling, and **#5748 is `in-progress` and
 claimed** on exactly that function. Leaf α was accordingly narrowed to a **behaviour-preserving**
 seam extraction, wired downstream of #5748, and the residual defect is **filed to PRD 2** by
-leaf ι rather than fixed here. No binding in this manifest asserts a change to `cmd_check`
+leaf ι rather than fixed here. *(Superseded 2026-08-27: the residue was adopted by
+driver-contract α #6773 as an acceptance clause — `driver-contract-implementation.md` §8.3,
+commit `1d487a7d1f`; ι files only if the defect escapes #5748/#6803/#6773.)* No binding in this
+manifest asserts a change to `cmd_check`
 routing, exit codes, `finish_check` or `--strict`.
 
 ## Numeric note (G6 branches 1 / 2)
@@ -56,7 +59,9 @@ All run against `target/debug/reify`, 2026-08-26/27.
 | P7 | `--purpose nonexistent_purpose=BallCheck` | error + **exit 1** (rejection fires, not a silent accept) |
 | P8 | `--purpose design_review` (no `=`) | **exit 1** |
 
-P1–P3 are evidence for the finding leaf ι hands to PRD 2. P5 is the staleness fixture's basis.
+P1–P3 are evidence for the finding leaf ι hands to PRD 2 *(superseded 2026-08-27: the residue is
+adopted by driver-contract α #6773 per `driver-contract-implementation.md` §8.3; ι files only if
+it escapes #5748/#6803/#6773)*. P5 is the staleness fixture's basis.
 P6 is why BT-5 is a **differential** oracle rather than a measurement assertion. P7/P8 are the
 G6 branch-4 rejection bindings, **observed to fire**.
 
@@ -172,6 +177,11 @@ G6 branch-4 rejection bindings, **observed to fire**.
 | no exemplar-corpus leaf owed | purposes already have corpus presence; no new authoring idiom | PASS (documented exemption) |
 
 ## ι — Companion corrections and the handed-over finding
+
+*(Corrected 2026-08-27: the first two rows' filing instruction is superseded — the residue was
+adopted by driver-contract α #6773 as an acceptance clause, `driver-contract-implementation.md`
+§8.3 / commit `1d487a7d1f`; ι re-verifies and files against driver-contract only if the defect
+escapes all of #5748/#6803/#6773. See task #6838 for the revised instruction.)*
 
 | Capability | Binding | Verdict |
 |---|---|---|

@@ -186,7 +186,12 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: autoResolve\.active
+      # Pattern narrowed 2026-08-27 (esc-6739-1): the bare token matched the implementer's
+      # own explanatory comment at App.tsx:786, falsely re-blocking dependents. This shape
+      # still catches the historical defect (`<Show when={...autoResolve.active}>`) but not
+      # the comment. Known trade-off (watcher-validated): misses a regression reintroduced
+      # via indirection (e.g. aliasing the flag before the Show).
+      pattern: when=\{[^}]*autoResolve\.active
       paths:
       - gui/src/App.tsx
       expect: absent
