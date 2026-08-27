@@ -2471,7 +2471,7 @@ pub(crate) fn compile_geometry_op(
             // naming an argument the author never wrote, and (unlike the
             // pre-λ Warning, which still built the surface at iso 0.0) a DROPPED
             // op. Pinned end-to-end by
-            // `crates/reify-eval/tests/isosurface_iso_units_e2e.rs`'s
+            // `crates/reify-eval/tests/pattern_spacing_units_e2e.rs`'s
             // `skipped_optional_iso_slot_binds_adaptive_positionally`.
             //
             // The real fix is to honour `arg_names` in that lowering arm (bind
