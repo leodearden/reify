@@ -385,3 +385,253 @@ fn ctor_type_name_at_returns_none_rather_than_guessing() {
     assert_eq!(ctor_type_name_at("", SourceSpan::empty(0)), None);
     assert_eq!(ctor_type_name_at(source, SourceSpan::prelude()), None);
 }
+
+// ─── step 5/6: diagnostic field extraction ───────────────────────────────────
+
+/// Build a synthetic diagnostic in the exact shape a given emitter produces, so
+/// the extractor tests need no compilation at all.
+#[cfg(test)]
+fn synth(
+    code: reify_core::diagnostics::DiagnosticCode,
+    message: &str,
+    label: Option<&str>,
+) -> reify_core::Diagnostic {
+    use reify_core::{Severity, diagnostics::DiagnosticLabel};
+    let mut d = reify_core::Diagnostic::error(message).with_code(code);
+    // α's knob: ctor field conformance is Warning severity, not Error.
+    d.severity = Severity::Warning;
+    if let Some(l) = label {
+        d = d.with_label(DiagnosticLabel::new(reify_core::SourceSpan::empty(0), l));
+    }
+    d
+}
+
+#[test]
+fn survey_site_extracts_field_from_the_argument_prose_prefix() {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    // `emit_arg_type_mismatch` (conformance/mod.rs) — the dominant shape.
+    let d = synth(
+        DiagnosticCode::ArgTypeMismatch,
+        "argument 'label' has type 'Int' but param 'label' requires type 'String'",
+        Some("expected 'String', got 'Int'"),
+    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect("ctor-coded diag yields a site");
+    assert_eq!(site.field.as_deref(), Some("label"));
+
+    // `emit_selector_mismatch` kind-vs-kind — same `argument '` prefix.
+    let d = synth(
+        DiagnosticCode::SelectorKindMismatch,
+        "argument 'face' has selector kind 'Selector(Edge)' but param 'face' \
+         requires selector kind 'Selector(Face)'",
+        Some("expected 'Selector(Face)', got 'Selector(Edge)'"),
+    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+    assert_eq!(site.field.as_deref(), Some("face"));
+
+    // `emit_geometry_trait_violation` — the prefix is `geometry argument '`,
+    // which still CONTAINS `argument '`, so the same extractor recovers it.
+    let d = synth(
+        DiagnosticCode::TypeNotConformingToTrait,
+        "geometry argument 'target' does not conform to trait 'Solid'",
+        Some("geometry argument 'target' is not Solid"),
+    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+    assert_eq!(site.field.as_deref(), Some("target"));
+
+    // The OTHER `TypeNotConformingToTrait` shape names the param via a
+    // different prefix entirely: `required by param '<name>'`.
+    let d = synth(
+        DiagnosticCode::TypeNotConformingToTrait,
+        "type 'Bolt' does not conform to trait 'Fastener' required by param 'part'",
+        Some("type 'Bolt' does not conform to trait 'Fastener'"),
+    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+    assert_eq!(
+        site.field.as_deref(),
+        Some("part"),
+        "the `required by param '` shape must also yield a field"
+    );
+
+    // `emit_structure_ref_mismatch` / `emit_vector_mismatch`.
+    for (code, msg) in [
+        (
+            DiagnosticCode::TypeNotConformingToStructureRef,
+            "argument 'part' has type 'Int' but param 'part' requires structure type 'Part'",
+        ),
+        (
+            DiagnosticCode::TypeNotConformingToVector,
+            "argument 'axis' has type 'Real' but param 'axis' requires vector type 'Vector3<Length>'",
+        ),
+    ] {
+        let d = synth(code, msg, Some("expected 'X', got 'Y'"));
+        let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+        assert!(site.field.is_some(), "{code:?} must yield a field, got None");
+    }
+}
+
+#[test]
+fn survey_site_extracts_field_and_def_from_the_epsilon_codes() {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    // ε `CtorUnknownField` (expr.rs): names BOTH the field and the def.
+    let d = synth(
+        DiagnosticCode::CtorUnknownField,
+        "E_CTOR_UNKNOWN_FIELD: unknown named argument 'wgt' in call to 'Bar'; \
+         'Bar' has no parameter with that name",
+        Some("unknown named argument"),
+    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+    assert_eq!(site.field.as_deref(), Some("wgt"));
+    assert_eq!(
+        site.def.as_deref(),
+        Some("Bar"),
+        "the `in call to '<Def>'` prose must supply the def"
+    );
+
+    // ε `CtorArity` names the def but NO param — its wording carries none.
+    let d = synth(
+        DiagnosticCode::CtorArity,
+        "E_CTOR_ARITY: Bar() expects at most 2 arguments, got 3",
+        Some("wrong number of arguments"),
+    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+    assert_eq!(
+        site.field, None,
+        "CtorArity names no param — inventing one would be a fabricated row"
+    );
+    assert_eq!(site.def.as_deref(), Some("Bar"));
+}
+
+#[test]
+fn survey_site_prefers_the_label_for_expected_and_found() {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    // The LABEL is more structured than the prose main message: it is exactly
+    // `expected '<X>', got '<Y>'` (conformance/mod.rs emit_arg_type_mismatch),
+    // whereas the message interleaves the param name twice and may carry the
+    // D4-6 dimensioned-scalar migration hint after a `;`.
+    let d = synth(
+        DiagnosticCode::ArgTypeMismatch,
+        "argument 'velocity_limit' has type 'Real' but param 'velocity_limit' requires \
+         type 'Scalar[m·s^-1]'; pass a dimensioned literal such as 1m/s",
+        Some("expected 'Scalar[m·s^-1]', got 'Real'"),
+    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+    assert_eq!(site.expected.as_deref(), Some("Scalar[m·s^-1]"));
+    assert_eq!(site.found.as_deref(), Some("Real"));
+    assert_eq!(site.field.as_deref(), Some("velocity_limit"));
+
+    // The two ε codes carry no `expected '…', got '…'` label at all.
+    for (code, msg, label) in [
+        (
+            DiagnosticCode::CtorUnknownField,
+            "E_CTOR_UNKNOWN_FIELD: unknown named argument 'w' in call to 'Bar'; \
+             'Bar' has no parameter with that name",
+            "unknown named argument",
+        ),
+        (
+            DiagnosticCode::CtorArity,
+            "E_CTOR_ARITY: Bar() expects at most 1 argument, got 2",
+            "wrong number of arguments",
+        ),
+    ] {
+        let d = synth(code, msg, Some(label));
+        let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+        assert_eq!(site.expected, None, "{code:?} carries no expected/got label");
+        assert_eq!(site.found, None, "{code:?} carries no expected/got label");
+    }
+}
+
+#[test]
+fn survey_site_renders_code_and_severity_in_pascal_case_debug_form() {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    let d = synth(
+        DiagnosticCode::ArgTypeMismatch,
+        "argument 'a' has type 'Int' but param 'a' requires type 'String'",
+        Some("expected 'String', got 'Int'"),
+    );
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
+    // `{:?}` is used because reify-core's serde feature (which supplies the
+    // PascalCase wire name) is non-default and not enabled for reify-compiler.
+    // Debug renders the identical string — same choice as examples_smoke.rs.
+    assert_eq!(site.code, "ArgTypeMismatch");
+    assert_eq!(
+        site.severity, "Warning",
+        "α's knob is Warning; the sweep must report what it measured, not assume Error"
+    );
+}
+
+#[test]
+fn survey_site_degrades_to_none_fields_and_keeps_the_raw_message() {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    // Extraction is a REAL coupling to diagnostic prose (the warning carried
+    // forward from examples_smoke.rs's param_name_from_ctor_diagnostic). A
+    // future wording drift must degrade to a still-usable row — never a
+    // silently dropped site, and never a fabricated field.
+    let drifted = "the wording of this diagnostic drifted entirely";
+    let d = synth(DiagnosticCode::ArgTypeMismatch, drifted, None);
+    let site = survey_site_from_diagnostic("a.ri", "", &d).expect(
+        "an unrecognised message must still yield a row — dropping it would under-size γ",
+    );
+    assert_eq!(site.field, None);
+    assert_eq!(site.expected, None);
+    assert_eq!(site.found, None);
+    assert_eq!(site.def, None);
+    assert_eq!(
+        site.message, drifted,
+        "the RAW message must survive verbatim so a drifted row stays usable"
+    );
+}
+
+#[test]
+fn survey_site_rejects_non_ctor_conformance_diagnostics() {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    // A code outside the 7-variant set is not a survey site.
+    let d = synth(
+        DiagnosticCode::TraitNotImplemented,
+        "type 'Bolt' does not implement trait 'Fastener'",
+        None,
+    );
+    assert!(
+        survey_site_from_diagnostic("a.ri", "", &d).is_none(),
+        "only the 7 ctor-conformance codes may enter the survey"
+    );
+
+    // An uncoded (legacy) diagnostic is likewise not a site.
+    let mut uncoded = reify_core::Diagnostic::error("argument 'a' has type 'Int'");
+    uncoded.severity = reify_core::Severity::Warning;
+    assert!(survey_site_from_diagnostic("a.ri", "", &uncoded).is_none());
+}
+
+#[test]
+fn survey_site_carries_file_and_resolved_line() {
+    use reify_core::{Severity, diagnostics::DiagnosticCode, diagnostics::DiagnosticLabel};
+
+    let source = "module test.x\nstructure def Root {\n    let q = Widget(label: 42)\n}\n";
+    let at_ctor = source.find("Widget(").expect("fixture") as u32;
+    let mut d = reify_core::Diagnostic::error(
+        "argument 'label' has type 'Int' but param 'label' requires type 'String'",
+    )
+    .with_code(DiagnosticCode::ArgTypeMismatch)
+    .with_label(DiagnosticLabel::new(
+        reify_core::SourceSpan::new(at_ctor, at_ctor + 6),
+        "expected 'String', got 'Int'",
+    ));
+    d.severity = Severity::Warning;
+
+    let site = survey_site_from_diagnostic("examples/x.ri", source, &d).expect("site");
+    assert_eq!(site.file, "examples/x.ri");
+    assert_eq!(site.line, 3, "the ctor is on line 3 of the fixture");
+    assert_eq!(
+        site.def.as_deref(),
+        Some("Widget"),
+        "the call-site anchor must recover the def name for the expression path"
+    );
+    // Not yet classified: `d9_owner` is applied by the corpus sweep, and the
+    // conservative default is the unattributable bucket, never `NonFea`.
+    assert_eq!(site.owner, Owner::Unknown);
+}
