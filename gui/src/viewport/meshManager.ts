@@ -9,6 +9,7 @@ import {
   DoubleSide,
   Color,
   type Scene,
+  type TypedArray,
 } from 'three';
 import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { MeshData, MeshAppearance, DisplayStyleData, VisibilityState } from '../types';
@@ -161,6 +162,43 @@ function validateMeshData(data: MeshData): boolean {
     }
   }
   return true;
+}
+
+/**
+ * Assign `newArray` into `geometry`'s `name` attribute.
+ *
+ * Reuses the existing BufferAttribute object (and therefore its GPU-side
+ * WebGLBuffer) only when the byte size is unchanged; otherwise installs a
+ * fresh BufferAttribute. WebGL buffers have fixed size: bumping `needsUpdate`
+ * on an attribute whose `array.byteLength` changed makes THREE.WebGLAttributes
+ * throw "Resizing buffer attributes is not supported" once per draw call
+ * (#6757).
+ *
+ * Compares byteLength, not element length, because that is what
+ * `WebGLAttributes.update()` compares
+ * (three/src/renderers/webgl/WebGLAttributes.js:204-214). Element length is
+ * only equivalent while `gui/src/types.ts` pins the wire element types; a
+ * narrower array at equal element length would have a different byte size and
+ * slip straight through into the throw.
+ *
+ * Never copies — the caller owns the copy-vs-alias decision and hands in an
+ * already-prepared array (position copies per task 3402's contract; normals
+ * alias per the `MeshData` contract at gui/src/types.ts:41-52).
+ */
+function assignOrReplaceAttribute(
+  geometry: BufferGeometry,
+  name: string,
+  newArray: TypedArray,
+  itemSize: number,
+): void {
+  const existing = geometry.getAttribute(name) as BufferAttribute | null;
+  if (existing && existing.array.byteLength === newArray.byteLength) {
+    existing.array = newArray;
+    (existing as { count: number }).count = newArray.length / itemSize;
+    existing.needsUpdate = true;
+  } else {
+    geometry.setAttribute(name, new BufferAttribute(newArray, itemSize));
+  }
 }
 
 export function createMeshManager(scene: Scene, options?: MeshManagerOptions): MeshManagerContext {
@@ -407,20 +445,16 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // so restore / re-apply at different warp factors works correctly.
     const vertsForBuffer = data.vertices.slice();
 
-    // Reuse existing BufferAttribute objects when array length matches to avoid
-    // orphaning GPU-side WebGLBuffers. When length differs, create new attribute
+    // Reuse existing BufferAttribute objects when the byte size matches to avoid
+    // orphaning GPU-side WebGLBuffers. When it differs, create a new attribute
     // because WebGL buffers have fixed size and cannot be resized.
-    const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
-    if (posAttr && posAttr.array.length === data.vertices.length) {
-      posAttr.array = vertsForBuffer;
-      (posAttr as { count: number }).count = data.vertices.length / 3;
-      posAttr.needsUpdate = true;
-    } else {
-      geometry.setAttribute('position', new BufferAttribute(vertsForBuffer, 3));
-    }
+    // See assignOrReplaceAttribute() for the full rationale (#6757).
+    assignOrReplaceAttribute(geometry, 'position', vertsForBuffer, 3);
 
+    // `index` cannot share the helper: it must go through geometry.setIndex(),
+    // not setAttribute(). Same byteLength guard, inline.
     const indexAttr = geometry.index;
-    if (indexAttr && indexAttr.array.length === data.indices.length) {
+    if (indexAttr && indexAttr.array.byteLength === data.indices.byteLength) {
       indexAttr.array = data.indices;
       (indexAttr as { count: number }).count = data.indices.length;
       indexAttr.needsUpdate = true;
@@ -429,14 +463,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
 
     if (data.normals) {
-      const normalAttr = geometry.getAttribute('normal') as BufferAttribute | null;
-      if (normalAttr && normalAttr.array.length === data.normals.length) {
-        normalAttr.array = data.normals;
-        (normalAttr as { count: number }).count = data.normals.length / 3;
-        normalAttr.needsUpdate = true;
-      } else {
-        geometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
-      }
+      assignOrReplaceAttribute(geometry, 'normal', data.normals, 3);
     } else if (geometry.getAttribute('normal')) {
       geometry.deleteAttribute('normal');
       geometry.computeVertexNormals();
@@ -489,17 +516,16 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
 
     // If colorize is active and this mesh already has a colour attribute, re-bake
-    // the colours in place with the new scalars.  Mirrors the setColorize mutation
+    // the colours with the new scalars.  Mirrors the setColorize mutation
     // path; ensures that sync()→sync() updates (e.g. from G2 FEA sourcing) are
     // reflected immediately without a full geometry resync or material swap.
+    // Routed through assignOrReplaceAttribute so a re-tessellation that changes
+    // the vertex count replaces the attribute instead of resizing it (#6757).
     if (colorize) {
       const scalars = (data.scalar_channels ?? {})[colorize.channel];
       const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
       if (scalars && scalars.length > 0 && colorAttr) {
-        const newColors = colorize.bake(scalars);
-        colorAttr.array = newColors;
-        (colorAttr as { count: number }).count = newColors.length / 3;
-        colorAttr.needsUpdate = true;
+        assignOrReplaceAttribute(geometry, 'color', colorize.bake(scalars), 3);
       }
     }
 
