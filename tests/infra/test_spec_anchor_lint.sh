@@ -48,9 +48,11 @@
 #   (o) §9.2 is ACTUALLY anchored in the shipped spec — structurally
 #       (every heading present is anchored) rather than by a pinned count,
 #       so leaf η's later graduation edits to §9.2 cannot red it.
-#   (p) the NORMATIVE authoring note exists, is linked from the spec front
-#       matter, states every clause of the contract, and contains no
-#       valid-format anchor ID (a copy-paste collision hazard).
+#   (p) the NORMATIVE authoring note EXISTS, the spec front matter's link to
+#       it RESOLVES, it contains no valid-format anchor ID (a copy-paste
+#       collision hazard), and every repo-relative path it cites resolves
+#       (p5 live control / p6 seeded mutant). It pins no WORDING — see the
+#       (p) banner for why.
 #
 # NO-SILENT-GREEN FLOOR: a $RAN counter is incremented by every scenario and
 # checked after test_summary. A future guard condition that skipped every
@@ -922,42 +924,36 @@ assert "(o6) anchor IDs are NOT in ascending order down the file" _ids_are_not_s
 # ===========================================================================
 # (p) THE NORMATIVE AUTHORING NOTE.
 #
-# The note is normative for every later spec-conformance wave, so it is
-# GUARDED, not merely written: a note that silently loses a clause stops being
-# the thing later waves can rely on, and nothing else would notice.
+# What this scenario covers: the note EXISTS and is non-empty (p1); the spec
+# front matter's link to it RESOLVES, so p1+p2 together red on a dangling
+# link (p2); it carries no copy-pasteable anchor ID (p4); and every
+# repo-relative path it cites resolves under $REPO_ROOT — live control (p5)
+# plus a seeded mutant proving that check can actually fire (p6).
+#
+# What this scenario deliberately does NOT cover: the note's WORDING. An
+# earlier revision grepped one English phrase per contract clause
+# ('never positional', 'retired forever', 'grepping the literal ID', ...).
+# Apply the discriminator and those pins fail it: rewording a sentence while
+# leaving every identifier intact — "Opaque and never positional" becoming
+# "IDs must not encode position" — leaves the note SEMANTICALLY IDENTICAL and
+# turns the assertion RED. That is a wording pin masquerading as a contract
+# check, not referential integrity, and it enforced nothing new: the ID
+# grammar and the anchor syntax are already gated by scripts/spec-anchor-lint.sh
+# rules 1-2 against the REAL spec, and p4 already scans the note with that
+# exact regex as a negative. Nothing executes this note — the lint reads only
+# --spec and --tombstones and never opens it — so its referential integrity
+# is the part a test can meaningfully hold. Do not reintroduce prose pins,
+# and do not "fix" them with a looser or case-insensitive regex: that deepens
+# the hole rather than closing it.
 # ===========================================================================
 echo ""
 echo "--- (p) the normative authoring note ---"
 RAN=$((RAN + 1))
 
-# One grep per clause, each a SHORT distinctive literal rather than a prose
-# pin: a partial note must not pass, but a reworded sentence must not red.
-_note_states() {
-    grep -qF -- "$1" "$NOTE" && return 0
-    echo "the authoring note does not state: $1"
-    return 1
-}
-
 assert "(p1) docs/notes/spec-anchor-contract.md exists and is non-empty" test -s "$NOTE"
 
 assert "(p2) the spec front matter LINKS the authoring note" \
     bash -c 'head -n 15 "$1" | grep -qF "docs/notes/spec-anchor-contract.md"' -- "$SPEC"
-
-assert "(p3) the note states the ID grammar" _note_states 'sc-[0-9a-f]{6}'
-assert "(p3) the note states the placement form" _note_states '<!-- sc-anchor: sc-XXXXXX -->'
-assert "(p3) the note states that IDs are randomly generated" _note_states 'randomly generated'
-assert "(p3) the note states that IDs are opaque" _note_states 'opaque'
-assert "(p3) the note gives the minting command" _note_states 'openssl rand -hex 3'
-assert "(p3) the note states that IDs are NEVER positional" _note_states 'never positional'
-assert "(p3) the note states that a tombstoned ID is retired forever" _note_states 'retired forever'
-assert "(p3) the note states that a tombstoned ID is never reused" _note_states 'never reused'
-assert "(p3) the note names the tombstone sidecar path" _note_states 'docs/reify-language-spec.tombstones'
-assert "(p3) the note states the SAME-diff deletion rule" _note_states 'SAME diff'
-assert "(p3) the note states a heading anchor's scope" _note_states 'whole run of intro prose'
-assert "(p3) the note states the consumer rule: resolve by grepping the literal ID" \
-    _note_states 'grepping the literal ID'
-assert "(p3) the note forbids consumers parsing section numbers for identity" \
-    _note_states 'section numbers'
 
 # p4 — COLLISION SAFETY. A realistic-looking example ID in normative
 # documentation is a live hazard the moment someone copies it: it either
@@ -985,8 +981,85 @@ _note_has_no_valid_id() {
 assert "(p4) the note contains NO valid-format anchor ID (only the metavariable)" \
     _note_has_no_valid_id
 
-assert "(p5) the note cites the owning PRD" \
-    _note_states 'docs/prds/v0_6/spec-conformance-suite.md'
+# p5/p6 — LINK ROT. Every repo-relative path the note cites must resolve.
+# This subsumes the literal PRD-cite and tombstone-path pins it replaced with
+# something strictly stronger: it pins no wording, survives any reword that
+# leaves the paths intact, and reds on REAL rot — a renamed PRD, a moved
+# script. Self-guarding against vacuity the same way _note_has_no_valid_id is:
+# a missing/empty file, or an extraction yielding ZERO paths, is a FAILURE,
+# because an unguarded version would pass trivially on an empty note — the
+# exact state it has to be meaningful in.
+_note_paths_resolve() {
+    local file="$1" paths p missing=0
+    if [ ! -s "$file" ]; then
+        echo "$file is missing or empty — this check would be vacuous"
+        return 1
+    fi
+    paths="$(grep -oE '(docs|scripts|tests|crates|tree-sitter-reify)/[A-Za-z0-9._/-]+' "$file" | sort -u || true)"
+    if [ -z "$paths" ]; then
+        echo "$file cites ZERO repo-relative paths — this check would be vacuous"
+        return 1
+    fi
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        if [ ! -e "$REPO_ROOT/$p" ]; then
+            echo "$file cites a repo-relative path that does not resolve under $REPO_ROOT: $p"
+            missing=$((missing + 1))
+        fi
+    done <<<"$paths"
+    [ "$missing" -eq 0 ] && return 0
+    echo "$missing cited path(s) do not resolve — the note has link rot"
+    return 1
+}
+
+# Same global-capture idiom as _run_lint: assert dumps a FAILING checker's
+# output, so a DELIBERATELY-failing one has to be captured separately for its
+# message to be assertable.
+_PATHS_RC=0
+_PATHS_OUT=""
+_run_note_paths() {
+    _PATHS_OUT=""
+    _PATHS_RC=0
+    _PATHS_OUT="$(_note_paths_resolve "$1" 2>&1)" || _PATHS_RC=$?
+}
+
+_paths_rc_nonzero() {
+    [ "$_PATHS_RC" != "0" ] && return 0
+    echo "expected a NON-ZERO rc from the link-rot check, got $_PATHS_RC; output was:"
+    printf '%s\n' "$_PATHS_OUT"
+    return 1
+}
+
+_paths_out_has() {
+    case "$_PATHS_OUT" in
+        *"$1"*) return 0 ;;
+    esac
+    echo "expected the link-rot output to contain '$1'; output was:"
+    printf '%s\n' "$_PATHS_OUT"
+    return 1
+}
+
+# (p5) LIVE CONTROL — the shipped note's citations all resolve.
+assert "(p5) every repo-relative path the shipped note cites RESOLVES" \
+    _note_paths_resolve "$NOTE"
+
+# (p6) SEEDED MUTANT — proof the (p5) instrument can actually fire.
+NOTE_BAD="$TMPWORK/note_badpath.md"
+BOGUS_PATH="docs/prds/v0_6/definitely-not-a-file.md"
+cp "$NOTE" "$NOTE_BAD"
+_NP_BEFORE="$(wc -l <"$NOTE")"
+printf 'See %s for the rest.\n' "$BOGUS_PATH" >>"$NOTE_BAD"
+_NP_AFTER="$(wc -l <"$NOTE_BAD")"
+
+assert "(p6) meta: the mutation actually added a line" _lt "$_NP_BEFORE" "$_NP_AFTER"
+assert "(p6) meta: the bogus path is in the MUTANT and absent from the shipped note" \
+    bash -c 'grep -qF -- "$2" "$1" && ! grep -qF -- "$2" "$3"' -- "$NOTE_BAD" "$BOGUS_PATH" "$NOTE"
+assert "(p6) meta: the bogus path really does not exist in the repo" \
+    bash -c '[ ! -e "$1/$2" ]' -- "$REPO_ROOT" "$BOGUS_PATH"
+
+_run_note_paths "$NOTE_BAD"
+assert "(p6) a note citing an unresolvable path FAILS the link-rot check" _paths_rc_nonzero
+assert "(p6) the failure output NAMES the unresolvable path" _paths_out_has "$BOGUS_PATH"
 
 # ---------------------------------------------------------------------------
 # Summary.
