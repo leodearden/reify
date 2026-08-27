@@ -244,27 +244,71 @@ Transcript evidence corrects two facts in the original escalation:
   recurred ~34min after the escalation was filed, and recurrences continued through 2026-08-08
   (`_lane-45`, `_lane-47`, `_lane-9` ×2, `_lane-49` ×2).
 
-**The hazard was live through 2026-08-26, and is now CLOSED on the live store.** It was measured
-armed twice: `rerere.enabled=true` / `rerere.autoupdate=true` with 241 rr-cache entries on 2026-08-13,
-and again with 266 entries on 2026-08-26 (+25 in 13 days), filed both times as `escalate_info` on task
-5870 (the second as `esc-5870-5`). The steward closed it on **2026-08-26** by running the one-time
-`scripts/git-rerere-guard.sh arm /home/leo/src/reify`, which reported
-`SET: rerere.enabled=false (was true)` and `SET: rerere.autoupdate=false (was true)` and exited 0
-(disarmed and self-verified). Confirmed independently from an unrelated lane: both keys read `false`,
-`check` exits 0, `rr-cache` still holds all 266 entries (never pruned — see §5), and the main
-checkout's tracked files were untouched.
+**The 2026-08-26 disarm was a point-in-time event, not a closure — the store was measured ARMED again
+on 2026-08-27.** Read the history as a sequence of measurements:
 
-Note the ordering: this write landed *before* the task branch did, so until `setup-dev.sh` is on `main`
-nothing re-asserts the pin. That is still strictly safer than leaving it armed — per `CLAUDE.md`, a
-bare `--unset` is a silent RE-ARM, so what protects the store is the explicit `false` being *present*,
-which it now is. Landing this task restores the durable re-assertion on every subsequent setup run.
+| When | Measurement |
+|---|---|
+| 2026-08-13 | Armed: `rerere.enabled=true` / `rerere.autoupdate=true`, 241 rr-cache entries. Filed `escalate_info` on task 5870. |
+| 2026-08-26 | Still armed, 266 entries (+25 in 13 days). Filed as `esc-5870-5`. |
+| 2026-08-26 | Steward ran `scripts/git-rerere-guard.sh arm /home/leo/src/reify` → `SET: rerere.enabled=false (was true)`, `SET: rerere.autoupdate=false (was true)`, exit 0 (disarmed and self-verified). Confirmed from an unrelated lane: both keys `false`, `check` exits 0, all 266 entries still present (never pruned — see §5), main checkout's tracked files untouched. |
+| 2026-08-27 | **Armed again** (detail below). Filed as `esc-5870-11`. |
 
-## 8. Open item
+Re-measured read-only from lane `_lane-5` on 2026-08-27 (~22:55 local), the store had re-armed within a
+day of the disarm:
 
-**`git fsck` on the shared store remains UNMEASURED.** The 2026-07-30 attempt was killed at a 900s
-timeout. It needs a queue-idle window. Until then, whether the concurrent writes left any object-level
-damage behind is an open question — the hardening here prevents *new* occurrences, and makes no claim
-about the existing store's integrity.
+- `git -C /home/leo/src/reify config --get rerere.enabled` → `true`; `--get rerere.autoupdate` → `true`.
+- `--show-origin --show-scope --get-regexp '^rerere\.'` reports both in scope `local`, `file:.git/config`
+  — the SHARED config, the same file `arm` writes. Per-scope reads confirm `--global`, `--system` and
+  `--worktree` are all UNSET, so nothing is *masking* a disarmed shared value; the shared value itself
+  is `true`.
+- `bash scripts/git-rerere-guard.sh check /home/leo/src/reify` → **exit 1**, two `ARMED:` lines.
+- `rr-cache` holds **269** entries, up from the 266 counted at the disarm. Exactly 3 post-date it, all
+  stamped 2026-08-27 05:09, each carrying a `preimage` written 04:56–04:58 and a `postimage` +
+  `thisimage` written 05:09 — a conflict recorded *and* a resolution written back, ~17h after the
+  disarm. Writing those requires rerere to have been armed at the time.
+
+So the re-arm happened between the 2026-08-26 `arm` and 2026-08-27 04:56. **The writer has not been
+identified**, and the available timestamps cannot narrow it:
+
+- `.git/config`'s mtime (2026-08-27 22:59:37) post-dates the rr-cache writes it would have to explain by
+  ~18h. mtime records a file's *last* write, so a later, unrelated write to the shared config has
+  already overwritten the rerere write's timestamp. It dates nothing here.
+- The store carries 238 linked worktrees with `extensions.worktreeConfig=true`, and per-lane config
+  writes are demonstrably concurrent with this session (`_lane-1/config.worktree` rewritten
+  2026-08-27 22:28). Config churn across the pool is continuous; no single mtime isolates one writer.
+- No tracked reify script or hook writes `rerere.*` — a grep over `scripts/` and `hooks/`, excluding the
+  guard and this runbook, returns nothing. The equivalent sweep of the dark-factory tree did **not**
+  complete (killed at a 45s timeout) and is therefore UNMEASURED; the orchestrator side is not cleared.
+
+> **Hypothesis:** an active writer outside reify's tracked scripts put the keys back. This is *not*
+> established — no candidate mechanism has been excluded, and the evidence above constrains only *when*
+> the write happened, never *what* made it.
+
+One incidental finding from the same sweep, recorded because it is easy to misread as a fleet-wide fix:
+exactly 3 of the 238 lanes (`_lane-1`, `_lane-2`, `_lane-3`) carry `rerere.enabled = false` in their own
+`config.worktree`. That disarms **those three lanes only** — the other 235 inherit the armed shared
+value. It is also the wrong scope for a fleet fix, which is exactly why `arm` writes `--local` and never
+`--worktree` (§6).
+
+None of this weakens the design; it sharpens the case for it. A one-shot `git config` write was observed
+not to hold for even a day — which is the whole argument for shipping a re-runnable *guard* wired into
+`setup-dev.sh` rather than a one-time fix. Note the ordering, though: nothing re-asserts the pin until
+`setup-dev.sh` carries the guard, and that happens only when this task lands.
+
+## 8. Open items
+
+1. **`git fsck` on the shared store remains UNMEASURED.** The 2026-07-30 attempt was killed at a 900s
+   timeout. It needs a queue-idle window. Until then, whether the concurrent writes left any
+   object-level damage behind is an open question — the hardening here prevents *new* occurrences, and
+   makes no claim about the existing store's integrity.
+
+2. **The re-armer is unidentified** (esc-5870-11, above). This bounds what landing this task buys: the
+   guard re-asserts `false` on every `setup-dev.sh` run, so if an active writer does exist, that
+   per-run re-assertion **narrows the window between re-arm and disarm — it does not close it.** Any
+   resolution recorded inside that window still lands in the one shared cache. Closing it requires
+   naming the writer, which requires sampling the effective config over time rather than reading it
+   once; `check` is the natural probe, since it already exits 1 on an armed store.
 
 ## Pointers
 
