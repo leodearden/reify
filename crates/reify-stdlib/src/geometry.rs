@@ -956,7 +956,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 .first()
                 .map(|v| v.dimension())
                 .unwrap_or(DimensionVector::DIMENSIONLESS);
-            if min_dim != max_dim {
+            // A BoundingBox is Length-valued by construction (task 6081): both
+            // corners must be `Point3<Length>`. This subsumes the older
+            // `min_dim != max_dim` gate — any non-Length corner is rejected, so
+            // mismatched corners cannot both be Length either. The explanation
+            // is emitted by the post-Undef classifier `diagnose` below, not here.
+            if min_dim != DimensionVector::LENGTH || max_dim != DimensionVector::LENGTH {
                 return Some(Value::Undef);
             }
             Value::BoundingBox {
