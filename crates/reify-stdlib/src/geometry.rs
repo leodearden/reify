@@ -934,6 +934,29 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         "frame_at" => eval_frame_at(args),
 
         // --- BoundingBox constructors ---
+        //
+        // A BoundingBox is Length-valued BY CONSTRUCTION (task 6081, ruling
+        // from esc-5997-2): `bbox` admits only `Point3<Length>` corners, and
+        // both accessors emit `Length` components unconditionally — even for a
+        // hand-built or kernel-produced box whose stored corners say otherwise.
+        //
+        // The quantity polymorphism this replaced was NOT a designed
+        // capability: it was incidental generic component-dimension
+        // propagation. The old gate only checked that the two corners AGREED,
+        // and the accessors merely echoed whatever dimension they found. Do not
+        // re-derive it as intentional. The only real producer,
+        // `dispatch_bounding_box` (reify-eval/src/geometry_ops.rs), is
+        // unconditionally `Point3<Length>`, and the sole `.ri` consumer
+        // (examples/differential_field_ops.ri) is metre-valued.
+        //
+        // Going monomorphic is the SAFE direction: a later `BoundingBox<Q>`
+        // would be a WIDENING, which is the easy one. For scale, the static
+        // type is a bare unit variant referenced across six crates
+        // (reify-compiler, reify-core, reify-eval, reify-expr, reify-ir,
+        // reify-kernel-openvdb) — re-derive the current site list with
+        //   grep -rn --include=*.rs -E 'Type::BoundingBox|Type::bounding_box\(\)' crates gui
+        // rather than trusting a count quoted here (the house convention on
+        // rotting inventory numbers; see `NAMED_DIMENSIONS` in reify-core).
         "bbox" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
