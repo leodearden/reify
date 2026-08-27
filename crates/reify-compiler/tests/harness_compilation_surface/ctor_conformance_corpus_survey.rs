@@ -1961,6 +1961,90 @@ fn render_survey_states_the_q6_ruling_and_the_provenance_disclaimers() {
 
 // ─── step 13/14: output path + the generator entry point ─────────────────────
 
+/// Env var that redirects the generator's output to a scratch path.
+const OUT_ENV: &str = "REIFY_CTOR_SURVEY_OUT";
+
+/// The committed artifact's repo-relative path.
+const ARTIFACT_REL: &str = "docs/prds/struct-ctor-field-type-conformance.survey.md";
+
+/// Resolve the output path from an already-read override value.
+///
+/// A pure seam so the override can be tested without setting a process-global
+/// env var, which would race every other test in this binary. An empty override
+/// falls back to the default: an accidental `REIFY_CTOR_SURVEY_OUT=` must not
+/// drop the artifact into the current working directory.
+fn survey_output_path_for(override_value: Option<String>) -> PathBuf {
+    match override_value {
+        Some(v) if !v.trim().is_empty() => PathBuf::from(v),
+        _ => PathBuf::from(WORKSPACE_ROOT).join(ARTIFACT_REL),
+    }
+}
+
+/// Where the generator writes: the committed artifact, unless
+/// [`OUT_ENV`] redirects it.
+///
+/// Defaulting to the real location is what lets [`REGEN_COMMAND`] carry no path
+/// argument — so the command committed inside the artifact cannot drift from
+/// where the artifact actually lives.
+fn survey_output_path() -> PathBuf {
+    survey_output_path_for(std::env::var(OUT_ENV).ok())
+}
+
+/// The `git rev-parse HEAD` of the workspace, stamped into the artifact header.
+fn base_commit() -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(WORKSPACE_ROOT)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: cannot run git: {e}"));
+    assert!(
+        out.status.success(),
+        "ctor_conformance_corpus_survey: `git rev-parse HEAD` exited {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// **The survey generator.** Sweeps every tracked `.ri` and writes the artifact.
+///
+/// `#[ignore]`d because it compiles the entire tracked corpus — ~2.5× the
+/// `examples/` walk that `examples_smoke.rs` already documents as "the single
+/// most expensive thing this binary does". Running it on every merge gate would
+/// directly fight `docs/prds/merge-gate-compile-cost.md`.
+///
+/// The ignore reason is deliberately OPERATIONAL, not blocker-prose: per
+/// `docs/prds/reify-audit-ptodo-detector.md` §8 (row 8, the
+/// `#[ignore = "requires OCCT"]` class) an operational reason produces no PTODO
+/// finding and needs no `#NNNN` cite. One is deliberately NOT written here — a
+/// cite would be liveness-checked and would go orphaned the moment task #5304
+/// closes.
+///
+/// Nothing is lost to the ignore: every DECISION this test makes lives in the
+/// pure helpers above, each unit-tested on every gate run, plus one cheap
+/// three-file end-to-end sweep.
+#[test]
+#[ignore = "corpus survey generator over all tracked .ri (660 files); run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
+fn generate_ctor_conformance_corpus_survey() {
+    let corpus = tracked_ri_corpus();
+    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), &corpus);
+    let rendered = render_survey(&run, &base_commit());
+    let out = survey_output_path();
+    std::fs::write(&out, &rendered)
+        .unwrap_or_else(|e| panic!("cannot write survey to {}: {e}", out.display()));
+    println!(
+        "ctor-conformance survey: {} sites across {} tracked .ri ({} surveyed, \
+         {} not surveyed, {} partial) -> {}",
+        run.sites.len(),
+        run.total,
+        run.surveyed,
+        run.not_surveyed.len(),
+        run.partial.len(),
+        out.display()
+    );
+}
+
 #[test]
 fn survey_output_path_defaults_to_the_committed_artifact_location() {
     // The default must match the artifact's real location exactly, so the
