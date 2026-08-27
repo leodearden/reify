@@ -229,6 +229,19 @@ Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf*
 - grammar / substrate: esc-2998-47 (ConvergenceStatus payload enum — resolved by **gating on the DCE cluster `3946`**, which adds named-field payload variants, rather than a C-style re-spec), the C-06 grammar-fiction precedents.
 - `bound≤floor`: esc-3821-44 (Duhamel `1e-9` ≪ `O((ΩΔt)²)≈2e-3` floor), esc-3453 buckling (`5%` < `9–10%` bending lock → 4066).
 
+**Scoping an `expect: absent` check — bind it to the construct, not the bare token.**
+1. Scope an `absent` pattern to the CONSTRUCT that would carry the defect, never to the bare token. A bare-token grep cannot distinguish code from a comment, and it also forbids legitimate unrelated uses of the token elsewhere in the same file. The collision is likely, not exotic: the clearest way to document "we stopped depending on X" is to write X's name, so the fix and the check race each other.
+2. When you narrow, name the accepted gap inline in the manifest (a comment beside the descriptor) and say which behavioural test covers it. A narrowed pattern buys comment-immunity at the cost of missing indirection (e.g. aliasing the flag before the gate).
+3. Prefer asserting the POSITIVE delivered construct where one exists; `absent` is the weaker form — it can only say a shape is missing, never that the replacement is present and correct.
+
+Descriptor grammar (`kind`/`pattern`/`expect`/`paths`; pattern-anchored, never file:line) is normative in the shared skill — `~/.claude/skills/prd/references/decompose-mode.md` Step 2.5 — and is not restated here.
+
+Worked case — **esc-6739-1** (2026-08-27, capability `mount-no-longer-gated-on-active`, task 6725, `docs/prds/v0_6/solver-legibility-telemetry.capability-manifest.yaml`):
+- Before: `pattern: autoResolve\.active`, `expect: absent`, `paths: [gui/src/App.tsx]` matched the implementer's own explanatory comment at `gui/src/App.tsx:786` (2026-08-27) and fired a critical DEP_CAPABILITY_NOT_DELIVERED escalation that blocked dependent task 6739 — even though the capability WAS delivered, data-gated at `gui/src/App.tsx:794` (2026-08-27).
+- After: `pattern: when=\{[^}]*autoResolve\.active` — still matches the historical `<Show when={engineStore.state.autoResolve.active}>` gate, and does not match the prose comment.
+- Accepted gap, recorded inline in the live manifest: misses a regression reintroduced via indirection (e.g. aliasing the flag before the `Show`); `gui/src/__tests__/App.test.tsx:6515` (2026-08-27, "AutoResolvePanel mounts on DATA and stays readable after the loop completes") is the behavioural cover.
+- Positive alternative that existed here (rule 3): `pattern: autoResolve\.iterations\.length > 0`, `expect: present` — present at `gui/src/App.tsx:794` (2026-08-27).
+
 ## Author-mode Stage 2 — Reify mechanism patterns to surface
 
 - **GR-001 family.** If the PRD assumes struct-ctor runtime evaluation (`Material(...)`, `LoadCase(...)`), confirm it gates on `gap-register.md` GR-001 (resolution: `docs/prds/v0_3/structure-instance-runtime.md` once authored).
