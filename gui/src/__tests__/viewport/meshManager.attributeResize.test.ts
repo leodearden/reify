@@ -137,6 +137,14 @@ function triScalars(n: number, extra: Partial<MeshData> = {}): MeshData {
   return tri(n, { scalar_channels: { vonMises }, ...extra });
 }
 
+/** `tri(n)` plus an FEA displacement field, so setDeformation has something to warp. */
+function triDisplaced(n: number): MeshData {
+  const base = tri(n);
+  const displaced = base.vertices.slice();
+  for (let i = 0; i < displaced.length; i += 3) displaced[i + 2] += 0.25;
+  return { ...base, displaced_positions: displaced };
+}
+
 /**
  * Mirrors the production `bakeColours` length contract
  * (gui/src/viewport/colormap.ts:152 — `new Float32Array(scalars.length * 3)`),
@@ -195,6 +203,105 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
 
     mm.setColorize({ channel: 'vonMises', bake });
     renderPass(scene, 'after-recolorize');
+
+    expect(violations).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Characterization pins for the paths that were ALREADY correct.
+  //
+  // These were confirmed violation-free on the pre-fix tree, so they are not
+  // expected to have a RED phase. Their job is to freeze the currently-correct
+  // sites — position/index/normal (guarded by task 3402), the
+  // computeVertexNormals branch, the deformation warp/restore/overlay paths and
+  // rebuildMaterials — so a future refactor cannot silently reintroduce the
+  // defect at a site this task did not touch.
+  // -------------------------------------------------------------------------
+
+  it('re-syncs position/index/normal across a vertex-count change (no colorize)', () => {
+    const mm = createMeshManager(scene);
+
+    mm.sync({ A: tri(2) });
+    renderPass(scene, 'after-first-sync');
+
+    mm.sync({ A: tri(5) });
+    renderPass(scene, 'after-resync');
+
+    expect(violations).toEqual([]);
+  });
+
+  it('re-syncs across a vertex-count change when normals are computed, not supplied', () => {
+    // Exercises the deleteAttribute('normal') + computeVertexNormals() branch:
+    // THREE would otherwise resize an existing wrong-sized normal attribute in
+    // place rather than allocating a fresh one.
+    const mm = createMeshManager(scene);
+
+    mm.sync({ A: tri(2, { normals: null }) });
+    renderPass(scene, 'after-first-sync');
+
+    mm.sync({ A: tri(5, { normals: null }) });
+    renderPass(scene, 'after-resync');
+
+    expect(violations).toEqual([]);
+  });
+
+  it('warps, re-syncs and restores across a vertex-count change with deformation active', () => {
+    // Covers applyWarpToMesh, restoreOriginalToMesh and the undeformed-overlay
+    // rebuild. All three write element-wise into a fixed-size destination and
+    // must never reassign `.array`; the overlay is rebuilt (not resized) on a
+    // topology-changing sync.
+    const mm = createMeshManager(scene);
+
+    mm.sync({ A: triDisplaced(2) });
+    renderPass(scene, 'after-first-sync');
+
+    mm.setDeformation({ warpFactor: 1 });
+    renderPass(scene, 'after-deform-on');
+    // Non-vacuity: deformation really engaged (an overlay exists to rebuild).
+    expect(mm.getDeformedOverlays().size).toBe(1);
+
+    mm.sync({ A: triDisplaced(5) });
+    renderPass(scene, 'after-resync');
+
+    mm.setDeformation({ warpFactor: 2 });
+    renderPass(scene, 'after-warp-change');
+
+    mm.setDeformation(null);
+    renderPass(scene, 'after-deform-off');
+
+    expect(violations).toEqual([]);
+  });
+
+  it('re-syncs a ghosted entity across a vertex-count change', () => {
+    // Ghost clones share the original's BufferGeometry object, so a resize on
+    // the original is visible through the clone as well.
+    const mm = createMeshManager(scene);
+
+    mm.sync({ A: tri(2) });
+    mm.setVisibility('A', 'ghost');
+    renderPass(scene, 'after-first-sync');
+    // Non-vacuity: a ghost clone really exists in the scene graph.
+    expect(mm.getGhostMeshes().size).toBe(1);
+
+    mm.sync({ A: tri(5) });
+    renderPass(scene, 'after-resync');
+
+    expect(violations).toEqual([]);
+  });
+
+  it('rebuilds materials after a colorize re-sync without resizing any attribute', () => {
+    // rebuildMaterials must keep installing colour via setAttribute and never
+    // fall back to in-place assignment.
+    const mm = createMeshManager(scene, { colorize: { channel: 'vonMises', bake } });
+
+    mm.sync({ A: triScalars(2) });
+    renderPass(scene, 'after-first-sync');
+
+    mm.sync({ A: triScalars(5) });
+    renderPass(scene, 'after-resync');
+
+    mm.rebuildMaterials();
+    renderPass(scene, 'after-rebuild-materials');
 
     expect(violations).toEqual([]);
   });
