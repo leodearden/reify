@@ -83,21 +83,23 @@ module whole_model_joint_drive
 // (task #5618 added the constraint-derived-box arm ahead of it; see
 // `extract_initial_point`'s four-arm docblock, solver.rs).  For this model
 // both sides of the box are derived, so today's seed is the midpoint
-// `(0.0+100.0)/2 = 50.0` —
-// and it is NOT the returned value, since the solve reaches the floored
-// argmin instead.  A shifted bracket is the worked second instance of the
-// same rule: `quantity_produced >= 1.0` → `m = max(0.02 × 1.0, 1e-9) = 0.02`
-// → floored bound `1.02` → `quantity_produced = 1.02`, `line_cost = 0.51
-// USD`, solving cleanly with zero errors — NOT `RobustnessFloorInfeasible`.
+// `(0.0+100.0)/2 = 50.0` — and it is NOT the returned value, since the solve
+// reaches the floored argmin instead.  A shifted bracket is the worked second
+// instance of the same rule: `quantity_produced >= 1.0` →
+// `m = max(0.02 × 1.0, 1e-9) = 0.02` → floored bound `1.02` →
+// `quantity_produced = 1.02`, `line_cost = 0.51 USD`, solving cleanly with
+// zero errors — NOT `RobustnessFloorInfeasible`.
 //
 // The user-observable signal is therefore the GOVERNANCE change — 50.0 → 1e-9,
 // 25.00 USD → 5e-10 USD — not the precise converged number.  Without the joint
 // drive, the parent's cost objective cannot reach the child's auto at all and
 // the design is pinned at the arbitrary centre of its feasible box.
 //
-// Both published assertions are COMPARATIVE (strict inequality + strict
-// difference), never an absolute converged value — the numbers above are the
-// derivation, not the pins.
+// BT-5's two assertions on the figures above are COMPARATIVE (strict
+// inequality + strict difference), never an absolute converged value.
+// BT-5b adds an ORDER-OF-MAGNITUDE band on the merged figure and a
+// closed-form pin on the shifted bracket's `1.02`, both DERIVED from the
+// `REL_MARGIN` / `ABS_FLOOR_SI` rule above, not tuned to an observed output.
 //
 // # Reading the result
 //
