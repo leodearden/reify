@@ -30,7 +30,19 @@ use std::cell::RefCell;
 /// `Severity::Error` because those codes (`GeometryUnbounded` and the geometry
 /// `TypeNotConformingToTrait`) belong to the geometry-primitive-constructors PRD,
 /// not to this ctor-field knob (see the `WalkCtx.severity` doc's carve-out note).
-const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
+///
+/// **ε (task 5303) additionally reads this knob from outside this module.** The
+/// two structural emit sites in the `StructureInstanceCtor` by-name binder
+/// (`crates/reify-compiler/src/expr.rs`) — unknown named argument
+/// ([`DiagnosticCode::CtorUnknownField`]) and over-arity positional argument
+/// ([`DiagnosticCode::CtorArity`]) — build their diagnostics with
+/// [`diag_at`]`(CTOR_FIELD_CONFORMANCE_SEVERITY, …)` rather than a literal
+/// `Severity::Warning`, which is why both this const and [`diag_at`] are
+/// `pub(crate)`. Keeping every knob-governed site on this one const is what keeps
+/// δ a literal one-const flip; a duplicated `Severity::Warning` literal in
+/// expr.rs would silently survive that flip (the C2(iv) severity-invariance
+/// failure mode).
+pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
 
 /// Build a `Diagnostic` at an explicit `severity`.
 ///
@@ -40,7 +52,12 @@ const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
 /// governs the whole surface. `Diagnostic.severity` is a public field, so this
 /// sets it directly after building — keeping the change confined to this crate
 /// (no reify-core change, per task 5302).
-fn diag_at(severity: Severity, message: impl Into<String>) -> Diagnostic {
+///
+/// `pub(crate)` since task 5303 (ε): the two structural ctor emit sites in
+/// `crates/reify-compiler/src/expr.rs` need the same severity-parameterized
+/// builder so they read [`CTOR_FIELD_CONFORMANCE_SEVERITY`] instead of
+/// hard-coding a severity.
+pub(crate) fn diag_at(severity: Severity, message: impl Into<String>) -> Diagnostic {
     let mut d = Diagnostic::error(message);
     d.severity = severity;
     d

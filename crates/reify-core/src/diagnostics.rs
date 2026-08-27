@@ -615,6 +615,149 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ARG_TYPE_MISMATCH`
     /// (see `docs/prds/type-hygiene.md` ζ §"Compile-time arg-type guard").
     ArgTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
+    /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
+    /// struct-ctor-conformance ε).
+    /// Emitted when a structure-constructor call supplies a NAMED argument whose
+    /// name matches no DECLARED parameter of the target structure — the site that
+    /// previously appended the argument leniently as `__arg{i}` with no
+    /// diagnostic at all.
+    ///
+    /// The suppressing predicate is the structure's `Param` PLUS `Auto { .. }`
+    /// value cells, at any visibility — the same externally-settable member-set
+    /// predicate used by `crates/reify-compiler/src/connect.rs` and
+    /// `crates/reify-compiler/src/traits.rs`. `param x : T = auto` / `auto(free)`
+    /// lowers to `ValueCellKind::Auto { free }`, so a named argument for an
+    /// `auto`-declared param is NOT an unknown field: it names a parameter the
+    /// author visibly wrote. (Counting only `Param` cells made this code assert
+    /// the opposite of the source on every auto-param structure.)
+    ///
+    /// That set is deliberately WIDER than the declared-parameter set, and is not
+    /// a claim about what a param is. `let m : T = auto` inside a structure lowers
+    /// to the SAME `Auto` cell as an auto param, and today's IR carries no
+    /// discriminator — so this code counts every `Auto` cell as possibly-declared
+    /// and stays SILENT on a named argument that targets one. Over-inclusion here
+    /// can only cost a diagnostic; it can never make this code state a falsehood,
+    /// which is the one failure mode it must not have. A named argument targeting
+    /// an auto LET is therefore leniently accepted, not diagnosed — the residual
+    /// `Auto`-slot binding gap is owned by #6705; the IR change that would make
+    /// the origin knowable is tracked by its own follow-up task. Contrast
+    /// [`Self::CtorArity`], which must print a NUMBER and so uses the narrower
+    /// visibility-keyed view.
+    ///
+    /// The lenient `__arg{i}` push is deliberately NOT gated by that predicate —
+    /// it keys off the positionally-bindable slot set, as it always did — so the
+    /// emitted IR is byte-for-byte the same whether or not this diagnostic fires.
+    ///
+    /// Canonical message form:
+    /// `"E_CTOR_UNKNOWN_FIELD: unknown named argument '{field}' in call to
+    /// '{Ctor}'; '{Ctor}' has no parameter with that name"`
+    ///
+    /// The `E_CTOR_UNKNOWN_FIELD: ` prefix is part of the message because
+    /// `reify check` renders `{severity}: {message}` and never prints the
+    /// `DiagnosticCode`; the prefix is what makes the mnemonic observable at the
+    /// CLI (in-file emit-site precedent: `E_FALLBACK_TYPE: ` / `E_PRIV_MEMBER_ACCESS`).
+    /// The label sits at the offending argument's own span (PRD §6 C3), reading
+    /// `"unknown named argument"`.
+    ///
+    /// Multiplicity: exactly ONE diagnostic per unknown named argument (an
+    /// unknown field name is a per-argument author error and each typo needs its
+    /// own span to be actionable), satisfying PRD §6 C2(ii) "at most one
+    /// diagnostic per (arg, fact)". A duplicate of a *known* parameter is NOT an
+    /// unknown field and keeps its own pre-existing duplicate-named-arg Error.
+    ///
+    /// Severity: emitted at the task-5302 `CTOR_FIELD_CONFORMANCE_SEVERITY` knob
+    /// (`crates/reify-compiler/src/conformance/mod.rs`) — **Warning at ε, Error
+    /// at δ**. The emit site never hard-codes a severity, so δ stays a literal
+    /// one-const flip. PRD §6 C2(i) type anti-cascade deliberately does NOT gate
+    /// this code: an unknown field name is a structural fact decidable without
+    /// reference to any argument's type, so a poisoned argument must not suppress
+    /// it (the typo often *caused* the downstream type error).
+    ///
+    /// Distinct from [`Self::ArgTypeMismatch`] (and not folded into it): that code
+    /// reports an expected-vs-found TYPE for an argument that legitimately binds
+    /// to a parameter, whereas here the named parameter does not exist at all —
+    /// there is no expected type to report, and the fix is a rename rather than a
+    /// value change. Minting a dedicated code (following the `SelectorKindMismatch`
+    /// minting precedent) lets the β corpus survey and the δ flip count
+    /// structural author errors separately from type errors.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CTOR_UNKNOWN_FIELD`
+    /// (see `docs/prds/struct-ctor-field-type-conformance.md` §7 row 11).
+    CtorUnknownField,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
+    /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
+    /// struct-ctor-conformance ε).
+    /// Emitted when a structure-constructor call supplies more arguments than the
+    /// target structure DECLARES parameters, and at least one positional argument
+    /// found no slot — the site that previously appended each surplus argument
+    /// leniently as `__arg{call_idx}` with no diagnostic at all.
+    ///
+    /// Canonical message form:
+    /// `"E_CTOR_ARITY: {Ctor}() expects at most {ndeclared} {argument|arguments},
+    /// got {nargs}"`
+    ///
+    /// `{ndeclared}` is the DECLARED parameter count — every `Param` cell, plus
+    /// each `Auto { .. }` cell whose `visibility` is `Public` — and the
+    /// singular/plural noun keys off that same count. It is deliberately not the
+    /// count of positionally-bindable slots: reporting the slot count made this
+    /// message state a ceiling the source contradicts (`expects at most 1
+    /// argument` on a structure declaring two, one of them `auto`).
+    ///
+    /// The visibility conjunct is what keeps an auto LET out of the ceiling.
+    /// `let m : T = auto` lowers to the SAME `ValueCellKind::Auto { free }` cell
+    /// as `param m : T = auto`, so counting every `Auto` cell inflated the ceiling
+    /// into a second false-message class — `expects at most 2 arguments` on a
+    /// structure declaring ONE param beside an auto let — and silenced the
+    /// param-less case outright. A param defaults to `Public`, a let to `Private`,
+    /// so visibility separates them for every shape in the corpus. It is a
+    /// heuristic, not a proof: `priv param x : T = auto` is read as a let and
+    /// understates the ceiling by one. No predicate over today's IR can be right
+    /// for both — the cells are byte-identical — and `priv`'s own meaning favours
+    /// this reading, since a private member is not part of the constructor's
+    /// externally-settable surface. Carrying the origin explicitly in the IR (a
+    /// `from_param` discriminant on the `Auto` variant, or a declared-param name
+    /// list on `TopologyTemplate`) is what removes the ambiguity, and is tracked by
+    /// its own follow-up task. Unlike [`Self::CtorUnknownField`], this code cannot
+    /// simply widen its view: it prints the count, so an over-wide view is itself
+    /// a false statement.
+    ///
+    /// Residual scope: a call whose argument count is WITHIN the declared count
+    /// but which still overflows the positionally-bindable slots — because `auto`
+    /// params are not positionally bindable today — is deliberately NOT diagnosed
+    /// here. That is a binding defect, not an arity one (the surplus argument
+    /// lands in a garbage `__arg{i}` member), and this code cannot state a true
+    /// fact about it. It is owned by #6705.
+    ///
+    /// The `{argument|arguments}` noun and the `"expects … , got …"` shape are
+    /// reused verbatim from `crates/reify-compiler/src/arg_check.rs` so ctor
+    /// arity reads identically to builtin arity; the accompanying label text is
+    /// that module's centralised `"wrong number of arguments"`. The
+    /// `E_CTOR_ARITY: ` prefix is part of the message for the same CLI-visibility
+    /// reason described on [`Self::CtorUnknownField`].
+    ///
+    /// Multiplicity: exactly ONE diagnostic per CALL SITE, anchored at the FIRST
+    /// over-arity positional argument. Arity is a call-level fact — `W("a","b","c")`
+    /// against a 1-param structure is one mistake, not three — matching every
+    /// existing arity diagnostic in the repo (`arg_check.rs` emits one per call,
+    /// never one per surplus argument).
+    ///
+    /// Severity: emitted at the task-5302 `CTOR_FIELD_CONFORMANCE_SEVERITY` knob
+    /// (`crates/reify-compiler/src/conformance/mod.rs`) — **Warning at ε, Error
+    /// at δ**, never a hard-coded severity, so δ stays a literal one-const flip.
+    /// PRD §6 C2(i) type anti-cascade does NOT gate this code either: an argument
+    /// count is decidable with no reference to any argument's type.
+    ///
+    /// Distinct from [`Self::ArgTypeMismatch`]: a surplus positional argument has no
+    /// parameter slot, hence no expected type to compare against — the fact
+    /// reported is the call's shape, not a value's type. Distinct also from the
+    /// `arg_check.rs` builtin arity errors, which are hard-coded `Severity::Error`
+    /// for *builtin* calls; this code covers structure constructors and must move
+    /// with the ctor-conformance knob.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CTOR_ARITY`
+    /// (see `docs/prds/struct-ctor-field-type-conformance.md` §7 row 12).
+    CtorArity,
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
@@ -5916,6 +6059,85 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::OpContractViolation).unwrap();
         assert_eq!(s, "\"OpContractViolation\"");
     }
+
+    // --- CtorUnknownField / CtorArity tests (task 5303 — struct-ctor-conformance ε;
+    //     E_CTOR_UNKNOWN_FIELD / E_CTOR_ARITY) ---
+    // Pairs with the two structural emit sites in the `StructureInstanceCtor`
+    // by-name binder in `crates/reify-compiler/src/expr.rs` (the sites that
+    // previously appended an unknown named arg / an over-arity positional arg
+    // leniently as `__arg{i}` with no diagnostic at all).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+    //
+    // NOTE on severity: the `with_code` round-trip tests below build via
+    // `Diagnostic::error(..)` purely to mirror the `OpContractViolation`
+    // precedent's shape — they pin that `with_code` preserves the code and does
+    // not perturb the severity it was handed. They deliberately do NOT pin the
+    // severity these codes are EMITTED at: that is read from
+    // `CTOR_FIELD_CONFORMANCE_SEVERITY` (`crates/reify-compiler/src/conformance/mod.rs`,
+    // Warning at ε, Error at δ) and is pinned by the ε probes in
+    // `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, so
+    // δ's one-const flip does not have to touch this file.
+
+    /// `DiagnosticCode::CtorUnknownField` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
+    /// severity it was constructed with. Catches a future enum reorganisation
+    /// that DROPS the variant; a RENAME is caught by the sibling
+    /// `diagnostic_code_ctor_unknown_field_serde_pascal_case`, which pins the
+    /// externally-visible LSP wire identifier.
+    #[test]
+    fn diagnostic_code_ctor_unknown_field_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorUnknownField);
+        assert_eq!(d.code, Some(DiagnosticCode::CtorUnknownField));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CtorUnknownField` serializes
+    /// as `"CtorUnknownField"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// This pins the LSP wire identifier: `crates/reify-lsp/src/convert.rs`
+    /// routes `DiagnosticCode` to its LSP form through serde precisely so new
+    /// variants need no registration there, which makes this string the
+    /// externally-visible contract for the code.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ctor_unknown_field_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CtorUnknownField).unwrap();
+        assert_eq!(s, "\"CtorUnknownField\"");
+    }
+
+    /// `DiagnosticCode::CtorArity` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
+    /// severity it was constructed with.
+    #[test]
+    fn diagnostic_code_ctor_arity_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorArity);
+        assert_eq!(d.code, Some(DiagnosticCode::CtorArity));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CtorArity` serializes as
+    /// `"CtorArity"` (PascalCase, from `rename_all = "PascalCase"`). Same LSP
+    /// wire-identifier rationale as
+    /// [`diagnostic_code_ctor_unknown_field_serde_pascal_case`].
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ctor_arity_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CtorArity).unwrap();
+        assert_eq!(s, "\"CtorArity\"");
+    }
+
+    // NOTE: no "these three codes are distinct" test lives here. With the derived
+    // `PartialEq` on this fieldless enum, `assert_ne!` between named variants is a
+    // compile-time tautology — it cannot fail for any change that still compiles,
+    // so it carries no regression signal. The property it appeared to guard (the
+    // three facts one bad ctor call can carry stay SEPARATELY COUNTABLE) is
+    // guarded executably by `all_three_ctor_faults_on_one_call_emit_exactly_one_
+    // diagnostic_each` in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
+    // and the externally-visible identifiers are pinned by the serde tests above.
 
     // --- ReservedTypeName tests (task 4591 — W_RESERVED_TYPE_NAME) ---
     // Pairs with the lint pass in
