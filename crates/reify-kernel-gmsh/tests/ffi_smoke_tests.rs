@@ -316,3 +316,77 @@ fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
 
     ffi::clear().expect("ffi::clear failed (cleanup)");
 }
+
+/// Pins that `get_element_types(3, -1)` censuses exactly `[4]` (P1 4-node
+/// tet) and exactly `[11]` (P2 10-node tet) on a geo-built unit box meshed
+/// with no recombination/extrusion. A box meshed this way holds only
+/// tetrahedra in dim 3, and `Mesh.ElementOrder=2` promotes every one of
+/// them to the 10-node tet, so the dim-3 type set is a singleton either
+/// way — corroborated by production code: `kernel_real.rs:229-236` already
+/// sets `Mesh.ElementOrder` from `ElementOrderTag` and its comment states
+/// "4 = P1 4-node tet, 11 = P2 10-node tet".
+///
+/// MEASURED (C probe against `/opt/reify-deps/lib/libgmsh.so.4.15.2`, same
+/// geo box): P1 `getElementTypes(3,-1) ierr=0 n=1 -> [4]`; P2
+/// `getElementTypes(3,-1) ierr=0 n=1 -> [11]`.
+///
+/// Both legs run under ONE `GMSH_LOCK` acquisition in ONE test function —
+/// `Mesh.ElementOrder` is a PROCESS-GLOBAL gmsh option that MEASURABLY
+/// survives `gmshClear()` (probed directly: set to 2, `gmshClear`,
+/// `gmshOptionGetNumber("Mesh.ElementOrder")` still reads 2). Splitting
+/// this into two `#[test]`s would let the P2 leg leak order-2 elements into
+/// whichever test the scheduler runs next, since this binary's tests run
+/// on separate threads in nondeterministic order, serialized only by
+/// `GMSH_LOCK`. Each leg therefore sets the order EXPLICITLY rather than
+/// relying on the default, and the function restores `1.0` before
+/// returning.
+///
+/// Deliberately does NOT assert on `get_element_types(-1, -1)` (whole-mesh
+/// census): measured `[1, 2, 4, 15]` at P1 and `[8, 9, 11, 15]` at P2 —
+/// that pins gmsh's whole-mesh B-rep decomposition, which is far more
+/// brittle than the dim-3 census this test actually needs.
+#[test]
+fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
+    let _guard = init::GMSH_LOCK
+        .lock()
+        .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
+
+    init::ensure_initialized();
+
+    // P1 leg.
+    ffi::clear().expect("ffi::clear failed (P1 setup)");
+    ffi::model_add("census_p1").expect("ffi::model_add failed (P1)");
+    ffi::option_set_number("Mesh.ElementOrder", 1.0)
+        .expect("ffi::option_set_number(Mesh.ElementOrder=1) failed");
+    build_geo_unit_box();
+    ffi::mesh_generate(3).expect("ffi::mesh_generate(3) failed (P1)");
+    let p1_types =
+        ffi::get_element_types(3, -1).expect("ffi::get_element_types(3,-1) failed (P1)");
+    assert_eq!(
+        p1_types,
+        vec![4],
+        "P1 dim-3 element-type census must be exactly [4] (4-node tet), got {p1_types:?}",
+    );
+
+    // P2 leg.
+    ffi::clear().expect("ffi::clear failed (P2 setup)");
+    ffi::model_add("census_p2").expect("ffi::model_add failed (P2)");
+    ffi::option_set_number("Mesh.ElementOrder", 2.0)
+        .expect("ffi::option_set_number(Mesh.ElementOrder=2) failed");
+    build_geo_unit_box();
+    ffi::mesh_generate(3).expect("ffi::mesh_generate(3) failed (P2)");
+    let p2_types =
+        ffi::get_element_types(3, -1).expect("ffi::get_element_types(3,-1) failed (P2)");
+    assert_eq!(
+        p2_types,
+        vec![11],
+        "P2 dim-3 element-type census must be exactly [11] (10-node tet), got {p2_types:?}",
+    );
+
+    // MANDATORY teardown before the guard drops: Mesh.ElementOrder is
+    // process-global and survives gmshClear(), so a later test must not
+    // inherit order 2.
+    ffi::option_set_number("Mesh.ElementOrder", 1.0)
+        .expect("ffi::option_set_number(Mesh.ElementOrder=1) failed (teardown)");
+    ffi::clear().expect("ffi::clear failed (teardown)");
+}
