@@ -1807,14 +1807,26 @@
                 &HashMap::new(),
                 &mut diagnostics,
             );
-            assert!(
-                result.is_err(),
-                "{label}: a non-Length `iso` must DROP the op so a bare 5 can never \
-                 reach the kernel as 5 SI metres; got: {result:?}"
-            );
-            assert!(
-                !matches!(result, Ok(reify_ir::GeometryOp::Surface { .. })),
-                "{label}: no GeometryOp::Surface may be produced; got: {result:?}"
+            // Exact equality, not a bare `is_err()`: the INVALID arm's
+            // caller-facing wording is owned solely by `required_length_arg`
+            // (D9), so pinning the string is what proves this position
+            // DELEGATES rather than forking a local message — a fork would
+            // still drop the op and still satisfy `is_err()`. Mirrors the
+            // `expect_err` style of the Undef sibling below, closing the arm
+            // that was previously asymmetric. (Asserted on the `Err` string
+            // because `reify_ir::GeometryOp` is not `PartialEq`; the `Ok` arm
+            // panics with the op so a regression names what leaked through.)
+            let err = match result {
+                Err(e) => e,
+                Ok(op) => panic!(
+                    "{label}: a non-Length `iso` must DROP the op so a bare 5 can \
+                     never reach the kernel as 5 SI metres; got: Ok({op:?})"
+                ),
+            };
+            assert_eq!(
+                err, "missing or non-Length argument 'iso' for isosurface",
+                "{label}: the rejected-value wording is inherited from \
+                 `required_length_arg`, not forked locally"
             );
 
             let rejections: Vec<&Diagnostic> = diagnostics
