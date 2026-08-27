@@ -83,10 +83,14 @@
 // out of phase as #precision varies, producing the teeth.
 //
 // NEAR THE BOUND this dominates: the 388-point sweep's largest measured
-// adjacent swing overall is 2.78x, at 0.68mm → 5.156e-4 m vs. 0.69mm →
-// 1.434e-3 m; a separate pair 0.08% apart in the request, 0.5955mm →
-// 1.223e-3 m vs. 0.5960mm → 4.541e-4 m, swings 2.69x — so a value that
-// clears the bound today can be one retune away from a tooth that doesn't.
+// adjacent swing overall is 2.78x — 0.68mm → 5.156e-4 m (TOOTH, ratio 0.758,
+// clears) vs. 0.69mm → 1.434e-3 m (ENVELOPE, ratio 2.078, VIOLATES); a
+// separate pair 0.08% apart in the request swings 2.69x — 0.5955mm →
+// 1.223e-3 m (ENVELOPE, ratio 2.054, VIOLATES) vs. 0.5960mm → 4.541e-4 m
+// (TOOTH, ratio 0.762, clears) — so a value that clears the bound only
+// because it landed on a tooth is one retune away from the envelope, which
+// near the bound violates. Never tune onto a tooth: pick a candidate whose
+// ENVELOPE value (~2.075x the request) clears the bound.
 // FARTHER BELOW THE BOUND the ~2.08x envelope ratio is an observation of the
 // upper envelope, not a guarantee — the teeth recur across the whole range,
 // and extrapolating the envelope is exactly what makes a tooth look like a
