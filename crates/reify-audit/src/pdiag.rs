@@ -70,6 +70,16 @@
 //!   block-region state — which only ever masks MORE lines, i.e. under-counts.
 //! - A `.with_code(` sitting in a trailing `//` comment on the anchor line
 //!   itself marks the site coded. Permissive, and vanishingly rare.
+//! - The `* ` block-comment-continuation form also matches a WRAPPED
+//!   ARITHMETIC continuation (`let x = a\n    * b\n    + c;`), so such a line
+//!   is masked as comment-only. 19 real instances exist in the swept corpus
+//!   today (`shell_assembly.rs`, `modal/transient.rs`, …), none of them within
+//!   30 lines below an anchor, so the live census is unaffected — but the
+//!   window budget is "15 non-comment lines" only up to this, not strictly 15
+//!   lines of CODE. Permissive in every direction: a masked line consumes no
+//!   window budget (widening the code probe's reach), cannot terminate an
+//!   escape scan, and hides any anchor of its own from the census. Re-measure
+//!   this before re-measuring [`PDIAG_CODE_WINDOW`].
 //! - Brace counting for the `#[cfg(test)]` skip is literal-unaware: an
 //!   unbalanced `{` or `}` inside a string literal or a trailing comment can
 //!   drift the depth counter. The blast radius is bounded to where a skip
@@ -199,6 +209,12 @@ fn line_escaped(line: &str) -> bool {
 /// token is `//` (covering `///` and `//!`), `/*`, or `* ` (a block-comment
 /// continuation — the trailing space keeps `*out = ...` deref expressions
 /// live).
+///
+/// The trailing space does NOT separate a block-comment continuation from a
+/// WRAPPED MULTIPLICATION (`let x = a\n    * b\n    + c;`), which is masked
+/// too — 19 such lines exist in the swept corpus. The effect is permissive
+/// only (see the module header's residual-imprecision list); tightening it
+/// would mean tracking block-comment adjacency, which buys nothing today.
 fn comment_mask(lines: &[&str]) -> Vec<bool> {
     let mut mask = Vec::with_capacity(lines.len());
     let mut in_block = false;
