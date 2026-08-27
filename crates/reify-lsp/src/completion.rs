@@ -904,21 +904,26 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "08-coordinate",
     },
     // --- 09-bbox: bounding box ---
+    // A BoundingBox is Length-valued by construction (task 6081), so the two
+    // accessors return `Vector3<Length>` / `Point3<Length>` — not an
+    // unqualified `Vector` / `Point`. `bbox` is the 2-point CONSTRUCTOR; the
+    // one-argument `bbox(solid)` form these entries used to declare is
+    // `bounding_box`'s signature, not this one.
     BuiltinFunctionInfo {
         name: "bbox",
-        signature: "bbox(solid) -> BoundingBox",
-        doc: "Returns the axis-aligned bounding box of a solid.",
+        signature: "bbox(min: Point3<Length>, max: Point3<Length>) -> BoundingBox",
+        doc: "Constructs an axis-aligned bounding box from its min and max corner points.",
         sort_group: "09-bbox",
     },
     BuiltinFunctionInfo {
         name: "bbox_size",
-        signature: "bbox_size(bb: BoundingBox) -> Vector",
+        signature: "bbox_size(bb: BoundingBox) -> Vector3<Length>",
         doc: "Returns the size (width × height × depth) of a bounding box.",
         sort_group: "09-bbox",
     },
     BuiltinFunctionInfo {
         name: "bbox_center",
-        signature: "bbox_center(bb: BoundingBox) -> Point",
+        signature: "bbox_center(bb: BoundingBox) -> Point3<Length>",
         doc: "Returns the centre point of a bounding box.",
         sort_group: "09-bbox",
     },
