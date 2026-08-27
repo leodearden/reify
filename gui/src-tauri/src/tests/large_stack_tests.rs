@@ -1217,3 +1217,86 @@ async fn async_dispatch_recovers_a_handed_back_job_off_the_submitting_frame() {
          panics with the nested-runtime message instead of resolving"
     );
 }
+
+/// (r4) The ASYNC half of (r2): a FUTURE that submits to the lane it is being
+/// DRIVEN on gets the same loud panic naming that lane, and the lane survives.
+///
+/// (r2) covers the BLOCKING seam. This is not a duplicate of it, because the
+/// unwind takes a materially different route and it is the route the module's
+/// docs lean on hardest. The panic must escape the INNER future mid-poll,
+/// unwind out of [`tokio::runtime::Handle::block_on`] (whose `enter_runtime`
+/// guard has to restore the runtime context on the way out), be caught by the
+/// OUTER job's own `catch_unwind`, ride back over the `tokio::sync::oneshot`,
+/// and be `resume_unwind`-ed on the awaiting submitter. Any one of those links
+/// failing turns a loud rejection back into the process-wide wedge the guard
+/// exists to replace — which is the module's stated worst outcome, so the async
+/// half deserves the same guard the blocking half got.
+///
+/// `tokio::spawn` is the unwind boundary, exactly as in (w): the panic arrives
+/// on the awaiting task, so [`tokio::task::JoinError::into_panic`] hands back
+/// the payload without needing `futures::FutureExt::catch_unwind` (and so
+/// without a new dependency).
+///
+/// # Why the guard is genuinely REACHED here
+///
+/// `dispatch_async` runs its reentrancy check AFTER an early return on
+/// [`tokio::runtime::Handle::try_current`] being `Err`, so a submission from a
+/// lane thread with NO ambient runtime would `.await` inline and never reach the
+/// check. That is not a hole this test papers over — it is the safe arm: an
+/// inline `.await` enqueues nothing, so it cannot wedge anything, and the guard
+/// is only needed where a job would actually be queued. On the production path
+/// the check IS reached, and that is what this test pins: the outer job is
+/// driven by `handle.block_on`, which installs the runtime context, so
+/// `try_current()` inside the inner submission succeeds and execution falls
+/// through to `assert_not_reentrant`.
+///
+/// Carries (r2)'s caveat unchanged: if the guard is ever removed this test hangs
+/// rather than failing, because the wedge is of a process-wide `static` lane.
+#[tokio::test]
+async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedging_it() {
+    use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
+
+    let joined = tokio::spawn(async {
+        // The OUTER future is driven ON the LSP lane; the inner submission
+        // targets that same lane, which is the wedge.
+        run_on_lsp_worker(async { run_on_lsp_worker(async { 1u32 }).await }).await
+    })
+    .await;
+
+    let err = joined.expect_err(
+        "re-entrant async submission must panic on the awaiting submitter rather \
+         than wedge the lane",
+    );
+    assert!(
+        err.is_panic(),
+        "the awaiting task must have PANICKED, not been cancelled: {err:?}"
+    );
+    let message = panic_message(&*err.into_panic());
+    assert!(
+        message.contains("re-entrant submission"),
+        "the panic must name the reentrancy rather than surface as a generic \
+         channel or oneshot error, got: {message}"
+    );
+    assert!(
+        message.contains(LSP_WORKER_THREAD_NAME),
+        "the panic must name the LANE that was re-entered, got: {message}"
+    );
+
+    // Survival, and on the SAME lane thread: a lane killed by the rejected
+    // submission would hang here, and one that had silently degraded to an
+    // inline await would answer from the caller's thread instead. Asserting the
+    // thread NAME rather than just the value is what separates those two.
+    let (value, ran_on) =
+        run_on_lsp_worker(async { (7u32, std::thread::current().name().map(str::to_owned)) }).await;
+    assert_eq!(
+        value, 7,
+        "the lane must survive a rejected re-entrant submission and keep serving \
+         every other caller in the process"
+    );
+    assert_eq!(
+        ran_on.as_deref(),
+        Some(LSP_WORKER_THREAD_NAME),
+        "the surviving lane must still be the LANE — a degraded inline await \
+         would answer from the awaiting runtime worker instead"
+    );
+}
