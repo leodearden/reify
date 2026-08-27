@@ -1690,6 +1690,271 @@
         );
     }
 
+    // ---- units-length λ (task 5755 step-3): Contract C at `isosurface`'s `iso` ----
+
+    /// ANTI-REGRESSION LOCK for decision D12 — this test PASSES TODAY and must
+    /// keep passing after the LENGTH gate lands. It is the guard that stops the
+    /// gate from "fixing" a deliberate default.
+    ///
+    /// D12, verbatim intent: for `isosurface`, ABSENCE of `iso` is the NORMAL,
+    /// EXPECTED shape (`isosurface(solid)` is the common form, shipped in
+    /// `examples/multi_kernel/voxel_to_mesh.ri`). The un-gated `iso_level = 0.0`
+    /// default therefore STAYS, and an absent `iso` MUST NOT emit a missing-arg
+    /// Warning. Only a PRESENT `iso` is LENGTH-gated. Routing the absent case
+    /// through `required_length_arg` would push `eval_named_arg`'s "missing
+    /// required geometry argument" Warning and break every bare call site.
+    ///
+    /// Deliberately a sibling of, not an edit to,
+    /// `compile_geometry_op_isosurface_bare_defaults_iso_zero_adaptive_false`:
+    /// that test locks the whole bare-op lowering (task #4999), this one locks
+    /// the D12 decision specifically, so a future reader retiring one does not
+    /// silently retire the other.
+    #[test]
+    fn compile_geometry_op_isosurface_absent_iso_stays_ungated_zero_default() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect("an absent `iso` must NOT drop the op (D12)");
+
+        match result {
+            reify_ir::GeometryOp::Surface { iso_level, .. } => assert_eq!(
+                iso_level, 0.0,
+                "an ABSENT `iso` keeps the deliberate un-gated 0.0 default (D12)"
+            ),
+            other => panic!("expected GeometryOp::Surface, got {other:?}"),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "absence is the normal expected shape — it must emit NO diagnostic, \
+             in particular no missing-arg Warning (D12); got: {diagnostics:?}"
+        );
+    }
+
+    /// REJECTION arm of Contract C at `isosurface`'s `iso`. A PRESENT but
+    /// non-LENGTH isovalue must DROP the op with exactly one `Severity::Error`
+    /// carrying `DiagnosticCode::DimensionedArgRejected` — never be read as a
+    /// bare SI-metre count.
+    ///
+    /// THE DEFECT THIS PINS, measured on the pre-change tree (task 5755 pre-1):
+    /// `iso` = `literal_f64(5.0)` returned
+    /// `Ok(Surface { iso_level: 5.0, .. })` with ZERO diagnostics — a bare `5`
+    /// silently read as 5 SI **metres**, 1000x a plausible 5 mm isovalue. That
+    /// is the same class of silent-1000x defect task 5214 fixed at the pattern
+    /// spacings; `isosurface` has no compile-layer slot in `builtin_arg_slots`,
+    /// so the eval-layer gate is the ONLY one and this path was wide open.
+    ///
+    /// Rows mirror the β sibling
+    /// `eval_named_arg_length_rejection_is_error_with_dimensioned_arg_rejected_code`
+    /// so the two read as one table, PLUS a `Bool` row that pins the
+    /// replacement for the old bespoke "non-numeric — defaulting to 0.0"
+    /// Warning (measured pre-change: Bool gave `Ok(iso_level: 0.0)` + one
+    /// non-Error Warning; it must now be a typed Error naming the actual type).
+    ///
+    /// The positive control that keeps this from passing vacuously is the
+    /// already-shipped
+    /// `compile_geometry_op_isosurface_named_args_decode_iso_metres_and_adaptive_true`
+    /// (`literal_length(0.005)` -> 0.005, zero diagnostics), which passes both
+    /// before and after and is deliberately NOT duplicated here.
+    ///
+    /// RED until step-4 routes a PRESENT `iso` through `required_length_arg`.
+    #[test]
+    fn compile_geometry_op_isosurface_non_length_iso_is_rejected_not_read_as_metres() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, iso_expr) in [
+            (
+                "bare Int",
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Int(5),
+                    reify_core::Type::dimensionless_scalar(),
+                ),
+            ),
+            ("bare Real", literal_f64(5.0)),
+            (
+                "wrong-dimension Scalar (MASS)",
+                literal_scalar(5.0, reify_core::DimensionVector::MASS),
+            ),
+            ("Bool", literal_bool(true)),
+        ] {
+            let op = CompiledGeometryOp::Isosurface {
+                grid: GeomRef::Step(0),
+                args: vec![("iso".to_string(), iso_expr)],
+            };
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "{label}: a non-Length `iso` must DROP the op so a bare 5 can never \
+                 reach the kernel as 5 SI metres; got: {result:?}"
+            );
+            assert!(
+                !matches!(result, Ok(reify_ir::GeometryOp::Surface { .. })),
+                "{label}: no GeometryOp::Surface may be produced; got: {result:?}"
+            );
+
+            let rejections: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.message.contains("argument expects Length"))
+                .collect();
+            assert_eq!(
+                rejections.len(),
+                1,
+                "{label}: exactly ONE rejection diagnostic (no cascade); got: {diagnostics:?}"
+            );
+            let rej = rejections[0];
+
+            assert_eq!(
+                rej.severity,
+                reify_core::Severity::Error,
+                "{label}: the rejection must be Error severity so `reify eval` exits \
+                 nonzero through the pure severity gate; got: {rej:?}"
+            );
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{label}: the rejection must carry the shared runtime code; got: {rej:?}"
+            );
+
+            // Wording is inherited from `ArgRejection::message` via
+            // `required_length_arg` — the SINGLE owner (D9). No forked text.
+            for needle in [
+                "isosurface",
+                "iso",
+                "expects Length",
+                "pass a dimensioned length such as `5mm`",
+            ] {
+                assert!(
+                    rej.message.contains(needle),
+                    "{label}: rejection message must contain {needle:?}; got: {:?}",
+                    rej.message
+                );
+            }
+        }
+    }
+
+    /// UNRESOLVED arm of Contract C at `isosurface`'s `iso`: an `Undef` isovalue
+    /// drops the op with the DISTINCT unresolved wording and leaves the value
+    /// layer QUIET (decision D10 / INV-SF-1). During solver iteration an Undef
+    /// cell is expected transient state — asserting "non-Length" for it would be
+    /// actively wrong, and emitting a diagnostic would spam every iteration.
+    ///
+    /// Exact equality on the message, same shape as
+    /// `pattern_kind_label_in_diagnostics_is_the_dsl_builtin_name`: this wording
+    /// is owned solely by `required_length_arg`, so pinning it here proves the
+    /// delegation rather than a forked local message. (Asserted on the `Err`
+    /// string via `expect_err` because `reify_ir::GeometryOp` is not `PartialEq`.)
+    ///
+    /// RED until step-4. Measured pre-change (task 5755 pre-1): an Undef `iso`
+    /// returned `Ok(Surface { iso_level: 0.0, .. })` plus one non-Error
+    /// "non-numeric value — defaulting to 0.0" Warning — i.e. the op was BUILT
+    /// with a wrong isovalue AND the value layer was loud.
+    #[test]
+    fn compile_geometry_op_isosurface_undef_iso_is_quiet_and_unresolved() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![("iso".to_string(), literal_undef())],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let err = result.expect_err("an Undef `iso` must drop the op");
+        assert_eq!(
+            err, "argument 'iso' for isosurface is unresolved (Undef)",
+            "an Undef `iso` gets the DISTINCT unresolved wording owned by \
+             `required_length_arg`, not \"missing or non-Length\""
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "the value layer stays QUIET for an unresolved cell (D10 / INV-SF-1); \
+             got: {diagnostics:?}"
+        );
+    }
+
+    /// BOUNDARY row the shipped positive control does not cover: an explicitly
+    /// dimensioned ZERO isovalue (`iso: 0mm`) must be ACCEPTED, with
+    /// `iso_level == 0.0` and zero diagnostics.
+    ///
+    /// This is the one input where an over-strict gate would regress a SHIPPED
+    /// e2e — `crates/reify-eval/tests/isosurface_iso_option_e2e.rs` builds with
+    /// `iso: 0mm`. `0mm` retains its LENGTH dimension
+    /// (`reify-compiler`'s expr lowering builds `Value::Scalar { si_value: 0.0,
+    /// dimension }`), so it is a finite LENGTH `Scalar` and Accepted — it is NOT
+    /// the same thing as an ABSENT `iso`, whose 0.0 comes from the un-gated D12
+    /// default. This test is what separates those two paths; without it, a gate
+    /// that rejected zero (or one that silently treated `0mm` as "absent") would
+    /// look correct at the unit layer.
+    #[test]
+    fn compile_geometry_op_isosurface_explicit_zero_length_iso_is_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![("iso".to_string(), literal_length(0.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect("an explicit `iso: 0mm` is a finite LENGTH Scalar and must be Accepted");
+
+        match result {
+            reify_ir::GeometryOp::Surface { iso_level, .. } => assert_eq!(
+                iso_level, 0.0,
+                "`iso: 0mm` decodes to exactly 0.0 SI metres"
+            ),
+            other => panic!("expected GeometryOp::Surface, got {other:?}"),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "an Accepted LENGTH Scalar pushes ZERO diagnostics; got: {diagnostics:?}"
+        );
+    }
+
     /// Helper: build a CompiledExpr literal from a Value::Transform
     /// (quaternion [w,x,y,z] and SI-metre translation [tx,ty,tz]).
     fn literal_transform(q: [f64; 4], t: [f64; 3]) -> reify_ir::CompiledExpr {
