@@ -94,6 +94,18 @@ fn unconsumed(result: &reify_eval::EvalResult) -> Vec<&Diagnostic> {
 /// "Exactly one" is the #5014 aggregation rule: one diagnostic per objective
 /// *declaration* naming the FULL unconsumed set — never one per component, per
 /// trial, or per auto.
+///
+/// `cell` must be the FULLY-QUALIFIED `entity.member` id, and it is matched
+/// against the BACKTICKED rendering `objective_unconsumed_diagnostic` emits
+/// (`format!("`{id}`")` over a `ValueCellId`, whose `Display` is
+/// `entity.member`). Both halves of that are load-bearing rather than
+/// fastidious: a bare-substring `contains(cell)` over an unqualified member
+/// name is VACUOUS, because the message template unconditionally contains the
+/// words "auto param", "Add a constraint" and "attach", so short member names
+/// like `a` are present no matter which cell — or whether any cell — the
+/// diagnostic actually named. Requiring the backticks pins the assertion to the
+/// cell LIST specifically, not to prose that merely happens to contain the same
+/// letters.
 fn assert_one_unconsumed_error_naming(result: &reify_eval::EvalResult, cell: &str) {
     let found = unconsumed(result);
     assert_eq!(
@@ -116,8 +128,15 @@ fn assert_one_unconsumed_error_naming(result: &reify_eval::EvalResult, cell: &st
         diag.message
     );
     assert!(
-        diag.message.contains(cell),
-        "the message must name the unconsumed auto `{cell}`; got {:?}",
+        cell.contains('.'),
+        "pass the fully-qualified `entity.member` id, not a bare member name — \
+         an unqualified name makes this assertion vacuous; got {cell:?}"
+    );
+    let backticked = format!("`{cell}`");
+    assert!(
+        diag.message.contains(&backticked),
+        "the message must name the unconsumed auto as {backticked} in its cell \
+         list; got {:?}",
         diag.message
     );
 }
@@ -204,7 +223,7 @@ structure DicMinUnconstrained {
 #[test]
 fn unconstrained_objective_reports_unconsumed() {
     let result = eval_with_solver(UNCONSTRAINED);
-    assert_one_unconsumed_error_naming(&result, "a");
+    assert_one_unconsumed_error_naming(&result, "DicMinUnconstrained.a");
 }
 
 /// The diagnostic is additive: `a`'s pre-existing undef classification is the
