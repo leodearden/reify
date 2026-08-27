@@ -33,3 +33,104 @@
 //! inputs, plus one cheap end-to-end sweep over a 3-file synthetic corpus.
 //! The pipeline is therefore regression-guarded on every gate run at near-zero
 //! cost, without the walk itself ever running there.
+
+use std::path::PathBuf;
+
+/// Absolute path to the workspace root, resolved at compile time from this
+/// crate's manifest directory (two levels up).
+///
+/// Same rooting idiom as `examples_smoke.rs`'s `EXAMPLES_DIR`, pointed one
+/// level higher: β's whole point is that the sweep is NOT examples-scoped.
+const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
+// ─── step 1/2: corpus enumeration ────────────────────────────────────────────
+
+#[test]
+fn tracked_ri_corpus_is_non_empty_and_covers_the_whole_tracked_tree() {
+    let corpus = tracked_ri_corpus();
+    // A FLOOR, never an exact count: 660 measured at plan time and the corpus
+    // legitimately grows. An exact assertion would go red on every new `.ri`.
+    assert!(
+        corpus.len() >= 600,
+        "tracked .ri corpus must have >= 600 entries (660 measured 2026-08-27), got {}",
+        corpus.len()
+    );
+}
+
+#[test]
+fn tracked_ri_corpus_entries_all_end_in_dot_ri() {
+    let corpus = tracked_ri_corpus();
+    let bad: Vec<&String> = corpus.iter().filter(|p| !p.ends_with(".ri")).collect();
+    assert!(
+        bad.is_empty(),
+        "every corpus entry must end in '.ri', got {} that do not: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(5)]
+    );
+}
+
+#[test]
+fn tracked_ri_corpus_is_sorted_and_deduplicated() {
+    // Determinism: the artifact must be byte-reproducible, which requires the
+    // enumeration itself to be a total order with no repeats.
+    let corpus = tracked_ri_corpus();
+    let mut expected = corpus.clone();
+    expected.sort();
+    expected.dedup();
+    assert_eq!(
+        corpus, expected,
+        "tracked_ri_corpus must return a sorted, deduplicated list"
+    );
+}
+
+#[test]
+fn tracked_ri_corpus_entries_all_resolve_to_existing_files() {
+    let root = PathBuf::from(WORKSPACE_ROOT);
+    let corpus = tracked_ri_corpus();
+    let missing: Vec<&String> = corpus
+        .iter()
+        .filter(|rel| !root.join(rel).is_file())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "every corpus entry must resolve to an existing file under the workspace \
+         root, got {} that do not: {:?}",
+        missing.len(),
+        &missing[..missing.len().min(5)]
+    );
+}
+
+#[test]
+fn tracked_ri_corpus_reaches_outside_examples() {
+    // The landed `discover_ri_files()` walk is rooted at `examples/` and would
+    // miss ~399 of the 660 tracked files. Widening the root IS β.
+    let corpus = tracked_ri_corpus();
+    assert!(
+        corpus
+            .iter()
+            .any(|p| p.starts_with("crates/reify-compiler/stdlib/")),
+        "corpus must include stdlib members (β is not examples-scoped); \
+         first 5 entries: {:?}",
+        &corpus[..corpus.len().min(5)]
+    );
+    assert!(
+        corpus.iter().any(|p| p.starts_with("examples/")),
+        "corpus must still include the examples/ tree"
+    );
+    let non_examples = corpus.iter().filter(|p| !p.starts_with("examples/")).count();
+    assert!(
+        non_examples >= 300,
+        "the non-examples half is the point of β (399 measured at plan time), got {non_examples}"
+    );
+}
+
+#[test]
+fn tracked_ri_corpus_paths_are_repo_relative_forward_slash() {
+    let corpus = tracked_ri_corpus();
+    for p in &corpus {
+        assert!(
+            !p.starts_with('/') && !p.starts_with("./") && !p.contains('\\'),
+            "corpus entries must be repo-relative forward-slash paths, got {p:?}"
+        );
+    }
+}
