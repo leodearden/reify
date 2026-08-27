@@ -846,3 +846,152 @@ fn survey_site_carries_file_and_resolved_line() {
     // conservative default is the unattributable bucket, never `NonFea`.
     assert_eq!(site.owner, Owner::Unknown);
 }
+
+// ─── step 7/8: D9 owner classification ───────────────────────────────────────
+
+#[test]
+fn scan_structure_defs_reads_only_the_listed_modules() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("fea.ri"),
+        "module std.fea\nstructure def Alpha { param a : Real }\nstructure def Beta { }\n",
+    )
+    .expect("write fea.ri");
+    std::fs::write(
+        dir.path().join("joints.ri"),
+        "module std.joints\nstructure def Gamma { }\n",
+    )
+    .expect("write joints.ri");
+
+    let defs = scan_structure_defs(dir.path(), &["fea"]);
+    assert_eq!(
+        defs.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["Alpha", "Beta"],
+        "only the LISTED module's defs may enter the FEA partition"
+    );
+    assert!(
+        !defs.contains("Gamma"),
+        "an unlisted module's defs must not be classified as FEA-owned"
+    );
+}
+
+#[test]
+fn scan_structure_defs_ignores_structure_def_prose_inside_comments() {
+    // Measured, not hypothetical: `stdlib/fea_multi_case.ri` line 292 contains
+    // the comment "// is a strict relaxation for PointLoad (its structure def
+    // already declares". A naive substring scan harvests `already` as a def
+    // name and would mis-classify any site whose def is literally named that.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("fea.ri"),
+        "module std.fea\n\
+         // its structure def already declares point and force\n\
+         structure def Real1 { }\n\
+             structure def Indented { }\n",
+    )
+    .expect("write");
+
+    let defs = scan_structure_defs(dir.path(), &["fea"]);
+    assert!(
+        !defs.contains("already"),
+        "prose inside a comment must not enter the def set, got {defs:?}"
+    );
+    assert!(defs.contains("Real1"), "a real column-0 def must be found");
+}
+
+#[test]
+#[should_panic(expected = "fea_nonexistent")]
+fn scan_structure_defs_panics_when_a_listed_module_is_missing() {
+    // A stdlib rename must not silently EMPTY the do-not-touch partition and
+    // mis-classify every deferred site as touchable. Fail loud instead.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _ = scan_structure_defs(dir.path(), &["fea_nonexistent"]);
+}
+
+#[test]
+fn fea_owned_defs_scans_the_real_stdlib() {
+    let defs = fea_owned_defs();
+    assert!(!defs.is_empty(), "the real FEA stdlib declares structure defs");
+    for expected in ["PointLoad", "FixedSupport", "LoadCase", "PressureLoad"] {
+        assert!(
+            defs.contains(expected),
+            "'{expected}' is declared in stdlib/fea_multi_case.ri and must be FEA-owned; got {} defs",
+            defs.len()
+        );
+    }
+    assert!(
+        !defs.contains("already"),
+        "the comment-prose false positive must not reach the real scan either"
+    );
+}
+
+#[test]
+fn d9_owner_classifies_fea_non_fea_and_unattributed() {
+    let fea = fea_owned_defs();
+
+    assert_eq!(
+        d9_owner(Some("PointLoad"), fea),
+        Owner::FeaDeferredToV06,
+        "D9: FEA defs are call-site-only; field-type flips stay v0.6-owned"
+    );
+    assert_eq!(
+        d9_owner(Some("NotAnFeaStructureDefAnywhere"), fea),
+        Owner::NonFea,
+        "a def that is not FEA-owned falls under D9's per-case judgment"
+    );
+    assert_eq!(
+        d9_owner(None, fea),
+        Owner::Unknown,
+        "an unattributable site (the sub `=` per-arg anchor) must NEVER silently \
+         default into the touchable bucket"
+    );
+}
+
+#[test]
+fn remedy_hint_is_a_pure_deterministic_function_of_the_type_pair() {
+    // Same input -> same output, no I/O, no ordering dependence.
+    let a = remedy_hint(Some("Selector(Face)"), Some("String"));
+    let b = remedy_hint(Some("Selector(Face)"), Some("String"));
+    assert_eq!(a, b, "remedy_hint must be deterministic");
+
+    // Distinct recognised pairs map to DISTINCT fixed strings.
+    let string_at_selector = remedy_hint(Some("Selector(Face)"), Some("String"));
+    let pose_at_selector = remedy_hint(Some("Selector(Face)"), Some("Frame(3)"));
+    let bare_at_dimensioned = remedy_hint(Some("Scalar[m·s^-1]"), Some("Real"));
+    assert_ne!(string_at_selector, pose_at_selector);
+    assert_ne!(string_at_selector, bare_at_dimensioned);
+    assert_ne!(pose_at_selector, bare_at_dimensioned);
+    for h in [&string_at_selector, &pose_at_selector, &bare_at_dimensioned] {
+        assert!(!h.is_empty(), "a recognised pair must produce a hint");
+    }
+
+    // An unrecognised pair, and a pair with a missing half, get a NEUTRAL
+    // string — never an invented remedy.
+    let neutral = remedy_hint(None, None);
+    assert_eq!(remedy_hint(Some("Widget"), Some("Gadget")), neutral);
+    assert_eq!(remedy_hint(Some("Selector(Face)"), None), neutral);
+    assert_eq!(remedy_hint(None, Some("String")), neutral);
+    assert_ne!(
+        neutral, string_at_selector,
+        "the neutral string must be distinguishable from a real hint"
+    );
+}
+
+#[test]
+fn remedy_hint_never_rules_between_d9_class_1_and_class_2() {
+    // The PRD assigns "call-site bug vs wrong declared field type" to γ as a
+    // per-case judgment. β emits an ADVISORY hint; it must not claim a verdict.
+    for (e, f) in [
+        (Some("Selector(Face)"), Some("String")),
+        (Some("Selector(Face)"), Some("Frame(3)")),
+        (Some("Scalar[m·s^-1]"), Some("Real")),
+        (Some("String"), Some("Int")),
+        (None, None),
+    ] {
+        let h = remedy_hint(e, f);
+        assert!(
+            !h.contains("must ") && !h.contains("the bug is"),
+            "the hint is advisory, not a ruling; got {h:?} for ({e:?}, {f:?})"
+        );
+    }
+}
