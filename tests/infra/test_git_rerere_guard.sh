@@ -1112,6 +1112,140 @@ assert "(g-i-c) a value armed LAST is still reported -> check exits non-zero" \
 assert "(g-i-c) ...naming the offending worktree" \
     bash -c "bash '$GUARD' check '$GIC_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtA'\""
 
+# ── (g-j) AN UNRESOLVABLE INCLUDE CHAIN MUST BE UNKNOWN, NEVER CLEAN ──────────
+# Following an include means the swept read can now FAIL on a file the guard
+# never used to open — and that read is wrapped in `2>/dev/null || true`, which
+# converts a failure into empty output, i.e. into the verdict "no rerere keys
+# here, clean".  That is the very silent-false-clean class this whole round is
+# closing, so it must not be re-opened at a new spot in the same round.  The
+# failure mode does not exist before --includes: without it git never touches the
+# included file at all.
+#
+# MEASURED on git 2.43.0, `git config --file <cfg> --includes --get-regexp ...`:
+#   missing include target   -> exit 0 (or 1 when nothing else matches), silently
+#                               ignored, direct keys still returned  [BENIGN]
+#   CIRCULAR include chain   -> exit 128, "exceeded maximum include depth (10)",
+#                               NO stdout
+#   UNREADABLE include target-> exit 128, "unable to access ...: Permission
+#                               denied", NO stdout
+echo ""
+echo "--- (g-j) an unresolvable include chain is reported UNKNOWN, not clean ---"
+
+read -r GJ_REPO GJ_A GJ_B <<< "$(make_wt_repo)"
+GJ_A_GITDIR="$(git -C "$GJ_A" rev-parse --absolute-git-dir)"
+
+assert "(g-j) negative control: nothing planted -> check exits 0" \
+    bash "$GUARD" check "$GJ_REPO"
+
+# A genuine cycle: config.worktree -> loop.cfg -> config.worktree -> ...
+printf '[include]\n\tpath = loop.cfg\n' > "$GJ_A_GITDIR/config.worktree"
+printf '[include]\n\tpath = config.worktree\n' > "$GJ_A_GITDIR/loop.cfg"
+
+# (g-j-a) FIXTURE LIVENESS.  The scenario is only meaningful if git really does
+# fail here — a version that quietly tolerated the cycle would make every
+# assertion below pass for the wrong reason.
+assert "(g-j-a) fixture: the swept read really FAILS on a circular chain" \
+    bash -c "! git config --file '$GJ_A_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.(enabled|autoupdate)\$' >/dev/null 2>&1"
+
+assert "(g-j-a) fixture: ...emitting NOTHING on stdout, so it looks exactly like 'clean'" \
+    bash -c "[ -z \"\$(git config --file '$GJ_A_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.(enabled|autoupdate)\$' 2>/dev/null)\" ]"
+
+# (g-j-b) The lane is reported UNKNOWN, in the same vocabulary the sweep already
+# uses for a config.worktree it cannot read at all.
+assert "(g-j-b) check WARNs, naming the config path" \
+    bash -c "bash '$GUARD' check '$GJ_REPO' 2>&1 >/dev/null | grep -qF 'cannot read $GJ_A_GITDIR/config.worktree'"
+
+assert "(g-j-b) ...and the worktree it belongs to" \
+    bash -c "bash '$GUARD' check '$GJ_REPO' 2>&1 >/dev/null | grep -q \"skipping worktree '.*wtA'\""
+
+assert "(g-j-b) ...reporting that lane as UNKNOWN rather than verified safe" \
+    bash -c "bash '$GUARD' check '$GJ_REPO' 2>&1 >/dev/null | grep -qF 'UNKNOWN, not verified safe'"
+
+# UNKNOWN is NOT armed: `arm` writes --local and cannot fix a lane the guard
+# merely fails to read, so folding this into the armed verdict would strand the
+# store on a permanent failure — the trap the extensions.worktreeConfig gate
+# already avoids.
+assert "(g-j-b) an unverifiable lane is UNKNOWN, not ARMED — check still exits 0" \
+    bash "$GUARD" check "$GJ_REPO"
+
+assert "(g-j-b) ...and no ARMED line is printed for it" \
+    bash -c "! bash '$GUARD' check '$GJ_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtA'\""
+
+# (g-j-c) One broken lane must not abort the sweep and mask every LATER lane.
+# The glob is lexical, so wtA (broken) is traversed before wtB (genuinely armed).
+git -C "$GJ_B" config --worktree rerere.enabled true
+
+assert "(g-j-c) the later ARMED worktree is still reported (the sweep continued)" \
+    bash -c "bash '$GUARD' check '$GJ_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtB'\""
+
+assert "(g-j-c) ...and the WARNING precedes it, so the skip really was traversed past" \
+    bash -c "bash '$GUARD' check '$GJ_REPO' 2>&1 >/dev/null | awk '/cannot read/{w=NR} /ARMED: worktree/{a=NR} END{exit !(w && a && w < a)}'"
+
+assert "(g-j-c) ...and the verdict is non-zero because of that armed lane" \
+    bash -c "! bash '$GUARD' check '$GJ_REPO' >/dev/null 2>&1"
+
+# (g-j-d) NOISE FLOOR.  A missing include target is BENIGN — git ignores it — and
+# an include contributing no rerere key is simply clean.  Neither may produce a
+# warning, or the guard cries wolf on ordinary configs and operators learn to
+# ignore it.
+read -r GJD_REPO GJD_A GJD_B <<< "$(make_wt_repo)"
+GJD_A_GITDIR="$(git -C "$GJD_A" rev-parse --absolute-git-dir)"
+GJD_B_GITDIR="$(git -C "$GJD_B" rev-parse --absolute-git-dir)"
+
+printf '[include]\n\tpath = absent.cfg\n' > "$GJD_A_GITDIR/config.worktree"
+printf '[include]\n\tpath = irrelevant.cfg\n' > "$GJD_B_GITDIR/config.worktree"
+printf '[core]\n\tbare = false\n' > "$GJD_B_GITDIR/irrelevant.cfg"
+
+# Preconditions MEASURED: git tolerates both, exiting 1 (the ordinary "no
+# matching key" answer) rather than 128.
+assert "(g-j-d) fixture: a MISSING include target is tolerated — the read exits 1, not 128" \
+    bash -c "git config --file '$GJD_A_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.(enabled|autoupdate)\$' >/dev/null 2>&1; [ \$? -eq 1 ]"
+
+assert "(g-j-d) fixture: an irrelevant include is likewise tolerated — exit 1" \
+    bash -c "git config --file '$GJD_B_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.(enabled|autoupdate)\$' >/dev/null 2>&1; [ \$? -eq 1 ]"
+
+assert "(g-j-d) neither shape is armed -> check exits 0" \
+    bash "$GUARD" check "$GJD_REPO"
+
+assert "(g-j-d) ...and neither produces a WARNING" \
+    bash -c "! bash '$GUARD' check '$GJD_REPO' 2>&1 >/dev/null | grep -q 'WARNING'"
+
+# (g-j-e) UNREADABLE include target — the other exit-128 shape.  chmod 000 is
+# meaningless as root, same as (g-g)/(h-g).  Permissions are restored INLINE, and
+# the suite's cleanup chmods before `rm -rf` so an assert dying mid-block cannot
+# leave a fixture the sweep in cleanup is unable to reclaim.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: (g-j-e) running as root — chmod 000 does not deny root reads"
+else
+    read -r GJU_REPO GJU_A GJU_B <<< "$(make_wt_repo)"
+    GJU_A_GITDIR="$(git -C "$GJU_A" rev-parse --absolute-git-dir)"
+
+    assert "(g-j-e) negative control: nothing planted -> check exits 0" \
+        bash "$GUARD" check "$GJU_REPO"
+
+    printf '[include]\n\tpath = secret.cfg\n' > "$GJU_A_GITDIR/config.worktree"
+    printf '[rerere]\n\tenabled = true\n' > "$GJU_A_GITDIR/secret.cfg"
+    chmod 000 "$GJU_A_GITDIR/secret.cfg"
+
+    assert "(g-j-e) fixture: the config.worktree ITSELF is readable — only the target is not" \
+        bash -c "head -c1 '$GJU_A_GITDIR/config.worktree' >/dev/null 2>&1 && ! head -c1 '$GJU_A_GITDIR/secret.cfg' >/dev/null 2>&1"
+
+    assert "(g-j-e) fixture: the swept read really FAILS on an unreadable include target" \
+        bash -c "! git config --file '$GJU_A_GITDIR/config.worktree' --includes --bool --get-regexp '^rerere\.(enabled|autoupdate)\$' >/dev/null 2>&1"
+
+    assert "(g-j-e) check WARNs, naming the config path and the worktree" \
+        bash -c "bash '$GUARD' check '$GJU_REPO' 2>&1 >/dev/null | grep -qF 'cannot read $GJU_A_GITDIR/config.worktree'"
+
+    assert "(g-j-e) ...reporting that lane as UNKNOWN rather than verified safe" \
+        bash -c "bash '$GUARD' check '$GJU_REPO' 2>&1 >/dev/null | grep -qF 'UNKNOWN, not verified safe'"
+
+    assert "(g-j-e) ...and UNKNOWN is not ARMED, so check exits 0" \
+        bash "$GUARD" check "$GJU_REPO"
+
+    chmod 644 "$GJU_A_GITDIR/secret.cfg"
+    unset GJU_REPO GJU_A GJU_B GJU_A_GITDIR
+fi
+
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
 #     rr-cache.  The whole point is that every lane inherits one shared
