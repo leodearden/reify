@@ -348,6 +348,51 @@ fn canonical_copy_block_yields_the_four_transcribed_diagnostics() {
     }
 }
 
+/// A COSMETIC REFLOW of the block's column-alignment padding must NOT fail
+/// this gate.
+///
+/// The exemplar pads its declarations so the `:` and `=` line up
+/// (`let   theta`, `let   arc   :`). That padding is presentation: collapsing
+/// it changes no claim the block makes, provokes no different diagnostic, and
+/// leaves every compiler- and parser-comparison assertion in this module
+/// green. A maintainer who tidies it must not be told the doc is now false.
+///
+/// The reflow is DERIVED from the exemplar's own bytes rather than typed out
+/// here — typing the reflowed text would reintroduce exactly the literal this
+/// test exists to retire. The derivation also touches the `ANTI-PATTERN`
+/// sketch at lines 26-29, which is harmless: the scan starts strictly after
+/// the marker, so those lines were never entries.
+#[test]
+fn canonical_copy_identity_survives_a_cosmetic_reflow() {
+    let reflowed = ANGLE_CROSSINGS_EXEMPLAR
+        .lines()
+        .map(|line| match line.strip_prefix("//") {
+            Some(body)
+                if body.len() - body.trim_start().len() == DECLARATION_INDENT
+                    && !body.trim().starts_with(DIAGNOSTIC_ARROW) =>
+            {
+                format!(
+                    "//{}{}",
+                    " ".repeat(DECLARATION_INDENT),
+                    normalize_whitespace(body.trim())
+                )
+            }
+            _ => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_ne!(
+        reflowed, ANGLE_CROSSINGS_EXEMPLAR,
+        "the reflow must actually change the exemplar's text, or this test proves \
+         nothing. If examples/best_practices/angle_crossings.ri no longer pads its \
+         declarations for column alignment, perturb some other presentation detail \
+         instead — the point is that presentation is not load-bearing."
+    );
+
+    assert_transcribed_identities(&canonical_copy_entries_from(&reflowed));
+}
+
 /// Collapse every run of whitespace in `text` to a single space.
 ///
 /// Used to key fixtures and expectations off a declaration whose exemplar form
