@@ -23,3 +23,20 @@
 //! diff — `tests/infra/test_occt_gated_scope.sh` Test 3 asserts the declared
 //! set EQUALS the cargo-metadata-derived set in BOTH directions, so updating
 //! one file only is a merge-gate failure.
+//!
+//! # Carry-forward: `fixtures/_*/` is not a spec section — gamma must skip it
+//!
+//! A leading underscore on a directory directly under `fixtures/` marks it as
+//! **not a spec section**. Today there is exactly one: `fixtures/_placement-probe/`,
+//! whose resident is deliberately unparseable, carries no directive annotations,
+//! and is a deliberate violator of the corpus-cleanliness guard — it is the
+//! sentinel that keeps that guard's registered exclusion arm for this tree from
+//! going vacuous (pinned by `tests/fixture_tree.rs`), not a conformance fixture.
+//!
+//! This is an obligation on leaf gamma (#6761): the manifest generator and the
+//! directive/annotation harness walk `fixtures/**/*.ri`, so they MUST skip any
+//! `fixtures/_*/` directory rather than ingest its contents. Ingesting the probe
+//! would red on a directive-less, unparseable file, or force an ad-hoc special
+//! case discovered at implementation time. The rule is a naming convention, not
+//! a marker file, precisely so it costs a future wave nothing to add another
+//! non-section resident.

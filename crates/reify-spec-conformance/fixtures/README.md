@@ -13,6 +13,11 @@ pile at the tree root**. `crates/reify-spec-conformance/tests/fixture_tree.rs`
 pins that structurally: no loose `*.ri` at the root, at least one `*.ri`
 somewhere beneath. Non-`.ri` files at the root (this README) are fine.
 
+Nesting depth *below* the root is deliberately not pinned at β — a fixture at
+`fixtures/a/b/c.ri` passes today. Section-directory naming is leaf γ's (#6761),
+and its manifest generator is what will pin the per-section depth; guessing a
+depth before that decision exists would only have to be undone.
+
 Cite a fixture by **full repo-relative path** everywhere — probe sets,
 capability manifests, PRD prose, task `metadata.files`. Bare `fixtures/<name>.ri`
 and bare stems are unresolvable by machine. This is the same rule the placement
@@ -57,6 +62,22 @@ live violator, the exclusion arm in `corpus_no_bare_scalar.rs` can never go
 vacuous: delete the arm, narrow its path, or move this tree, and that guard
 reds immediately naming the probe file. Do not "fix" the probe.
 
+That property is itself machine-checked, not merely asked for here:
+`placement_probe_sentinel_still_violates_the_corpus_guard` in
+`crates/reify-spec-conformance/tests/fixture_tree.rs` reads this file and
+re-runs a mirror of the guard's own predicate over it, so migrating the bare
+`Scalar` annotation to `Length` — the plausible drive-by cleanup this section's
+prose alone could not stop — reds immediately with the reason. It is the one
+place any tracked `.rs` names a resident of this tree by basename, and it is
+allowed to precisely because the probe is a sentinel rather than a conformance
+fixture.
+
+The leading `_` is a rule with a consumer, not decoration: leaf γ's (#6761)
+manifest generator and directive harness walk `fixtures/**/*.ri` and **must
+skip `fixtures/_*/`**, or they will ingest a directive-less unparseable file.
+That obligation is carried forward in `crates/reify-spec-conformance/src/lib.rs`
+so it travels with the code γ edits.
+
 Section-directory naming (`s09_2` vs `section-09-02` vs `09.2`) is deliberately
 **not** decided here — it belongs to leaf γ (#6761), whose manifest generator
 must parse it, and leaf η (#6765), the first real §9.2 wave.
@@ -77,7 +98,7 @@ tree was run from a clean worktree:
 | Command | Verdict |
 |---|---|
 | `cargo build -p reify-spec-conformance` | Finished dev profile, exit 0 |
-| `cargo test -p reify-spec-conformance --test fixture_tree` | ok. 3 passed; 0 failed |
+| `cargo test -p reify-spec-conformance --test fixture_tree` | ok. 4 passed; 0 failed |
 | `cargo test -p reify-cli --test harness_cli corpus_no_bare_scalar::` | ok. 26 passed; 0 failed *(the headline observation)* |
 | `cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::` | ok. 9 passed; 0 failed (walks `examples/` only) |
 | `cargo test -p reify-test-support --test ignore_reason_hygiene` | ok. 1 passed; 0 failed (repo-wide over `*.rs`; nothing here carries `#[ignore]`) |
