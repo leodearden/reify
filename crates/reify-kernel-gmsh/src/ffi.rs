@@ -17,6 +17,23 @@
 //! returns into a `GeometryError::OperationFailed` annotated with the
 //! function name, the `ierr` value, and the message extracted from
 //! `gmshLoggerGetLastError`.
+//!
+//! # Diagnostics
+//!
+//! Beyond the lifecycle/mesh-I/O surface above, this module also binds two
+//! diagnostic-only surfaces: the gmsh logger CAPTURE family
+//! ([`logger_start`]/[`logger_get`]/[`logger_stop`]) and
+//! [`get_element_types`], a dim-scoped element-type census. Both exist for
+//! debugging gmsh misbehaviour from Rust, not for production control flow —
+//! they are deliberately test-only consumers (see the `// G-allow:` markers
+//! on each wrapper, which keep a future dead-code sweep from deleting them).
+//!
+//! Concrete precedent: diagnosing #6200 (`classify_surfaces` at exactly 90°
+//! finding 2 model surfaces instead of 6, HXT building 206 tets while the
+//! model retained only 91) required hand-declaring these same externs in a
+//! throwaway integration test, which was then deleted. #6205 makes them
+//! permanent so the next investigation starts from a bound API instead of
+//! re-declaring externs from scratch.
 
 #![allow(non_snake_case, non_camel_case_types)]
 
