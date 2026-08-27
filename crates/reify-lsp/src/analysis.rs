@@ -865,11 +865,99 @@ pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> Sou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::DimensionVector;
+    use reify_core::{DiagnosticCode, DimensionVector, Severity};
+    use std::collections::HashSet;
     use tower_lsp::lsp_types::Url;
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
+    }
+
+    /// BT8 forward (task #6798, PRD `driver-contract-implementation.md`
+    /// leaf pi): `AnalysisContext::from_parsed` — the third and last LSP
+    /// production compile site — must agree with `reify check`'s
+    /// real-checker verdict on a CONSTANT `auto:` constraint, not the
+    /// compile-time stub's. Reuses
+    /// [`crate::diagnostics::BT8_CONSTANT_CONSTRAINT_SRC`] rather than
+    /// duplicating the fixture, so the two forward tests cannot drift
+    /// apart.
+    ///
+    /// Anti-vacuity guard first: assert the stub and the real checker
+    /// still genuinely diverge on the fixture before asserting
+    /// `AnalysisContext` matches the real one — mirrors the sibling guard
+    /// in
+    /// `diagnostics::tests::lsp_constant_constraint_agrees_with_reify_check_real_checker`.
+    /// If a future compiler change collapses AMBIGUOUS/NO_CANDIDATE into
+    /// the same verdict, this guard fails loudly instead of the
+    /// `AnalysisContext` assertion below passing vacuously.
+    ///
+    /// Asserts against the typed `reify_core::DiagnosticCode` (not the LSP
+    /// wire string) because `AnalysisContext` holds the raw
+    /// `CompiledModule`, one layer below `convert::convert_diagnostic`.
+    #[test]
+    fn analysis_context_uses_real_constraint_checker() {
+        let src = crate::diagnostics::BT8_CONSTANT_CONSTRAINT_SRC;
+        let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
+
+        // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
+        let stub = reify_compiler::compile_with_stdlib(&parsed);
+        let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+        let stub_codes: HashSet<DiagnosticCode> =
+            stub.diagnostics.iter().filter_map(|d| d.code).collect();
+        let real_codes: HashSet<DiagnosticCode> =
+            real.diagnostics.iter().filter_map(|d| d.code).collect();
+        assert!(
+            stub_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
+            "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
+             reproducing the stub's AutoTypeParamAmbiguous verdict — the \
+             fixture is no longer divergent and this test would pass \
+             vacuously. stub diagnostics: {:#?}",
+            stub.diagnostics
+        );
+        assert!(
+            real_codes.contains(&DiagnosticCode::AutoTypeParamNoCandidate)
+                && !real_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
+            "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
+             reproducing the real checker's AutoTypeParamNoCandidate \
+             verdict — the fixture is no longer divergent and this test \
+             would pass vacuously. real-checker diagnostics: {:#?}",
+            real.diagnostics
+        );
+        assert_ne!(
+            stub_codes, real_codes,
+            "anti-vacuity guard: stub and real-checker DiagnosticCode sets \
+             must differ on BT8_CONSTANT_CONSTRAINT_SRC — a constant \
+             constraint is the one compile-time shape where they diverge; \
+             stub: {:#?}, real: {:#?}",
+            stub.diagnostics, real.diagnostics
+        );
+
+        // --- AnalysisContext (the site under test) ---
+        let ctx = AnalysisContext::new(src, &test_uri());
+        let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.code, d.message.as_str()))
+            .collect();
+        let has_no_candidate = ctx.compiled.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)
+        });
+        let has_ambiguous = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous));
+        assert!(
+            has_no_candidate && !has_ambiguous,
+            "BT8 forward (AnalysisContext::from_parsed): must agree with \
+             `reify check`'s real-checker AutoTypeParamNoCandidate verdict \
+             on a constant constraint, not the compile-time stub's \
+             AutoTypeParamAmbiguous; got (severity, code, message) \
+             triples: {:#?}",
+            observed
+        );
     }
 
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
