@@ -28,18 +28,17 @@ ureq = { version = "2.10", default-features = false, features = ["json"] }
 # WHICH publics, why they live BELOW the edge rather than here, and the open
 # question about the shape of the arrangement are argued once in `sanitize`'s
 # doc comment (crates/reify-test-support/src/git_env.rs).
-# This comment deliberately does NOT restate that list. It carried its own copy
-# until task 5657 added a second reach while Cargo.toml sat outside that task's
-# locked scope, leaving the copy naming only the first — and nothing pins the
-# sites that mention this edge to each other. One destination means adding or
-# retiring a reach is one edit rather than several coordinated ones.
+# This comment deliberately keeps no copy of that list — it carried one, and that
+# copy went stale. One destination means adding or retiring a reach is one edit
+# rather than several coordinated ones.
 # Acyclic: reify-test-support depends on reify-ast/core/ir/syntax/compiler —
 # none of which depend on reify-audit. PRD §4/§8.3/§10 sanction this direction.
-# Build-graph note: the transitive compiler-stack deps inflate the audit binary's
-# build graph. This cost was weighed against extracting extract_ignore_reason into
-# a new dep-free leaf crate; the alternative was declined because the function is
-# ~15 lines, a new crate adds more ceremony than it saves, and the PRD explicitly
-# chose reuse. Re-evaluate if reify-test-support's deps grow significantly.
+# Build-graph note: this edge pulls reify-test-support's transitive compiler-stack
+# deps into the audit binary's build graph — an accepted cost, not an unnoticed
+# one. Whether a dep-free leaf crate is the right shape instead is an OPEN
+# question, tracked by the follow-up ticket named at the destination above; read
+# this arrangement's persistence as undecided there, not as decided here.
+# Re-evaluate if reify-test-support's deps grow significantly.
 reify-test-support.workspace = true
 
 [[bin]]

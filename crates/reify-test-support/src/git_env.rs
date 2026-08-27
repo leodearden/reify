@@ -135,24 +135,15 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 ///   original reason `reify-audit` carries this crate as a normal dependency
 ///   rather than a dev-dependency.
 ///
-/// Items, deliberately, and not a census of their call sites — such a census
-/// rots the moment one is renamed while still reading as authoritative, which
-/// is why `reify_audit::git_env`'s own module doc tells a reader to re-run the
-/// sweep rather than trust a list written down there.
+/// Items, not a census of their call sites: a census rots on the next rename
+/// while still reading as authoritative — see `reify_audit::git_env`'s module
+/// doc, which tells a reader to re-run the sweep instead.
 ///
-/// This two-item list lives HERE and nowhere else. The three other sites that
-/// describe the arrangement state only the FACT that some of this crate's
-/// publics are on that production path, and point back here for which ones and
-/// why: the script's comment above the exclusion, which now records it as an
-/// accepted blind spot rather than an assumed-safe one, and both manifests
-/// (`crates/reify-audit`'s `[dependencies]` entry and this crate's package
-/// note). A reader arriving from any of them has reached the full account and
-/// needs nothing further.
-/// Single-sourcing it is not fastidiousness: nothing pins those sites to each
-/// other the way `crate::orphan_audit`'s `EXCLUDE_CRATES` is pinned across the
-/// language boundary, and the reify-audit copy had already drifted once — task
-/// 5657 added the second reach while that manifest sat outside its locked
-/// scope, leaving the comment naming only the first.
+/// Single-sourced here: the three sites that describe this arrangement — the
+/// script's comment above the exclusion and both manifests — state only the
+/// fact and point back, keeping no copy. `crates/reify-audit`'s manifest kept
+/// one once and it went stale, when task 5657 added the second item without
+/// touching it.
 ///
 /// Whether the arrangement warrants a dep-free `reify-git-env` leaf crate the
 /// sweep does cover, or a narrower `EXCLUDE_CRATES`, is tracked as follow-up
