@@ -287,13 +287,16 @@ fn edit_height_inrange_still_satisfied() {
 
     // Positive presence check: all constraints should still be evaluated (not silently dropped).
     // Height does not touch the `determined(origin)` guard, so no constraints are excluded —
-    // the full assembly count (measured as 49) must be present.
-    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
+    // the full assembly count (measured as 51) must be present.
+    // Floor is 49: 51 total minus the 2 guarded constraints excluded by esc-295-78.
+    // #5417 raised the Assembly total from 49 to 51: `examples/integration_full_v01.ri`
+    // gained two bracketing constraints on `load_free` so its `minimize load_free`
+    // objective is genuinely consumed rather than structurally inert.
     assert!(
-        check_result.constraint_results.len() >= 47,
-        "expected >= 47 constraint results after height=400mm, got {} \
+        check_result.constraint_results.len() >= 49,
+        "expected >= 49 constraint results after height=400mm, got {} \
          (constraints may have been silently dropped; \
-          floor is 49 total minus 2 esc-295-78-guarded constraints = 47)",
+          floor is 51 total minus 2 esc-295-78-guarded constraints = 49)",
         check_result.constraint_results.len()
     );
 
@@ -395,12 +398,15 @@ fn edit_height_below_width_triggers_ordering_violation() {
         .edit_check(height_id, mm(100.0))
         .expect("edit_check should succeed");
 
-    // Total count still >=47 (no short-circuit on violation).
-    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
+    // Total count still >=49 (no short-circuit on violation).
+    // Floor is 49: 51 total minus the 2 guarded constraints excluded by esc-295-78.
+    // #5417 raised the Assembly total from 49 to 51: `examples/integration_full_v01.ri`
+    // gained two bracketing constraints on `load_free` so its `minimize load_free`
+    // objective is genuinely consumed rather than structurally inert.
     assert!(
-        check_result.constraint_results.len() >= 47,
-        "expected >=47 constraint results even with height=100mm (violation), got {} \
-         (floor is 49 total minus 2 esc-295-78-guarded constraints = 47)",
+        check_result.constraint_results.len() >= 49,
+        "expected >=49 constraint results even with height=100mm (violation), got {} \
+         (floor is 51 total minus 2 esc-295-78-guarded constraints = 49)",
         check_result.constraint_results.len()
     );
 
@@ -435,14 +441,17 @@ fn edit_position_x_determinacy_predicates_hold() {
         .expect("edit_check should succeed");
 
     // Positive presence check: due to esc-295-78, the 2 guarded constraints are excluded from
-    // the result when position_x is in the dirty cone.  Even so, the remaining 47 constraints
+    // the result when position_x is in the dirty cone.  Even so, the remaining 49 constraints
     // must all be present — any further silent dropping would indicate a regression.
-    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
+    // Floor is 49: 51 total minus the 2 guarded constraints excluded by esc-295-78.
+    // #5417 raised the Assembly total from 49 to 51: `examples/integration_full_v01.ri`
+    // gained two bracketing constraints on `load_free` so its `minimize load_free`
+    // objective is genuinely consumed rather than structurally inert.
     assert!(
-        check_result.constraint_results.len() >= 47,
-        "expected >= 47 constraint results after position_x=200mm, got {} \
+        check_result.constraint_results.len() >= 49,
+        "expected >= 49 constraint results after position_x=200mm, got {} \
          (constraints may have been silently dropped; \
-          note esc-295-78 excludes 2 guarded constraints leaving floor of 47)",
+          note esc-295-78 excludes 2 guarded constraints leaving floor of 49)",
         check_result.constraint_results.len()
     );
 
@@ -465,7 +474,7 @@ fn edit_position_x_determinacy_predicates_hold() {
 /// Checks:
 /// 1. The compiled Assembly template has exactly 1 guarded_group with 2 constraints
 ///    (the `where determined(origin) { … }` block).
-/// 2. After edit_check, all 49 constraints are returned (including the 2 guarded ones).
+/// 2. After edit_check, all 51 constraints are returned (including the 2 guarded ones).
 /// 3. The guarded constraints (determined(displacement), determined(base_frame)) are Satisfied.
 /// 4. No returned constraint results are Violated.
 #[test]
@@ -492,7 +501,7 @@ fn edit_position_x_where_guard_constraints_remain_satisfied() {
          (determined(displacement) and determined(base_frame))"
     );
 
-    // 2. After edit_check(position_x=200mm), all 49 constraints should be returned.
+    // 2. After edit_check(position_x=200mm), all 51 constraints should be returned.
     let px_id = ValueCellId::new(e, "position_x");
     let check_result = engine
         .edit_check(px_id, mm(200.0))
@@ -500,18 +509,18 @@ fn edit_position_x_where_guard_constraints_remain_satisfied() {
 
     let result_count = check_result.constraint_results.len();
     assert_eq!(
-        result_count, 49,
-        "expected all 49 constraint results (including 2 guarded), got {result_count}"
+        result_count, 51,
+        "expected all 51 constraint results (including 2 guarded), got {result_count}"
     );
     // Lower-bound guard: even with esc-295-78 active, any regression that drops
-    // the count below the expected-broken floor of 47 must not silently pass.
-    // The XFAIL assertion above already captures the known breakage (count != 49);
+    // the count below the expected-broken floor of 49 must not silently pass.
+    // The XFAIL assertion above already captures the known breakage (count != 51);
     // this lower bound catches additional regressions below the broken floor.
     assert!(
-        result_count >= 47,
-        "expected >= 47 constraint results after position_x=200mm (XFAIL lower bound), \
+        result_count >= 49,
+        "expected >= 49 constraint results after position_x=200mm (XFAIL lower bound), \
          got {result_count} — this indicates a regression beyond the esc-295-78 exclusion \
-         (49 total minus 2 guarded constraints excluded by esc-295-78 = 47 broken floor)"
+         (51 total minus 2 guarded constraints excluded by esc-295-78 = 49 broken floor)"
     );
 
     // 3. The guarded constraints should be Satisfied (determined(origin) is true after edit).
