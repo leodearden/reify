@@ -1152,6 +1152,119 @@ fn remedy_hint_never_rules_between_d9_class_1_and_class_2() {
 
 // ─── step 9/10: end-to-end sweep over a synthetic mini-corpus ────────────────
 
+/// The result of one pass over a corpus.
+///
+/// `surveyed + not_surveyed.len() == total` is an invariant: every member is
+/// accounted for. The house "no silent caps" rule applies directly here — a
+/// bounded sweep must state what it dropped, or the artifact reads as full
+/// coverage and under-sizes γ.
+#[derive(Debug, Default)]
+struct SurveyRun {
+    /// Every member handed in — the coverage denominator.
+    total: usize,
+    /// Members that reached the compile phase and contributed their sites.
+    surveyed: usize,
+    /// `(path, reason)` for members that contributed NO sites at all.
+    /// Reasons: `read-error`, `parse-error`.
+    not_surveyed: Vec<(String, String)>,
+    /// `(path, reason)` for members that WERE surveyed but whose compile also
+    /// produced Error-severity diagnostics — their ctor sites are collected,
+    /// but coverage of that file may be partial. Reason: `compile-error`.
+    ///
+    /// A separate bucket from `not_surveyed` on purpose: `compile_with_stdlib`
+    /// is the SINGLE-FILE path (`reify check` instead uses
+    /// `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows
+    /// `#cfg`-gated user imports), so every multi-module corpus member — the
+    /// `examples/module_visibility/consumer.ri` class — lands here. Calling
+    /// those "not surveyed" would understate coverage; calling them fully
+    /// surveyed would overstate it. Naming them is the honest third option.
+    partial: Vec<(String, String)>,
+    /// Every ctor-conformance site found, sorted `(file, line, field)`.
+    sites: Vec<SurveySite>,
+}
+
+/// Sweep `rel_paths` (resolved against `root`) and collect every
+/// ctor-conformance site.
+///
+/// Mirrors `examples_smoke.rs`'s `ctor_conformance_one` — read →
+/// `parse_with_stdlib(&source, ModulePath::single(stem))` →
+/// `compile_with_stdlib` → filter `compiled.diagnostics` by
+/// `is_ctor_conformance_code` — so the survey and the landed α corpus gate
+/// cannot disagree about what a ctor-conformance site IS.
+///
+/// Two deliberate differences from that gate:
+/// 1. The root widens from `examples/` to whatever corpus is handed in.
+/// 2. Read and parse failures are RECORDED rather than panicked-on or silently
+///    `return`ed. The non-examples corpus contains many intentionally
+///    unparseable fixtures, and omitting them would inflate apparent coverage.
+fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
+    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
+    use reify_core::{ModulePath, Severity};
+
+    let fea = fea_owned_defs();
+    let mut run = SurveyRun {
+        total: rel_paths.len(),
+        ..SurveyRun::default()
+    };
+
+    for rel in rel_paths {
+        let path = root.join(rel);
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            run.not_surveyed.push((rel.clone(), "read-error".to_owned()));
+            continue;
+        };
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+
+        let parsed = parse_with_stdlib(&source, ModulePath::single(&stem));
+        if !parsed.errors.is_empty() {
+            run.not_surveyed
+                .push((rel.clone(), "parse-error".to_owned()));
+            continue;
+        }
+
+        let compiled = compile_with_stdlib(&parsed);
+        run.surveyed += 1;
+        if compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error)
+        {
+            run.partial.push((rel.clone(), "compile-error".to_owned()));
+        }
+        for d in compiled
+            .diagnostics
+            .iter()
+            .filter(|d| is_ctor_conformance_code(d.code))
+        {
+            let Some(mut site) = survey_site_from_diagnostic(rel, &source, d) else {
+                continue;
+            };
+            site.owner = d9_owner(site.def.as_deref(), fea);
+            run.sites.push(site);
+        }
+    }
+
+    // Total order, so the artifact is byte-reproducible regardless of the order
+    // members were handed in. `code` and `message` break the remaining ties so
+    // two sites at the same (file, line, field) still sort deterministically.
+    run.sites.sort_by(|a, b| {
+        (&a.file, a.line, &a.field, &a.code, &a.message).cmp(&(
+            &b.file,
+            b.line,
+            &b.field,
+            &b.code,
+            &b.message,
+        ))
+    });
+    run.not_surveyed.sort();
+    run.partial.sort();
+    run
+}
+
 /// The known-WARNING member: PRD §7 boundary-test row 2, reused verbatim from
 /// `struct_ctor_field_conformance_tests.rs`'s `SOURCE_ROW2_VALUE_CELL_STRING`.
 ///
