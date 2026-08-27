@@ -947,9 +947,25 @@ fn d9_owner(def: Option<&str>, fea_defs: &std::collections::BTreeSet<String>) ->
 /// The neutral hint used when no (expected, found) pattern is recognised.
 const NO_HINT: &str = "no mechanical hint — γ per-case judgment";
 
-/// Whether `ty` renders as a selector-typed field (`Selector(k)`/`AnySelector`).
+/// Every string `reify_core::Type` renders for a selector-typed field.
+///
+/// Read off the Display impls, NOT guessed: `SelectorKind`'s four arms render
+/// `<Kind>Selector` (`crates/reify-core/src/ty.rs`), and `Type::AnySelector`
+/// renders the bare `Selector`. There is no `Selector(Face)` form anywhere —
+/// an earlier draft of this file matched exactly that, and so silently gave
+/// NO_HINT to every real selector site including the D3 String→selector case
+/// that is the PRD's headline illegality.
+const SELECTOR_TYPE_RENDERINGS: &[&str] = &[
+    "Selector",
+    "FaceSelector",
+    "EdgeSelector",
+    "VertexSelector",
+    "BodySelector",
+];
+
+/// Whether `ty` renders as a selector-typed field.
 fn is_selector_type(ty: &str) -> bool {
-    ty.starts_with("Selector(") || ty == "AnySelector"
+    SELECTOR_TYPE_RENDERINGS.contains(&ty)
 }
 
 /// Whether `ty` renders as a coordinate pose rather than a region target.
@@ -1104,13 +1120,13 @@ fn d9_owner_classifies_fea_non_fea_and_unattributed() {
 #[test]
 fn remedy_hint_is_a_pure_deterministic_function_of_the_type_pair() {
     // Same input -> same output, no I/O, no ordering dependence.
-    let a = remedy_hint(Some("Selector(Face)"), Some("String"));
-    let b = remedy_hint(Some("Selector(Face)"), Some("String"));
+    let a = remedy_hint(Some("FaceSelector"), Some("String"));
+    let b = remedy_hint(Some("FaceSelector"), Some("String"));
     assert_eq!(a, b, "remedy_hint must be deterministic");
 
     // Distinct recognised pairs map to DISTINCT fixed strings.
-    let string_at_selector = remedy_hint(Some("Selector(Face)"), Some("String"));
-    let pose_at_selector = remedy_hint(Some("Selector(Face)"), Some("Frame(3)"));
+    let string_at_selector = remedy_hint(Some("FaceSelector"), Some("String"));
+    let pose_at_selector = remedy_hint(Some("FaceSelector"), Some("Frame(3)"));
     let bare_at_dimensioned = remedy_hint(Some("Scalar[m·s^-1]"), Some("Real"));
     assert_ne!(string_at_selector, pose_at_selector);
     assert_ne!(string_at_selector, bare_at_dimensioned);
@@ -1123,7 +1139,7 @@ fn remedy_hint_is_a_pure_deterministic_function_of_the_type_pair() {
     // string — never an invented remedy.
     let neutral = remedy_hint(None, None);
     assert_eq!(remedy_hint(Some("Widget"), Some("Gadget")), neutral);
-    assert_eq!(remedy_hint(Some("Selector(Face)"), None), neutral);
+    assert_eq!(remedy_hint(Some("FaceSelector"), None), neutral);
     assert_eq!(remedy_hint(None, Some("String")), neutral);
     assert_ne!(
         neutral, string_at_selector,
@@ -1132,12 +1148,70 @@ fn remedy_hint_is_a_pure_deterministic_function_of_the_type_pair() {
 }
 
 #[test]
+fn selector_type_renderings_match_what_reify_core_actually_displays() {
+    use reify_core::Type;
+    use reify_core::ty::SelectorKind;
+
+    // Pin the table against the REAL Display impl by constructing types and
+    // rendering them, rather than hand-transcribing wire forms. An earlier
+    // draft matched `Selector(Face)` — a string the compiler never emits — so
+    // every real selector site fell through to the neutral hint. Constructing
+    // the values here means a Display rename goes RED instead of silently
+    // re-emptying the selector arm.
+    for kind in [
+        SelectorKind::Face,
+        SelectorKind::Edge,
+        SelectorKind::Vertex,
+        SelectorKind::Body,
+    ] {
+        let rendered = Type::Selector(kind).to_string();
+        assert!(
+            is_selector_type(&rendered),
+            "Type::Selector({kind:?}) renders as {rendered:?}, which is_selector_type \
+             does not recognise"
+        );
+    }
+    let any = Type::AnySelector.to_string();
+    assert!(
+        is_selector_type(&any),
+        "Type::AnySelector renders as {any:?}, which is_selector_type does not recognise"
+    );
+
+    // And the D3 case end-to-end: a String at a selector-typed field must get
+    // the typed-ctor hint, not the neutral fallback.
+    let hint = remedy_hint(Some(&any), Some("String"));
+    assert_ne!(
+        hint, NO_HINT,
+        "the D3 String→selector case is the PRD's headline illegality; it must \
+         carry a hint"
+    );
+    assert!(hint.contains("face(b"), "the hint names the typed-ctor replacement");
+
+    // Pose Display forms are `Frame3` / `Transform3` / `Point3<Length>`.
+    for pose in [
+        Type::Frame(3).to_string(),
+        Type::Transform(3).to_string(),
+        Type::point3(Type::length()).to_string(),
+    ] {
+        assert!(
+            is_pose_type(&pose),
+            "{pose:?} must be recognised as a coordinate pose"
+        );
+        assert_ne!(
+            remedy_hint(Some(&any), Some(&pose)),
+            NO_HINT,
+            "the D2 pose-vs-set case must carry a hint for {pose:?}"
+        );
+    }
+}
+
+#[test]
 fn remedy_hint_never_rules_between_d9_class_1_and_class_2() {
     // The PRD assigns "call-site bug vs wrong declared field type" to γ as a
     // per-case judgment. β emits an ADVISORY hint; it must not claim a verdict.
     for (e, f) in [
-        (Some("Selector(Face)"), Some("String")),
-        (Some("Selector(Face)"), Some("Frame(3)")),
+        (Some("FaceSelector"), Some("String")),
+        (Some("FaceSelector"), Some("Frame(3)")),
         (Some("Scalar[m·s^-1]"), Some("Real")),
         (Some("String"), Some("Int")),
         (None, None),
@@ -1519,6 +1593,21 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
         Nothing below was typed in by hand, and a column that could not be recovered\n\
         renders as `—` rather than as a guess.\n\
         \n\
+        Two things to know before reading a row:\n\
+        \n\
+        - **`line` is the CTOR CALL-SITE line, not the offending argument's line.** α\n\
+          anchors the label at the `Foo(...)` call's own span (PRD §10 Q1;\n\
+          `compile_builder/entities_phase.rs`), so a multi-line ctor reports the line of\n\
+          its opening `Foo(`. The offending argument is named in the `field` column and\n\
+          sits within that call — e.g.\n\
+          `examples/trajectory/printer_print_envelope.ri:169` is the `TOTSShaper(` line,\n\
+          while `velocity_limit: 300.0` is three lines further down.\n\
+        - **`def` is the identifier at that anchor,** which is a `structure def` name for\n\
+          the ctor path. A few rows carry codes that reach this survey from a NON-ctor\n\
+          path (selector composition, overload resolution) and are Error- rather than\n\
+          Warning-severity; for those the anchor identifier can be a *function* name.\n\
+          The `severity` and `message` columns disambiguate.\n\
+        \n\
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
         (1) *call-site bug* and class (2) *wrong declared field type* as \"per-case\n\
@@ -1689,7 +1778,7 @@ fn synth_site(file: &str, line: u32, def: &str, field: &str, owner: Owner) -> Su
         line,
         def: Some(def.to_owned()),
         field: Some(field.to_owned()),
-        expected: Some("Selector(Face)".to_owned()),
+        expected: Some("FaceSelector".to_owned()),
         found: Some("String".to_owned()),
         code: "ArgTypeMismatch".to_owned(),
         severity: "Warning".to_owned(),
