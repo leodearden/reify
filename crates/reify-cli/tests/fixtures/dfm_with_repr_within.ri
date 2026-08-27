@@ -98,9 +98,11 @@
 // stated above) is this note's own single source of truth; the 8-point
 // neighbourhood grid around it lives in
 // `representation_within_assertion.rs`'s `OCCT_SOURCE_FINE` doc comment —
-// see there rather than restating the grid here. 0.3mm was chosen because
-// both its measured neighbours in that grid also clear the bound, not
-// because it is a smooth optimum.
+// see there rather than restating the grid here. 0.3mm's safety margin
+// rests on the envelope, not the grid: teeth deviate DOWNWARD only
+// (~0.758x), so the ~2.075x envelope UPPER-bounds the achieved deviation,
+// and 0.3mm sits on that envelope at 6.202e-4 m, 1.61x inside the 1e-3 m
+// bound.
 //
 // To re-derive any candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
