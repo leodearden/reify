@@ -240,7 +240,9 @@ This is the invariant that makes parity **testable** rather than asserted, and i
 the direct lesson of §2.2's casing defect: two sides agreed in prose and diverged in
 fact because nothing drove real producer output through the real consumer.
 
-The record's fields are exactly the union of what is already computed:
+The record's fields are the union of what is already computed, plus exactly one
+explicitly reserved slot — `completeness`, which has no source today and is called
+out under the table:
 
 | Group | Fields | Source today |
 |---|---|---|
@@ -261,7 +263,9 @@ a dependency on either id.
 
 ### §4.2 — C2: honest absence, never a fabricated value
 
-Four field-level rules, each with a verified motivating defect:
+Four field-level rules, each with a verified motivating defect — the first three on a
+surface this PRD repairs, the fourth on a producer P3 retires (so it binds P4's
+renderers without obligating any P4 leaf):
 
 - **Slack is inequality-only.** `Eq`, `Ne` and `Or` are explicitly skipped by
   `collect_slack_terms` — there is no well-defined signed interior slack for an
@@ -280,9 +284,17 @@ Four field-level rules, each with a verified motivating defect:
   not render a bare `unique: true` in its place. #6706's invariant C1 makes `unique` a
   *derived* value — `unique == (completeness == Exhaustive && solutions.len() == 1)` — so
   a standalone uniqueness claim, asserted without the completeness verdict it is derived
-  from, is exactly the fabricated value this rule bans. Nothing renders uniqueness today
-  (§13 Q1's θ chip states and λ's `solve_report` field list both omit it), so this bullet
-  forbids a future lie rather than obligating any existing leaf.
+  from, is exactly the fabricated value this rule bans. The motivating defect is already
+  in the tree, on the **producer** side: `SolveSpaceSolver::solve` returns
+  `unique: true` unconditionally on the libslvs `Ok` arm
+  (`crates/reify-constraints/src/solvespace.rs`:1700), and `relate_solve::solve_frame`
+  computes `unique = fully_pinned && !unknown.free` from **local** Jacobian rank
+  (`relate_solve.rs`:317) — local isolation reported as global uniqueness. P3 §0.2 item 4
+  measured both; C1 retires them. This rule is P4's half: a fabricated `unique` must not
+  be laundered through a renderer just because the completeness slot beside it is empty.
+  No **P4** leaf is obligated by it — nothing renders uniqueness today (§13 Q1's θ chip
+  states and λ's `solve_report` field list both omit it) — so the rule forbids a future
+  lie rather than adding work to any leaf in §13.
 
 ### §4.3 — C3: the GUI seam obeys the existing conventions
 
@@ -514,8 +526,9 @@ imply.
 2. **Which leaf renders it: #6711, on the CLI.** P4 ξ **#6733** renders the P4-owned
    fields only — `scope`, `term_contributions`, the slack lines, the infeasible-case
    message, the `source` token, and the stale `engine_eval.rs:3884` anchor fix. That set
-   is **disjoint** from the completeness verdict. ξ must neither add nor re-render the
-   completeness field; if #6711 has landed at ξ's dispatch, ξ leaves its rendering alone.
+   is **disjoint** from the completeness verdict, and ξ must
+   **neither add nor re-render the completeness field**, which is #6711's.
+   If #6711 has landed at ξ's dispatch, ξ leaves its rendering alone.
 
 3. **No dependency edge in either direction** — the same ruling §8.1 item 2 made for
    `ConstraintCheckEntry`. Neither leaf needs the other's field, so inventing an edge
@@ -745,12 +758,17 @@ Four movements, in dependency order:
 - **Multimodality verdicts / found-basins honesty.** P3 owns the semantics. This PRD
   leaves a **named slot** in the record and nothing more — the reserved
   `completeness` field in §4.1, guarded by §4.2's fourth C2 bullet, populated by no
-  P4 leaf. Per INV-SF-5 the slot names live owners rather than "a future PRD": its
-  vocabulary is `solution-set-completeness.md` α **#6706**'s `Completeness` carrier,
-  and the first leaf that populates it — deduplicating the candidate set by basin box,
-  attaching the verdict, and rendering it through `ObjectiveProvenance` /
-  `reify explain` — is ζ **#6711**. §8.2 rules which of the two co-tenants on
-  `reify explain` adds the field (#6711) and which does not (ξ #6733).
+  P4 leaf. Per INV-SF-5 the slot names live owners rather than "a future PRD", and it
+  names them one role at a time, in `solution-set-completeness.md`:
+
+  - Vocabulary carrier for the slot: α **#6706** — the `Completeness` type
+    (`Exhaustive | Partial{reason} | Refuted{narrowing}`) whose words the slot holds.
+  - First leaf that populates the slot: ζ **#6711** — it dedups the candidate set by
+    basin box, attaches the verdict, and renders it through `ObjectiveProvenance` /
+    `reify explain`.
+
+  §8.2 rules which of the two co-tenants on `reify explain` adds the field (#6711) and
+  which does not (ξ #6733).
 - **The DOF ledger, minimal conflict sets and `W_UNDERDETERMINED` extension** —
   #4388 (D3). This PRD renders the ledger; it does not compute it.
 - **The sketch DOF ledger** (`constrained-2d-sketch.md` #5509) — a *second*,
@@ -820,7 +838,7 @@ silent-failure INV-SF-1..7, angle-crossing INV-AD-1..4) plus the GUI rows in
 | INV-SF-2 `error-severity-exits-nonzero` | yes (corollary) | A routine solve status is **not** Error-severity. `BestFound`, budget-exhausted and stale-served are Info/Warning; the θ chip's colour, not a severity, carries urgency. The GUI has no exit code; the corollary binds the *severity choice*, which C5 fixes. |
 | INV-SF-3 `declared-intent-consumed-or-diagnosed` | yes | The record carries a "why this did not run" slot for a skipped or declined solve (P1's I5 marks it; this PRD renders it). No renderer may show a blank where a stage was skipped. |
 | INV-SF-4 `indeterminate-attributable-transient` | yes | C2 forbids collapsing the tri-state; the record carries `Satisfaction` **plus** its typed cause, and B8 asserts the cause is visible. Vocabulary comes from #6659/#6649, not re-invented. |
-| INV-SF-5 `placeholders-owned-and-loud` | yes | The P3 multimodality slot cites two **live tasks** by id — α **#6706** (the `Completeness` vocabulary carrier) and ζ **#6711** (the first leaf that populates it) — not "a future PRD", the blanket-escape pattern this invariant bans. Stamped in §4.1 (the reserved slot), §8 (the seam row + §8.2) and §11, and re-checked mechanically by ω #6739's `p3-multimodality-slot-cites-live-tasks` manifest binding before the terminal stamp. The invariant's normative rule (`docs/legibility/design-invariants.md`:145-155) is scoped to placeholders in **tracked source**, so this row applies its *posture* to a PRD-record slot by analogy — the same move `spec-conformance-suite.capability-manifest.yaml`:643 makes for test scaffolding — and is not a literal tracked-source hit. **Corrected #6751 (2026-08-27):** as first landed this row read "the citation is stamped at decompose" while no P3 id appeared anywhere in the document. |
+| INV-SF-5 `placeholders-owned-and-loud` | yes | The P3 multimodality slot cites two **live tasks** by id — α **#6706** (the `Completeness` vocabulary carrier) and ζ **#6711** (the first leaf that populates it) — not "a future PRD", the blanket-escape pattern this invariant bans. Stamped in §4.1 (the reserved slot), §8 (the seam row + §8.2) and §11, and re-checked mechanically before the terminal stamp by ω #6739's two `p3-multimodality-slot-cites-*` manifest bindings — one per id, both `expect: present`, each anchored to §11's own wording for that id so dropping either cite reds the gate (a single `#6706\|#6711` alternation would not: it is satisfied by either id, anywhere in the file, including by this row). The invariant's normative rule (`docs/legibility/design-invariants.md`:145-155) is scoped to placeholders in **tracked source**, so this row applies its *posture* to a PRD-record slot by analogy — the same move `spec-conformance-suite.capability-manifest.yaml`:643 makes for test scaffolding — and is not a literal tracked-source hit. **Corrected #6751 (2026-08-27):** as first landed this row read "the citation is stamped at decompose" while no P3 id appeared anywhere in the document. |
 | INV-SF-6 `diagnostics-carry-codes` | yes | C5: every renderer keys on `DiagnosticCode`, never message text. γ additionally **adds codes** to the two uncoded solver warnings, so the PRD reduces the violation count rather than building on it. |
 | INV-SF-7 `parse-is-value-faithful` | no | No new grammar. D7's default is a special-form call; the probed pragma composes with no adjacency-sensitive rule. |
 | INV-AD-1..4 (angle crossings) | no | Nothing here types a quotient as Angle; slack carries the constraint's own dimension. |
@@ -848,9 +866,13 @@ because it sits in the column headed *Resolution*. The general rule: **where a G
 defers to a decompose-time action, the decompose-close step must verify the action
 happened**, or the invariant walk certifies its own intention rather than the state of
 the world. The concrete remedy is shipped with this correction — ω **#6739**'s
-capability manifest now re-greps the citation (`#6706|#6711`, scoped to this file)
-immediately before it applies the terminal status, so this specific row cannot rot back
-into a promise without ω's own gate failing.
+capability manifest now re-greps the citation immediately before it applies the terminal
+status, so this specific row cannot rot back into a promise without ω's own gate failing.
+The remedy carries a second-order version of the same lesson: the first draft of that
+gate greped the bare alternation `#6706|#6711` over the whole file, which both ids
+already satisfy from several sections — including this paragraph. A check that the
+correction narrative alone keeps green is the promise defect one level up, so the gate is
+now two checks, one per id, each anchored to §11's own wording rather than to a bare id.
 
 ---
 
