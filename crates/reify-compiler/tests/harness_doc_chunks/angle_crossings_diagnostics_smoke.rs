@@ -6,10 +6,11 @@
 //! the compile-gated file" — with
 //! `crates/reify-mcp/src/tools/chunks/units.md` deferring to it as the
 //! authority. But the only gate over the exemplar,
-//! `crates/reify-compiler/tests/examples_smoke.rs`, checks the POSITIVE path
-//! (the file parses and produces zero `Severity::Error` diagnostics). The four
-//! transcriptions sit inside a `//` comment, which nothing executes, so
-//! "compile-gated" was doing work no gate did. This module is that gate.
+//! `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`,
+//! checks the POSITIVE path (the file parses and produces zero
+//! `Severity::Error` diagnostics). The four transcriptions sit inside a `//`
+//! comment, which nothing executes, so "compile-gated" was doing work no gate
+//! did. This module is that gate.
 //!
 //! # Mechanism: scrape, don't curate
 //!
@@ -145,8 +146,9 @@ const DIAGNOSTIC_ARROW: &str = "-> ";
 /// - the **CLI** adds `Parse error: ` when it prints, at
 ///   `crates/reify-cli/src/main.rs:195` (and the same `eprintln!` at `:254`);
 /// - `reify-test-support`'s `parse_errors_as_diagnostics`
-///   (`helpers.rs:261-270`) forwards `e.message` verbatim with **no** prefix,
-///   so nothing at the library layer ever emits it either.
+///   (`crates/reify-test-support/src/helpers.rs:317-326`) forwards `e.message`
+///   verbatim with **no** prefix, so nothing at the library layer ever emits
+///   it either.
 ///
 /// A test in the `reify-compiler` crate cannot invoke the CLI, so the prefix is
 /// pinned here as a constant and reconstructed onto the live parser message;
@@ -589,7 +591,7 @@ fn transcribed_parse_diagnostic_matches_the_real_parser() {
 
     // And the rejection must survive to the caller as a Severity::Error, i.e. a
     // reader who runs this source actually sees it. Mirrors
-    // `enums_chunk_option_smoke.rs:571-581`: the plain
+    // `enums_chunk_option_smoke.rs:572-580`: the plain
     // `compile_source_with_stdlib` panics on parse errors, so a negative test
     // must use the `_allow_parse_errors` variant to observe them rather than
     // die on them.
