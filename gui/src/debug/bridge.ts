@@ -81,6 +81,11 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // reach it through a `params.testId as string` cast that the JSON payload could
 // falsify. `escapeAttrValue`'s `String()` coercion sits BELOW this boundary as a
 // backstop, not as the validation (task #6178 review amendment).
+//
+// The guards are INDEPENDENT COPIES, not one shared helper, so each needs its
+// own coverage or it can be reverted alone with the suite green. One row per
+// tool lives in the `boundary guards above the escape` block of
+// debugBridge.test.tsx; add a row there when a new tool joins this list.
 export const RESOLVE_BY_TESTID_ERRORS = {
   notFound: (testId: string) => `element with data-testid="${testId}" not found`,
   notFoundForViewport: (testId: string, id: string) =>
@@ -244,23 +249,33 @@ function pickFeaChannelSelect(
  * silent non-match, because jsdom's selector engine is more lenient than a
  * webview's CSS parser.
  *
- * Takes `unknown` and coerces FIRST so the two arms cannot diverge on input
- * type. `CSS.escape` takes a WebIDL DOMString and so coerces its argument
- * itself; the fallback calls `String.prototype.replace`, which THROWS on a
- * non-string — surfacing as `{error: 'v.replace is not a function'}`, exactly
- * the opaque-internal-message failure this helper exists to prevent, reached
- * through a wrong TYPE rather than a metacharacter. Coercing here closes every
- * call site at once.
+ * TWO LAYERS GUARD THE INPUT TYPE, and the ORDER between them is the point.
  *
- * That coercion is a BACKSTOP, not the validation. Since #6178's review
- * amendment every caller-supplied value that reaches this helper has already
- * passed a `typeof` guard at its own tool boundary — see THE BOUNDARY RULE on
- * `RESOLVE_BY_TESTID_ERRORS` — so no dispatch path hands it a non-string today.
- * It stays because a call site added later WITHOUT that guard would otherwise
- * fail as an opaque internal TypeError under the fallback arm alone, the one arm
- * no real webview takes, so the gap would never show up in a browser.
+ * The parameter stays `string` so that the FIRST layer is tsc: an unvalidated
+ * `escapeAttrValue(params.foo)` is a compile error at author time, loud and free
+ * and before review. Widening this to `unknown` would delete that check — the
+ * unvalidated call site would compile, and `undefined` would coerce into the
+ * literal selector `[data-testid="undefined"]`, reading downstream as a plain
+ * not-found. A compile error is strictly the better failure.
+ *
+ * `String(v)` is the SECOND layer, and it only ever fires for a caller that
+ * defeated the first — an `as string` cast the JSON payload falsifies, which is
+ * exactly how the pre-#6178 call sites reached here. For a well-typed caller it
+ * is a no-op. It matters because the two arms disagree about a non-string:
+ * `CSS.escape` takes a WebIDL DOMString and coerces its argument itself, while
+ * the fallback calls `String.prototype.replace`, which THROWS — surfacing as
+ * `{error: 'v.replace is not a function'}`, the opaque-internal-message failure
+ * this helper exists to prevent, reached through a wrong TYPE rather than a
+ * metacharacter, and reached only under the arm no real webview takes. Coercing
+ * before the branch makes the arms behave identically instead.
+ *
+ * NEITHER layer is the validation. Since #6178's review amendment every
+ * caller-supplied value that reaches this helper has already passed a `typeof`
+ * guard at its OWN tool boundary — see THE BOUNDARY RULE on
+ * `RESOLVE_BY_TESTID_ERRORS` — which is what turns a wrong-typed request into
+ * `testId is required` rather than into any diagnostic about the DOM.
  */
-function escapeAttrValue(v: unknown): string {
+function escapeAttrValue(v: string): string {
   const s = String(v);
   return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
     ? CSS.escape(s)
@@ -989,10 +1004,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // surfaces as an opaque CSS-parser message instead of the
       // `menu trigger not found` diagnostic below. Pinned by the
       // `open_menu name` row of the `debug bridge escapeAttrValue` table in
-      // debugBridge.test.tsx, whose `nonString` half pins the separate property
-      // that the guard above rejects `{"name": 3}` outright rather than letting
-      // it coerce into a `menu trigger not found: 3` that reads as a missing
-      // menu — THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS`.
+      // debugBridge.test.tsx. The separate property that the guard above rejects
+      // `{"name": 3}` outright — rather than letting it coerce and open a menu
+      // that was never asked for — is that file's `boundary guards above the
+      // escape` block: THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS`.
       const el = document.querySelector(
         `[data-testid="menu-trigger-${escapeAttrValue(name)}"]`,
       );

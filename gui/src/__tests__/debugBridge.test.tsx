@@ -2541,33 +2541,48 @@ describe('debug bridge set_window_size', () => {
 // debug bridge tree-node expand/collapse (step-5 RED → step-6 GREEN)
 // ---------------------------------------------------------------------------
 
-/** Inject a chevron button that toggles the design-panel expandedSet on click. */
-function setupDesignPanel(path: string, initialExpanded = false) {
-  const expandedSet = new Set<string>();
-  if (initialExpanded) expandedSet.add(path);
-  const btn = document.createElement('button');
-  btn.setAttribute('data-testid', `chevron-${path}`);
-  btn.addEventListener('click', () => {
-    if (expandedSet.has(path)) expandedSet.delete(path);
-    else expandedSet.add(path);
-  });
-  document.body.appendChild(btn);
-  window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
-  return { expandedSet, btn };
-}
+/**
+ * The two tree panels `driveTreeNode` serves, stated once.
+ *
+ * It differs between them in exactly TWO places — the testid prefix it
+ * interpolates `path` into, and the debug-context accessor it re-reads expansion
+ * state from (note the slots are not even named alike: `designTree.expanded` vs
+ * `constraintPanel.expandedNodes`) — so the fixtures differ in exactly those two
+ * and nothing else. A third panel belongs here as a row, not as a third
+ * copy-pasted `setup*Panel`.
+ */
+const TREE_PANELS = {
+  design: {
+    testIdPrefix: 'chevron-',
+    install: (expanded: () => Set<string>) => {
+      window.__REIFY_DEBUG__!.designTree = { expanded };
+    },
+  },
+  constraint: {
+    testIdPrefix: 'constraint-row-',
+    install: (expanded: () => Set<string>) => {
+      window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: expanded };
+    },
+  },
+} as const;
+type TreePanelKind = keyof typeof TREE_PANELS;
 
-/** Inject a constraint-row button that toggles the constraint-panel expandedSet on click. */
-function setupConstraintPanel(path: string, initialExpanded = false) {
+/**
+ * Inject the control `driveTreeNode` will look for on `kind`'s panel, wired to
+ * toggle an expandedSet on click, and register the accessor that reports it.
+ */
+function setupTreePanel(kind: TreePanelKind, path: string, initialExpanded = false) {
+  const panel = TREE_PANELS[kind];
   const expandedSet = new Set<string>();
   if (initialExpanded) expandedSet.add(path);
   const btn = document.createElement('button');
-  btn.setAttribute('data-testid', `constraint-row-${path}`);
+  btn.setAttribute('data-testid', `${panel.testIdPrefix}${path}`);
   btn.addEventListener('click', () => {
     if (expandedSet.has(path)) expandedSet.delete(path);
     else expandedSet.add(path);
   });
   document.body.appendChild(btn);
-  window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => expandedSet };
+  panel.install(() => expandedSet);
   return { expandedSet, btn };
 }
 
@@ -2601,7 +2616,7 @@ describe('debug bridge tree-node expand/collapse', () => {
   it('(a) expand_tree_node: node NOT expanded → clicks chevron once, returns { ok:true, path, expanded:true }', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
-    const { btn } = setupDesignPanel('Bracket.body', false);
+    const { btn } = setupTreePanel('design', 'Bracket.body', false);
     const clickSpy = vi.fn();
     btn.addEventListener('click', clickSpy);
 
@@ -2615,7 +2630,7 @@ describe('debug bridge tree-node expand/collapse', () => {
   it('(b) expand_tree_node idempotent: node already expanded → NO click, returns expanded:true', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
-    const { btn } = setupDesignPanel('Bracket.body', true);
+    const { btn } = setupTreePanel('design', 'Bracket.body', true);
     const clickSpy = vi.fn();
     btn.addEventListener('click', clickSpy);
 
@@ -2628,7 +2643,7 @@ describe('debug bridge tree-node expand/collapse', () => {
   it('(c) collapse_tree_node: node expanded → clicks once, returns expanded:false', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
-    const { btn } = setupDesignPanel('Bracket.body', true);
+    const { btn } = setupTreePanel('design', 'Bracket.body', true);
     const clickSpy = vi.fn();
     btn.addEventListener('click', clickSpy);
 
@@ -2641,7 +2656,7 @@ describe('debug bridge tree-node expand/collapse', () => {
   it('(d) collapse_tree_node idempotent: not expanded → NO click, returns expanded:false', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
-    const { btn } = setupDesignPanel('Bracket.body', false);
+    const { btn } = setupTreePanel('design', 'Bracket.body', false);
     const clickSpy = vi.fn();
     btn.addEventListener('click', clickSpy);
 
@@ -2654,7 +2669,7 @@ describe('debug bridge tree-node expand/collapse', () => {
   it('(e) expand_tree_node: missing path returns { error }', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
-    setupDesignPanel('Bracket.body', false);
+    setupTreePanel('design', 'Bracket.body', false);
 
     const result = await dispatch(9004, 'expand_tree_node', {});
     expect(result).toHaveProperty('error');
@@ -2675,7 +2690,7 @@ describe('debug bridge tree-node expand/collapse', () => {
   it('(g) panel:constraint drives constraint-row testid and reads constraintPanel.expandedNodes', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
-    const { btn } = setupConstraintPanel('constraint-1', false);
+    const { btn } = setupTreePanel('constraint', 'constraint-1', false);
     const clickSpy = vi.fn();
     btn.addEventListener('click', clickSpy);
 
@@ -2699,7 +2714,7 @@ describe('debug bridge tree-node expand/collapse', () => {
     // 'design' or 'constraint') return an error that names the bad value.
     const stores = makeStores();
     await initDebugBridge(stores);
-    setupDesignPanel('Bracket.body', false);
+    setupTreePanel('design', 'Bracket.body', false);
 
     const result = await dispatch(9008, 'expand_tree_node', { path: 'Bracket.body', panel: 'foo' });
     expect(result).toHaveProperty('error');
@@ -4928,26 +4943,6 @@ type EscapeSite = {
    *  post-dispatch assertion that it was really driven (click spy, store, …). */
   mountHit: (value: string) => () => void;
   expectHit: (value: string) => unknown;
-  /**
-   * A JSON-supplied NON-string, plus the SCHEMA-VIOLATION diagnostic the site's
-   * boundary guard must answer it with.
-   *
-   * This half does not exercise the escape at all — that is the point. THE
-   * BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS` in bridge.ts requires a
-   * wrong-typed param to be rejected BEFORE resolution, so that `{"testId": 3}`
-   * cannot coerce to `"3"` and come back as `element with data-testid="3" not
-   * found` — a diagnostic that says the DOM is missing something when the
-   * REQUEST is what is malformed. The rows pin the rejection per site because
-   * the guard is per site; `escapeAttrValue`'s own `String()` coercion is the
-   * backstop underneath it, and no dispatch path reaches it non-string today.
-   *
-   * Present only on the two sites whose param is caller-supplied verbatim.
-   * Absent where the value cannot arrive non-string at all: the tree rows
-   * interpolate `path` into a template BEFORE escaping, and the fea row's
-   * `viewportId` has its own typeof guard (case (n) of the set_fea_channel
-   * block).
-   */
-  nonString?: { value: unknown; expected: unknown };
 };
 
 /**
@@ -4977,11 +4972,20 @@ type EscapeSite = {
  * no-cross-pane-bleed property, which no other row has). This table is NOT a
  * proof that every selector interpolation in bridge.ts is escaped — grep
  * `escapeAttrValue` when adding one.
+ *
+ * ONE ROW PER CALL SITE, NOT PER TOOL. Seven #5891 tools reach the testId row's
+ * escape through the ONE shared `escapeAttrValue`, so covering that escape once
+ * covers all seven. The per-TOOL boundary guards ABOVE the escape are the
+ * opposite shape — eight independent hand-written copies — so they are tabled
+ * separately, one row per tool, in the `boundary guards above the escape` block
+ * below.
  */
 const ESCAPE_SITES: EscapeSite[] = [
-  // resolveByTestId's testId arm — the busiest site: every #5891 scoped tool
-  // (click_element, focus_element, scroll, element_screenshot,
-  // wait_for_selector and wait_for's selector arm) reaches the escape here.
+  // resolveByTestId's testId arm — the busiest site: all SEVEN #5891 scoped
+  // tools (dom_query, click_element, focus_element, scroll, element_screenshot,
+  // wait_for_selector and wait_for's selector arm) reach the escape here, over
+  // six `resolveByTestId(…)` call sites — `buildSelectorPredicate` serves the
+  // last two from one.
   {
     label: 'resolveByTestId testId',
     prefix: 'row',
@@ -4995,9 +4999,6 @@ const ESCAPE_SITES: EscapeSite[] = [
     },
     // A single match, so the response stays the bare success shape.
     expectHit: () => ({ ok: true }),
-    // NOT `notFound('3')`: click_element rejects the wrong type at its own
-    // boundary, so the resolver — and the escape below it — is never reached.
-    nonString: { value: 3, expected: { error: 'testId is required' } },
   },
   // open_menu's `name` — menu names are simple lowercase identifiers BY
   // CONVENTION only, and this tool boundary does not enforce it.
@@ -5015,59 +5016,45 @@ const ESCAPE_SITES: EscapeSite[] = [
     // names, so `ctx.menuBar` is undefined and `open` falls back to the
     // requested name. This row is about the selector round trip, not menu state.
     expectHit: (value) => ({ ok: true, open: value }),
-    // NOT `menu trigger not found: 3`: same boundary rejection as the testId row.
-    nonString: { value: 3, expected: { error: 'name is required' } },
   },
-  // driveTreeNode, design panel. Both panels feed the same escape through a
-  // different testid prefix, so each is its own row.
-  {
-    label: 'driveTreeNode path (design panel)',
-    prefix: 'Bracket',
-    dispatch: (value) => ['expand_tree_node', { path: value }],
-    setUpMiss: () => {
-      // Register the accessor reporting NOT-expanded and inject NO control, so
-      // the handler necessarily takes the `expandedNow !== wantExpanded` branch
-      // — the ONLY branch that runs the escape — and then fails the lookup. A
-      // fixture whose state already matched would skip the escape entirely.
-      const expanded = new Set<string>();
-      window.__REIFY_DEBUG__!.designTree = { expanded: () => expanded };
-      return () => expect(expanded.size).toBe(0);
-    },
-    expectMiss: (value) => ({ error: `tree node control not found: ${value}` }),
-    mountHit: (value) => {
-      const { expandedSet, btn } = setupDesignPanel(value, false);
-      const clickSpy = vi.fn();
-      btn.addEventListener('click', clickSpy);
-      expect(btn.getAttribute('data-testid')).toBe(`chevron-${value}`);
-      return () => {
-        expect(clickSpy).toHaveBeenCalledTimes(1);
-        expect(expandedSet.has(value)).toBe(true);
-      };
-    },
-    expectHit: (value) => ({ ok: true, path: value, expanded: true }),
-  },
-  {
-    label: 'driveTreeNode path (constraint panel)',
-    prefix: 'Constraint',
-    dispatch: (value) => ['expand_tree_node', { path: value, panel: 'constraint' }],
-    setUpMiss: () => {
-      const expanded = new Set<string>();
-      window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => expanded };
-      return () => expect(expanded.size).toBe(0);
-    },
-    expectMiss: (value) => ({ error: `tree node control not found: ${value}` }),
-    mountHit: (value) => {
-      const { expandedSet, btn } = setupConstraintPanel(value, false);
-      const clickSpy = vi.fn();
-      btn.addEventListener('click', clickSpy);
-      expect(btn.getAttribute('data-testid')).toBe(`constraint-row-${value}`);
-      return () => {
-        expect(clickSpy).toHaveBeenCalledTimes(1);
-        expect(expandedSet.has(value)).toBe(true);
-      };
-    },
-    expectHit: (value) => ({ ok: true, path: value, expanded: true }),
-  },
+  // driveTreeNode. Both panels feed the SAME escape through a different testid
+  // prefix, so each is its own row — but derived from one shape, off the same
+  // `TREE_PANELS` table the fixtures use, rather than copy-pasted. What varies
+  // is only what varies in bridge.ts: the prefix, the accessor, and the `panel`
+  // param that selects between them.
+  ...(
+    [
+      { kind: 'design', prefix: 'Bracket', params: {} },
+      { kind: 'constraint', prefix: 'Constraint', params: { panel: 'constraint' } },
+    ] as const
+  ).map(
+    ({ kind, prefix, params }): EscapeSite => ({
+      label: `driveTreeNode path (${kind} panel)`,
+      prefix,
+      dispatch: (value) => ['expand_tree_node', { path: value, ...params }],
+      setUpMiss: () => {
+        // Register the accessor reporting NOT-expanded and inject NO control, so
+        // the handler necessarily takes the `expandedNow !== wantExpanded` branch
+        // — the ONLY branch that runs the escape — and then fails the lookup. A
+        // fixture whose state already matched would skip the escape entirely.
+        const expanded = new Set<string>();
+        TREE_PANELS[kind].install(() => expanded);
+        return () => expect(expanded.size).toBe(0);
+      },
+      expectMiss: (value) => ({ error: `tree node control not found: ${value}` }),
+      mountHit: (value) => {
+        const { expandedSet, btn } = setupTreePanel(kind, value, false);
+        const clickSpy = vi.fn();
+        btn.addEventListener('click', clickSpy);
+        expect(btn.getAttribute('data-testid')).toBe(`${TREE_PANELS[kind].testIdPrefix}${value}`);
+        return () => {
+          expect(clickSpy).toHaveBeenCalledTimes(1);
+          expect(expandedSet.has(value)).toBe(true);
+        };
+      },
+      expectHit: (value) => ({ ok: true, path: value, expanded: true }),
+    }),
+  ),
   // pickFeaChannelSelect's viewportId — the sibling ladder, and the only row
   // whose success is a store write rather than a click.
   {
@@ -5130,7 +5117,9 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
   // The environment fact the arm table exists to work around, asserted rather
   // than assumed: with no stub in place there is no global `CSS` under vitest,
   // so `escapeAttrValue` takes its hand-rolled fallback and the CSS.escape arm
-  // is unreachable — which is why every row below runs twice.
+  // is unreachable — which is why every ESCAPE_SITES row runs twice. (The
+  // boundary-guard block below runs once: it never reaches the escape, so it has
+  // no arm to be blind to.)
   it('jsdom exposes no global CSS, so only the stubbed arm reaches CSS.escape', () => {
     expect(typeof (globalThis as { CSS?: unknown }).CSS).toBe('undefined');
   });
@@ -5191,32 +5180,137 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
         expect(result).toEqual(site.expectHit(value));
         verifyHit();
       });
-
-      // The per-site boundary guard — THE BOUNDARY RULE on
-      // `RESOLVE_BY_TESTID_ERRORS` in bridge.ts. With the guard in place both
-      // arms answer identically, because neither is reached; the case is run
-      // under both anyway because DELETING the guard fails differently on each,
-      // and neither failure is the contract. The fallback arm would call
-      // `String.prototype.replace` and THROW `TypeError: v.replace is not a
-      // function`, which the dispatcher surfaces as
-      // `{error: 'v.replace is not a function'}` — an opaque internal message.
-      // The CSS.escape arm would coerce silently and answer a malformed REQUEST
-      // with a missing-ELEMENT diagnostic. An arm-blind version of this case
-      // would be green on whichever branch it did not happen to run.
-      if (site.nonString) {
-        const { value, expected } = site.nonString;
-        it(`[${arm.name}] ${site.label}: a JSON-supplied non-string is rejected at the boundary, never coerced into a not-found`, async () => {
-          arm.install();
-          const stores = makeStores();
-          await initDebugBridge(stores);
-          const verifyMiss = site.setUpMiss();
-
-          const result = await dispatchCmd(nextId++, ...site.dispatch(value));
-
-          expect(result).toEqual(expected);
-          verifyMiss();
-        });
-      }
     }
   }
+
+  /**
+   * THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS` in bridge.ts: every tool
+   * that resolves by testid rejects a wrong-typed param at its OWN boundary,
+   * BEFORE resolution — so `{"testId": 3}` can never coerce to `"3"` and be
+   * answered with a claim about the DOM.
+   *
+   * These are a separate table from `ESCAPE_SITES` because they are a different
+   * SHAPE of duplication. The escape is one shared helper, so the table above is
+   * one row per CALL SITE and seven tools ride on its `resolveByTestId testId`
+   * row. The guards are EIGHT independent hand-written copies, so a row here
+   * that covered only one of them would leave the other seven free to regress
+   * with the suite green — which is what #6178's review measured. One row per
+   * name in THE BOUNDARY RULE's list, therefore, and a ninth tool joining that
+   * list needs a ninth row.
+   *
+   * Each row mounts a DECOY carrying the coerced value as its literal testid,
+   * so a reverted guard does not merely misword an error — it finds and DRIVES a
+   * real element, and reports success. Measured, with the five guards #6178
+   * rewrote reverted to their pre-task `!testId` form: `dom_query` answers
+   * `{exists: true, visible: false, …}` (a false OBSERVATION about the DOM in
+   * reply to a malformed REQUEST), `click_element` and `focus_element` answer
+   * `{ok: true}` having clicked/focused the decoy, `scroll` answers
+   * `{ok: true, scrollTop: 40}` having really scrolled it, and `open_menu`
+   * answers `{ok: true, open: 3}`. Without a decoy every one of those would be
+   * the far milder `element with data-testid="3" not found`, so the decoy is
+   * what raises the stakes from wrong-diagnostic to wrong-element-driven.
+   *
+   * The last three rows — `element_screenshot`, `wait_for_selector` and
+   * `wait_for`'s selector arm — guarded the type BEFORE #6178 and are unchanged
+   * by it. They are here because the argument above is about the guards being
+   * independent copies, which is as true of the three this task did not touch as
+   * of the five it did.
+   *
+   * Run ONCE, not per `ESCAPE_ARMS` arm: the guard returns before
+   * `escapeAttrValue` is reached, and `escapeAttrValue` coerces with `String(v)`
+   * BEFORE branching, so neither arm can observe a non-string even with the
+   * guard deleted. (An older version of this block ran per-arm on the theory
+   * that the fallback would throw `v.replace is not a function`; measured, both
+   * arms answer identically, so the doubling was pure duplication. That
+   * TypeError survives only as the motivation for the `String()` coercion, in
+   * `escapeAttrValue`'s docblock.)
+   */
+  const BOUNDARY_GUARD_SITES: {
+    label: string;
+    /** The testid the decoy carries — what the coerced value would look up. */
+    decoyTestId: string;
+    dispatch: () => [string, Record<string, unknown>];
+    expected: unknown;
+  }[] = [
+    {
+      label: 'dom_query',
+      decoyTestId: '3',
+      dispatch: () => ['dom_query', { testId: 3 }],
+      expected: { error: 'testId is required' },
+    },
+    {
+      label: 'click_element',
+      decoyTestId: '3',
+      dispatch: () => ['click_element', { testId: 3 }],
+      expected: { error: 'testId is required' },
+    },
+    {
+      label: 'focus_element',
+      decoyTestId: '3',
+      dispatch: () => ['focus_element', { testId: 3 }],
+      expected: { error: 'testId is required' },
+    },
+    {
+      // `top` is supplied so a guard-less path would have a scroll to perform,
+      // and the wording is scroll's own — it accepts `target:"editor"` instead
+      // of a testid, so it never adopted the bare `testId is required`.
+      label: 'scroll',
+      decoyTestId: '3',
+      dispatch: () => ['scroll', { testId: 3, top: 40 }],
+      expected: { error: 'testId or target:"editor" is required' },
+    },
+    {
+      // open_menu resolves by `name`, interpolated into a `menu-trigger-` prefix
+      // rather than used as the whole testid — so its decoy carries the prefix.
+      label: 'open_menu',
+      decoyTestId: 'menu-trigger-3',
+      dispatch: () => ['open_menu', { name: 3 }],
+      expected: { error: 'name is required' },
+    },
+    {
+      // Pre-#6178 guard, spelled `!testId || typeof testId !== 'string'` — the
+      // same predicate the other seven write the other way round.
+      label: 'element_screenshot',
+      decoyTestId: '3',
+      dispatch: () => ['element_screenshot', { testId: 3 }],
+      expected: { error: 'testId is required' },
+    },
+    {
+      // The two waiters get a short `timeout_ms` so a guard-less path polls
+      // briefly rather than for the 5s default. It is never read here — both
+      // validate the testid FIRST — which is itself part of what the row pins.
+      label: 'wait_for_selector',
+      decoyTestId: '3',
+      dispatch: () => ['wait_for_selector', { testId: 3, timeout_ms: 50 }],
+      expected: { error: 'testId is required' },
+    },
+    {
+      // wait_for reaches the same resolver through `buildSelectorPredicate`, and
+      // guards the NESTED `predicate.testId` — hence its own distinct wording.
+      label: 'wait_for (selector predicate)',
+      decoyTestId: '3',
+      dispatch: () => [
+        'wait_for',
+        { predicate: { kind: 'selector', testId: 3 }, timeout_ms: 50 },
+      ],
+      expected: { error: 'predicate.testId is required for selector kind' },
+    },
+  ];
+
+  describe('boundary guards above the escape', () => {
+    for (const site of BOUNDARY_GUARD_SITES) {
+      it(`${site.label}: a JSON-supplied non-string is rejected at the boundary, never coerced into a DOM lookup`, async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const { el: decoy, clickSpy } = mountTestIdTarget(site.decoyTestId);
+
+        const result = await dispatchCmd(nextId++, ...site.dispatch());
+
+        expect(result).toEqual(site.expected);
+        // Not merely the right error — the decoy was never reached at all.
+        expect(clickSpy).not.toHaveBeenCalled();
+        expect(document.activeElement).not.toBe(decoy);
+      });
+    }
+  });
 });

@@ -164,8 +164,9 @@ says so — never a not-found. `{"testId": 3}` does not come back as
 hunting in the DOM for an element that was never asked for; every
 testid-resolving tool rejects the type at its own boundary before resolution.
 That rule is stated once as THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS` in
-`bridge.ts`, and pinned per call site by the `nonString` half of the
-`debug bridge escapeAttrValue` table in `debugBridge.test.tsx`.
+`bridge.ts`, and pinned **per tool** — the guards are independent copies, so one
+row per tool is what keeps any single one from regressing — by the
+`boundary guards above the escape` block in `debugBridge.test.tsx`.
 
 The Rust transport passes this object through verbatim: the JSON string
 returned by the JS bridge is parsed by `DebugBridge::resolve` →
