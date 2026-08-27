@@ -52,8 +52,12 @@
 //! source was tessellated before the transform, that stale triangulation no
 //! longer matches the rewritten B-spline geometry and
 //! `BRepCheck_Analyzer::IsValid()` (`GeometryQuery::IsWatertight`) reports
-//! `false` (test 4 half (b), a pinned characterization of a known defect —
-//! follow-up ticket `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`). BOTH hazards reproduce
+//! `false` (test 4 half (b), a pinned characterization of a known defect).
+//! Both hazards — the exactness loss (half (a)) and the pre-tessellation
+//! invalidity (half (b)) — are tracked by follow-up task **#6652** (filed as
+//! ticket `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`, which the curator resolved to
+//! that task number); every pinning assertion in test 4 names #6652 and
+//! states what its own failure would mean. BOTH hazards reproduce
 //! identically under the IDENTITY linear map `diag(1,1,1)` (det = +1,
 //! geometrically a no-op), which is the proof that they belong to
 //! `BRepBuilderAPI_GTransform` itself and are NOT a `det<0` orientation
@@ -75,11 +79,12 @@
 
 #![cfg(has_occt)]
 
+use crate::common;
 use reify_ir::{ExportFormat, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
 
 // ---------------------------------------------------------------------------
-// Test 1 (steps 1-2) — det<0 reflection yields a valid, positive-volume solid
+// Test 1 — det<0 reflection yields a valid, positive-volume solid
 // ---------------------------------------------------------------------------
 
 /// For each of three convex, primitive-derived fixtures, reflect across the
@@ -89,14 +94,11 @@ use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
 /// yield a BRepCheck-valid, positive-volume solid whose volume matches the
 /// source within a path-specific tolerance.
 ///
-/// RED: `convex_fixtures`, `mirror_across_yz`, `affine_reflect_x`,
-/// `volume_of` and `flag_of` do not exist yet, so this fails to COMPILE
-/// until step-2 adds them.
-///
 /// Fixtures are deliberately primitive-derived (never a boolean result: a
 /// boolean returns a COMPOUND, and `IsWatertight` hard-returns `false` for
 /// any non-SOLID/COMPSOLID/SHELL shape regardless of validity) and are NOT
-/// tessellated before reflecting here — pre-tessellation ordering is step-7's
+/// tessellated before reflecting here — pre-tessellation ordering is
+/// [`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]'s
 /// subject, and tessellating in this test would contaminate its answer.
 ///
 /// Tolerances: `Mirror` is bit-exact against the source (measured identical
@@ -106,6 +108,24 @@ use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
 /// is +8.615e-3 relative (cylinder) and +8.250e-3 (cone), so 2e-2 relative
 /// (≈2.3× the measured worst case) is used — tightening this to, say, 1e-9
 /// would be a doomed assertion.
+///
+/// (f) The reflected AABB (`GeometryQuery::BoundingBox` via
+/// [`common::bbox_of`]) is the x-mirror of the source's:
+/// `min.x == -source.max.x`, `max.x == -source.min.x`, y/z extents
+/// unchanged. This is the positional obligation (a)-(e) miss: every one of
+/// them is invariant under an arbitrary rigid motion, so a `Mirror` or
+/// `AffineApply` that silently degraded to a translation or a no-op copy
+/// would satisfy all of (a)-(e) unchanged. Tolerance is `Mirror` 1e-12
+/// relative (measured bit-exact, same as the volume check) and `AffineApply`
+/// 0.3 relative (**not** the volume check's 2e-2 — a separate, coarser
+/// effect: `BoundingBox` computes via `BRepBndLib`'s default non-precise
+/// mode, which bounds a B-spline surface by its control polygon rather than
+/// the surface itself, and a NURBS approximation of a curved surface has a
+/// control polygon that measurably bulges outside the true envelope;
+/// measured worst case 2.105e-1 relative, on the cone). Both are scaled by
+/// each fixture's own characteristic size (the largest-magnitude source AABB
+/// component) rather than applied per-coordinate — a coordinate close to the
+/// x=0 mirror plane would make a coordinate-relative tolerance meaningless.
 #[test]
 fn both_reflection_paths_yield_valid_positive_volume_solids() {
     if !OCCT_AVAILABLE {
@@ -120,11 +140,33 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
             source_volume > 0.0,
             "{name}: source fixture should itself have positive volume, got {source_volume:e}"
         );
+        let source_bbox = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(source)));
+        // Characteristic size used to scale the (f) AABB tolerance below: the
+        // largest-magnitude component of the source AABB. Avoids a
+        // per-coordinate relative tolerance, which would be meaningless for
+        // a coordinate close to the x=0 mirror plane.
+        let bbox_scale = [
+            source_bbox.xmin,
+            source_bbox.xmax,
+            source_bbox.ymin,
+            source_bbox.ymax,
+            source_bbox.zmin,
+            source_bbox.zmax,
+        ]
+        .into_iter()
+        .fold(0.0_f64, |acc, v| acc.max(v.abs()));
 
         let mirrored = mirror_across_yz(&mut kernel, source);
         let affine = affine_reflect_x(&mut kernel, source);
 
-        for (path, target, tol) in [("Mirror", mirrored, 1e-12), ("AffineApply", affine, 2e-2)] {
+        // (path, target, volume-relative-tolerance, bbox-relative-tolerance).
+        // The two tolerances are DELIBERATELY different bases, not a shared
+        // `tol` — see the (f) comment below for why a shared tolerance would
+        // be doomed.
+        for (path, target, vol_tol, bbox_tol) in [
+            ("Mirror", mirrored, 1e-12, 1e-12),
+            ("AffineApply", affine, 2e-2, 0.3),
+        ] {
             // (b) positive volume under reflection.
             let v = volume_of(&kernel, target);
             assert!(
@@ -135,9 +177,9 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
             // (c)/(d) volume matches source within the path-specific tolerance.
             let rel_err = (v - source_volume).abs() / source_volume;
             assert!(
-                rel_err < tol,
+                rel_err < vol_tol,
                 "{name} via {path}: reflected volume {v:e} should match source {source_volume:e} \
-                 within {tol:e} relative, got rel_err={rel_err:e}"
+                 within {vol_tol:e} relative, got rel_err={rel_err:e}"
             );
 
             // (e) BRepCheck validity survives reflection.
@@ -152,13 +194,54 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
                     "{name} via {path}: {flag_name} should be true after det<0 reflection"
                 );
             }
+
+            // (f) the reflected AABB is the x-mirror of the source's: x
+            // flips and negates, y/z are unchanged. Catches a `Mirror` or
+            // `AffineApply` that silently degraded to a translation or a
+            // no-op copy — invisible to (b)-(e), which are invariant under
+            // any rigid motion.
+            //
+            // `bbox_tol` is NOT the volume tolerance reused: measured, the
+            // two are different-sized effects. `Mirror` is bit-exact here
+            // too (measured delta 0 on all 6 fields × all 3 fixtures), so it
+            // keeps the same 1e-12 relative bound. `AffineApply`'s bbox error
+            // is a SEPARATE, much coarser phenomenon than its ~8.6e-3 volume
+            // error: `GeometryQuery::BoundingBox` computes via `BRepBndLib`'s
+            // default (non-precise) mode, which bounds a B-spline surface by
+            // its CONTROL POLYGON rather than the surface itself — and a
+            // NURBS approximation of a circular/conical surface has a
+            // control polygon that measurably bulges outside the true
+            // envelope. Measured worst case 2.105e-1 relative to
+            // `bbox_scale` (cone xmax); box is unaffected (delta 0 — a
+            // B-spline image of a flat plane is exact, matching test 4's
+            // finding). 0.3 (~1.4× the measured worst case) is used —
+            // reusing the 2e-2 volume band here would be a doomed assertion.
+            let target_bbox = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(target)));
+            let bbox_abs_tol = bbox_tol * bbox_scale;
+            for (field, actual, expected) in [
+                ("xmin", target_bbox.xmin, -source_bbox.xmax),
+                ("xmax", target_bbox.xmax, -source_bbox.xmin),
+                ("ymin", target_bbox.ymin, source_bbox.ymin),
+                ("ymax", target_bbox.ymax, source_bbox.ymax),
+                ("zmin", target_bbox.zmin, source_bbox.zmin),
+                ("zmax", target_bbox.zmax, source_bbox.zmax),
+            ] {
+                let delta = (actual - expected).abs();
+                assert!(
+                    delta < bbox_abs_tol,
+                    "{name} via {path}: reflected AABB.{field} should equal {expected:e} \
+                     (x-mirror of the source AABB across x=0; y/z unchanged), got {actual:e} \
+                     (delta {delta:e}, tol {bbox_abs_tol:e} = {bbox_tol:e} rel × characteristic \
+                     scale {bbox_scale:e})"
+                );
+            }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers (step-2) — kept PRIVATE to this module: they encode this
-// probe's fixture contract, not a crate-wide idiom. `tests/common/mod.rs` is
+// Shared helpers — kept PRIVATE to this module: they encode this probe's
+// fixture contract, not a crate-wide idiom. `tests/common/mod.rs` is
 // reserved for helpers duplicated across MANY modules (see its header).
 // ---------------------------------------------------------------------------
 
@@ -172,22 +255,25 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
 ///     SOLID/COMPSOLID/SHELL — regardless of actual validity. A boolean-
 ///     derived fixture would make this module's validity assertions
 ///     unsatisfiable.
-///   - **Positioned wholly at x>0.** step-5's baked-geometry STEP assertion
-///     reads a negative x coordinate in an exported 3D `CARTESIAN_POINT`
-///     entity as the reflection signal; a fixture straddling or left of x=0
-///     would make that signal ambiguous. (The signal is counted by
-///     `negative_x_3d_point_count`, which excludes 2D pcurve parameter-space
-///     points — the cone source emits 3 of those and they are NOT positions.)
+///   - **Positioned wholly at x>0.**
+///     [`reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement`]'s
+///     baked-geometry STEP assertion reads a negative x coordinate in an
+///     exported 3D `CARTESIAN_POINT` entity as the reflection signal; a
+///     fixture straddling or left of x=0 would make that signal ambiguous.
+///     (The signal is counted by `negative_x_3d_point_count`, which excludes
+///     2D pcurve parameter-space points — the cone source emits 3 of those
+///     and they are NOT positions.)
 ///
 /// All three are additionally CONVEX, which is what licenses the AABB-centre
-/// reference direction in the outward-winding tessellation check (steps 3-4)
+/// reference direction in the outward-winding tessellation check
+/// ([`both_reflection_paths_tessellate_to_outward_wound_closed_manifold`])
 /// — a concave fixture can legitimately have inward-pointing dot products in
 /// its concave regions (measured: 343 outward / 253 inward on a box-minus-
 /// cylinder-minus-sphere part), which would make that assertion meaningless.
-// Fixture dimensions — single source of truth shared by `convex_fixtures`
-// (steps 1-2) and `fresh_pretessellated_cylinder` (steps 7-8), so the two can
-// never silently drift apart: step-8 must build the exact same
-// `cylinder_r6_h20` that `convex_fixtures` does.
+// Fixture dimensions — single source of truth shared by `convex_fixtures` and
+// `fresh_pretessellated_cylinder`, so the two can never silently drift apart:
+// `fresh_pretessellated_cylinder` must build the exact same `cylinder_r6_h20`
+// that `convex_fixtures` does.
 const BOX_WIDTH: f64 = 0.010;
 const BOX_HEIGHT: f64 = 0.020;
 const BOX_DEPTH: f64 = 0.030;
@@ -264,7 +350,8 @@ fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandle
 /// Mirror `target` across the x=0 (y-z) plane via [`GeometryOp::Mirror`]
 /// (`gp_Trsf::SetMirror`) — the v1 reflective-derivation lowering PRD §3.7
 /// names, and the path this module's probe finds bit-exact and immune to
-/// both GTransform hazards (step-7).
+/// both GTransform hazards
+/// ([`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]).
 fn mirror_across_yz(kernel: &mut OcctKernel, target: GeometryHandleId) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Mirror {
@@ -279,9 +366,11 @@ fn mirror_across_yz(kernel: &mut OcctKernel, target: GeometryHandleId) -> Geomet
 /// Apply the general dense 3×3 linear map `linear` (zero translation) to
 /// `target` via [`GeometryOp::AffineApply`] (`gp_GTrsf` /
 /// `BRepBuilderAPI_GTransform`). [`affine_reflect_x`] delegates here with
-/// `diag(-1,1,1)`; step-7 reuses this general form directly with the
-/// IDENTITY `diag(1,1,1)` to prove its two GTransform hazards are
-/// determinant-independent rather than reflection artifacts.
+/// `diag(-1,1,1)`;
+/// [`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]
+/// reuses this general form directly with the IDENTITY `diag(1,1,1)` to
+/// prove its two GTransform hazards are determinant-independent rather than
+/// reflection artifacts.
 fn affine_linear(
     kernel: &mut OcctKernel,
     target: GeometryHandleId,
@@ -346,18 +435,15 @@ fn flag_of(kernel: &OcctKernel, query: GeometryQuery) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 (steps 3-4) — det<0 reflection tessellates to an outward-wound,
-// closed, orientable manifold. THE CORE of T17: this is the assertion that
-// actually observes det<0 output orientation.
+// Test 2 — det<0 reflection tessellates to an outward-wound, closed,
+// orientable manifold. THE CORE of T17: this is the assertion that actually
+// observes det<0 output orientation.
 // ---------------------------------------------------------------------------
 
 /// For each convex fixture and each of the two reflection paths, tessellate
 /// at 1e-4 m (0.1 mm) deflection and assert the result is a closed,
 /// consistently OUTWARD-wound manifold whose supplied normals agree with
 /// that winding.
-///
-/// RED: `assert_outward_wound_closed_manifold` does not exist yet, so this
-/// fails to COMPILE until step-4 adds it.
 ///
 /// **Why the outward-winding check (obligation (b) on
 /// [`assert_outward_wound_closed_manifold`]) is load-bearing, and
@@ -404,7 +490,7 @@ fn both_reflection_paths_tessellate_to_outward_wound_closed_manifold() {
 }
 
 // ---------------------------------------------------------------------------
-// Tessellation-orientation helpers (step-4)
+// Tessellation-orientation helpers
 // ---------------------------------------------------------------------------
 
 /// Compute the geometric normal of triangle (pa, pb, pc) from the emitted
@@ -590,8 +676,7 @@ fn assert_outward_wound_closed_manifold(mesh: &reify_ir::Mesh, what: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3 (steps 5-6) — reflected B-rep STEP export: baked geometry, no
-// det<0 placement.
+// Test 3 — reflected B-rep STEP export: baked geometry, no det<0 placement.
 // ---------------------------------------------------------------------------
 
 /// The STEP-writer half of T17: for each convex fixture, export the SOURCE
@@ -600,9 +685,6 @@ fn assert_outward_wound_closed_manifold(mesh: &reify_ir::Mesh, what: &str) {
 /// than placed (PRD §3.8: "baked reflected B-reps + det=+1 placements are
 /// AP242-conformant by construction"). The FreeCAD mirrored-bodies-vanish
 /// defect is the cautionary tale this test rules out.
-///
-/// RED: `step_entity_count` does not exist yet, so this fails to COMPILE
-/// until step-6 adds it.
 ///
 /// `src/lib.rs`'s existing `new_ops_export_step` unit test already exports a
 /// mirrored box, but asserts only that the file contains `ISO-10303-21` —
@@ -620,23 +702,11 @@ fn reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement
 
     let mut kernel = OcctKernel::new();
 
-    // Local export-to-text helper (not a module-level fn: `kernel.export` and
-    // `String::from_utf8` are real, already-compiling APIs, so wrapping them
-    // in a closure here doesn't change what makes this step RED).
-    let export_step_text = |kernel: &OcctKernel, id: GeometryHandleId| -> String {
-        let mut buf = Vec::<u8>::new();
-        kernel
-            .export(id, ExportFormat::Step, &mut buf)
-            .unwrap_or_else(|e| panic!("STEP export of handle {id:?} should succeed: {e:?}"));
-        String::from_utf8(buf)
-            .unwrap_or_else(|e| panic!("STEP export of handle {id:?} should be valid UTF-8: {e}"))
-    };
-
     for (name, source) in convex_fixtures(&mut kernel) {
         let mirrored = mirror_across_yz(&mut kernel, source);
         let affine = affine_reflect_x(&mut kernel, source);
 
-        let source_text = export_step_text(&kernel, source);
+        let source_text = step_text(&kernel, source);
 
         // (a) well-formed STEP framing on the source export.
         assert!(
@@ -667,7 +737,7 @@ fn reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement
         );
 
         for (path, target) in [("Mirror", mirrored), ("AffineApply", affine)] {
-            let text = export_step_text(&kernel, target);
+            let text = step_text(&kernel, target);
 
             // (a) well-formed STEP framing; a truncated/failed write is not
             // silently accepted.
@@ -716,18 +786,33 @@ fn reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement
                 "{name} via {path}: reflected export should contain >=1 3D CARTESIAN_POINT \
                  with a negative x coordinate (baked mirrored geometry)"
             );
+            // (e, cont.) negative control: a FULLY reflected fixture should carry
+            // ZERO positive-x 3D CARTESIAN_POINTs. A nonzero count would mean some
+            // geometry was not reflected — a partial reflection (some faces
+            // reflected, some not) or a reflection about the wrong plane — which
+            // the >=1 negative-x check above cannot rule out on its own.
+            assert_eq!(
+                positive_x_3d_point_count(&text),
+                0,
+                "{name} via {path}: fully-reflected export should contain NO 3D \
+                 CARTESIAN_POINT with a positive x coordinate — a nonzero count would mean \
+                 some geometry was not reflected (partial reflection, or reflection about \
+                 the wrong plane)"
+            );
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// STEP text helpers (step-6)
+// STEP text helpers
 // ---------------------------------------------------------------------------
 
 /// Export `id` to STEP text via an in-memory buffer:
 /// `kernel.export(id, ExportFormat::Step, &mut buf)` then
 /// `String::from_utf8(buf)`, both unwrapped with a message naming the
-/// handle. Reused by step-7's cross-path entity-count comparison.
+/// handle. Reused by
+/// [`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]'s
+/// cross-path entity-count comparison.
 fn step_text(kernel: &OcctKernel, id: GeometryHandleId) -> String {
     let mut buf = Vec::<u8>::new();
     kernel
@@ -737,9 +822,22 @@ fn step_text(kernel: &OcctKernel, id: GeometryHandleId) -> String {
         .unwrap_or_else(|e| panic!("STEP export of handle {id:?} should be valid UTF-8: {e}"))
 }
 
-/// Count non-overlapping occurrences of `entity` in `step_text`, scanning the
-/// WHOLE string rather than line-by-line — STEP folds long lines, so a
-/// line-based scan could split a match across a fold boundary.
+/// Count non-overlapping occurrences of `entity` in `step_text` via a plain
+/// whole-string [`str::match_indices`] scan.
+///
+/// **This is fold-fragile, not fold-safe.** STEP's line-folding inserts a
+/// newline into the byte stream, so a token that folds mid-entity (e.g.
+/// inside `PLANE(` or `CARTESIAN_TRANSFORMATION_OPERATOR`) is missed by this
+/// whole-string scan exactly as it would be by a line-based one — the
+/// newline is still there, splitting the match either way; scanning the
+/// whole string only helps for a match that spans a line boundary with no
+/// inserted character, which folding never produces. This module's three
+/// fixtures export small STEP files (118-149 entities measured), well under
+/// any line-folding threshold, so nothing folds today and every count below
+/// is exact. A future fixture large enough to fold would need either a
+/// normalize-then-count pass (strip inserted line breaks before scanning) or
+/// a documented re-verification that folding still doesn't reach the counted
+/// tokens.
 ///
 /// This is a substring match, not an exact-token match, so a suffixed
 /// spelling (e.g. `CARTESIAN_TRANSFORMATION_OPERATOR_3D`) is still counted.
@@ -758,8 +856,9 @@ fn step_entity_count(step_text: &str, entity: &str) -> usize {
 }
 
 /// Count `CARTESIAN_POINT` entities that are **3D model-space** points whose
-/// x (first) coordinate is strictly negative — i.e. baked geometry left of
-/// the x=0 plane.
+/// x (first) coordinate satisfies `pred` — i.e. baked geometry on one
+/// particular side of the x=0 plane. Shared by [`negative_x_3d_point_count`]
+/// and [`positive_x_3d_point_count`].
 ///
 /// Deliberately NOT a plain `step_entity_count(text, "CARTESIAN_POINT('',(-")`.
 /// That literal is a FALSE-POSITIVE detector, and the cone fixture proves it:
@@ -775,14 +874,16 @@ fn step_entity_count(step_text: &str, entity: &str) -> usize {
 ///
 /// Discriminator: a 3D `CARTESIAN_POINT` carries exactly three coordinates,
 /// a parameter-space one exactly two. So parse the parenthesised coordinate
-/// list and require arity 3 plus `x < 0.0`. Parsing (rather than a
+/// list and require arity 3 plus `pred(x)`. Parsing (rather than a
 /// `starts_with('-')` text test) also drops the STEP writer's signed-zero
-/// spelling `-0.` for free: IEEE `-0.0 < 0.0` is `false`.
+/// spelling `-0.` for free: IEEE `-0.0 < 0.0` and `-0.0 > 0.0` are both
+/// `false`, so a signed zero counts toward neither
+/// [`negative_x_3d_point_count`] nor [`positive_x_3d_point_count`].
 ///
-/// Whole-string scan, same as [`step_entity_count`], so a folded STEP line
-/// cannot split a match; the per-field `trim` absorbs any fold whitespace
-/// inside the coordinate list.
-fn negative_x_3d_point_count(step_text: &str) -> usize {
+/// Whole-string scan, same fold caveat as [`step_entity_count`] (fold-fragile
+/// in principle, harmless on this module's small fixtures); the per-field
+/// `trim` absorbs any fold whitespace inside the coordinate list.
+fn count_3d_points_matching(step_text: &str, pred: impl Fn(f64) -> bool) -> usize {
     const HEAD: &str = "CARTESIAN_POINT('',(";
     step_text
         .match_indices(HEAD)
@@ -792,15 +893,32 @@ fn negative_x_3d_point_count(step_text: &str) -> usize {
                 return false;
             };
             let coords: Vec<&str> = rest[..end].split(',').map(str::trim).collect();
-            coords.len() == 3 && coords[0].parse::<f64>().is_ok_and(|x| x < 0.0)
+            coords.len() == 3 && coords[0].parse::<f64>().is_ok_and(&pred)
         })
         .count()
 }
 
+/// Count 3D `CARTESIAN_POINT` entities with a strictly negative x coordinate
+/// — baked geometry left of the x=0 plane. See [`count_3d_points_matching`]
+/// for the arity discriminator and why a raw substring probe is unsound.
+fn negative_x_3d_point_count(step_text: &str) -> usize {
+    count_3d_points_matching(step_text, |x| x < 0.0)
+}
+
+/// Count 3D `CARTESIAN_POINT` entities with a strictly positive x coordinate.
+/// Used as the negative control on a reflected export: a fixture that lives
+/// wholly at x>0 before reflection should, after a FULL reflection, carry
+/// ZERO such points — a nonzero count means some geometry was not reflected
+/// (a partial reflection, or a reflection about the wrong plane). See
+/// [`count_3d_points_matching`] for the arity discriminator.
+fn positive_x_3d_point_count(step_text: &str) -> usize {
+    count_3d_points_matching(step_text, |x| x > 0.0)
+}
+
 // ---------------------------------------------------------------------------
-// Test 4 (steps 7-8) — GTransform hazards are real but ORTHOGONAL to
-// determinant sign: analytic-geometry loss and pre-tessellation fragility.
-// This is the A-δ-informing payload of the probe.
+// Test 4 — GTransform hazards are real but ORTHOGONAL to determinant sign:
+// analytic-geometry loss and pre-tessellation fragility. This is the
+// A-δ-informing payload of the probe.
 // ---------------------------------------------------------------------------
 
 /// Two `BRepBuilderAPI_GTransform` hazards that a reader could otherwise
@@ -813,14 +931,19 @@ fn negative_x_3d_point_count(step_text: &str) -> usize {
 /// "OCCT mishandles det<0" from a plausible misreading of this probe into a
 /// disproven one — precisely the distinction PRD §4's open question turns on.
 ///
-/// RED: `fresh_pretessellated_cylinder` does not exist yet, so this fails to
-/// COMPILE until step-8 adds it.
+/// Both hazards below are tracked by follow-up task **#6652** (filed as
+/// ticket `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`, which the curator resolved to
+/// that task number).
 ///
 /// **Half (a) — analytic geometry is destroyed** (fixture never tessellated).
 /// `BRepBuilderAPI_GTransform` rewrites every analytic surface (planes,
 /// cylinders, ...) as a B-spline approximation; `GeometryOp::Mirror`
 /// (`gp_Trsf::SetMirror`) does not, so analytic surface types and exact
-/// volume survive it unchanged.
+/// volume survive it unchanged. Its four assertions pin TODAY's lossy
+/// behaviour as a hard gate — **if any of them FAILS, OCCT has gotten
+/// BETTER at preserving analytic geometry under GTransform: update that
+/// assertion and this module's doc (and #6652), rather than treating the
+/// failure as a regression.**
 ///
 /// **Half (b) — pre-tessellation fragility**, and why it needs a CURVED
 /// fixture. `BRepTools_GTrsfModification` (GTransform's modifier) rewrites
@@ -836,10 +959,10 @@ fn negative_x_3d_point_count(step_text: &str) -> usize {
 /// still matches.
 ///
 /// The two `IsWatertight == false` assertions in half (b) are CHARACTERIZATION
-/// PINS of this known defect (follow-up ticket
+/// PINS of this known defect (follow-up task #6652 / ticket
 /// `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`), not desired behaviour — **if either
 /// assertion FAILS, the defect has been FIXED: delete that pin, update this
-/// module's doc, and close the named ticket.**
+/// module's doc, and close #6652.**
 #[test]
 fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
     if !OCCT_AVAILABLE {
@@ -906,18 +1029,30 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
         step_entity_count(&affine_text, "CYLINDRICAL_SURFACE"),
         0,
         "AffineApply det<0 should destroy the analytic CYLINDRICAL_SURFACE entirely \
-         (BRepBuilderAPI_GTransform rewrites it as a B-spline)"
+         (BRepBuilderAPI_GTransform rewrites it as a B-spline). Characterization pin \
+         (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion \
+         FAILS, OCCT has gotten BETTER at preserving analytic geometry under GTransform: \
+         update this pin and this module's doc rather than treating the failure as a \
+         regression."
     );
     assert_eq!(
         step_entity_count(&affine_text, "PLANE("),
         0,
-        "AffineApply det<0 should destroy the analytic PLANE( entities entirely"
+        "AffineApply det<0 should destroy the analytic PLANE( entities entirely. \
+         Characterization pin (follow-up task #6652 / ticket \
+         tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion FAILS, OCCT has gotten BETTER \
+         at preserving analytic geometry under GTransform: update this pin and this module's \
+         doc rather than treating the failure as a regression."
     );
     assert!(
         step_entity_count(&affine_text, "B_SPLINE_SURFACE") > 0,
         "AffineApply det<0 should introduce >=1 B_SPLINE_SURFACE entity (measured 5); \
          asserted as > 0 rather than an exact count since the entity name mixes plain and \
-         complex-entity spellings"
+         complex-entity spellings. Characterization pin (follow-up task #6652 / ticket \
+         tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion FAILS, OCCT has gotten BETTER \
+         at preserving analytic geometry under GTransform (no B-spline substitution needed): \
+         update this pin and this module's doc rather than treating the failure as a \
+         regression."
     );
     let affine_volume = volume_of(&kernel, affine);
     let affine_rel_err = (affine_volume - source_volume).abs() / source_volume;
@@ -925,7 +1060,11 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
         affine_rel_err > 1e-4,
         "AffineApply det<0 volume should differ from source by more than 1e-4 relative \
          (measured +8.615e-3) — this is a real analytic-to-B-spline approximation loss, not \
-         noise, got rel_err={affine_rel_err:e}"
+         noise, got rel_err={affine_rel_err:e}. Characterization pin (follow-up task #6652 / \
+         ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion FAILS, OCCT has gotten \
+         BETTER at preserving analytic geometry under GTransform (volume now survives \
+         intact): update this pin and this module's doc rather than treating the failure as \
+         a regression."
     );
 
     // --- Half (b): pre-tessellation fragility, determinant-independent ---
@@ -941,12 +1080,13 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
     let affine_b = affine_reflect_x(&mut kernel_b, base);
     assert!(
         !flag_of(&kernel_b, GeometryQuery::IsWatertight(affine_b)),
-        "Known defect (follow-up ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC): AffineApply det<0 on \
-         a pre-tessellated source is IsWatertight=false — BRepTools_GTrsfModification carries \
-         the source's stale Poly_Triangulation across the analytic-to-B-spline rewrite, so it \
-         no longer matches the new geometry and BRepCheck_Analyzer::IsValid() fails. If this \
-         assertion FAILS, the defect has been FIXED — delete this characterization pin, update \
-         this module's doc, and close ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC."
+        "Known defect (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC): \
+         AffineApply det<0 on a pre-tessellated source is IsWatertight=false — \
+         BRepTools_GTrsfModification carries the source's stale Poly_Triangulation across the \
+         analytic-to-B-spline rewrite, so it no longer matches the new geometry and \
+         BRepCheck_Analyzer::IsValid() fails. If this assertion FAILS, the defect has been \
+         FIXED — delete this characterization pin, update this module's doc, and close #6652 \
+         (ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC)."
     );
 
     let identity_b = affine_linear(
@@ -956,17 +1096,18 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
     );
     assert!(
         !flag_of(&kernel_b, GeometryQuery::IsWatertight(identity_b)),
-        "Known defect (follow-up ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC): determinant-independence \
-         proof — AffineApply with the IDENTITY linear map on a pre-tessellated source is ALSO \
-         IsWatertight=false, proving this hazard belongs to BRepBuilderAPI_GTransform itself and \
-         is NOT a det<0 orientation defect. If this assertion FAILS, the defect has been FIXED — \
-         delete this characterization pin, update this module's doc, and close ticket \
-         tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC."
+        "Known defect (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC): \
+         determinant-independence proof — AffineApply with the IDENTITY linear map on a \
+         pre-tessellated source is ALSO IsWatertight=false, proving this hazard belongs to \
+         BRepBuilderAPI_GTransform itself and is NOT a det<0 orientation defect. If this \
+         assertion FAILS, the defect has been FIXED — delete this characterization pin, \
+         update this module's doc, and close #6652 (ticket \
+         tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC)."
     );
 }
 
 // ---------------------------------------------------------------------------
-// Pre-tessellation fragility helper (step-8)
+// Pre-tessellation fragility helper
 // ---------------------------------------------------------------------------
 
 /// Build a FRESH `OcctKernel` containing only a fresh, untransformed
@@ -980,9 +1121,13 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
 ///
 ///   - **Fresh kernel.** The pre-tessellation must apply to THIS test's
 ///     source handle only. Reusing a shared kernel/fixture would silently
-///     contaminate steps 1/3/5's assertions, which all require an
-///     UNTESSELLATED source — tessellating a fixture before reflecting it is
-///     exactly the hazard test 4 half (b) is characterizing.
+///     contaminate the assertions in tests 1-3
+///     (`both_reflection_paths_yield_valid_positive_volume_solids`,
+///     `both_reflection_paths_tessellate_to_outward_wound_closed_manifold`,
+///     `reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement`),
+///     which all require an UNTESSELLATED source — tessellating a fixture
+///     before reflecting it is exactly the hazard test 4 half (b) is
+///     characterizing.
 ///   - **Tessellate-then-reflect ordering.** Verified 3-way in the probe:
 ///     (A) no pre-tessellation → both `Mirror` and `AffineApply` (det<0 and
 ///     identity) report `IsWatertight=true`; (B) pre-tessellate the SOURCE
