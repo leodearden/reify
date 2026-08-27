@@ -498,13 +498,29 @@ structure def StepForce : ForcingFunction {
     // rather than relying solely on test coverage (task-2544 convention,
     // mirroring `ModalOptions.n_modes > 0` above and
     // `PiecewisePolynomialProfile.waypoints.count > 0` in trajectory.ri).
-    // Dimensioned literal `0N` (= 0 newtons in SI) is retained by convention:
-    // an explicit newton bound reads better in production code. A bare `0`
-    // would ALSO compile — task-4485/β's polymorphic-zero rewrite promotes a
-    // syntactic zero to `Scalar<Force>(0.0)` at compile time, before the
-    // dimension guard runs, so the compiled RHS is already dimensioned by the
-    // time `eval_cmp` checks dim-equality at runtime (task #3115 esc-3115-112
-    // resolved).
+    //
+    // ── DIMENSIONED-ZERO CONVENTION ─────────────────────────────────────
+    // Canonical statement. Other stdlib sites point here instead of restating
+    // the mechanism; task #3115 esc-3115-112, resolved by task-4485/β.
+    //
+    // In COMPARISON / ADDITIVE OPERAND position a syntactic zero is rewritten
+    // to `Scalar<D>(0.0)` at compile time, taking D from the sibling operand,
+    // before the dimension guard and type inference run. It covers `0`, `0.0`
+    // and negated forms; every dimension family; every relational operator
+    // (`>=` as much as `>`); and any sibling whose COMPILED TYPE is a
+    // non-dimensionless `Scalar`, a member access such as `material.density`
+    // included — the rewrite keys on that type, not on the sibling's
+    // expression shape. So a dimensioned RHS literal is never REQUIRED in this
+    // position, and the compiled RHS is dimensioned by the time `eval_cmp`
+    // checks dim-equality at runtime either way.
+    //
+    // `0N` is retained here because an explicit newton bound reads better in
+    // production code — a convention, not a requirement.
+    //
+    // In PARAM-DEFAULT position the rewrite does NOT apply; see the
+    // `phase : Angle = 0deg` note further down this file.
+    //
+    // Pinned by crates/reify-compiler/tests/polymorphic_zero_tests.rs.
     constraint magnitude > 0N
 
     // NOTE — explicitly NOT constrained:
@@ -555,11 +571,10 @@ structure def ImpulseForce : ForcingFunction {
     param time : Time
 
     // `impulse : Impulse` keeps the explicit dimensioned-zero form
-    // `0 * 1N * 1s` for readability — it spells out N·s = kg·m·s⁻¹ = Impulse
-    // right at the constraint site — same convention as `frequency > 0Hz` on
-    // the Frequency-typed HarmonicForce.frequency and `StepForce.magnitude
-    // > 0N` above. Polymorphic zero HAS landed (task-4485/β, task #3115
-    // esc-3115-112 resolved), so a bare `0` would compile here too. By
+    // `0 * 1N * 1s` because it spells out N·s = kg·m·s⁻¹ = Impulse right at the
+    // constraint site; a bare `0` would compile too.
+    // DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N` note
+    // above. By
     // convention, `direction` carries the sign (unit vector); `impulse` carries
     // the positive scalar magnitude. Declaring the lower bound at the
     // structure-def level follows the task-2544 explicit-contract convention.
@@ -602,22 +617,15 @@ structure def ImpulseForce : ForcingFunction {
 //               negative frequency is degenerate (symmetric to positive under the
 //               sine function). Encoded as `Frequency` (bare dimension name).
 //   phase     — initial phase offset in angle units. Default `0deg` (zero Angle
-//               literal) per PRD §5.1 "default: 0". `= 0deg` is the canonical
-//               zero-Angle default and is preferred because it keeps the
-//               default dimensioned at the declaration site — but it is a
-//               CONVENTION, not a requirement (the "required" claim previously
-//               recorded here under task #3115 esc-3115-112 was false): a bare
-//               `= 0` is also accepted, by the param-default literal guard.
-//               Evidence is the landed test
-//               `param_int_and_real_literal_on_dimensioned_scalar_do_not_error`
-//               in crates/reify-compiler/tests/param_default_type_mismatch_tests.rs,
-//               which asserts `param zero_int : Length = 0` raises no
-//               `ParamDefaultTypeMismatch`. NOTE this is the param-default
-//               path, NOT the binop polymorphic-zero rewrite: task-4485/β
-//               reaches comparison/additive OPERANDS only (its sole call site
-//               is in `compile_binop`) and does not extend to param defaults,
-//               so it is deliberately not cited as the reason here.
-//               Choice of `deg` over `rad`
+//               literal) per PRD §5.1 "default: 0". `= 0deg` is a CONVENTION,
+//               not a requirement — a bare `= 0` compiles, accepted by the
+//               param-default literal guard (esc-3115-112). But the
+//               DIMENSIONED-ZERO CONVENTION above does NOT reach a param
+//               default: that guard only SUPPRESSES the
+//               `ParamDefaultTypeMismatch` diagnostic, it performs no rewrite,
+//               so `= 0` leaves the stored default DIMENSIONLESS while `= 0deg`
+//               stores `Scalar<Angle>(0.0)`. `0deg` is preferred for that
+//               reason, not merely for readability. Choice of `deg` over `rad`
 //               follows the `Angularity.nominal_angle : Angle = 0deg`
 //               precedent in `tolerancing.ri` and is more user-intuitive
 //               for the typical 0/90/180 phase-offset workflow. Any real phase
@@ -637,19 +645,14 @@ structure def HarmonicForce : ForcingFunction {
     // sign (unit vector); amplitude carries the positive peak size. Declaring
     // the lower bound at the structure-def level follows the task-2544
     // explicit-contract convention (same rationale as `StepForce.magnitude
-    // > 0N` and `ModalOptions.n_modes > 0`). Dimensioned literal `0N` retained
-    // by convention (it reads as an explicit newton bound); a bare `0` would
-    // also compile, coerced to `Scalar<Force>(0.0)` at compile time by
-    // task-4485/β's polymorphic-zero rewrite (task #3115 esc-3115-112
-    // resolved).
+    // > 0N` and `ModalOptions.n_modes > 0`). `0N` retained per the
+    // DIMENSIONED-ZERO CONVENTION on `StepForce.magnitude > 0N` above.
     constraint amplitude > 0N
 
     // A zero-frequency "harmonic" is a DC offset (degenerate as a sinusoid);
     // negative frequency is symmetric to positive under sin() and physically
-    // degenerate for a "harmonic" excitation. Dimensioned literal `0Hz`
-    // retained by the same convention as `amplitude > 0N` above; a bare `0`
-    // would also compile, coerced to `Scalar<Frequency>(0.0)` at compile time
-    // by task-4485/β (task #3115 esc-3115-112 resolved).
+    // degenerate for a "harmonic" excitation. `0Hz` retained per the
+    // DIMENSIONED-ZERO CONVENTION on `StepForce.magnitude > 0N` above.
     constraint frequency > 0Hz
 
     // NOTE — explicitly NOT constrained:

@@ -34,17 +34,13 @@
 //     longer a flat param; a geometry-derived positivity will be revived
 //     in Phase 6). RHS is dimensioned (kg/m³) so `eval_cmp` dim-equality
 //     succeeds at runtime after task #3111 tightened Material.density from
-//     Real to Density; `0kg/m^3` is retained by convention, and a bare `0`
-//     would also compile — coerced to `Scalar<Density>(0.0)` at compile time
-//     by task-4485/β's polymorphic-zero rewrite (esc-3115-112 resolved). The
-//     rewrite does reach a MEMBER-ACCESS operand like `material.density`: its
-//     gate keys on the sibling's compiled type being `Scalar<D>`, not on the
-//     sibling's expression shape (measured in task 6038 —
-//     `member_access_lhs_gt_zero_no_error` in
-//     crates/reify-compiler/tests/polymorphic_zero_tests.rs). That is NOT in
-//     tension with the `moi_principal[0]` IndexAccess note below: that one
-//     records a deliberate choice not to lean on the coercion for a different
-//     operand shape, which this task did not re-measure.
+//     Real to Density; `0kg/m^3` is retained by convention, not required — a
+//     bare `0` compiles too, MEMBER-ACCESS operand included, because the
+//     rewrite keys on the sibling's compiled type rather than its expression
+//     shape. DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N`
+//     note in modal_analysis.ri. The `moi_principal[0]` IndexAccess note below
+//     is not in tension with this: it records a deliberate choice not to lean
+//     on the coercion for a different operand shape.
 //
 // Historical note: prior to task 1876 this refined a trait named `Material`,
 // later renamed to `MaterialSpec`. PRD Phase 1 retires the trait edge
@@ -103,9 +99,10 @@ trait Rigid : Physical {
 trait Flexible {
     param stiffness : Stiffness
     param max_deflection : Length
-    // Bare `0` coerced to Scalar<Stiffness> / Scalar<Length> at compile time
-    // by task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved — the old
-    // multiplication boilerplate `0.0 * 1N/1m` / `0.0 * 1m` is no longer needed).
+    // Bare `0`, not the old `0.0 * 1N/1m` / `0.0 * 1m` boilerplate: it is
+    // coerced to Scalar<Stiffness> / Scalar<Length> at compile time.
+    // DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N` note in
+    // modal_analysis.ri.
     constraint stiffness > 0
     constraint max_deflection > 0
 }
