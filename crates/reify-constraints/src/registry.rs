@@ -3,7 +3,7 @@
 //! Combines classification + decomposition to dispatch sub-problems
 //! to domain-specific solvers.
 
-use crate::decompose::{SubProblem, decompose_into_components};
+use crate::decompose::SubProblem;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver,
@@ -36,9 +36,19 @@ const LEX_EPSILON_BAND_ABS: f64 = 1e-9;
 /// no `ConstraintSolver` trait method is added (`SolveResult` /
 /// `RankedSolveResult` are frozen per F-result I1).
 ///
-/// `solve_inner` itself consults the same classifier that produces this
-/// verdict, so the reported fact and the behaviour it describes provably
-/// cannot drift (G7 no-lockstep-duplication).
+/// `solve_inner` does not merely consult the same classifier — it consumes the
+/// same [`decompose_prelude`] call, components and verdict together, so the
+/// reported fact and the behaviour it describes provably cannot drift (G7
+/// no-lockstep-duplication).
+///
+/// That covers the WHOLE prelude, expansion included (task #5417 step-18,
+/// review round 1 finding 3). The objective's refs are widened through
+/// `dependent_cells` before the first-match scan, so a LET-INDIRECTED objective
+/// — `minimize <derived cell>`, which names no auto directly — is classified
+/// [`Consumed`](Self::Consumed) exactly when the solver does in fact consume it.
+/// While the expansion lived only in `solve_inner`, such an objective was
+/// reported [`FallbackComponentZero`](Self::FallbackComponentZero) and the
+/// engine raised `E_OBJECTIVE_UNCONSUMED` against a model that was fine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ObjectiveConsumption {
     /// The problem declares no objective, so there is nothing to consume.
@@ -66,83 +76,193 @@ pub enum ObjectiveConsumption {
     },
 }
 
-/// Collect the union of every objective term's value-refs, or `None` when the
-/// problem declares no objective.
-///
-/// Single-term `ObjectiveSet`s reduce to the prior single-expr ref set
-/// bit-identically (PRD §6.2 invariant I2).
-fn objective_value_refs(
-    problem: &ResolutionProblem,
-) -> Option<std::collections::HashSet<ValueCellId>> {
-    problem.objective.as_ref().map(|obj: &ObjectiveSet| {
-        let mut refs = std::collections::HashSet::new();
-        for term in &obj.terms {
-            crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
-        }
-        refs
-    })
-}
-
-/// Run `solve_inner`'s decomposition prelude once, returning both the
+/// Run `solve_inner`'s decomposition prelude ONCE, returning both the
 /// components it routes on and the [`ObjectiveConsumption`] verdict those
 /// components imply.
 ///
 /// This is the single source both `solve_inner` and the public
-/// [`objective_consumption`] read, so the routing decision and the reported
-/// fact cannot diverge (G7). The `auto_params.is_empty()` short-circuit mirrors
+/// [`objective_consumption`] read — not two copies kept in step, but one body
+/// with one caller each — so the routing decision and the reported fact cannot
+/// diverge (G7). The `auto_params.is_empty()` short-circuit mirrors
 /// `solve_inner`'s own early exit, so no decomposition work is added on that
 /// path.
+///
+/// Sharing the whole prelude, rather than just the decomposition call, is what
+/// makes the claim hold for LET-INDIRECTED objectives (task #5417 step-18,
+/// review round 1 finding 3). The objective's refs are expanded through
+/// `dependent_cells` BEFORE the first-match scan, exactly as `solve_inner` used
+/// to do inline; without that, `minimize <derived cell>` matched no component,
+/// answered [`ObjectiveConsumption::FallbackComponentZero`], and contradicted
+/// the routing — which then fired `E_OBJECTIVE_UNCONSUMED` on a model whose
+/// objective the solver had in fact consumed.
+///
+/// The returned `component` index is an index INTO THE RETURNED VECTOR and is
+/// meaningless against any other decomposition: components are assembled by
+/// iterating a `HashMap` keyed on union-find roots, so their ORDER varies
+/// between invocations even for identical inputs. Callers must use the pair
+/// together.
+struct DecompositionPrelude {
+    /// The components `solve_inner` routes on.
+    components: Vec<SubProblem>,
+    /// The verdict those components imply. Its `component` index is an index
+    /// into `components` above and is meaningless against any other vector.
+    consumption: ObjectiveConsumption,
+    /// dependent-cell id → the autos it reads TRANSITIVELY. Returned rather
+    /// than rebuilt because `solve_inner`'s per-component `dependent_cells`
+    /// fold filter needs the same map, and re-deriving it there would be a
+    /// second transitive walk on the solve hot path.
+    dependent_auto_reads: HashMap<ValueCellId, std::collections::HashSet<ValueCellId>>,
+}
+
+/// The `(components, verdict)` half of [`decompose_prelude`], for callers that
+/// do not route and so have no use for the reads map — namely the public
+/// [`objective_consumption`] fact and its unit tests.
+///
+/// A thin projection, deliberately NOT a second implementation: there is one
+/// prelude body, and this returns two of its three outputs.
 fn decompose_and_classify(problem: &ResolutionProblem) -> (Vec<SubProblem>, ObjectiveConsumption) {
+    let prelude = decompose_prelude(problem);
+    (prelude.components, prelude.consumption)
+}
+
+fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
     let has_objective = problem.objective.is_some();
 
     // Mirrors solve_inner's first early exit: with no auto params there is
     // nothing to decompose and any declared objective is dropped.
     if problem.auto_params.is_empty() {
-        let verdict = if has_objective {
+        let consumption = if has_objective {
             ObjectiveConsumption::NoAutoParams
         } else {
             ObjectiveConsumption::NoObjective
         };
-        return (Vec::new(), verdict);
+        return DecompositionPrelude {
+            components: Vec::new(),
+            consumption,
+            dependent_auto_reads: HashMap::new(),
+        };
     }
 
-    let obj_refs = objective_value_refs(problem);
+    // For each dependent cell, the autos it reads TRANSITIVELY (task #5720).
+    // Computed ONCE — it is consumed three times below (the objective-ref
+    // expansion, the decomposition, and, through the returned components,
+    // solve_inner's per-component fold filter).
+    let dependent_auto_reads =
+        crate::decompose::dependent_cell_auto_reads(&problem.dependent_cells, &problem.auto_params);
 
-    // Decompose into connected components, merging any components whose auto
-    // params are co-referenced by the objective expression(s).
+    // Collect value-refs from ALL objective terms for objective-aware
+    // decomposition. Single-term `ObjectiveSet`s reduce to the prior
+    // single-expr ref set bit-identically (PRD §6.2 invariant I2).
     //
-    // `dependent_cells` is threaded through so connectivity follows derived
-    // cells exactly as `solve_inner`'s own prelude does (tasks #5720 / #5467).
-    let components = decompose_into_components(
+    // RETAINED, not discarded (task #5467 amendment): the expansion's reach
+    // delta is handed to the decomposition below so it need not re-derive the
+    // identical set. See the `obj_reach` note at that call.
+    let mut obj_reach: Vec<ValueCellId> = Vec::new();
+    let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
+        problem.objective.as_ref().map(|obj: &ObjectiveSet| {
+            let mut refs = std::collections::HashSet::new();
+            for term in &obj.terms {
+                crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
+            }
+            // Expand through `dependent_cells` (task #5720): a ref to a derived
+            // cell also means every auto that cell transitively drives.
+            // Delegated to decompose.rs' ONE expansion body (task #5467 layer 2)
+            // rather than hand-rolled here — the same helper the decomposition's
+            // own constraint and objective sides use, so the three cannot drift
+            // out of lock-step (G7).
+            // This expansion exists for the FIRST-MATCH LOOKUP below, not for
+            // `decompose_into_components_with_reads` — that function widens
+            // `objective_refs` itself and never needed a pre-expanded input.
+            // Handing it the already-widened set is behaviourally free (the
+            // expansion is idempotent), but it is not COST-free: re-deriving the
+            // delta there re-clones every reached id, two `String` allocations
+            // apiece. So the delta is kept here and passed down instead of
+            // dropped on the floor.
+            obj_reach = crate::decompose::expand_refs_through_dependent_cells(
+                &mut refs,
+                &dependent_auto_reads,
+            );
+            refs
+        });
+
+    // Decompose into connected components. Decomposition FOLLOWS
+    // `dependent_cells`: because `obj_refs` above was expanded through them, an
+    // objective that reads a derived cell unions every auto that cell
+    // transitively drives into ONE component, and the first-match lookup below
+    // therefore resolves for real.
+    //
+    // Why the expansion is load-bearing (task #5720): the canonical joint-drive
+    // shape (task #5189 β) is an objective that reads a bare derived cell and NO
+    // auto directly, so the unexpanded `obj_refs` held no auto ids at all. The
+    // objective-union step filters to auto indices, would get an empty set, and
+    // would union nothing — two autos coupled only through that cell would land
+    // in separate components, and the lookup below would fall through to the
+    // hardcoded `0`, handing the objective to an arbitrary component of a
+    // nondeterministic `HashMap` iteration while the other component's autos
+    // were solved feasibility-only against stale seeds.
+    //
+    // LAYER 2 (task #5467 / PRD2 α): the CONSTRAINT side follows
+    // `dependent_cells` too, so `constraint s == 10.0` over `let s = a + b`
+    // couples `a` and `b` into one component instead of referencing no auto at
+    // all and being skipped. `_with_reads` is called directly with the map built
+    // once above — the 4-arg `decompose_into_components` wrapper would rebuild
+    // it, a second transitive walk on the solve hot path.
+    //
+    // `obj_reach` is the delta the pre-expansion above already computed and
+    // already folded into `obj_refs`; passing it spares the objective-union step
+    // a second full `dependent_cell_reach_delta` walk over the same map. It is
+    // empty (and the parameter inert) whenever there is no objective or no
+    // dependent cell — the D1/B2 identity path.
+    let components = crate::decompose::decompose_into_components_with_reads(
         &problem.auto_params,
         &problem.constraints,
         obj_refs.as_ref(),
-        &problem.dependent_cells,
+        Some(&obj_reach),
+        &dependent_auto_reads,
     );
 
     let Some(refs) = obj_refs else {
-        return (components, ObjectiveConsumption::NoObjective);
+        return DecompositionPrelude {
+            components,
+            consumption: ObjectiveConsumption::NoObjective,
+            dependent_auto_reads,
+        };
     };
 
     // Mirrors solve_inner's second early exit: no components ⇒ the auto params
     // are unconstrained and the objective is dropped.
     if components.is_empty() {
-        return (components, ObjectiveConsumption::NoComponents);
+        return DecompositionPrelude {
+            components,
+            consumption: ObjectiveConsumption::NoComponents,
+            dependent_auto_reads,
+        };
     }
 
-    // The objective-component first-match scan. Because
-    // `decompose_into_components` unions all objective-referenced params, they
-    // are guaranteed to land in a single component, so first-match always
-    // finds the correct one.
+    // The objective-component first-match scan, over the EXPANDED `refs`.
+    // Because the decomposition unions all objective-referenced params —
+    // including the ones reached only through a dependent cell — they are
+    // guaranteed to land in a single component, so first-match always finds the
+    // correct one.
+    //
+    // A cell absent from `dependent_auto_reads` contributes nothing to the
+    // expansion and so is matched on its own id alone: that is deliberate, and
+    // it is the shape the `FallbackComponentZero` arm below still exists for.
     let matched = components
         .iter()
         .position(|comp| refs.iter().any(|r| comp.auto_params.contains(r)));
 
-    match matched {
-        Some(component) => (components, ObjectiveConsumption::Consumed { component }),
-        // Objective references no auto param in any component → solve_inner
-        // gives it to component 0 regardless.
-        None => (components, ObjectiveConsumption::FallbackComponentZero),
+    let consumption = match matched {
+        Some(component) => ObjectiveConsumption::Consumed { component },
+        // Objective reaches no auto param in any component, even after
+        // following `dependent_cells` → solve_inner gives it to component 0
+        // regardless.
+        None => ObjectiveConsumption::FallbackComponentZero,
+    };
+    DecompositionPrelude {
+        components,
+        consumption,
+        dependent_auto_reads,
     }
 }
 
@@ -151,12 +271,17 @@ fn decompose_and_classify(problem: &ResolutionProblem) -> (Vec<SubProblem>, Obje
 ///
 /// Pure, deterministic, and solver-free: the verdict is a function of the
 /// problem alone, so the engine can consult it without dispatching a solve.
-/// `SolverRegistry::solve_inner` derives its own routing from the same
-/// classifier, which is what guarantees the fact describes the behaviour that
-/// actually happens (G7 no-lockstep-duplication).
+/// `SolverRegistry::solve_inner` takes its routing from the SAME
+/// [`decompose_prelude`] body — dependent-cell reads, objective-ref expansion,
+/// component build and first-match scan, all of it — which is what guarantees
+/// the fact describes the behaviour that actually happens (G7
+/// no-lockstep-duplication). The expansion is the part that matters in
+/// practice: without it a `minimize` over a derived cell was reported dropped
+/// while the solver was consuming it (task #5417 step-18).
 ///
-/// Cost is one `decompose_into_components` pass — cheap relative to the solve
-/// it accompanies, and skipped entirely when the problem has no auto params.
+/// Cost is one `decompose_into_components_with_reads` pass plus the transitive
+/// dependent-cell walk it needs — cheap relative to the solve it accompanies,
+/// and skipped entirely when the problem has no auto params.
 pub fn objective_consumption(problem: &ResolutionProblem) -> ObjectiveConsumption {
     decompose_and_classify(problem).1
 }
@@ -297,17 +422,22 @@ impl SolverRegistry {
         // vector — see the "δ best-of-K propagation" doc section above.
         let mut captured_candidates: Option<Vec<RankedCandidate>> = None;
 
-        // Objective ref-collection + objective-component first-match, run ONCE
-        // (task γ #5417). The three objective drop sites below and the public
-        // `objective_consumption` fact both read this one classification.
+        // The decomposition prelude — dependent-cell reads, objective-ref
+        // expansion, component build, objective-component first-match — runs
+        // ONCE, in `decompose_and_classify`. The three objective drop sites
+        // below and the public `objective_consumption` fact read that one
+        // classification, so the fact can never drift from the routing it
+        // describes (G7 no-lockstep-duplication). Routing is unchanged: each arm
+        // below does exactly what the previous inline code did.
         //
-        // The components it decomposes are DISCARDED here: this back-merge kept
-        // main's #5720/#5467 decomposition prelude below as the routing of
-        // record, and `decompose_and_classify` has not yet been re-extracted
-        // around it, so its own 3-arg decomposition is not the one this solve
-        // routes on. Collapsing the two — restoring the G7 single-source claim
-        // this doc makes — is #5417 step-18.
-        let (_classifier_components, consumption) = decompose_and_classify(problem);
+        // `components` and `consumption` MUST be taken from the same call:
+        // `Consumed { component }` is an index into THIS vector, and component
+        // order varies between invocations (`HashMap`-keyed assembly).
+        let DecompositionPrelude {
+            components,
+            consumption,
+            dependent_auto_reads,
+        } = decompose_prelude(problem);
 
         // Early exit: no auto params → already solved
         if problem.auto_params.is_empty() {
@@ -325,85 +455,6 @@ impl SolverRegistry {
                 None,
             );
         }
-
-        // For each dependent cell, the autos it reads TRANSITIVELY (task #5720).
-        // Computed ONCE per solve — never inside the component loop below, which
-        // also consumes it as the per-component fold filter.
-        let dependent_auto_reads = crate::decompose::dependent_cell_auto_reads(
-            &problem.dependent_cells,
-            &problem.auto_params,
-        );
-
-        // Collect value-refs from ALL objective terms for objective-aware decomposition.
-        // Single-term ObjectiveSet reduces to the prior single-expr ref set bit-identically.
-        //
-        // RETAINED, not discarded (task #5467 amendment): the expansion's reach
-        // delta is handed to the decomposition below so it need not re-derive
-        // the identical set. See the `obj_reach` note at that call.
-        let mut obj_reach: Vec<ValueCellId> = Vec::new();
-        let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
-            problem.objective.as_ref().map(|obj: &ObjectiveSet| {
-                let mut refs = std::collections::HashSet::new();
-                for term in &obj.terms {
-                    crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
-                }
-                // Expand through `dependent_cells` (task #5720): a ref to a
-                // derived cell also means every auto that cell transitively
-                // drives.  Delegated to decompose.rs' ONE expansion body (task
-                // #5467 layer 2) rather than hand-rolled here — the same helper
-                // the decomposition's own constraint and objective sides use,
-                // so the three cannot drift out of lock-step (G7).
-                // This expansion exists for the `objective_component` FIRST-MATCH
-                // LOOKUP below, not for `decompose_into_components_with_reads` —
-                // that function widens `objective_refs` itself and never needed a
-                // pre-expanded input. Handing it the already-widened set is
-                // behaviourally free (the expansion is idempotent), but it is not
-                // COST-free: re-deriving the delta there re-clones every reached
-                // id, two `String` allocations apiece. So the delta is kept here
-                // and passed down instead of dropped on the floor.
-                obj_reach = crate::decompose::expand_refs_through_dependent_cells(
-                    &mut refs,
-                    &dependent_auto_reads,
-                );
-                refs
-            });
-
-        // Decompose into connected components. Decomposition FOLLOWS
-        // `dependent_cells`: because `obj_refs` above was expanded through them,
-        // an objective that reads a derived cell unions every auto that cell
-        // transitively drives into ONE component, and `objective_component`'s
-        // first-match lookup below therefore resolves for real.
-        //
-        // Why the expansion is load-bearing (task #5720): the canonical
-        // joint-drive shape (task #5189 β) is an objective that reads a bare
-        // derived cell and NO auto directly, so the unexpanded `obj_refs` held
-        // no auto ids at all. `decompose_into_components`' objective-union step
-        // filters to auto indices, got an empty set, and unioned nothing — two
-        // autos coupled only through that cell landed in separate components,
-        // and the lookup below fell through to the hardcoded `0`, handing the
-        // objective to an arbitrary component of a nondeterministic `HashMap`
-        // iteration while the other component's autos were solved
-        // feasibility-only against stale seeds.
-        //
-        // LAYER 2 (task #5467 / PRD2 α): the CONSTRAINT side now follows
-        // `dependent_cells` too, so `constraint s == 10.0` over `let s = a + b`
-        // couples `a` and `b` into one component instead of referencing no auto
-        // at all and being skipped. `_with_reads` is called directly with the
-        // map built once above — the 4-arg `decompose_into_components` wrapper
-        // would rebuild it, a second transitive walk on the solve hot path.
-        //
-        // `obj_reach` is the delta the pre-expansion above already computed and
-        // already folded into `obj_refs`; passing it spares the objective-union
-        // step a second full `dependent_cell_reach_delta` walk over the same
-        // map. It is empty (and the parameter inert) whenever there is no
-        // objective or no dependent cell — the D1/B2 identity path.
-        let components = crate::decompose::decompose_into_components_with_reads(
-            &problem.auto_params,
-            &problem.constraints,
-            obj_refs.as_ref(),
-            Some(&obj_reach),
-            &dependent_auto_reads,
-        );
 
         // If no components (all constraints reference non-auto params),
         // the auto params are unconstrained. Return current values or defaults.
