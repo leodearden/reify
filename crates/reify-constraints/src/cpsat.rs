@@ -1218,7 +1218,7 @@ impl Ord for ScoredModel {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.score
             .partial_cmp(&other.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — always FINITE, not merely never-NaN: `ScoredModel.score` is only ever an `eval_objective_set` result (the sole construction site is in `solve_ranked_with_budget`), and that function fails closed on a non-finite ACCUMULATOR since task #6377 (`if !acc.is_finite() { return None }`), so ±Inf is rejected too and `partial_cmp` cannot return None here
             .then(self.index.cmp(&other.index))
     }
 }

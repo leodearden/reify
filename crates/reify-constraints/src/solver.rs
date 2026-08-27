@@ -3924,7 +3924,7 @@ impl DimensionalSolver {
         // is genuinely dead code.
         scored.sort_by(|a, b| {
             a.2.partial_cmp(&b.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — always FINITE, not merely never-NaN: every score in `scored` came from `eval_objective_set`, which since task #6377 fails closed on a non-finite ACCUMULATOR (`if !acc.is_finite() { return None }`), so ±Inf is rejected too and `partial_cmp` cannot return None here
                 .then(a.0.cmp(&b.0))
         });
 
