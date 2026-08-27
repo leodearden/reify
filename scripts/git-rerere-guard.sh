@@ -315,7 +315,7 @@ _report_armed_worktree() {
 
 _sweep_worktree_configs() {
     local armed=0 wt_config wt_name mentions key value
-    local last_enabled last_autoupdate
+    local last_enabled last_autoupdate read_out read_status
 
     # config.worktree is DEAD BYTES unless extensions.worktreeConfig is true —
     # git does not read those files at all, so a rerere.enabled=true sitting in
@@ -417,6 +417,34 @@ _sweep_worktree_configs() {
         # `arm` can NEVER clear, because it writes --local and cannot touch a
         # per-worktree file, so the store would park on the advisory exit 2
         # forever.  Accumulate here, decide after the loop.
+        #
+        # The read's STATUS is captured, never discarded with `|| true`.
+        # --includes lets it fail on a file this loop never opens — a circular
+        # chain and an unreadable include target both exit 128 with NO stdout —
+        # and `|| true` would launder that into empty output, i.e. into "no
+        # rerere keys here, clean": the exact silent-false-clean the guard
+        # exists to prevent.  A command substitution swallows the status, so the
+        # output is assigned to a variable under a guarded `if` first and the
+        # loop is fed from that variable.  Still exactly ONE fork per file.
+        read_status=0
+        read_out="$(git config --file "$wt_config" --includes --bool \
+            --get-regexp '^rerere\.(enabled|autoupdate)$' 2>/dev/null)" || read_status=$?
+
+        # Exit 1 is git's ordinary "no matching key" answer — CLEAN.  Anything
+        # else means this file's value could not be resolved at all, which is
+        # UNKNOWN, not ARMED: `arm` writes --local and cannot fix a lane the
+        # guard merely fails to read, so folding it into `armed` would strand the
+        # store on a permanent failure — the same trap the extensions.
+        # worktreeConfig gate avoids.  Warn and CONTINUE, so one broken lane
+        # cannot mask the rest.
+        if [ "$read_status" -ne 0 ] && [ "$read_status" -ne 1 ]; then
+            echo "WARNING: cannot read $wt_config through its include.path chain — skipping worktree '$wt_name'." >&2
+            echo "  git config exited $read_status; a circular chain and an unreadable include" >&2
+            echo "  target both report 128 with no output, which is indistinguishable from clean." >&2
+            echo "  This lane's rerere state is UNKNOWN, not verified safe." >&2
+            continue
+        fi
+
         last_enabled=""
         last_autoupdate=""
         while read -r key value; do
@@ -425,7 +453,7 @@ _sweep_worktree_configs() {
                 rerere.autoupdate) last_autoupdate="$value" ;;
             esac
         done <<EOF
-$(git config --file "$wt_config" --includes --bool --get-regexp '^rerere\.(enabled|autoupdate)$' 2>/dev/null || true)
+$read_out
 EOF
 
         if [ "$last_enabled" = "true" ]; then
@@ -509,7 +537,10 @@ cmd_arm() {
     if ! cmd_check; then
         echo "WARNING: rerere is STILL armed after writing the shared config." >&2
         echo "  The shared write above SUCCEEDED — what survives is an override this run" >&2
-        echo "  cannot reach: another lane's config.worktree, or the user's global gitconfig." >&2
+        echo "  cannot reach: another lane's config.worktree, the user's global gitconfig, or" >&2
+        echo "  an include.path chain in the shared config resolved AFTER the section this run" >&2
+        echo "  wrote — git rewrites an existing [rerere] section IN PLACE, so a later [include]" >&2
+        echo "  still wins (measured), and the write can succeed while changing nothing." >&2
         echo "  See the ARMED lines above for which, and clear it at that scope." >&2
         # Exit 2, NOT 1.  setup-dev.sh runs `arm` under `set -e` on every
         # developer setup, and this branch is dominated by a FOREIGN lane's
