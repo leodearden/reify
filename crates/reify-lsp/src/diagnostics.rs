@@ -125,7 +125,7 @@ pub fn compute_diagnostics_with_state(
 
     // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
-    // `compile_with_stdlib` below). See task 2525.
+    // `compile_with_stdlib_checked` below). See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     for err in &parsed.errors {
         diagnostics.push(convert::convert_parse_error(err, source, uri));
@@ -140,8 +140,12 @@ pub fn compute_diagnostics_with_state(
         };
     }
 
-    // Compile
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    // Compile. Real checker (task #6798, PRD leaf pi): matches `reify check`
+    // (crates/reify-cli/src/main.rs:200) and the GUI
+    // (gui/src-tauri/src/engine.rs:843) instead of the compile-time
+    // CompileTimeIndeterminateChecker stub, so `auto:` candidate feasibility
+    // sees the same constraint verdicts the CLI does.
+    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
     for diag in &compiled.diagnostics {
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
@@ -734,7 +738,7 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     let module_name = module_name_from_uri(uri);
 
     // Parse (prelude-aware so stdlib enum references disambiguate correctly;
-    // pairs with `compile_with_stdlib` below). See task 2525.
+    // pairs with `compile_with_stdlib_checked` below). See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
 
     // Convert parse errors
@@ -742,8 +746,12 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
         result.push(convert::convert_parse_error(err, source, uri));
     }
 
-    // Compile
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    // Compile. Real checker (task #6798, PRD leaf pi): matches `reify check`
+    // (crates/reify-cli/src/main.rs:200) and the GUI
+    // (gui/src-tauri/src/engine.rs:843) instead of the compile-time
+    // CompileTimeIndeterminateChecker stub, so `auto:` candidate feasibility
+    // sees the same constraint verdicts the CLI does.
+    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
 
     // Convert compiler diagnostics
     for diag in &compiled.diagnostics {
