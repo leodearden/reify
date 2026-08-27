@@ -2061,21 +2061,70 @@ fn survey_output_path() -> PathBuf {
     survey_output_path_for(std::env::var(OUT_ENV).ok())
 }
 
-/// The `git rev-parse HEAD` of the workspace, stamped into the artifact header.
-fn base_commit() -> String {
+/// Run one git command at the workspace root and return its trimmed stdout.
+///
+/// Every invocation is `-C WORKSPACE_ROOT` (the test process's own CWD is the
+/// crate directory, not the repo root), and every one keeps the non-zero-exit
+/// assertion: a git read that silently failed would feed an empty string into
+/// [`stamp_decision`], which is precisely the "looks clean" reading that must
+/// never be reachable by accident.
+fn git_read(args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(WORKSPACE_ROOT)
-        .args(["rev-parse", "HEAD"])
+        .args(args)
         .output()
-        .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: cannot run git: {e}"));
+        .unwrap_or_else(|e| {
+            panic!(
+                "ctor_conformance_corpus_survey: cannot run `git {}` in {WORKSPACE_ROOT}: {e}",
+                args.join(" ")
+            )
+        });
     assert!(
         out.status.success(),
-        "ctor_conformance_corpus_survey: `git rev-parse HEAD` exited {:?}: {}",
+        "ctor_conformance_corpus_survey: `git {}` in {WORKSPACE_ROOT} exited {:?}: {}",
+        args.join(" "),
         out.status.code(),
         String::from_utf8_lossy(&out.stderr).trim()
     );
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// The commit stamped into the artifact header — `git merge-base main HEAD`,
+/// deliberately NOT `git rev-parse HEAD`.
+///
+/// A task-branch tip is a commit the merge machinery can, and demonstrably did,
+/// rewrite. The first committed survey stamped `a0d0899874…`, the pre-rebase
+/// duplicate of `23d1af852a` (identical subject, different tree), orphaned into
+/// a dangling object when this branch was rebased onto a newer `main`. Stamping
+/// another branch tip would merely re-arm the identical failure at the next
+/// rebase, so this is the root fix rather than a re-stamp.
+///
+/// The merge base is ON `main`, and CLAUDE.md forbids moving `main` by any
+/// history-rewriting route (no `git update-ref` / `reset` / `commit-tree` /
+/// `merge --no-verify`), so it stays reachable permanently. It also survives
+/// further rebases of THIS branch: rebasing onto a newer `main` keeps the older
+/// `main` commit in ancestry, so the anchor remains an ancestor either way. And
+/// it is the semantically correct reading of the header's own words — "enumerate
+/// and size, once, at the base commit stamped above".
+///
+/// Panics rather than stamping any state that would make that header dishonest;
+/// the decision itself is [`stamp_decision`], which is pure and gate-resident.
+///
+/// For the reader: only THIS function — which runs solely inside the
+/// `#[ignore]`d generator — depends on a `main` ref existing. The gate-resident
+/// guard `committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`
+/// deliberately does not, so a checkout without `main` cannot red the gate.
+fn base_commit() -> String {
+    let anchor = git_read(&["merge-base", "main", "HEAD"]);
+    // `--untracked-files=no` is deliberate: `git ls-files` never surfaces an
+    // untracked file, so an untracked scratch file cannot change one row of the
+    // survey and must not trigger a spurious refusal. A staged addition still
+    // appears as `A ` and is still caught.
+    let dirty = git_read(&["status", "--porcelain", "--untracked-files=no"]);
+    let ri_drift = git_read(&["diff", "--name-only", &anchor, "HEAD", "--", "*.ri"]);
+    stamp_decision(&anchor, &dirty, &ri_drift)
+        .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: {e}"))
 }
 
 /// **The survey generator.** Sweeps every tracked `.ri` and writes the artifact.
@@ -2169,6 +2218,51 @@ fn survey_output_path_honours_the_scratch_override() {
 /// A full git object name as `git rev-parse`/`git merge-base` print one:
 /// exactly 40 lowercase hexadecimal characters.
 const FULL_SHA_LEN: usize = 40;
+
+/// Decide whether the git state just read may be stamped into the artifact
+/// header — or whether stamping it would make that header lie.
+///
+/// Pure by construction, so the decision is gate-resident and unit-tested with
+/// no git state at all; the three reads that feed it live in [`base_commit`],
+/// behind the `#[ignore]`d generator. Same split this module uses throughout.
+///
+/// * `anchor` — `git merge-base main HEAD`, the commit the header will name.
+/// * `dirty` — `git status --porcelain --untracked-files=no`.
+/// * `ri_drift` — `git diff --name-only <anchor> HEAD -- '*.ri'`.
+///
+/// Whitespace-only input is an EMPTY read: git writes a trailing newline even
+/// when it has nothing to report.
+fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<String, String> {
+    let anchor = anchor.trim();
+    if anchor.len() != FULL_SHA_LEN || !anchor.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
+        return Err(format!(
+            "refusing to stamp {anchor:?}: the artifact header must name a fully \
+             resolved commit ({FULL_SHA_LEN} lowercase hex characters), never an \
+             abbreviated name or a symbolic ref that names a moving target"
+        ));
+    }
+
+    let dirty = dirty.trim();
+    if !dirty.is_empty() {
+        return Err(format!(
+            "refusing to stamp {anchor}: the working tree is dirty, so the \
+             header's claim to be a snapshot AT that commit would be false — the \
+             bytes surveyed are not the bytes at the stamped commit. Commit \
+             first, then re-run the generator. Dirty:\n{dirty}"
+        ));
+    }
+
+    let ri_drift = ri_drift.trim();
+    if !ri_drift.is_empty() {
+        return Err(format!(
+            "refusing to stamp {anchor}: tracked .ri files differ between it and \
+             the commit being surveyed, so the anchor would not describe the \
+             corpus rendered below it. Drifted:\n{ri_drift}"
+        ));
+    }
+
+    Ok(anchor.to_owned())
+}
 
 #[test]
 fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
