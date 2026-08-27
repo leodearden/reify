@@ -105,7 +105,15 @@
 //! reviewed opt-out must never silently cover a site its author did not review.
 //! Without the second bound, adding a code-less constructor within 15
 //! non-comment lines above an existing escape bypassed this hard gate outright
-//! ([`escape_in_window`]). Unlike the code probe, the escape probe DOES see
+//! ([`escape_in_window`]).
+//!
+//! "Nearest constructor above" is resolved per ANCHOR, not per line
+//! ([`escaped_anchors`]) — one line can hold two constructors (the real
+//! `if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }` shape), so
+//! a trailing escape covers the right-hand one only and the left-hand one needs
+//! its own. Gating the whole line instead was the same hole by a second route:
+//! a new code-less constructor parked beside a reviewed one was silently
+//! absorbed. Unlike the code probe, the escape probe DOES see
 //! comment-only lines: an escape is a comment by its very nature, so a
 //! `// pdiag:allow` on its own line inside the window is honoured, and an
 //! anchor merely quoted in a comment does not bound anything.
@@ -276,15 +284,25 @@ fn anchor_positions(line: &str) -> Vec<usize> {
 ///   that, the next unrelated brace anywhere below would start a bogus skip
 ///   and silently swallow production sites. An unbalanced file simply runs the
 ///   suppression to EOF: terminating, and in the permissive direction.
-/// - **`pdiag:allow` escape.** A site is dropped when its anchor line carries
-///   the token, or when a line below it does — within the forward window and
-///   before the next constructor ([`escape_in_window`]), so one escape covers
-///   exactly one site.
+/// - **`pdiag:allow` escape.** Accounted PER ANCHOR, not per line
+///   ([`escaped_anchors`]): an escape token binds to the nearest anchor at or
+///   before it on its own line, and an escape BELOW the line covers only the
+///   line's LAST anchor — the nearest constructor above it — within the
+///   forward window and before the next constructor
+///   ([`escape_in_window`]). One escape therefore covers exactly one site
+///   even on a line carrying two constructors.
 ///
 /// Pure `&str` operations throughout: no `syn`, no `regex`.
 fn scan_file(content: &str) -> Vec<Site> {
     let lines: Vec<&str> = content.lines().collect();
     let mask = comment_mask(&lines);
+    // Anchors are derived ONCE per line for the whole file and then threaded
+    // through exactly as the comment mask is. Both consumers need them — this
+    // loop for the sites themselves, `escape_in_window` for its terminator —
+    // and deriving them twice both re-ran `anchor_positions` up to
+    // `PDIAG_CODE_WINDOW` times per site and risked the two anchoring rules
+    // drifting apart. An anchor-free line's `Vec` never allocates.
+    let anchors: Vec<Vec<usize>> = lines.iter().map(|line| anchor_positions(line)).collect();
     let mut out = Vec::new();
 
     // `#[cfg(test)]` skip state. `skip_base` holds the brace depth the active
@@ -320,16 +338,19 @@ fn scan_file(content: &str) -> Vec<Site> {
         // Evaluated AFTER arming so the `mod tests {` line itself is inside
         // its own block, and BEFORE the depth update so the closing `}` line
         // is too.
-        if skip_base.is_none() {
-            let anchors = anchor_positions(line);
-            if !anchors.is_empty() && !line_escaped(line) && !escape_in_window(&lines, &mask, i) {
-                for at in anchors {
-                    // Probe from the anchor rightwards so a `.with_code(`
-                    // belonging to an EARLIER constructor on the same line
-                    // cannot code a later one.
-                    let coded = line[at..].contains(CODE_PROBE) || code_in_window(&lines, &mask, i);
-                    out.push(Site { line: i + 1, coded });
+        if skip_base.is_none() && !anchors[i].is_empty() {
+            let escaped = escaped_anchors(line, &anchors[i], || {
+                escape_in_window(&lines, &mask, &anchors, i)
+            });
+            for (k, &at) in anchors[i].iter().enumerate() {
+                if escaped[k] {
+                    continue;
                 }
+                // Probe from the anchor rightwards so a `.with_code(`
+                // belonging to an EARLIER constructor on the same line
+                // cannot code a later one.
+                let coded = line[at..].contains(CODE_PROBE) || code_in_window(&lines, &mask, i);
+                out.push(Site { line: i + 1, coded });
             }
         }
 
@@ -361,6 +382,50 @@ fn code_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
         }
     }
     false
+}
+
+/// Which of `line`'s `anchors` (byte offsets, ascending) a `pdiag:allow`
+/// covers.
+///
+/// The escape is accounted PER ANCHOR because the suppression rule is
+/// per-site: one reviewed opt-out covers exactly one constructor. Gating the
+/// whole line — as this did before — meant a single escape suppressed BOTH
+/// sites on the real `if bad { Diagnostic::error(m) } else {
+/// Diagnostic::warning(m) }` shape, so a brand-new code-less constructor
+/// could be parked beside a reviewed one and silently absorbed. Same failure
+/// direction as the backwards leak [`escape_in_window`] closes, reached by a
+/// different route.
+///
+/// Two binding rules, both inherited from the escape's forward scoping:
+///
+/// - An escape token ON the line binds to the nearest anchor at or before it,
+///   so a trailing `// pdiag:allow` covers the LAST constructor on the line
+///   and nothing to its left. A token sitting before every anchor covers
+///   nothing — an escape never reaches forwards, and a line whose FIRST
+///   token is a comment is masked out well before this point anyway.
+/// - An escape BELOW the line (`window`, evaluated lazily because it walks up
+///   to [`PDIAG_CODE_WINDOW`] lines) covers only the line's last anchor: that
+///   is the nearest constructor above it, exactly as
+///   [`escape_in_window`]'s own terminator defines the relationship.
+fn escaped_anchors(line: &str, anchors: &[usize], window: impl FnOnce() -> bool) -> Vec<bool> {
+    let mut covered = vec![false; anchors.len()];
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(PDIAG_ALLOW) {
+        let at = from + rel;
+        if let Some(k) = anchors.iter().rposition(|&anchor| anchor < at) {
+            covered[k] = true;
+        }
+        from = at + PDIAG_ALLOW.len();
+    }
+    // Only the last anchor can be covered from below, so the window probe is
+    // skipped entirely when that one already carries its own escape.
+    if let Some(last) = covered.last_mut()
+        && !*last
+        && window()
+    {
+        *last = true;
+    }
+    covered
 }
 
 /// `true` when a `pdiag:allow` appears below `anchor_line` (a 0-based index
@@ -396,16 +461,22 @@ fn code_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
 /// also break the real `if {…} else {…}.with_code(code)` severity-dispatch
 /// shape, where the first anchor must reach past the second to the shared
 /// trailing code attachment.
-fn escape_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
+fn escape_in_window(
+    lines: &[&str],
+    mask: &[bool],
+    anchors: &[Vec<usize>],
+    anchor_line: usize,
+) -> bool {
     let mut budget = PDIAG_CODE_WINDOW;
-    for (line, is_comment) in lines.iter().zip(mask).skip(anchor_line + 1) {
-        if !*is_comment && !anchor_positions(line).is_empty() {
+    for j in (anchor_line + 1)..lines.len() {
+        let is_comment = mask[j];
+        if !is_comment && !anchors[j].is_empty() {
             return false;
         }
-        if line_escaped(line) {
+        if line_escaped(lines[j]) {
             return true;
         }
-        if *is_comment {
+        if is_comment {
             continue;
         }
         budget -= 1;
@@ -1595,6 +1666,50 @@ mod tests {
             "    // pdiag:allow — reviewed, applies to the constructor above",
         ]);
         assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn an_escape_covers_one_site_on_a_two_constructor_line_too() {
+        // The second route to the same hard-gate hole. The escape test used to
+        // gate the whole `for at in anchors` loop, so on the real
+        // `if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }`
+        // shape (pinned by `two_constructors_on_one_line_are_two_sites`) ONE
+        // reviewed opt-out suppressed BOTH sites — a brand-new code-less
+        // constructor could be parked beside a reviewed one and silently
+        // absorbed. Accounting is per ANCHOR: an escape binds to the nearest
+        // constructor at or before it, on the line exactly as below it.
+
+        // (i) A trailing escape covers the LAST constructor on the line only.
+        let src = "    let d = if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }; \
+// pdiag:allow — reviewed, this site only";
+        assert_eq!(
+            sites(src),
+            vec![(1, false)],
+            "the trailing escape must not absorb the constructor to its left"
+        );
+
+        // (ii) A run of constructors needs an escape EACH — on one line as
+        //      much as across many.
+        let src = "    f(Diagnostic::error(m) /* pdiag:allow */, Diagnostic::warning(m)); // pdiag:allow";
+        assert_eq!(sites(src), none());
+
+        // (iii) An escape BELOW the line covers only the line's last anchor:
+        //       that is the nearest constructor above it, which is exactly the
+        //       relationship `escape_in_window`'s terminator already defines.
+        let src = file(&[
+            "    let d = if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) };",
+            "    // pdiag:allow — reviewed, applies to the constructor above",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false)]);
+
+        // (iv) An escape sitting before EVERY anchor on the line covers
+        //      nothing — the escape never reaches forwards, on its own line any
+        //      more than from the line above (`escape_is_forward_scoped_and_
+        //      does_not_leak`). The fixture leads with real code deliberately:
+        //      a line whose FIRST token opens a comment is comment-masked, so
+        //      it carries no site to suppress in the first place.
+        let src = "    let x = 1; /* pdiag:allow — reviewed */ let d = Diagnostic::error(m);";
+        assert_eq!(sites(src), vec![(1, false)]);
     }
 
     #[test]
