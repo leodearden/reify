@@ -23,8 +23,12 @@
 #                        (default: docs/reify-language-spec.md)
 #   --tombstones <path>  the retired-ID sidecar
 #                        (default: docs/reify-language-spec.tombstones)
-#   --repo-root <dir>    root that relative --spec/--tombstones resolve
-#                        against (default: this script's parent directory)
+#   --base <rev>         revision whose spec text is rule 5's "before" side
+#                        (default: HEAD). Mutually exclusive with --base-spec.
+#   --base-spec <file>   read the "before" side from this file instead of git
+#                        (for hermetic testing). Mutually exclusive with --base.
+#   --repo-root <dir>    root that relative --spec/--tombstones/--base-spec
+#                        resolve against (default: this script's parent dir)
 #   -h | --help          usage
 #
 #   Relative paths resolve against --repo-root, NOT the caller's CWD, so the
@@ -52,14 +56,42 @@
 #                     §8.1's "immediately preceding the anchored paragraph" is
 #                     decorative and rule 5 has no referent — you cannot
 #                     detect the deletion of a paragraph never bound to an ID.
-#   (Rule 5, the deletion ⇒ same-diff tombstone rule, is added by the next
-#   step of this leaf and documents its own base semantics here.)
+#   5. DELETION     — every ID that was live at the BASE and is absent from
+#                     the current spec must have a row in the tombstone file.
+#                     Deleting an anchored paragraph without retiring its id in
+#                     the SAME diff turns every consumer's cite into a silent
+#                     dangling reference, which is strictly worse than citing a
+#                     section number (a stale section number is visibly stale).
 #
 #   Fenced code blocks are skipped when scanning for anchors, so a fenced
 #   EXAMPLE anchor in some future spec section is never mistaken for a live
 #   one. Prose that DISCUSSES the mechanism therefore belongs in the authoring
 #   note (docs/notes/spec-anchor-contract.md), not in the spec body — or
 #   inside a fence.
+#
+# BASE SEMANTICS — stated honestly rather than implied
+#   The default base is HEAD, which gives a PER-COMMIT posture: it catches
+#   deletions in the WORKING TREE relative to the last commit. Branch-wide
+#   coverage follows only because every commit passes the gate in turn — it is
+#   NOT a property of any single invocation. A merge-time caller that wants
+#   branch scope must pass `--base <merge-base>` explicitly. Wiring that
+#   merge-gate invocation is leaf θ (#6766), not this script.
+#
+#   Four configurations are genuine base-RESOLUTION FAILURES and are exit 2,
+#   never a downgrade to "deletion check skipped":
+#     - `--base-spec` naming an unreadable file;
+#     - `--base` naming a rev that does not resolve to a commit;
+#     - --repo-root not being a git work tree (when a git base is needed);
+#     - an in-tree `--spec` that does not exist at the base rev — this is the
+#       spec-was-renamed case, and hard-failing it is what stops a rename from
+#       silently orphaning every id.
+#
+#   ONE configuration resolves to an EMPTY base rather than failing: a `--spec`
+#   OUTSIDE --repo-root (a candidate copy under /tmp, say) has no git history
+#   at all, so no id was live at the base and rule 5 is satisfied. That is an
+#   earned comparison result over an artifact with no prior version, not a
+#   skip — and it cannot mask a real deletion in the gate, because the gate
+#   always runs on the in-tree spec, which takes the hard-failing branch above.
 #
 # OUTPUT
 #   One `file:line: <message>` per violation on STDERR, followed by a summary
@@ -77,6 +109,7 @@
 #
 # Usage: scripts/spec-anchor-lint.sh [--repo-root <dir>] [--spec <path>]
 #                                    [--tombstones <path>]
+#                                    [--base <rev> | --base-spec <file>]
 
 set -euo pipefail
 
@@ -89,18 +122,30 @@ export LC_ALL=C
 REPO_ROOT=""
 SPEC_ARG=""
 TOMB_ARG=""
+BASE_REV=""
+BASE_SPEC_ARG=""
+SAW_BASE=0
+SAW_BASE_SPEC=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --repo-root)   REPO_ROOT="${2:-}";  shift 2 ;;
-        --spec)        SPEC_ARG="${2:-}";   shift 2 ;;
-        --tombstones)  TOMB_ARG="${2:-}";   shift 2 ;;
+        --repo-root)   REPO_ROOT="${2:-}";      shift 2 ;;
+        --spec)        SPEC_ARG="${2:-}";       shift 2 ;;
+        --tombstones)  TOMB_ARG="${2:-}";       shift 2 ;;
+        --base)        BASE_REV="${2:-}";       SAW_BASE=1;      shift 2 ;;
+        --base-spec)   BASE_SPEC_ARG="${2:-}";  SAW_BASE_SPEC=1; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [--repo-root <dir>] [--spec <path>] [--tombstones <path>]"
+            echo "          [--base <rev> | --base-spec <file>]"
             exit 0 ;;
         *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+if [[ $SAW_BASE -eq 1 && $SAW_BASE_SPEC -eq 1 ]]; then
+    echo "ERROR: --base and --base-spec are mutually exclusive (given both)" >&2
+    exit 2
+fi
 
 if [[ -z "$REPO_ROOT" ]]; then
     REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -138,6 +183,12 @@ if [[ ! -f "$TOMB_PATH" ]]; then
     echo "       scan failure, not an empty set of retired IDs." >&2
     exit 2
 fi
+
+# ── Scratch file for a git-materialised base. Registered once, before any
+# code path can create it, so no branch can leak it.
+_BASE_SCRATCH=""
+_cleanup() { [[ -n "$_BASE_SCRATCH" ]] && rm -f "$_BASE_SCRATCH" || true; }
+trap _cleanup EXIT
 
 # ── Violation accumulator. Every entry is a ready-to-print
 # `file:line: message` string; they are emitted together at the end so the
@@ -199,6 +250,69 @@ _scan_spec() {
 if ! SPEC_RECORDS="$(_scan_spec "$SPEC_PATH")"; then
     echo "ERROR: awk failed while scanning $SPEC_PATH" >&2
     exit 2
+fi
+
+# ── BASE RESOLUTION (rule 5's "before" side). See BASE SEMANTICS in the header
+# for why exactly one configuration resolves to an empty base and the rest are
+# hard failures. There is no path here that downgrades an unknown base to
+# "deletion check skipped".
+BASE_TEXT_PATH=""
+BASE_LABEL=""
+
+if [[ $SAW_BASE_SPEC -eq 1 ]]; then
+    BASE_TEXT_PATH="$(_resolve "$BASE_SPEC_ARG")"
+    if [[ ! -f "$BASE_TEXT_PATH" || ! -r "$BASE_TEXT_PATH" ]]; then
+        echo "ERROR: --base-spec is not a readable file: $BASE_TEXT_PATH" >&2
+        echo "       Refusing to continue: an unresolvable base must never be" >&2
+        echo "       downgraded to \"deletion check skipped\"." >&2
+        exit 2
+    fi
+    BASE_LABEL="$BASE_TEXT_PATH"
+else
+    BASE_REV="${BASE_REV:-HEAD}"
+    if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: not a git work tree: $REPO_ROOT" >&2
+        echo "       Rule 5 needs a base revision; pass --base-spec <file> to" >&2
+        echo "       supply the \"before\" side directly." >&2
+        exit 2
+    fi
+    if ! git -C "$REPO_ROOT" rev-parse --verify --quiet "$BASE_REV^{commit}" >/dev/null; then
+        echo "ERROR: --base does not resolve to a commit: $BASE_REV" >&2
+        exit 2
+    fi
+    _spec_rel=""
+    case "$SPEC_PATH" in
+        "$REPO_ROOT"/*) _spec_rel="${SPEC_PATH#"$REPO_ROOT"/}" ;;
+    esac
+    if [[ -n "$_spec_rel" ]]; then
+        _BASE_SCRATCH="$(mktemp "${TMPDIR:-/tmp}/spec-anchor-base.XXXXXX")"
+        if ! git -C "$REPO_ROOT" show "$BASE_REV:$_spec_rel" >"$_BASE_SCRATCH" 2>/dev/null; then
+            echo "ERROR: $_spec_rel does not exist at base rev $BASE_REV" >&2
+            echo "       If the spec was renamed, pass --base <rev> / --base-spec <file>" >&2
+            echo "       naming its previous location — a rename must not silently" >&2
+            echo "       orphan every id that was live before it." >&2
+            exit 2
+        fi
+        BASE_TEXT_PATH="$_BASE_SCRATCH"
+        BASE_LABEL="$BASE_REV:$_spec_rel"
+    else
+        # --spec is outside the work tree: it has no git history, so no id was
+        # live at the base. An EARNED empty comparison, not a skip (header).
+        BASE_TEXT_PATH=""
+        BASE_LABEL="(empty base: $SPEC_PATH is outside $REPO_ROOT)"
+    fi
+fi
+
+# Parse the base with the SAME extractor as the current spec — a single
+# derivation, so a format change can never desynchronise the two sides. Only
+# `A` records matter here: the base's own violations are the base commit's
+# problem, and re-reporting them would blame this diff for them.
+BASE_RECORDS=""
+if [[ -n "$BASE_TEXT_PATH" ]]; then
+    if ! BASE_RECORDS="$(_scan_spec "$BASE_TEXT_PATH")"; then
+        echo "ERROR: awk failed while scanning the base spec ($BASE_LABEL)" >&2
+        exit 2
+    fi
 fi
 
 declare -A ANCHOR_LINES=()   # id -> space-separated line numbers
@@ -306,6 +420,28 @@ for _id in "${ANCHOR_ORDER[@]:-}"; do
     fi
 done
 
+# ── RULE 5: deletion ⇒ same-diff tombstone. `base_ids \ current_ids` must be
+# a subset of `tombstone_ids`. Reported against the BASE (path or rev:path),
+# because that is where the vanished id can still be seen.
+declare -A BASE_ID_LINE=()
+BASE_ORDER=()
+
+while IFS=$'\t' read -r _kind _line _payload; do
+    [[ "$_kind" == "A" ]] || continue
+    if [[ -z "${BASE_ID_LINE[$_payload]:-}" ]]; then
+        BASE_ID_LINE["$_payload"]="$_line"
+        BASE_ORDER+=("$_payload")
+    fi
+done <<<"$BASE_RECORDS"
+
+for _id in "${BASE_ORDER[@]:-}"; do
+    [[ -z "$_id" ]] && continue
+    [[ -n "${ANCHOR_LINES[$_id]:-}" ]] && continue   # still live: nothing deleted
+    [[ -n "${TOMB_LINE[$_id]:-}" ]] && continue      # properly retired
+    _add_violation "$BASE_LABEL" "${BASE_ID_LINE[$_id]}" \
+        "\`$_id\` was live at the base but is absent from $SPEC_PATH and has no row in $TOMB_PATH; deleting an anchored paragraph requires retiring its id in the SAME diff"
+done
+
 # ═══════════════════════════════════════════════════════════════════════════
 # REPORT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -316,6 +452,7 @@ if [[ ${#_violations[@]} -gt 0 ]]; then
         echo "ERROR: ${#_violations[@]} sc-anchor violation(s) found."
         echo "  spec:       $SPEC_PATH"
         echo "  tombstones: $TOMB_PATH"
+        echo "  base:       $BASE_LABEL"
         echo ""
         echo "An anchor is a standalone line \`<!-- sc-anchor: sc-XXXXXX -->\`"
         echo "IMMEDIATELY preceding the paragraph or heading it anchors, whose id is"
