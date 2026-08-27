@@ -94,6 +94,74 @@ fn compile_linear_pattern_produces_realization() {
     );
 }
 
+/// A geometry-let `linear_pattern` lowers its `target` arg slot typed
+/// `Geometry` (task 5389). The surrounding structural fact — that the target
+/// resolves to the geometry let by name rather than to the positional
+/// `GeomRef::Step(0)` fallback — is already pinned by
+/// `tests/harness_langcore/let_scope_tests.rs::linear_pattern_let_bound_ops`
+/// and is deliberately not restated here.
+#[test]
+fn geometry_let_pattern_lowers_a_named_geometry_target_slot() {
+    let source = r#"structure S {
+    let elem = box(10mm, 10mm, 10mm)
+    let row = linear_pattern(elem, 1, 0, 0, 4, 20mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_geolet_linpat"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a geometry-let `linear_pattern` target must compile with zero Error diagnostics, got: \
+         {:#?}",
+        errors
+    );
+
+    // Every step down to the arg slot goes through `.first()`, never bare
+    // indexing. A lowering regression that empties one of these vecs is exactly
+    // the case these messages are worded for, and a bare `[0]` would panic with
+    // `index out of bounds` BEFORE the wording could fire.
+    let Some(template) = compiled.templates.first() else {
+        panic!("expected `structure S` to lower to at least one template, got none");
+    };
+    // Each geometry let compiles to its OWN realization, so `elem` is not inlined
+    // into `row`'s operations — hence the lookup by name rather than by index.
+    let realizations = &template.realizations;
+    let row = realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("row"))
+        .unwrap_or_else(|| panic!("expected a realization named `row`, got {:?}", realizations));
+    let Some(op) = row.operations.first() else {
+        panic!(
+            "expected `row` to lower to at least one operation, got {:?}",
+            row.operations
+        );
+    };
+    let CompiledGeometryOp::Pattern { args, .. } = op else {
+        panic!("expected `row` to lower to a Pattern op, got {:?}", op);
+    };
+    let Some((arg_name, arg)) = args.first() else {
+        panic!(
+            "expected the Pattern op to carry a named `target` arg slot, got no args: {:?}",
+            op
+        );
+    };
+
+    assert_eq!(
+        (arg_name.as_str(), &arg.result_type),
+        ("target", &reify_core::Type::Geometry),
+        "expected args[0] to be the named `target` slot typed as Geometry"
+    );
+}
+
 #[test]
 fn compile_isosurface_produces_realization_for_operand_and_result() {
     // Task 5033 GAP #1(a) RED: "isosurface" is missing from
