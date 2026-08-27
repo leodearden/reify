@@ -181,6 +181,19 @@ function validateMeshData(data: MeshData): boolean {
  * narrower array at equal element length would have a different byte size and
  * slip straight through into the throw.
  *
+ * The element *type* and `itemSize` are checked too, because byteLength alone
+ * is a weaker predicate than the element-length comparison it replaced. THREE
+ * records the GL type once, at `createBuffer()` time, and never revisits it, so
+ * reusing an attribute whose array changed constructor at equal byte size
+ * (`Uint32Array(6)` -> `Uint16Array(12)`, or Float32 -> Uint32) would upload the
+ * new bytes under the stale type and draw garbage — silently, with no error at
+ * all, which is strictly harder to diagnose than the throw this guard exists to
+ * prevent. Likewise a reused attribute keeps its old `itemSize` while `count` is
+ * recomputed from the new one, so a future non-3-component caller would get an
+ * inconsistent pair. Neither is reachable today (`gui/src/types.ts` pins
+ * Float32Array/Uint32Array on the wire and every call site passes itemSize 3);
+ * both are cheap to exclude structurally rather than by convention.
+ *
  * Never copies — the caller owns the copy-vs-alias decision and hands in an
  * already-prepared array (position copies per task 3402's contract; normals
  * alias per the `MeshData` contract at gui/src/types.ts:41-52).
@@ -192,7 +205,12 @@ function assignOrReplaceAttribute(
   itemSize: number,
 ): void {
   const existing = geometry.getAttribute(name) as BufferAttribute | null;
-  if (existing && existing.array.byteLength === newArray.byteLength) {
+  if (
+    existing &&
+    existing.itemSize === itemSize &&
+    existing.array.constructor === newArray.constructor &&
+    existing.array.byteLength === newArray.byteLength
+  ) {
     existing.array = newArray;
     (existing as { count: number }).count = newArray.length / itemSize;
     existing.needsUpdate = true;
@@ -452,9 +470,16 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     assignOrReplaceAttribute(geometry, 'position', vertsForBuffer, 3);
 
     // `index` cannot share the helper: it must go through geometry.setIndex(),
-    // not setAttribute(). Same byteLength guard, inline.
+    // not setAttribute(). Same byteLength + element-type guard, inline
+    // (see assignOrReplaceAttribute for why the constructor is compared too:
+    // THREE records the index buffer's GL type once and never revisits it, so
+    // a Uint32Array -> Uint16Array swap at equal byte size would draw garbage).
     const indexAttr = geometry.index;
-    if (indexAttr && indexAttr.array.byteLength === data.indices.byteLength) {
+    if (
+      indexAttr &&
+      indexAttr.array.constructor === data.indices.constructor &&
+      indexAttr.array.byteLength === data.indices.byteLength
+    ) {
       indexAttr.array = data.indices;
       (indexAttr as { count: number }).count = data.indices.length;
       indexAttr.needsUpdate = true;
@@ -521,11 +546,34 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // reflected immediately without a full geometry resync or material swap.
     // Routed through assignOrReplaceAttribute so a re-tessellation that changes
     // the vertex count replaces the attribute instead of resizing it (#6757).
+    //
+    // The negative cases must be handled explicitly rather than falling through.
+    // The material-rebuild guard above declines to rebuild while a colour
+    // attribute is still attached, so simply skipping the re-bake would leave a
+    // MeshPhongMaterial({ vertexColors: true }) mesh drawing a stale, wrong-sized
+    // colour buffer against the new position buffer — a WebGL "attempt to access
+    // out of range vertices in attribute" on every draw call. That is the same
+    // user-visible outcome as the resize throw, reached by a different route, and
+    // it is what a re-evaluation that both re-tessellates an entity and drops its
+    // FEA solve produces. Converge instead on exactly the state
+    // createMeshFromData() and rebuildMaterials() produce for a mesh with no
+    // usable channel: drop the colour attribute and install the base material.
+    //
+    // The length check is `=== vertexCount`, not `> 0`, because `bake()` sizes
+    // its output off the scalars, not off position.count — a channel that
+    // survived at the old vertex count is just as unusable as a missing one.
     if (colorize) {
-      const scalars = (data.scalar_channels ?? {})[colorize.channel];
       const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
-      if (scalars && scalars.length > 0 && colorAttr) {
-        assignOrReplaceAttribute(geometry, 'color', colorize.bake(scalars), 3);
+      if (colorAttr) {
+        const scalars = activeScalars(data);
+        if (scalars !== null && scalars.length === data.vertices.length / 3) {
+          assignOrReplaceAttribute(geometry, 'color', colorize.bake(scalars), 3);
+        } else {
+          geometry.deleteAttribute('color');
+          const staleMaterial = mesh.material as { dispose: () => void };
+          mesh.material = makeBaseMaterial(mesh.name);
+          staleMaterial.dispose();
+        }
       }
     }
 
