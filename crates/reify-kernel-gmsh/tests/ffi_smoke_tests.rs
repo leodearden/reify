@@ -18,6 +18,81 @@
 use reify_kernel_gmsh::ffi;
 use reify_kernel_gmsh::init;
 
+/// Build a unit box (`(0,0,0)`-`(1,1,1)`) from the built-in-CAD `geo_*`
+/// primitives `ffi.rs` already binds, returning the assigned volume tag.
+/// Shared by the logger-capture test and the element-type census test
+/// (#6205 step-1 / step-3) so both exercise `mesh_generate(3)` against the
+/// same geometry.
+///
+/// Ported from a validated C probe (`gcc` against
+/// `/opt/reify-deps/lib/libgmsh.so.4.15.2`, every call `ierr=0`). Signed
+/// curve-loop tags matter — a curve loop must be a consistently oriented
+/// closed circuit, so the four vertical faces each negate two of their
+/// four edges.
+fn build_geo_unit_box() -> i32 {
+    const COORDS: [(f64, f64, f64); 8] = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 1.0),
+        (1.0, 1.0, 1.0),
+        (0.0, 1.0, 1.0),
+    ];
+    let mut p = [0i32; 8];
+    for (i, (x, y, z)) in COORDS.iter().enumerate() {
+        p[i] = ffi::geo_add_point(*x, *y, *z, 0.0)
+            .unwrap_or_else(|e| panic!("build_geo_unit_box: geo_add_point({i}) failed: {e:?}"));
+    }
+
+    const EDGES: [(usize, usize); 12] = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
+    let mut l = [0i32; 12];
+    for (i, (a, b)) in EDGES.iter().enumerate() {
+        l[i] = ffi::geo_add_line(p[*a], p[*b])
+            .unwrap_or_else(|e| panic!("build_geo_unit_box: geo_add_line({i}) failed: {e:?}"));
+    }
+
+    // Six faces as signed curve loops (consistently oriented closed circuits).
+    let faces: [[i32; 4]; 6] = [
+        [l[0], l[1], l[2], l[3]],     // bottom z=0
+        [l[4], l[5], l[6], l[7]],     // top    z=1
+        [l[0], l[9], -l[4], -l[8]],   // y=0
+        [l[1], l[10], -l[5], -l[9]],  // x=1
+        [l[2], l[11], -l[6], -l[10]], // y=1
+        [l[3], l[8], -l[7], -l[11]],  // x=0
+    ];
+    let mut surf = [0i32; 6];
+    for (i, face) in faces.iter().enumerate() {
+        let cl = ffi::geo_add_curve_loop(face).unwrap_or_else(|e| {
+            panic!("build_geo_unit_box: geo_add_curve_loop({i}) failed: {e:?}")
+        });
+        surf[i] = ffi::geo_add_plane_surface(&[cl]).unwrap_or_else(|e| {
+            panic!("build_geo_unit_box: geo_add_plane_surface({i}) failed: {e:?}")
+        });
+    }
+
+    let shell = ffi::geo_add_surface_loop(&surf)
+        .expect("build_geo_unit_box: geo_add_surface_loop failed");
+    let volume =
+        ffi::geo_add_volume(&[shell]).expect("build_geo_unit_box: geo_add_volume failed");
+    ffi::geo_synchronize().expect("build_geo_unit_box: geo_synchronize failed");
+    volume
+}
+
 /// Round-trip a single triangle through the gmsh model API: add a discrete
 /// surface entity, push 3 nodes + 1 triangle into it, then read them back
 /// and assert the values match.
@@ -185,6 +260,59 @@ fn geo_add_point_line_curve_loop_plane_surface_and_set_recombine_round_trip() {
     // 45.0 angle is the per-corner deviation tolerance Gmsh uses to decide
     // whether two triangles can be merged into a quad.
     ffi::mesh_set_recombine(2, surf_tag, 45.0).expect("ffi::mesh_set_recombine failed");
+
+    ffi::clear().expect("ffi::clear failed (cleanup)");
+}
+
+/// Pins that `logger_start` / `logger_get` / `logger_stop` capture gmsh's
+/// Info/Progress stream even when `General.Terminal = 0` — the option every
+/// production mesher sets (kernel_real.rs:187, mesh_boundary.rs:609,
+/// refine_volume.rs:203, mesh_profile_2d.rs:88) to silence gmsh's own
+/// stdout/stderr writes. `General.Terminal` and the logger-capture buffer
+/// are independent switches on the gmsh side — this test is the whole
+/// reason the capture family exists rather than `gmshLoggerGetLastError`
+/// alone (which only ever holds the *last error*, not the Info/Progress
+/// stream).
+///
+/// MEASURED baseline (C probe against
+/// `/opt/reify-deps/lib/libgmsh.so.4.15.2`, this exact geo box,
+/// `General.Terminal=0`): `ierr=0, n=85` lines; `LOG[0]="Info: Meshing
+/// 1D..."`, `LOG[1]="Info: Meshing curve 1 (Line)"`, `LOG[2]="Progress:
+/// Meshing 1D..."`. gmsh's C-API default for `General.Terminal` is `1`, so
+/// setting it to `0` first is what makes this assertion meaningful.
+#[test]
+fn gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced() {
+    let _guard = init::GMSH_LOCK
+        .lock()
+        .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
+
+    init::ensure_initialized();
+    ffi::clear().expect("ffi::clear failed");
+
+    ffi::model_add("logger_smoke").expect("ffi::model_add failed");
+    ffi::option_set_number("General.Terminal", 0.0)
+        .expect("ffi::option_set_number(General.Terminal) failed");
+
+    build_geo_unit_box();
+
+    ffi::logger_start().expect("ffi::logger_start failed");
+    ffi::mesh_generate(3).expect("ffi::mesh_generate(3) failed");
+    let log = ffi::logger_get().expect("ffi::logger_get failed");
+    ffi::logger_stop().expect("ffi::logger_stop failed");
+
+    assert!(
+        !log.is_empty(),
+        "expected at least one captured log line from mesh_generate(3) with \
+         General.Terminal=0, got {} lines",
+        log.len(),
+    );
+    for (i, line) in log.iter().enumerate() {
+        assert!(!line.is_empty(), "captured log line {i} is empty");
+    }
+    assert!(
+        log.iter().any(|line| line.contains("Meshing")),
+        "expected at least one captured line containing \"Meshing\", got: {log:?}",
+    );
 
     ffi::clear().expect("ffi::clear failed (cleanup)");
 }
