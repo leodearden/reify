@@ -113,6 +113,15 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
   );
 
   /**
+   * Whether the loop is still running or has landed — the single source for
+   * BOTH the root's `data-loop-state` attribute and the visible chip's text.
+   * Derived once rather than spelled out at each use: the CSS keys the chip's
+   * colour off the root attribute, so a second copy of the ternary could drift
+   * the chip's *label* out of step with its own colour and with the root.
+   */
+  const loopState = () => (props.state.active ? 'running' : 'complete');
+
+  /**
    * Driving metric name — invariant across the loop. Reads from the O(1) cached
    * `canonicalDrivingMetric` field set by `engineStore.applyAutoResolveIteration`
    * when the first metric-bearing iteration is accepted. Falls back to scanning
@@ -164,8 +173,8 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
       data-testid="auto-resolve-panel"
       // A completed loop persists on screen, so "Iteration N" alone is
       // ambiguous between still-running and finished. Say which — and expose it
-      // on the root so the chip below and the panel state cannot drift.
-      data-loop-state={props.state.active ? 'running' : 'complete'}
+      // on the root so the CSS can colour the chip below off a single attribute.
+      data-loop-state={loopState()}
     >
       <header class={styles.panelHeader} data-testid="panel-title-auto-resolve">
         <Show
@@ -177,7 +186,7 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
           </span>
         </Show>
         <span class={styles.loopState} data-testid="auto-resolve-loop-state">
-          {props.state.active ? 'running' : 'complete'}
+          {loopState()}
         </span>
       </header>
 

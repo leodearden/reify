@@ -954,25 +954,35 @@ describe('engineStore freshness pass-through', () => {
   });
 });
 
-describe('engineStore autoResolve loop state', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: {
-      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+// One canonical auto-resolve iteration fixture, shared by every autoResolve
+// describe below. Previously each block re-declared this same 14-line literal;
+// drift between the copies would have silently stopped the deferred-reset and
+// driving-metric tests from exercising the canonical-metric interaction they
+// are named for.
+//
+// Treat as READ-ONLY: tests spread it (`{ ...sampleIteration, iteration: 2 }`)
+// rather than mutating it, so the single instance is safe to share across
+// stores. Do not `Object.freeze` it — Solid's `createStore` defines a `$PROXY`
+// property on any object it wraps, which throws on a frozen target.
+const sampleIteration = {
+  iteration: 1,
+  parameters: {
+    'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+  },
+  constraints: {
+    max_von_mises: {
+      name: 'max_von_mises',
+      value: 180,
+      unit: 'MPa',
+      target_upper: 200,
+      satisfied: true,
     },
-    constraints: {
-      max_von_mises: {
-        name: 'max_von_mises',
-        value: 180,
-        unit: 'MPa',
-        target_upper: 200,
-        satisfied: true,
-      },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
+  },
+  driving_metric: 'max_von_mises',
+  driving_metric_value: 180,
+};
 
+describe('engineStore autoResolve loop state', () => {
   it('(a) initial state.autoResolve equals { active: false, iterations: [] }', () => {
     createRoot((dispose) => {
       const { state } = createEngineStore();
@@ -1055,24 +1065,6 @@ describe('engineStore autoResolve loop state', () => {
 });
 
 describe('engineStore autoResolve deferred loop reset', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: {
-      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
-    },
-    constraints: {
-      max_von_mises: {
-        name: 'max_von_mises',
-        value: 180,
-        unit: 'MPa',
-        target_upper: 200,
-        satisfied: true,
-      },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
-
   it('(1) beginAutoResolveLoop does NOT open an empty iterations window', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
@@ -1157,24 +1149,6 @@ describe('engineStore autoResolve deferred loop reset', () => {
 });
 
 describe('engineStore autoResolve initFromState reset', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: {
-      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
-    },
-    constraints: {
-      max_von_mises: {
-        name: 'max_von_mises',
-        value: 180,
-        unit: 'MPa',
-        target_upper: 200,
-        satisfied: true,
-      },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
-
   it('initFromState drops the previous file\'s completed auto-resolve loop', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop, initFromState } = createEngineStore();
@@ -1214,16 +1188,6 @@ describe('engineStore autoResolve initFromState reset', () => {
 });
 
 describe('engineStore autoResolve subscribeToEvents wiring', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: { 'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' } },
-    constraints: {
-      max_von_mises: { name: 'max_von_mises', value: 180, unit: 'MPa', target_upper: 200, satisfied: true },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
-
   it('(a) subscribeToEvents calls onAutoResolveStart, onAutoResolveIteration, onAutoResolveComplete', async () => {
     await createRoot(async (dispose) => {
       mockOnMeshUpdate.mockResolvedValue(vi.fn());
@@ -1349,24 +1313,6 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
 });
 
 describe('engineStore autoResolve driving_metric invariance', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: {
-      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
-    },
-    constraints: {
-      max_von_mises: {
-        name: 'max_von_mises',
-        value: 180,
-        unit: 'MPa',
-        target_upper: 200,
-        satisfied: true,
-      },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
-
   it('(1) iteration with matching driving_metric is appended', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
@@ -1514,24 +1460,6 @@ describe('engineStore autoResolve driving_metric invariance', () => {
 });
 
 describe('engineStore autoResolve empty-string driving_metric', () => {
-  const sampleIteration = {
-    iteration: 1,
-    parameters: {
-      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
-    },
-    constraints: {
-      max_von_mises: {
-        name: 'max_von_mises',
-        value: 180,
-        unit: 'MPa',
-        target_upper: 200,
-        satisfied: true,
-      },
-    },
-    driving_metric: 'max_von_mises',
-    driving_metric_value: 180,
-  };
-
   it('(a) empty-string driving_metric after canonical established: appended, canonical unchanged, dedicated warn fires', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();

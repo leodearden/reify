@@ -550,13 +550,18 @@ describe('AutoResolvePanel (g) chart honesty for sub-plottable sample counts', (
       { ...makeIteration(1), driving_metric: undefined, driving_metric_value: undefined },
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
-    render(() => <AutoResolvePanel state={state} />);
+    const { container } = render(() => <AutoResolvePanel state={state} />);
 
     // An axis frame with nothing on it is a lie about the data.
     expect(screen.queryByTestId('auto-resolve-chart')).toBeNull();
     expect(screen.getByTestId('auto-resolve-chart-no-data')).toBeTruthy();
-    // And no orphaned polyline survives anywhere in the panel's chart section.
-    expect(screen.getByTestId('auto-resolve-chart-no-data').querySelector('polyline')).toBeNull();
+    // And no orphaned polyline survives anywhere in the panel. Scope this to the
+    // whole `container`, not to the no-data note: the note is a <div> wrapping a
+    // text node, so querying it for a <polyline> could only ever return null and
+    // would pass even with a stray trace left elsewhere in the chart section.
+    // (This single iteration also leaves the lone sparkline row sub-plottable,
+    // so the panel as a whole draws no line — see (h.1).)
+    expect(container.querySelector('polyline')).toBeNull();
   });
 
   it('(g.2) single sample: no chart svg, a single-sample note naming the metric and its value', () => {
