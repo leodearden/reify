@@ -79,7 +79,8 @@
 #   declarable in a lock charter at α but is still REJECTed at the γ submit_task
 #   backstop — the same reify-leads shape as #5726 -> 3117, handled the same way.
 #
-#   STATUS 2026-07-31 (#5890) — EXTENSIONLESS vector: α LEADS, γ LAGS.  This
+#   STATUS 2026-07-31 (#5890), SUPERSEDED 2026-08-27 (#6856, below) —
+#   EXTENSIONLESS vector AT TIME OF WRITING: α LEADS, γ LAGS.  This
 #   script accepts the 8 _EXTLESS basenames as of this task; γ does not.
 #   dark_factory:3248 is the mirroring task and had NOT landed at time of
 #   writing (DF main b525c6ee92 still has CODE_EXTENSIONS, no rename to
@@ -91,6 +92,22 @@
 #   backstop.  This task alone does not make those paths declarable end-to-end.
 #   This is the same reify-leads shape as #5726 → 3117 and is handled the same
 #   way: α ships the primitive, γ mirrors it, and this block is the seam record.
+#
+#   MEASURED 2026-08-27 (#6856): the α LEADS / γ LAGS status above is stale,
+#   not current.  Both γ copies this note named as lacking the vector —
+#   shared/src/shared/locking.py and
+#   fused-memory/src/fused_memory/middleware/lock_charter_guard.py — now
+#   define EXTENSIONLESS_FILENAMES, holding the identical 8 names as this
+#   script's _EXTLESS.  The vector is CONVERGED, and the "passes α here but
+#   still FAILS at the γ submit_task / scheduler backstop" consequence above
+#   is discharged.  Sequencing finding for the seam record: dark_factory:3248
+#   was planned believing this was a dark_factory-only lead; that premise was
+#   refuted by measurement on 2026-08-09 — reify #5890 had already landed the
+#   identical vector and added --list-extensionless specifically so the other
+#   side could pin against it.  So, unlike the extension vector's documented
+#   γ-first inversion (STATUS 2026-08-07 (#6067) above), this vector was
+#   α-first after all, matching this block's own rule.
+#
 #   This block used to argue it was SAFE to lead because γ's Tier-2
 #   cross-source drift test (fused-memory/tests/test_lock_charter_guard.py
 #   ::test_extension_drift_guard_vs_reify_script) was live and comparing
