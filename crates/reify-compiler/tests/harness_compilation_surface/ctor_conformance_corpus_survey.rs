@@ -1431,3 +1431,275 @@ fn survey_corpus_orders_sites_deterministically() {
         "site ordering must not depend on the order files are handed in"
     );
 }
+
+// ─── step 11/12: markdown rendering ─────────────────────────────────────────
+
+/// A `SurveyRun` assembled by hand for the renderer tests, so no corpus
+/// compile is needed to exercise the artifact's whole contract.
+#[cfg(test)]
+fn synth_site(file: &str, line: u32, def: &str, field: &str, owner: Owner) -> SurveySite {
+    SurveySite {
+        file: file.to_owned(),
+        line,
+        def: Some(def.to_owned()),
+        field: Some(field.to_owned()),
+        expected: Some("Selector(Face)".to_owned()),
+        found: Some("String".to_owned()),
+        code: "ArgTypeMismatch".to_owned(),
+        severity: "Warning".to_owned(),
+        message: format!("argument '{field}' has type 'String' but param '{field}' requires type 'Selector(Face)'"),
+        owner,
+    }
+}
+
+#[test]
+fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
+    let run = SurveyRun {
+        total: 660,
+        surveyed: 640,
+        not_surveyed: vec![("x.ri".to_owned(), "parse-error".to_owned())],
+        partial: vec![("y.ri".to_owned(), "compile-error".to_owned())],
+        sites: vec![
+            synth_site("a.ri", 3, "PointLoad", "point", Owner::FeaDeferredToV06),
+            synth_site("b.ri", 7, "Widget", "label", Owner::NonFea),
+        ],
+    };
+    let md = render_survey(&run, "deadbeef");
+
+    // The stated count is COMPUTED, never typed — that is the task's
+    // "site count stated" signal, and it must equal the rows actually drawn.
+    let rows = md
+        .lines()
+        .filter(|l| l.starts_with("| `") && l.contains(".ri:"))
+        .count();
+    assert_eq!(rows, 2, "two sites must draw two table rows, got:\n{md}");
+    assert!(
+        md.contains("**Sites:** 2"),
+        "the header must state the site count; got:\n{md}"
+    );
+    assert!(md.contains("deadbeef"), "the base commit must be stamped");
+    assert!(md.contains("660"), "the live corpus total must be stated");
+    assert!(
+        md.contains("640"),
+        "the surveyed count must be stated so the denominator is visible"
+    );
+}
+
+#[test]
+fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
+    let run = SurveyRun {
+        total: 3,
+        surveyed: 3,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![
+            synth_site("z.ri", 1, "Widget", "label", Owner::NonFea),
+            synth_site("a.ri", 1, "PointLoad", "point", Owner::FeaDeferredToV06),
+            synth_site("m.ri", 1, "Mystery", "f", Owner::Unknown),
+        ],
+    };
+    let md = render_survey(&run, "cafe1234");
+
+    let fea_at = md.find("FEA").expect("FEA group heading");
+    let non_fea_at = md.find("non-FEA").expect("non-FEA group heading");
+    assert!(
+        fea_at < non_fea_at,
+        "the do-not-touch FEA partition must come FIRST — γ's first question is \
+         which sites it may touch:\n{md}"
+    );
+    assert!(
+        md.contains("DO NOT FIX"),
+        "the FEA group must be explicitly labelled do-not-fix:\n{md}"
+    );
+    assert!(
+        md.contains("unattributed"),
+        "the Unknown bucket must be rendered as its own group, not folded away"
+    );
+}
+
+#[test]
+fn render_survey_orders_rows_deterministically_within_a_group() {
+    let ordered = vec![
+        synth_site("a.ri", 2, "W", "alpha", Owner::NonFea),
+        synth_site("a.ri", 9, "W", "beta", Owner::NonFea),
+        synth_site("b.ri", 1, "W", "gamma", Owner::NonFea),
+    ];
+    let mut shuffled = vec![ordered[2].clone(), ordered[0].clone(), ordered[1].clone()];
+    // A same-(file,line) pair discriminated only by field must still sort.
+    shuffled.push(synth_site("a.ri", 2, "W", "aardvark", Owner::NonFea));
+
+    let mk = |sites: Vec<SurveySite>| SurveyRun {
+        total: sites.len(),
+        surveyed: sites.len(),
+        not_surveyed: vec![],
+        partial: vec![],
+        sites,
+    };
+    let mut sorted = shuffled.clone();
+    sorted.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
+
+    assert_eq!(
+        render_survey(&mk(shuffled), "sha"),
+        render_survey(&mk(sorted), "sha"),
+        "rows must render in (file, line, field) order regardless of input order"
+    );
+}
+
+#[test]
+fn render_survey_escapes_pipes_and_newlines_so_a_message_cannot_break_the_table() {
+    let mut site = synth_site("a.ri", 1, "W", "f", Owner::NonFea);
+    site.message = "a | b\nsecond line | c".to_owned();
+    site.field = Some("has|pipe".to_owned());
+    let run = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![site],
+    };
+    let md = render_survey(&run, "sha");
+
+    let row = md
+        .lines()
+        .find(|l| l.starts_with("| `a.ri:1`"))
+        .expect("the site row");
+    assert!(
+        !row.contains("a | b"),
+        "a raw pipe inside a message would split the cell: {row:?}"
+    );
+    assert!(
+        row.contains("second line"),
+        "the escaped message must still carry its full text: {row:?}"
+    );
+    assert!(
+        !md.contains("has|pipe"),
+        "a pipe inside ANY cell must be escaped, not just the message"
+    );
+}
+
+#[test]
+fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
+    let site = SurveySite {
+        file: "a.ri".to_owned(),
+        line: 1,
+        def: None,
+        field: None,
+        expected: None,
+        found: None,
+        code: "CtorArity".to_owned(),
+        severity: "Warning".to_owned(),
+        message: "E_CTOR_ARITY: Bar() expects at most 1 argument, got 2".to_owned(),
+        owner: Owner::Unknown,
+    };
+    let run = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![site],
+    };
+    let md = render_survey(&run, "sha");
+    let row = md
+        .lines()
+        .find(|l| l.starts_with("| `a.ri:1`"))
+        .expect("the site row");
+    assert_eq!(
+        row.matches('—').count(),
+        4,
+        "def / field / expected / found must each render as an em-dash, never an \
+         empty or invented cell: {row:?}"
+    );
+    assert!(
+        !row.contains("||"),
+        "no cell may be rendered empty: {row:?}"
+    );
+}
+
+#[test]
+fn render_survey_renders_the_zero_site_case_explicitly() {
+    let run = SurveyRun {
+        total: 660,
+        surveyed: 660,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![],
+    };
+    let md = render_survey(&run, "sha");
+    assert!(md.contains("**Sites:** 0"), "the count must still be stated");
+    assert!(
+        md.to_lowercase().contains("no ctor-conformance"),
+        "a zero-site outcome must be rendered as an explicit statement, never an \
+         empty table a reader could mistake for a truncated run:\n{md}"
+    );
+}
+
+#[test]
+fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
+    let run = SurveyRun {
+        total: 4,
+        surveyed: 2,
+        not_surveyed: vec![
+            ("bad.ri".to_owned(), "parse-error".to_owned()),
+            ("gone.ri".to_owned(), "read-error".to_owned()),
+        ],
+        partial: vec![("multi.ri".to_owned(), "compile-error".to_owned())],
+        sites: vec![synth_site("a.ri", 1, "W", "f", Owner::NonFea)],
+    };
+    let md = render_survey(&run, "sha");
+
+    assert!(
+        md.contains("## How to regenerate"),
+        "house convention for a generated artifact (cf. \
+         docs/architecture-audit/g-tool-baseline-report.md)"
+    );
+    assert!(
+        md.contains(REGEN_COMMAND),
+        "the EXACT regeneration command must appear verbatim:\n{md}"
+    );
+
+    // Coverage: every not-surveyed and partial member, with its reason.
+    for (name, reason) in [
+        ("bad.ri", "parse-error"),
+        ("gone.ri", "read-error"),
+        ("multi.ri", "compile-error"),
+    ] {
+        assert!(
+            md.contains(name) && md.contains(reason),
+            "the coverage section must list {name} with reason {reason}:\n{md}"
+        );
+    }
+}
+
+#[test]
+fn render_survey_states_the_q6_ruling_and_the_provenance_disclaimers() {
+    let run = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![synth_site("a.ri", 1, "W", "f", Owner::NonFea)],
+    };
+    let md = render_survey(&run, "sha").to_lowercase();
+
+    // Q6 (PRD §10 open question) is answered in the ARTIFACT header — the PRD
+    // file is deliberately not edited (sibling α/γ/δ/ζ tasks read it).
+    assert!(md.contains("q6"), "the header must name the Q6 ruling");
+    // The task's own signals, stated rather than implied.
+    assert!(
+        md.contains("zero hand-derived"),
+        "the artifact must state that every row is machine-generated"
+    );
+    assert!(
+        md.contains("advisory"),
+        "the hint column must be marked advisory — the D9 (1)-vs-(2) ruling is γ's"
+    );
+    // Both coverage limitations, stated rather than papered over.
+    assert!(
+        md.contains("rust"),
+        "limitation 1: inline Rust-string .ri fixtures are not file-enumerable"
+    );
+    assert!(
+        md.contains("single-file"),
+        "limitation 2: compile_with_stdlib is the single-file path"
+    );
+}
