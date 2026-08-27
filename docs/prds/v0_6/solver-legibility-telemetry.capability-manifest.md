@@ -6,7 +6,11 @@ check is paid once here rather than once per task at dispatch.
 
 **Evidence verified against main `2128c3692cbb88f59b6e9edfd25ee801513423bb`**
 (2026-08-26), by execution or by `git grep`. Main moves fast — cite-by-symbol;
-re-locate at implementation time.
+re-locate at implementation time. **Exception:** the three bindings added by #6751
+(`completeness-field-owner-is-p3-zeta` on ξ, `p3-multimodality-slot-cites-6706` and
+`p3-multimodality-slot-cites-6711` on ω) were verified against baseline
+`cdc501a3f1` (2026-08-27), which is the HEAD their zero-hit RED measurement was taken
+at.
 
 Machine-readable twin: `solver-legibility-telemetry.capability-manifest.yaml`.
 Its `delivered_check` bindings are the **post-delivery** state (pattern-anchored ERE,
@@ -15,9 +19,14 @@ dispatch gate. Every `grep` check in the sidecar was executed at authoring time 
 confirmed to resolve in the asserted direction. Two of them (β's verdict token and
 δ's mount gate) assert the **post-delivery** state and therefore fail *today* by
 design — they are delivery assertions, not evidence of the current defect, which the
-`binding` column records in prose instead.
+`binding` column records in prose instead. The three #6751-authored bindings named
+above are a **third** kind, and a green result on them must be read accordingly: they
+are docs assertions already satisfied by #6751's own diff, not by their leaf's
+delivery. What they buy is *anti-rot* — each was RED at `cdc501a3f1` and goes RED
+again if the text it anchors on is removed or reworded, which is the whole point of
+re-running them at ω's terminal stamp (PRD §12.5).
 
-**Gate verdict: PASS.** 17 leaves, 53 capability bindings, no binding resolving to
+**Gate verdict: PASS.** 17 leaves, 56 capability bindings, no binding resolving to
 `declared-only`, `test-only`, `producer-absent`, `producer-downstream`,
 `producer-extent-short`, `fixture-ERROR`, `bound<=floor` or `rejection-absent`.
 No numeric bound is asserted anywhere in this PRD, so the G6 floor check does not
@@ -132,6 +141,7 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 | `term-contributions-already-computed` | **PASS** | capability→producer — TermContribution carries sense, weight, realized_value and contribution, computed per scope and Arc-shared; explain currently drops it.<br>`grep:struct TermContribution` → `present` in `crates/reify-ir/src/constraint.rs` |
 | `infeasible-and-no-autos-are-indistinguishable-today` | **PASS** | signal premise (the defect) — explain prints the same no-provenance sentinel for an infeasible model and for a model with no autos; only stderr and the exit code separate them.<br>`grep:No objective provenance recorded` → `present` in `crates/reify-cli/src/main.rs` |
 | `stale-anchor-is-repaired-here` | **PASS** | code-anchor hygiene — cmd_explain's own rustdoc cites engine_eval.rs:3884 for the provenance rationale; that line is now an unrelated field-elaboration arm. xi re-cites by symbol.<br>`grep:engine_eval.rs:3884` → `absent` in `crates/reify-cli/src/main.rs` |
+| `completeness-field-owner-is-p3-zeta` | **PASS** | G7 co-tenancy ruling — canonical text is **PRD §8.2 items 1–3**; this row is a pointer, not a fifth copy. The rule: ξ renders the P4-owned fields only and neither adds nor re-renders the `completeness` field, which is P3 ζ #6711's; no dependency edge either way. Anchored on §8.2's ruling sentence rather than on the id `#6711`, which alone now occurs in §4.1, §8, §11 and §12.5 and so would stay green with the ruling deleted.<br>`grep:neither add nor re-render the completeness field` → `present` in `docs/prds/v0_6/solver-legibility-telemetry.md` (0 hits at baseline `cdc501a3f1`) |
 
 ## ο (#6735) — P4-omicron: docs-truth for the observable legibility surface
 
@@ -171,4 +181,6 @@ gate failure: the leaf that needs it is the leaf that adds it, precedented by
 |---|---|---|
 | `terminal-vocabulary-is-closed` | **PASS** | docs-truth / PRD-status contract — the terminal token must be exactly one of SHIPPED, SUPERSEDED or WITHDRAWN, matched case-insensitively as the first token after the Status label, with the landed leaf IDs named on the same line.<br>`grep:SHIPPED|SUPERSEDED|WITHDRAWN` → `present` in `docs/prds/v0_6/solver-legibility-telemetry.md` |
 | `cancelled-sibling-counts-as-satisfied` | **PASS** | dependency disposition — a cancelled sibling leaf satisfies omega's edge; if the scheduler treats it as unmet the decompose steward removes the edge by hand rather than leaving omega permanently blocked.<br>_manual_ — a scheduler-disposition rule, not a repo pattern. |
+| `p3-multimodality-slot-cites-6706` | **PASS** | G7 / INV-SF-5 posture, **half one of two** — §11's multimodality slot must name #6706, the `Completeness` vocabulary carrier, never "a future PRD". As first landed the §12.5 G7 row promised the citation was "stamped at decompose" and no P3 id appeared anywhere in the document; #6751 stamped it in §4.1, §8 (row + §8.2) and §11. ω is dep-wired behind #6751 and applies the terminal status stamp, so this re-verifies the citation immediately before that stamp — a G7 justification that defers to a decompose-time action must be re-checked at decompose-close. **Two checks, not one alternation:** the requirement is conjunctive, and an ERE alternation is satisfied by either id alone. **Anchored, not a bare id-grep:** `#6706` alone now occurs in §4.1, §8 and §12.5 — including §12.5's account of this very correction — so a bare id-grep would stay green with §11 regressed to "a future PRD". **Non-vacuous:** `paths` is the single PRD file and this pattern had zero hits in it at baseline HEAD `cdc501a3f1` — a genuine RED→GREEN check, unlike the vacuous tree-scoped id-grep that forced `gui-on-demand-measurement.capability-manifest.yaml`:80-85 down to `kind: manual`. Unlike β's and δ's, this binding is GREEN on #6751's own diff.<br>`grep:Vocabulary carrier for the slot.*#6706` → `present` in `docs/prds/v0_6/solver-legibility-telemetry.md` |
+| `p3-multimodality-slot-cites-6711` | **PASS** | G7 / INV-SF-5 posture, **half two of two** — the same §11 slot must also name #6711, the first leaf that populates it. Rationale, conjunctive-not-alternation reasoning and non-vacuity are as for `p3-multimodality-slot-cites-6706` above; this pattern likewise had zero hits at baseline `cdc501a3f1` and is anchored to §11's own role line, because `#6711` alone now occurs in §4.1, §8, §8.2, §11 and §12.5. **Both halves must pass** for the INV-SF-5 row to be certified.<br>`grep:First leaf that populates the slot.*#6711` → `present` in `docs/prds/v0_6/solver-legibility-telemetry.md` |
 

@@ -454,6 +454,22 @@ tasks:
       paths:
       - crates/reify-cli/src/main.rs
       expect: absent
+  - name: completeness-field-owner-is-p3-zeta
+    binding: 'G7 co-tenancy ruling — canonical text is PRD section 8.2 items 1-3 (written by
+      #6751); this is a pointer, not a fifth copy. The rule: xi renders the P4-owned fields
+      only and neither adds nor re-renders the completeness field, which is P3 zeta #6711''s;
+      no dependency edge either way. The pattern anchors on section 8.2''s own ruling sentence
+      rather than on the id #6711, which by itself now occurs in sections 4.1, 8, 11 and 12.5
+      and so would stay green with the ruling deleted. Zero hits at baseline HEAD cdc501a3f1,
+      so this is a real RED-to-GREEN check; GREEN on #6751''s own diff, not a post-delivery
+      assertion.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: neither add nor re-render the completeness field
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present
 - label: ο
   task_id: 6735
   title: 'P4-omicron: docs-truth for the observable legibility surface'
@@ -605,3 +621,43 @@ tasks:
     delivered_check:
       kind: manual
       reason: a scheduler-disposition rule, not a repo pattern.
+  - name: p3-multimodality-slot-cites-6706
+    binding: 'G7 / INV-SF-5 posture, half one of two — the PRD section 11 multimodality slot
+      must name #6706, the Completeness vocabulary carrier, never "a future PRD". As first
+      landed the section 12.5 G7 row promised the citation was "stamped at decompose" and NO P3
+      id appeared anywhere in the document; #6751 stamped it in section 4.1 (the reserved
+      slot), section 8 (the seam row plus 8.2) and section 11. omega is dep-wired behind #6751
+      and is the leaf that applies the terminal status stamp, so this check re-verifies the
+      citation immediately before that stamp: a G7 justification that defers to a decompose-time
+      action must be re-checked at decompose-close, or the invariant walk certifies its own
+      intention. TWO checks, not one alternation: the requirement is conjunctive (both ids), and
+      an ERE alternation is satisfied by either id alone. The pattern is anchored to section
+      11''s own role line rather than to the bare id, because #6706 now also occurs in sections
+      4.1, 8 and 12.5 — including in 12.5''s account of this very correction, so a bare id-grep
+      would stay green with section 11 regressed to "a future PRD". NON-VACUITY: paths is the
+      single PRD file and this pattern had ZERO hits in it at baseline HEAD cdc501a3f1, so grep
+      is the honest kind — unlike gui-on-demand-measurement.capability-manifest.yaml lines
+      80-85, demoted to manual because its pattern already matched elsewhere in its search
+      paths. Unlike beta''s verdict token and delta''s mount gate, this binding is GREEN on
+      #6751''s own diff rather than asserting a post-delivery state.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Vocabulary carrier for the slot.*#6706
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present
+  - name: p3-multimodality-slot-cites-6711
+    binding: 'G7 / INV-SF-5 posture, half two of two — the same section 11 slot must also name
+      #6711, the first leaf that populates it. Rationale, conjunctive-not-alternation reasoning
+      and non-vacuity are as for p3-multimodality-slot-cites-6706 above; this pattern likewise
+      had ZERO hits at baseline HEAD cdc501a3f1 and is anchored to section 11''s own role line,
+      because #6711 alone now occurs in sections 4.1, 8, 8.2, 11 and 12.5. Both halves must pass
+      for the INV-SF-5 row to be certified.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: First leaf that populates the slot.*#6711
+      paths:
+      - docs/prds/v0_6/solver-legibility-telemetry.md
+      expect: present
