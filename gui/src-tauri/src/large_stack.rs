@@ -94,7 +94,11 @@
 //!    other, where the multi-threaded tauri runtime previously ran them
 //!    concurrently. The split buys isolation from ENGINE work, not from other
 //!    LSP work — see [`Lane`]'s "What the split does NOT buy" for what that
-//!    costs and what bounding it would take.
+//!    costs and what bounding it would take. Tracked as task #6517.
+//! 4. **Drop-cancellation of an LSP request.** A future handed to a lane is
+//!    driven to completion by a thread that cannot be cancelled, so abandoning
+//!    the awaiting side no longer stops the work — see
+//!    [`crate::lsp_bridge::lsp_request_on_worker`]'s "What this COSTS".
 //!
 //! So the invariant this module establishes is: "compile-bearing and
 //! high-frequency engine work, plus the inline LSP dispatch arms, run on a large
@@ -493,7 +497,16 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// bypass couples this module to `reify-lsp`'s internal choice of which arms
 /// offload — a coupling that would rot silently if that choice changed — and a
 /// pool is a different concurrency design than the one this task specified,
-/// needing its own reentrancy and ordering argument.
+/// needing its own reentrancy and ordering argument (LSP notifications such as
+/// `didOpen`/`didChange` are order-sensitive against later requests on the same
+/// document, so a pool must not reorder them).
+///
+/// That deferral is TRACKED, not merely narrated: task #6517 carries both
+/// candidate fixes above, and records that the choice between them should be
+/// made against a measurement — no benchmark of serialized-vs-concurrent
+/// keystroke latency exists yet. Cited here for the same reason the module docs
+/// cite #6195 and 5466: a disclosed limit with no ticket behind it is
+/// indistinguishable from a limit nobody intends to close.
 pub(crate) struct Lane {
     /// The lane thread's name, for backtraces, `top -H` and profiler rows.
     name: &'static str,

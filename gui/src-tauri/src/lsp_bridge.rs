@@ -116,6 +116,34 @@ pub async fn lsp_request_impl(
 /// 2-worker runtime responsive); tracked as task #6195 rather than overclaimed
 /// here.
 ///
+/// # What this COSTS: the request is no longer DROP-CANCELLABLE
+///
+/// Stated alongside the coverage limit above because it is a behaviour change
+/// this routing INTRODUCES, not merely one it fails to fix.
+///
+/// Before task 5772 the body ran inside the Tauri command's own future, so a
+/// frontend `invoke` that was abandoned — window closed, pane navigated away,
+/// a keystroke's request superseded by the next one — dropped that future and
+/// the LSP work stopped at its next `.await` point. Now the future is MOVED
+/// into a lane job and driven by [`tokio::runtime::Handle::block_on`] on a
+/// thread that has no cancellation point at all. Dropping the awaiting side
+/// only drops the `oneshot` receiver; `reply_tx.send` then fails silently
+/// (`let _ = ...`) while the work runs to completion regardless.
+///
+/// That compounds with the single-consumer serialization documented on
+/// [`crate::large_stack::Lane`]: an abandoned request still occupies the lane
+/// for its full duration, so it delays the LIVE requests queued behind it.
+/// Bounding it means threading a cancellation token into the job and checking
+/// it at the lane before driving the future, so an abandoned request is dropped
+/// from the queue instead of executed — same lane, same shape, but a different
+/// job contract than this task specified. Tracked with the serialization it
+/// compounds, on task #6517.
+///
+/// Not a correctness bug in either direction: the work is idempotent
+/// request-handling against the bridge's own state, and every arm still
+/// RESOLVES. It is a wasted-work and latency cost, and the honest statement of
+/// it is this paragraph rather than silence.
+///
 /// # Why this composition lives here, not inline in `main.rs`
 ///
 /// `main.rs` is the `--features gui` bin and has no test module, so a wrapper
