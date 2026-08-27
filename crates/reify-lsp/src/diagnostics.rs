@@ -2678,6 +2678,102 @@ structure S {
         );
     }
 
+    /// BT8 REVERSE (task #6798, PRD `driver-contract-implementation.md`
+    /// leaf pi / §5 BT8 / §12 matrix ruling 2): locks that injecting the
+    /// real `SimpleConstraintChecker` at compile time (step-2/step-4 of
+    /// this leaf) does not disturb the Leo-ratified trampoline-free
+    /// posture — see [`compute_diagnostics_with_state`]'s "## Engine
+    /// posture" doc block for the authoritative writeup. Matrix ruling 2
+    /// retires the CLI-side FEA lock but explicitly KEEPS this LSP-side
+    /// subtraction.
+    ///
+    /// **GREEN before and after** this leaf's impl steps: like its sibling
+    /// [`fea_bearing_constraint_produces_no_false_violation_or_false_pass`],
+    /// this locks pre-existing gate behaviour — the compile-time checker
+    /// change never touches the eval-time Engine — rather than new runtime
+    /// behaviour, so there is no honest RED state to manufacture for it.
+    ///
+    /// Three assertions:
+    /// 1. The checker swap is a strict compile-time no-op on
+    ///    [`FEA_BEARING_SRC`]: identical `(severity, code, message)`
+    ///    diagnostics AND identical `content_hash` on both compile entry
+    ///    points. `FEA_BEARING_SRC` has no `auto:` type parameter, so the
+    ///    injected checker is never even consulted on it.
+    /// 2. No compute trampolines are registered — broadens the sibling
+    ///    lock's single-name probe (`solver::elastic_static`) to all three
+    ///    real registered targets in `register_compute_fns`
+    ///    (`crates/reify-eval/src/compute_targets/mod.rs:249-278`):
+    ///    keystroke-time FEA/buckling/form-find solves are rejected
+    ///    outright, not merely deferred (PRD `compute-fea-hardening.md`
+    ///    INV-FEA-1 §2), and the checker change is compile-time only.
+    /// 3. No false violation and no false pass — reuses
+    ///    [`assert_no_false_violation_or_pass`] exactly as the sibling
+    ///    lock does.
+    #[test]
+    fn real_checker_injection_preserves_trampoline_free_posture() {
+        let uri = test_uri();
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+
+        // --- (1) The checker swap is a strict compile-time no-op here ---
+        let stub_compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let real_compiled =
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+        let stub_diags: Vec<(Severity, Option<DiagnosticCode>, &str)> = stub_compiled
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.code, d.message.as_str()))
+            .collect();
+        let real_diags: Vec<(Severity, Option<DiagnosticCode>, &str)> = real_compiled
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.code, d.message.as_str()))
+            .collect();
+        assert_eq!(
+            stub_diags, real_diags,
+            "real-checker injection must be a strict compile-time no-op on \
+             FEA_BEARING_SRC — it has no `auto:` type parameter, so the \
+             injected checker is never consulted; stub diagnostics: {:#?}, \
+             real-checker diagnostics: {:#?}",
+            stub_compiled.diagnostics, real_compiled.diagnostics
+        );
+        assert_eq!(
+            stub_compiled.content_hash, real_compiled.content_hash,
+            "real-checker injection must produce an identical content_hash \
+             on FEA_BEARING_SRC (compile-time no-op)"
+        );
+
+        // --- (2) No compute trampolines are registered ---
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+        for target in [
+            "solver::elastic_static",
+            "solver::buckling",
+            "solver::form_find",
+        ] {
+            assert!(
+                state.engine.compute_dispatch(target).is_none(),
+                "the real-checker injection is a COMPILE-time change only: \
+                 the persistent Engine used by compute_diagnostics_with_state \
+                 must still carry no registered '{target}' compute \
+                 trampoline — keystroke-time FEA/buckling/form-find solves \
+                 are rejected outright, not deferred (PRD \
+                 compute-fea-hardening.md INV-FEA-1 §2)"
+            );
+        }
+
+        // --- (3) No false violation and no false pass ---
+        let check_result = state.engine.check_snapshot(&real_compiled).expect(
+            "state.engine should hold a snapshot for FEA_BEARING_SRC's content \
+             hash immediately after compute_diagnostics_with_state evaluated it",
+        );
+        assert_no_false_violation_or_pass(
+            &result.diagnostics,
+            &check_result,
+            "compute_diagnostics_with_state (post real-checker injection)",
+        );
+    }
+
     /// Shared assertion for
     /// [`fea_bearing_constraint_produces_no_false_violation_or_false_pass`]
     /// (see that test's doc for the full rationale). Given one LSP entry
