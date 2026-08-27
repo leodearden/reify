@@ -6129,6 +6129,132 @@ mod tests {
         let _ = eval_objective_set(&incoherent, &ValueMap::new(), &[], None);
     }
 
+    // ---- eval_objective_set non-finite-ACCUMULATOR fail-closed contract (task #6377) ----
+    //
+    // The per-term `.filter(|v| v.is_finite())?` inside the fold guards each `v`.
+    // It does NOT guard `acc`. These four cases pin the two unguarded paths that
+    // reach a non-finite ACCUMULATED fold anyway, plus one positive control that
+    // must keep passing so the guard cannot be over-eager.
+
+    /// Hand-build a dimensionless single-term `WeightedSum` set with an explicit weight.
+    ///
+    /// Mirrors the struct-literal construction used by
+    /// `eval_objective_set_panics_on_incoherent_dimensions` above; every term is
+    /// dimensionless, so `reify_ir::objective_terms_coherent` is satisfied and the
+    /// I-UNITS `debug_assert!` at the head of the fold stays quiet.
+    fn weighted_set(terms: Vec<(reify_ir::ObjectiveSense, f64, f64)>) -> reify_ir::ObjectiveSet {
+        use reify_ir::{ObjectiveCombination, ObjectiveSet, ObjectiveTerm};
+        ObjectiveSet {
+            terms: terms
+                .into_iter()
+                .map(|(sense, weight, v)| {
+                    let mut t = ObjectiveTerm::new(sense, real_lit(v));
+                    t.weight = weight;
+                    t
+                })
+                .collect(),
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        }
+    }
+
+    /// Pins defect 2(a): `ObjectiveTerm::weight` is a bare `pub f64`
+    /// (`reify-ir/src/constraint.rs`) whose "> 0; default 1.0" contract is a doc
+    /// comment only — no construction site validates it at runtime. A `NaN` weight
+    /// therefore reaches the fold, where `term.weight * v` is `NaN` and the
+    /// accumulator goes `NaN` even though every *term value* passed the per-term
+    /// `is_finite` filter. `eval_objective_set` must abstain, not emit an
+    /// unorderable score.
+    #[test]
+    fn eval_objective_set_nan_weight_returns_none() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::NAN, 2.0)]);
+        assert!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_none(),
+            "a NaN term weight folds to a NaN accumulator; eval_objective_set must \
+             fail closed with None rather than return Some(NaN) — a NaN score is not \
+             orderable, and both ranking sites (solver.rs solve_ranked_impl, \
+             cpsat.rs `impl Ord for ScoredModel`) assume it can never occur"
+        );
+    }
+
+    /// Pins the other half of defect 2(a): an INFINITE weight is equally unvalidated.
+    /// `inf * 2.0` is `+inf`, so the accumulator is non-finite without ever being NaN
+    /// — which is why the guard must test `is_finite()`, not `!is_nan()`. An `+inf`
+    /// score orders fine under `partial_cmp` but is still a garbage optimum.
+    #[test]
+    fn eval_objective_set_infinite_weight_returns_none() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::INFINITY, 2.0)]);
+        assert!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_none(),
+            "an infinite term weight folds to an infinite accumulator; \
+             eval_objective_set must fail closed with None. Note this case is NOT \
+             caught by a `!is_nan()` check — the guard has to be `is_finite()`"
+        );
+    }
+
+    /// Pins the first half of defect 2(b): weight validation alone would NOT close
+    /// this path. Both factors are finite and the weight is positive — exactly what
+    /// a "> 0 and finite" construction-site check would enforce — yet
+    /// `f64::MAX * 1e10` overflows to `+inf`, so the accumulator is non-finite.
+    #[test]
+    fn eval_objective_set_weight_times_value_overflow_returns_none() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::MAX, 1e10)]);
+        assert!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_none(),
+            "f64::MAX * 1e10 overflows to +inf even though BOTH factors are finite \
+             and the weight is positive; eval_objective_set must fail closed. This is \
+             the case that makes upstream weight validation insufficient on its own"
+        );
+    }
+
+    /// The strongest case, and the second half of defect 2(b): every weight is finite
+    /// AND positive, honoring the documented "> 0" contract in full, and the fold is
+    /// still `NaN`. `acc` goes `0.0 → +inf` (Minimize) → `inf - inf = NaN` (Maximize).
+    /// Both terms are dimensionless, so `objective_terms_coherent` returns `Ok` and the
+    /// I-UNITS `debug_assert!` at the head of the fold does not fire — this really does
+    /// reach `Some(acc)` on the unguarded base.
+    #[test]
+    fn eval_objective_set_opposing_infinities_fold_to_nan_returns_none() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![
+            (ObjectiveSense::Minimize, f64::MAX, 1e10),
+            (ObjectiveSense::Maximize, f64::MAX, 1e10),
+        ]);
+        assert!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None).is_none(),
+            "a +inf Minimize term and a -inf Maximize term fold to NaN (inf - inf) \
+             with every weight finite and positive; eval_objective_set must fail \
+             closed. No construction-site weight validation can close this path — \
+             only a guard on the ACCUMULATOR can"
+        );
+    }
+
+    /// Positive control: the guard must not be over-eager. Pins PRD §6.2 invariant I2
+    /// — for a single `Minimize` term with the default `weight = 1.0` and finite `v`,
+    /// the fold is `0.0 + 1.0·v == v` exactly (IEEE-754), so the score is returned
+    /// unchanged and byte-identically. This must pass BEFORE and AFTER the guard lands.
+    #[test]
+    fn eval_objective_set_finite_fold_still_returns_the_score() {
+        use reify_ir::{ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm};
+        let obj = ObjectiveSet {
+            terms: vec![ObjectiveTerm::new(ObjectiveSense::Minimize, real_lit(3.0))],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
+        assert_eq!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
+            Some(3.0),
+            "a finite fold must be returned unchanged: the fail-closed accumulator \
+             guard rejects only non-finite scores, and I2 (0.0 + 1.0·v == v for finite \
+             v) keeps the cost surface byte-identical for every well-formed objective"
+        );
+    }
+
+    // ---- end eval_objective_set non-finite-accumulator contract (task #6377) ----
+
     #[test]
     fn multi_param_solving() {
         use crate::DimensionalSolver;
