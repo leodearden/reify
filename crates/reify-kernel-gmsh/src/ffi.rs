@@ -142,6 +142,20 @@ unsafe extern "C" {
         ierr: *mut c_int,
     );
 
+    /// Get the types of elements in the entity of dimension `dim` and tag
+    /// `tag`. If `tag < 0`, get the types for all entities of dimension
+    /// `dim`. If `dim` and `tag` are negative, get all the types in the
+    /// mesh. — gmshc.h:886-889
+    ///
+    /// `void gmshModelMeshGetElementTypes(int** elementTypes, size_t* elementTypes_n, const int dim, const int tag, int* ierr)`
+    pub fn gmshModelMeshGetElementTypes(
+        elementTypes: *mut *mut c_int,
+        elementTypes_n: *mut usize,
+        dim: c_int,
+        tag: c_int,
+        ierr: *mut c_int,
+    );
+
     /// `void gmshModelMeshClassifySurfaces(double angle, int boundary, int forReparametrization, double curveAngle, int exportDiscrete, int* ierr)`
     pub fn gmshModelMeshClassifySurfaces(
         angle: f64,
@@ -933,4 +947,42 @@ pub fn logger_get() -> Result<Vec<String>, GeometryError> {
     }
     check_ierr("gmshLoggerGet", ierr)?;
     Ok(lines)
+}
+
+/// Read the element-type codes present in the mesh, scoped by `dim` and
+/// `tag`.
+///
+/// Per gmshc.h:886-888: if `tag < 0`, returns the types for ALL entities of
+/// dimension `dim`; if `dim` AND `tag` are both negative, returns EVERY
+/// type in the mesh. This is the cheap census that discriminates "readback
+/// dropped a mixed element type" from "gmsh never had the elements".
+///
+/// Measured type codes (geo-built unit box, no recombination/extrusion):
+/// dim 3 -> `4` = P1 4-node tet, `11` = P2 10-node tet (agreeing with
+/// `kernel_real.rs:229-236`); dim 2 -> `2` = 3-node triangle (measured
+/// `[2]` on the same box). Whole-mesh `(-1, -1)` measured `[1, 2, 4, 15]`
+/// at P1 and `[8, 9, 11, 15]` at P2 — that pins gmsh's whole B-rep
+/// decomposition and is far more version-sensitive than a dim-scoped
+/// census.
+///
+/// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
+pub fn get_element_types(dim: i32, tag: i32) -> Result<Vec<i32>, GeometryError> {
+    let mut types_ptr: *mut c_int = ptr::null_mut();
+    let mut types_n: usize = 0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshModelMeshGetElementTypes(&mut types_ptr, &mut types_n, dim, tag, &mut ierr);
+    }
+    let types: Vec<i32> = if types_ptr.is_null() || types_n == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(types_ptr, types_n) }.to_vec()
+    };
+    unsafe {
+        if !types_ptr.is_null() {
+            gmshFree(types_ptr as *mut c_void);
+        }
+    }
+    check_ierr("gmshModelMeshGetElementTypes", ierr)?;
+    Ok(types)
 }
