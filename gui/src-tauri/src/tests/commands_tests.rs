@@ -1977,6 +1977,9 @@ fn get_initial_state_impl_runs_correctly_through_worker() {
 /// hardcoded, so the guard cannot rot into a no-op if the fixture's parameter
 /// names change; setting a cell to its OWN current value keeps the edit a
 /// genuine round-trip through `set_parameter` without changing the model.
+///
+/// The round trip has to REJOIN `ValueData`'s two halves to be a round trip at
+/// all — see the comment on `value` below.
 #[test]
 fn set_parameter_impl_runs_correctly_through_worker() {
     use crate::commands::{get_initial_state_impl, set_parameter_impl};
@@ -1993,7 +1996,22 @@ fn set_parameter_impl_runs_correctly_through_worker() {
         .iter()
         .find(|v| v.kind == "Param")
         .expect("the bracket fixture must expose at least one Param cell");
-    let (cell_id, value) = (param.cell_id.clone(), param.value.clone());
+    // `ValueData` splits a displayed quantity across TWO fields: `value` is the
+    // display NUMBER with its unit stripped off into the sibling `unit`
+    // (`format_value` -> `Value::format_display_pair`). So `param.value` alone
+    // is the bare `"80"`, and feeding that back to a dimensioned cell is not a
+    // round trip — the engine rejects it outright ("expects Length, got the
+    // bare number '80'; pass a dimensioned Length literal such as '80mm'").
+    // Rejoining the halves reconstructs the literal a user would have typed,
+    // which is what every other `set_parameter_impl` call site in this file
+    // passes by hand (`"5mm"`, `"250mm"`) — recovered here by DISCOVERY rather
+    // than hardcoded, so the guard still cannot rot into a no-op. A
+    // dimensionless param carries `unit == ""`, so the concatenation degrades
+    // to the bare number exactly where the bare number is what the engine wants.
+    let (cell_id, value) = (
+        param.cell_id.clone(),
+        format!("{}{}", param.value, param.unit),
+    );
 
     let direct = set_parameter_impl(&engine_direct, &cell_id, &value)
         .unwrap_or_else(|e| panic!("direct set_parameter_impl({cell_id}, {value}) failed: {e}"));
