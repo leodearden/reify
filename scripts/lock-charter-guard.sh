@@ -128,8 +128,23 @@
 #   prompt-γ-mirror discipline in this block MORE important, not less: a lag
 #   between an α widening landing and its γ mirror landing is now a live DF
 #   main-red window, not a quiet gap.  The extensionless vector (the STATUS
-#   2026-07-31 note above) is unaffected by this and still has no live
-#   cross-source check on either side.
+#   2026-07-31 note above) is NOT exempt from this: γ's test module
+#   (fused-memory/tests/test_lock_charter_guard.py) defines the two Tier-2
+#   cross-source guards symmetrically, test_extension_drift_guard_vs_reify_script
+#   and test_extensionless_drift_guard_vs_reify_script — the latter invoking
+#   --list-extensionless against this very script — both under the same
+#   import-time _REIFY_SKIP_REASON skipif and both routed through
+#   _reify_guard_vector, which HARD-FAILS rather than skips when this script's
+#   emitter exits non-zero, so dropping or renaming --list-extensionless is
+#   loud, not a silent retirement.  A `-rs` run scoped to the extensionless
+#   case (`pytest -rs -q -k extensionless`) shows 19 passed, 0 skipped — the
+#   guard RUNS — and pointing REIFY_ROOT at a temp reify root whose _EXTLESS
+#   drops `Dockerfile` reds test_extensionless_drift_guard_vs_reify_script on
+#   the α/γ/bash drift assertion — the guard FIRES.  So the α-first +
+#   prompt-γ-mirror discipline two sentences up applies to BOTH vectors, not
+#   just the one that motivated this measurement: a unilateral α widening of
+#   EITHER allowlist — _EXTS or _EXTLESS — now opens a live DF main-red
+#   window until its γ mirror lands.
 
 set -euo pipefail
 
