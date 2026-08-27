@@ -4661,9 +4661,14 @@ describe('reifyLanguage — fold and indent coverage', () => {
     PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
     ConnectBody:
       'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
-    // `import a.b {C, D}` — no separator, matching the RULE this port follows
-    // (see the long note on `ImportDeclaration` in reify.grammar).
-    ImportItems: 'import std.mech {Bolt, Nut}',
+    // `import a.b.{C, D}` — the canonical DOTTED form settled by #5931 against
+    // docs/reify-language-spec.md:2616-2618 §15. The `.` is part of the
+    // opener: `ImportItems` starts at the named `ImportItemsOpen` (`".{"`)
+    // token, so `ownBraceInterior`'s literal-`{` scan lands one past the dot —
+    // the same `from` the fold assertion for this node expects. The SPACED
+    // form this fixture used to hold is now a parse error (asserted upstream
+    // in this file), which is why it cannot stay.
+    ImportItems: 'import std.mech.{Bolt, Nut}',
     // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30.
     KeyedMemberBlock:
       'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }',
