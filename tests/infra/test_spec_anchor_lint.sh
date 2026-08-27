@@ -48,6 +48,9 @@
 #   (o) §9.2 is ACTUALLY anchored in the shipped spec — structurally
 #       (every heading present is anchored) rather than by a pinned count,
 #       so leaf η's later graduation edits to §9.2 cannot red it.
+#   (p) the NORMATIVE authoring note exists, is linked from the spec front
+#       matter, states every clause of the contract, and contains no
+#       valid-format anchor ID (a copy-paste collision hazard).
 #
 # NO-SILENT-GREEN FLOOR: a $RAN counter is incremented by every scenario and
 # checked after test_summary. A future guard condition that skipped every
@@ -76,6 +79,7 @@ TOMB_REL="docs/reify-language-spec.tombstones"
 SPEC="$REPO_ROOT/$SPEC_REL"
 TOMBSTONES="$REPO_ROOT/$TOMB_REL"
 LINT="$REPO_ROOT/scripts/spec-anchor-lint.sh"
+NOTE="$REPO_ROOT/docs/notes/spec-anchor-contract.md"
 TS_CONSUMER="$REPO_ROOT/tree-sitter-reify/tests/spec_purpose_example_grammar.rs"
 
 # Did ANY scenario actually execute?  Consulted after test_summary; a run that
@@ -914,6 +918,75 @@ assert "(o5) no anchor lands inside a fenced code block within §9.2" \
 assert "(o6) anchor IDs carry no section digits" _ids_are_opaque
 
 assert "(o6) anchor IDs are NOT in ascending order down the file" _ids_are_not_sorted
+
+# ===========================================================================
+# (p) THE NORMATIVE AUTHORING NOTE.
+#
+# The note is normative for every later spec-conformance wave, so it is
+# GUARDED, not merely written: a note that silently loses a clause stops being
+# the thing later waves can rely on, and nothing else would notice.
+# ===========================================================================
+echo ""
+echo "--- (p) the normative authoring note ---"
+RAN=$((RAN + 1))
+
+# One grep per clause, each a SHORT distinctive literal rather than a prose
+# pin: a partial note must not pass, but a reworded sentence must not red.
+_note_states() {
+    grep -qF -- "$1" "$NOTE" && return 0
+    echo "the authoring note does not state: $1"
+    return 1
+}
+
+assert "(p1) docs/notes/spec-anchor-contract.md exists and is non-empty" test -s "$NOTE"
+
+assert "(p2) the spec front matter LINKS the authoring note" \
+    bash -c 'head -n 15 "$1" | grep -qF "docs/notes/spec-anchor-contract.md"' -- "$SPEC"
+
+assert "(p3) the note states the ID grammar" _note_states 'sc-[0-9a-f]{6}'
+assert "(p3) the note states the placement form" _note_states '<!-- sc-anchor: sc-XXXXXX -->'
+assert "(p3) the note states that IDs are randomly generated" _note_states 'randomly generated'
+assert "(p3) the note states that IDs are opaque" _note_states 'opaque'
+assert "(p3) the note gives the minting command" _note_states 'openssl rand -hex 3'
+assert "(p3) the note states that IDs are NEVER positional" _note_states 'never positional'
+assert "(p3) the note states that a tombstoned ID is retired forever" _note_states 'retired forever'
+assert "(p3) the note states that a tombstoned ID is never reused" _note_states 'never reused'
+assert "(p3) the note names the tombstone sidecar path" _note_states 'docs/reify-language-spec.tombstones'
+assert "(p3) the note states the SAME-diff deletion rule" _note_states 'SAME diff'
+assert "(p3) the note states a heading anchor's scope" _note_states "whole run of intro prose"
+assert "(p3) the note states the consumer rule: resolve by grepping the literal ID" \
+    _note_states 'grepping the literal ID'
+assert "(p3) the note forbids consumers parsing section numbers for identity" \
+    _note_states 'section numbers'
+
+# p4 — COLLISION SAFETY. A realistic-looking example ID in normative
+# documentation is a live hazard the moment someone copies it: it either
+# duplicates a live ID or burns one the tombstone file has no record of.
+# `sc-XXXXXX` is not hex, so it CANNOT match the ID grammar — the hazard is
+# made structurally impossible rather than managed after the fact. This also
+# keeps the lint's scan surface honest: it reads only the spec and the
+# sidecar, so an ID living in the note would be invisible to rule 2.
+_note_has_no_valid_id() {
+    local hits
+    # Self-guarding: grep over a MISSING file yields no hits, so without this
+    # the check would pass vacuously whenever the note does not exist —
+    # exactly the state it is supposed to be meaningful in.
+    if [ ! -s "$NOTE" ]; then
+        echo "the authoring note is missing or empty at $NOTE — this check would be vacuous"
+        return 1
+    fi
+    hits="$(grep -oE 'sc-[0-9a-f]{6}' "$NOTE" || true)"
+    [ -z "$hits" ] && return 0
+    echo "the authoring note contains valid-format anchor ID(s) — a copy-paste collision hazard:"
+    printf '%s\n' "$hits"
+    grep -nE 'sc-[0-9a-f]{6}' "$NOTE" || true
+    return 1
+}
+assert "(p4) the note contains NO valid-format anchor ID (only the metavariable)" \
+    _note_has_no_valid_id
+
+assert "(p5) the note cites the owning PRD" \
+    _note_states 'docs/prds/v0_6/spec-conformance-suite.md'
 
 # ---------------------------------------------------------------------------
 # Summary.
