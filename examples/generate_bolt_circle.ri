@@ -19,8 +19,11 @@
 // `check`/`eval`/build paths; the residual that survives it is narrower — a
 // repeat no-op tessellate under selective demand, i.e. the GUI's rebuild path —
 // and is tracked as #6460. This file's lambda computes point3 values only,
-// which is why it is unaffected either way. Canonical source, and the one to
-// trust over this note: `docs/prds/v0_6/eradicate-silent-undef.md`.
+// which is why it is unaffected either way. Trust the task records #5385 and
+// #6460 over this note for the FUNCTIONAL fix; `docs/prds/v0_6/
+// eradicate-silent-undef.md` is canonical only for the loudness arm (it puts
+// the generate-of-geometry functional fix out of scope, and does not mention
+// #6460 at all).
 
 structure BoltCircle {
     let bolt_count = 4

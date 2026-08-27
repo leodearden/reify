@@ -12,9 +12,21 @@
 //
 // Length-semantic pattern args (spacings, arbitrary_pattern offsets) MUST be
 // dimensioned lengths (e.g. `20mm`). Task 5214 migrated the bare numbers here to
-// avoid a silent-SI-metres hazard at eval; since task 5652 the spacing slots are
-// checked at COMPILE time instead, so a bare number is now a hard
-// ArgTypeMismatch error rather than a silent wrong answer.
+// avoid a silent-SI-metres hazard at eval.
+//
+// WHICH LAYER CATCHES A BARE NUMBER depends on the builtin, so do not rely on a
+// green `reify check` alone:
+//   - `linear_pattern` / `linear_pattern_2d` SPACING slots are ALSO checked at
+//     COMPILE time since task 5652 — a bare number there is a hard
+//     ArgTypeMismatch at `reify check`.
+//   - `arbitrary_pattern` offsets (used by PatternComposed below) and
+//     `circular_pattern` / `mirror` origins have NO compile-time slot; task 5652
+//     deliberately deferred them (deferral tracked as #5662), so
+//     a bare number there is caught only by the EVAL-layer gate.
+// The compile check COMPLEMENTS the eval gate, it never replaces it — a
+// dynamically-typed operand is skipped at compile time by design and still
+// relies on eval. Both layers are load-bearing (crates/reify-compiler/src/
+// builtin_signatures.rs, "Relationship to the eval-layer units gate").
 
 // ── 1. BaseElement ────────────────────────────────────────────────────────────
 // Simple box geometry. It is deliberately kept as a standalone primitive here —
