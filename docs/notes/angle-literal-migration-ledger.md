@@ -199,12 +199,17 @@ leaves — warn off both, not just δ:**
   asserts the volumes match. Retyping the bare arm deletes the comparison.
   **δ's (5780).**
 - **`occt_non_length_fields_stay_ungated`** (`reify-kernel-occt/src/lib.rs`) —
-  the `Draft` arm. Its bareness *is* the experiment: the test asserts that **no**
-  `field = "angle"` warn is emitted, and a dimensioned `Value` emits no warn
-  either — so retyping it makes the assertion pass **vacuously** and silently
-  guts the ungated-`extract_f64` regression control, with a green run to hide it.
+  the `Draft` arm. This is a control for the PRD's 46 = 41 + 3 + 2
+  ungated-field split, not a corpus fixture, and its bareness is load-bearing:
+  a bare `Value::Real` is the one shape `check_length_field` can never wave
+  through, because its early return is gated on the `Value::Scalar` variant.
+  Keep it bare and the arm still catches a rewire to `extract_length_f64` even
+  if that predicate is later loosened to accept any dimensioned `Scalar`. A
+  retyped arm would still warn on a rewire *today* — an ANGLE `Scalar` is not
+  `LENGTH`, so `check_length_field` still returns `Some` — but it gives that
+  extra reach up for nothing.
   **δ's (5780)** — but its sibling `CircularPattern` arm in the *same* test is
-  **ε's (5781)**, and carries exactly the same trap.
+  **ε's (5781)**, and carries exactly the same reason.
 
 Every Draft *fixture* is migrated; what is left is two controls.
 

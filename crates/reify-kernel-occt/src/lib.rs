@@ -13839,18 +13839,25 @@ mod tests {
                 axis_dir: [0.0, 0.0, 1.0],
                 count: 2,
                 // Stays bare deliberately — task 5777. ε (5781) migrates
-                // `circular_pattern` angles, but NOT this one: a dimensioned
-                // `Value` emits no `field = "angle"` warn either, so retyping it
-                // makes the assertion below pass VACUOUSLY and silently deletes
-                // this control. See docs/notes/angle-literal-migration-ledger.md
-                // §1.2.1.
+                // `circular_pattern` angles, but NOT this one: it is a control
+                // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
+                // fixture. A bare `Value::Real` is the one shape
+                // `check_length_field` can never wave through — its early
+                // return is gated on the `Value::Scalar` variant — so the arm
+                // still catches a rewire to `extract_length_f64` even if that
+                // predicate is later loosened to accept any dimensioned
+                // `Scalar`. A retyped arm would still warn on a rewire today
+                // (an ANGLE `Scalar` is not LENGTH), but it gives that extra
+                // reach up for nothing. See
+                // docs/notes/angle-literal-migration-ledger.md §1.2.1.
                 angle: Value::Real(std::f64::consts::PI),
             });
             let _ = kernel.execute(&GeometryOp::Draft {
                 target,
                 faces: vec![],
-                // Stays bare deliberately — task 5777, same vacuity trap as the
-                // arm above, but δ's (5780): `draft` is δ's migration target.
+                // Stays bare deliberately — task 5777, same control contract as
+                // the arm above, but δ's (5780): `draft` is δ's migration
+                // target.
                 angle: Value::Real(0.05),
                 plane: target,
             });
