@@ -46,7 +46,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Scene, Mesh, BufferAttribute, type BufferGeometry } from 'three';
-import { createMeshManager } from '../../viewport/meshManager';
+import { createMeshManager, type MeshManagerContext } from '../../viewport/meshManager';
 import type { MeshData } from '../../types';
 
 // ---------------------------------------------------------------------------
@@ -153,6 +153,35 @@ function triDisplaced(n: number): MeshData {
 const bake = (s: Float32Array): Float32Array => new Float32Array(s.length * 3).fill(0.5);
 
 // ---------------------------------------------------------------------------
+// Non-vacuity guard
+// ---------------------------------------------------------------------------
+
+/**
+ * `expect(violations).toEqual([])` is a purely *negative* oracle: it also holds
+ * when the scene contains nothing capable of violating anything.  A regression
+ * that made `sync()` bail out early — a `validateMeshData` rejection, a BVH
+ * throw routing through `removeMesh`, colorize silently failing to install a
+ * colour attribute — would turn these tests green rather than red.
+ *
+ * So every scenario also asserts, positively, that the mesh really reached the
+ * post-resize state.  `tri(n)` emits `n` independent triangles, hence `n * 3`
+ * vertices and `n * 3` indices.
+ */
+function expectResyncedTo(
+  mm: MeshManagerContext,
+  triangles: number,
+  entityPath = 'A',
+): BufferGeometry {
+  const mesh = mm.getSceneMeshes().get(entityPath);
+  expect(mesh).toBeDefined();
+  const geometry = mesh!.geometry as BufferGeometry;
+  expect(geometry.getAttribute('position').count).toBe(triangles * 3);
+  expect(geometry.index).not.toBeNull();
+  expect(geometry.index!.count).toBe(triangles * 3);
+  return geometry;
+}
+
+// ---------------------------------------------------------------------------
 
 describe('meshManager BufferAttribute resize safety (#6757)', () => {
   let scene: Scene;
@@ -176,6 +205,8 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
     renderPass(scene, 'after-resync');
 
     expect(violations).toEqual([]);
+    // The colour attribute really tracked the new vertex count.
+    expect(expectResyncedTo(mm, 5).getAttribute('color').count).toBe(15);
   });
 
   it('re-bakes via setColorize after an off/on toggle spanning a vertex-count change', () => {
@@ -205,6 +236,9 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
     renderPass(scene, 'after-recolorize');
 
     expect(violations).toEqual([]);
+    // Re-enabling colorize really re-baked at the NEW vertex count — a
+    // setColorize that silently no-op'd would leave this at the stale 6.
+    expect(expectResyncedTo(mm, 5).getAttribute('color').count).toBe(15);
   });
 
   // -------------------------------------------------------------------------
@@ -228,6 +262,10 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
     renderPass(scene, 'after-resync');
 
     expect(violations).toEqual([]);
+    const geometry = expectResyncedTo(mm, 5);
+    expect(geometry.getAttribute('normal').count).toBe(15);
+    // No colorize was ever active, so no colour attribute should exist.
+    expect(geometry.getAttribute('color')).toBeUndefined();
   });
 
   it('re-syncs across a vertex-count change when normals are computed, not supplied', () => {
@@ -243,6 +281,9 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
     renderPass(scene, 'after-resync');
 
     expect(violations).toEqual([]);
+    // computeVertexNormals() really ran against the new geometry: a normal
+    // attribute exists and is sized for 15 vertices, not the stale 6.
+    expect(expectResyncedTo(mm, 5).getAttribute('normal').count).toBe(15);
   });
 
   it('warps, re-syncs and restores across a vertex-count change with deformation active', () => {
@@ -270,6 +311,8 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
     renderPass(scene, 'after-deform-off');
 
     expect(violations).toEqual([]);
+    // The warp/restore round trip really landed on the re-tessellated geometry.
+    expectResyncedTo(mm, 5);
   });
 
   it('re-syncs a ghosted entity across a vertex-count change', () => {
@@ -287,6 +330,12 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
     renderPass(scene, 'after-resync');
 
     expect(violations).toEqual([]);
+    // Asserted through the GHOST, not getSceneMeshes() (which only reports
+    // 'show' entities): the clone must see the re-tessellated geometry, which
+    // is only true while it genuinely shares the original's BufferGeometry.
+    const ghost = mm.getGhostMeshes().get('A');
+    expect(ghost).toBeDefined();
+    expect((ghost!.geometry as BufferGeometry).getAttribute('position').count).toBe(15);
   });
 
   it('rebuilds materials after a colorize re-sync without resizing any attribute', () => {
@@ -304,5 +353,50 @@ describe('meshManager BufferAttribute resize safety (#6757)', () => {
     renderPass(scene, 'after-rebuild-materials');
 
     expect(violations).toEqual([]);
+    // rebuildMaterials really re-installed a colour attribute at the new size.
+    expect(expectResyncedTo(mm, 5).getAttribute('color').count).toBe(15);
+  });
+
+  it('drops a stale colour attribute when a re-sync also drops the FEA channel', () => {
+    // Adjacent hole in the same defect family, reachable when the backend stops
+    // emitting an FEA solve for an entity in the same re-evaluation that
+    // re-tessellates it. No `version` is bumped, so the resize *throw* never
+    // fires and the harness stays silent — but a MeshPhongMaterial mesh left
+    // holding a 6-vertex colour buffer against a 15-vertex position buffer
+    // reads out of range on every draw call, which is the same user-visible
+    // outcome by a different route. Hence the positive assertion below carries
+    // this test, not `violations`.
+    const mm = createMeshManager(scene, { colorize: { channel: 'vonMises', bake } });
+
+    mm.sync({ A: triScalars(2) });
+    renderPass(scene, 'after-first-sync');
+    expect(expectResyncedTo(mm, 2).getAttribute('color').count).toBe(6);
+
+    // Re-tessellated AND the vonMises channel disappeared.
+    mm.sync({ A: tri(5) });
+    renderPass(scene, 'after-resync-without-channel');
+
+    expect(violations).toEqual([]);
+    // Degraded to the uncolorized rendering rather than keeping an undersized
+    // colour buffer attached.
+    expect(expectResyncedTo(mm, 5).getAttribute('color')).toBeUndefined();
+  });
+
+  it('drops a stale colour attribute when the channel outlives its vertex count', () => {
+    // Same hazard by a subtler route: the channel is still present, but its
+    // length still describes the OLD tessellation. `bake()` sizes its output off
+    // the scalars, not off position.count, so re-baking would install a
+    // correctly-versioned but undersized colour buffer — again out of range.
+    const mm = createMeshManager(scene, { colorize: { channel: 'vonMises', bake } });
+
+    mm.sync({ A: triScalars(2) });
+    renderPass(scene, 'after-first-sync');
+
+    // 5 triangles of geometry, but only the old 2-triangle scalar channel.
+    mm.sync({ A: tri(5, { scalar_channels: { vonMises: new Float32Array(6) } }) });
+    renderPass(scene, 'after-resync-with-stale-channel');
+
+    expect(violations).toEqual([]);
+    expect(expectResyncedTo(mm, 5).getAttribute('color')).toBeUndefined();
   });
 });
