@@ -623,15 +623,27 @@ pub enum DiagnosticCode {
     /// previously appended the argument leniently as `__arg{i}` with no
     /// diagnostic at all.
     ///
-    /// The declared-parameter set is the structure's `Param` AND `Auto { .. }`
-    /// value cells, because `param x : T = auto` / `auto(free)` lowers to
-    /// `ValueCellKind::Auto { free }`. A named argument for an `auto`-declared
-    /// param is therefore NOT an unknown field: it names a parameter the author
-    /// visibly wrote. (Counting only `Param` cells made this code assert the
-    /// opposite of the source on every auto-param structure.) It is the same
-    /// externally-settable member-set predicate used by
-    /// `crates/reify-compiler/src/connect.rs` and
-    /// `crates/reify-compiler/src/traits.rs`.
+    /// The suppressing predicate is the structure's `Param` PLUS `Auto { .. }`
+    /// value cells, at any visibility — the same externally-settable member-set
+    /// predicate used by `crates/reify-compiler/src/connect.rs` and
+    /// `crates/reify-compiler/src/traits.rs`. `param x : T = auto` / `auto(free)`
+    /// lowers to `ValueCellKind::Auto { free }`, so a named argument for an
+    /// `auto`-declared param is NOT an unknown field: it names a parameter the
+    /// author visibly wrote. (Counting only `Param` cells made this code assert
+    /// the opposite of the source on every auto-param structure.)
+    ///
+    /// That set is deliberately WIDER than the declared-parameter set, and is not
+    /// a claim about what a param is. `let m : T = auto` inside a structure lowers
+    /// to the SAME `Auto` cell as an auto param, and today's IR carries no
+    /// discriminator — so this code counts every `Auto` cell as possibly-declared
+    /// and stays SILENT on a named argument that targets one. Over-inclusion here
+    /// can only cost a diagnostic; it can never make this code state a falsehood,
+    /// which is the one failure mode it must not have. A named argument targeting
+    /// an auto LET is therefore leniently accepted, not diagnosed — the residual
+    /// `Auto`-slot binding gap is owned by #6705; the IR change that would make
+    /// the origin knowable is tracked by its own follow-up task. Contrast
+    /// [`Self::CtorArity`], which must print a NUMBER and so uses the narrower
+    /// visibility-keyed view.
     ///
     /// The lenient `__arg{i}` push is deliberately NOT gated by that predicate —
     /// it keys off the positionally-bindable slot set, as it always did — so the
@@ -685,12 +697,30 @@ pub enum DiagnosticCode {
     /// `"E_CTOR_ARITY: {Ctor}() expects at most {ndeclared} {argument|arguments},
     /// got {nargs}"`
     ///
-    /// `{ndeclared}` is the DECLARED parameter count — `Param` plus `Auto { .. }`
-    /// cells, the same set described on [`Self::CtorUnknownField`] — and the
+    /// `{ndeclared}` is the DECLARED parameter count — every `Param` cell, plus
+    /// each `Auto { .. }` cell whose `visibility` is `Public` — and the
     /// singular/plural noun keys off that same count. It is deliberately not the
     /// count of positionally-bindable slots: reporting the slot count made this
     /// message state a ceiling the source contradicts (`expects at most 1
     /// argument` on a structure declaring two, one of them `auto`).
+    ///
+    /// The visibility conjunct is what keeps an auto LET out of the ceiling.
+    /// `let m : T = auto` lowers to the SAME `ValueCellKind::Auto { free }` cell
+    /// as `param m : T = auto`, so counting every `Auto` cell inflated the ceiling
+    /// into a second false-message class — `expects at most 2 arguments` on a
+    /// structure declaring ONE param beside an auto let — and silenced the
+    /// param-less case outright. A param defaults to `Public`, a let to `Private`,
+    /// so visibility separates them for every shape in the corpus. It is a
+    /// heuristic, not a proof: `priv param x : T = auto` is read as a let and
+    /// understates the ceiling by one. No predicate over today's IR can be right
+    /// for both — the cells are byte-identical — and `priv`'s own meaning favours
+    /// this reading, since a private member is not part of the constructor's
+    /// externally-settable surface. Carrying the origin explicitly in the IR (a
+    /// `from_param` discriminant on the `Auto` variant, or a declared-param name
+    /// list on `TopologyTemplate`) is what removes the ambiguity, and is tracked by
+    /// its own follow-up task. Unlike [`Self::CtorUnknownField`], this code cannot
+    /// simply widen its view: it prints the count, so an over-wide view is itself
+    /// a false statement.
     ///
     /// Residual scope: a call whose argument count is WITHIN the declared count
     /// but which still overflows the positionally-bindable slots — because `auto`

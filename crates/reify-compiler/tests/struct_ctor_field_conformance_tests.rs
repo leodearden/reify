@@ -3648,3 +3648,219 @@ fn no_auto_over_arity_messages_and_spans_are_unchanged_by_the_declared_ceiling()
          not move `extra_positional_idxs`, got slice {sliced:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AUTO-LET vs AUTO-PARAM (esc-5303-9 remediation)
+//
+// `let m : T = auto` inside a structure lowers to the SAME
+// `ValueCellKind::Auto { free }` cell as `param m : T = auto`
+// (`entity.rs`, the auto-let branch) — an auto LET is not a constructor
+// parameter, so a view that counts every `Auto` cell as a declared param
+// inflates the declared set and both ε diagnostics misfire.
+//
+// The two diagnostics therefore take DIFFERENT views, each safe in its own
+// direction (`expr.rs`, views (a) and (b) at the ctor binder):
+//   * `CtorUnknownField` suppresses on the WIDE `Param | Auto{..}` set, so
+//     over-inclusion can only cost a diagnostic, never state a falsehood.
+//   * `CtorArity` prints a NUMBER, so it counts `Param` cells plus only those
+//     `Auto` cells whose `visibility` is `Public` — a param defaults to
+//     `Public`, a plain let to `Private`.
+// ---------------------------------------------------------------------------
+
+const SRC_AUTO_LET_ONLY_POSITIONAL: &str = r#"module test.auto_let_only_positional
+structure def WLet {
+    let m : Length = auto
+}
+structure def Root {
+    let x = WLet(1.0)
+}
+"#;
+
+/// (a) A structure whose ONLY `Auto` cell is an auto LET declares ZERO params,
+/// so a positional argument is surplus and the ceiling is `0`.
+///
+/// Regression pin for esc-5303-9 case (1): counting every `Auto` cell as a
+/// declared param made this call silent, and the surplus argument landed in a
+/// garbage `__arg0` member with no diagnostic at all. The pre-existing
+/// zero-param probe uses a NON-auto `let k = 1`, which never reaches the `Auto`
+/// branch, so the hole was invisible to it.
+#[test]
+fn positional_argument_to_an_auto_let_only_structure_emits_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_AUTO_LET_ONLY_POSITIONAL);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "an auto LET declares no param, so the positional is surplus — exactly one \
+         CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    assert_eq!(
+        diags[0].message, "E_CTOR_ARITY: WLet() expects at most 0 arguments, got 1",
+        "the ceiling must be the DECLARED param count (0), not the `Auto` cell count"
+    );
+}
+
+const SRC_AUTO_LET_PLUS_PARAM_SURPLUS: &str = r#"module test.auto_let_plus_param_surplus
+structure def WLetParam {
+    let m : Length = auto
+    param b : Real
+}
+structure def Root {
+    let x = WLetParam(1.0, 2.0, 3.0)
+}
+"#;
+
+/// (b) An auto LET beside a real param must not inflate the reported ceiling.
+/// `WLetParam` declares ONE param, so the message must say `at most 1 argument`.
+///
+/// Regression pin for esc-5303-9 case (2): counting the auto let made the
+/// message read `expects at most 2 arguments` — a ceiling the source
+/// contradicts, i.e. the same false-message defect class the declared view was
+/// introduced to fix, inverted.
+#[test]
+fn an_auto_let_does_not_inflate_the_ctor_arity_ceiling() {
+    let module = compile_source_with_stdlib(SRC_AUTO_LET_PLUS_PARAM_SURPLUS);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly one CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    assert_eq!(
+        diags[0].message,
+        "E_CTOR_ARITY: WLetParam() expects at most 1 argument, got 3",
+        "the ceiling must count the PARAM only — the auto let is not a declared param"
+    );
+}
+
+const SRC_AUTO_PARAM_BESIDE_AUTO_LET: &str = r#"module test.auto_param_beside_auto_let
+structure def WMixed {
+    let m : Length = auto
+    param a : Length = auto
+    param b : Real
+}
+structure def Root {
+    let x = WMixed(1.0, 2.0, 3.0)
+}
+"#;
+
+/// (c) BOTH DIRECTIONS AT ONCE: an auto PARAM still counts toward the ceiling
+/// while an auto LET still does not. `WMixed` declares two params (`a`, `b`), so
+/// the ceiling is `2` — not `1` (dropping the auto param, the defect the
+/// declared view fixed) and not `3` (counting the auto let, the defect
+/// esc-5303-9 reported).
+#[test]
+fn the_arity_ceiling_counts_auto_params_but_not_auto_lets() {
+    let module = compile_source_with_stdlib(SRC_AUTO_PARAM_BESIDE_AUTO_LET);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly one CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].message, "E_CTOR_ARITY: WMixed() expects at most 2 arguments, got 3",
+        "the ceiling must be PARAM count (auto param + plain param = 2)"
+    );
+}
+
+const SRC_NAMED_ARG_FOR_AUTO_LET: &str = r#"module test.named_arg_for_auto_let
+structure def WLetNamed {
+    let m : Length = auto
+    param b : Real
+}
+structure def Root {
+    let x = WLetNamed(m: 1.0, b: 2.0)
+}
+"#;
+
+/// (d) LENIENCY, DELIBERATELY PINNED — a named argument targeting an auto LET is
+/// silently accepted (pushed to `__arg{i}`), NOT reported as an unknown field.
+///
+/// `CtorUnknownField` suppresses on the WIDE view precisely so it can never
+/// assert a falsehood: today's IR cannot tell `let m : T = auto` from
+/// `priv param m : T = auto`, so firing here would risk telling an author their
+/// structure "has no parameter with that name" when it visibly does. Silence is
+/// leniency, not a false claim, and the residual `Auto`-slot binding gap it
+/// leaves is owned by #6705.
+///
+/// This test pins the CURRENT behaviour so a future change to it is a deliberate
+/// decision rather than an accident.
+#[test]
+fn named_argument_for_an_auto_let_is_leniently_accepted() {
+    let module = compile_source_with_stdlib(SRC_NAMED_ARG_FOR_AUTO_LET);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a named argument naming an `Auto` cell must stay silent — `CtorUnknownField` \
+         may not claim a name the author visibly wrote is unknown, got: {diags:#?}"
+    );
+}
+
+const SRC_PRIV_AUTO_PARAM_POSITIONAL: &str = r#"module test.priv_auto_param_positional
+structure def WPrivAuto {
+    priv param x : Length = auto
+}
+structure def Root {
+    let y = WPrivAuto(1.0)
+}
+"#;
+
+/// (e) KNOWN RESIDUAL, pinned so it is visible rather than hidden.
+///
+/// `priv param x : T = auto` lowers to a `Private` `Auto` cell — byte-identical
+/// to a plain auto let — so the arity ceiling reads it as a let and reports `0`
+/// rather than `1`. No predicate over today's IR can be right for both shapes,
+/// and this reading is the one that is correct for every shape in `examples/*.ri`
+/// (which contains auto lets and zero `priv param … = auto`) and the one that
+/// matches `priv`'s own meaning: a private member is not part of the
+/// constructor's externally-settable surface. The durable fix carries the origin
+/// explicitly in the IR (see the `CtorArity` doc comment); it is an ~86-site
+/// change across six crates and is tracked by its own follow-up task.
+///
+/// The companion direction is already covered by (d): the WIDE
+/// `CtorUnknownField` view means `WPrivAuto(x: …)` stays silent, so the residual
+/// is confined to the arity NUMBER and never produces a false "no parameter with
+/// that name".
+#[test]
+fn priv_auto_param_is_read_as_an_auto_let_by_the_arity_ceiling() {
+    let module = compile_source_with_stdlib(SRC_PRIV_AUTO_PARAM_POSITIONAL);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly one CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].message,
+        "E_CTOR_ARITY: WPrivAuto() expects at most 0 arguments, got 1",
+        "documented residual: a `Private` `Auto` cell is read as an auto let, so the \
+         ceiling understates by one. Changing this assertion means the IR gained an \
+         origin discriminator — update the `CtorArity` doc comment with it."
+    );
+}
+
+const SRC_PRIV_AUTO_PARAM_NAMED: &str = r#"module test.priv_auto_param_named
+structure def WPrivAutoNamed {
+    priv param x : Length = auto
+}
+structure def Root {
+    let y = WPrivAutoNamed(x: 1.0mm)
+}
+"#;
+
+/// (f) The residual in (e) must NOT leak into `CtorUnknownField`: a named
+/// argument for a `priv param … = auto` names a parameter the author visibly
+/// wrote, and the WIDE view keeps it silent.
+#[test]
+fn named_argument_for_a_priv_auto_param_is_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_PRIV_AUTO_PARAM_NAMED);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "the wide `CtorUnknownField` view must cover every `Auto` cell regardless of \
+         visibility, got: {diags:#?}"
+    );
+}
