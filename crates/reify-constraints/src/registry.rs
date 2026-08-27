@@ -1373,4 +1373,236 @@ mod objective_consumption_tests {
         assert_eq!(first, second);
         assert_eq!(format!("{p:?}"), before, "problem must not be mutated");
     }
+
+    // ── G7: the classifier and `solve_inner` share ONE prelude ──────────────
+    //
+    // Task #5417 step-17 (review round 1, finding 3). `ObjectiveConsumption`'s
+    // doc and `objective_consumption`'s doc both claim `solve_inner` "consults
+    // the same classifier that produces this verdict, so the reported fact and
+    // the behaviour it describes provably cannot drift". Until step-18 that
+    // claim was PROSE ONLY: `solve_inner` expands the objective's refs through
+    // `dependent_cells` before its first-match lookup (tasks #5720 / #5467),
+    // and `decompose_and_classify` did not. These cases make the claim
+    // executable — the let-indirection case below is RED without the
+    // expansion, and the two either side of it are the guard rails that stop
+    // step-18 from "fixing" it by deleting `FallbackComponentZero` outright.
+
+    /// `let`-style derived cell `<entity>.<member> = <reads> + 1.0`, in the
+    /// shape `ResolutionProblem.dependent_cells` carries.
+    fn dep(entity: &str, member: &str, reads: &[(&str, &str)]) -> (ValueCellId, CompiledExpr) {
+        let mut expr = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        for (e, m) in reads {
+            expr = CompiledExpr::binop(BinOp::Add, vref(e, m), expr, Type::dimensionless_scalar());
+        }
+        (ValueCellId::new(entity, member), expr)
+    }
+
+    /// [`problem`] with a non-empty `dependent_cells` — the field the
+    /// objective-ref expansion reads.
+    fn problem_with_deps(
+        auto_params: Vec<AutoParam>,
+        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+        objective: Option<ObjectiveSet>,
+        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            dependent_cells,
+            ..problem(auto_params, constraints, objective)
+        }
+    }
+
+    /// THE CASE THAT MATTERS: a LET-INDIRECTED objective. `minimize P.s` where
+    /// `s` is a derived cell reading the auto `P.a`, and a constraint over `a`
+    /// builds a component that genuinely carries the objective.
+    ///
+    /// `solve_inner` routes this as consumed — it expands `{s}` to `{s, a}` via
+    /// `expand_refs_through_dependent_cells` before its `objective_component`
+    /// lookup, finds component 0, and attaches the cost there. The classifier
+    /// matched only the objective's DIRECT refs, so it answered
+    /// `FallbackComponentZero`: the fact contradicted the routing, which is
+    /// exactly the drift G7 forbids — and it made the runtime gate fire
+    /// `E_OBJECTIVE_UNCONSUMED` on a model whose objective was in fact consumed.
+    #[test]
+    fn let_indirected_objective_is_consumed_not_fallback() {
+        let p = problem_with_deps(
+            vec![auto("P", "a")],
+            vec![ge_one("P", "a", 0)],
+            Some(minimize_ref("P", "s")),
+            vec![dep("P", "s", &[("P", "a")])],
+        );
+        assert_eq!(
+            objective_consumption(&p),
+            ObjectiveConsumption::Consumed { component: 0 },
+            "`minimize P.s` reaches the auto `P.a` THROUGH the dependent cell \
+             `P.s`, and component 0 holds `P.a` — the same expansion \
+             `solve_inner` performs before its own objective-component lookup"
+        );
+    }
+
+    /// GUARD RAIL 1 — `FallbackComponentZero` must be NARROWED by the
+    /// expansion, not deleted. Here `dependent_cells` is non-empty and the
+    /// objective still reads a derived cell, but that cell reaches only the
+    /// NON-auto `P.b`, so even after expansion the objective reaches no auto
+    /// in any component. The verdict must stay `FallbackComponentZero`.
+    #[test]
+    fn objective_through_a_cell_reaching_no_auto_stays_fallback() {
+        let p = problem_with_deps(
+            vec![auto("P", "a")],
+            vec![ge_one("P", "a", 0)],
+            Some(minimize_ref("P", "t")),
+            // `t` reads `P.b`, which is not an auto param and appears in no
+            // constraint — expansion widens `{t}` by nothing.
+            vec![dep("P", "t", &[("P", "b")])],
+        );
+        assert_eq!(
+            objective_consumption(&p),
+            ObjectiveConsumption::FallbackComponentZero,
+            "expansion must NARROW this verdict, not delete it: the objective \
+             reaches no auto even after following `dependent_cells`, so \
+             `solve_inner` still hands it to component 0 regardless"
+        );
+    }
+
+    /// GUARD RAIL 2 — the components the classifier returns are the ones
+    /// `solve_inner` routes on, asserted STRUCTURALLY on the joint-drive shape
+    /// (task #5189 β): `constraint s == 10.0` over `let s = a + b`, where the
+    /// constraint names NO auto directly.
+    ///
+    /// Connectivity follows `dependent_cells` (#5467 layer 2), so `a` and `b`
+    /// must land in ONE component. If a future change expanded refs in only one
+    /// of the two paths, the split would show up here as two components (or as
+    /// zero, the pre-#5467 shape) while `solve_inner` still saw one.
+    #[test]
+    fn joint_drive_shape_yields_one_component_carrying_the_objective() {
+        let p = problem_with_deps(
+            vec![auto("P", "a"), auto("P", "b")],
+            vec![ge_one("P", "s", 0)],
+            Some(minimize_ref("P", "s")),
+            vec![dep("P", "s", &[("P", "a"), ("P", "b")])],
+        );
+
+        let (components, verdict) = decompose_and_classify(&p);
+        assert_eq!(
+            components.len(),
+            1,
+            "`a` and `b` are coupled only THROUGH `s`; decomposition follows \
+             `dependent_cells`, so they must not split — got {components:?}"
+        );
+        let expected: std::collections::HashSet<ValueCellId> =
+            [ValueCellId::new("P", "a"), ValueCellId::new("P", "b")]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            components[0].auto_params, expected,
+            "the single component must hold BOTH autos"
+        );
+        assert_eq!(
+            verdict,
+            ObjectiveConsumption::Consumed { component: 0 },
+            "and that component is the one carrying the objective"
+        );
+    }
+
+    /// The classifier's components are the SAME SET `solve_inner` builds from
+    /// main's five-arg prelude, and the verdict's `component` index really
+    /// names the component that carries the objective — the executable form of
+    /// the G7 single-source claim, over a two-component joint-drive shape.
+    ///
+    /// Compared on `auto_params` per component (`SubProblem` derives only
+    /// `Debug`), CANONICALLY SORTED rather than in vector order. That is not
+    /// laxity — it is MEASURED: `decompose_into_components_with_reads` assembles
+    /// its result by iterating a `HashMap<usize, Vec<usize>>` keyed on
+    /// union-find roots, so the vector ORDER varies per `HashMap` instance. Two
+    /// invocations over identical inputs came back in opposite orders in 4 of 6
+    /// consecutive runs during step-17. An order-sensitive assertion here would
+    /// be a coin flip, and — more to the point — the ORDER is not the property
+    /// worth pinning; membership is.
+    ///
+    /// What the order-sensitivity DOES mean is that a `component` index derived
+    /// from one decomposition cannot be used to index another. `solve_inner`
+    /// attaches the objective with `objective_component == Some(ci)` over the
+    /// vector it holds, so the index and the vector must come from ONE call —
+    /// which is precisely what step-18 makes true. The second assertion below
+    /// pins the resulting coherence.
+    #[test]
+    fn classifier_components_match_solve_inners_five_arg_prelude() {
+        let p = problem_with_deps(
+            vec![auto("P", "a"), auto("P", "b"), auto("Q", "c")],
+            vec![ge_one("P", "s", 0), ge_one("Q", "c", 1)],
+            Some(minimize_ref("P", "s")),
+            vec![dep("P", "s", &[("P", "a"), ("P", "b")])],
+        );
+
+        // Exactly what `solve_inner`'s prelude does, spelled out here.
+        let dependent_auto_reads =
+            crate::decompose::dependent_cell_auto_reads(&p.dependent_cells, &p.auto_params);
+        let mut obj_reach: Vec<ValueCellId> = Vec::new();
+        let obj_refs = p.objective.as_ref().map(|obj: &ObjectiveSet| {
+            let mut refs = std::collections::HashSet::new();
+            for term in &obj.terms {
+                crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
+            }
+            obj_reach = crate::decompose::expand_refs_through_dependent_cells(
+                &mut refs,
+                &dependent_auto_reads,
+            );
+            refs
+        });
+        let routed = crate::decompose::decompose_into_components_with_reads(
+            &p.auto_params,
+            &p.constraints,
+            obj_refs.as_ref(),
+            Some(&obj_reach),
+            &dependent_auto_reads,
+        );
+
+        let (classified, verdict) = decompose_and_classify(&p);
+
+        /// Component membership, canonicalised so the comparison does not
+        /// depend on `HashMap` iteration order (see the doc above).
+        fn shape(cs: &[SubProblem]) -> Vec<Vec<String>> {
+            let mut out: Vec<Vec<String>> = cs
+                .iter()
+                .map(|c| {
+                    let mut ids: Vec<String> =
+                        c.auto_params.iter().map(|i| i.to_string()).collect();
+                    ids.sort();
+                    ids
+                })
+                .collect();
+            out.sort();
+            out
+        }
+        assert_eq!(
+            shape(&classified),
+            shape(&routed),
+            "the classifier and `solve_inner` must decompose into the same \
+             components — the verdict's `component` index is meaningless \
+             otherwise"
+        );
+
+        // `s` couples `a` and `b`; `Q.c` is constrained on its own.
+        assert_eq!(
+            shape(&classified),
+            vec![
+                vec!["P.a".to_string(), "P.b".to_string()],
+                vec!["Q.c".to_string()]
+            ],
+            "anti-vacuity: the fixture must really produce TWO components, so \
+             the index below discriminates"
+        );
+
+        // The index the verdict carries must resolve, IN THE CLASSIFIER'S OWN
+        // vector, to the component holding the autos the objective reaches.
+        let ObjectiveConsumption::Consumed { component } = verdict else {
+            panic!("`minimize P.s` reaches `P.a`/`P.b` through `P.s`; got {verdict:?}");
+        };
+        let carrier = &classified[component].auto_params;
+        assert!(
+            carrier.contains(&ValueCellId::new("P", "a"))
+                && carrier.contains(&ValueCellId::new("P", "b")),
+            "component {component} must be the one the objective reaches, not \
+             the unrelated `Q.c` component; got {carrier:?}"
+        );
+    }
 }
