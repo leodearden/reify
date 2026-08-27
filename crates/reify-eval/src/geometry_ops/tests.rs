@@ -3262,6 +3262,106 @@
         );
     }
 
+    // ---- units-length λ (task 5755 step-1): the user-visible PatternKind labels ----
+
+    /// The `kind_label` interpolated into a pattern's eval-layer diagnostics
+    /// must be the builtin name the `.ri` author actually TYPED
+    /// (`linear_pattern` / `linear_pattern_2d`), not `PatternKind`'s internal
+    /// variant nickname (`linear` / `linear_2d`). A diagnostic naming a symbol
+    /// that appears nowhere in the source is unactionable: the reader cannot
+    /// grep for it (PRD decision D7).
+    ///
+    /// WHY THE UNDEF ROUTE, not a bare `spacing`: the bare-spacing route is
+    /// SHADOWED. `linear_pattern` has a compile-layer LENGTH slot
+    /// (`reify-compiler`'s `builtin_signatures.rs`), so
+    /// `linear_pattern(b, 1, 0, 0, 3, 20)` is rejected at COMPILE with a
+    /// message minted by `ArgRejection::message` from the DSL builtin name —
+    /// already correct, and never routed through `PatternKind::Display`. The
+    /// UNRESOLVED (`Undef`) arm of `required_length_arg` is the reachable route
+    /// where `Display` is the ONLY producer of the label token. Do not
+    /// "simplify" this back to a bare literal: that fixture cannot fail.
+    ///
+    /// Precedent for EXACT-equality on this wording: the `accept_length_point3`
+    /// test below pins `"argument 'oy' for mirror is unresolved (Undef)"` the
+    /// same way. Here the equality is asserted on the `Err` STRING via
+    /// `expect_err` rather than on the whole `Result`, because
+    /// `reify_ir::GeometryOp` does not implement `PartialEq` — the wording is
+    /// still pinned byte-for-byte, which is the point.
+    ///
+    /// RED until step-2 flips the two `Display` arms. Measured on the
+    /// pre-change tree (task 5755 pre-1): `Err("argument 'spacing' for linear
+    /// is unresolved (Undef)")` and `Err("argument 'spacing1' for linear_2d is
+    /// unresolved (Undef)")`, both with EMPTY diagnostics.
+    #[test]
+    fn pattern_kind_label_in_diagnostics_is_the_dsl_builtin_name() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // (a) 1D `linear_pattern`.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_pattern_with_spacing(literal_undef()),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result.expect_err("an Undef spacing must drop the op");
+        assert_eq!(
+            err, "argument 'spacing' for linear_pattern is unresolved (Undef)",
+            "the label must be the DSL builtin name `linear_pattern`, not the \
+             `PatternKind::Linear` variant nickname `linear`"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an Undef spacing stays QUIET at the value layer (D10 / INV-SF-1); \
+             got: {diagnostics:?}"
+        );
+
+        // (b) The 2D twin. This is the SAME defect as (a), reached through the
+        // same `required_length_arg` Unresolved arm — found by the adversary
+        // probe on the live tree, not a speculative extra.
+        let op_2d = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx1".into(), literal_f64(1.0)),
+                ("dy1".into(), literal_f64(0.0)),
+                ("dz1".into(), literal_f64(0.0)),
+                ("count1".into(), literal_f64(3.0)),
+                ("spacing1".into(), literal_undef()),
+                ("dx2".into(), literal_f64(0.0)),
+                ("dy2".into(), literal_f64(1.0)),
+                ("dz2".into(), literal_f64(0.0)),
+                ("count2".into(), literal_f64(4.0)),
+                ("spacing2".into(), literal_length(0.03)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op_2d,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result.expect_err("an Undef spacing1 must drop the op");
+        assert_eq!(
+            err, "argument 'spacing1' for linear_pattern_2d is unresolved (Undef)",
+            "the label must be the DSL builtin name `linear_pattern_2d`, not the \
+             `PatternKind::Linear2D` variant nickname `linear_2d`"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an Undef spacing1 stays QUIET at the value layer (D10 / INV-SF-1); \
+             got: {diagnostics:?}"
+        );
+    }
+
     // ---- units-length β (task 5743 step-7): the R7 chokepoint at the box slots ----
 
     /// Helper: a `PrimitiveKind::Box` op whose `slot` arg is `expr` and whose

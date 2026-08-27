@@ -254,3 +254,87 @@ fn linear_pattern_2d_dimensioned_spacing_builds_op() {
         pattern_ops.len()
     );
 }
+
+/// units-length λ (task 5755, PRD §6 boundary row 18) — the LABEL a real
+/// `Engine::build` shows the author must be the builtin they TYPED.
+///
+/// WHY THIS FIXTURE and not the bare-`20` one used everywhere above: the
+/// bare-spacing route is SHADOWED by task 5652's compile-layer `ArgTypeMismatch`
+/// slot, whose message is minted by `ArgRejection::message` from the DSL
+/// builtin name — already `linear_pattern`, and never routed through
+/// `PatternKind::Display`. So a bare-spacing source cannot fail on the label
+/// and is worthless as a fixture here. An UNBOUND `param s : Length` folds to
+/// `Value::Undef` at build instead, reaching `required_length_arg`'s
+/// `Unresolved` arm — the one caller-facing message where
+/// `PatternKind::Display` is the sole producer of the label token.
+///
+/// Reachability was MEASURED on the pre-change tree (task 5755 pre-1), not
+/// assumed: this exact source compiles with ZERO diagnostics and builds to
+/// exactly one `Severity::Error`, `"failed to compile geometry operation:
+/// argument 'spacing' for linear is unresolved (Undef)"`, with no
+/// `LinearPattern` op reaching the kernel. RED until the λ `Display` flip
+/// turns `for linear` into `for linear_pattern`.
+///
+/// The `failed to compile geometry operation: <err>` wrapper shape is already
+/// proven observable from a real `Engine::build` by
+/// `unified_dag_geometry_executors.rs`'s `"argument 'radius' for fillet is
+/// unresolved (Undef)"` assertion.
+#[test]
+fn unresolved_spacing_diagnostic_names_the_dsl_builtin_not_the_variant_nickname() {
+    let source = r#"
+        structure def LabelProbe {
+            param s : Length
+            let b = box(10mm, 10mm, 10mm)
+            let p = linear_pattern(b, 1, 0, 0, 3, s)
+        }
+    "#;
+
+    // STRICT `parse_and_compile`: an unbound param is legal `.ri`, so this
+    // fixture must compile with zero Error diagnostics. That is what keeps the
+    // assertions below from passing because compilation broke.
+    let compiled = parse_and_compile(source);
+
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    let error_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "an unresolved spacing must produce EXACTLY ONE Error diagnostic (no \
+         cascade); got: {:?}",
+        result.diagnostics
+    );
+    let msg = &error_diags[0].message;
+    assert!(
+        msg.contains("failed to compile geometry operation"),
+        "the eval-layer Err must surface through the build-loop wrapper; got: {msg:?}"
+    );
+    assert!(
+        msg.contains("argument 'spacing' for linear_pattern is unresolved (Undef)"),
+        "the diagnostic must name `linear_pattern` — the builtin the author \
+         actually typed and can grep for — not the `PatternKind::Linear` variant \
+         nickname `linear`; got: {msg:?}"
+    );
+
+    let ops = ops_ref.lock().unwrap();
+    let pattern_ops: Vec<_> = ops
+        .iter()
+        .filter(|r| matches!(&r.op, GeometryOp::LinearPattern { .. }))
+        .collect();
+    assert!(
+        pattern_ops.is_empty(),
+        "an unresolved-spacing linear_pattern must be DROPPED, not built; \
+         emitted LinearPattern ops: {}",
+        pattern_ops.len()
+    );
+}
