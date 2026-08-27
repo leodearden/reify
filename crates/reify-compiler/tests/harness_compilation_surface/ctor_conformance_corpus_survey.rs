@@ -1149,3 +1149,172 @@ fn remedy_hint_never_rules_between_d9_class_1_and_class_2() {
         );
     }
 }
+
+// ─── step 9/10: end-to-end sweep over a synthetic mini-corpus ────────────────
+
+/// The known-WARNING member: PRD §7 boundary-test row 2, reused verbatim from
+/// `struct_ctor_field_conformance_tests.rs`'s `SOURCE_ROW2_VALUE_CELL_STRING`.
+///
+/// Using α's own landed fixture means the end-to-end test asserts against a
+/// site shape the compiler is ALREADY proven to emit — the premise is verified
+/// live on `main`, not guessed.
+#[cfg(test)]
+const SYNTH_WARNS: &str = "module test.row2\n\
+     structure def Widget { param label : String }\n\
+     structure def Root {\n\
+     \x20   let x = Widget(label: 42)\n\
+     }\n";
+
+/// The known-CLEAN member: the same source with a conforming argument.
+#[cfg(test)]
+const SYNTH_CLEAN: &str = "module test.clean\n\
+     structure def Widget { param label : String }\n\
+     structure def Root {\n\
+     \x20   let x = Widget(label: \"ok\")\n\
+     }\n";
+
+/// The known-UNPARSEABLE member. The tracked corpus really does contain
+/// deliberately-unparseable negative fixtures and tree-sitter parser-corpus
+/// inputs, so the sweep must record them rather than panic.
+#[cfg(test)]
+const SYNTH_BROKEN: &str = "module test.broken\n((( this is not reify at all ]]] §§§\n";
+
+/// Write the three synthetic members into a temp dir and return `(dir, paths)`.
+#[cfg(test)]
+fn synth_corpus() -> (tempfile::TempDir, Vec<String>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (name, source) in [
+        ("warns.ri", SYNTH_WARNS),
+        ("clean.ri", SYNTH_CLEAN),
+        ("broken.ri", SYNTH_BROKEN),
+    ] {
+        std::fs::write(dir.path().join(name), source).expect("write synthetic member");
+    }
+    let paths = vec![
+        "broken.ri".to_owned(),
+        "clean.ri".to_owned(),
+        "warns.ri".to_owned(),
+    ];
+    (dir, paths)
+}
+
+#[test]
+fn survey_corpus_finds_the_known_warning_site_with_every_column_resolved() {
+    let (dir, paths) = synth_corpus();
+    let run = survey_corpus(dir.path(), &paths);
+
+    assert_eq!(
+        run.sites.len(),
+        1,
+        "exactly one ctor-conformance site across the mini-corpus, got: {:#?}",
+        run.sites
+    );
+    let site = &run.sites[0];
+    assert_eq!(site.file, "warns.ri");
+    assert_eq!(site.code, "ArgTypeMismatch");
+    assert_eq!(
+        site.severity, "Warning",
+        "α's knob is Warning — the sweep must report what it MEASURED, never assume Error"
+    );
+    assert_eq!(site.field.as_deref(), Some("label"));
+    assert_eq!(site.def.as_deref(), Some("Widget"));
+    assert_eq!(site.expected.as_deref(), Some("String"));
+    assert_eq!(site.found.as_deref(), Some("Int"));
+    assert_eq!(
+        site.line, 4,
+        "the ctor is on line 4 of the fixture; got line {} for {:?}",
+        site.line, site.message
+    );
+    assert_eq!(
+        site.owner,
+        Owner::NonFea,
+        "`Widget` is not an FEA stdlib def — the sweep must CLASSIFY, not leave Unknown"
+    );
+}
+
+#[test]
+fn survey_corpus_records_unsurveyable_members_instead_of_dropping_them() {
+    let (dir, paths) = synth_corpus();
+    let run = survey_corpus(dir.path(), &paths);
+
+    assert_eq!(run.total, 3, "the denominator is every file handed in");
+    let broken: Vec<&(String, String)> = run
+        .not_surveyed
+        .iter()
+        .filter(|(f, _)| f == "broken.ri")
+        .collect();
+    assert_eq!(
+        broken.len(),
+        1,
+        "the unparseable member must be RECORDED, not silently dropped: {:#?}",
+        run.not_surveyed
+    );
+    assert_eq!(
+        broken[0].1, "parse-error",
+        "its reason must name the phase that failed"
+    );
+
+    // "No silent caps": the coverage denominator has to be visible, or γ is
+    // sized against a survey that reads as full coverage but is not.
+    assert_eq!(
+        run.surveyed + run.not_surveyed.len(),
+        run.total,
+        "surveyed + not_surveyed must account for every corpus member"
+    );
+    assert_eq!(run.surveyed, 2, "the two parseable members are surveyed");
+}
+
+#[test]
+fn survey_corpus_does_not_leak_prelude_diagnostics_into_every_file() {
+    // If stdlib-prelude diagnostics were re-attributed to each swept file, the
+    // artifact would inflate ~660x and be worthless. Two distinct files, each
+    // yielding ONLY its own sites, is the cheap pin on that.
+    let (dir, paths) = synth_corpus();
+    let run = survey_corpus(dir.path(), &paths);
+
+    let clean_sites = run.sites.iter().filter(|s| s.file == "clean.ri").count();
+    assert_eq!(
+        clean_sites, 0,
+        "the conforming member must contribute ZERO sites; prelude leakage would \
+         give it the same site count as every other file"
+    );
+
+    // Sweeping the clean member ALONE must likewise be empty.
+    let solo = survey_corpus(dir.path(), &["clean.ri".to_owned()]);
+    assert!(
+        solo.sites.is_empty(),
+        "a clean file swept alone must yield no sites, got: {:#?}",
+        solo.sites
+    );
+    assert_eq!(solo.surveyed, 1);
+    assert_eq!(solo.total, 1);
+}
+
+#[test]
+fn survey_corpus_records_a_read_error_rather_than_panicking() {
+    let (dir, _) = synth_corpus();
+    let run = survey_corpus(dir.path(), &["no_such_file.ri".to_owned()]);
+    assert_eq!(run.total, 1);
+    assert_eq!(run.surveyed, 0);
+    assert_eq!(
+        run.not_surveyed,
+        vec![("no_such_file.ri".to_owned(), "read-error".to_owned())],
+        "an unreadable member is recorded with its reason, never a panic that \
+         would abort a 660-file sweep"
+    );
+}
+
+#[test]
+fn survey_corpus_orders_sites_deterministically() {
+    // Byte-reproducibility of the artifact starts here: the same corpus handed
+    // in a different order must produce the same site list.
+    let (dir, paths) = synth_corpus();
+    let forward = survey_corpus(dir.path(), &paths);
+    let mut reversed = paths.clone();
+    reversed.reverse();
+    let backward = survey_corpus(dir.path(), &reversed);
+    assert_eq!(
+        forward.sites, backward.sites,
+        "site ordering must not depend on the order files are handed in"
+    );
+}
