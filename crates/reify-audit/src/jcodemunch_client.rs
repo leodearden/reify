@@ -947,7 +947,7 @@ fn extract_g_allow(line: &str) -> Option<String> {
 /// same-file conjunct. Loosening this (e.g. if jcodemunch ever grows a
 /// server-side file-scope parameter — see the `JCodemunchOps::find_references`
 /// doc at `lib.rs:1206-1213` — or having P1 treat cross-file refs as their
-/// own signal) is tracked as a follow-up rather than fixed here.
+/// own signal) is tracked as a follow-up (#6504) rather than fixed here.
 fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolReference> {
     refs.into_iter().filter(|r| r.file == file).collect()
 }
