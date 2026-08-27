@@ -45,6 +45,59 @@ const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 // ─── step 1/2: corpus enumeration ────────────────────────────────────────────
 
+/// Every TRACKED `.ri` file in the repository, as repo-relative
+/// forward-slash paths, sorted and deduplicated.
+///
+/// Shells out to `git ls-files -z -- '*.ri'` at the workspace root rather than
+/// walking the filesystem, for three reasons:
+///
+/// 1. The task defines the corpus as "all **tracked** `.ri`", and both the PRD
+///    and the capability manifest cite `git ls-files '*.ri'` as the enumerating
+///    command — so the survey's denominator is identical to the one the PRD
+///    gate reasons about.
+/// 2. A filesystem walk would have to exclude `target/` and every other
+///    gitignored tree by hand, and would drift from that definition; a
+///    build-artifact `.ri` could silently enter the survey.
+/// 3. `-z` / NUL splitting means a path containing a space or a newline cannot
+///    corrupt the list.
+///
+/// Panics if git is unavailable or exits non-zero. A silently-empty corpus
+/// would render a falsely-clean survey, which is the one failure mode this
+/// artifact must never have.
+fn tracked_ri_corpus() -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(WORKSPACE_ROOT)
+        .args(["ls-files", "-z", "--", "*.ri"])
+        .output()
+        .unwrap_or_else(|e| {
+            panic!("ctor_conformance_corpus_survey: cannot run `git ls-files` in {WORKSPACE_ROOT}: {e}")
+        });
+    assert!(
+        out.status.success(),
+        "ctor_conformance_corpus_survey: `git ls-files -z -- '*.ri'` in {WORKSPACE_ROOT} \
+         exited {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+
+    let stdout = String::from_utf8(out.stdout)
+        .expect("ctor_conformance_corpus_survey: `git ls-files` emitted non-UTF-8 paths");
+    let mut paths: Vec<String> = stdout
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    assert!(
+        !paths.is_empty(),
+        "ctor_conformance_corpus_survey: `git ls-files -z -- '*.ri'` returned nothing in \
+         {WORKSPACE_ROOT} — a silently-empty corpus would render a falsely-clean survey"
+    );
+    paths
+}
+
 #[test]
 fn tracked_ri_corpus_is_non_empty_and_covers_the_whole_tracked_tree() {
     let corpus = tracked_ri_corpus();
