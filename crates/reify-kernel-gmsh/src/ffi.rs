@@ -64,6 +64,15 @@ unsafe extern "C" {
     /// `void gmshLoggerGetLastError(char** error, int* ierr)`
     pub fn gmshLoggerGetLastError(error: *mut *mut c_char, ierr: *mut c_int);
 
+    /// `void gmshLoggerStart(int* ierr)` — gmshc.h:3638
+    pub fn gmshLoggerStart(ierr: *mut c_int);
+
+    /// `void gmshLoggerGet(char*** log, size_t* log_n, int* ierr)` — gmshc.h:3641
+    pub fn gmshLoggerGet(log: *mut *mut *mut c_char, log_n: *mut usize, ierr: *mut c_int);
+
+    /// `void gmshLoggerStop(int* ierr)` — gmshc.h:3645
+    pub fn gmshLoggerStop(ierr: *mut c_int);
+
     // ---- model + mesh I/O ----
 
     /// `void gmshOptionSetNumber(const char* name, double value, int* ierr)`
@@ -852,4 +861,76 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
     }
     check_ierr("gmshModelMeshGetNodes(entity)", ierr)?;
     Ok((node_tags, coords))
+}
+
+/// Start capturing gmsh's Info/Warning/Progress message stream into an
+/// in-memory buffer, drained by [`logger_get`].
+///
+/// This capture is INDEPENDENT of the `"General.Terminal"` option — every
+/// production mesher in this crate sets that option to `0` to silence
+/// gmsh's own stdout/stderr writes (`kernel_real.rs:187`,
+/// `mesh_boundary.rs:609`, `refine_volume.rs:203`, `mesh_profile_2d.rs:88`),
+/// which would otherwise leave gmsh diagnostics unreachable from Rust. A
+/// probe against `/opt/reify-deps/lib/libgmsh.so.4.15.2` measured 85
+/// captured lines across one `mesh_generate(3)` call with
+/// `General.Terminal = 0` — the capture buffer is a separate switch gmsh
+/// keeps regardless of that option.
+///
+/// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
+pub fn logger_start() -> Result<(), GeometryError> {
+    gmsh_call!("gmshLoggerStart", ierr, gmshLoggerStart(&mut ierr))
+}
+
+/// Stop capturing gmsh's message stream (started by [`logger_start`]).
+///
+/// Measured: calling [`logger_get`] after `logger_stop` returns an empty
+/// `Vec` with `ierr=0` — stopping the logger drains the buffer, it does not
+/// merely pause capture.
+///
+/// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
+pub fn logger_stop() -> Result<(), GeometryError> {
+    gmsh_call!("gmshLoggerStop", ierr, gmshLoggerStop(&mut ierr))
+}
+
+/// Read every message gmsh has logged since [`logger_start`] was called,
+/// as owned `String`s.
+///
+/// Measured edge cases: if the logger was never started, this returns an
+/// empty `Vec` with `ierr=0` (not an error); likewise after [`logger_stop`]
+/// has drained the buffer. `gmshLoggerGet` returns a `char***` — gmsh
+/// allocates both the outer array of `log_n` pointers and every string it
+/// points at, so both levels are freed here via `gmshFree` before
+/// `check_ierr`, mirroring the free-before-check ordering in
+/// [`get_nodes_all`] and [`get_elements_by_type`] (this avoids leaking the
+/// buffers on the `ierr != 0` path, since `check_ierr` returns early via
+/// `?`).
+///
+/// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller (#6205).
+pub fn logger_get() -> Result<Vec<String>, GeometryError> {
+    let mut log_ptr: *mut *mut c_char = ptr::null_mut();
+    let mut log_n: usize = 0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshLoggerGet(&mut log_ptr, &mut log_n, &mut ierr);
+    }
+    let mut lines: Vec<String> = Vec::new();
+    if !log_ptr.is_null() && log_n > 0 {
+        let entries = unsafe { std::slice::from_raw_parts(log_ptr, log_n) };
+        for &s in entries {
+            if s.is_null() {
+                continue;
+            }
+            lines.push(unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned());
+            unsafe {
+                gmshFree(s as *mut c_void);
+            }
+        }
+    }
+    if !log_ptr.is_null() {
+        unsafe {
+            gmshFree(log_ptr as *mut c_void);
+        }
+    }
+    check_ierr("gmshLoggerGet", ierr)?;
+    Ok(lines)
 }
