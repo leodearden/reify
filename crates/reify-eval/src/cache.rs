@@ -193,11 +193,10 @@ impl CachedResult {
     ///
     /// Handle freshness is consequently **not** carried by the eval-cache
     /// entry. It is supplied by `Engine::post_process_geometry_handle_cells`
-    /// (engine_build.rs:9479), which on the build success path writes
+    /// in `engine_build.rs`, which on the build success path writes
     /// `kernel_handle: Some(kernel_handle)` into the `values` `ValueMap` and
     /// records `realization_handles.insert(realization.id.clone(),
-    /// kernel_handle)` (engine_build.rs:9524) — the GHR-δ §5 read-time
-    /// revalidation oracle.
+    /// kernel_handle)` — the GHR-δ §5 read-time revalidation oracle.
     ///
     /// **Warning for GHR-ζ (#3608), and for any consumer that needs a live
     /// handle for kernel dispatch: read `values` / `realization_handles`,
