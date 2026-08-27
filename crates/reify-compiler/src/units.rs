@@ -606,6 +606,9 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// fn frame_at(o: Point, x: Direction, z: Direction)-> Frame(3)
 /// fn plane_xy(δ: Length)                           -> Plane   (also plane_xz/plane_yz)
 /// fn axis_x(o: Point3)                             -> Axis    (also axis_y/axis_z)
+/// fn bbox(min: Point3<Length>, max: Point3<Length>)-> BoundingBox
+/// fn bbox_size(bb: BoundingBox)                    -> Vector3<Length>
+/// fn bbox_center(bb: BoundingBox)                  -> Point3<Length>
 /// ```
 ///
 /// Each name resolves to its datum codomain:
@@ -615,6 +618,22 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// - `axis_x` / `axis_y` / `axis_z`        → `Type::Axis`
 /// - `frame_at`                            → `Type::Frame(3)`
 /// - `offset`                              → `Type::Plane` ONLY at arity 2 (see below)
+/// - `bbox`                                → `Type::BoundingBox`
+/// - `bbox_size`                           → `Vector3<Length>`
+/// - `bbox_center`                         → `Point3<Length>`
+///
+/// **BoundingBox is Length-valued (task 6081).** The three `bbox*` names are
+/// the BoundingBox constructor and its two accessors. Their quantity slot is
+/// fixed at LENGTH by the task-6081 ruling — a bounding box is spatial by
+/// construction — so unlike `point3`/`vec3` (whose quantity is
+/// argument-DEPENDENT and therefore lives in `math_signatures`) they fit this
+/// arity-blind table. The monomorphism is load-bearing in both directions:
+/// `reify_stdlib::geometry` rejects non-`Length` corners at `bbox` and emits
+/// `Length` components unconditionally from both accessors, so these rows
+/// agree with the runtime rather than over-claiming a quantity-polymorphic
+/// value. Before this task all three fell through to `expr.rs`'s SILENT
+/// first-arg fallback, which typed `bbox(p, p)` as its argument's
+/// `Point3<Length>` and both accessors as their `BoundingBox` argument.
 ///
 /// **Neighbour audit (task 5344).** The six axis-aligned constructors
 /// `plane_xy`/`plane_xz`/`plane_yz` and `axis_x`/`axis_y`/`axis_z` — which this
@@ -689,6 +708,15 @@ pub(crate) fn datum_constructor_result_type(
         // only; arity-3 `offset(Plane, Plane, Length)` is γ's relation, claimed
         // by the earlier relation arm.
         "offset" if args.len() == 2 => Some(reify_core::Type::Plane),
+        // BoundingBox constructor + accessors (task 6081). Same vocabulary,
+        // same eval home (`reify_stdlib::geometry::eval_geometry`); arity-blind
+        // like every sibling except `offset`. The quantity slot is fixed at
+        // LENGTH by the task-6081 ruling — a bounding box is spatial by
+        // construction, and the eval side emits Length components
+        // unconditionally, so these monomorphic rows agree with the runtime.
+        "bbox" => Some(reify_core::Type::bounding_box()),
+        "bbox_size" => Some(reify_core::Type::vec3(reify_core::Type::length())),
+        "bbox_center" => Some(reify_core::Type::point3(reify_core::Type::length())),
         _ => None,
     }
 }
