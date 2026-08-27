@@ -424,11 +424,12 @@ impl SolverRegistry {
 
         // The decomposition prelude — dependent-cell reads, objective-ref
         // expansion, component build, objective-component first-match — runs
-        // ONCE, in `decompose_and_classify`. The three objective drop sites
-        // below and the public `objective_consumption` fact read that one
-        // classification, so the fact can never drift from the routing it
-        // describes (G7 no-lockstep-duplication). Routing is unchanged: each arm
-        // below does exactly what the previous inline code did.
+        // ONCE, in `decompose_prelude`. The three objective drop sites below and
+        // the public `objective_consumption` fact (through the
+        // `decompose_and_classify` projection) read that one classification, so
+        // the fact can never drift from the routing it describes (G7
+        // no-lockstep-duplication). Routing is unchanged: each arm below does
+        // exactly what the previous inline code did.
         //
         // `components` and `consumption` MUST be taken from the same call:
         // `Consumed { component }` is an index into THIS vector, and component
