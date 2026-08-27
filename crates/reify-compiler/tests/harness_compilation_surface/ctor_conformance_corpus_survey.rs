@@ -2366,3 +2366,100 @@ fn stamp_decision_rejects_an_anchor_that_is_not_a_full_lowercase_sha() {
         "40 lowercase hex characters is the accepted shape"
     );
 }
+
+// ─── step 19/20: the committed stamp must stay reachable ─────────────────────
+
+/// The `<sha>` from the artifact's ``**Base commit:** `<sha>` `` header line.
+///
+/// `None` when the line is absent or does not have that exact shape — the
+/// caller treats that as a FAILURE, never as a skip, so a renderer change
+/// cannot silently defeat the parse and take the guard with it.
+fn parse_stamped_base_commit(md: &str) -> Option<&str> {
+    md.lines()
+        .filter_map(|line| line.trim_end().strip_prefix("**Base commit:** `"))
+        .find_map(|rest| rest.strip_suffix('`'))
+}
+
+/// Run one git command at the workspace root and report only whether it
+/// SUCCEEDED.
+///
+/// For the git PREDICATES — `cat-file -e`, `merge-base --is-ancestor` — whose
+/// entire answer is the exit code, and where a non-zero exit is the finding
+/// rather than an infrastructure failure. [`git_read`] would panic on it.
+fn git_succeeds(args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(WORKSPACE_ROOT)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "ctor_conformance_corpus_survey: cannot run `git {}` in {WORKSPACE_ROOT}: {e}",
+                args.join(" ")
+            )
+        })
+        .status
+        .success()
+}
+
+#[test]
+fn committed_survey_stamps_a_commit_that_is_an_ancestor_of_head() {
+    // Makes the dangling-anchor defect class LOUD on every gate run instead of
+    // leaving it for a human reviewer to catch. Cost is one file read plus
+    // three git calls — so unlike the `#[ignore]`d generator this belongs here.
+    //
+    // ORDERING DEPENDENCY: this guard stays green across future rebases ONLY
+    // because `base_commit()` stamps `git merge-base main HEAD` rather than the
+    // branch tip. Adding it while the anchor was still a branch tip would
+    // convert every rebase of this branch into a merge-blocking red.
+    //
+    // Unlike `base_commit()`, nothing here needs a `main` ref to exist.
+    let artifact = std::path::Path::new(WORKSPACE_ROOT).join(ARTIFACT_REL);
+    let md = std::fs::read_to_string(&artifact).unwrap_or_else(|e| {
+        panic!(
+            "the committed survey must exist at {}: {e}",
+            artifact.display()
+        )
+    });
+
+    // (a) The header line must be present AND parseable. A missing or
+    //     reshaped line FAILS rather than skipping: a renderer change must not
+    //     be able to defeat the parse and silently disarm (b) and (c) with it.
+    let sha = parse_stamped_base_commit(&md).unwrap_or_else(|| {
+        panic!(
+            "{} must carry a `**Base commit:** `<sha>`` header line — without it \
+             the artifact's snapshot claim names nothing checkable",
+            ARTIFACT_REL
+        )
+    });
+    assert!(
+        sha.len() == FULL_SHA_LEN && sha.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+        "the stamped base commit must be {FULL_SHA_LEN} lowercase hex characters, \
+         got {sha:?}"
+    );
+
+    // The one environment that could produce a FALSE red: in a shallow clone
+    // the anchor object may legitimately be absent, and a false red here would
+    // deadlock the merge queue. Verified `false` in this worktree, so the
+    // assertions below really do run.
+    if git_read(&["rev-parse", "--is-shallow-repository"]) == "true" {
+        return;
+    }
+
+    // (b) The object actually exists in this repository. This alone catches a
+    //     stamp that survives only as a dangling object in one worktree.
+    assert!(
+        git_succeeds(&["cat-file", "-e", &format!("{sha}^{{commit}}")]),
+        "the stamped base commit {sha} does not exist as a commit in this \
+         repository — the artifact header names an unresolvable object"
+    );
+
+    // (c) It is reachable from the tip, so it survives the `--no-ff` merge onto
+    //     main. A rebase orphaning the stamped commit reds exactly here.
+    assert!(
+        git_succeeds(&["merge-base", "--is-ancestor", sha, "HEAD"]),
+        "the stamped base commit {sha} is not an ancestor of HEAD — it was \
+         orphaned (a rebase, most likely) and will vanish when this branch \
+         lands. Re-run the survey generator to re-stamp the merge base."
+    );
+}
