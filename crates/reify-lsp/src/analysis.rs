@@ -77,8 +77,8 @@ impl AnalysisContext {
     pub fn new(source: &str, uri: &Url) -> Self {
         let module_name = module_name_from_uri(uri);
         // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
-        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib` in
-        // `from_parsed`. See task 2525.
+        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib_checked`
+        // in `from_parsed`. See task 2525.
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
         Self::from_parsed(Arc::new(parsed))
     }
@@ -91,10 +91,18 @@ impl AnalysisContext {
     /// the same `Arc<ParsedModule>` to every request for a given document
     /// version, so hover and completion compile + check the cached parse instead
     /// of re-parsing. [`AnalysisContext::new`] delegates here after parsing.
+    ///
+    /// **Real constraint checker (task #6798, PRD `driver-contract-implementation.md`
+    /// leaf pi).** The compile stage below uses the real `SimpleConstraintChecker`,
+    /// matching `reify check` (`crates/reify-cli/src/main.rs:200`) and the GUI
+    /// (`gui/src-tauri/src/engine.rs:843`), instead of the compile-time
+    /// `CompileTimeIndeterminateChecker` stub — so hover/completion/goto-def/symbols
+    /// see the same `auto:` candidate-feasibility verdicts the CLI does.
     pub fn from_parsed(parsed: Arc<ParsedModule>) -> Self {
         // `&parsed` (`&Arc<ParsedModule>`) deref-coerces to the `&ParsedModule`
         // the compiler expects.
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled =
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
         // Enable undef-cause capture BEFORE `check` so the post-eval snapshot
