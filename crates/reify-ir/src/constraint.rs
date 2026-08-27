@@ -81,6 +81,11 @@ pub struct ObjectiveTerm {
     pub sense: ObjectiveSense,
     pub expr: CompiledExpr,
     /// > 0; default 1.0 (PRD §6.1, invariant I3 — the WeightedSum cost contribution).
+    ///
+    /// That bound is NOT runtime-validated (task #6377): no construction site
+    /// checks positivity or even finiteness, so a NaN/±Inf weight can reach a
+    /// solve. `reify_constraints::solver::eval_objective_set` fails closed on
+    /// the resulting non-finite fold rather than emitting an unorderable score.
     pub weight: f64,
     /// default 0; higher = solved first in `Lexicographic` (PRD §6.1, invariant I4).
     pub priority: u32,

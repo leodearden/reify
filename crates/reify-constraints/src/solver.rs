@@ -3912,11 +3912,16 @@ impl DimensionalSolver {
 
         // Rank feasible candidates by strict ascending objective_score, ties
         // broken by ascending start index (start #0, the historical seed,
-        // wins exact ties). candidates[0] is the optimum (I2). `partial_cmp`
-        // only returns `None` for NaN, which `eval_objective_set` already
-        // filters out (`.filter(|v| v.is_finite())`), so every score here is
-        // a well-ordered finite f64 — `unwrap_or(Equal)` is a defensive
-        // fallback, never actually exercised.
+        // wins exact ties). candidates[0] is the optimum (I2).
+        //
+        // Every score in `scored` came from `eval_objective_set`, which fails
+        // closed on a non-finite ACCUMULATOR (task #6377 — the canonical
+        // statement is at that guard). Note it is the accumulator guard, NOT
+        // the per-term `.filter(|v| v.is_finite())`, that makes this true:
+        // the per-term filter leaves a non-finite `weight · v` fold wide open.
+        // Every score here is therefore a finite f64, `partial_cmp` cannot
+        // return `None`, and `unwrap_or(Equal)` is a defensive fallback that
+        // is genuinely dead code.
         scored.sort_by(|a, b| {
             a.2.partial_cmp(&b.2)
                 .unwrap_or(std::cmp::Ordering::Equal)

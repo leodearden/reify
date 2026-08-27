@@ -1021,9 +1021,11 @@ impl CpSatSolver {
                     None,
                 );
                 // `eval_objective_set` already normalises `Maximize` to
-                // "lower is better" (it accumulates `-weight · v`) and rejects
-                // any non-finite fold with `None`, so every score reaching the
-                // heap is a finite, well-ordered, minimisation-sense f64
+                // "lower is better" (it accumulates `-weight · v`), and since
+                // task #6377 it rejects a non-finite ACCUMULATED fold with
+                // `None` — not merely a non-finite per-term value, which is
+                // all its per-term filter ever caught. So every score reaching
+                // the heap is a finite, well-ordered, minimisation-sense f64
                 // (F-result I2).
                 let Some(score) =
                     crate::solver::eval_objective_set(objective, &full, &problem.functions, None)
@@ -1041,9 +1043,17 @@ impl CpSatSolver {
                 };
 
                 // Exact `==` on f64 is deliberate: the question is whether two
-                // models attained the SAME score, and `eval_objective_set` has
-                // already filtered NaN out, so equality here is the total,
-                // reflexive kind.
+                // models attained the SAME score. A non-finite score can no
+                // longer reach this tally — `eval_objective_set`'s fail-closed
+                // accumulator guard (task #6377) drops it upstream — so
+                // equality here is the total, reflexive kind.
+                //
+                // That is load-bearing for the match below, not decoration: a
+                // NaN compares false BOTH ways, so one NaN score would send
+                // every subsequent model to the `_` arm and silently degrade
+                // `best` from "the minimum seen" to "the last score seen",
+                // which then trips the `debug_assert_eq!` at the end of this
+                // function (`Some(NaN) == Some(NaN)` is false).
                 best = Some(match best {
                     Some((seen, ties)) if score == seen => (seen, ties + 1),
                     Some((seen, ties)) if seen < score => (seen, ties),
@@ -1192,10 +1202,12 @@ impl CpSatSolver {
 /// unstable run-to-run for exactly the problems where the choice is arbitrary
 /// (D4).
 ///
-/// `partial_cmp` returns `None` only for NaN, which `eval_objective_set` has
-/// already filtered out, so `unwrap_or(Equal)` is a defensive fallback that is
-/// never exercised — and `Eq`/`Ord` are therefore honest rather than a lie told
-/// to satisfy the heap's bounds.
+/// `score` is only ever an `eval_objective_set` result (constructed in
+/// [`CpSatSolver::solve_ranked_with_budget`]), and that function fails closed on
+/// a non-finite accumulator (task #6377 — the canonical statement is at that
+/// guard). `score` is therefore finite, `partial_cmp` cannot return `None`, and
+/// `unwrap_or(Equal)` is a defensive fallback that is genuinely dead code — so
+/// `Eq`/`Ord` are honest rather than a lie told to satisfy the heap's bounds.
 struct ScoredModel {
     score: f64,
     index: usize,
