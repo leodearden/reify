@@ -582,10 +582,29 @@ the seam is **behaviour-preserving for `cmd_check`**, so φ inherits a callable 
 body and **not** a fixed `--purpose` arm; and that PRD's own investigation recorded, with
 executed evidence, that `reify check --purpose` currently exits 0 on a file plain
 `reify check` rejects with a `RepresentationWithin` violation. That false green is
-**not** closed by the seam. Its capability half — capture flags and tessellation reaching
-the purpose arm — is what leaf α's profile closes structurally; its routing half is
-check-diagnostic-truthfulness's, where that PRD files it as a fresh evidenced task. φ must
-not assume either half has landed.
+**not** closed by the seam.
+
+**Ownership of that false green, traced 2026-08-27 and assigned to leaf α.** The first
+reading — capability half to α, routing half to check-diagnostic-truthfulness — was too
+generous to both. Tracing what the fix actually touches once the seams land collapses it:
+every arm involved (kind detection, `set_capture_repr_tol`, the handle-populating
+`build()`, `tessellate_realizations`, `ensure_openvdb_kernel`) lives **inside**
+gui-on-demand-measurement's `run_measurement_pass`, which kind-gates internally — so there
+is no per-arm work at all. And the exit half needs nothing either: once measurement runs
+the constraint is `Violated` rather than `Indeterminate`, so check's existing violation
+gate fires unaided, and that PRD's non-strict Indeterminate-is-pass policy never has to
+move. What remains is **one call-site condition** — whether the unified check body invokes
+the measurement seam on the purpose path.
+
+That is not a `cmd_check` edit: after the seam extraction it is inside `reify-eval`, so the
+binding G4 reservation (which covers `cmd_check`, `finish_check`, exit codes and
+`--strict` — all CLI-side) does not reach it. It **is** a §4.3 violation: a body that
+declines the measurement capability on a purpose flag is an unnamed third subtraction,
+carrying none of the three artifacts §4.3 requires. So it is leaf α's, as an explicit
+acceptance clause rather than a new task — which also gives α a falsifiable behavioural
+signal where it previously had only a structural one. The gui-purpose PRD's docs leaf has
+been redirected accordingly and files nothing unless the defect survives all three
+upstreams. φ must still not assume it has landed.
 
 ### §8.4 — A message this PRD owes a sibling leaf
 
