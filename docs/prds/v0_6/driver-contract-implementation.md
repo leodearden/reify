@@ -208,20 +208,39 @@ is a value, not a convention: a driver cannot acquire or lose a capability by ed
 construction expression, and no construction path yields a capability set that no profile
 names.
 
-This **extends** solver-driver-parity's `ResolutionProfile` rather than paralleling it.
-That type already carries the doctrine — *"a profile may not decline a stage"* — and the
-type-level enforcement that makes it stick; what it does not yet carry is the six axes
-other than solve. Widening it is cheap while its own leaf is pending and expensive after
-five driver leaves have landed against a solver-only shape.
+This **composes** solver-driver-parity's `ResolutionProfile`; it neither widens it nor
+parallels it. The distinction is load-bearing and was corrected on 2026-08-27 — the
+original text here said "widen", which would have broken the very invariant it cited.
+
+`ResolutionProfile` is deliberately **two axes — iteration budget and staleness — with no
+stage-decline field**, and its totality is doing real work: I5 says *"a profile may not
+decline a stage"*, and that is what keeps `INV-SF-4`'s doctrine ("a solve that never ran"
+is an unexpected cause plain `reify check` must fail on) applicable **without amendment**.
+Widening that type to carry kernels and trampolines would have to add exactly the
+stage-decline field it forbids — because §4.3's two ratified subtractions *are* declines —
+and would cost that reasoning.
+
+So the layering is: a **capability profile** carries the six non-solve axes and the two
+ratified subtractions, and **has a `ResolutionProfile`** for the solve axis. `I5` stays
+literally true and total at the resolution layer; capability subtractions live one layer
+up, where they are Leo-ratified and locked by tests. This is still one construct and one
+architecture gate — the thing §6 decision 1 actually cares about — with no second
+solver-posture type anywhere.
+
+The two ratified subtractions are consistent with I5 read at its own layer: the LSP
+declines **compute trampolines**, not a solve stage (solver-driver-parity's own LSP leaf
+*gives* the LSP a budgeted solver), and `doc` constructs no engine at all, so it has no
+resolution profile to decline anything with.
 
 **Consequence for that leaf's open question.** solver-driver-parity's §13 asks whether
 `ResolutionProfile` lives in `reify-ir` or `reify-eval`, and suggests `reify-ir` so that
 `reify-lsp` and `gui/src-tauri` can name a profile without depending on engine internals.
-A profile that also names kernels and trampolines does not sit as cleanly in `reify-ir`.
-**This PRD's answer: the profile type lives in `reify-ir` and stays capability-*declarative*
-— it names axes and settings, never engine types**; the `reify-eval` side owns the
-interpretation (which kernel object, which registrar). That preserves the suggested
-placement and the widening together. This must reach that leaf before it dispatches (§7).
+Under composition that suggestion is simply **right and unaffected** — `ResolutionProfile`
+stays where that leaf puts it. **This PRD's answer: keep `reify-ir`, and keep the type
+capability-*declarative*** — it names axes and settings, never engine types — so the
+capability profile can sit beside it in `reify-ir` and `reify-eval` owns the
+interpretation (which kernel object, which registrar). This must reach that leaf before
+it dispatches (§7).
 
 ### §4.2 — I2: the shared constructor composes; it does not re-implement
 
@@ -275,6 +294,9 @@ the 2026-08-26 ruling and each pinned by a locking test:
 
 A third subtraction may not be added by a code change alone: it requires a profile
 constant, a doc comment naming the ruling, and a locking test — the same three artifacts.
+
+Both subtractions live at the **capability** layer, never inside `ResolutionProfile`
+(§4.1). Neither declines a resolution stage, so solver-driver-parity's I5 remains total.
 
 ### §4.4 — I4: staleness is a declared axis, not an attached default
 
