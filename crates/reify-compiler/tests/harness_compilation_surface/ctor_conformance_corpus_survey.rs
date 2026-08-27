@@ -849,6 +849,160 @@ fn survey_site_carries_file_and_resolved_line() {
 
 // ─── step 7/8: D9 owner classification ───────────────────────────────────────
 
+/// Absolute path to the stdlib directory whose FEA modules define the
+/// do-not-touch partition.
+const STDLIB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib");
+
+/// The FEA stdlib module FILE STEMS, as PRD §4 D9 itself enumerates them
+/// ("`fea_multi_case.ri`, `fea.ri`, `solver_*.ri`, …"), reconciled against the
+/// live `ls crates/reify-compiler/stdlib/`.
+///
+/// This small MODULE list is the survey's only reviewable knob. The def NAMES
+/// are always derived by scanning these files, never hand-listed — which is
+/// what keeps "zero hand-derived entries" literally true, and keeps the
+/// do-not-touch partition traceable to the PRD rather than to β's judgment.
+///
+/// [`scan_structure_defs`] panics if any stem here has no `.ri` file, so a
+/// stdlib rename cannot silently empty the partition.
+const FEA_STDLIB_MODULES: &[&str] = &[
+    "fea",
+    "fea_multi_case",
+    "fea_types",
+    "materials_fea",
+    "solver_buckling",
+    "solver_buckling_fns",
+    "solver_elastic",
+];
+
+/// The `structure def <Name>` declarations in `dir/<stem>.ri` for each `stem`.
+///
+/// Anchored at COLUMN 0 rather than matched as a substring, deliberately: a
+/// naive scan of `stdlib/fea_multi_case.ri` harvests `already` as a def name
+/// from the prose "…(its structure def already declares…" in a comment at line
+/// 292. Every real declaration in the stdlib is at column 0, and a `//` line is
+/// skipped outright, so both halves of that guard are cheap.
+///
+/// # Panics
+///
+/// If a listed module has no file. That is the deliberate loud failure: a
+/// silently-empty FEA partition would mis-classify every v0.6-deferred site as
+/// touchable, which is the single most costly error this artifact could make.
+fn scan_structure_defs(
+    dir: &std::path::Path,
+    modules: &[&str],
+) -> std::collections::BTreeSet<String> {
+    const DEF_PREFIX: &str = "structure def ";
+    let mut defs = std::collections::BTreeSet::new();
+    for stem in modules {
+        let path = dir.join(format!("{stem}.ri"));
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "ctor_conformance_corpus_survey: FEA stdlib module '{stem}' is listed in \
+                 FEA_STDLIB_MODULES but {} cannot be read: {e}. A stdlib rename must not \
+                 silently empty the D9 do-not-touch partition — update the list.",
+                path.display()
+            )
+        });
+        for line in source.lines() {
+            // Column-0 anchor: skips comments and any nested/indented prose.
+            let Some(rest) = line.strip_prefix(DEF_PREFIX) else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                defs.insert(name);
+            }
+        }
+    }
+    defs
+}
+
+/// Every structure def declared by an FEA stdlib module, scanned once.
+fn fea_owned_defs() -> &'static std::collections::BTreeSet<String> {
+    static DEFS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
+        std::sync::OnceLock::new();
+    DEFS.get_or_init(|| {
+        scan_structure_defs(std::path::Path::new(STDLIB_DIR), FEA_STDLIB_MODULES)
+    })
+}
+
+/// The D9 fix-forward class governing a site whose structure def is `def`.
+///
+/// Mechanizes exactly the half of D9 that IS decidable — whether the def is
+/// FEA-owned, hence call-site-changes-only with field-type flips deferred to
+/// v0.6. An unresolved def is its own `Unknown` bucket, never folded into
+/// `NonFea`: guessing in the touchable direction is the one classification
+/// error with a real cost.
+fn d9_owner(def: Option<&str>, fea_defs: &std::collections::BTreeSet<String>) -> Owner {
+    match def {
+        None => Owner::Unknown,
+        Some(name) if fea_defs.contains(name) => Owner::FeaDeferredToV06,
+        Some(_) => Owner::NonFea,
+    }
+}
+
+/// The neutral hint used when no (expected, found) pattern is recognised.
+const NO_HINT: &str = "no mechanical hint — γ per-case judgment";
+
+/// Whether `ty` renders as a selector-typed field (`Selector(k)`/`AnySelector`).
+fn is_selector_type(ty: &str) -> bool {
+    ty.starts_with("Selector(") || ty == "AnySelector"
+}
+
+/// Whether `ty` renders as a coordinate pose rather than a region target.
+fn is_pose_type(ty: &str) -> bool {
+    ty.starts_with("Frame") || ty.starts_with("Transform") || ty.starts_with("Point")
+}
+
+/// Whether `ty` renders as a DIMENSIONED scalar (`Scalar[…]`, not bare `Real`).
+fn is_dimensioned_scalar(ty: &str) -> bool {
+    ty.starts_with("Scalar[")
+}
+
+/// An ADVISORY remedy hint, derived purely and deterministically from the
+/// (expected, found) type pair.
+///
+/// This is NOT a D9 ruling. The PRD defines the split between class (1) call-
+/// site bug and class (2) wrong declared field type as "per-case judgment …
+/// whichever is the actual bug" and assigns it to γ; fabricating a verdict here
+/// would be exactly the hand-derivation β is forbidden. Every string below
+/// therefore describes what the *shape* of the mismatch suggests, and the
+/// artifact's column header says "advisory".
+///
+/// An unrecognised pair — or one with a missing half — gets [`NO_HINT`], never
+/// an invented remedy.
+fn remedy_hint(expected: Option<&str>, found: Option<&str>) -> String {
+    let (Some(expected), Some(found)) = (expected, found) else {
+        return NO_HINT.to_owned();
+    };
+    if is_selector_type(expected) && found == "String" {
+        // D3: implicit String → selector-typed field is newly ILLEGAL; callers
+        // move to typed ctors.
+        return "selector field given a string — typed ctor such as face(b, \"x_max\") \
+                or vertex(b, \"tip\") is the usual replacement"
+            .to_owned();
+    }
+    if is_selector_type(expected) && is_pose_type(found) {
+        // D2 pose-vs-set: the fixed hint substring task 4833's fixtures assert.
+        return "selector field given a coordinate pose — a pose locates a datum, \
+                it does not name a region target"
+            .to_owned();
+    }
+    if is_dimensioned_scalar(expected) && (found == "Real" || found == "Int") {
+        // D4-6 dimensioned-scalar migration family.
+        return "dimensioned scalar field given a bare number — a dimensioned \
+                literal (e.g. 1m/s) is the usual replacement"
+            .to_owned();
+    }
+    if expected == "String" && (found == "Int" || found == "Real" || found == "Bool") {
+        return "string field given a non-string literal".to_owned();
+    }
+    NO_HINT.to_owned()
+}
+
 #[test]
 fn scan_structure_defs_reads_only_the_listed_modules() {
     let dir = tempfile::tempdir().expect("tempdir");
