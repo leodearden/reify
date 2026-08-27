@@ -836,7 +836,13 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
    *
    * When `opts` is null the colorize state is cleared; existing colour buffers
    * on already-phong meshes are left unchanged (material teardown is out of
-   * scope for this task).
+   * scope for this task).  Because that buffer stays attached, a mesh can be
+   * re-tessellated at a different vertex count while colorize is off (the
+   * `sync()` re-bake is skipped when `colorize === null`), leaving a stale
+   * colour attribute sized for the old vertex count.  A later
+   * `setColorize(opts)` therefore *replaces* that attribute rather than
+   * resizing it in place — resizing would make THREE.WebGLAttributes throw on
+   * the next draw call (#6757; see `assignOrReplaceAttribute`).
    */
   function setColorize(opts: MeshColorize | null): void {
     colorize = opts;
@@ -852,10 +858,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
       if (!colorAttr) continue; // mesh was created without colorize; skip
 
-      const newColors = opts.bake(scalars);
-      colorAttr.array = newColors;
-      (colorAttr as { count: number }).count = newColors.length / 3;
-      colorAttr.needsUpdate = true;
+      assignOrReplaceAttribute(geometry, 'color', opts.bake(scalars), 3);
     }
   }
 
