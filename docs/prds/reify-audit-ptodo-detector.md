@@ -12,6 +12,12 @@ validates their task citations against the task DB, and reports violations — w
 into the `/audit` default sweep and a `tests/infra` baseline-ratchet check, warn-first,
 ratcheting to a hard gate once the repo is green.
 
+> **As-built correction (2026-08-27, esc-6088-2; see §8.4).** Of that last clause, only
+> the **baseline-ratchet** half is enforced against this repo. The severity "hard gate"
+> (task η) exists in the CLI's exit code but has no real-tree consumer — every
+> exit-code assertion is hermetic. Read "hard gate" below as *High severity*, which
+> routes `/audit`, not as *verify fails*.
+
 **The invariant (Leo, 2026-06-11, codified in dark-factory
 `skills/review-briefing/SKILL.md` --validate checks 5/6, commits 24edb2cbf7 +
 55c8229d44):** every real TODO — `TODO`/`FIXME`/`HACK` comment markers, Rust
@@ -199,6 +205,18 @@ degraded one and the `comm -23 live baseline` subset oracle stays empty in both 
 checkout and a task worktree. **Every seeded line must be hand-inspected before commit**
 — a false positive seeded here is permanent by design, and worse, teaches later readers
 that the cite is real debt.
+
+**Amendment — "keeps the gate green" means the RATCHET, and there was only ever one gate
+(2026-08-27, esc-6088-2 ruling; task 6088 cancelled as vacuous).** Rationale (3) above is
+correct as written about the ratchet: the baseline is read only by the ratchet test and
+the generator, `reify-audit` never consults it, and seeding therefore keeps the ratchet
+green while `--pattern PTODO` still REPORTS the findings. What it leaves implicit is the
+other half — η's exit-code gate (§8.4) was **already** green-by-absence, independently of
+any seeding, because no verify step ever runs the exit-code check against the real tree.
+So the seeding decision did not trade away a second layer of enforcement; there was no
+second layer to trade. That also explains why re-seeding 11 High findings onto main in
+the same diff turned nothing red — the outcome this paragraph predicted, for one more
+reason than it stated. Full record: **§8.4**.
 
 **Vacuity floor on generator-emitted SCAN EVIDENCE (2026-08-11, task #6127, esc-6087-3;
 rebased off the live finding count by task #6241).** *This paragraph is the single home for
@@ -463,6 +481,54 @@ As of task η (#4559, 2026-06-15) `untracked` / `orphaned` / `bare-ignore` emit
 DB-sync artifact must not hard-fail verify); `task-cites-deleted-path` stays
 advisory; `malformed-cite` / `phantom-tracking` stay **Medium**.
 
+**Correction — the exit code is not the real-tree gate; the §6.6 ratchet is
+(2026-08-27, esc-6088-2 ruling; task 6088 cancelled as vacuous).** *This paragraph is
+the single home for the correction — §6.6 and §12's η entry point here rather than
+restating it.* The severity mapping above is accurate, and so is "exit code = High
+count" (`bin/reify-audit.rs::high_severity_exit_code`, a raw `Severity::High` count
+clamped to 254, with **no** baseline suppression). The parenthetical's second half —
+"the `tests/infra` PTODO check hard-fails verify" — was never wired to this repo.
+`tests/infra/test_reify_audit_ptodo.sh` makes eleven `--project-root` invocations, and
+exactly **one** targets the real repo: `ptodo-baseline-gen --project-root "$REPO_ROOT"`
+(§6.6 scenario a), which asserts `comm -23 <live> <baseline>` is empty. The other ten
+all target hermetic fixture repos built in `mktemp -d` — nine assert an **exit code**
+(scenarios c–f, at `:706 :726 :823 :842 :927 :948 :1038 :1055 :1086`), and the tenth
+(scenario b, `:624`) asserts hermetic ratchet behaviour. Every one of those nine expects
+0 or 1, so even on fixtures the "exit code = High **count**" arithmetic is never
+asserted above 1.
+
+So on the real tree the enforcement mechanism is the **fingerprint ratchet**, and since
+`ptodo::fingerprint` is `{path} :: {kind} :: {text}` (severity plays no part) the ratchet
+is **severity-blind**: it blocks any NEW fingerprint of any kind at any severity, and it
+never observes the High count at all. η's exit-code gate has no real-tree consumer.
+
+Consequences, recorded so they are not re-derived:
+
+- **A non-zero PTODO exit on main is the steady state, not an alarm.** Measured on main
+  2026-08-27: **65 findings, 11 High, exit code 11** — 10 `untracked` + 1 `orphaned`
+  (High), 3 `malformed-cite`, 51 `task-cites-deleted-path`. No gate observes any of it.
+- **What the ratchet actually reaches is narrower than "all findings".**
+  `ptodo-baseline-gen` filters to path-keyed source-marker findings
+  (`is_swept_ext(&f.task_id) && !is_g_allow_finding(f)`), so of those 65 only **14** are
+  fingerprinted, and they collapse to the 5 committed baseline lines because
+  fingerprints drop line numbers — the 8 identical `#[allow(dead_code)] // T12 layer-B
+  seam …` markers in `engine_build.rs` are 8 findings but 1 fingerprint. The 51 ζ
+  inverse-lane findings are keyed by **task id**, not a swept path, so they fall outside
+  the ratchet; being Medium they are also exit-neutral. That lane is therefore gated by
+  nothing at all — deliberate for an advisory lane (§6.3), but it means "the ratchet is
+  the gate" bounds the ratchet to the source-marker lanes only.
+- **Severity is not decorative** — it still routes the `/audit` skill (High →
+  `escalate_info`, Medium → deferred follow-up task, `.claude/skills/audit/SKILL.md`).
+  It is decorative only for the verify gate.
+- **Why this was invisible for two months.** η's dispatch condition was "PTODO reports
+  zero violations on main", which held when it landed 2026-06-15; a gate that is green
+  because it never runs is indistinguishable from one that is green because the tree is
+  clean. Re-seeding the baseline for lane δ-A (2026-08-07, #6087) put 11 High findings
+  on main without turning anything red, which is what made the gap legible.
+- **This is a record, not a change request.** Whether to wire the exit code to the real
+  tree — or to delete η's exit-code framing as superseded by the ratchet — is an open
+  design question, deliberately not decided here.
+
 `parked-on-anchor` emits **Medium** (advisory, exit-neutral): a `do_not_complete`
 anchor is non-terminal but never resolves the cited debt; surface it ("parked, not
 promised") without hard-failing. Keyed on the structured `metadata.do_not_complete`
@@ -562,6 +628,13 @@ Labels are PRD-relative; ids assigned at decompose. All signals CLI-observable.
   dispatch, not a dep edge): PTODO reports **zero** violations on main — if not,
   fix cites first or bounce. **Leaf.** Signal: a violation makes `reify-audit` exit
   non-zero and verify fail. **Landed 2026-06-15 (task #4559).**
+  **Signal correction (2026-08-27, esc-6088-2 ruling; task 6088 cancelled as vacuous):**
+  only the first half of that signal was ever wired. A violation does make `reify-audit`
+  exit non-zero, but nothing makes **verify** fail on the real tree — the exit-code
+  assertions live entirely on hermetic fixtures, and the real-tree gate is the §6.6
+  fingerprint ratchet, which is severity-blind. The dispatch condition ("PTODO reports
+  zero violations on main") held at landing, so a gate that never ran was
+  indistinguishable from one that ran and passed. See **§8.4**.
 - **θ — vocabulary-expansion ASSESS** (dep ε). FP-review of softer vocabularies
   (§6.2: STUB_MSG idiom, "for now", "placeholder", "stub", "XXX", "workaround")
   mirroring 4075/4076/4141 methodology; extend the vocabulary for those that clear;
