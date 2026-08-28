@@ -13678,7 +13678,7 @@ mod tests {
 
     /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
     ///
-    /// The PRD's split is 46 = 41 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
+    /// The PRD's split is 47 = 42 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
     /// — dimensionless unit-normal components, not lengths. The 2 are
     /// `CircularPattern.angle` and `Draft.angle` — ANGLE, which is PRD 3's
     /// surface, not this one. All five must stay on the plain, context-free
@@ -13799,7 +13799,7 @@ mod tests {
 
     /// **Full 41-field enumeration (step-9B).**
     ///
-    /// The completeness check for the PRD's 46 = 41 + 3 + 2 split, proved by
+    /// The completeness check for the PRD's 47 = 42 + 3 + 2 split, proved by
     /// OBSERVATION rather than by asserting a table against itself: every one of
     /// the 41 LENGTH-semantic `(op, field)` pairs is driven through
     /// `OcctKernel::execute` with a bare `Value::Real` in the field under test
@@ -14205,7 +14205,7 @@ mod tests {
         assert_eq!(
             cases.len(),
             41,
-            "the PRD's 46 = 41 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
+            "the PRD's 47 = 42 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
         );
 
         for (op, op_kind, field) in cases {

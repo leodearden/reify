@@ -48,11 +48,11 @@
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 10 `CompiledGeometryOp` variant families × 53 nested kinds, across 11 tests:
-//! Primitive 8, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
+//! 10 `CompiledGeometryOp` variant families × 54 nested kinds, across 11 tests:
+//! Primitive 8, Boolean 3, Modify 10 (+3 edges-selector branch cases), Transform
 //! 7, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
-//! Surface 1, Isosurface 1 (8+3+9+7+5+9+6+4+1+1 = 53). The `coverage_*` test pins
-//! the 10-family / 53-kind census; the per-family `characterize_*` tests plus
+//! Surface 1, Isosurface 1 (8+3+10+7+5+9+6+4+1+1 = 54). The `coverage_*` test pins
+//! the 10-family / 54-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
 //! newly-added variant or nested kind. L5 MUST keep all 11 tests byte-identical
 //! green.
@@ -3789,7 +3789,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
 /// Kept as a named constant so the prose and the assertion cannot drift apart
 /// silently: the test compares this against the sum of the nine
 /// `VARIANT_COUNT`s, so if the doc arithmetic is wrong the test fails.
-const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 52;
+const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 53;
 
 /// Runtime census cross-check for the 10-family / 53-nested-kind oracle
 /// (nine kind families totalling 52, plus the Isosurface marker family).
