@@ -4703,40 +4703,32 @@ fn profile_circle(
     Ok(reify_ir::GeometryOp::CircleProfile { radius })
 }
 
-/// Shoelace-formula signed area of a closed 2D ring, in SI square metres.
-///
-/// CCW ring → positive; CW ring → negative; collinear / degenerate ring → 0.0
-/// (within float tolerance). A ring of fewer than 3 points encloses nothing,
-/// so it is 0.0 by definition.
-///
-/// Deliberately a local copy of `ring_signed_area_2d`
-/// (`reify-solver-elastic/src/mesher.rs:319`) rather than a shared import:
-/// reify-eval must not depend on reify-solver-elastic. Both operate on the
-/// same SI-metre coordinates, so [`profile_polygon`]'s build-time gate is a
-/// strict pre-image of the downstream `validate_boundary` gate.
-fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
-    if ring.len() < 3 {
-        return 0.0;
-    }
-    let n = ring.len();
-    let mut acc: f64 = 0.0;
-    for i in 0..n {
-        let p = ring[i];
-        let q = ring[(i + 1) % n];
-        acc += p[0] * q[1] - q[0] * p[1];
-    }
-    acc * 0.5
-}
-
 /// Degenerate-ring tolerance, in SI square metres.
 ///
 /// NOT an independently-chosen tolerance: this is the same value
-/// `validate_boundary` (`reify-solver-elastic/src/mesher.rs:353`) already
-/// applies to the sampled outer ring, on the same SI-metre coordinates.
-/// Keeping the two equal is what makes the build-time check a strict
-/// pre-image of the existing downstream gate — a ring this check accepts can
-/// still fail later for other reasons, but a ring it rejects would certainly
-/// have failed there.
+/// `validate_boundary` already applies to the sampled outer ring (and to each
+/// hole) in `reify-solver-elastic/src/mesher.rs`, on the same SI-metre
+/// coordinates. Keeping the two equal is what makes the build-time check a
+/// strict pre-image of the existing downstream gate — a ring this check accepts
+/// can still fail later for other reasons, but a ring it rejects would
+/// certainly have failed there.
+///
+/// It is a local `const` only because the mesher's copy is still an INLINE
+/// `1e-14` literal inside a private `fn`, so there is nothing to import. Its
+/// companion [`reify_solver_elastic::ring_signed_area_2d`] no longer has that
+/// problem — task 5218 promoted it to `pub` and re-exported it at the crate
+/// root, which is why the shoelace formula itself is imported here rather than
+/// copied. Lifting the threshold to a `pub const` beside it would let this
+/// declaration go the same way.
+///
+/// That equality is load-bearing, so it is asserted in code rather than only in
+/// prose: `degenerate_ring_area_tolerance_matches_mesher_gate` (this module's
+/// tests) reads the mesher source and fails if the two values diverge.
+/// Complementary but NOT a substitute — they derive their rings from this
+/// constant and so move with it — are the two boundary tests
+/// `..._area_just_below_tolerance_returns_err` /
+/// `..._area_just_above_tolerance_returns_ok`, which pin that the gate honours
+/// whatever value this holds, with the correct sense and scale.
 const DEGENERATE_RING_AREA_TOLERANCE: f64 = 1e-14;
 
 fn profile_polygon(
@@ -4769,10 +4761,13 @@ fn profile_polygon(
     //   position in one build, not just the first: the pre-5661 reader
     //   short-circuited via `collect::<Option<_>>()`.
     //
-    // The label stays the literal `"polygon"`, which here happens to equal
-    // `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
-    // which renders `interp_curve`. Spelling it out keeps today's label bytes
-    // and leaves `_kind` unused, as in `curve_interp_curve`.
+    // The Contract C label stays the literal `"polygon"`, which here happens to
+    // equal `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
+    // which renders `interp_curve`. Spelling it out keeps today's label bytes.
+    // (The parameter is now bound as `kind` rather than `_kind`, because task
+    // 5664's degenerate-ring diagnostic below renders it; the literal above is
+    // deliberately NOT switched over with it, so the Contract C wording stays
+    // byte-stable independently of `Display`.)
     let vals = eval_all_args_to_values(args, values, functions, meta_map);
     let coords = accept_variadic_length_args(
         "polygon",
@@ -4789,8 +4784,21 @@ fn profile_polygon(
     // winding order is not this gate's business. Self-intersection is
     // deliberately NOT detected here (an O(n²) sweep with robust predicates is
     // materially different engineering; tracked separately).
-    let signed_area = ring_signed_area_2d(&points);
-    if points.len() < 3 || signed_area.abs() < DEGENERATE_RING_AREA_TOLERANCE {
+    //
+    // The shoelace formula is the SHARED one — `reify_solver_elastic`'s
+    // crate-root `ring_signed_area_2d`, the very function `validate_boundary`
+    // calls — not a local re-derivation, so "pre-image" is a structural fact
+    // about one function rather than a claim about two copies staying in step.
+    // (`sweep_classifier.rs` already calls it, so this adds no new dependency
+    // edge.) Only the TOLERANCE is still duplicated; see the const's doc.
+    //
+    // No separate `points.len() < 3` arity guard: `ring_signed_area_2d` returns
+    // exactly 0.0 for any ring of fewer than 3 points, and `0.0 <` the
+    // tolerance, so an under-3-point ring is caught by this same area test.
+    // Adding the arity disjunct would be dead as a distinct branch and would
+    // imply the two conditions were independent.
+    let signed_area = reify_solver_elastic::ring_signed_area_2d(&points);
+    if signed_area.abs() < DEGENERATE_RING_AREA_TOLERANCE {
         diagnostics.push(Diagnostic::warning(format!(
             "{} profile dropped: {} point(s) enclose a degenerate signed area of {} \
              (the ring must enclose a non-zero area)",
