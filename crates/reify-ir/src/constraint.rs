@@ -85,7 +85,12 @@ pub struct ObjectiveTerm {
     /// That bound is NOT runtime-validated (task #6377): no construction site
     /// checks positivity or even finiteness, so a NaN/±Inf weight can reach a
     /// solve. `reify_constraints::solver::eval_objective_set` fails closed on
-    /// the resulting non-finite fold rather than emitting an unorderable score.
+    /// the resulting non-finite fold rather than emitting an unorderable score;
+    /// that guard is local to that ONE fold — the other two folds named at
+    /// [`objective_terms_coherent`] below (`registry.rs::eval_rank_cost`,
+    /// `engine_eval.rs::objective_term_contributions`) do **not** re-check the
+    /// weighted result they return, so a non-finite weight still propagates
+    /// through both.
     pub weight: f64,
     /// default 0; higher = solved first in `Lexicographic` (PRD §6.1, invariant I4).
     pub priority: u32,
