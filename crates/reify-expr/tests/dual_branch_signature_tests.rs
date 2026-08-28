@@ -598,3 +598,251 @@ fn a_seed_dependent_field_reduction_refuses_a_tangent_but_still_records_its_bran
     assert_eq!(rec.entries()[0].kind, KinkKind::FieldReduction(ReductionKind::Max));
     assert_eq!(t, Tangent::None);
 }
+
+// ===========================================================================
+// Step-9: λ's consumption contract
+// ===========================================================================
+//
+// λ (#6679) does not read individual entries — it compares whole records
+// across solver iterations.  Two primitives carry that:
+//
+//   * `differs_from` — "did the active branch set change, and if so WHERE?",
+//     the signal that contracts η's trust region; and
+//   * `signature_key` — a hashable identity for a branch set, so alternation
+//     between two signatures more than K times can be detected without
+//     retaining every record.
+//
+// The load-bearing property underneath both is SITE STABILITY UNDER FLIPS: a
+// kink's identity must not move when some *other* branch flips.  A pre-order
+// visit counter would fail this — short-circuiting `Conditional`/`And`/`Or`
+// changes how many nodes precede a given kink — which is exactly why
+// `KinkSite` is a structural path from the root.
+
+/// `if flag then abs(x) else min(x, y)` — a kink in EACH branch of an outer
+/// conditional, so flipping `flag` swaps which nested kink is traversed while
+/// leaving both of their sites where they are.
+fn two_sided_conditional() -> CompiledExpr {
+    conditional_expr(
+        vref("flag"),
+        call("abs", vec![vref("x")]),
+        call("min", vec![vref("x"), vref("y")]),
+    )
+}
+
+fn record_of(expr: &CompiledExpr, cells: &[(&str, Value)], seed_names: &[&str]) -> BranchRecord {
+    run(expr, cells, seed_names).2
+}
+
+// ---------------------------------------------------------------------------
+// (1) differs_from: None when nothing moved, Some(site) naming what did
+// ---------------------------------------------------------------------------
+
+#[test]
+fn differs_from_is_none_for_two_points_that_take_the_same_branches() {
+    let expr = two_sided_conditional();
+    let a = record_of(
+        &expr,
+        &[("flag", Value::Bool(true)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))],
+        &["x", "y"],
+    );
+    // A different point, but the same side of every kink: x stays positive.
+    let b = record_of(
+        &expr,
+        &[("flag", Value::Bool(true)), ("x", Value::Real(9.5)), ("y", Value::Real(-3.0))],
+        &["x", "y"],
+    );
+    assert_eq!(
+        a.differs_from(&b),
+        None,
+        "same branches at both points ⇒ one smooth function ⇒ no trust-region contraction"
+    );
+}
+
+#[test]
+fn differs_from_names_the_exact_conditional_that_flipped() {
+    let expr = two_sided_conditional();
+    let then_side = record_of(
+        &expr,
+        &[("flag", Value::Bool(true)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))],
+        &["x", "y"],
+    );
+    let else_side = record_of(
+        &expr,
+        &[("flag", Value::Bool(false)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))],
+        &["x", "y"],
+    );
+    let site = then_side
+        .differs_from(&else_side)
+        .expect("a Then→Else flip must be reported, not silently absorbed");
+    assert_eq!(
+        site.path(),
+        &[] as &[u16],
+        "the OUTER conditional is the node that flipped, so its root site is what λ is handed"
+    );
+    // The relation is symmetric in *which* site it names.
+    assert_eq!(else_side.differs_from(&then_side), Some(site));
+}
+
+#[test]
+fn differs_from_reports_a_kink_that_flips_without_any_conditional_moving() {
+    // abs(x) alone: positive at one point, negative at another.
+    let expr = call("abs", vec![vref("x")]);
+    let pos = record_of(&expr, &[("x", Value::Real(2.0))], &["x"]);
+    let neg = record_of(&expr, &[("x", Value::Real(-2.0))], &["x"]);
+    let site = pos.differs_from(&neg).expect("Positive→Negative is a branch change");
+    assert_eq!(site.path(), &[] as &[u16]);
+}
+
+// ---------------------------------------------------------------------------
+// (2) SITE STABILITY UNDER FLIPS — the load-bearing property
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_nested_kink_keeps_its_site_whichever_way_the_outer_conditional_went() {
+    // `if flag then abs(x) else min(x, y)`:
+    //   - then-branch is child index 1, so `abs` sits at [1]
+    //   - else-branch is child index 2, so `min` sits at [2]
+    // Those paths are properties of the TREE, not of the traversal, so they do
+    // not move when `flag` flips.  A pre-order visit counter would renumber
+    // them: on the else path the whole then-subtree is skipped, so every later
+    // kink would shift by however many nodes it contains.
+    let expr = two_sided_conditional();
+
+    let then_rec = record_of(
+        &expr,
+        &[("flag", Value::Bool(true)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))],
+        &["x", "y"],
+    );
+    assert_eq!(then_rec.len(), 2, "the Conditional plus the kink inside the taken branch");
+    assert_eq!(then_rec.entries()[0].site.path(), &[] as &[u16], "the Conditional is at the root");
+    assert_eq!(then_rec.entries()[0].choice, BranchChoice::Then);
+    assert_eq!(then_rec.entries()[1].kind, KinkKind::Abs);
+    assert_eq!(then_rec.entries()[1].site.path(), &[1], "abs sits at then-branch child index 1");
+
+    let else_rec = record_of(
+        &expr,
+        &[("flag", Value::Bool(false)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))],
+        &["x", "y"],
+    );
+    assert_eq!(else_rec.len(), 2);
+    assert_eq!(else_rec.entries()[0].site.path(), &[] as &[u16]);
+    assert_eq!(else_rec.entries()[0].choice, BranchChoice::Else);
+    assert_eq!(else_rec.entries()[1].kind, KinkKind::Min);
+    assert_eq!(
+        else_rec.entries()[1].site.path(),
+        &[2],
+        "min sits at else-branch child index 2, unchanged by the flip"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (3) The record is what was TRAVERSED, not what exists
+// ---------------------------------------------------------------------------
+
+#[test]
+fn kinks_under_an_untaken_branch_appear_in_neither_record() {
+    let expr = two_sided_conditional();
+    let then_rec = record_of(
+        &expr,
+        &[("flag", Value::Bool(true)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))],
+        &["x", "y"],
+    );
+    let else_rec = record_of(
+        &expr,
+        &[("flag", Value::Bool(false)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))],
+        &["x", "y"],
+    );
+    assert!(
+        !then_rec.entries().iter().any(|e| e.kind == KinkKind::Min),
+        "the else-branch `min` was never evaluated, so it must not be recorded"
+    );
+    assert!(
+        !else_rec.entries().iter().any(|e| e.kind == KinkKind::Abs),
+        "the then-branch `abs` was never evaluated, so it must not be recorded"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (4) signature_key
+// ---------------------------------------------------------------------------
+
+#[test]
+fn signature_key_is_stable_across_repeated_evaluation_at_the_same_point() {
+    let expr = two_sided_conditional();
+    let cells = [("flag", Value::Bool(true)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))];
+    let first = record_of(&expr, &cells, &["x", "y"]).signature_key();
+    for _ in 0..4 {
+        assert_eq!(
+            record_of(&expr, &cells, &["x", "y"]).signature_key(),
+            first,
+            "the key must be a function of the branch set alone — λ counts alternations \
+             between keys, so a key that wobbles would manufacture phantom chatter"
+        );
+    }
+}
+
+#[test]
+fn signature_key_agrees_for_equal_records_and_separates_any_single_choice_change() {
+    let expr = two_sided_conditional();
+    let base = [("flag", Value::Bool(true)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))];
+
+    // Same branches, different point ⇒ same key.
+    let moved = [("flag", Value::Bool(true)), ("x", Value::Real(9.5)), ("y", Value::Real(-3.0))];
+    assert_eq!(
+        record_of(&expr, &base, &["x", "y"]).signature_key(),
+        record_of(&expr, &moved, &["x", "y"]).signature_key()
+    );
+
+    // One `choice` differs (the Conditional flips) ⇒ different key.
+    let flipped =
+        [("flag", Value::Bool(false)), ("x", Value::Real(2.0)), ("y", Value::Real(-3.0))];
+    assert_ne!(
+        record_of(&expr, &base, &["x", "y"]).signature_key(),
+        record_of(&expr, &flipped, &["x", "y"]).signature_key()
+    );
+
+    // A nested kink's own flip, with the outer conditional held fixed, must
+    // also separate: `abs` goes Positive → Negative.
+    let abs_neg = [("flag", Value::Bool(true)), ("x", Value::Real(-2.0)), ("y", Value::Real(-3.0))];
+    assert_ne!(
+        record_of(&expr, &base, &["x", "y"]).signature_key(),
+        record_of(&expr, &abs_neg, &["x", "y"]).signature_key(),
+        "a flip anywhere in the record must move the key, or λ would miss the chatter"
+    );
+}
+
+#[test]
+fn signature_key_of_an_empty_record_is_reachable_and_distinct_from_a_populated_one() {
+    let smooth = binop(BinOp::Mul, vref("x"), vref("x"));
+    let empty = record_of(&smooth, &[("x", Value::Real(2.0))], &["x"]);
+    assert!(empty.is_empty());
+    let populated = record_of(&call("abs", vec![vref("x")]), &[("x", Value::Real(2.0))], &["x"]);
+    assert_ne!(empty.signature_key(), populated.signature_key());
+    assert_eq!(empty.differs_from(&populated), Some(reify_expr::branch_signature::KinkSite::root()));
+}
+
+// ---------------------------------------------------------------------------
+// (5) The site is a PATH, not a content hash
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_structurally_identical_sibling_kinks_get_distinct_sites() {
+    // `abs(x) + abs(x)` — both operands have the SAME `content_hash`, so a
+    // content-addressed site would collapse them into one and λ could never
+    // tell which of the two moved.  As child indices 0 and 1 of the `+` they
+    // are distinct.
+    let leaf = call("abs", vec![vref("x")]);
+    let expr = binop(BinOp::Add, leaf.clone(), leaf.clone());
+    assert_eq!(
+        leaf.content_hash, leaf.content_hash,
+        "the two operands are content-identical by construction"
+    );
+    let rec = record_of(&expr, &[("x", Value::Real(2.0))], &["x"]);
+    assert_eq!(rec.len(), 2, "each traversed kink gets its own entry");
+    assert_eq!(rec.entries()[0].site.path(), &[0]);
+    assert_eq!(rec.entries()[1].site.path(), &[1]);
+    assert_ne!(
+        rec.entries()[0].site, rec.entries()[1].site,
+        "identical content must NOT collapse to one site"
+    );
+}
