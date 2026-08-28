@@ -56,9 +56,9 @@
 //! `reify_compiler::__resolve_function_overload_for_parity_test` shim, which
 //! mirrors `__infer_mul_div_result_for_parity_test` (`lib.rs:180`); the
 //! self-pull dev-dependency that activates `feature = "test-support"` for
-//! this integration-test target already exists (`Cargo.toml`), so no
-//! manifest change was needed. The eval-side
-//! `find_matching_compiled_function` is already `pub`.
+//! the `harness_langcore` integration-test target this module belongs to
+//! already exists (`Cargo.toml`), so no manifest change was needed. The
+//! eval-side `find_matching_compiled_function` is already `pub`.
 //!
 //! Modelled on `crates/reify-compiler/tests/mul_div_static_runtime_parity.rs`
 //! (INV-COMP-3 β3), whose table + shared-engine + exemption-ledger shape this
