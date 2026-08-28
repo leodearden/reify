@@ -190,8 +190,11 @@ impl MeshToVoxelOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::{MeshToVoxelOptions, VOXELS_PER_LONGEST_AXIS};
-    use reify_ir::Mesh;
+    use super::{
+        MIN_FEATURE_VOXELS_ACROSS, MeshToVoxelOptions, VOXELS_PER_LONGEST_AXIS,
+        VoxelResolutionError,
+    };
+    use reify_ir::{Mesh, VoxelResolution};
     // Import the authoritative sentinel — not a hand-copied literal — so this
     // test fails loudly if reify_eval::NO_OPTIONS ever drifts (ESC-3433-117).
     use reify_eval::NO_OPTIONS;
@@ -430,6 +433,217 @@ mod tests {
             b.content_hash(),
             "identical MeshToVoxelOptions must produce equal content_hash values \
              (hash must be deterministic)",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // for_resolution tests (task 6560, step-3 RED)
+    // -----------------------------------------------------------------------
+    //
+    // Pure arithmetic, no FFI: these run in stub builds too.
+
+    /// The shells PRD's own motivating geometry (`structural-analysis-shells.md`,
+    /// "Background"): a 1 mm thin feature inside a 100 mm part. Axis-aligned
+    /// box, x,y ∈ [0,100], z ∈ [0,1] — the same shape as
+    /// `tests/dispatcher_integration.rs:238`. Deliberately NOT origin-centred:
+    /// the real-FFI probe in step-7 depends on the z ∈ [0,1] placement.
+    fn plate_100x100x1() -> Mesh {
+        let v: Vec<f32> = vec![
+            0.0, 0.0, 0.0, // 0
+            100.0, 0.0, 0.0, // 1
+            100.0, 100.0, 0.0, // 2
+            0.0, 100.0, 0.0, // 3
+            0.0, 0.0, 1.0, // 4
+            100.0, 0.0, 1.0, // 5
+            100.0, 100.0, 1.0, // 6
+            0.0, 100.0, 1.0, // 7
+        ];
+        let i: Vec<u32> = vec![
+            // Bottom (-Z)
+            0, 2, 1, 0, 3, 2, // Top (+Z)
+            4, 5, 6, 4, 6, 7, // Front (-Y)
+            0, 1, 5, 0, 5, 4, // Back (+Y)
+            2, 3, 7, 2, 7, 6, // Left (-X)
+            0, 4, 7, 0, 7, 3, // Right (+X)
+            1, 2, 6, 1, 6, 5,
+        ];
+        Mesh {
+            vertices: v,
+            indices: i,
+            normals: None,
+        }
+    }
+
+    /// A 4 × 4 × 0.3125 thin panel (the `thin_panel` proportions already used
+    /// elsewhere in the openvdb suite), centred at the origin.
+    fn thin_panel() -> Mesh {
+        box_mesh(2.0, 2.0, 0.156_25)
+    }
+
+    /// `HonestFloor` must be a verbatim delegation to [`MeshToVoxelOptions::honest_floor`]
+    /// — BOTH fields exactly equal, no re-derivation.
+    ///
+    /// This is the behaviour-preservation pin: every pre-6560 caller keeps the
+    /// grid it always got, bit-for-bit.
+    #[test]
+    fn for_resolution_honest_floor_is_bit_identical_to_honest_floor() {
+        let panel = thin_panel();
+        let via_request = MeshToVoxelOptions::for_resolution(&panel, VoxelResolution::HonestFloor)
+            .expect("HonestFloor on a valid panel must succeed");
+        let direct = MeshToVoxelOptions::honest_floor(&panel)
+            .expect("honest_floor on a valid panel must return Some");
+
+        assert_eq!(
+            via_request.voxel_size, direct.voxel_size,
+            "for_resolution(HonestFloor) must delegate voxel_size verbatim"
+        );
+        assert_eq!(
+            via_request.narrow_band, direct.narrow_band,
+            "for_resolution(HonestFloor) must delegate narrow_band verbatim"
+        );
+    }
+
+    /// **Pins the gate failure this task exists to close.**
+    ///
+    /// Today's only policy is bbox-driven: `longest_extent / 64`. On the shells
+    /// PRD's own motivating part (1 mm feature in a 100 mm plate) that is
+    /// 1.5625 mm/voxel — COARSER than the whole feature, so the feature is
+    /// entirely sub-voxel and no amount of downstream sampling can recover it.
+    #[test]
+    fn honest_floor_is_sub_feature_on_the_shells_prd_motivating_plate() {
+        let plate = plate_100x100x1();
+        let opts = MeshToVoxelOptions::honest_floor(&plate)
+            .expect("honest_floor must return Some for the plate");
+
+        assert_eq!(
+            opts.voxel_size,
+            100.0 / VOXELS_PER_LONGEST_AXIS,
+            "honest_floor must still derive voxel_size from the LONGEST extent (100.0)"
+        );
+        assert_eq!(
+            opts.voxel_size, 1.5625,
+            "100.0 / 64.0 is exactly representable in f64"
+        );
+        assert!(
+            opts.voxel_size > 1.0,
+            "the 1 mm feature is entirely sub-voxel under honest_floor \
+             (voxel_size {} > thickness 1.0) — this is the v0.4-shells gate failure",
+            opts.voxel_size
+        );
+    }
+
+    /// `MinFeature(t)` resolves the feature: `voxel_size = t / MIN_FEATURE_VOXELS_ACROSS`.
+    ///
+    /// The second assertion is the reason `MIN_FEATURE_VOXELS_ACROSS` is 4 and
+    /// not the PRD's literal "≈ thickness/3": at `h = t/3` the half-thickness
+    /// is `1.5h`, BELOW the empirically-established OpenVDB interior-signing
+    /// floor of "half-thickness ≥ 2 × voxel_size"
+    /// (`reify-eval/tests/harness_kernel_realization/realization_read_api.rs:505-510`).
+    #[test]
+    fn for_resolution_min_feature_resolves_the_thin_feature() {
+        let plate = plate_100x100x1();
+        let opts = MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::MinFeature(1.0))
+            .expect("MinFeature(1.0) on the plate must succeed");
+
+        assert_eq!(
+            opts.voxel_size,
+            1.0 / MIN_FEATURE_VOXELS_ACROSS,
+            "MinFeature(t) must yield t / MIN_FEATURE_VOXELS_ACROSS"
+        );
+        assert_eq!(opts.voxel_size, 0.25, "1.0 / 4.0 is exact in f64");
+        assert!(
+            opts.voxel_size * 2.0 <= 1.0 / 2.0,
+            "half-thickness (0.5) must be at least 2 voxels ({}) — the documented \
+             OpenVDB interior-signing floor",
+            opts.voxel_size * 2.0
+        );
+    }
+
+    /// `TargetVoxelSize(h)` is used verbatim.
+    #[test]
+    fn for_resolution_target_voxel_size_is_used_verbatim() {
+        let plate = plate_100x100x1();
+        let opts = MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::TargetVoxelSize(0.25))
+            .expect("TargetVoxelSize(0.25) on the plate must succeed");
+        assert_eq!(
+            opts.voxel_size, 0.25,
+            "TargetVoxelSize must be honoured exactly, not re-derived"
+        );
+    }
+
+    /// Non-finite and non-positive requested sizes are rejected for BOTH
+    /// value-carrying variants — a structured `Err`, never a silently-clamped
+    /// or NaN-propagating grid.
+    #[test]
+    fn for_resolution_rejects_invalid_requested_sizes() {
+        let plate = plate_100x100x1();
+        for bad in [0.0_f64, -1.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for resolution in [
+                VoxelResolution::TargetVoxelSize(bad),
+                VoxelResolution::MinFeature(bad),
+            ] {
+                match MeshToVoxelOptions::for_resolution(&plate, resolution) {
+                    Err(VoxelResolutionError::InvalidRequest { requested, .. }) => {
+                        assert!(
+                            requested.to_bits() == bad.to_bits(),
+                            "the error must carry the offending value verbatim; \
+                             requested={requested}, bad={bad}"
+                        );
+                    }
+                    other => panic!(
+                        "expected Err(InvalidRequest) for {resolution:?}; got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    /// A degenerate mesh is rejected for EVERY variant, matching the conditions
+    /// under which `honest_floor` returns `None` (empty, all-coincident, or any
+    /// non-finite coordinate).
+    #[test]
+    fn for_resolution_rejects_degenerate_meshes_for_every_variant() {
+        let empty = Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        };
+        let coincident = Mesh {
+            vertices: vec![0.0_f32; 8 * 3],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let nan = Mesh {
+            vertices: vec![-1.0, -1.0, -1.0, 1.0, 1.0, f32::NAN],
+            indices: vec![],
+            normals: None,
+        };
+
+        for mesh in [&empty, &coincident, &nan] {
+            for resolution in [
+                VoxelResolution::HonestFloor,
+                VoxelResolution::TargetVoxelSize(0.25),
+                VoxelResolution::MinFeature(1.0),
+            ] {
+                let got = MeshToVoxelOptions::for_resolution(mesh, resolution);
+                assert!(
+                    matches!(got, Err(VoxelResolutionError::DegenerateMesh)),
+                    "expected Err(DegenerateMesh) for {resolution:?} on a degenerate mesh; \
+                     got {got:?}"
+                );
+            }
+        }
+    }
+
+    /// `MIN_FEATURE_VOXELS_ACROSS` is 4.0, and is at least as fine as the
+    /// shells PRD's "≈ thickness/3" — being finer satisfies the gate's
+    /// "resolutions sufficient for".
+    #[test]
+    fn min_feature_voxels_across_is_at_least_the_prd_thickness_over_three() {
+        assert_eq!(MIN_FEATURE_VOXELS_ACROSS, 4.0);
+        assert!(
+            MIN_FEATURE_VOXELS_ACROSS >= 3.0,
+            "must be at least as fine as the shells PRD's ≈ thickness/3"
         );
     }
 }
