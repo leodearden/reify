@@ -260,6 +260,144 @@ fn reify_fence_violations(path: &str, content: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Corpus discovery
+//
+// reify-mcp does NOT depend on reify-compiler, so these files cannot be
+// `include_str!`-ed from here — they are read by path via the
+// `CARGO_MANIFEST_DIR` idiom `examples_smoke.rs` and
+// `geometry_chunk_smoke.rs:333` already use. A wrong path fails loudly at
+// read time rather than silently scanning nothing.
+// ---------------------------------------------------------------------------
+
+const CHUNKS_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reify-mcp/src/tools/chunks"
+);
+
+const LANGUAGE_CHUNKS_RS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reify-mcp/src/tools/language_chunks.rs"
+);
+
+/// Every `*.md` stem in the chunk dir, PATH-SORTED.
+///
+/// Sorted because `read_dir` order is filesystem-dependent: without this a
+/// failure list would shuffle between machines and a diff of two runs would be
+/// unreadable. Mirrors `pdoccover`'s sorted-corpus discipline.
+fn discover_chunk_stems() -> Vec<String> {
+    let entries = std::fs::read_dir(CHUNKS_DIR).unwrap_or_else(|e| {
+        panic!("{CHUNKS_DIR} must be readable ({e}) — update CHUNKS_DIR if the chunk dir moved")
+    });
+
+    let mut stems: Vec<String> = entries
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("{CHUNKS_DIR}: unreadable dir entry ({e})"))
+                .path()
+        })
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("md"))
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    stems.sort();
+    stems
+}
+
+/// The text of one chunk file.
+fn read_chunk_file(stem: &str) -> String {
+    let path = format!("{CHUNKS_DIR}/{stem}.md");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{path} must be readable ({e})"))
+}
+
+/// The repo-relative label used in violation messages, so a failure reads as a
+/// path a developer can open rather than an absolute build-machine path.
+fn chunk_label(stem: &str) -> String {
+    format!("crates/reify-mcp/src/tools/chunks/{stem}.md")
+}
+
+// ---------------------------------------------------------------------------
+// Check 4 — every chunk is reachable through the MCP tool
+// ---------------------------------------------------------------------------
+
+/// The exact prefix of the `TOPICS` slice literal in `language_chunks.rs`.
+const TOPICS_ANCHOR: &str = "pub const TOPICS: &[&str] = &[";
+
+/// The body of the `TOPICS` slice literal, or `None` if it cannot be located.
+fn topics_literal(src: &str) -> Option<&str> {
+    let start = src.find(TOPICS_ANCHOR)? + TOPICS_ANCHOR.len();
+    let rest = &src[start..];
+    let end = rest.find("];")?;
+    Some(&rest[..end])
+}
+
+/// Every chunk stem on disk that is not reachable through the
+/// `reify_language_reference` MCP tool.
+///
+/// Reachability needs BOTH halves and they fail differently:
+///
+/// - no `include_str!("chunks/<stem>.md")` — the file is not compiled into the
+///   binary at all. Whole-file omission drift: it ships in the repo and is
+///   served to nobody.
+/// - not in the `TOPICS` slice literal — subtler, and the reason the TOPICS
+///   half is scoped to that literal rather than scanned file-wide. Such a
+///   chunk compiles in and even answers `get_chunk`, but `TOPICS` is what the
+///   MCP tool ENUMERATES, so no caller can discover it. A whole-file scan
+///   would be satisfied by the `"<stem>" => Some(CONST)` match arm and miss
+///   this entirely.
+///
+/// Both scans are ANCHORED — `include_str!("chunks/<stem>.md")` in full, and
+/// the QUOTED `"<stem>"` for the topic entry — so a stem can never be satisfied
+/// by a coincidental substring of a longer one (`types` inside `prototypes`).
+/// An unanchored scan would report the corpus clean while a chunk was served to
+/// nobody, which is the exact silent failure this check exists to prevent.
+fn reachability_violations(stems: &[String], src: &str) -> Vec<String> {
+    let Some(topics) = topics_literal(src) else {
+        return vec![format!(
+            "could not locate the `{TOPICS_ANCHOR}` slice literal in \
+             language_chunks.rs — the reachability scan is anchored on it, so a \
+             move or rename must fail LOUDLY here rather than silently \
+             reporting the whole corpus clean (or the whole corpus broken)"
+        )];
+    };
+
+    stems
+        .iter()
+        .filter_map(|stem| {
+            let include = format!("include_str!(\"chunks/{stem}.md\")");
+            let topic_entry = format!("\"{stem}\"");
+
+            let mut missing: Vec<String> = Vec::new();
+            if !src.contains(&include) {
+                missing.push(format!(
+                    "no `{include}` in language_chunks.rs, so the file is not \
+                     compiled into the binary at all"
+                ));
+            }
+            if !topics.contains(&topic_entry) {
+                missing.push(format!(
+                    "no `{topic_entry}` entry in the `TOPICS` slice literal, so \
+                     the `reify_language_reference` MCP tool cannot enumerate it \
+                     even if it compiles in"
+                ));
+            }
+            if missing.is_empty() {
+                return None;
+            }
+
+            Some(format!(
+                "{} is on disk but UNREACHABLE: {}",
+                chunk_label(stem),
+                missing.join("; and ")
+            ))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Hermetic parser tests
 //
 // Every case below runs on SYNTHETIC in-memory markdown. No chunk file on disk
