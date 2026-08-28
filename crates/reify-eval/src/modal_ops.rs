@@ -2917,10 +2917,10 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 
 /// Build the homogeneous Dirichlet BCs from the `boundary_conditions` supports.
 ///
-/// Realization is **per named face and KIND-AWARE** (task 6663): each support
+/// Realization is **per named face and KIND-AWARE** (task 6663): EVERY support
 /// contributes constraints on its own target face, and what it constrains there
-/// is decided by the support's `type_name`, not by how many supports the model
-/// happens to carry.
+/// is decided by the support's `type_name` (via [`face_realization`]), not by how
+/// many supports the model happens to carry.
 ///
 ///   • **`FixedSupport` (and every other support kind)** — clamp all three
 ///     translational DOFs on every mesh node of the named face
@@ -2930,15 +2930,21 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 ///
 ///   • **`PinnedSupport`** — pin only the transverse (Z) DOF on every node of the
 ///     named face, leaving the bending rotation `dw/dx` free (it is carried by
-///     the axial `u(z)`, not by `w`).
+///     the axial `u(z)`, not by `w`) — but ONLY on a beam-axis end face of a
+///     model that carries another support. A lone or non-beam-axis pinned face
+///     clamps instead, matching `PinnedOnTetEquivalentToFixed`; see
+///     [`face_realization`] for why that scoping is load-bearing.
 ///
 ///   • **Simply-supported (pin-pin) special case** — when BOTH beam-axis end
 ///     faces (`"x_min"` AND `"x_max"`) are named AND every support naming an end
-///     face is `PinnedSupport`, delegate to [`simply_supported_pin_pin_bcs`],
-///     which adds the three minimal neutral-axis anchors that the per-face rule
-///     alone cannot supply. Neither end face is clamped in that configuration,
-///     so without those anchors `K_free` is singular (see step-4's comment there
-///     for why the mixed propped-cantilever case needs no such anchors).
+///     face is `PinnedSupport`, the two end faces are realized by
+///     [`simply_supported_pin_pin_bcs`], which adds the three minimal
+///     neutral-axis anchors that the per-face rule alone cannot supply. Neither
+///     end face is clamped in that configuration, so without those anchors
+///     `K_free` is singular (see step-4's comment there for why the mixed
+///     propped-cantilever case needs no such anchors). Supports naming any OTHER
+///     face are still realized per-face and UNIONed on top — the special case
+///     re-interprets the two end faces, it never discards a support.
 ///
 /// **Why the kind matters here, even though a face-pin equals a face-clamp on a
 /// solid tet body** (`reify-solver-elastic/src/shell_boundary.rs:133-140`,
@@ -2975,6 +2981,19 @@ fn build_dirichlet_bcs(
     height: f64,
 ) -> Vec<DirichletBc> {
     let targets = support_targets(options);
+    let n_supports = targets.len();
+
+    // Resolve every support to (what it constrains, which face) up front, so the
+    // two branches below share ONE realization policy.
+    let faces: Vec<(FaceRealization, &str)> = targets
+        .iter()
+        .map(|(kind, target)| {
+            (
+                face_realization(*kind, target, n_supports),
+                target.as_str(),
+            )
+        })
+        .collect();
 
     // Simply-supported (pin-pin) special case: BOTH beam-axis end faces named,
     // and every support naming an end face is Pinned. A single `FixedSupport`
@@ -2983,24 +3002,51 @@ fn build_dirichlet_bcs(
     let names_face = |face: &str| targets.iter().any(|(_, t)| t == face);
     let end_face_supports_all_pinned = targets
         .iter()
-        .filter(|(_, t)| t == "x_min" || t == "x_max")
-        .all(|(kind, _)| *kind == SupportKind::Pinned);
+        .filter(|(_, t)| is_beam_axis_end_face(t))
+        .all(|(kind, _)| *kind == DeclaredSupport::Pinned);
     if names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned {
-        return normalize_bcs(simply_supported_pin_pin_bcs(nodes, length, height));
+        // The special case re-interprets the TWO END FACES only. Every support
+        // naming another face is still realized per-face and unioned on top, so
+        // e.g. `[Pinned(x_min), Pinned(x_max), Fixed(y_min)]` is a
+        // simply-supported beam that is ALSO clamped on y_min, not a plain
+        // simply-supported beam with the y_min clamp silently discarded.
+        let mut bcs = simply_supported_pin_pin_bcs(nodes, length, height);
+        let others: Vec<(FaceRealization, &str)> = faces
+            .iter()
+            .copied()
+            .filter(|(_, t)| !is_beam_axis_end_face(t))
+            .collect();
+        bcs.extend(per_face_bcs(&others, nodes, length, width, height));
+        return normalize_bcs(bcs);
     }
 
-    // Per-face realization: every named face is realized independently, so a
-    // third support ADDS a face rather than reinterpreting the whole model.
-    // (The pre-6663 discriminator did the opposite: a set like
-    // `[x_min, x_max, y_min]` silently DROPPED y_min and flipped the whole model
-    // to pin-pin, with no diagnostic. A target outside the six recognized face
-    // names still selects nothing — that gap is unchanged here — but it can no
-    // longer cause the rest of the model to be reinterpreted.)
+    normalize_bcs(per_face_bcs(&faces, nodes, length, width, height))
+}
+
+/// Realize each `(what, face)` pair independently: select the face's nodes by
+/// coordinate and emit that realization's DOFs.
+///
+/// Per-face and order-independent by construction, so a third support ADDS a
+/// face rather than reinterpreting the whole model. (The pre-6663 discriminator
+/// did the opposite: a set like `[x_min, x_max, y_min]` silently DROPPED y_min
+/// and flipped the whole model to pin-pin, with no diagnostic. A target outside
+/// the six recognized face names still selects nothing — that gap is unchanged
+/// here — but it can no longer cause the rest of the model to be reinterpreted.)
+///
+/// The result is a raw union: repeats are possible when two faces share a corner
+/// node, so callers must pass it through [`normalize_bcs`].
+fn per_face_bcs(
+    faces: &[(FaceRealization, &str)],
+    nodes: &[[f64; 3]],
+    length: f64,
+    width: f64,
+    height: f64,
+) -> Vec<DirichletBc> {
     let eps = 1e-9_f64;
     let mut bcs = Vec::new();
-    for (kind, target) in &targets {
+    for (realization, target) in faces {
         for (n, coord) in nodes.iter().enumerate() {
-            let on_face = match target.as_str() {
+            let on_face = match *target {
                 "x_min" => coord[0] <= eps,
                 "x_max" => coord[0] >= length - eps,
                 "y_min" => coord[1] <= eps,
@@ -3012,9 +3058,9 @@ fn build_dirichlet_bcs(
             if !on_face {
                 continue;
             }
-            match kind {
+            match realization {
                 // Clamp: all three translational DOFs on this face's node.
-                SupportKind::Fixed => {
+                FaceRealization::ClampAllDofs => {
                     for axis in 0..3 {
                         bcs.push(DirichletBc {
                             dof: 3 * n + axis,
@@ -3025,36 +3071,34 @@ fn build_dirichlet_bcs(
                 // Simple support: the transverse (Z) DOF only, so the bending
                 // rotation at the support stays free.
                 //
-                // NOTE the deliberate ASYMMETRY with the pin-pin branch above,
-                // which adds three minimal neutral-axis anchors on top of its
-                // Z pins. That branch needs them because a simply-supported beam
-                // is a WELL-POSED structure whose 2-D bending idealization the
-                // anchors do not disturb — they sit on the neutral axis, on the
-                // vertical modes' own node line.
+                // NOTE the deliberate ASYMMETRY with the pin-pin branch in
+                // `build_dirichlet_bcs`, which adds three minimal neutral-axis
+                // anchors on top of its Z pins. That branch needs them because a
+                // simply-supported beam is a WELL-POSED structure whose 2-D
+                // bending idealization the anchors do not disturb — they sit on
+                // the neutral axis, on the vertical modes' own node line.
                 //
-                // No such anchors belong here. A Pinned-only realization that is
-                // not the pin-pin branch MAY leave 3-4 rigid-body modes alive —
-                // measured: `[PinnedSupport("x_min")]` alone leaves four (X
-                // translation, Y translation, in-plane Z-rotation, and the
-                // bending-plane Y-rotation, which survives because a rigid
-                // rotation about y through the x_min face gives u_z = 0
-                // everywhere ON that face, so Z-pinning it does not touch that
-                // mode). That is not a defect in this realization: it is an
-                // under-constrained MODEL — a mechanism — and inventing anchors
-                // for it would return plausible-looking frequencies for a
-                // structure that has none, the exact silent-wrong-answer class
-                // task 6663 exists to close. It is handled downstream instead,
-                // by the singular-K fallback in `solve_generalized_eigen`, which
-                // routes it to the graceful `W_ModalRigidBodyMode` path rather
-                // than the shift-invert Cholesky.
-                SupportKind::Pinned => bcs.push(DirichletBc {
+                // No such anchors belong here. `face_realization` scopes
+                // `PinTransverse` to a beam-axis end face of a multi-support
+                // model, which rules out the two mechanisms a lone/off-axis Z
+                // pin would create — but not every one: a degenerate set that
+                // Z-pins the SAME end face twice (or pairs it with a support
+                // whose target names no face at all) still leaves 3-4 rigid-body
+                // modes alive. Inventing anchors for those would return
+                // plausible-looking frequencies for a structure that has none,
+                // the exact silent-wrong-answer class task 6663 exists to close.
+                // They are handled downstream instead, by the singular-K fallback
+                // in `solve_generalized_eigen`, which routes them to the graceful
+                // `W_ModalRigidBodyMode` path rather than the shift-invert
+                // Cholesky.
+                FaceRealization::PinTransverse => bcs.push(DirichletBc {
                     dof: 3 * n + 2,
                     value: 0.0,
                 }),
             }
         }
     }
-    normalize_bcs(bcs)
+    bcs
 }
 
 /// Sort a homogeneous Dirichlet set by `dof` and drop repeats.
@@ -3196,32 +3240,110 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     nearest
 }
 
-/// How a support constrains its target face in [`build_dirichlet_bcs`].
+/// The support kind as **declared in the DSL**, read off
+/// `StructureInstance.type_name` by [`support_targets`].
 ///
 /// `FixedSupport` and `PinnedSupport` are declared with IDENTICAL field shapes
 /// (`param target : String = ""`, crates/reify-compiler/stdlib/fea_multi_case.ri
 /// :355 and :380), so the `target` field alone cannot tell them apart — the kind
 /// has to be read off the instance's `type_name` (task 6663).
+///
+/// **Deliberately NOT named `SupportKind`.** `reify_solver_elastic::SupportKind`
+/// (re-exported from that crate's `lib.rs`, and this module already imports
+/// several items from it) has the same two variant names but different
+/// semantics: there, `Pinned` on a tet body IS a 3-DOF clamp
+/// (`shell_boundary.rs`, `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`).
+/// Here the variant records only what the author WROTE; what it constrains is
+/// [`FaceRealization`], decided by [`face_realization`]. Keeping the two names
+/// distinct stops a future reader from folding this enum into the existing
+/// `use reify_solver_elastic::{…}` list and silently changing the meaning.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SupportKind {
-    /// Clamp all three translational DOFs on the target face.
+enum DeclaredSupport {
+    /// `FixedSupport` (and every unrecognized support type name).
     Fixed,
-    /// Pin the transverse (Z) DOF only, leaving the bending rotation free.
+    /// `PinnedSupport`.
     Pinned,
 }
 
-/// Collect the `(kind, target face name)` pairs from the options'
+/// What a support actually constrains on its target face, after
+/// [`face_realization`] has interpreted the declared kind in context.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FaceRealization {
+    /// Clamp all three translational DOFs on every node of the face. This is
+    /// also how a *pinned* face is realized everywhere else in the system
+    /// (`PinnedOnTetEquivalentToFixed`), so it is the default, not the exception.
+    ClampAllDofs,
+    /// Pin the transverse (Z) DOF only, leaving the bending rotation `dw/dx`
+    /// free. The simply-supported BEAM idealization — see [`face_realization`]
+    /// for why it is scoped rather than applied to every `PinnedSupport`.
+    PinTransverse,
+}
+
+/// The two beam-axis end faces. The simply-supported idealization is about
+/// these and only these: a "pin" on any other face is not a beam end support.
+fn is_beam_axis_end_face(target: &str) -> bool {
+    target == "x_min" || target == "x_max"
+}
+
+/// Decide what `kind` constrains on `target`, given how many supports the model
+/// carries in total.
+///
+/// `Fixed` always clamps. `Pinned` realizes as a transverse (Z) pin ONLY on a
+/// beam-axis end face of a model that carries at least one other support;
+/// otherwise it clamps like every other pinned face in the system.
+///
+/// # Why `Pinned` is not "Z-only, always"
+///
+/// The Z-only realization is a property of the simply-supported BEAM
+/// idealization, not of the `PinnedSupport` kind. Everywhere else in the system
+/// a pin on a solid tet body is a full 3-DOF clamp
+/// (`reify-solver-elastic/src/shell_boundary.rs`,
+/// `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`; the static path's
+/// `loads_supports_to_bc_node_sets` clamps all three DOFs for any support kind).
+/// Applying Z-only per face unconditionally would make the same DSL word mean
+/// two different things in two solvers, and would regress two configurations
+/// that used to return a real answer into ≈ 0 Hz mechanisms reported under a
+/// mere Warning:
+///
+///   * `[PinnedSupport("x_min")]` alone — a LONE support is the model's only
+///     restraint, so a transverse-only pin is a mechanism by construction
+///     (measured: four surviving rigid-body modes). Pre-6663 this returned the
+///     cantilever answer, which is also what `PinnedOnTetEquivalentToFixed`
+///     says a single pinned tet face means. Clamping restores that.
+///   * `[PinnedSupport("y_min"), PinnedSupport("y_max")]` — neither face is a
+///     beam end, so Z-pinning both leaves the beam free to slide axially.
+///
+/// Both propped configurations the task cares about are unaffected: the
+/// pin-pin special case in [`build_dirichlet_bcs`] handles two pinned end
+/// faces, and `[Fixed("x_min"), Pinned("x_max")]` still realizes x_max as a
+/// genuine transverse-only prop (two supports, beam-axis end face).
+fn face_realization(
+    kind: DeclaredSupport,
+    target: &str,
+    n_supports: usize,
+) -> FaceRealization {
+    match kind {
+        DeclaredSupport::Fixed => FaceRealization::ClampAllDofs,
+        DeclaredSupport::Pinned if is_beam_axis_end_face(target) && n_supports > 1 => {
+            FaceRealization::PinTransverse
+        }
+        DeclaredSupport::Pinned => FaceRealization::ClampAllDofs,
+    }
+}
+
+/// Collect the `(declared kind, target face name)` pairs from the options'
 /// `boundary_conditions` list. Non-StructureInstance entries and entries without
 /// a string `target` are skipped.
 ///
 /// The kind is read off `StructureInstance.type_name`: `"PinnedSupport"` maps to
-/// [`SupportKind::Pinned`], and EVERY other type name to [`SupportKind::Fixed`].
+/// [`DeclaredSupport::Pinned`], and EVERY other type name to
+/// [`DeclaredSupport::Fixed`].
 /// Defaulting unknown names to `Fixed` is what keeps every pre-task-6663
 /// configuration bit-for-bit identical except the two-`FixedSupport` one that was
 /// the bug. Note that `RollerSupport`/`DisplacementSupport` are still name-
 /// dispatched builtins returning a `Value::Map`, which this function already
 /// skips because it requires a `Value::StructureInstance`.
-fn support_targets(options: &Value) -> Vec<(SupportKind, String)> {
+fn support_targets(options: &Value) -> Vec<(DeclaredSupport, String)> {
     let mut targets = Vec::new();
     if let Value::StructureInstance(data) = options
         && let Some(Value::List(items)) = data.fields.get("boundary_conditions")
@@ -3231,9 +3353,9 @@ fn support_targets(options: &Value) -> Vec<(SupportKind, String)> {
                 && let Some(Value::String(target)) = support.fields.get("target")
             {
                 let kind = if support.type_name == "PinnedSupport" {
-                    SupportKind::Pinned
+                    DeclaredSupport::Pinned
                 } else {
-                    SupportKind::Fixed
+                    DeclaredSupport::Fixed
                 };
                 targets.push((kind, target.clone()));
             }
@@ -3292,8 +3414,8 @@ mod tests {
     use reify_stdlib::modal::transient::uniform_time_grid;
 
     use super::{
-        DampingKind, ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh,
-        ModalTrampolineRun, TransientCache, assemble_mechanism_km, assemble_modal_km,
+        DENSE_FALLBACK_MAX_DIM, DampingKind, ModalAnalysisCache, ModalAssembly, ModalCoreResult,
+        ModalMesh, ModalTrampolineRun, TransientCache, assemble_mechanism_km, assemble_modal_km,
         build_beam_mesh, build_dirichlet_bcs, classify_damping, degenerate_displacement_history,
         degenerate_modal_result, displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
@@ -4234,19 +4356,20 @@ mod tests {
         );
     }
 
-    /// Task 6663 / review blocker (a): a Pinned-ONLY support set must not panic.
+    /// Task 6663 / review blocker (a): a transverse-pin-ONLY support set must
+    /// not panic.
     ///
-    /// `build_dirichlet_bcs`'s `SupportKind::Pinned` branch emits Z-only
+    /// `per_face_bcs`'s `FaceRealization::PinTransverse` branch emits Z-only
     /// constraints and adds NO rigid-body anchors (deliberately — see its NOTE;
-    /// a single pinned face is genuinely a mechanism and anchors must not be
-    /// invented for it). `eigensolve_modal`'s guard is
+    /// such a set is genuinely a mechanism and anchors must not be invented for
+    /// it). `eigensolve_modal`'s guard is
     /// `n_dofs - n_free < 6`, which counts CONSTRAINED DOFs rather than
     /// rigid-body modes actually removed: one Z DOF per face node here is
     /// 14 ≥ 6, so `force_dense` stays false, the solve takes the shift-invert
     /// path, and its up-front Cholesky `.expect(...)` PANICS on the singular
     /// `K_free`.
     ///
-    /// MEASURED pre-fix on exactly this input (debug):
+    /// MEASURED pre-fix on exactly this BC set (debug):
     /// `n_dofs = 84  n_constrained = 14  bcs dofs = [2, 8, 14, 20, 26, 32] …`
     /// (Z-only, stride 6) → `panicked at eigensolve.rs:660: eigensolve: K must
     /// be SPD; sp_cholesky failed … NonPositivePivot { index: 67 }`.
@@ -4257,6 +4380,17 @@ mod tests {
     /// `solve_modal_core_unconstrained_default_n_modes_does_not_panic`, which
     /// covers the 0-constrained-DOF sibling case that the count-based guard
     /// *does* catch.
+    ///
+    /// **Why the support list repeats `x_min`** (amendment, review suggestion 2):
+    /// a LONE `PinnedSupport` now clamps rather than pinning transversely, so
+    /// `[Pinned("x_min")]` alone is a well-posed cantilever and no longer reaches
+    /// this path. Two pinned supports naming the SAME end face — a copy-paste
+    /// modelling error — keep `n_supports > 1` true without naming `x_max`, so
+    /// [`face_realization`] still returns `PinTransverse` and the emitted BC set
+    /// is bit-identical to the pre-amendment fixture's (dedup collapses the
+    /// repeat). This is the residual mechanism class that `face_realization`'s
+    /// scoping deliberately does NOT rule out, so it is exactly the right input
+    /// for the downstream-safety contract under test.
     #[test]
     fn pinned_only_single_face_does_not_panic() {
         let length = 0.02_f64;
@@ -4266,7 +4400,7 @@ mod tests {
 
         let opts = modal_options(vec![(
             "boundary_conditions".to_string(),
-            Value::List(vec![pinned_support("x_min")]),
+            Value::List(vec![pinned_support("x_min"), pinned_support("x_min")]),
         )]);
         let bcs = build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height);
         assert!(
@@ -4275,10 +4409,20 @@ mod tests {
              guard does NOT fire (that is the whole point); got {}",
             bcs.len(),
         );
+        let n_free = 3 * mesh.nodes.len() - bcs.len();
         assert!(
-            3 * mesh.nodes.len() - bcs.len() > 64,
+            n_free > 64,
             "fixture must exceed the dense-regime threshold so the shift-invert \
-             path is selected on size",
+             path is selected on size; got n_free = {n_free}",
+        );
+        // Amendment (review suggestion 5): this fixture pins the side of the
+        // ceiling BELOW `DENSE_FALLBACK_MAX_DIM`, where the graceful dense
+        // fallback is still taken and modes ARE returned. Its sibling,
+        // `pinned_only_large_mesh_does_not_exhaust_memory`, pins the side above.
+        assert!(
+            n_free < DENSE_FALLBACK_MAX_DIM,
+            "fixture must sit BELOW the dense-fallback ceiling ({DENSE_FALLBACK_MAX_DIM}) \
+             so the graceful dense fallback is exercised; got n_free = {n_free}",
         );
 
         // Production default knobs (the trampoline's own).
@@ -4314,6 +4458,19 @@ mod tests {
              got {:?}",
             result.diagnostics,
         );
+        // Amendment (review suggestion 5): BELOW the ceiling the degenerate
+        // no-eigenpairs path must NOT be taken, so the explanatory ceiling
+        // diagnostic must be absent. Without this the test would still pass if
+        // the ceiling were mis-set low enough to swallow this fixture too.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("exceeds the dense-fallback ceiling")),
+            "below the ceiling the graceful dense fallback must run — no \
+             ceiling diagnostic expected; got {:?}",
+            result.diagnostics,
+        );
     }
 
     /// Task 6663 / review blocker (b): the singular-K fallback must not trade a
@@ -4333,6 +4490,21 @@ mod tests {
     /// gracefully instead of densifying. Pre-fix it panics at the same
     /// `eigensolve.rs:660` (`NonPositivePivot { index: 2542 }`) in ~221 ms — RED
     /// as a fast panic, not as a hang.
+    ///
+    /// Repeats `x_min` for the same reason as
+    /// [`pinned_only_single_face_does_not_panic`] — see its doc comment. The
+    /// emitted BC set is unchanged (dedup collapses the repeat).
+    ///
+    /// **Amendment (review suggestion 5):** the original assertions were a 60 s
+    /// wall-clock bound plus a `W_ModalRigidBodyMode` prefix check, neither of
+    /// which is specific to the new ceiling — the pre-existing near-zero-mode
+    /// loop emits that same prefix, and the whole file runs in ~0.2 s, so the
+    /// timing bound was a very loose, load-sensitive proxy for "did not
+    /// densify". What the ceiling path actually introduces is asserted directly
+    /// below instead: NO eigenpairs are returned, and the diagnostic is the new
+    /// ceiling message rather than a per-mode rigid-body one. The timing bound is
+    /// kept as a backstop against a future regression that reintroduces the
+    /// O(n³) densification while still emitting the right text.
     #[test]
     fn pinned_only_large_mesh_does_not_exhaust_memory() {
         let length = 1.0_f64;
@@ -4342,7 +4514,7 @@ mod tests {
 
         let opts = modal_options(vec![(
             "boundary_conditions".to_string(),
-            Value::List(vec![pinned_support("x_min")]),
+            Value::List(vec![pinned_support("x_min"), pinned_support("x_min")]),
         )]);
         let bcs = build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height);
         let n_free = 3 * mesh.nodes.len() - bcs.len();
@@ -4350,6 +4522,11 @@ mod tests {
             n_free > 2000,
             "fixture must be large enough that a dense fallback would be \
              unacceptable; got n_free = {n_free}",
+        );
+        assert!(
+            n_free > DENSE_FALLBACK_MAX_DIM,
+            "fixture must sit ABOVE the dense-fallback ceiling \
+             ({DENSE_FALLBACK_MAX_DIM}); got n_free = {n_free}",
         );
 
         let eigen_opts = EigenSolverOptions {
@@ -4370,18 +4547,46 @@ mod tests {
         );
         let elapsed = started.elapsed();
 
-        let has_rigid_warning = result.diagnostics.iter().any(|d| {
-            d.severity == Severity::Warning && d.message.starts_with("W_ModalRigidBodyMode")
+        // (1) The degenerate outcome itself: above the ceiling the fallback
+        //     returns NO eigenpairs rather than densifying a 2548² system.
+        assert!(
+            result.frequencies.is_empty(),
+            "above the dense-fallback ceiling the singular solve must return no \
+             eigenpairs; got {} frequencies: {:?}",
+            result.frequencies.len(),
+            result.frequencies,
+        );
+
+        // (2) The specific new diagnostic — not merely the shared
+        //     `W_ModalRigidBodyMode` prefix, which the per-mode near-zero loop
+        //     also emits and which cannot fire here (there are no modes to
+        //     inspect).
+        let ceiling_diag = result.diagnostics.iter().find(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("exceeds the dense-fallback ceiling")
+        });
+        let ceiling_diag = ceiling_diag.unwrap_or_else(|| {
+            panic!(
+                "expected the dense-fallback-ceiling Warning; got {:?}",
+                result.diagnostics,
+            )
         });
         assert!(
-            has_rigid_warning,
-            "expected a W_ModalRigidBodyMode Warning naming the under-constrained \
-             model; got {:?}",
-            result.diagnostics,
+            ceiling_diag.message.starts_with("W_ModalRigidBodyMode"),
+            "the ceiling diagnostic must keep the W_ModalRigidBodyMode prefix \
+             that assertions and consumer grouping keys are keyed on; got {:?}",
+            ceiling_diag.message,
         );
-        // Generous bound: the point is to pin that a 2548-DOF SINGULAR system is
-        // not routed into `solve_eigen_dense` (O(n³) QZ + ~208 MB of dense
-        // allocation here), not to benchmark the guarded path.
+        assert!(
+            ceiling_diag.message.contains(&n_free.to_string()),
+            "the ceiling diagnostic must name the offending n_free = {n_free}; \
+             got {:?}",
+            ceiling_diag.message,
+        );
+
+        // (3) Backstop only: the point is to pin that a 2548-DOF SINGULAR system
+        //     is not routed into `solve_eigen_dense` (O(n³) QZ + ~208 MB of dense
+        //     allocation here), not to benchmark the guarded path.
         assert!(
             elapsed < std::time::Duration::from_secs(60),
             "the singular-K fallback must not densify a large system; took {elapsed:?}",
@@ -4876,6 +5081,172 @@ mod tests {
                 .filter(|&n| on_x_max(n) && !on_x_min(n))
                 .all(|n| z_only(&propped, n)),
             "propped cantilever must constrain Z ONLY on the pinned x_max face",
+        );
+    }
+
+    /// Amendment (review suggestion 1): the pin-pin special case must never
+    /// DISCARD a support that names some other face.
+    ///
+    /// `[Pinned(x_min), Pinned(x_max), Fixed(y_min)]` satisfies the special
+    /// case's predicate (both end faces named, every end-face support pinned),
+    /// and the first cut of the task-6663 fix returned
+    /// `simply_supported_pin_pin_bcs(...)` wholesale from that branch — silently
+    /// throwing the `y_min` clamp away with no diagnostic, for a beam that is
+    /// pinned at both ends AND clamped on a side face. That is the same
+    /// silent-wrong-answer class as the original defect, only reached through
+    /// the `PinnedSupport` spelling instead of the `FixedSupport` one.
+    ///
+    /// The fix realizes the two END FACES by the special case and UNIONs the
+    /// per-face realization of every other support on top. Asserted as: the
+    /// three-support set is a strict SUPERSET of the plain pin-pin set (so the
+    /// simply-supported realization is bit-preserved — no anchor moved, nothing
+    /// dropped) that additionally clamps all three DOFs on every `y_min` node.
+    #[test]
+    fn build_dirichlet_bcs_pin_pin_special_case_does_not_discard_other_faces() {
+        use std::collections::HashSet;
+
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+        let eps = 1e-9_f64;
+        let on_y_min = |n: usize| mesh.nodes[n][1] <= eps;
+        let on_end = |n: usize| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps;
+
+        let dof_set = |supports: Vec<Value>| -> HashSet<usize> {
+            let opts = modal_options(vec![(
+                "boundary_conditions".to_string(),
+                Value::List(supports),
+            )]);
+            build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height)
+                .iter()
+                .map(|b| b.dof)
+                .collect()
+        };
+
+        let pin_pin = dof_set(vec![pinned_support("x_min"), pinned_support("x_max")]);
+        let pin_pin_plus_side = dof_set(vec![
+            pinned_support("x_min"),
+            pinned_support("x_max"),
+            fixed_support("y_min"),
+        ]);
+
+        // Fixture sanity: the y_min face exists and is not already fully covered
+        // by the pin-pin set, so "superset" below is a real signal.
+        assert!(
+            (0..mesh.nodes.len()).any(on_y_min),
+            "fixture must have y_min face nodes",
+        );
+
+        // (1) Nothing from the simply-supported realization is lost or moved.
+        assert!(
+            pin_pin.is_subset(&pin_pin_plus_side),
+            "adding a third support must not perturb the simply-supported \
+             realization; missing DOFs: {:?}",
+            pin_pin.difference(&pin_pin_plus_side).collect::<Vec<_>>(),
+        );
+
+        // (2) The third support is actually realized: every y_min node is fully
+        //     clamped. Pre-amendment this set was bit-identical to `pin_pin`.
+        assert!(
+            (0..mesh.nodes.len()).filter(|&n| on_y_min(n)).all(|n| {
+                pin_pin_plus_side.contains(&(3 * n))
+                    && pin_pin_plus_side.contains(&(3 * n + 1))
+                    && pin_pin_plus_side.contains(&(3 * n + 2))
+            }),
+            "the FixedSupport(\"y_min\") must clamp all three DOFs on every \
+             y_min node — the pin-pin special case must not discard it",
+        );
+        assert!(
+            pin_pin_plus_side.len() > pin_pin.len(),
+            "the three-support set must be strictly larger than the pin-pin set \
+             ({} vs {}) — an equal size means the y_min clamp was dropped",
+            pin_pin_plus_side.len(),
+            pin_pin.len(),
+        );
+
+        // (3) The end faces still read as simple supports, not clamps: some
+        //     end-face node off y_min keeps X and Y free.
+        assert!(
+            (0..mesh.nodes.len()).any(|n| {
+                on_end(n)
+                    && !on_y_min(n)
+                    && pin_pin_plus_side.contains(&(3 * n + 2))
+                    && !pin_pin_plus_side.contains(&(3 * n))
+                    && !pin_pin_plus_side.contains(&(3 * n + 1))
+            }),
+            "the end faces must stay simply supported (some off-y_min end-face \
+             node with only Z constrained)",
+        );
+    }
+
+    /// Amendment (review suggestion 2): a `PinnedSupport` realizes as a
+    /// transverse-only pin ONLY where the simply-supported BEAM idealization
+    /// applies — a beam-axis end face of a model that carries another support.
+    /// Everywhere else it clamps, matching `PinnedOnTetEquivalentToFixed`
+    /// (`reify-solver-elastic/src/shell_boundary.rs`) and the static path.
+    ///
+    /// Two configurations regress into ≈ 0 Hz mechanisms under an
+    /// unconditional Z-only rule, and both are pinned here:
+    ///
+    ///   (i)  `[Pinned("x_min")]` — a LONE support, whose Z-only realization
+    ///        leaves four rigid-body modes. Pre-6663 this returned the
+    ///        cantilever answer; the amendment restores that, so the set is
+    ///        asserted EQUAL to `[Fixed("x_min")]`'s.
+    ///   (ii) `[Pinned("y_min"), Pinned("y_max")]` — neither face is a beam end,
+    ///        so Z-pinning both leaves the beam free to slide axially. Both
+    ///        faces clamp instead.
+    ///
+    /// The propped case `[Fixed("x_min"), Pinned("x_max")]` (covered by
+    /// `build_dirichlet_bcs_discriminates_support_kind` case (iv)) is the
+    /// counterexample that keeps this scoping from collapsing into "Pinned
+    /// always clamps": there, x_max IS transverse-only.
+    #[test]
+    fn build_dirichlet_bcs_pins_transversely_only_on_a_supported_beam_end() {
+        use std::collections::HashSet;
+
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+        let eps = 1e-9_f64;
+
+        let dof_set = |supports: Vec<Value>| -> HashSet<usize> {
+            let opts = modal_options(vec![(
+                "boundary_conditions".to_string(),
+                Value::List(supports),
+            )]);
+            build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height)
+                .iter()
+                .map(|b| b.dof)
+                .collect()
+        };
+
+        // (i) A lone PinnedSupport is the model's only restraint, so it must
+        //     fully clamp — bit-identical to the FixedSupport spelling, i.e.
+        //     the pre-6663 cantilever answer rather than a 4-mode mechanism.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min")]),
+            dof_set(vec![fixed_support("x_min")]),
+            "a LONE PinnedSupport must clamp its face (PinnedOnTetEquivalentToFixed), \
+             not degrade the model to a transverse-only mechanism",
+        );
+
+        // (ii) Non-beam-axis pinned faces clamp too: Z-pinning y_min + y_max
+        //      would leave the beam free to slide along its own axis.
+        let side_pins = dof_set(vec![pinned_support("y_min"), pinned_support("y_max")]);
+        let side_clamps = dof_set(vec![fixed_support("y_min"), fixed_support("y_max")]);
+        assert_eq!(
+            side_pins, side_clamps,
+            "PinnedSupports on non-beam-axis faces must clamp all three DOFs",
+        );
+        assert!(
+            (0..mesh.nodes.len())
+                .filter(|&n| mesh.nodes[n][1] <= eps)
+                .all(|n| side_pins.contains(&(3 * n))
+                    && side_pins.contains(&(3 * n + 1))
+                    && side_pins.contains(&(3 * n + 2))),
+            "every y_min node must carry all three DOFs",
         );
     }
 
