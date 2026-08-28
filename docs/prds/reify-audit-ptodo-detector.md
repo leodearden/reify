@@ -197,8 +197,13 @@ a committed baseline of **fingerprints** (`path :: kind :: normalized marker tex
 no line numbers; they drift). Any violation not in the baseline fails the check
 immediately — a fresh untracked `TODO:` is red at verify time from the moment ε lands,
 even while grandfathered violations are being burned down. Baseline is shrink-only
-(ratchet-above-baseline oracle pattern, Leo-ratified jun11 on 4521). After δ the
-baseline should be ≈ empty.
+(ratchet-above-baseline oracle pattern, Leo-ratified jun11 on 4521) — **a convention
+enforced by nothing**: the implemented oracle is subset-of, and no assertion anywhere
+requires the baseline to shrink, or a baseline entry to still be live. Adding that second
+assertion was considered and **declined** on measurement — **§17** (2026-08-28, task
+#6859), the single home for that ruling. After δ the baseline should be ≈ empty —
+**an aspiration with no mechanism**: measured unchanged from the 2026-08-07 seed through
+2026-08-28 (**§17**).
 
 **Sequencing rule for a new lane — re-seed in the same diff (2026-08-07, task #6087).**
 Widening marker recognition necessarily discovers pre-existing debt, so the lane's own
