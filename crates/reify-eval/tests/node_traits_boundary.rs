@@ -5,7 +5,7 @@
 //! covered instead by the per-kind unit tests in `reify-ir/src/node_traits.rs`
 //! (T1's PRD-assigned crate); T3 was specified against a `concurrent_eval`-style
 //! fixture on the `reify_runtime::concurrent` scheduler stack deleted under
-//! #5065, so it is obsolete as written rather than merely pending. T5 landed
+//! #5065, so it is obsolete as written rather than merely pending. T5 landed  // ptodo:allow — #5065 is provenance for a deleted stack, not a deferral target
 //! under task #3579 and was dropped under #5065 along with the `concurrent.rs`
 //! scheduler stack it pinned; the WARM_STARTABLE coextension invariant itself
 //! remains covered by `reify-runtime/src/warm_startable_assert.rs`.
