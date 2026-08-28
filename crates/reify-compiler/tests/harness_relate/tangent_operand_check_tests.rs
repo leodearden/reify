@@ -31,8 +31,12 @@
 //! | sphere/sphere     | `tangent(Point, Point, r1, r2)` | 1  |
 //!
 //! Safe to police: the one pre-existing `.ri` caller is
-//! `tests/prd-gate/fixtures/solver_unification_tangent_silent_accept.ri`, a
-//! PRD-evidence probe for this very silent no-solve — it calls
+//! `solver_unification_tangent_silent_accept.ri` under `tests/prd-gate/fixtures/`
+//! (spelled split, NOT as one path — `test_verify_scope.sh`'s PG-DRIFT scenario
+//! derives "read by a compiled test target" from a comment-inclusive grep for
+//! `<that dir>/<name>.ri` over every tracked `*.rs`, so writing the joined path
+//! in this very sentence would assert the opposite of what the sentence says),
+//! a PRD-evidence probe for this very silent no-solve — it calls
 //! `tangent(Axis, Axis)` and `tangent(Plane, Plane)`, both at arity 2, and pins
 //! today's exit-0 `All constraints satisfied.` This gate deliberately turns both
 //! into typed rejections: an arity error (cylinder/cylinder needs two radii) and
