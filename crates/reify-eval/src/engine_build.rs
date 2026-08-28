@@ -4530,8 +4530,7 @@ impl Engine {
                         // L2 selector gate, resolved once above the template
                         // loop. Only the build paths opt in; tessellate/query
                         // keep the fail-open `true` default.
-                        .with_module_binds_selector(module_binds_selector_flag),
-                        .with_mesh_contract_mode(mesh_contract_mode)
+                        .with_module_binds_selector(module_binds_selector_flag)
                         // Task 5208: the SAME repr snapshot threaded into
                         // `hydrate_value_cell_in_loop` above, so an inline
                         // curated selector argument is region-capability-gated
