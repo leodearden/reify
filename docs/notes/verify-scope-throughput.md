@@ -241,22 +241,25 @@ The widening is observable only on an `action=test` plan, where
 `verify.sh test --profile both --scope all --print-plan` now ends with
 `./scripts/tree-sitter-freshness.sh check` after the last nextest leaf._
 
-_Counts RE-DERIVED 2026-08-17 (task 5629, merge integration): the two notes
-above were written on the task branch against a 16-count baseline, and read
-16 → 17 → 18 while they sat there. `main` meanwhile moved the same cells
-independently — task 5076 added two leaves (16 → 18) and then narrowed the
-gui-feature test pass out of the shape (b)/(c) `scope=branch` cells (18 → 17) —
-so NEITHER side's numbers described the merged tree, and both sides' sentinel
-blocks conflicted textually. The numbers above are therefore not a hand-merge
-of the two: they were re-measured on the merged tree with the documented
-`--print-plan` oracle below, via `tests/infra/test_verify_throughput.sh`, whose
+_Counts RE-DERIVED 2026-08-28 (task 5629, rebase onto main): the two notes
+above were originally written on the task branch against a 16-count baseline and
+read 16 → 17 → 18 while they sat there — which is why their COMMIT SUBJECTS
+still say "16 → 17" and "17 → 18". `main` meanwhile moved the same cells
+independently: task 5076 added two leaves (16 → 18) and then narrowed the
+gui-feature test pass out of the shape (b)/(c) `scope=branch` cells (18 → 17).
+So NEITHER side's numbers described the rebased tree, and both sides' sentinel
+blocks conflicted textually on every replayed commit. The endpoints in the two
+notes above were therefore rewritten during conflict resolution to ride on
+main's baseline (18 → 19, then 19 → 20), and the numbers are not a hand-merge:
+they were re-measured on the rebased tree with the documented `--print-plan`
+oracle below, via `tests/infra/test_verify_throughput.sh`, whose
 `note(X) == live(Y)` assertions report the live count regardless of whether they
-pass. Measured: `scope=all` = 20 for all four shapes; `scope=branch` = 0
-(docs-only), 19 (reify-doc), 19 (reify-eval), 3 (gui-only). The deltas the two
-notes claim (+1 each, in the `RUN_RUST=1` cells) are unchanged in kind — only
-their absolute endpoints moved, because two independent +1s landed underneath
-them. The human-readable table and this sentinel are re-synced in lockstep per
-the standing task-5125 convention._
+pass. Measured at this HEAD: `scope=all` = 20 for all four shapes;
+`scope=branch` = 0 (docs-only), 19 (reify-doc), 19 (reify-eval), 3 (gui-only) —
+54 passed / 0 failed. The deltas the two notes claim (+1 each, in the
+`RUN_RUST=1` cells) are unchanged in kind; only their absolute endpoints moved,
+because two independent +1s landed underneath them. The human-readable table and
+this sentinel are re-synced in lockstep per the standing task-5125 convention._
 
 ## Heavy-Work Narrowed Markers
 
