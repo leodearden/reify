@@ -14,7 +14,8 @@
 // makes it a signal rather than a spelling test.
 //
 // The `.angular` / `.linear` reads are also deliberately EVALUATED by the
-// companion Rust test (crates/reify-eval/tests/jacobian_column_member_access.rs)
+// companion Rust test
+// (crates/reify-eval/tests/harness_fea_solver_e2e/jacobian_column_member_access.rs)
 // against the analytic column values — a declared-but-absent key evaluates to
 // `undef` rather than erroring (probed via `snapshot(m, []).is_singular`), so
 // only a value assertion distinguishes real wiring from vacuous wiring.

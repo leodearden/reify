@@ -1056,7 +1056,9 @@ is_occt_crate() {
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
-#     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784)
+#     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784),
+#     jacobian_column_members.ri (read via std::fs::read_to_string by
+#     jacobian_column_member_access.rs's fixture_source(), task 6102)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1082,7 +1084,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
