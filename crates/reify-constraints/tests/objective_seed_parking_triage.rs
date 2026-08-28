@@ -32,6 +32,13 @@
 //! | P1 | `min x` s.t. `x >= 8mm` | none | **8.800000 mm** (`8.80000000000000053e-3` m, bits `0x3f8205bc01a36e2f`) | `8mm × 1.1` | yes |
 //! | P2 | `max x` s.t. `8mm <= x <= 40mm` | none | **24.000000 mm** (`2.40000000000000005e-2` m, bits `0x3f989374bc6a7efa`) | `(8mm + 40mm)/2` | yes |
 //! | P3 | `max x` s.t. `x <= 40mm` | none | **36.000000 mm** (`3.60000000000000042e-2` m, bits `0x3fa26e978d4fdf3c`) | `40mm − 0.1 × 40mm` | yes |
+//! | P4a | `min x` s.t. `x >= 8mm` | 30mm | **30.000000 mm** (bits `0x3f9eb851eb851eb8`) | the seed | yes — bit-exact |
+//! | P4b | `min x` s.t. `x >= 8mm` | 12mm | **12.000000 mm** (bits `0x3f889374bc6a7efa`) | the seed | yes — bit-exact |
+//! | P4c | `max x` s.t. `8mm <= x <= 40mm` | 11mm | **11.000000 mm** (bits `0x3f86872b020c49ba`) | the seed | yes — bit-exact |
+//! | P6 | `min x` s.t. `2mm < x < 50mm`, **wall (5mm, 100mm)** | 25mm | **5.000000 mm** (bits `0x3f747ae147ae147b`) | the clamp floor | — |
+//!
+//! P6 is the single deliberate NON-production row (it sets an `AutoParam.bounds` wall);
+//! every other row uses `bounds: None`.
 //!
 //! Every probe returned `SolveResult::Solved { unique: false }` — never `Infeasible`
 //! or `NoProgress`. The `unique: false` is **expected and not a divergence**: the
@@ -39,10 +46,6 @@
 //! at `solver.rs:1691-1693` as a *placeholder*, and `finalise_uniqueness`
 //! (`solver.rs:2694-2730`) overwrites it — an all-`free` problem skips the uniqueness
 //! re-solve entirely and reports `unique: false` (`solver.rs:2723-2728`).
-//!
-//! | P4a | `min x` s.t. `x >= 8mm` | 30mm | **30.000000 mm** (bits `0x3f9eb851eb851eb8`) | the seed | yes — bit-exact |
-//! | P4b | `min x` s.t. `x >= 8mm` | 12mm | **12.000000 mm** (bits `0x3f889374bc6a7efa`) | the seed | yes — bit-exact |
-//! | P4c | `max x` s.t. `8mm <= x <= 40mm` | 11mm | **11.000000 mm** (bits `0x3f86872b020c49ba`) | the seed | yes — bit-exact |
 //!
 //! P5 (`solve_ranked` on P1's problem) measured
 //! `Ranked { candidates: [ { objective_score: Some(0.0088) } ], optimality: BestFound
@@ -94,6 +97,13 @@
 //!   sd-tolerance, not the iteration cap. It converges fine; its answer is DISCARDED
 //!   at link 4.
 //! * **P3 corrects the filing's reading of the reported 24mm** (link 1, two-sided arm).
+//! * **P6 explains why the suite is blind.** With a clamp wall inside the constraint
+//!   region the objective moves the answer 20mm (25mm seed → 5mm floor); without one it
+//!   moves it 0mm. Every in-tree progress-asserting fixture sets that wall, and
+//!   production never does.
+//! * **P7** (`reify-eval/tests/objective_seed_parking_e2e.rs`) reproduces link 5 at the
+//!   `.ri` driver level and measures the silence: 24.000000 mm returned with **zero**
+//!   diagnostics of any kind.
 //! * Candidate (c), the Money robustness floor / centrality blend, needs no probe:
 //!   the floor is Money-gated (`:820`, `:1755-1760`) and
 //!   `tests/robustness_floor.rs:397` (`non_money_objective_unchanged`) already pins
@@ -464,6 +474,10 @@ fn p5_optimality_status_is_not_iteration_limited() {
 /// symptom as INTENDED behaviour. Hence a real defect with fully green coverage.
 ///
 /// This probe is the deliberate exception to the module-wide production shape.
+///
+/// MEASURED at HEAD `9c1bed42a7`: `Solved { unique: false }`, `5.00000000000000010e-3` m
+/// = **5.000000 mm** (bits `0x3f747ae147ae147b`) — the clamp floor, i.e. the objective
+/// drove the answer 20mm from its 25mm seed. Contrast P1–P4/P7, which move 0mm.
 #[test]
 fn p6_wall_inside_constraint_region_makes_real_progress() {
     let x = value_ref(ENTITY, MEMBER);

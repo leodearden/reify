@@ -35,6 +35,19 @@
 //!    answer comes back silently. That silence is why loudness is a real, separate
 //!    deliverable, owned by `#6654` arm 3.
 //!
+//! # Measured result (HEAD `9c1bed42a7`)
+//!
+//! `SeedParking.x` = `2.40000000000000005e-2` m = **24.000000 mm**, bits
+//! `0x3f989374bc6a7efa` — bit-identical to the solver-level P2 measurement, and 16mm
+//! away from the 8mm bound `minimize x` points at. Total diagnostic count: **0**.
+//!
+//! The contrast the probe set establishes reads cleanly:
+//!
+//! | shape | clamp wall inside the constraint region? | outcome |
+//! |---|---|---|
+//! | P1–P4, P7 (**production**, `bounds: None`) | no | parks at the seed, bit-exactly |
+//! | P6 (`solver_integration.rs:498`'s shape) | yes (5mm–100mm) | real progress to the 5mm floor |
+//!
 //! # Candidate (c) needs no probe of its own
 //!
 //! The Money robustness floor and the centrality blend are ruled out **by construction**,
@@ -78,6 +91,15 @@ structure SeedParking {
 /// `DiagnosticCode::SolverOptimalityUnproven` is emitted, because that warning is gated
 /// on `BestFoundReason::IterationLimit` (`crates/reify-eval/src/engine_eval.rs:6120-6136`)
 /// and this solve converges within budget (measured by P5).
+///
+/// MEASURED at HEAD `9c1bed42a7`: `SeedParking.x` = `2.40000000000000005e-2` m =
+/// **24.000000 mm**, bits `0x3f989374bc6a7efa` — **bit-identical** to the solver-level
+/// P2 result, so the driver adds nothing and subtracts nothing. `minimize x` moved the
+/// answer **16mm in the wrong direction** from the 8mm bound it points at.
+///
+/// And `result.diagnostics.len()` == **0**. Not merely "no `SolverOptimalityUnproven`":
+/// the whole eval emitted **no diagnostic of any kind**. An author gets 24mm back with
+/// nothing at all to indicate the objective was never honoured.
 #[test]
 fn p7_ri_driver_minimize_parks_at_seed_silently() {
     let compiled = compile_source_with_stdlib(TWO_SIDED_SOURCE);
