@@ -232,6 +232,54 @@ fn line_of_span(source: &str, span: reify_core::SourceSpan) -> u32 {
     line.clamp(1, last_line)
 }
 
+/// Where a row's `def` came from — or, when it is absent, WHY.
+///
+/// Recorded PER ROW so the artifact never has to *assert* a cause in prose. An
+/// earlier draft of the Unknown-group blurb claimed those rows "come through the
+/// sub `=` per-arg anchor"; the two rows actually in the committed artifact are
+/// param DEFAULT INITIALIZERS (`param kc : Curvature = 0.2rad / 1mm`) whose label
+/// anchors at the literal — the span starts on a digit, not mid-argument. Both
+/// causes land in the same `SpanNotIdentifier` arm, and neither is distinguishable
+/// from here; machine-deriving what the code actually knows removes the whole
+/// class of that mistake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefOrigin {
+    /// Recovered from the ctor call-site span anchor (α's expression path).
+    CallSiteAnchor,
+    /// Recovered from ε prose (`in call to '<Def>'` / `<Def>() expects …`).
+    DiagnosticProse,
+    /// The diagnostic carried no label at all, so there was no span to read.
+    NoLabel,
+    /// The label span points past the end of the file, or is the prelude
+    /// sentinel — no source text exists at it.
+    SpanOutOfRange,
+    /// The label span starts inside a multi-byte codepoint; identifiers are
+    /// ASCII-led, so this can never be a ctor anchor.
+    SpanMidCodepoint,
+    /// The span starts at something that is not an identifier — a literal, an
+    /// operator, a delimiter. Param default-initializer checks and the sub `=`
+    /// per-arg anchor both land here.
+    SpanNotIdentifier,
+    /// An identifier was found but is not followed by `(`, so it is a plain
+    /// reference rather than a call.
+    IdentifierNotACall,
+}
+
+impl DefOrigin {
+    /// Stable cell text for the artifact's `def source` column.
+    fn label(self) -> &'static str {
+        match self {
+            DefOrigin::CallSiteAnchor => "ctor call-site anchor",
+            DefOrigin::DiagnosticProse => "diagnostic prose",
+            DefOrigin::NoLabel => "unrecovered: diagnostic carries no label",
+            DefOrigin::SpanOutOfRange => "unrecovered: label span out of range",
+            DefOrigin::SpanMidCodepoint => "unrecovered: label span mid-codepoint",
+            DefOrigin::SpanNotIdentifier => "unrecovered: label span starts at a non-identifier",
+            DefOrigin::IdentifierNotACall => "unrecovered: identifier not followed by `(`",
+        }
+    }
+}
+
 /// The structure-def name at `span`'s start, when `span` anchors a ctor call.
 ///
 /// Takes the leading Rust-identifier-shaped run at `span.start` and returns it
@@ -247,22 +295,33 @@ fn line_of_span(source: &str, span: reify_core::SourceSpan) -> u32 {
 /// as `—` in the artifact; the def is then named in prose by the two ε codes or
 /// left unattributed, which is the honest outcome.
 fn ctor_type_name_at(source: &str, span: reify_core::SourceSpan) -> Option<String> {
+    ctor_type_name_at_with_origin(source, span).0
+}
+
+/// [`ctor_type_name_at`], plus the machine-derived [`DefOrigin`] saying how
+/// recovery succeeded or why it failed.
+fn ctor_type_name_at_with_origin(
+    source: &str,
+    span: reify_core::SourceSpan,
+) -> (Option<String>, DefOrigin) {
     let start = span.start as usize;
     if start >= source.len() {
-        return None;
+        return (None, DefOrigin::SpanOutOfRange);
     }
     // A span that starts inside a multi-byte codepoint cannot be a ctor anchor
     // (identifiers are ASCII-led), and slicing at it would panic.
     if !source.is_char_boundary(start) {
-        return None;
+        return (None, DefOrigin::SpanMidCodepoint);
     }
     let rest = &source[start..];
     let mut chars = rest.char_indices();
     // Rust-identifier shape: first char alphabetic or `_`, then alphanumeric
     // or `_`. Reify def names are a subset of this.
-    let (_, first) = chars.next()?;
+    let Some((_, first)) = chars.next() else {
+        return (None, DefOrigin::SpanOutOfRange);
+    };
     if !(first.is_alphabetic() || first == '_') {
-        return None;
+        return (None, DefOrigin::SpanNotIdentifier);
     }
     let ident_end = chars
         .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
@@ -273,9 +332,9 @@ fn ctor_type_name_at(source: &str, span: reify_core::SourceSpan) -> Option<Strin
     // recovery; anything else means this is not a call.
     let after = rest[ident_end..].trim_start();
     if after.starts_with('(') {
-        Some(ident.to_owned())
+        (Some(ident.to_owned()), DefOrigin::CallSiteAnchor)
     } else {
-        None
+        (None, DefOrigin::IdentifierNotACall)
     }
 }
 
@@ -393,29 +452,118 @@ fn ctor_type_name_at_returns_none_rather_than_guessing() {
 
 // ─── step 5/6: diagnostic field extraction ───────────────────────────────────
 
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// Deliberately duplicated from the identically-named helpers in
-/// `examples_smoke.rs` and `struct_ctor_field_conformance_tests.rs`, following
-/// the rule those files' own headers state: integration tests are separate
-/// binaries and cannot share a private helper without a support-crate hop, and
-/// the set is small enough that duplication is cheaper than the indirection.
-/// The survey is a third consumer under that same rule.
-fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
+/// The diagnostic codes emitted by the struct-ctor field-conformance surface
+/// (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444) — the survey's admission set,
+/// as DATA so the drift guard below can compare it against the α corpus gate's
+/// copy without a second hand-written list.
+const CTOR_CONFORMANCE_CODES: &[reify_core::diagnostics::DiagnosticCode] = {
     use reify_core::diagnostics::DiagnosticCode;
-    matches!(
-        code,
-        Some(
-            DiagnosticCode::ArgTypeMismatch
-                | DiagnosticCode::SelectorKindMismatch
-                | DiagnosticCode::TypeNotConformingToTrait
-                | DiagnosticCode::TypeNotConformingToStructureRef
-                | DiagnosticCode::TypeNotConformingToVector
-                | DiagnosticCode::CtorUnknownField
-                | DiagnosticCode::CtorArity
+    &[
+        DiagnosticCode::ArgTypeMismatch,
+        DiagnosticCode::SelectorKindMismatch,
+        DiagnosticCode::TypeNotConformingToTrait,
+        DiagnosticCode::TypeNotConformingToStructureRef,
+        DiagnosticCode::TypeNotConformingToVector,
+        DiagnosticCode::CtorUnknownField,
+        DiagnosticCode::CtorArity,
+    ]
+};
+
+/// True when `code` is one of [`CTOR_CONFORMANCE_CODES`].
+///
+/// This is a local copy of the identically-named helper in `examples_smoke.rs`
+/// — but NOT for the reason an earlier draft of this comment gave. That draft
+/// claimed "integration tests are separate binaries and cannot share a private
+/// helper", which is simply false for that sibling: `examples_smoke.rs` is a
+/// `#[path]` module declared right next to this one in
+/// `crates/reify-compiler/tests/harness_compilation_surface.rs`, so both compile
+/// into the SAME test binary and its helper is one `pub(super)` away. (The
+/// *third* copy, in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
+/// genuinely IS a separate binary and could not share anything without a
+/// support-crate hop — the original rationale is true of that one alone.) The
+/// copy stays local here only because flipping the sibling's visibility is
+/// outside task #5304's declared file scope.
+///
+/// Because the two in-unit copies are therefore lock-step by convention rather
+/// than by construction, the real hazard is DRIFT: adding an eighth
+/// ctor-conformance code to the α corpus gate and forgetting this copy would
+/// silently UNDER-COUNT the survey — exactly the failure this module's header
+/// says must never happen. [`ctor_conformance_code_set_matches_the_alpha_corpus_gate`]
+/// pins the two sets against each other on every gate run.
+fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
+    code.is_some_and(|c| CTOR_CONFORMANCE_CODES.contains(&c))
+}
+
+/// The `DiagnosticCode::` variants named inside the α corpus gate's own
+/// `is_ctor_conformance_code`, scraped from its source text.
+///
+/// Reading the sibling's TEXT rather than calling its function is deliberate and
+/// is the weaker of the two available guards: `examples_smoke.rs` is outside this
+/// task's file scope, so its helper cannot be made `pub(super)` from here. The
+/// scrape still pins the invariant that actually matters — the two admission sets
+/// are identical — and fails loudly the moment either side gains a code the other
+/// lacks. If a later task widens that helper's visibility, delete this scrape and
+/// call it directly.
+#[cfg(test)]
+fn alpha_corpus_gate_code_names() -> Vec<String> {
+    const SIBLING: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/harness_compilation_surface/examples_smoke.rs"
+    );
+    const FN_ANCHOR: &str = "fn is_ctor_conformance_code(";
+    const MARKER: &str = "DiagnosticCode::";
+
+    let source = std::fs::read_to_string(SIBLING)
+        .unwrap_or_else(|e| panic!("cannot read the α corpus gate at {SIBLING}: {e}"));
+    let start = source.find(FN_ANCHOR).unwrap_or_else(|| {
+        panic!(
+            "`examples_smoke.rs` must still define `{FN_ANCHOR}` — if it was renamed or \
+             removed, this survey's admission set has lost its only drift guard"
         )
-    )
+    });
+    let body = &source[start..];
+    let end = body
+        .find("\n}\n")
+        .expect("`is_ctor_conformance_code` must close with a column-0 brace");
+
+    let mut names: Vec<String> = Vec::new();
+    let mut rest = &body[..end];
+    while let Some(at) = rest.find(MARKER) {
+        rest = &rest[at + MARKER.len()..];
+        let ident: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !ident.is_empty() {
+            names.push(ident);
+        }
+    }
+    names.sort();
+    names.dedup();
+    assert!(
+        !names.is_empty(),
+        "scraped no `DiagnosticCode::` variants from the α corpus gate — the scrape \
+         itself has broken, which would make this guard vacuously green"
+    );
+    names
+}
+
+#[test]
+fn ctor_conformance_code_set_matches_the_alpha_corpus_gate() {
+    let mut mine: Vec<String> = CTOR_CONFORMANCE_CODES
+        .iter()
+        .map(|c| format!("{c:?}"))
+        .collect();
+    mine.sort();
+    mine.dedup();
+    assert_eq!(
+        mine,
+        alpha_corpus_gate_code_names(),
+        "the survey's admission set and `examples_smoke::is_ctor_conformance_code` must \
+         name the SAME codes. They are two copies in one compile unit with no \
+         compiler-enforced link, so a code added to one and not the other silently \
+         under-counts this survey (or under-gates the α corpus walk). Update both."
+    );
 }
 
 /// Which D9 fix-forward rule governs a site — the load-bearing, mechanizable
@@ -429,12 +577,31 @@ enum Owner {
     /// The site's structure def is declared in an FEA stdlib module. Per D9,
     /// γ may make CALL-SITE changes only — field-type flips stay v0.6-owned.
     FeaDeferredToV06,
-    /// The def is resolved and is not FEA-owned: D9's per-case judgment applies.
+    /// The recovered name IS a declared `structure def` somewhere in the swept
+    /// corpus (or the stdlib) and is not FEA-owned: D9's per-case judgment
+    /// applies, and this is the only bucket γ should size as actionable.
     NonFea,
-    /// The def could not be attributed (the sub `=` per-arg anchor carries no
-    /// ctor name, and the diagnostic prose names none). Deliberately its own
-    /// bucket: silently defaulting an unattributable site into the touchable
-    /// pile would be the one classification error with a real cost.
+    /// A name was recovered at the anchor, but it is not a declared
+    /// `structure def` anywhere.
+    ///
+    /// [`ctor_type_name_at`] recovers *any* identifier followed by `(` — it
+    /// cannot tell a ctor from a plain function call. Several codes in the
+    /// admission set (`SelectorKindMismatch` from selector composition and
+    /// overload resolution) reach this survey from a NON-ctor path, where the
+    /// anchor identifier is a FUNCTION name: `union(faces(b), edges(b))` and
+    /// `needs_face(edges(b))` both appear in the tracked corpus. Letting those
+    /// fall into [`Owner::NonFea`] would size a function call into γ's
+    /// actionable pile — exactly the "unattributable site must never default
+    /// into the touchable bucket" rule this module states, violated one level
+    /// down from where it was being enforced.
+    UnresolvedDef,
+    /// No def name could be attributed at all — the label span names none and
+    /// the diagnostic prose names none. Each row carries its own machine-derived
+    /// [`DefOrigin`] saying which shape it was.
+    ///
+    /// Deliberately its own bucket: silently defaulting an unattributable site
+    /// into the touchable pile would be the one classification error with a real
+    /// cost.
     Unknown,
 }
 
@@ -443,7 +610,10 @@ impl Owner {
     fn title(self) -> &'static str {
         match self {
             Owner::FeaDeferredToV06 => "FEA — deferred to v0.6 (DO NOT FIX HERE)",
-            Owner::NonFea => "non-FEA — γ per-case judgment",
+            Owner::NonFea => "non-FEA structure def — γ per-case judgment",
+            Owner::UnresolvedDef => {
+                "name recovered, but it is not a known structure def — needs manual triage"
+            }
             Owner::Unknown => "unattributed def — needs manual triage",
         }
     }
@@ -462,6 +632,9 @@ struct SurveySite {
     line: u32,
     /// Structure def being constructed, when recoverable.
     def: Option<String>,
+    /// How [`SurveySite::def`] was recovered — or, when it is `None`, why it
+    /// could not be. Machine-derived; see [`DefOrigin`].
+    def_origin: DefOrigin,
     /// Offending field / param name, when the wording carries one.
     field: Option<String>,
     /// Declared param type, from the `expected '<X>', got '<Y>'` label.
@@ -550,21 +723,23 @@ fn expected_found_of_labels(d: &reify_core::Diagnostic) -> (Option<String>, Opti
 /// 3. The call-site span anchor — α anchors the expression-path label at the
 ///    ctor's own span, so `source[span.start..]` begins with `Def(`.
 ///
-/// Returns `None` — never a guess — for the sub `=` per-arg anchor, which
-/// starts mid-argument and names no def anywhere.
-fn def_of_diagnostic(source: &str, d: &reify_core::Diagnostic) -> Option<String> {
+/// Returns `None` — never a guess — for every anchor shape that names no def,
+/// PAIRED WITH the machine-derived [`DefOrigin`] saying which shape it was, so
+/// the artifact can report the cause instead of asserting one.
+fn def_of_diagnostic(source: &str, d: &reify_core::Diagnostic) -> (Option<String>, DefOrigin) {
     if let Some(def) = quoted_after(&d.message, IN_CALL_TO_PREFIX) {
-        return Some(def);
+        return (Some(def), DefOrigin::DiagnosticProse);
     }
     if let Some(rest) = d.message.strip_prefix(CTOR_ARITY_PREFIX)
         && let Some(paren) = rest.find("()")
         && !rest[..paren].is_empty()
     {
-        return Some(rest[..paren].to_owned());
+        return (Some(rest[..paren].to_owned()), DefOrigin::DiagnosticProse);
     }
-    d.labels
-        .first()
-        .and_then(|l| ctor_type_name_at(source, l.span))
+    match d.labels.first() {
+        None => (None, DefOrigin::NoLabel),
+        Some(l) => ctor_type_name_at_with_origin(source, l.span),
+    }
 }
 
 /// Build one [`SurveySite`] from a diagnostic observed while sweeping `file`.
@@ -590,10 +765,12 @@ fn survey_site_from_diagnostic(
         .first()
         .map(|l| line_of_span(source, l.span))
         .unwrap_or(1);
+    let (def, def_origin) = def_of_diagnostic(source, d);
     Some(SurveySite {
         file: file.to_owned(),
         line,
-        def: def_of_diagnostic(source, d),
+        def,
+        def_origin,
         field: field_of_message(&d.message),
         expected,
         found,
@@ -901,7 +1078,6 @@ fn scan_structure_defs(
     dir: &std::path::Path,
     modules: &[&str],
 ) -> std::collections::BTreeSet<String> {
-    const DEF_PREFIX: &str = "structure def ";
     let mut defs = std::collections::BTreeSet::new();
     for stem in modules {
         let path = dir.join(format!("{stem}.ri"));
@@ -913,18 +1089,62 @@ fn scan_structure_defs(
                 path.display()
             )
         });
-        for line in source.lines() {
-            // Column-0 anchor: skips comments and any nested/indented prose.
-            let Some(rest) = line.strip_prefix(DEF_PREFIX) else {
-                continue;
-            };
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            if !name.is_empty() {
-                defs.insert(name);
-            }
+        collect_structure_defs_into(&source, &mut defs);
+    }
+    defs
+}
+
+/// Add every `structure def <Name>` declared by `source` to `defs`.
+///
+/// The column-0 anchor and the `pub `/`priv ` visibility prefixes are the whole
+/// grammar: measured over the tracked corpus, all 719 declarations sit at column
+/// 0 and 10 of them carry `pub `. Missing the visibility prefix would drop
+/// `pub structure def Actuator` from the known set and demote its sites to
+/// [`Owner::UnresolvedDef`] — conservative, but needless noise in γ's triage.
+fn collect_structure_defs_into(source: &str, defs: &mut std::collections::BTreeSet<String>) {
+    const DEF_KEYWORD: &str = "structure def ";
+    const VISIBILITY_PREFIXES: &[&str] = &["pub ", "priv "];
+    for line in source.lines() {
+        // Column-0 anchor: skips comments and any nested/indented prose. A naive
+        // substring scan of `stdlib/fea_multi_case.ri` harvests `already` from
+        // the comment "…(its structure def already declares…".
+        let after_vis = VISIBILITY_PREFIXES
+            .iter()
+            .find_map(|p| line.strip_prefix(p))
+            .unwrap_or(line);
+        let Some(rest) = after_vis.strip_prefix(DEF_KEYWORD) else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            defs.insert(name);
+        }
+    }
+}
+
+/// Every `structure def` declared anywhere in `crates/reify-compiler/stdlib/`.
+///
+/// Seeds the known-def set so a site constructing a stdlib def still resolves
+/// even when the declaring stdlib file was not itself part of the swept corpus.
+fn stdlib_structure_defs() -> std::collections::BTreeSet<String> {
+    let mut defs = std::collections::BTreeSet::new();
+    let dir = std::path::Path::new(STDLIB_DIR);
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "ctor_conformance_corpus_survey: cannot read the stdlib dir {}: {e}",
+            dir.display()
+        )
+    });
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ri") {
+            continue;
+        }
+        if let Ok(source) = std::fs::read_to_string(&path) {
+            collect_structure_defs_into(&source, &mut defs);
         }
     }
     defs
@@ -941,14 +1161,26 @@ fn fea_owned_defs() -> &'static std::collections::BTreeSet<String> {
 ///
 /// Mechanizes exactly the half of D9 that IS decidable — whether the def is
 /// FEA-owned, hence call-site-changes-only with field-type flips deferred to
-/// v0.6. An unresolved def is its own `Unknown` bucket, never folded into
-/// `NonFea`: guessing in the touchable direction is the one classification
-/// error with a real cost.
-fn d9_owner(def: Option<&str>, fea_defs: &std::collections::BTreeSet<String>) -> Owner {
+/// v0.6.
+///
+/// `Owner::NonFea` — the only bucket γ should size as actionable — is reached
+/// ONLY when `def` is a name that `structure_defs` actually declares. Everything
+/// else routes to a triage bucket: an unrecovered name to [`Owner::Unknown`], a
+/// recovered name that is not a declared structure def to
+/// [`Owner::UnresolvedDef`]. Both directions of that guard matter, because
+/// [`ctor_type_name_at`] recovers any identifier followed by `(` and therefore
+/// cannot tell a ctor from a function call; guessing in the touchable direction
+/// is the one classification error with a real cost.
+fn d9_owner(
+    def: Option<&str>,
+    fea_defs: &std::collections::BTreeSet<String>,
+    structure_defs: &std::collections::BTreeSet<String>,
+) -> Owner {
     match def {
         None => Owner::Unknown,
         Some(name) if fea_defs.contains(name) => Owner::FeaDeferredToV06,
-        Some(_) => Owner::NonFea,
+        Some(name) if structure_defs.contains(name) => Owner::NonFea,
+        Some(_) => Owner::UnresolvedDef,
     }
 }
 
@@ -976,9 +1208,27 @@ fn is_selector_type(ty: &str) -> bool {
     SELECTOR_TYPE_RENDERINGS.contains(&ty)
 }
 
+/// The `Type` Display prefixes that introduce a coordinate pose.
+///
+/// Each is ALWAYS followed by the dimension digit in the real Display impl —
+/// `Frame3`, `Transform3`, `Point3<Length>` (`crates/reify-core/src/ty.rs`).
+const POSE_TYPE_PREFIXES: &[&str] = &["Frame", "Transform", "Point"];
+
 /// Whether `ty` renders as a coordinate pose rather than a region target.
+///
+/// The dimension digit is REQUIRED, not decoration. `Type::StructureRef(name)`
+/// Displays as the bare struct name, so a bare-prefix match would classify the
+/// real defs `PointLoad` and `PointCloud` as poses — and `PointLoad` is the one
+/// FEA def PRD §4 D9 singles out by name. That would put a confidently WRONG
+/// remedy string ("a pose locates a datum, it does not name a region target")
+/// on rows inside the do-not-touch partition, which is worse for γ's sizing than
+/// the neutral fallback. Requiring an ASCII digit after the prefix separates the
+/// two exactly.
 fn is_pose_type(ty: &str) -> bool {
-    ty.starts_with("Frame") || ty.starts_with("Transform") || ty.starts_with("Point")
+    POSE_TYPE_PREFIXES.iter().any(|p| {
+        ty.strip_prefix(p)
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+    })
 }
 
 /// Whether `ty` renders as a DIMENSIONED scalar (`Scalar[…]`, not bare `Real`).
@@ -1109,22 +1359,72 @@ fn fea_owned_defs_scans_the_real_stdlib() {
 #[test]
 fn d9_owner_classifies_fea_non_fea_and_unattributed() {
     let fea = fea_owned_defs();
+    let known: std::collections::BTreeSet<String> = ["Widget", "PointLoad"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
 
     assert_eq!(
-        d9_owner(Some("PointLoad"), fea),
+        d9_owner(Some("PointLoad"), fea, &known),
         Owner::FeaDeferredToV06,
-        "D9: FEA defs are call-site-only; field-type flips stay v0.6-owned"
+        "D9: FEA defs are call-site-only; field-type flips stay v0.6-owned. FEA \
+         ownership outranks the known-def gate, not the other way round"
     );
     assert_eq!(
-        d9_owner(Some("NotAnFeaStructureDefAnywhere"), fea),
+        d9_owner(Some("Widget"), fea, &known),
         Owner::NonFea,
-        "a def that is not FEA-owned falls under D9's per-case judgment"
+        "a KNOWN structure def that is not FEA-owned falls under D9's per-case judgment"
     );
     assert_eq!(
-        d9_owner(None, fea),
+        d9_owner(Some("union"), fea, &known),
+        Owner::UnresolvedDef,
+        "`union` is a stdlib FUNCTION, not a structure def — recovery cannot tell the \
+         two apart from `ident(`, so a name that resolves to no declaration must NOT \
+         be sized into γ's actionable pile"
+    );
+    assert_eq!(
+        d9_owner(None, fea, &known),
         Owner::Unknown,
-        "an unattributable site (the sub `=` per-arg anchor) must NEVER silently \
-         default into the touchable bucket"
+        "an unattributable site must NEVER silently default into the touchable bucket"
+    );
+}
+
+#[test]
+fn structure_def_scanner_reads_the_visibility_prefixes() {
+    let mut defs = std::collections::BTreeSet::new();
+    collect_structure_defs_into(
+        "pub structure def Actuator { }\n\
+         priv structure def Hidden { }\n\
+         structure def Plain { }\n\
+         // structure def Commented { }\n\
+         \x20   structure def Indented { }\n\
+         let x = 1 // its structure def already declares y\n",
+        &mut defs,
+    );
+    let got: Vec<&str> = defs.iter().map(String::as_str).collect();
+    assert_eq!(
+        got,
+        vec!["Actuator", "Hidden", "Plain"],
+        "`pub`/`priv` prefixes are part of the declaration grammar (10 `pub structure \
+         def` sites in the tracked corpus); comments, indented prose and mid-line \
+         mentions are not declarations"
+    );
+}
+
+#[test]
+fn stdlib_structure_defs_is_a_superset_of_the_fea_partition() {
+    let all = stdlib_structure_defs();
+    let fea = fea_owned_defs();
+    assert!(
+        !all.is_empty(),
+        "the stdlib def scan must not be empty — an empty known-def set would demote \
+         EVERY row to `UnresolvedDef` and empty γ's actionable group"
+    );
+    let missing: Vec<&String> = fea.iter().filter(|d| !all.contains(*d)).collect();
+    assert!(
+        missing.is_empty(),
+        "the FEA modules are stdlib files, so every FEA def must also be found by the \
+         whole-stdlib scan; missing: {missing:?}"
     );
 }
 
@@ -1217,6 +1517,32 @@ fn selector_type_renderings_match_what_reify_core_actually_displays() {
             "the D2 pose-vs-set case must carry a hint for {pose:?}"
         );
     }
+
+    // …and the NEGATIVE half, which the true-positive loop above cannot catch:
+    // `Type::StructureRef(name)` Displays as the BARE struct name, so a
+    // prefix-only `is_pose_type` would call these poses. `PointLoad` is a real
+    // FEA def (PRD §4 D9 names it), `PointCloud` is a real def in this tree, and
+    // both would then carry the D2 "a pose locates a datum" hint — a confidently
+    // wrong remedy inside the do-not-touch partition.
+    for not_a_pose in ["PointLoad", "PointCloud", "Framework", "Transformer"] {
+        let rendered = Type::StructureRef(not_a_pose.into()).to_string();
+        assert_eq!(
+            rendered, not_a_pose,
+            "Type::StructureRef must still Display as the bare struct name; if that \
+             changed, this negative case is testing the wrong string"
+        );
+        assert!(
+            !is_pose_type(&rendered),
+            "{rendered:?} is a structure ref, not a coordinate pose — a bare-prefix \
+             match here puts a false D2 remedy hint on real rows"
+        );
+        assert_eq!(
+            remedy_hint(Some(&any), Some(&rendered)),
+            NO_HINT,
+            "a structure ref at a selector-typed field has no mechanical remedy; the \
+             neutral fallback is the honest answer"
+        );
+    }
 }
 
 // ─── step 9/10: end-to-end sweep over a synthetic mini-corpus ────────────────
@@ -1266,11 +1592,21 @@ struct SurveyRun {
 /// 2. Read and parse failures are RECORDED rather than panicked-on or silently
 ///    `return`ed. The non-examples corpus contains many intentionally
 ///    unparseable fixtures, and omitting them would inflate apparent coverage.
+///
+/// D9 owner assignment is a SECOND pass, after the loop: a site in the first
+/// swept file may construct a def declared in the last one, so the known-def set
+/// has to be complete before any row is classified. Classifying inline would
+/// make a row's owner depend on the order members were handed in — the exact
+/// non-determinism the artifact's byte-reproducibility rules out.
 fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
     use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
     use reify_core::{ModulePath, Severity};
 
     let fea = fea_owned_defs();
+    // Seeded with the stdlib so a site constructing a stdlib def resolves even
+    // when the declaring stdlib file is not part of the corpus handed in; every
+    // swept member then contributes its own declarations below.
+    let mut structure_defs = stdlib_structure_defs();
     let mut run = SurveyRun {
         total: rel_paths.len(),
         ..SurveyRun::default()
@@ -1288,6 +1624,12 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
+
+        // Declarations are harvested from the raw text BEFORE the parse gate:
+        // a member that fails to parse can still legitimately declare a def that
+        // another member constructs, and dropping it would demote that other
+        // member's rows to `UnresolvedDef` for no reason.
+        collect_structure_defs_into(&source, &mut structure_defs);
 
         let parsed = parse_with_stdlib(&source, ModulePath::single(&stem));
         if !parsed.errors.is_empty() {
@@ -1310,12 +1652,16 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
             .iter()
             .filter(|d| is_ctor_conformance_code(d.code))
         {
-            let Some(mut site) = survey_site_from_diagnostic(rel, &source, d) else {
+            let Some(site) = survey_site_from_diagnostic(rel, &source, d) else {
                 continue;
             };
-            site.owner = d9_owner(site.def.as_deref(), fea);
             run.sites.push(site);
         }
+    }
+
+    // Second pass: every declaration in the corpus is now known.
+    for site in &mut run.sites {
+        site.owner = d9_owner(site.def.as_deref(), fea, &structure_defs);
     }
 
     // Total order, so the artifact is byte-reproducible regardless of the order
@@ -1357,6 +1703,22 @@ const SYNTH_CLEAN: &str = "module test.clean\n\
 #[cfg(test)]
 const SYNTH_BROKEN: &str = "module test.broken\n((( this is not reify at all ]]] §§§\n";
 
+/// The known-COMPILE-ERROR member: parses cleanly, then emits an Error-severity
+/// diagnostic (`unresolved name: no_such_binding`).
+///
+/// This is the `partial` bucket's only coverage. 69 of the 660 tracked members
+/// land there in the committed artifact — every multi-module file the single-file
+/// `compile_with_stdlib` path cannot resolve — yet without this member the
+/// synthetic sweep never populates `run.partial` at all, and a regression that
+/// stopped filling it (or that moved compile-error files into `not_surveyed`,
+/// breaking the coverage arithmetic) would go undetected while every other test
+/// stayed green.
+#[cfg(test)]
+const SYNTH_COMPILE_ERROR: &str = "module test.compile_error\n\
+     structure def Root {\n\
+     \x20   let x = no_such_binding + 1\n\
+     }\n";
+
 /// Write the three synthetic members into a temp dir and return `(dir, paths)`.
 #[cfg(test)]
 fn synth_corpus() -> (tempfile::TempDir, Vec<String>) {
@@ -1365,12 +1727,14 @@ fn synth_corpus() -> (tempfile::TempDir, Vec<String>) {
         ("warns.ri", SYNTH_WARNS),
         ("clean.ri", SYNTH_CLEAN),
         ("broken.ri", SYNTH_BROKEN),
+        ("compile_error.ri", SYNTH_COMPILE_ERROR),
     ] {
         std::fs::write(dir.path().join(name), source).expect("write synthetic member");
     }
     let paths = vec![
         "broken.ri".to_owned(),
         "clean.ri".to_owned(),
+        "compile_error.ri".to_owned(),
         "warns.ri".to_owned(),
     ];
     (dir, paths)
@@ -1415,7 +1779,7 @@ fn survey_corpus_records_unsurveyable_members_instead_of_dropping_them() {
     let (dir, paths) = synth_corpus();
     let run = survey_corpus(dir.path(), &paths);
 
-    assert_eq!(run.total, 3, "the denominator is every file handed in");
+    assert_eq!(run.total, 4, "the denominator is every file handed in");
     let broken: Vec<&(String, String)> = run
         .not_surveyed
         .iter()
@@ -1439,7 +1803,49 @@ fn survey_corpus_records_unsurveyable_members_instead_of_dropping_them() {
         run.total,
         "surveyed + not_surveyed must account for every corpus member"
     );
-    assert_eq!(run.surveyed, 2, "the two parseable members are surveyed");
+    assert_eq!(
+        run.surveyed, 3,
+        "the three parseable members are surveyed — including the one that then \
+         failed to COMPILE, which is partial coverage, not zero coverage"
+    );
+}
+
+#[test]
+fn survey_corpus_records_a_compile_error_member_as_partial_not_missing() {
+    let (dir, paths) = synth_corpus();
+    let run = survey_corpus(dir.path(), &paths);
+
+    assert_eq!(
+        run.partial,
+        vec![("compile_error.ri".to_owned(), "compile-error".to_owned())],
+        "a member that PARSES and then emits an Error-severity diagnostic belongs in \
+         `partial` with its reason named. 69 of the 660 tracked members land here — \
+         every multi-module file the single-file `compile_with_stdlib` path cannot \
+         resolve — so an empty `partial` on the real corpus would be a silent \
+         coverage overstatement: {:#?}",
+        run.partial
+    );
+
+    // The three-way split has to stay consistent, or the artifact's coverage
+    // arithmetic (`surveyed + not_surveyed == total`) stops adding up.
+    assert!(
+        run.not_surveyed
+            .iter()
+            .all(|(f, _)| f != "compile_error.ri"),
+        "a partially-surveyed member must NOT also be listed as not-surveyed — that \
+         would double-count it and break the coverage denominator: {:#?}",
+        run.not_surveyed
+    );
+    assert_eq!(
+        run.surveyed + run.not_surveyed.len(),
+        run.total,
+        "`partial` is a QUALIFIER on surveyed members, never a fourth disjoint bucket"
+    );
+    assert!(
+        run.partial.iter().all(|(f, _)| f != "broken.ri"),
+        "a member that never reached the compile phase cannot be `partial`: {:#?}",
+        run.partial
+    );
 }
 
 #[test]
@@ -1584,7 +1990,7 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
         Nothing below was typed in by hand, and a column that could not be recovered\n\
         renders as `—` rather than as a guess.\n\
         \n\
-        Two things to know before reading a row:\n\
+        Three things to know before reading a row:\n\
         \n\
         - **`line` is the CTOR CALL-SITE line, not the offending argument's line.** α\n\
           anchors the label at the `Foo(...)` call's own span (PRD §10 Q1;\n\
@@ -1593,11 +1999,18 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
           sits within that call — e.g.\n\
           `examples/trajectory/printer_print_envelope.ri:169` is the `TOTSShaper(` line,\n\
           while `velocity_limit: 300.0` is three lines further down.\n\
-        - **`def` is the identifier at that anchor,** which is a `structure def` name for\n\
-          the ctor path. A few rows carry codes that reach this survey from a NON-ctor\n\
-          path (selector composition, overload resolution) and are Error- rather than\n\
-          Warning-severity; for those the anchor identifier can be a *function* name.\n\
-          The `severity` and `message` columns disambiguate.\n\
+        - **`def` is whatever identifier sits at that anchor, and `def source` says where\n\
+          it came from.** The recovery reads an identifier followed by `(` — which cannot\n\
+          by itself tell a `structure def` ctor from a plain function call. A few rows\n\
+          carry codes that reach this survey from a NON-ctor path (selector composition,\n\
+          overload resolution), where that identifier is a *function* name. Those are not\n\
+          left in the actionable group: a recovered name is cross-checked against every\n\
+          `structure def` declared in the corpus and the stdlib, and a name that does not\n\
+          resolve is filed under *name recovered, but it is not a known structure def*.\n\
+        - **A `—` in `def` is explained, not asserted.** The `def source` column carries\n\
+          the machine-derived reason recovery failed for that specific row (span starts at\n\
+          a non-identifier, identifier not followed by `(`, span out of range, …), so no\n\
+          prose here has to guess a cause on a reader's behalf.\n\
         \n\
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
@@ -1625,7 +2038,12 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
              was and was not surveyed.\n\n",
         );
     }
-    for owner in [Owner::FeaDeferredToV06, Owner::NonFea, Owner::Unknown] {
+    for owner in [
+        Owner::FeaDeferredToV06,
+        Owner::NonFea,
+        Owner::UnresolvedDef,
+        Owner::Unknown,
+    ] {
         let mut group: Vec<&SurveySite> = run.sites.iter().filter(|s| s.owner == owner).collect();
         group.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
 
@@ -1638,13 +2056,26 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
                  declared field types here.**\n\n",
             ),
             Owner::NonFea => md.push_str(
-                "D9's per-case judgment applies: fix the call site or the declared field type,\n\
-                 whichever is the actual bug — γ's ruling, recorded in γ's diff.\n\n",
+                "The recovered name IS a `structure def` declared in the corpus or the stdlib,\n\
+                 and it is not FEA-owned. D9's per-case judgment applies: fix the call site or\n\
+                 the declared field type, whichever is the actual bug — γ's ruling, recorded in\n\
+                 γ's diff. **This is the group to size γ against.**\n\n",
+            ),
+            Owner::UnresolvedDef => md.push_str(
+                "An identifier was recovered at the diagnostic's anchor, but it is not a\n\
+                 `structure def` declared anywhere in the corpus or the stdlib. Recovery reads\n\
+                 an identifier followed by `(`, which cannot distinguish a ctor from a plain\n\
+                 function call, so these are typically FUNCTION names reaching the survey from\n\
+                 a non-ctor path (selector composition, overload resolution) — the `severity`\n\
+                 and `message` columns show which. Held out of the actionable group rather than\n\
+                 sized into it. **Triage manually before touching.**\n\n",
             ),
             Owner::Unknown => md.push_str(
-                "The structure def could not be attributed mechanically — these sites come\n\
-                 through the sub `=` per-arg anchor, which carries no ctor name, and the\n\
-                 diagnostic prose names none either. Deliberately its own group: folding an\n\
+                "No def name could be attributed. The `def source` column gives the\n\
+                 machine-derived reason PER ROW rather than asserting one cause for the group:\n\
+                 known shapes that land here include the sub `=` per-arg anchor and param\n\
+                 default-initializer checks, both of which anchor the label somewhere other\n\
+                 than a `Def(` call site. Deliberately its own group: folding an\n\
                  unattributable site into the touchable pile is the one classification error\n\
                  with a real cost. **Triage manually before touching.**\n\n",
             ),
@@ -1654,16 +2085,17 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
             continue;
         }
         md.push_str(
-            "| site | def | field | expected | found | code | severity | hint (advisory) | message |\n\
-             |---|---|---|---|---|---|---|---|---|\n",
+            "| site | def | def source | field | expected | found | code | severity | hint (advisory) | message |\n\
+             |---|---|---|---|---|---|---|---|---|---|\n",
         );
         for s in group {
             let _ = writeln!(
                 md,
-                "| `{}:{}` | {} | {} | {} | {} | `{}` | {} | {} | {} |",
+                "| `{}:{}` | {} | {} | {} | {} | {} | `{}` | {} | {} | {} |",
                 cell(&s.file),
                 s.line,
                 opt_cell(s.def.as_ref()),
+                cell(s.def_origin.label()),
                 opt_cell(s.field.as_ref()),
                 opt_cell(s.expected.as_ref()),
                 opt_cell(s.found.as_ref()),
@@ -1769,6 +2201,7 @@ fn synth_site(file: &str, line: u32, def: &str, field: &str, owner: Owner) -> Su
         file: file.to_owned(),
         line,
         def: Some(def.to_owned()),
+        def_origin: DefOrigin::CallSiteAnchor,
         field: Some(field.to_owned()),
         expected: Some("FaceSelector".to_owned()),
         found: Some("String".to_owned()),
@@ -1816,15 +2249,22 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
 
 #[test]
 fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
+    let mut unresolved = synth_site("u.ri", 1, "union", "arg", Owner::UnresolvedDef);
+    unresolved.def_origin = DefOrigin::CallSiteAnchor;
+    let mut unknown = synth_site("m.ri", 1, "Mystery", "f", Owner::Unknown);
+    unknown.def = None;
+    unknown.def_origin = DefOrigin::SpanNotIdentifier;
+
     let run = SurveyRun {
-        total: 3,
-        surveyed: 3,
+        total: 4,
+        surveyed: 4,
         not_surveyed: vec![],
         partial: vec![],
         sites: vec![
             synth_site("z.ri", 1, "Widget", "label", Owner::NonFea),
             synth_site("a.ri", 1, "PointLoad", "point", Owner::FeaDeferredToV06),
-            synth_site("m.ri", 1, "Mystery", "f", Owner::Unknown),
+            unknown,
+            unresolved,
         ],
     };
     let md = render_survey(&run, "cafe1234");
@@ -1843,6 +2283,42 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
     assert!(
         md.contains("unattributed"),
         "the Unknown bucket must be rendered as its own group, not folded away"
+    );
+
+    // Every one of the FOUR owner classes must render its own group. A class the
+    // renderer forgets is a class of sites that silently vanishes from the
+    // artifact — the survey's one unacceptable failure.
+    for owner in [
+        Owner::FeaDeferredToV06,
+        Owner::NonFea,
+        Owner::UnresolvedDef,
+        Owner::Unknown,
+    ] {
+        let heading = format!("### {} — 1 site(s)", owner.title());
+        assert!(
+            md.contains(&heading),
+            "every owner class must render its own group with its own count; missing \
+             {heading:?}:\n{md}"
+        );
+    }
+
+    // The two non-actionable triage buckets must sort AFTER the actionable one,
+    // so γ reads its own work first and does not mistake a function-call row for
+    // a ctor site it owns.
+    let unresolved_at = md
+        .find(Owner::UnresolvedDef.title())
+        .expect("UnresolvedDef group heading");
+    assert!(
+        non_fea_at < unresolved_at,
+        "the actionable non-FEA group must precede the manual-triage buckets:\n{md}"
+    );
+
+    // …and the recovered-but-unknown name is NOT sized into γ's actionable pile.
+    let non_fea_block = &md[non_fea_at..unresolved_at];
+    assert!(
+        !non_fea_block.contains("`u.ri:1`"),
+        "`union` is a function name, not a structure def — it must not appear in the \
+         actionable non-FEA group:\n{non_fea_block}"
     );
 }
 
@@ -1912,6 +2388,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         file: "a.ri".to_owned(),
         line: 1,
         def: None,
+        def_origin: DefOrigin::SpanNotIdentifier,
         field: None,
         expected: None,
         found: None,
@@ -1936,19 +2413,28 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
     // whole row: the neutral hint string legitimately contains one too, so a
     // raw count is an imprecise proxy for what this test actually means.
     let cells: Vec<&str> = row.split('|').map(str::trim).collect();
-    for (idx, name) in [(2, "def"), (3, "field"), (4, "expected"), (5, "found")] {
+    for (idx, name) in [(2, "def"), (4, "field"), (5, "expected"), (6, "found")] {
         assert_eq!(
             cells[idx], "—",
             "the {name} cell must render as an em-dash, never an empty or invented \
              cell: {row:?}"
         );
     }
+    // …but the `def source` cell is NEVER an em-dash: an unrecovered def has a
+    // machine-derived REASON, which is what stops the artifact from asserting a
+    // cause for the whole group in prose.
+    assert_eq!(
+        cells[3],
+        DefOrigin::SpanNotIdentifier.label(),
+        "an unrecovered def must carry its machine-derived recovery-failure reason, \
+         not a second em-dash: {row:?}"
+    );
     assert!(
         !row.contains("||"),
         "no cell may be rendered empty: {row:?}"
     );
     assert!(
-        cells[9].starts_with("E_CTOR_ARITY:"),
+        cells[10].starts_with("E_CTOR_ARITY:"),
         "the raw message must still be carried verbatim: {row:?}"
     );
 }
@@ -1971,6 +2457,54 @@ fn render_survey_renders_the_zero_site_case_explicitly() {
         md.to_lowercase().contains("no ctor-conformance"),
         "a zero-site outcome must be rendered as an explicit statement, never an \
          empty table a reader could mistake for a truncated run:\n{md}"
+    );
+}
+
+#[test]
+fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
+    // The whole point of the `def source` column: an earlier Unknown-group blurb
+    // asserted "these sites come through the sub `=` per-arg anchor", which was
+    // false for BOTH rows actually in the committed artifact (they are param
+    // default initializers). The renderer must therefore report per row what the
+    // code measured, and the group prose must not name one cause as THE cause.
+    let mut site = synth_site("a.ri", 1, "W", "f", Owner::Unknown);
+    site.def = None;
+    site.def_origin = DefOrigin::SpanNotIdentifier;
+    let run = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![site],
+    };
+    let md = render_survey(&run, "sha");
+
+    assert!(
+        md.contains(DefOrigin::SpanNotIdentifier.label()),
+        "the row's machine-derived recovery-failure reason must appear in the \
+         artifact:\n{md}"
+    );
+    assert!(
+        !md.contains("these sites come\nthrough the sub `=` per-arg anchor"),
+        "the Unknown group must not assert ONE cause for every row in it:\n{md}"
+    );
+    assert!(
+        md.contains("| def source |"),
+        "the `def source` column must be part of the table header:\n{md}"
+    );
+
+    // And a RECOVERED def reports where it came from, not a blank.
+    let recovered = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![synth_site("b.ri", 2, "Widget", "label", Owner::NonFea)],
+    };
+    let md = render_survey(&recovered, "sha");
+    assert!(
+        md.contains(DefOrigin::CallSiteAnchor.label()),
+        "a recovered def must still say HOW it was recovered:\n{md}"
     );
 }
 
