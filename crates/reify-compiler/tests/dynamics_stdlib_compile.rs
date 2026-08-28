@@ -834,7 +834,7 @@ fn inverse_dynamics_fns_have_mechanism_and_snapshot_param_types() {
     // NOTE: the q_dot/q_ddot arm just below intentionally pins `List<dimensionless
     // scalar>`, not a `JointValue`-named type — `JointValue` is `pub type JointValue
     // = Real` (trajectory.ri, "no live owner" TODO), a placeholder the kinematic-
-    // completion PRD is expected to retarget (see the TODO(joint-value-type) notes
+    // completion PRD is expected to retarget (see the `joint-value-type` notes
     // above `TrajectorySample` in dynamics.ri). If that retarget lands, this exact-
     // equality arm fails for that unrelated reason, not because Mechanism/Snapshot
     // regressed — update the q_dot/q_ddot expected type below to match rather than
