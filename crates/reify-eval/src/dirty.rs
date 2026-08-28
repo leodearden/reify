@@ -127,8 +127,10 @@ pub fn compute_dirty_cone(
 /// re-seed would let a cycle returning to a seed re-enter the frontier.
 ///
 /// Seed discrimination (task-spec test 3, locked in by step-13): the caller
-/// is responsible for only inserting Realizations whose content-hash
-/// actually differs. An empty `changed_realizations` set yields no
+/// is responsible for only inserting Realizations that actually moved. As of
+/// #4729 the sole production caller discriminates on the GHR-β INPUT-cone
+/// hash, NOT on `content_hash` — see "Production wiring" below for why the
+/// static hash cannot serve here. An empty `changed_realizations` set yields no
 /// Realization-driven propagation — the function only iterates over the
 /// supplied seeds. This mirrors the existing `EvalOutcome::Changed/Unchanged`
 /// pattern at the seed boundary instead of duplicating the comparison logic
