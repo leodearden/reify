@@ -1433,6 +1433,81 @@ select_harness_kloc_guard() {
 select_harness_kloc_guard
 
 # ---------------------------------------------------------------------------
+# Cheap PTODO ratchet on the hook-gated --scope staged path (task 6817).
+#
+# hooks/pre-commit -> hooks/project-checks is the ONLY production caller of
+# `--scope staged` (grep -rn -- "--scope staged" over tracked files confirms
+# this); every per-task lane uses `--scope branch`, and merge/background force
+# `--scope all` (contract C2). A hook-gated main commit is therefore the one
+# and only landing path with NO later gate: task 5125 moved the PTODO ratchet
+# (tests/infra/test_reify_audit_ptodo.sh, scenario (a) — live ptodo-baseline-gen
+# fingerprints must be a subset of crates/reify-audit/ptodo-baseline.txt) to the
+# MERGE-tier run_all.sh pool only, so a docs-landing commit staging an
+# uncoupled tests/prd-gate/fixtures/*.ri (task 5536's no-heavy-checks carve-out
+# above) got neither the full pool nor a selective subset. 108d1d9226's
+# phantom-tracking marker landed on `main` through exactly this gap and
+# reddened post-merge verification for every task until 9ebebcec22 reworded it
+# (task 6817). Deliberately NOT extended to `--scope branch`: that would be
+# doing 5125's explicitly deferred follow-up ("a cheap per-task-only PTODO
+# precheck ... is a possible follow-up if per-task PTODO latency proves costly
+# in practice") and would add ~3.4s to every task lane for a signal the merge
+# gate already provides there.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
+# populates (mirrors select_harness_kloc_guard's precedent paragraph just
+# above), so it inherits for free: (a) merge/background suppression — the
+# selective emission block (add_tool site below) is suppressed when
+# DF_VERIFY_ROLE=merge|background, where run_all.sh already runs this exact
+# file wholesale (exactly-once, INV-5); (b) the REIFY_INFRA_SUITE_ACTIVE
+# re-entrancy guard; (c) fail-fast ordering before the cargo poles; (d)
+# add_tool's LD_LIBRARY_PATH scrub, so no new plain-`add` call site appears
+# for tests/infra/test_verify_ld_library_path_scope.sh to police. A plain path
+# is a degenerate glob, so no emission-side change is needed at all.
+#
+# Measured cost: tests/infra/test_reify_audit_ptodo.sh is 22 assertions,
+# 0m3.362s warm on 2026-08-28 (main checkout, target/release/{reify-audit,
+# ptodo-baseline-gen} already built) — a single cheap leaf, not a cargo pole.
+#
+# Extension arm is `.ri` ONLY for now (task 6817 step-2); step-4 widens it to
+# reify-audit's full swept-extension set (crates/reify-audit/src/ptodo.rs::
+# is_swept_ext) under a derive-from-source drift guard (test_verify_scope.sh's
+# PT-DRIFT scenario), closing the same-class docs/**/*.ri and
+# gui/**/*.{ts,tsx,js} holes in one rule instead of enumerating decide_scope's
+# no-heavy case arms one at a time.
+#
+# ACCEPTED RESIDUAL: REIFY_AUDIT_NO_COLD_BUILD is deliberately NOT set on this
+# path (the merge tier sets it, paired with a pre-build and a positive
+# existence assertion). If target/release/reify-audit is stale here,
+# reify_audit_guard's rebuild-budget-safe path self-heals via `cargo build
+# --release -q -p reify-audit` inside the 10m selective-infra wall — setting
+# the knob would make the guard SKIP budget-safely instead, silently
+# reopening exactly the hole this selector closes. A cold build that blows
+# the wall fails the commit loudly, which is the correct direction of error
+# for a gate protecting a main landing.
+# ---------------------------------------------------------------------------
+select_cheap_ptodo_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    local _f
+    while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        # ${_f,,} (bash case-fold) mirrors is_swept_ext's path.to_lowercase().
+        # .ri only for now — step-4 widens this to the full swept-extension set.
+        case "${_f,,}" in
+            *.ri) : ;;
+            *) continue ;;
+        esac
+        # Whole-token dedup via space sentinels (mirrors select_infra_tests).
+        case " $SELECTED_INFRA_GLOBS " in
+            *" tests/infra/test_reify_audit_ptodo.sh "*) : ;;
+            *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }tests/infra/test_reify_audit_ptodo.sh" ;;
+        esac
+        return 0
+    done <<< "$CHANGED_FILES_RAW"
+}
+select_cheap_ptodo_gate
+
+# ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
 #
 # Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
