@@ -5676,11 +5676,9 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     ///
     /// A future per-kind or per-operand counter split (face vs. edge, left vs.
     /// right operand) remains an option if finer-grained diagnostics are needed;
@@ -5724,6 +5722,10 @@ pub struct LocalFeatureOpHistoryRecords {
     /// but could not map back into the result face/edge map (i.e. the child
     /// shape reported by BRep_Builder was absent from the result's TopExp
     /// map).  For well-formed BRep operations this should be zero.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -5785,11 +5787,9 @@ pub struct SweepOpHistoryRecords {
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
     /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     ///
     /// A future per-kind counter split (face vs. edge) remains an option if
     /// finer-grained diagnostics are needed; the current single counter matches
@@ -5831,6 +5831,10 @@ pub struct SweepOpHistoryRecords {
     /// (`dot ≈ 2e-6`, just over `DIR_TOL = 1e-6`), using the assertion
     /// `unsynthesized_profile_edge_count == n_profile_edges − face_generated.len()`
     /// so the test is agnostic to whether OCCT covers the edge independently.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub unsynthesized_profile_edge_count: u32,
     /// Count of `face_generated` records dropped by the post-sort dedup pass
     /// because their `parent_subshape_index` duplicated the immediately
@@ -5852,6 +5856,10 @@ pub struct SweepOpHistoryRecords {
     /// == 0` in happy-path full-revolve tests. The FFI fixture
     /// `revolve_synthesis_post_sort_for_test` enables white-box testing of
     /// the dedup logic on synthetic flat inputs without real OCCT geometry.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub duplicate_parent_subshape_index_count: u32,
 }
 
