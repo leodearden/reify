@@ -155,6 +155,20 @@ fn probe_problem(
     objective: Option<ObjectiveSense>,
     seed_mm: Option<f64>,
 ) -> ResolutionProblem {
+    // PRODUCTION shape — see module doc. NOT `Some((lo, hi))`: an explicit wall
+    // strictly inside the constraint region is exactly what makes the existing suite
+    // blind to this defect. P6 is the single deliberate exception.
+    probe_problem_shaped(constraints, objective, seed_mm, None)
+}
+
+/// [`probe_problem`] generalised over `AutoParam.bounds`, so P6 can build the
+/// NON-production wall-inside-the-region shape that the existing suite uses.
+fn probe_problem_shaped(
+    constraints: Vec<CompiledExpr>,
+    objective: Option<ObjectiveSense>,
+    seed_mm: Option<f64>,
+    bounds: Option<(f64, f64)>,
+) -> ResolutionProblem {
     let x_id = vcid(ENTITY, MEMBER);
     let mut current_values = ValueMap::new();
     if let Some(seed) = seed_mm {
@@ -165,10 +179,7 @@ fn probe_problem(
         auto_params: vec![AutoParam {
             id: x_id,
             param_type: Type::length(),
-            // PRODUCTION shape — see module doc. NOT `Some((lo, hi))`: an explicit
-            // wall strictly inside the constraint region is exactly what makes the
-            // existing suite blind to this defect.
-            bounds: None,
+            bounds,
             free: true,
         }],
         constraints: constraints
@@ -188,8 +199,12 @@ fn probe_si(
     objective: ObjectiveSense,
     seed_mm: Option<f64>,
 ) -> f64 {
-    let problem = probe_problem(constraints, Some(objective), seed_mm);
-    match DimensionalSolver.solve(&problem) {
+    solved_si(&probe_problem(constraints, Some(objective), seed_mm))
+}
+
+/// Solve and extract the probe auto param's value in **metres (SI)**.
+fn solved_si(problem: &ResolutionProblem) -> f64 {
+    match DimensionalSolver.solve(problem) {
         SolveResult::Solved { values, .. } => values
             .get(&vcid(ENTITY, MEMBER))
             .expect("solved values must contain the probe auto param")
@@ -421,4 +436,59 @@ fn p5_optimality_status_is_not_iteration_limited() {
         }
         other => panic!("P5 expected Ranked, got {:?}", other),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P6 — the CONTRAST CONTROL. Why the existing suite is blind to all of the above.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **P6 — WALL-INSIDE-REGION CONTROL: the objective DOES make progress.**
+///
+/// The same `minimize x` shape, but with an explicit `bounds: Some((0.005, 0.1))` wall
+/// strictly INSIDE a `2mm < x < 50mm` constraint region, seeded at 25mm. This is the
+/// shape of `solver_integration.rs:498` (`optimize_with_feasible_initial_point`), which
+/// passes on `main` today — and whose own doc comment states the mechanism outright:
+/// "Auto param bounds (5mm–100mm) prevent the solver from overshooting the constraint
+/// boundary at 2mm, so the optimizer converges at the bounds floor".
+///
+/// PREDICTION: **≈5mm** — the clamp wall, i.e. real objective-driven progress from the
+/// 25mm seed.
+///
+/// Its role is to isolate the differentiator. The defect appears only when NO clamp
+/// wall lies inside the constraint region — which is the PRODUCTION configuration,
+/// because `AutoParam.bounds` is always `None` (`solver.rs:993-997`). Every in-tree
+/// objective fixture that asserts real progress sets such a wall, so the corpus cannot
+/// see this defect; and the one fixture that puts the wall OUTSIDE the region
+/// (`solver_integration.rs:618`,
+/// `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible`) encodes the
+/// symptom as INTENDED behaviour. Hence a real defect with fully green coverage.
+///
+/// This probe is the deliberate exception to the module-wide production shape.
+#[test]
+fn p6_wall_inside_constraint_region_makes_real_progress() {
+    let x = value_ref(ENTITY, MEMBER);
+    let problem = probe_problem_shaped(
+        vec![
+            gt(x.clone(), literal(mm(2.0))),
+            lt(x, literal(mm(50.0))),
+        ],
+        Some(ObjectiveSense::Minimize),
+        Some(25.0),
+        // NON-production: the wall (5mm-100mm) sits strictly inside `2mm < x < 50mm`.
+        Some((0.005, 0.1)),
+    );
+    let got = solved_si(&problem);
+
+    assert!(
+        (got - 0.005).abs() <= TOL_M,
+        "P6 `minimize x` s.t. `2mm < x < 50mm` with a 5mm-100mm WALL and a 25mm seed: \
+         expected the objective to drive the answer to the 5mm clamp floor; got {got} m \
+         ({} mm). If this parks at the 25mm seed instead, the contrast that explains the \
+         suite's blindness is gone and the whole verdict must be re-derived.",
+        got * 1000.0
+    );
+    assert!(
+        (got - 0.025).abs() > TOL_M,
+        "P6 must NOT park at its 25mm seed — that is the contrast against P1-P4."
+    );
 }
