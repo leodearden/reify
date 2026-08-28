@@ -1204,3 +1204,103 @@ fn every_chunk_is_reachable_through_the_mcp_tool() {
         &reachability_violations(&stems, &src),
     );
 }
+
+// ---------------------------------------------------------------------------
+// CROSS-HARNESS PIN
+//
+// The retag sweep this task performed had exactly one way to do silent damage,
+// and it is not a failing test — it is a PASSING one that stopped protecting
+// anything. This test makes that coupling load-bearing so the next sweep
+// cannot repeat it.
+// ---------------------------------------------------------------------------
+
+/// The sibling suite's scrape predicate, reproduced VERBATIM from
+/// `geometry_chunk_smoke.rs:617`.
+///
+/// Deliberately a copy rather than a call: the point is to detect the day the
+/// two drift apart, and a shared helper would make them drift together.
+fn sibling_scrape_counts_bare_reify_fences(markdown: &str) -> usize {
+    markdown
+        .lines()
+        .filter(|line| line.trim_end() == "```reify")
+        .count()
+}
+
+/// `geometry.md` must keep BOTH of its bare ```` ```reify ```` fences, because
+/// a sibling suite in this same compile unit scrapes for that exact string.
+///
+/// `geometry_chunk_smoke.rs` finds its subjects with
+/// `line.trim_end() == "```reify"` (:617), compiles each hit verbatim (:704),
+/// and guards itself with its own `fences.len() >= 2` floor (:661). Retagging
+/// either fence to `reify-fragment` or `reify-schematic` would not fail that
+/// suite — the exact match simply stops hitting, the compile loop iterates
+/// once instead of twice, and a whole documented FORM silently loses its only
+/// compile check. That is strictly worse than a red test, so this task's sweep
+/// KEPT both tags and this test pins the decision where a future sweep will
+/// read it.
+///
+/// Asserted on both sides of the seam: through this module's parser (tag
+/// EXACTLY `reify`) and through a verbatim copy of the sibling's own
+/// predicate. Agreement between the two is the actual invariant — either one
+/// alone could pass while the coupling was already broken.
+#[test]
+fn geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite() {
+    let content = read_chunk_file("geometry");
+    let label = chunk_label("geometry");
+
+    let parsed_bare_reify = parse_fences(&content)
+        .unwrap_or_else(|e| panic!("{label}: {e}"))
+        .into_iter()
+        .filter(|f| f.tag.as_deref() == Some("reify"))
+        .collect::<Vec<_>>();
+
+    assert!(
+        parsed_bare_reify.len() >= 2,
+        "{label} carries only {} fence(s) tagged EXACTLY `reify`, expected at least 2. \
+         `geometry_chunk_smoke.rs` scrapes this file with `line.trim_end() == \"```reify\"` \
+         (:617) and asserts its own `>= 2` floor (:661); dropping below 2 here HOLLOWS that \
+         suite rather than failing it — its compile loop just stops visiting the fence. If a \
+         fence genuinely stopped compiling standalone, fix the fence or move the sibling \
+         suite's subject deliberately; do NOT quietly retag it to `reify-fragment`.",
+        parsed_bare_reify.len()
+    );
+
+    let scraped = sibling_scrape_counts_bare_reify_fences(&content);
+    assert_eq!(
+        scraped,
+        parsed_bare_reify.len(),
+        "the sibling's exact-string scrape finds {scraped} bare ```reify opening line(s) in \
+         {label} but this module's parser finds {}. The two harnesses have DRIFTED: whatever \
+         one of them now believes is a `reify` fence, the other does not. Reconcile them \
+         before touching any tag.",
+        parsed_bare_reify.len()
+    );
+
+    // NEGATIVE CONTROL, hermetic — proves the assertions above can actually go
+    // RED. Retag geometry.md's own opening delimiters in memory (the real file
+    // is never written) and confirm BOTH sides stop counting them, i.e. that
+    // `reify-fragment` is not swept in by a prefix match on either side.
+    let retagged = content.replace("\n```reify\n", "\n```reify-fragment\n");
+    assert_ne!(
+        retagged, content,
+        "the negative control rewrote nothing — its `\\n```reify\\n` pattern no longer matches \
+         {label}, so it is proving nothing and must be updated with the file"
+    );
+    assert_eq!(
+        sibling_scrape_counts_bare_reify_fences(&retagged),
+        0,
+        "the sibling scrape still counted bare `reify` fences after every one was retagged to \
+         `reify-fragment` — its exact match has become a prefix match, and `reify-fragment` / \
+         `reify-schematic` bodies are now being compiled as if they were standalone modules"
+    );
+    assert_eq!(
+        parse_fences(&retagged)
+            .unwrap_or_else(|e| panic!("{label} (retagged): {e}"))
+            .into_iter()
+            .filter(|f| f.tag.as_deref() == Some("reify"))
+            .count(),
+        0,
+        "this module's parser still reported fences tagged `reify` after every one was retagged \
+         to `reify-fragment` — the EXACT-match tag contract has regressed to a prefix match"
+    );
+}
