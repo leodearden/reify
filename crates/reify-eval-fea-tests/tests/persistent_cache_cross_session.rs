@@ -811,3 +811,179 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
         "the good entry's .meta sidecar must survive the sweep intact",
     );
 }
+
+/// Case 4 — eviction order follows the cost-aware score, and an entry that was
+/// expensive to solve and recently used survives a cap squeeze.
+///
+/// `evict_over_cap` is driven DIRECTLY here, which is the same entry point
+/// `reify cache gc` uses (`crates/reify-cli/src/cache.rs:226`). That is
+/// deliberate and is the only way to reach eviction today: the PRD's
+/// "opportunistic on write" trigger
+/// (`docs/prds/v0_3/persistent-fea-cache.md` §"GC policy") is NOT wired — the
+/// engine's persistent-write hook never checks directory size — so this test
+/// must not be read as evidence that a write triggers eviction. That gap is
+/// tracked separately (esc-2980-1/-2/-3, task #6639).
+///
+/// The cap is computed from REAL on-disk `.bin` footprints rather than guessed,
+/// and the four fixtures' scores are separated by at least 10x. Both choices are
+/// load-bearing; see the comments at each.
+///
+/// The 25 GiB default cap is deliberately NOT re-pinned here — `reify-config`'s
+/// own `resolve_cache_all_defaults()` test already owns that constant, and
+/// restating it would be lockstep duplication.
+#[test]
+fn eviction_order_follows_score_and_expensive_recent_entries_survive() {
+    use reify_eval::persistent_cache::{
+        entry_bin_path, entry_meta_path, eviction_score, evict_over_cap,
+    };
+
+    let tmp = tempfile::TempDir::new().expect("tmp dir creation must succeed");
+    let root = tmp.path();
+
+    // ── Four fixtures whose scores are separated by >= 10x ──────────────────
+    //
+    // score = age_secs / max(solve_time_ms, 1)   (persistent_cache.rs:1371-1381)
+    //
+    //   cheap_old        1 ms,  1_000_000 s  -> 1e6     evicted 1st
+    //   expensive_old    1_000 ms, 1_000_000 s -> 1e3   evicted 2nd
+    //   cheap_recent     1 ms,  100 s        -> 1e2     survives
+    //   expensive_recent 1_000 ms, 10 s      -> 1e-2    survives (lowest score)
+    //
+    // WHY THE >= 10x SEPARATION IS REQUIRED, and why a future author must not
+    // tighten these fixtures: `evict_over_cap` takes its own `SystemTime::now()`
+    // internally (persistent_cache.rs:1224) and there is no injectable clock, so
+    // the ages it computes differ from the ones computed here by however long
+    // the test takes to reach the call. A 10x margin makes the ORDER immune to
+    // that drift; scores closer than that would turn this into a flake.
+    const CHEAP_MS: u64 = 1;
+    const EXPENSIVE_MS: u64 = 1_000;
+    const OLD_SECS: u64 = 1_000_000;
+    const RECENT_SECS: u64 = 100;
+    const VERY_RECENT_SECS: u64 = 10;
+
+    let cheap_old = "aa".to_string() + &"0".repeat(30);
+    let expensive_old = "bb".to_string() + &"0".repeat(30);
+    let cheap_recent = "cc".to_string() + &"0".repeat(30);
+    let expensive_recent = "dd".to_string() + &"0".repeat(30);
+
+    let size_cheap_old = seed_entry(root, &cheap_old, CHEAP_MS, OLD_SECS);
+    let size_expensive_old = seed_entry(root, &expensive_old, EXPENSIVE_MS, OLD_SECS);
+    let size_cheap_recent = seed_entry(root, &cheap_recent, CHEAP_MS, RECENT_SECS);
+    let size_expensive_recent = seed_entry(root, &expensive_recent, EXPENSIVE_MS, VERY_RECENT_SECS);
+
+    // ── (a) The expected order IS score-descending, per the public formula ───
+    //
+    // Scored through `eviction_score` itself rather than by restating the
+    // arithmetic, so this pins the shipped formula through its own public API.
+
+    let now = std::time::SystemTime::now();
+    let mut scored: Vec<(f64, &str)> = [
+        (&cheap_old, CHEAP_MS),
+        (&expensive_old, EXPENSIVE_MS),
+        (&cheap_recent, CHEAP_MS),
+        (&expensive_recent, EXPENSIVE_MS),
+    ]
+    .iter()
+    .map(|(hash, solve_ms)| {
+        let last_access = std::fs::metadata(entry_meta_path(root, ENGINE_VERSION_HASH, hash))
+            .expect("every seeded entry must have a .meta sidecar")
+            .modified()
+            .expect("the .meta sidecar must expose an mtime");
+        (eviction_score(now, last_access, *solve_ms), hash.as_str())
+    })
+    .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("no NaN scores"));
+
+    let order: Vec<&str> = scored.iter().map(|(_, h)| *h).collect();
+    assert_eq!(
+        order,
+        vec![
+            cheap_old.as_str(),
+            expensive_old.as_str(),
+            cheap_recent.as_str(),
+            expensive_recent.as_str(),
+        ],
+        "score-descending order must be cheap+old, expensive+old, cheap+recent, \
+         expensive+recent — scores were {:?}",
+        scored.iter().map(|(s, _)| *s).collect::<Vec<f64>>(),
+    );
+    for pair in scored.windows(2) {
+        assert!(
+            pair[0].0 >= pair[1].0 * 10.0,
+            "adjacent scores must stay >= 10x apart or this test becomes a flake \
+             against evict_over_cap's internal clock: {} vs {}",
+            pair[0].0,
+            pair[1].0,
+        );
+    }
+
+    // ── (b) Squeeze the cap to exactly the two survivors' footprint ──────────
+    //
+    // Derived from measured `.bin` sizes, not guessed: the loop stops as soon as
+    // `remaining <= cap`, so a cap of exactly size(cheap_recent) +
+    // size(expensive_recent) forces precisely two evictions.
+
+    let cap = size_cheap_recent + size_expensive_recent;
+    let total = size_cheap_old + size_expensive_old + cap;
+    assert!(
+        cap < total,
+        "test invariant: the cap ({cap}) must be below the total footprint ({total}), \
+         or nothing would be evicted",
+    );
+
+    let report = evict_over_cap(root, ENGINE_VERSION_HASH, cap).expect("eviction must succeed");
+    assert_eq!(
+        report.evicted_count, 2,
+        "exactly the two highest-scoring entries must be evicted",
+    );
+    assert_eq!(
+        report.evicted_bytes,
+        size_cheap_old + size_expensive_old,
+        "evicted_bytes must be the summed .bin footprint of the two highest-scoring entries",
+    );
+    assert!(
+        report.remaining_bytes <= cap,
+        "eviction must bring the footprint to or below the cap: {} > {cap}",
+        report.remaining_bytes,
+    );
+
+    // ── (c) Survivorship, and eviction removes the .bin/.meta PAIR ───────────
+
+    for evicted in [&cheap_old, &expensive_old] {
+        assert!(
+            read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, evicted)
+                .expect("read_entry must not error on an evicted entry")
+                .is_none(),
+            "an evicted entry must read as a cache MISS: {evicted}",
+        );
+        assert!(
+            !entry_bin_path(root, ENGINE_VERSION_HASH, evicted).exists(),
+            "eviction must remove the .bin: {evicted}",
+        );
+        assert!(
+            !entry_meta_path(root, ENGINE_VERSION_HASH, evicted).exists(),
+            "eviction must remove the .meta sidecar alongside its .bin: {evicted}",
+        );
+    }
+
+    // THE COST-AWARENESS CLAIM: the entry that was expensive to solve and
+    // recently used is the one that survives — that is the whole point of
+    // weighting the score by solve time rather than using plain LRU.
+    let survivor: ElasticResult = read_entry(root, ENGINE_VERSION_HASH, &expensive_recent)
+        .expect("read_entry must not error on the expensive-recent entry")
+        .expect("the expensive, recently-used entry must survive the cap squeeze");
+    assert_eq!(
+        survivor.solve_time_ms, EXPENSIVE_MS,
+        "the surviving entry must be the expensive one, not a same-shaped cheap one",
+    );
+    assert!(
+        entry_meta_path(root, ENGINE_VERSION_HASH, &expensive_recent).exists(),
+        "the survivor's .meta sidecar must survive eviction",
+    );
+    assert!(
+        read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &cheap_recent)
+            .expect("read_entry must not error on the cheap-recent entry")
+            .is_some(),
+        "the cheap but recently-used entry is under the cap and must also survive",
+    );
+}
