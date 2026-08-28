@@ -139,10 +139,10 @@ describe('reify.grammar — qualified reference in TYPE position', () => {
 
   /**
    * NO qualified GENERIC form. `pp.Box<T>` is out of scope for μ and is
-   * excluded from `namespaced_name` upstream too (grammar.js:1146-1149, where
-   * the `optional(type_args)` formulation is recorded as the one that produces
-   * an unresolved LR conflict). Pinned so a later "obvious" widening is a
-   * deliberate choice rather than a silent one.
+   * excluded from `namespaced_name` upstream too (the `namespaced_name` rule in
+   * grammar.js is where the `optional(type_args)` formulation is recorded as
+   * the one that produces an unresolved LR conflict). Pinned so a later
+   * "obvious" widening is a deliberate choice rather than a silent one.
    */
   it('does NOT admit a qualified generic type', () => {
     expect(countErrorNodes('structure def S { param p : pp.Box<T> }')).toBeGreaterThan(0);
@@ -187,10 +187,10 @@ describe('reify.grammar — qualified reference in `sub` position', () => {
    *
    * MEASURED, not speculative — this is the one case where this grammar had
    * silently become STRICTER than the compiler. tree-sitter parses it with zero
-   * ERROR nodes (its specialization arm keeps `optional(type_args)` after the
-   * widened `structure_name`, grammar.js:895) and `lower_sub` builds a valid
-   * `SubDecl { structure_name: "pp.Pulley", type_args: [T] }` with no
-   * diagnostic, while this grammar produced 2 error nodes until
+   * ERROR nodes (its `sub_declaration` specialization (`:`) arm keeps
+   * `optional(type_args)` after the widened `structure_name`) and `lower_sub`
+   * builds a valid `SubDecl { structure_name: "pp.Pulley", type_args: [T] }`
+   * with no diagnostic, while this grammar produced 2 error nodes until
    * `subSpecializedName` grew the matching tail. An editor that rejects what the
    * compiler accepts degrades silently — the exact failure this file's header
    * names.

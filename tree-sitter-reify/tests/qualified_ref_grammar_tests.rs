@@ -338,7 +338,7 @@ fn sub_specialization_arm_accepts_namespaced_structure_name() {
 /// degradation `reifyGrammarQualifiedRef.test.ts` exists to prevent. Note this
 /// is NOT the excluded qualified-generic form: `param p : pp.Box<T>` in TYPE
 /// position still ERRORs, because `namespaced_name` itself carries no
-/// `optional(type_args)` tail (see grammar.js:1146-1149).
+/// `optional(type_args)` tail (see the `namespaced_name` rule).
 #[test]
 fn sub_specialization_arm_accepts_namespaced_name_with_type_args() {
     let source = "structure def S {\n    sub h : pp.Pulley<T>\n}\n";
@@ -370,8 +370,8 @@ fn sub_specialization_arm_accepts_namespaced_name_with_type_args() {
 
 /// The excluded companion: a qualified generic in TYPE position stays an error.
 ///
-/// `namespaced_name` deliberately carries NO `optional(type_args)` tail — that
-/// exact formulation is recorded at grammar.js:1146-1149 as the one producing
+/// `namespaced_name` deliberately carries NO `optional(type_args)` tail — the
+/// `namespaced_name` rule itself records that formulation as the one producing
 /// an unresolved LR conflict, and qualified generics are out of scope for μ.
 /// Pinned so the `sub h : pp.Pulley<T>` acceptance above cannot be mistaken for
 /// a general widening, and so a later deliberate one is a visible change here.
@@ -454,7 +454,8 @@ fn double_colon_type_stays_qualified_type() {
 }
 
 /// The `List<Foo>` vs `Listicle<Foo>` lexer rule-#1 / rule-#2 discipline
-/// (grammar.js:845-880) is unchanged by widening `structure_name`.
+/// (documented on `sub_declaration`'s specialization arm in
+/// tree-sitter-reify/grammar.js) is unchanged by widening `structure_name`.
 ///
 /// `List<Foo>` → collection arm (rule #2: the `'List'` string token beats the
 /// equal-length identifier regex), so `structure_name` is `Foo`.

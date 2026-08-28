@@ -182,9 +182,9 @@ fn sub_structure_name_whitespace_is_normalised() {
 
 /// Specialization arm with a type-argument tail: `sub h : pp.Pulley<T>`.
 ///
-/// THREE-SURFACE PARITY PIN. The specialization arm keeps its own
-/// `optional(field('type_args', …))` slot AFTER the widened `structure_name`
-/// (grammar.js:895), so widening that slot to `namespaced_name` made the
+/// THREE-SURFACE PARITY PIN. `sub_declaration`'s specialization (`:`) arm
+/// keeps its own `optional(field('type_args', …))` slot AFTER the widened
+/// `structure_name`, so widening that slot to `namespaced_name` made the
 /// qualified-plus-specialized form parse and lower cleanly — a form neither
 /// surface accepted before μ. The tail belongs to the `sub` arm, NOT to
 /// `namespaced_name` itself: a qualified generic in TYPE position (`param p :
@@ -380,8 +380,9 @@ fn three_segment_callee_drops_the_member_and_spans_the_callee() {
 }
 
 /// A callee object that is not dotted at all still reaches the same guard,
-/// because `member_access.object` is a full `_expression` (grammar.js:1621) —
-/// so `arr[0].g()` reduces to `namespaced_call` with an `index_access` object.
+/// because `member_access.object` is a full `_expression` (the `member_access`
+/// rule in tree-sitter-reify/grammar.js) — so `arr[0].g()` reduces to
+/// `namespaced_call` with an `index_access` object.
 ///
 /// The diagnostic must fit the input: it names the required `binding.Name(...)`
 /// shape and the offending object, and must NOT tell a user who wrote
