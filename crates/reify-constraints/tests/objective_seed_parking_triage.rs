@@ -25,6 +25,26 @@
 //! for retiring `PENALTY_WEIGHT`), so a desired-behaviour assertion would be a doomed
 //! RED that no in-scope change can turn GREEN.
 //!
+//! # Measured results (HEAD `9c1bed42a7`, `DimensionalSolver::solve`)
+//!
+//! | Probe | problem | seed | measured | derivation | bit-identical to derivation |
+//! |---|---|---|---|---|---|
+//! | P1 | `min x` s.t. `x >= 8mm` | none | **8.800000 mm** (`8.80000000000000053e-3` m, bits `0x3f8205bc01a36e2f`) | `8mm × 1.1` | yes |
+//! | P2 | `max x` s.t. `8mm <= x <= 40mm` | none | **24.000000 mm** (`2.40000000000000005e-2` m, bits `0x3f989374bc6a7efa`) | `(8mm + 40mm)/2` | yes |
+//! | P3 | `max x` s.t. `x <= 40mm` | none | **36.000000 mm** (`3.60000000000000042e-2` m, bits `0x3fa26e978d4fdf3c`) | `40mm − 0.1 × 40mm` | yes |
+//!
+//! Every probe returned `SolveResult::Solved { unique: false }` — never `Infeasible`
+//! or `NoProgress`. The `unique: false` is **expected and not a divergence**: the
+//! `unique: true` constructed by the drift fallback at `solver.rs:2029` is documented
+//! at `solver.rs:1691-1693` as a *placeholder*, and `finalise_uniqueness`
+//! (`solver.rs:2694-2730`) overwrites it — an all-`free` problem skips the uniqueness
+//! re-solve entirely and reports `unique: false` (`solver.rs:2723-2728`).
+//!
+//! P2 vs P3 settles the open question from the filing: a genuinely **one-sided**
+//! `<= 40mm` returns **36mm**, so the reported 24mm can only have come from a
+//! **two-sided** shape. It is the derived-box midpoint seed — the *same* mechanism as
+//! P1's 8.8mm, not the separate unexplained effect the filing assumed.
+//!
 //! # Production shape
 //!
 //! Every probe builds its auto param with `bounds: None` — the PRODUCTION shape.
@@ -140,6 +160,10 @@ fn le_40mm() -> CompiledExpr {
 /// one-sided inward nudge of `extract_initial_point` arm 3
 /// (`solver.rs:402-419` doc, `:420-440` body; `SEED_NUDGE_REL = 0.1` at `solver.rs:239`).
 /// The objective never moves it: the answer IS the seed.
+///
+/// MEASURED at HEAD `9c1bed42a7`: `Solved { unique: false }`, `8.80000000000000053e-3` m
+/// = **8.800000 mm** (bits `0x3f8205bc01a36e2f`) — bit-identical to the derivation.
+/// A correct `minimize` would return 8mm; the objective moved the answer by 0.
 #[test]
 fn p1_minimize_one_sided_lower_bound_parks_at_nudged_seed() {
     let got = probe_si(vec![ge_8mm()], ObjectiveSense::Minimize, None);
@@ -149,7 +173,8 @@ fn p1_minimize_one_sided_lower_bound_parks_at_nudged_seed() {
         (got - predicted).abs() <= TOL_M,
         "P1 `minimize x` s.t. `x >= 8mm`: expected the one-sided nudged SEED \
          {predicted} m (= 8mm × (1 + SEED_NUDGE_REL), SEED_NUDGE_REL = 0.1 at \
-         solver.rs:239), got {got} m ({} mm). Minimizing would reach 8mm.",
+         solver.rs:239); MEASURED 8.800000 mm at HEAD 9c1bed42a7. Got {got} m \
+         ({} mm). Minimizing would reach 8mm.",
         got * 1000.0
     );
 }
@@ -162,6 +187,10 @@ fn p1_minimize_one_sided_lower_bound_parks_at_nudged_seed() {
 /// `extract_initial_point` arm 3 with BOTH sides derived (`solver.rs:402-419`).
 /// This is the reported number — and it is the *same* mechanism as P1, not a separate
 /// unexplained effect.
+///
+/// MEASURED at HEAD `9c1bed42a7`: `Solved { unique: false }`, `2.40000000000000005e-2` m
+/// = **24.000000 mm** (bits `0x3f989374bc6a7efa`) — bit-identical to the derivation.
+/// A correct `maximize` would return 40mm; the answer sits 16mm away, at the seed.
 #[test]
 fn p2_maximize_two_sided_parks_at_derived_box_midpoint() {
     let got = probe_si(
@@ -174,8 +203,9 @@ fn p2_maximize_two_sided_parks_at_derived_box_midpoint() {
     assert!(
         (got - predicted).abs() <= TOL_M,
         "P2 `maximize x` s.t. `8mm <= x <= 40mm`: expected the two-sided derived-box \
-         MIDPOINT seed {predicted} m (extract_initial_point arm 3, solver.rs:402-419), \
-         got {got} m ({} mm). Maximizing would reach 40mm.",
+         MIDPOINT seed {predicted} m (extract_initial_point arm 3, solver.rs:402-419); \
+         MEASURED 24.000000 mm at HEAD 9c1bed42a7. Got {got} m ({} mm). \
+         Maximizing would reach 40mm.",
         got * 1000.0
     );
 }
@@ -189,6 +219,10 @@ fn p2_maximize_two_sided_parks_at_derived_box_midpoint() {
 ///
 /// If P3 returns 36mm while P2 returns 24mm, the reported 24mm can only have come from
 /// a TWO-SIDED shape — a genuinely one-sided `<= 40mm` does not produce it.
+///
+/// MEASURED at HEAD `9c1bed42a7`: `Solved { unique: false }`, `3.60000000000000042e-2` m
+/// = **36.000000 mm** (bits `0x3fa26e978d4fdf3c`) — bit-identical to the derivation,
+/// and DIFFERENT from P2's 24mm. Verdict: the reported 24mm needs both bounds.
 #[test]
 fn p3_maximize_one_sided_upper_bound_parks_at_nudged_seed() {
     let got = probe_si(vec![le_40mm()], ObjectiveSense::Maximize, None);
@@ -197,8 +231,9 @@ fn p3_maximize_one_sided_upper_bound_parks_at_nudged_seed() {
     assert!(
         (got - predicted).abs() <= TOL_M,
         "P3 `maximize x` s.t. `x <= 40mm`: expected the one-sided nudged SEED \
-         {predicted} m (= 40mm − 0.1 × 40mm, SEED_NUDGE_REL at solver.rs:239), \
-         got {got} m ({} mm). This is the discriminator against P2's 24mm.",
+         {predicted} m (= 40mm − 0.1 × 40mm, SEED_NUDGE_REL at solver.rs:239); \
+         MEASURED 36.000000 mm at HEAD 9c1bed42a7. Got {got} m ({} mm). \
+         This is the discriminator against P2's 24mm.",
         got * 1000.0
     );
 }
