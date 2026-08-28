@@ -8,6 +8,9 @@
 #                  committed crates/reify-audit/ptodo-baseline.txt
 #                  (live - baseline = empty).  Subset-of alone is trivially
 #                  satisfied by the empty set; see RATCHET VACUITY FLOOR below.
+#                  Subset-of BY RULING, not by omission: the converse
+#                  assertion (comm -13, baseline ⊆ live) was considered and
+#                  DECLINED — PRD §17.
 #   (b) SCENARIO 13 (hermetic) — a git-tracked code file carrying a fresh
 #                  untracked marker produces fingerprints absent from an empty
 #                  baseline, proving the ratchet fires red on new violations.
@@ -120,6 +123,16 @@ done
 echo "=== PTODO detector infra gate ==="
 
 # -----------------------------------------------------------------------
+# ORACLE DIRECTION — subset-of BY RULING (task #6859, PRD §17).  Two KNOWN
+# LIMITATIONS are accepted here rather than overlooked: there is no drain
+# forcing function (a grandfathered entry may sit in the baseline forever), and
+# a grandfathered fingerprint is a re-entry permit for that text ANYWHERE in
+# the same file (fingerprints erase line numbers).  Adding the converse
+# `comm -13` assertion does not fix either and reds every DB-less context; the
+# measurements, the alternatives and the revisit condition are in §17, not
+# here.  Pinned in BOTH directions by
+# tests/infra/test_reify_audit_ptodo_ratchet_superset.sh.
+#
 # Pure ratchet-regression checker (task 5260, ITEM 3). When the live-minus-
 # baseline fingerprint set ($1) is non-empty, print the offending fingerprints
 # (one per line, with a count header) to stderr and return 1; when empty, stay
