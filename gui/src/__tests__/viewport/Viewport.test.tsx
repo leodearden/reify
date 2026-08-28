@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData, FeaDiagnosticInfo } from '../../types';
+import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData, FeaDiagnosticInfo, ScalarChannelTag } from '../../types';
 import { createFeaModeStore } from '../../stores';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
@@ -1281,6 +1281,82 @@ describe('Viewport FEA Lock Current + readout wiring', () => {
     expect(readout).toBeTruthy();
     // Content must include the max value (8) in some numeric form
     expect(readout.textContent).toMatch(/8/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Viewport tagged scalar channels (task #6185)
+// End-to-end B8: a tagged channel's unit reaches the legend, and a SIGNED
+// channel's negative values survive range computation all the way into the
+// FEA store rather than being clamped away.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport — tagged scalar channels (task #6185)', () => {
+  function makeTaggedMesh(
+    channel: string,
+    values: number[],
+    tag?: ScalarChannelTag,
+  ): MeshData {
+    return {
+      entity_path: 'bracket',
+      vertices: new Float32Array(0),
+      indices: new Uint32Array(0),
+      normals: null,
+      scalar_channels: { [channel]: new Float32Array(values) },
+      ...(tag === undefined ? {} : { scalar_channel_tags: { [channel]: tag } }),
+    };
+  }
+
+  it('(a) a Pa-tagged channel renders its unit in the max readout', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-a" feaModeStore={store as any} />);
+
+    setMeshes({
+      bracket: makeTaggedMesh('vonMises', [2, 8], { unit: 'Pa', signed: false }),
+    });
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/Pa/);
+    expect(readout.textContent).toMatch(/vonMises/);
+  });
+
+  it('(b) a signed channel keeps its NEGATIVE min through to the store, and shows rad', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    store.setChannel('testRotation');
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-b" feaModeStore={store as any} />);
+
+    setMeshes({
+      bracket: makeTaggedMesh('testRotation', [-0.5, 0, 0.25], { unit: 'rad', signed: true }),
+    });
+
+    // The B8 pin: negatives survive range computation to the renderer.
+    expect(store.state.range.min).toBe(-0.5);
+    expect(store.state.range.max).toBe(0.25);
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/rad/);
+  });
+
+  it('(c) untagged meshes render no unit and keep the non-negative range', () => {
+    // Regression pin for pre-tag payloads.
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-c" feaModeStore={store as any} />);
+
+    setMeshes({ bracket: makeTaggedMesh('vonMises', [-1, 2, 8]) });
+
+    // -1 is the OOB sentinel for an untagged channel and must not reach the range.
+    expect(store.state.range).toEqual({ mode: 'auto', min: 2, max: 8 });
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toBe('max vonMises: 8');
   });
 });
 

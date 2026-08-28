@@ -11,6 +11,7 @@ import { createSelection } from './selection';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
+import { channelUnit } from './channelTags';
 import { pickDefaultScalarChannel } from './defaultScalarChannel';
 import { feaToolbarChannels } from './feaToolbarChannels';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
@@ -571,6 +572,11 @@ export function Viewport(props: ViewportProps) {
             if (r) props.feaModeStore!.lockCurrent(r.min, r.max);
           }}
           maxValue={activeScalarRange()?.max ?? null}
+          unitLabel={
+            props.feaModeStore
+              ? channelUnit(props.meshes, props.feaModeStore.state.channel)
+              : null
+          }
           convergence={props.feaConvergence ?? undefined}
         />
       </Show>
