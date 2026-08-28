@@ -2163,7 +2163,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     // `operation`. Split's row has `operation: None`, which reproduces the
     // prior unreachable!() exactly — Split is a topology selector and must
     // never reach this function (it is never inserted into the realization
-    // graph). All other 47 variants have `operation: Some(_)`.
+    // graph). All other 48 variants have `operation: Some(_)`.
     descriptor_for(op.into())
         .and_then(|d| d.operation)
         .unwrap_or_else(|| {

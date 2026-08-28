@@ -6483,7 +6483,7 @@ structure Assembly {
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",
             },
-            // ── Remaining primitives (task 4671 step-3: full 47-variant coverage) ─
+            // ── Remaining primitives (task 4671 step-3: full 48-variant coverage) ─
             Case {
                 op: GeometryOp::Sphere { radius: Value::Real(0.005) },
                 expected: vec![],
@@ -6784,7 +6784,7 @@ structure Assembly {
     // ── substitute_op_parents unit tests ─────────────────────────────────────
 
     /// Characterizes the per-variant-family parent-handle substitution semantics
-    /// of `substitute_op_parents`. For every non-Split variant (47 total):
+    /// of `substitute_op_parents`. For every non-Split variant (48 total):
     /// builds an op with known handle ids, applies `substitute_op_parents` with
     /// a mapping that remaps those ids, and asserts that only the PARENT fields
     /// are rewritten — non-parent fields (Pipe.path, Sweep.path, SweepGuided.path
@@ -6793,7 +6793,7 @@ structure Assembly {
     ///   from the map are left as-is (tested via Union left absent from map).
     ///
     /// All expected values are hardcoded independently of the L1 table, so
-    /// full 47-variant coverage gives full validation of the table's
+    /// full 48-variant coverage gives full validation of the table's
     /// `parent_role` column for this function.
     ///
     /// Stays GREEN against the current per-variant fn; the coverage-completeness
