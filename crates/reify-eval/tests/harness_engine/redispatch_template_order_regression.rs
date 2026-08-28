@@ -138,8 +138,11 @@ fn recorded() -> Vec<ProbeRecord> {
 /// order_probe(body)` becomes a *value cell* carrying a
 /// `CompiledExprKind::UserFunctionCall` default-expr — which is exactly the
 /// shape `redispatch_geometry_consuming_compute_nodes`'s Phase-1 scan matches
-/// (`engine_build.rs:9652`). A Geometry-typed consumer would lower to a
-/// separate realization and be invisible to that scan.
+/// (its `// ── Phase 1: collect candidates` block in `engine_build.rs`, whose
+/// `for (c_id, node_data) in state.snapshot.graph.compute_nodes.iter()` walk
+/// skips any node whose `realization_inputs` are already non-empty). A
+/// Geometry-typed consumer would lower to a separate realization and be
+/// invisible to that scan.
 const CONSUMER_STRUCTURE: &str = r#"
 @optimized("test::redispatch-order-probe")
 fn order_probe(g: Geometry) -> Int {
