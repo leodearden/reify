@@ -4593,6 +4593,108 @@ mod tests {
         );
     }
 
+    /// Task 6663 / review suggestion 4: the OTHER route into the degenerate
+    /// no-eigenpairs branch — `force_dense == true` — must hit the same ceiling.
+    ///
+    /// [`solve_generalized_eigen`] can reach the over-ceiling branch two ways,
+    /// and its doc advertises both:
+    ///
+    ///   1. `try_solve_eigen_shift_invert` measures K as non-SPD and returns
+    ///      `None`. That is what `pinned_only_large_mesh_does_not_exhaust_memory`
+    ///      exercises — it constrains 14 DOFs, so `under_constrained` is FALSE
+    ///      and `force_dense` never becomes true there.
+    ///   2. `force_dense` short-circuits the factorization attempt entirely
+    ///      (constrained DOFs < `RIGID_BODY_DOFS`, the common no-supports error).
+    ///      The doc claims routing this through the SAME ceiling "closes a
+    ///      pre-existing hazard for free: before task 6663, a no-supports model
+    ///      on a large mesh set `force_dense` and walked straight into the dense
+    ///      allocation".
+    ///
+    /// Route 2 was the untested one. An EMPTY BC set on the same 1.0 m mesh gives
+    /// 0 constrained DOFs (so `force_dense` is true) and n_free far above the
+    /// ceiling — precisely the `force_dense && n > DENSE_FALLBACK_MAX_DIM` corner.
+    /// Without this test, a regression that restored `if force_dense { dense }`
+    /// AHEAD of the ceiling check would reinstate the resource bomb silently:
+    /// every existing test either sits below the ceiling or arrives via route 1.
+    #[test]
+    fn unconstrained_large_mesh_force_dense_still_respects_ceiling() {
+        let length = 1.0_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+
+        // No supports at all: 0 constrained DOFs => `under_constrained` (and so
+        // `force_dense`) is true, which is what distinguishes this from the
+        // pinned-only fixture above.
+        let bcs: Vec<DirichletBc> = Vec::new();
+        let n_free = 3 * mesh.nodes.len();
+        assert!(
+            n_free > DENSE_FALLBACK_MAX_DIM,
+            "fixture must sit ABOVE the dense-fallback ceiling \
+             ({DENSE_FALLBACK_MAX_DIM}) for the guard to be under test; \
+             got n_free = {n_free}",
+        );
+
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 10,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
+
+        let started = std::time::Instant::now();
+        let result: ModalCoreResult = solve_modal_core(
+            ModalMesh::P1(&mesh),
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &eigen_opts,
+        );
+        let elapsed = started.elapsed();
+
+        // (1) Degenerate outcome, not a densified solve.
+        assert!(
+            result.frequencies.is_empty(),
+            "above the ceiling a force_dense (no-supports) model must return no \
+             eigenpairs rather than densifying a {n_free}² system; got {} \
+             frequencies: {:?}",
+            result.frequencies.len(),
+            result.frequencies,
+        );
+
+        // (2) The ceiling diagnostic, naming the offending n_free — same signal
+        //     the shift-invert route asserts, so both paths stay explainable.
+        let ceiling_diag = result
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.severity == Severity::Warning
+                    && d.message.contains("exceeds the dense-fallback ceiling")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected the dense-fallback-ceiling Warning on the \
+                     force_dense route; got {:?}",
+                    result.diagnostics,
+                )
+            });
+        assert!(
+            ceiling_diag.message.contains(&n_free.to_string()),
+            "the ceiling diagnostic must name the offending n_free = {n_free}; \
+             got {:?}",
+            ceiling_diag.message,
+        );
+
+        // (3) Backstop, mirroring the sibling test: pin that the O(n³) dense
+        //     path was genuinely skipped, not merely relabelled.
+        assert!(
+            elapsed < std::time::Duration::from_secs(60),
+            "the force_dense ceiling guard must not densify a large system; \
+             took {elapsed:?}",
+        );
+    }
+
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
     /// the usual elastic fields, optionally carrying a `density` scalar. Mirrors
     /// the runtime material shape the trampoline reads (cf. buckling's

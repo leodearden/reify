@@ -9,12 +9,17 @@
 //!   1. **`None` means EXACTLY "`K` is not SPD".** A stiffness matrix carrying a
 //!      free (zero-stiffness) DOF — the shape an under-constrained modal model
 //!      assembles — returns `None` instead of panicking in `sp_cholesky`.
-//!   2. **`Some` is bit-identical to `solve_eigen_shift_invert`.** The `try_`
-//!      shape factors `K` exactly once and reuses that factorization, so the
-//!      healthy path pays nothing and returns the same numbers. (A "probe with a
-//!      throwaway `sp_cholesky`, then call the panicking entry point" shape would
-//!      also pass clause 1 while factoring K twice on every well-posed solve;
-//!      clause 2 is what pins the cheap shape.)
+//!   2. **`Some` is bit-identical to `solve_eigen_shift_invert`.** On SPD `K` the
+//!      two entry points stay numerically interchangeable, so the healthy path
+//!      returns the same numbers and callers can swap one for the other freely.
+//!
+//! The implementation also factors `K` exactly once and reuses that
+//! factorization, rather than probing with a throwaway `sp_cholesky` and then
+//! calling the panicking entry point. That property is deliberately NOT claimed
+//! as a pinned clause here: `sp_cholesky` is deterministic, so the probe-then-
+//! refactor shape would return bit-identical numbers and pass clause 2
+//! unchanged. Pinning it would take a counting/instrumented factorization; this
+//! file pins the observable contract only.
 //!
 //! # Fixture
 //!
@@ -143,11 +148,18 @@ fn shift_invert_still_panics_on_the_same_singular_k() {
 /// element-for-element, to `solve_eigen_shift_invert`'s — and both match the
 /// closed form.
 ///
-/// Exact (`==`) equality is asserted deliberately: the two entry points share one
-/// factorization and one Lanczos run today, so any drift means the delegation was
-/// replaced by a second, separately-factored solve — the exact regression the
-/// "factors K once" clause exists to prevent. The closed-form check keeps the test
-/// meaningful (rather than tautological) if that delegation is ever restructured.
+/// Exact (`==`) equality is asserted deliberately, but note what it does and does
+/// NOT pin. It DOES pin that the two entry points stay numerically interchangeable
+/// on SPD K: any change that makes `try_` return a merely-close spectrum (a
+/// different shift, a different tolerance, a re-ordered assembly) reds here rather
+/// than drifting silently past an epsilon. It does NOT pin the "factors K exactly
+/// once" property — `sp_cholesky` is deterministic, so an implementation that
+/// probed with one factorization and then re-factored would produce bit-identical
+/// output and pass unchanged. Detecting that would need an instrumented or
+/// counting factorization, not an output comparison.
+///
+/// The closed-form check keeps the test meaningful (rather than tautological) if
+/// the delegation is ever restructured.
 #[test]
 fn try_shift_invert_matches_the_panicking_entry_point_on_spd_k() {
     let k = spd_laplacian();
@@ -171,7 +183,7 @@ fn try_shift_invert_matches_the_panicking_entry_point_on_spd_k() {
         assert_eq!(
             got, exp,
             "eigenvalue[{i}]: try_ returned {got:.17e}, solve_ returned {exp:.17e} \
-             — the two entry points must share one factorization and one solve",
+             — on SPD K the two entry points must stay numerically interchangeable",
         );
     }
     assert_eq!(
