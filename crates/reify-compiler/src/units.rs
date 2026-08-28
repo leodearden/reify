@@ -1029,8 +1029,10 @@ pub(crate) fn is_dynamics_constructor(name: &str) -> bool {
 ///
 /// **Wiring**: `is_fea_envelope_query` is checked in `expr.rs`'s
 /// `NoUserFunctions` ladder BEFORE the first-arg fallback, alongside the
-/// `is_dynamics_query` / `is_dynamics_constructor` / `is_analysis_typed_fn`
-/// arms. Eval dispatch is unchanged (name-dispatched FunctionCall stays).
+/// `is_dynamics_query` / `is_dynamics_constructor` arms and the
+/// builtin-signature-registry arm that replaced `is_analysis_typed_fn` /
+/// `is_parse_typed_fn` (task #6001 α).
+/// Eval dispatch is unchanged (name-dispatched FunctionCall stays).
 ///
 /// **Disjointness contract**: all three names MUST be absent from every
 /// sibling classification family; pinned by
@@ -5256,7 +5258,9 @@ mod tests {
     /// constructor family (task 5344): every `ORIENTATION_TYPED_FN_NAMES` entry
     /// must be absent from every sibling classification family so the
     /// `is_orientation_typed_fn` arm in `expr.rs`'s `NoUserFunctions` ladder is
-    /// the sole claimant. Mirrors `parse_fn_names_are_disjoint_from_other_families`,
+    /// the sole claimant. Mirrors `registry_row_names_are_disjoint_from_legacy_families`
+/// (task #6001 α renamed `parse_fn_names_are_disjoint_from_other_families` to it
+/// and folded the retired analysis lock into it),
     /// and — since this is the newest family — checks against EVERY sibling slice
     /// that exists today, not just the ones that preceded it. The reciprocal
     /// direction is pinned by an `!ORIENTATION_TYPED_FN_NAMES.contains(name)`

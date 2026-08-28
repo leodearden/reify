@@ -15,9 +15,9 @@
 //     crates/reify-stdlib/src/registry_dispatch.rs, which is exhaustive
 //     over the sub-enum — so an unbound row fails the BUILD.
 // This fixture pins that the alpha registry swap keeps the observable
-// behavior byte-stable: `reify check` on this file was captured at the
-// branch's merge-base (b79cecf53a) and at the post-swap tip, and stdout,
-// stderr and exit code are byte-identical.
+// behavior byte-stable: `reify check` on this file was captured at
+// b79cecf53a (the branch's PRE-REBASE merge-base) and at the post-swap
+// tip, and stdout, stderr and exit code are byte-identical.
 
 structure def ParseLengthMatchProbe {
     let r = parse_length("3mm")
