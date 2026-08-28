@@ -805,11 +805,13 @@ pub(crate) fn resolve_field_type_name(
 /// `implicitly_converts_to` is intentionally direction-sensitive and does NOT
 /// include Int→Real widening (that rule lives in `type_compatible`, which is
 /// symmetric by design). Field codomain checks are directional (body → declared),
-/// but whole-number float literals are typed as `Int` by the expression compiler,
-/// so we must also accept `Int` where `Real` is declared. Encoding this in a
-/// dedicated predicate avoids repeating the widening rule at each call site —
-/// a future change to widening semantics (e.g. `Int→Scalar[dimensionless]`) needs
-/// updating only here.
+/// but bare integer-form literals (e.g. `1`, no `.`/`e`/`E` in the source token)
+/// are typed as `Int` by the expression compiler — see
+/// `reify_ast::decl::classify_number_literal` — so a field body like `{ 1 }`
+/// declared `Real` needs the same widening. We must also accept `Int` where
+/// `Real` is declared. Encoding this in a dedicated predicate avoids repeating
+/// the widening rule at each call site — a future change to widening semantics
+/// (e.g. `Int→Scalar[dimensionless]`) needs updating only here.
 fn field_codomain_compatible(body_ty: &Type, codomain_ty: &Type) -> bool {
     implicitly_converts_to(body_ty, codomain_ty)
         || (matches!(body_ty, Type::Int)
