@@ -2710,8 +2710,20 @@ fn objective_unconsumed_diagnostic(
 /// (`dispatch_merged_cluster_solve`) emission sites so the *decision*, not just
 /// the wording, is one source.
 ///
-/// All four conditions are necessary:
+/// All five conditions are necessary:
 ///
+/// 0. `solve_succeeded` — the solve this scope just ran reported
+///    [`SolveResult::Solved`]. γ's claim is *the solve succeeded and your
+///    `minimize` was silently dropped*; on `Infeasible` / `NoProgress` that
+///    claim is unwarranted, because the objective was not consumed for the
+///    trivial reason that nothing was solved at all. Added in review round 1
+///    (finding 2), which found three faults on the failure arms at once: the
+///    Error is a FALSE POSITIVE (the remedy text asks for constraints relating
+///    the cell "to the rest of the scope" that the source already declares), it
+///    DOUBLE-REPORTS on top of the failing solve's own diagnostic, and on the
+///    `NoProgress` arm it ESCALATES that diagnostic's severity from warning to
+///    Error on a model whose behaviour never changed. The gate lives here, once,
+///    rather than at the two call sites, so neither site can drift from it.
 /// 1. `declared.is_some()` — a **user-declared** objective. A synthesised
 ///    Chebyshev-centre scope has `template.objective == None` at compile time
 ///    (it is recorded in `centrality_synthesized_scopes` instead), so this is
@@ -2729,20 +2741,38 @@ fn objective_unconsumed_diagnostic(
 ///    of `problem.auto_params` upstream, and solver-bound autos land in
 ///    `resolved_params`, so an instantiation whose every objective-reachable
 ///    auto is concretely bound this run stays quiet without a parallel ledger.
-///    It is load-bearing, not belt-and-braces: a let-indirected objective over a
-///    solved auto classifies as `FallbackComponentZero` (the registry matches
-///    the objective's DIRECT refs, which name only the let), so condition 2 does
-///    not fire and this is the sole thing keeping a healthy model quiet.
+///    It is still load-bearing on the merged path, where a `FallbackComponentZero`
+///    verdict coexists with a write-back that binds every reached auto
+///    (`examples/whole_model_joint_drive.ri` is the in-tree case). It is NO
+///    LONGER the *sole* thing keeping a healthy model quiet, on two counts: a
+///    let-indirected objective over a solved auto now classifies `Consumed` —
+///    the registry expands the objective's refs through `dependent_cells` before
+///    the first-match scan (task #5417 step-18) — so condition 2 stops it first;
+///    and a scope whose solve failed is stopped by condition 0 above.
 ///
 /// `bound_this_run` is the scope's `resolved_params` map. An `Undef` entry does
 /// not count as bound — the solver can write one for an auto it failed to pin,
 /// and treating that as success would silence the very case γ exists to report.
+///
+/// `solve_succeeded` is MEASURED, not assumed, to leave every intended positive
+/// intact: the PRD's B7 fixture (`dic_min_unconstrained.ri`) and the merged
+/// zero-component fixture both reach their drop site reporting `Solved` — the
+/// registry's `components.is_empty()` early exit returns
+/// `SolveResult::Solved { values: {}, unique: true }` — so a strict `Solved`
+/// gate costs neither of them.
 fn objective_unconsumed_finding(
     scope: &str,
     declared: Option<&ObjectiveSet>,
     problem: &ResolutionProblem,
     bound_this_run: &HashMap<ValueCellId, Value>,
+    solve_succeeded: bool,
 ) -> Option<Diagnostic> {
+    // (0) the solve succeeded. A failed solve dropped the objective because it
+    // dropped everything, and it already reported that itself.
+    if !solve_succeeded {
+        return None;
+    }
+
     // (1) user-declared only.
     declared?;
 
@@ -6104,6 +6134,14 @@ impl Engine {
                         (solver.solve_with_dispatch(&problem, Some(&dispatcher)), None)
                     };
 
+                // DIC γ gate condition (0) (task #5417 step-20): the outcome
+                // must be captured HERE because the match below CONSUMES
+                // `solve_result`, and the emission site is deliberately after
+                // the match (condition (4) needs the `resolved_params` the
+                // `Solved` arm writes). `matches!` binds nothing, so it reads
+                // the place without moving it.
+                let solve_succeeded = matches!(solve_result, SolveResult::Solved { .. });
+
                 match solve_result {
                     SolveResult::Solved {
                         values: solver_values,
@@ -6347,9 +6385,17 @@ impl Engine {
                 // reasons: `resolved_params` has by now absorbed everything
                 // this scope's solve bound (condition 4 needs that), and this
                 // is the one point every solve outcome (Solved / Infeasible /
-                // NoProgress) converges on, so the report does not depend on
-                // which arm ran. Its sibling #4804 warning above shares the
-                // position for the same reason.
+                // NoProgress) converges on, so ONE emission site serves all
+                // three. Its sibling #4804 warning above shares the position
+                // for the same reason.
+                //
+                // Converging here does NOT mean the report ignores the outcome:
+                // `solve_succeeded`, captured above the match because the match
+                // consumes `solve_result`, is gate condition (0) — a failed
+                // solve stays quiet (task #5417 step-20, review round 1
+                // finding 2). The gate itself lives in
+                // `objective_unconsumed_finding` so the merged site inherits it
+                // rather than repeating it.
                 //
                 // The zero-constraint fixture the PRD measured
                 // (`dic_min_unconstrained.ri`) DOES reach here: an auto exists,
@@ -6361,6 +6407,7 @@ impl Engine {
                     template.objective.as_ref(),
                     &problem,
                     &resolved_params,
+                    solve_succeeded,
                 ) {
                     diagnostics.push(diag);
                 }
@@ -7506,6 +7553,10 @@ impl Engine {
             cluster.scopes,
         );
 
+        // DIC γ gate condition (0) (task #5417 step-20) — captured before the
+        // match consumes `solve_result`, exactly as the single-scope site does.
+        let solve_succeeded = matches!(solve_result, SolveResult::Solved { .. });
+
         match solve_result {
             SolveResult::Solved {
                 values: solver_values,
@@ -7791,7 +7842,9 @@ impl Engine {
         // the same two reasons: it is after the `match solve_result`, so every
         // outcome (Solved / Infeasible / NoProgress) converges here, and
         // `resolved_params` has by now absorbed the merged write-back that gate
-        // condition (4) reads.
+        // condition (4) reads. The outcome still gates the report —
+        // `solve_succeeded` is captured above the match and passed as condition
+        // (0) — but the DECISION is the shared function's, not this site's.
         //
         // `problem.objective.as_ref()` is SAFE as `declared` — i.e. it cannot
         // resurrect the task-4013 synthetic-centrality case condition (1)
@@ -7832,6 +7885,7 @@ impl Engine {
             problem.objective.as_ref(),
             &problem,
             resolved_params,
+            solve_succeeded,
         ) {
             diagnostics.push(diag);
         }

@@ -340,6 +340,150 @@ fn assert_purpose_has_objective(compiled: &reify_compiler::CompiledModule, name:
     );
 }
 
+// ── CROSS-MODULE: an override this module cannot see ────────────────────────
+//
+// Review round 1, finding 1. `phase_inert_objective_check` judges a template
+// against `ctx.templates` — the templates of the module being compiled, and
+// nothing else. `ctx.templates` is initialized EMPTY (`ctx.rs`'s ctor, whose
+// doc says "no prelude content is seeded here"), imported templates live in
+// borrow-only registries during compilation, and `merge_imported_pub_templates`
+// appends them onto the finished `CompiledModule` only AFTER compilation
+// returns. So `auto_override_possible` — whose entire purpose is to notice a
+// `sub w : Widget { k = auto }` override that makes `k` reachable-as-auto —
+// cannot see an override that lives in another module.
+//
+// The direction is what makes this unfixable by threading the prelude: a
+// prelude holds the modules this one IMPORTS (upstream), never the modules that
+// import it (downstream), and the override is downstream. A `pub` template's
+// consumers are simply unknowable at compile time, which under PRD §3
+// decision 5 ("every ambiguity returns `None`") means silence.
+
+/// Compile a two-module DAG — `child.ri` plus a `main.ri` that imports it — and
+/// hand back the DAG so a caller can read EITHER module's diagnostics.
+///
+/// Follows `harness_modules_ports/module_dag_tests.rs`'s established idiom
+/// (tempdir + `ModuleResolver` + `ModuleDag::compile_module`) rather than a new
+/// entry point. The stdlib root deliberately points at a directory that does not
+/// exist: `ModuleResolver` falls back to the embedded stdlib for `std.*`
+/// imports, and these fixtures import nothing from it anyway.
+fn compile_child_and_main(child_src: &str, main_src: &str) -> reify_compiler::module_dag::ModuleDag {
+    use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().to_path_buf();
+    std::fs::write(dir.join("child.ri"), child_src).expect("write child.ri");
+    std::fs::write(dir.join("main.ri"), main_src).expect("write main.ri");
+
+    let resolver = ModuleResolver::new(&dir, dir.join("nonexistent_stdlib"));
+    let mut dag = ModuleDag::new();
+    dag.compile_module("main", &resolver)
+        .unwrap_or_else(|errors| panic!("the two-module DAG must compile: {errors:#?}"));
+    dag
+}
+
+/// Assert `module_name`'s compiled form in `dag` reports no inert objective.
+fn assert_dag_module_has_no_inert(
+    dag: &reify_compiler::module_dag::ModuleDag,
+    module_name: &str,
+    why: &str,
+) {
+    let compiled = dag
+        .modules
+        .get(module_name)
+        .unwrap_or_else(|| panic!("module `{module_name}` must be in the DAG"));
+    assert_no_inert(compiled, why);
+}
+
+/// The reviewer's repro, compiled as the DAG it belongs to: `Widget.k` IS made
+/// `auto` — by a `sub` override in a downstream module — so the objective over
+/// it governs a real solver variable and the program is legal.
+#[test]
+fn exported_template_overridden_to_auto_downstream_is_compile_clean() {
+    let dag = compile_child_and_main(
+        r#"module child
+
+pub structure def Widget {
+    param k : Real = 3.0
+    constraint k > 0.0
+    minimize k
+}
+"#,
+        r#"module main
+
+import child
+
+structure def App {
+    sub w : Widget { k = auto }
+    constraint self.w.k == 4.0
+}
+
+structure Root {
+    sub app : App {}
+}
+"#,
+    );
+    assert_dag_module_has_no_inert(
+        &dag,
+        "child",
+        "a downstream `sub w : Widget { k = auto }` makes `k` a solver variable; \
+         the objective governs it and the program is legal",
+    );
+}
+
+/// The HARDER and more important half: `child.ri` compiled ALONE, with no
+/// consumer anywhere in the DAG, must also stay clean.
+///
+/// This is the reviewer's literal repro (`reify check child.ri`), and it is the
+/// case that rules out "thread the prelude" as a fix: there is no consumer to
+/// find, in the prelude or anywhere else, and one may be written tomorrow. A
+/// `pub` template is compiled without knowledge of its consumers by
+/// construction, so no positive proof of inertness is available — and a false
+/// Inert REJECTS a legal program, whereas a missed one merely leaves today's
+/// silence.
+#[test]
+fn exported_template_compiled_alone_is_compile_clean() {
+    let src = r#"module child
+
+pub structure def Widget {
+    param k : Real = 3.0
+    constraint k > 0.0
+    minimize k
+}
+"#;
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "Widget");
+    assert_no_inert(
+        &compiled,
+        "a `pub` template's consumers are unknowable at compile time, so \
+         inertness cannot be proved",
+    );
+}
+
+/// NEGATIVE GUARD — visibility must be the DISCRIMINATOR, not an off switch.
+///
+/// The byte-identical template WITHOUT `pub` is module-private: every consumer
+/// that could override `k` is in this module and therefore in `all_templates`,
+/// so inertness IS provable and the rule must still fire. Without this case a
+/// step-22 that simply disabled the pass would pass the two tests above.
+///
+/// Kept adjacent to them deliberately: the pair differs in exactly one token.
+#[test]
+fn module_private_template_with_the_same_inert_objective_still_errors() {
+    let src = r#"module child
+
+structure def Widget {
+    param k : Real = 3.0
+    constraint k > 0.0
+    minimize k
+}
+
+structure Root {
+    sub w : Widget {}
+}
+"#;
+    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+}
+
 // ── POSITIVE: the two structurally-inert fixtures ────────────────────────────
 
 /// Byte-mirror of `docs/prds/v0_6/fixtures/dic_min_no_autos.ri`.
