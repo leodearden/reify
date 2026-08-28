@@ -522,6 +522,10 @@ Consequences, recorded so they are not re-derived:
 - **A non-zero PTODO exit on main is the steady state, not an alarm.** Measured on main
   2026-08-27: **65 findings, 11 High, exit code 11** — 10 `untracked` + 1 `orphaned`
   (High), 3 `malformed-cite`, 51 `task-cites-deleted-path`. No gate observes any of it.
+  (That ζ kind breakdown predates §17: after #5654 the same population splits between
+  `task-cites-deleted-path` and `task-cites-renamed-path`. The two are mutually
+  exclusive per cited path and both Medium, so the 51 total and the exit code are
+  unchanged — only the kind labels move.)
 - **What the ratchet actually reaches is narrower than "all findings".**
   `ptodo-baseline-gen` filters to path-keyed source-marker findings
   (`is_swept_ext(&f.task_id) && !is_g_allow_finding(f)`), so of those 65 only **14** are
@@ -963,10 +967,11 @@ fix, chosen over another instance sweep of the live backlog.**
    it went. 2 renamed paths accounted for 6 citing tasks, which is also the argument for
    the per-run memo on the added `git show`.
 3. **The mechanism resolves the real case.** `git show -M --name-status --format=
-   60be72d922` prints exactly
-   `R100<TAB>crates/reify-compiler/tests/geometry_chunk_smoke.rs<TAB>crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs`,
-   and `git log -1 -- <old path>` returns that same sha — so the two seam calls compose on
-   the commit the lane already resolved, with no history walk.
+   60be72d922` prints two status lines, the second of which is
+   `R100<TAB>crates/reify-compiler/tests/geometry_chunk_smoke.rs<TAB>crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs`
+   (the first is an unrelated `A` line — which is why the parse scans every line rather
+   than only the first), and `git log -1 -- <old path>` returns that same sha — so the two
+   seam calls compose on the commit the lane already resolved, with no history walk.
 4. **Every degenerate input measured collapses to the unchanged deleted kind.** A genuine
    delete prints only `D<TAB><path>` lines; a merge commit prints **0** lines (`git show`
    defaults to `--cc`); a bogus sha exits non-zero with `fatal: bad object`, which

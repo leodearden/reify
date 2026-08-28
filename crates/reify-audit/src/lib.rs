@@ -1658,8 +1658,11 @@ mod tests {
         );
     }
 
-    /// The real 60be72d922 shape: the rename line is not first — other status
-    /// lines precede it, so the scan must not stop at the first non-`R` line.
+    /// Modelled on 60be72d922, whose measured shape has the rename line NOT
+    /// first (one unrelated `A` line precedes it), so the scan must not stop at
+    /// the first non-`R` line. The preceding lines here are synthetic — the
+    /// property under test is the position of the `R` line, not the exact
+    /// neighbours that commit happens to carry.
     #[test]
     fn parse_rename_target_finds_rename_after_other_status_lines() {
         let stdout = "A\tcrates/reify-compiler/tests/harness_doc_chunks/mod.rs\n\
