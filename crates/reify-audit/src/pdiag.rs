@@ -174,9 +174,12 @@ const CODE_PROBE: &str = ".with_code(";
 /// `.with_code(`.
 ///
 /// Measured against the real corpus: the widest constructor -> `.with_code(`
-/// gap anywhere in the tree is 13 lines
-/// (`crates/reify-compiler/src/expr.rs:5895` -> `:5908`), so 15 covers 100% of
-/// observed offsets with two lines of headroom. Counting non-comment lines
+/// gap the scanner resolves to its OWN attachment is 15 non-comment lines —
+/// `crates/reify-compiler/src/expr.rs`'s `let base_diag = Diagnostic::error(…)`
+/// / `base_diag.with_code(DiagnosticCode::SelectorKindMismatch)` pair — so 15
+/// covers 100% of observed offsets with ZERO headroom. Re-measure before
+/// trusting that figure: it was 13 when this detector was written and the
+/// corpus has since closed the gap. Counting non-comment lines
 /// (rather than physical ones) means an interleaved doc block cannot push a
 /// real code attachment out of reach. Widening this is a one-line change —
 /// re-measure the corpus first, and note that widening only ever makes the
@@ -579,7 +582,7 @@ fn brace_delta(line: &str) -> (usize, usize) {
 }
 
 /// Path prefixes exempt from the sweep, mirroring `ptodo.rs`'s
-/// `ALLOWLIST_PREFIXES` (ptodo.rs:602-617), which closes the identical hazard
+/// `ALLOWLIST_PREFIXES`, which closes the identical hazard
 /// for the TODO detector.
 const SCOPE_EXCLUDE_PREFIXES: &[&str] = &[
     // SELF-MATCH. The detector's own crate carries anchor tokens as DATA: this
@@ -824,7 +827,7 @@ impl RatchetVerdict {
         Finding {
             pattern: Pattern::PDiag,
             severity,
-            // Structural detectors key `task_id` by path (ptodo.rs:1447) —
+            // Structural detectors key `task_id` by path (`ptodo.rs::check`) —
             // there is no task to attribute a source-shape finding to.
             task_id: path.clone(),
             summary,
@@ -876,7 +879,7 @@ fn malformed_baseline_finding(err: &str) -> Finding {
     Finding {
         pattern: Pattern::PDiag,
         severity: Severity::High,
-        // Path-keyed like every other PDIAG finding (ptodo.rs:1447).
+        // Path-keyed like every other PDIAG finding (`ptodo.rs::check`).
         task_id: BASELINE_PATH.to_string(),
         summary: format!(
             "pdiag-baseline-unreadable: {BASELINE_PATH} does not parse — {err}. The ratchet \
@@ -945,7 +948,7 @@ fn empty_census_finding(rows: usize) -> Finding {
 /// - An unreadable source file (absent from the working tree, non-UTF-8) is
 ///   skipped, contributing nothing. `ls_files()` and the tree can legitimately
 ///   disagree mid-rebase, and inventing a count there would be a false RED
-///   (`ptodo.rs:1418` takes the same line).
+///   (`ptodo.rs::check`'s `read_to_string` arm takes the same line).
 ///
 /// Deliberately blind to the manifest: the census must be reconstructible from
 /// the tree alone, or the generator could never regenerate from scratch.
@@ -1064,7 +1067,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 /// scope) when an integration test pulls the crate in. Each caller therefore
 /// owns the tempdir and passes `tmp.path()`. That is also why the fixture reads
 /// real files: the enumeration seam is `ls_files()`, but content comes from the
-/// working tree (the `ptodo.rs:1418` posture), so the missing-file and non-UTF-8
+/// working tree (the `ptodo.rs::check` posture), so the missing-file and non-UTF-8
 /// fail-safe branches stay reachable rather than mocked away.
 #[cfg(any(test, feature = "test-support"))]
 // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
@@ -1180,7 +1183,7 @@ pub mod test_support {
     }
 
     /// `n` code-less constructor sites, one per line — the dominant real shape
-    /// (`crates/reify-eval/src/geometry_ops.rs:313`).
+    /// (`crates/reify-eval/src/geometry_ops.rs`).
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn codeless_src(n: usize) -> String {
         (0..n).map(|i| format!("    out.push(Diagnostic::error(format!(\"boom {i}\")));\n")).collect()
@@ -1232,7 +1235,7 @@ mod tests {
 
     #[test]
     fn single_line_codeless_push_is_one_uncoded_site() {
-        // Real shape: crates/reify-eval/src/geometry_ops.rs:313.
+        // Real shape: crates/reify-eval/src/geometry_ops.rs.
         let src = "        diagnostics.push(Diagnostic::warning(rej.message(&x, name)));";
         assert_eq!(sites(src), vec![(1, false)]);
     }
@@ -1257,7 +1260,8 @@ mod tests {
     #[test]
     fn info_constructor_is_not_an_anchor() {
         // INV-SF-6 scopes codes-mandatory to Warning/Error; `Info` is the debug
-        // tier (crates/reify-core/src/diagnostics.rs:3327) and is not
+        // tier (`DiagnosticCode::HexWedgeForceTet`'s doc in
+        // crates/reify-core/src/diagnostics.rs) and is not
         // code-mandatory, so it yields no site at all.
         let src = "    let d = Diagnostic::info(msg);";
         assert_eq!(sites(src), none());
@@ -1315,10 +1319,12 @@ mod tests {
     }
 
     #[test]
-    fn worst_observed_offset_of_thirteen_lines_is_coded() {
-        // crates/reify-compiler/src/expr.rs:5895 -> :5908 is the widest
-        // constructor -> `.with_code(` gap in the whole corpus. It MUST be
-        // coded, or the detector manufactures a false RED on landed code.
+    fn real_corpus_multiline_chain_offset_is_coded() {
+        // A 13-line constructor -> `.with_code(` gap is a real landed shape.
+        // The widest such gap in the corpus is now 15 (see PDIAG_CODE_WINDOW's
+        // doc), pinned by the boundary test below; this one guards the
+        // mid-range chain that motivated a windowed probe at all. Either MUST
+        // be coded, or the detector manufactures a false RED on landed code.
         assert_eq!(with_code_at_offset(13), vec![(1, true)]);
     }
 
@@ -1367,8 +1373,8 @@ mod tests {
     #[test]
     fn line_comment_forms_yield_no_sites() {
         // ~86 doc/line-comment occurrences repo-wide would otherwise inflate
-        // the counts (crates/reify-eval/src/engine_build.rs:3563 is exactly a
-        // constructor quoted inside a `//` comment).
+        // the counts (crates/reify-eval/src/engine_build.rs carries several
+        // constructors quoted inside `//` comments).
         let src = file(&[
             "// Diagnostic::error(m) — quoted in a line comment",
             "    /// Diagnostic::warning(m) — quoted in a doc comment",
@@ -1823,7 +1829,7 @@ mod tests {
         // SELF-MATCH is not hypothetical: `pdssentinel.rs` alone carries 10
         // literal `Diagnostic::error` tokens in its doc comments, and this
         // module's own header carries more. Mirrors ptodo's ALLOWLIST_PREFIXES
-        // (ptodo.rs:602-617), which closes the identical hazard.
+        // (`ptodo.rs::ALLOWLIST_PREFIXES`), which closes the identical hazard.
         for path in [
             "crates/reify-audit/src/pdiag.rs",
             "crates/reify-audit/src/pdssentinel.rs",
@@ -2074,7 +2080,7 @@ mod tests {
     #[test]
     fn only_exceeded_and_new_file_are_high() {
         // The exit code IS the High count (`high_severity_exit_code`,
-        // src/bin/reify-audit.rs:154), so High is the ONLY hard-gate lever.
+        // in src/bin/reify-audit.rs), so High is the ONLY hard-gate lever.
         // Under-count and orphan rows stay Medium and exit-neutral —
         // otherwise every opportunistic fix and every file deletion would turn
         // a diff RED, which is the exact thrash class esc-5252-1/5260/5266/5288
@@ -2250,7 +2256,7 @@ mod tests {
     fn a_tracked_path_absent_from_disk_is_skipped() {
         // ls_files() and the working tree can disagree (a deletion staged but
         // not yet reflected, a mid-rebase tree). Fail-safe: skip, never panic
-        // and never invent a count. Mirrors ptodo.rs:1418.
+        // and never invent a count. Mirrors `ptodo.rs::check`'s `read_to_string` arm.
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut fx = Fixture::new(tmp.path());
         fx.track_only(GEOM).baseline("");

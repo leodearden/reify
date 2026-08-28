@@ -3,7 +3,7 @@
 **Status:** Normative — cited verbatim in the `reify-audit --pattern PDIAG` failure message
 **Date:** 2026-07-28
 **Source:** Task 5405 (PRD `docs/prds/v0_6/eradicate-silent-undef.md` task η, §3 Leg C item 2, §7 "PDIAG baseline")
-**Invariants realized:** `INV-SF-2 error-severity-exits-nonzero` (`docs/legibility/design-invariants.md:47`), `INV-SF-6 diagnostics-carry-codes` (`:154`)
+**Invariants realized:** `INV-SF-2 error-severity-exits-nonzero` (`docs/legibility/design-invariants.md` §INV-SF-2), `INV-SF-6 diagnostics-carry-codes` (§INV-SF-6)
 
 This note answers two questions for anyone adding a diagnostic:
 
@@ -36,7 +36,7 @@ INV-SF-2's rule is that *any* Error-severity diagnostic on *any* channel
 (compile, eval, constraint, kernel, build) makes the command exit nonzero, with
 no per-code bolt-on escalation lists.
 
-The corollary (`design-invariants.md:47`) is the part that governs severity
+The corollary (`design-invariants.md` §INV-SF-2) is the part that governs severity
 choice, and it is the one most often got wrong:
 
 > a diagnostic *expected* on a healthy path is by definition not
@@ -63,7 +63,7 @@ builds, defeating a backstop whose whole point is graceful loudness.
 
 `Severity::Info` **is** the "debug" tier. This is not a choice made here; it is
 the layering landed for #5196 and stated at
-`crates/reify-core/src/diagnostics.rs:3355`:
+`crates/reify-core/src/diagnostics.rs` (`DiagnosticCode::HexWedgeForceTet`'s doc):
 
 > The PRD "debug" tier is realized as `Severity::Info` because
 > `reify_core::Severity` has no `Debug` variant; adding one would require
@@ -72,11 +72,11 @@ the layering landed for #5196 and stated at
 Two landed consequences worth knowing before you pick `Info`:
 
 - **Standing advisories are `Info`, deduped.** `FlexureFatigueCheckMissing`
-  (`diagnostics.rs:2316-2326`) is emitted once per eval session because it
+  (`DiagnosticCode::FlexureFatigueCheckMissing`) is emitted once per eval session because it
   describes a surface-level gap, not a per-instance defect.
-- **`Info` can be upgrade-exempt.** `HexWedgeForceTet` (`:3355`) and
-  `HexWedgePromoted` (`:3293`) are documented as always `Info` and never
-  upgraded, while their sibling `HexWedgeInvalidSweepGeometry` (`:3331`) is
+- **`Info` can be upgrade-exempt.** `HexWedgeForceTet` and
+  `HexWedgePromoted` are documented as always `Info` and never
+  upgraded, while their sibling `HexWedgeInvalidSweepGeometry` is
   `Info` by default and upgraded to `Error` under `require_hex_wedge=true` —
   **with the code preserved across the upgrade**. Severity is a property of the
   emission; the code is a property of the *condition* and does not change when
@@ -91,7 +91,7 @@ de-noise pass; this note owns the written policy.
 
 ## 2. Codes are mandatory (INV-SF-6)
 
-**Rule** (`design-invariants.md:154`):
+**Rule** (`design-invariants.md` §INV-SF-6):
 
 > Every emitted Warning/Error carries a `DiagnosticCode`.
 
@@ -110,12 +110,12 @@ sites. Coding an `Info` is welcome, not required.
    (`crates/reify-core/src/diagnostics.rs:156`), with the doc-comment shape its
    neighbours use: an `Origin:` line naming the emitting function, the task /
    PRD cite, when it is emitted, and — where non-obvious — a `Severity:` line.
-   The enum is `#[non_exhaustive]` (`:155`), so adding a variant is additive.
-2. Attach it at the construction site with `.with_code(...)`
-   (`:3915`), which chains off `Diagnostic::error` (`:3875`) or
-   `Diagnostic::warning` (`:3885`).
+   The enum is `#[non_exhaustive]`, so adding a variant is additive.
+2. Attach it at the construction site with `Diagnostic::with_code`, which
+   chains off `Diagnostic::error` or `Diagnostic::warning` (all three are
+   inherent methods on `Diagnostic` in the same file).
 
-`Diagnostic` is itself `#[non_exhaustive]` (`:3819`), so struct-literal
+`Diagnostic` is itself `#[non_exhaustive]`, so struct-literal
 construction is impossible outside `reify-core`: those three constructors are
 the whole shape space, which is what makes the PDIAG scan tractable.
 
@@ -219,6 +219,6 @@ construction, not by exemption.
 
 - `docs/prds/v0_6/eradicate-silent-undef.md` — §3 Leg C (the detector + this
   doc), §6 decisions 3/7/8, §7 contract, §8 boundary row 8.
-- `docs/legibility/design-invariants.md` — INV-SF-2 (`:47`), INV-SF-6 (`:154`).
+- `docs/legibility/design-invariants.md` — §INV-SF-2, §INV-SF-6.
 - `docs/prds/reify-audit-ptodo-detector.md` §8 — the sibling detector whose
   escape-hatch and baseline conventions PDIAG mirrors.
