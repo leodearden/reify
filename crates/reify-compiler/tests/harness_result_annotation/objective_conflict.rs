@@ -484,6 +484,57 @@ structure Root {
     assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
 }
 
+/// SECOND ROUTE into the same false positive, found while verifying finding 1
+/// and absent from the review: an imported GENERIC objective-bearing structure
+/// reaches `ctx.templates` as a monomorph CLONE, so the pass judges ANOTHER
+/// module's objective with only *this* module's visibility.
+///
+/// `phase_auto_type_param_resolution` resolves the target from a registry that
+/// chains prelude templates in unfiltered (`auto_type_param_phase.rs`'s
+/// `template_registry`, built from `prelude.iter().flat_map(|m| m.templates)`),
+/// clones it (`let mut mono = target.clone();`) and pushes the clone into
+/// `ctx.templates`. That phase's own known-gap comment lists `objective` among
+/// the fields it does NOT substitute, so the clone carries the generic's
+/// `minimize` verbatim. It runs well before `phase_inert_objective_check`
+/// (`lib.rs`), which then reports on it — anchoring the label at a
+/// `SourceSpan` that indexes into the *defining* module's source text, so even
+/// the rendered location is wrong.
+///
+/// The assertion is on `main`, not `child`: `child` compiled alone is the
+/// first route and is covered above.
+#[test]
+fn imported_generic_monomorph_objective_is_compile_clean() {
+    let dag = compile_child_and_main(
+        r#"module child
+
+trait Seal {}
+
+pub structure def ORingSeal : Seal { param d : Real = 10.0 }
+
+pub structure def Bearing<T: Seal> {
+    param bore : Real = 25.0
+    constraint bore > 0.0
+    minimize bore
+}
+"#,
+        r#"module main
+
+import child
+
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+
+structure Root { sub a : Assembly {} }
+"#,
+    );
+    assert_dag_module_has_no_inert(
+        &dag,
+        "main",
+        "a monomorph clone of an IMPORTED generic carries the defining module's \
+         objective; this module can see neither that module's overrides nor its \
+         downstream consumers, so inertness is not provable here",
+    );
+}
+
 // ── POSITIVE: the two structurally-inert fixtures ────────────────────────────
 
 /// Byte-mirror of `docs/prds/v0_6/fixtures/dic_min_no_autos.ri`.
