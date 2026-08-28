@@ -199,6 +199,39 @@
 //! table's domain; it is the reviewed statement of which of them are
 //! non-selectors, consumed only by the invariant that enforces it.
 //!
+//! # Two RULES task 6862 added
+//!
+//! Both are stated here as rules only; the arms and the tests that enforce them
+//! are the source of truth, so there is no second copy to drift.
+//!
+//! 1. **`Type::ScalarParam` DEFERS at a dimension slot and REJECTS at an `Int`
+//!    slot.** `Scalar<Q>` is what a dim-kinded generic PARAMETER
+//!    (`fn beam<Q: Dimension>(l: Scalar<Q>)`) resolves to. Its FAMILY is known
+//!    and only its DIMENSION is open, so at a dimension slot there is nothing to
+//!    compare until `Q` binds — judging the uninstantiated body under strict
+//!    `DimensionVector` equality could only ever REJECT correct code. At an
+//!    `Int` COUNT slot the asymmetry flips: `Scalar<Q>` is a dimensioned scalar
+//!    for EVERY binding of `Q`, so the family mismatch is decidable without
+//!    instantiating and rejecting is right. Precedents for the defer:
+//!    `type_compat::is_mul_div_gradualism_skip` and
+//!    `conformance::scalar_param_arg_defers_at_scalar_slot` (task 5627 γ D4-5,
+//!    PRD invariant I5) — the latter deliberately narrow in the same way, gating
+//!    on `matches!(param_type, Type::Scalar { .. })`. Both halves are pinned:
+//!    `tests::scalar_param_defers_at_length_slot` and
+//!    `tests::scalar_param_still_rejected_at_int_slot`.
+//!
+//! 2. **A slotted name that accepts more than one arity needs a guard or an
+//!    argued exemption.** `tests::lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`
+//!    derives each lowering's accepted-arity set BEHAVIOURALLY (compiles real
+//!    calls, reads back the arg-count diagnostics), pins it, and requires any
+//!    multi-arity name to carry an `if arg_count ==` guard or appear in
+//!    `tests::MULTI_ARITY_AGNOSTIC_SAFE` with the layout proving its indices
+//!    denote the same parameters at every form. A companion completeness arm
+//!    keeps the ledger honest: every name the table serves must be ledgered or
+//!    recorded in `tests::ARITY_UNOBSERVABLE_SLOT_KEYS`. What this buys, and its
+//!    MEASURED blind spot (the nine topology selectors and `generate` emit no
+//!    arity diagnostic at all), is on the HAZARD block above the primitive arms.
+//!
 //! # Relationship to the eval-layer units gate (task 5214)
 //!
 //! This check COMPLEMENTS `required_length_value` — it never replaces it.  It
@@ -3199,13 +3232,45 @@ mod tests {
 
     /// Slotted names whose lowering emits NO observable arg-count diagnostic, so
     /// [`lowering_accepted_arities`] cannot derive an accepted-arity set for them
-    /// and a [`LOWERING_ACCEPTED_ARITIES`] row would be vacuous rather than
+    /// and a [`LOWERING_ACCEPTED_ARITIES`] row would be VACUOUS rather than
     /// merely absent.
     ///
-    /// EMPTY as landed by step-5 of task 6862 — deliberately, so the completeness
-    /// arm below is RED and names its own exemption set rather than having one
-    /// asserted into place. Step-6 populates it with the measurement.
-    const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[];
+    /// # The measurement, not an assumption
+    ///
+    /// Compiling every one of these names at every arity in `0..=MAX_PROBED_ARITY`
+    /// produced NO arg-count diagnostic AT ALL — the probe therefore reads every
+    /// arity as "accepted" for them, which is not a fact about the lowering but
+    /// the absence of one. The geometry TOPOLOGY SELECTOR family is simply not
+    /// routed through a lowering arity check the way the geometry PRODUCERS are.
+    /// That measurement is re-run on every test run, not trusted: the
+    /// no-dead-entries arm of
+    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] asserts each
+    /// name here still yields a FULL accepted set, so if a selector ever gains an
+    /// arity check this list turns RED and forces the name into the ledger, where
+    /// the pin and the coupling rule can see it.
+    ///
+    /// # The consequence, stated honestly
+    ///
+    /// The FINDING-2 guard therefore covers the geometry-LOWERING families —
+    /// task 5750's subject, and the 26 arity-agnostic arms that motivated the
+    /// finding — and NOT task 4493/3994's selector family. Nobody should read the
+    /// guard as broader than that. The nine selectors plus `generate` are also
+    /// the names least exposed to the hazard: none is overloaded today, and a
+    /// value-form overload is a producer-side notion (task 5351).
+    const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[
+        // The nine geometry topology selectors (task 4493).
+        "center_of_mass",
+        "moment_of_inertia",
+        "faces_by_normal",
+        "edges_parallel_to",
+        "faces_perpendicular_to",
+        "edges_perpendicular_to",
+        "edges_at_height",
+        "extremal_by_bbox",
+        "extremal_by_centroid",
+        // The task-3994 list combinator, the table's lone `Int` count slot.
+        "generate",
+    ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by
     /// an arity-AGNOSTIC arm in [`builtin_arg_slots`].
