@@ -4121,8 +4121,11 @@ impl<'a> Lowering<'a> {
     /// Split out of [`Self::lower_unit_expr`] purely as a TEST SEAM, following
     /// the same shape as [`Self::qualified_type_recovery_base`]: no source
     /// reaches the two dropping arms today (see [`UnitOp`]), so a synthetic
-    /// classification handed to a real CST node is the only way to observe the
-    /// diagnostic's WORDING and its SPAN.  Without that, the `push_error` call
+    /// classification handed to a real CST node is the only way to observe that
+    /// the diagnostic FIRES AT ALL, exactly once, naming the operator verbatim,
+    /// and SPANNED to the whole `unit_expr`.  (Its full wording is deliberately
+    /// not pinned — see `unit_op_seam_unrecognized_*`.)  Without that seam, the
+    /// `push_error` call
     /// below is defensive code whose first execution would be in production —
     /// the shape INV-SF-7 warns about.  `unit_op_seam_*` in this file's `mod
     /// tests` drives all four arms.
@@ -4754,8 +4757,20 @@ enum UnitOp<'a> {
 /// that `is_error()`, and a scanner-accepted operator produces no error node).
 /// The user then sees a binding vanish with no diagnostic — the INV-SF-7
 /// `parse-is-value-faithful` failure shape (`docs/legibility/design-invariants.md`).
-/// Returning [`UnitOp::Unrecognized`] instead of `None` closes that structurally,
-/// rather than one operator at a time.
+/// Returning [`UnitOp::Unrecognized`] instead of `None` closes that for the
+/// OPERATOR-CLASSIFICATION path — every operator spelling, present or future,
+/// rather than `·` alone.
+///
+/// Scope of that claim, stated exactly because the next reader will lean on it:
+/// it covers this function's fallthrough, NOT the whole `Mul`/`Div` arm.  Three
+/// bare-`None` exits still precede the classification in
+/// [`Lowering::lower_unit_expr`] — the two `self.lower_unit_expr(..)?` operand
+/// recursions and the `self.source.get(op_start..op_end)?` slice read.  All
+/// three are unreachable for a well-formed CST (the operand byte ranges are
+/// token-aligned, ascending and inside `self.source`), so they are not live
+/// INV-SF-7 defects; but they are silent, so "no silent exit anywhere in the
+/// arm" would be a false claim.  A future edit that can make any of them fail on
+/// real source must give it a diagnostic, not inherit this one.
 fn classify_unit_op(op_text: &str) -> UnitOp<'_> {
     match op_text.trim() {
         "*" | "·" => UnitOp::Mul,
@@ -7237,8 +7252,9 @@ mod tests {
     // [`UnitOp`] doc for why they still must diagnose rather than return a bare
     // `None`).  Tests are therefore their only observation, and these cover just
     // one half of it: WHICH ARM a slice lands in.  What the call site does with
-    // that arm — the diagnostic's wording, its span, and the silence of
-    // `Missing` — is pinned by `unit_op_seam_*` below.  Deleting either group as
+    // that arm — that a diagnostic fires at all and names the operator, the span
+    // it attaches, and the silence of `Missing` — is pinned by `unit_op_seam_*`
+    // below.  Deleting either group as
     // "dead code" restores the silent-member-drop hazard unobserved.
 
     #[test]
@@ -7354,8 +7370,8 @@ mod tests {
     //
     // #5784 amendment pass.  The `classify_unit_op_*` tests above stop at the
     // classification; nothing observed what the caller then DOES with a dropping
-    // arm — not the diagnostic's wording, not the span it attaches, not the
-    // SILENCE of `Missing`.  Both arms are unreachable from source (the scanner
+    // arm — not that a diagnostic fires at all, not the span it attaches, not
+    // the SILENCE of `Missing`.  Both arms are unreachable from source (the scanner
     // emits only `*`, `·` and `/`, and comments are excised before classifying),
     // so the classification is the synthetic half here while the NODE stays real:
     // the span assertion is then a genuine claim about which construct an editor
@@ -7415,12 +7431,25 @@ mod tests {
         );
         let errors = lowering.errors.borrow();
         let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        // The two SUBSTANTIVE claims, asserted separately: exactly one
+        // diagnostic, and it quotes the operator verbatim.  Deliberately NOT a
+        // full-sentence equality against the message — this arm is unreachable
+        // from any source the grammar accepts, so the exact wording is a string
+        // no user can currently observe.  Pinning it would red this seam on a
+        // reword that changes no behaviour, while both claims below survive one
+        // (#5784 amendment pass).
         assert_eq!(
-            messages,
-            vec!["unrecognized unit operator `/*c*/*` in unit expression"],
-            "the diagnostic must quote the operator VERBATIM and be the ONLY one \
-             emitted — a second message here means the caller is also reporting \
-             the same node through `check_and_lower!`"
+            messages.len(),
+            1,
+            "the drop must produce exactly ONE diagnostic — a second here means \
+             the caller is also reporting the same node through \
+             `check_and_lower!`; got {messages:?}"
+        );
+        assert!(
+            messages[0].contains("/*c*/*"),
+            "the diagnostic must quote the rejected operator VERBATIM, so the \
+             user can see WHICH operator was not understood; got {:?}",
+            messages[0]
         );
         let span = errors[0].span;
         assert_eq!(
