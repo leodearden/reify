@@ -60,11 +60,12 @@
 //   not cosmetic, and a reordered or partial keyword call binds correctly —
 //   `element_order: ElementOrder.P2` lands in `element_order` wherever it is
 //   written.
-//   The real trap is a MISSPELLED label: an unknown name is appended lenient
-//   as `__arg{i}` with NO diagnostic (only a duplicate label is diagnosed) and
-//   the intended param silently falls back to its default — which for
-//   `element_order` is P1, quietly reinstating the bending lock this fixture
-//   exists to avoid. Spelling every param out, in order, keeps that failure
+//   The real trap is a MISSPELLED label: an unknown name emits
+//   `E_CTOR_UNKNOWN_FIELD` — a Warning today, an Error at δ — and is STILL
+//   appended lenient as `__arg{i}`, so the intended param falls back to its
+//   default anyway — which for `element_order` is P1, quietly reinstating the
+//   bending lock this fixture exists to avoid. A Warning does not fail the
+//   build, so spelling every param out, in order, still keeps that failure
 //   mode visible under review.
 //
 // RayleighDamping: matches the PRD §1 dogfood snippet and the resonance-budget
@@ -123,8 +124,9 @@ structure PrinterGantryModes {
     // each `name:` label is resolved against ModalOptions' declared params, so
     // `element_order: ElementOrder.P2` lands in `element_order` regardless of
     // position. Every param is still spelled out, in declaration order, because
-    // a MISSPELLED label is silently lenient and would leave element_order at
-    // its P1 default.
+    // a MISSPELLED label emits only an `E_CTOR_UNKNOWN_FIELD` Warning today
+    // (Error at δ) and is STILL bound leniently as `__arg{i}`, so it would
+    // leave element_order at its P1 default without failing the build.
     //
     // RayleighDamping(alpha: 0.0Hz, beta: 0.0001s): structural damping for the
     // resonance-budget reference (damping does not affect natural frequencies).

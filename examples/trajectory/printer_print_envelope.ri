@@ -77,8 +77,9 @@ structure def PrinterPrintEnvelope {
     // fill the remaining slots in declaration order: n_modes,
     // boundary_conditions, damping, sigma, tol, max_iters, reference_direction,
     // element_order). All params are still spelled out because a MISSPELLED
-    // label is silently lenient — appended as `__arg{i}` with no diagnostic,
-    // leaving the intended param (here element_order) at its P1 default.
+    // label is STILL bound leniently — appended as `__arg{i}`, leaving the
+    // intended param (here element_order) at its P1 default — under only an
+    // `E_CTOR_UNKNOWN_FIELD` Warning today (Error at δ).
 
     let gantry_length = 500mm
     let gantry_width  = 60mm

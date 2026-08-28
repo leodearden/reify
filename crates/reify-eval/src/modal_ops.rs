@@ -4085,7 +4085,7 @@ mod tests {
     /// algebraic property of the closed form ALONE. It calls the pure
     /// `reify_stdlib::modal::free_vibration::rayleigh_damping_ratio` twice with
     /// two ω arguments of its own making; it never observes what scale
-    /// `modal_ops` actually FEEDS. Changing `build_modes_list`'s
+    /// `modal_ops` actually FEEDS. Changing `run_modal_analysis`'s
     /// `let omega = 2.0 * PI * f` to pass `f` leaves this test GREEN. It was
     /// previously named `rayleigh_coefficients_are_consumed_on_the_angular_rate_scale`,
     /// which overstated exactly that, and `modal_analysis.ri` cited it by that

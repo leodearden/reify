@@ -46,8 +46,9 @@
 //   - ModalOptions args bind BY NAME (task-4522's by-name ctor binder resolves
 //     each `name:` label against the declared params; only UNLABELLED args fill
 //     the remaining slots in declaration order). Every param is still spelled
-//     out because a MISSPELLED label is silently lenient — appended as
-//     `__arg{i}` with no diagnostic, leaving the real param at its default.
+//     out because a MISSPELLED label is STILL bound leniently — appended as
+//     `__arg{i}`, leaving the real param at its default — under only an
+//     `E_CTOR_UNKNOWN_FIELD` Warning today (Error at δ).
 
 structure CantileverStepResponse {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
