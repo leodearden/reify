@@ -5320,11 +5320,19 @@ mod tests {
     /// must be absent from every sibling classification family so the
     /// `is_orientation_typed_fn` arm in `expr.rs`'s `NoUserFunctions` ladder is
     /// the sole claimant. Mirrors `parse_fn_names_are_disjoint_from_other_families`,
-    /// and — since this is the newest family — checks against EVERY sibling slice
-    /// that exists today, not just the ones that preceded it. The reciprocal
-    /// direction is pinned by an `!ORIENTATION_TYPED_FN_NAMES.contains(name)`
-    /// assert added to each of those 13 sibling tests, so a collision is caught
-    /// whichever slice it is added to.
+    /// and — since this was the newest family when 5344 landed — checks against
+    /// every sibling slice that PRECEDED it, not just its immediate neighbours.
+    /// The reciprocal direction is pinned by an
+    /// `!ORIENTATION_TYPED_FN_NAMES.contains(name)` assert added to each of those
+    /// 13 sibling tests, so a collision is caught whichever slice it is added to.
+    ///
+    /// The one later family, `FLEXURE_CTOR_FN_NAMES` (task #5476), is deliberately
+    /// NOT listed in the loop below: per that slice's own convention the newest
+    /// family checks against all existing siblings from its own side, and
+    /// `flexure_ctor_fn_names_are_disjoint_from_other_families` carries the
+    /// `!ORIENTATION_TYPED_FN_NAMES` assert for this pair. A single-direction
+    /// `∀ n ∈ F: n ∉ O` loop already catches a colliding name added to EITHER
+    /// slice, so the pair is fully covered.
     ///
     /// GREEN on arrival — a regression lock that fails if a colliding name is
     /// later added to either slice. The only pre-existing mentions of these
