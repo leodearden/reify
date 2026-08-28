@@ -354,6 +354,15 @@ const fn length_arg(index: usize, name: &'static str) -> CheckableArg {
 /// `h` that IS present.  Short-arg calls are already handled downstream by
 /// `check_builtin_arg_types`'s `compiled_args.get(index)` bounds check; arity
 /// errors are a separate diagnostic family.
+///
+/// **The standing obligation that rule creates** (task 6862 FINDING 2): a name
+/// is only safely unguarded while it stays single-form.  When a lowering gains
+/// a VALUE-FORM overload, the matching guard must land here in the same change,
+/// or the existing indices start firing on the wrong arguments.  The hazard, why
+/// the `compiled_args.get(index)` bounds check does not shield it, and the guard
+/// that now enforces the coupling
+/// ([`tests::lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`])
+/// are all stated in the HAZARD block immediately above the primitive arms.
 pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [CheckableArg] {
     match name {
         // ── Mass-properties topology selectors ───────────────────────────────
@@ -520,6 +529,53 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             },
         ],
 
+        // ── HAZARD: an arity-agnostic arm meets a future value-form overload ─
+        //
+        // Everything from here down (the task-5750 primitive / profile / modify
+        // / sweep / transform blocks) is arity-AGNOSTIC except where an arm
+        // spells an explicit `if arg_count ==` guard. That is correct while each
+        // name has ONE form, and it is what the "guard only genuinely overloaded
+        // names" rule above requires. The hazard is what happens when that stops
+        // being true.
+        //
+        // If a slotted name later gains a VALUE-FORM overload in the lowering
+        // WITHOUT a matching edit here, the slot INDICES below start denoting
+        // different parameters — and fire on the wrong ones. Worked example
+        // (task 6862 FINDING 2): adding `revolve(profile, axis_value, angle)`
+        // alongside today's 8-arg form would leave the `ox`@1 / `oy`@2 origin
+        // slots pointing at the `Axis` and at a `Scalar{ANGLE}`, i.e. TWO false
+        // `ArgTypeMismatch` errors on correct code.
+        //
+        // `check_builtin_arg_types`' `compiled_args.get(index)` bounds check does
+        // NOT shield that case. It shields `linear_pattern`'s 4-arg form only
+        // because the slot indices there are ABSENT at the short arity; in the
+        // `revolve` sketch indices 1-2 ARE populated, just by different
+        // parameters. A bounds check cannot tell those two situations apart.
+        //
+        // Coupling: task 5351 owns the value forms, and `linear_pattern` /
+        // `linear_pattern_2d` are already forward-compat-guarded for it.
+        //
+        // # What now enforces this
+        //
+        // `tests::lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`.
+        // It compiles real calls at every arity, derives each lowering's ACCEPTED
+        // arity set from the arg-count diagnostics, pins it, and requires that any
+        // name accepting MORE THAN ONE arity either carry an `if arg_count ==`
+        // guard or appear in `tests::MULTI_ARITY_AGNOSTIC_SAFE` with the layout
+        // that proves its indices denote the same parameters at every form.
+        //
+        // Task 6862 chose that ENFORCEABLE-TEST route over the comment-only
+        // route its brief also allowed, because the ledger is derived
+        // BEHAVIOURALLY (from diagnostics, not from reading these arms) and so
+        // cannot drift out of step with the lowering the way a comment can.
+        //
+        // Honest limit, MEASURED rather than assumed: the guard is blind to the
+        // nine geometry TOPOLOGY SELECTORS and to `generate`, which emit no
+        // arg-count diagnostic at all at any probed arity (see
+        // `tests::ARITY_UNOBSERVABLE_SLOT_KEYS`). It therefore covers exactly
+        // FINDING 2's subject — the geometry-lowering families task 5750 added —
+        // and not task 4493/3994's selector family.
+
         // ── Primitive CSG producers: every dimension is a Length (task 5750) ──
         //
         // PRD `docs/prds/v0_6/units-length-gate-completion.md` leaf η, work
@@ -643,7 +699,9 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // from `geometry_transform.rs`'s `compile_transform_op`.
         //
         // Both names are single-form (`check_arg_count_exact`), so both arms
-        // stay arity-agnostic per the rule stated on this function.
+        // stay arity-agnostic per the rule stated on this function — and are
+        // therefore subject to the HAZARD block above the primitives, which
+        // names what a future value-form overload would do to these indices.
         //
         // translate(target, dx, dy, dz)
         //   arg0:    the geometry handle — permanently unchecked (ε=4358's
@@ -683,6 +741,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // `crates/reify-eval/src/arg_acceptance.rs`'s family table. Arg names
         // are copied from `geometry_modify.rs`'s `compile_modify_op` arms and
         // its shared `compile_modify_2arg` helper.
+        //
+        // The arity-agnostic arms here are subject to the HAZARD block above the
+        // primitives. Two names in this block ALREADY accept more than one arity
+        // while staying agnostic — `offset_curve` and `shell` — and both are
+        // recorded, with the layout that makes them safe, in
+        // `tests::MULTI_ARITY_AGNOSTIC_SAFE`.
         //
         // This is where the table's first genuinely OVERLOADED names appear.
         // `fillet` and `chamfer` each accept a 2-arg all-edges form and a 3-arg
@@ -749,6 +813,10 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // this leaf through its named fixtures. Arg names from `geometry.rs`'s
         // Sweep arms.
         //
+        // Arity-agnostic, so subject to the HAZARD block above the primitives —
+        // `revolve` is that block's worked example, because its ox@1 / oy@2
+        // origin slots sit exactly where a value form's Axis and angle would.
+        //
         // extrude(profile, distance) / extrude_symmetric(profile, distance)
         // pipe(path, radius)
         //   All exact-2 single-form. Index 0 is the profile / path — a geometry
@@ -782,8 +850,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // ── 2-D profile producers (task 5750) ────────────────────────────────
         //
         // The task-5743 `profile` row of the same family table. Same rules as
-        // the primitives above; `polygon`'s variadic vertex stream is excluded
-        // for the reason recorded there.
+        // the primitives above — including the HAZARD block; `polygon`'s
+        // variadic vertex stream is excluded for the reason recorded there.
         //
         // rectangle(width, height)
         "rectangle" => const { &[length_arg(0, "width"), length_arg(1, "height")] },
@@ -3129,8 +3197,43 @@ mod tests {
         ("translate", &[4]),
     ];
 
+    /// Names that legitimately accept MORE THAN ONE arity while being served by
+    /// an arity-AGNOSTIC arm in [`builtin_arg_slots`].
+    ///
+    /// Adding a name here is a DELIBERATE CLAIM, not a way to quiet the guard:
+    /// that the slot indices denote THE SAME PARAMETERS at every accepted arity,
+    /// verified against the lowering. When they do NOT — the usual case — the
+    /// correct fix is an `if arg_count ==` guard on the arm, as `fillet`,
+    /// `chamfer`, `linear_pattern` and `linear_pattern_2d` already carry.
+    ///
+    /// The companion no-dead-entries assertion in
+    /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] requires
+    /// every name here to still be multi-arity AND still be agnostic, so a stale
+    /// entry cannot silently hollow out the rule.
+    ///
+    /// Per entry, why it is safe — each VERIFIED against the lowering, not
+    /// assumed:
+    ///
+    /// - `offset_curve` — accepts 2 and 3. The 2-arg form goes through
+    ///   `geometry_modify.rs`'s `compile_modify_2arg(…, "distance", …)`, which
+    ///   builds `[("target", …), ("distance", …)]`; the 3-arg form builds
+    ///   `[("target", …), ("distance", …), ("third", …)]` explicitly. Index 1 is
+    ///   `distance` in BOTH, so the arm's `length_arg(1, "distance")` denotes the
+    ///   same parameter either way. Note plainly what this is: FINDING 2's exact
+    ///   hazard shape, ALREADY PRESENT in the table and benign only by
+    ///   coincidence of the lowering's layout. It is listed rather than silently
+    ///   tolerated precisely so that a future third case has to be argued.
+    ///
+    /// - `shell` — `check_arg_count_at_least("shell", …, 2, …)`, so it accepts an
+    ///   OPEN tail. The lowering builds `[("target", …), ("thickness", …)]` and
+    ///   then appends the remaining args as `face_{i}` indices, so index 1 is
+    ///   `thickness` at every arity and the agnostic arm denotes the same
+    ///   parameter throughout.
+    const MULTI_ARITY_AGNOSTIC_SAFE: &[&str] = &["offset_curve", "shell"];
+
     /// FINDING 2's guard: the lowering-arity ledger is pinned, and a name that
-    /// accepts MORE THAN ONE arity may not be served by an arity-AGNOSTIC arm.
+    /// accepts MORE THAN ONE arity may not be served by an arity-AGNOSTIC arm
+    /// unless it is an explicitly-argued [`MULTI_ARITY_AGNOSTIC_SAFE`] entry.
     ///
     /// Two assertions, and the second is the one that makes FINDING 2
     /// enforceable rather than conventional:
@@ -3143,9 +3246,16 @@ mod tests {
     /// 2. COUPLING — for every multi-arity name, `builtin_arg_slots(name, k)`
     ///    must NOT be identical across its accepted arities, i.e. the arm must
     ///    carry an `if arg_count ==` guard (as `fillet` / `chamfer` /
-    ///    `linear_pattern` / `linear_pattern_2d` already do). An arity-agnostic
-    ///    arm serving an overloaded name is EXACTLY how a slot comes to fire on
-    ///    the wrong argument.
+    ///    `linear_pattern` / `linear_pattern_2d` already do), UNLESS the name is
+    ///    an argued [`MULTI_ARITY_AGNOSTIC_SAFE`] entry. An arity-agnostic arm
+    ///    serving an overloaded name is EXACTLY how a slot comes to fire on the
+    ///    wrong argument.
+    ///
+    /// 3. NO DEAD EXEMPTIONS — every [`MULTI_ARITY_AGNOSTIC_SAFE`] entry must
+    ///    still be multi-arity AND still be agnostic. Without this, a name that
+    ///    later gained a guard (or lost an overload) would sit in the exemption
+    ///    list forever, hollowing rule 2 out for it. Mirrors assertion (a) of
+    ///    [`arg_slot_keys_are_registered_builtin_names`].
     #[test]
     fn lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table() {
         let probed = lowering_accepted_arities();
@@ -3171,7 +3281,7 @@ mod tests {
 
             // (2) COUPLING. Collected rather than asserted in-loop, so ONE run
             // names every offender instead of only the alphabetically-first.
-            if pinned.len() > 1 {
+            if pinned.len() > 1 && !MULTI_ARITY_AGNOSTIC_SAFE.contains(name) {
                 let arities: Vec<usize> = pinned.iter().copied().collect();
                 let first = builtin_arg_slots(name, arities[0]);
                 let arity_agnostic = arities.iter().all(|&k| builtin_arg_slots(name, k) == first);
@@ -3190,5 +3300,29 @@ mod tests {
              indices genuinely denote the same parameters at every accepted arity, record \
              the name in MULTI_ARITY_AGNOSTIC_SAFE with the layout that proves it."
         );
+
+        // (3) NO DEAD EXEMPTIONS.
+        for &name in MULTI_ARITY_AGNOSTIC_SAFE {
+            let measured = probed.get(name).unwrap_or_else(|| {
+                panic!(
+                    "MULTI_ARITY_AGNOSTIC_SAFE names {name:?}, but it is not a slotted \
+                     builtin — the probe never saw it. Remove the stale entry."
+                )
+            });
+            assert!(
+                measured.len() > 1,
+                "MULTI_ARITY_AGNOSTIC_SAFE names {name:?}, but its lowering now accepts \
+                 only {measured:?}. The exemption no longer applies — delete the entry so \
+                 the coupling rule covers this name again."
+            );
+            let arities: Vec<usize> = measured.iter().copied().collect();
+            let first = builtin_arg_slots(name, arities[0]);
+            assert!(
+                arities.iter().all(|&k| builtin_arg_slots(name, k) == first),
+                "MULTI_ARITY_AGNOSTIC_SAFE names {name:?}, but its arm is no longer \
+                 arity-agnostic — it now carries an `if arg_count ==` guard, which is the \
+                 stronger fix. Delete the entry; the guard already satisfies the rule."
+            );
+        }
     }
 }
