@@ -16,7 +16,7 @@
 //! Pinned by the unit test `default_content_hash_is_not_no_options_sentinel`.
 
 use reify_core::ContentHash;
-use reify_ir::Mesh;
+use reify_ir::{Mesh, VoxelResolution};
 
 /// OpenVDB Mesh→Voxel conversion options.
 ///
@@ -78,6 +78,150 @@ pub const VOXELS_PER_LONGEST_AXIS: f64 = 64.0;
 /// parameter.  2.0 extra voxels is the PRD §6 D7 conservative default.
 pub const BAND_MARGIN_VOXELS: f64 = 2.0;
 
+/// Number of voxels required ACROSS the thinnest feature a caller asks to
+/// resolve (task 6560): `voxel_size = h = min_feature / MIN_FEATURE_VOXELS_ACROSS`.
+///
+/// # Why 4 and not the PRD's "≈ thickness/3"
+///
+/// The v0.4-shells gate (`docs/prds/v0_4/structural-analysis-shells.md`) asks
+/// for "≈ thickness/3 voxel size for the thinnest expected feature". At
+/// `h = t/3` the half-thickness of that feature is `1.5 h` — BELOW the
+/// empirically-established OpenVDB interior-signing floor of
+/// "half-thickness ≥ 2 × voxel_size" documented at
+/// `crates/reify-eval/tests/harness_kernel_realization/realization_read_api.rs:505-510`,
+/// so the feature's interior can fail to sign negative at all. `4.0` is the
+/// COARSEST value clearing that floor (`half-thickness = 2 h`), and being
+/// finer than `t/3` it satisfies the gate's "resolutions sufficient for".
+///
+/// Tunable on the same "measure first, then tune" footing as
+/// [`VOXELS_PER_LONGEST_AXIS`] (PRD §6 D7): raising it refines the grid and
+/// raises cost cubically; lowering it below 4.0 re-enters the unsigned-interior
+/// regime and must not be done without re-measuring that floor.
+pub const MIN_FEATURE_VOXELS_ACROSS: f64 = 4.0;
+
+/// Why a resolution request could not be turned into [`MeshToVoxelOptions`].
+///
+/// Shape follows [`crate::ingest::IngestError`] (`ingest.rs:85`): a plain
+/// `Debug + Clone + PartialEq` enum with a hand-written [`std::fmt::Display`]
+/// and a blanket [`std::error::Error`] impl, so the message is the single
+/// source of truth for what the caller sees. `OpenVdbKernel` bridges it into
+/// `GeometryError::OperationFailed` via that `Display`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VoxelResolutionError {
+    /// The mesh has no usable bounding box, so no voxel size can be derived
+    /// from it and none of the budget arithmetic is meaningful.
+    ///
+    /// Exactly the conditions under which [`MeshToVoxelOptions::honest_floor`]
+    /// returns `None`: an empty `vertices` buffer, a mesh whose vertices are
+    /// all coincident (zero extent on every axis), or any non-finite (NaN /
+    /// Inf) vertex coordinate.
+    DegenerateMesh,
+
+    /// A caller-supplied length in the resolution request was not finite and
+    /// strictly positive.
+    ///
+    /// Carries the offending value verbatim (including its NaN payload — the
+    /// field is compared by bits in the unit tests) and the request variant it
+    /// came from, so the diagnostic names both what was asked for and where.
+    InvalidRequest {
+        /// The offending value exactly as requested.
+        requested: f64,
+        /// Name of the [`VoxelResolution`] variant that carried it, e.g.
+        /// `"MinFeature"`.
+        variant: &'static str,
+    },
+}
+
+impl std::fmt::Display for VoxelResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DegenerateMesh => write!(
+                f,
+                "cannot derive a voxel resolution: the mesh has no usable bounding box \
+                 (empty, all vertices coincident, or a non-finite coordinate)"
+            ),
+            Self::InvalidRequest { requested, variant } => write!(
+                f,
+                "invalid VoxelResolution::{variant}({requested}): the requested length \
+                 must be finite and strictly positive"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VoxelResolutionError {}
+
+/// Axis-aligned bounding-box extents `[dx, dy, dz]` of `mesh`, in `f64`.
+///
+/// Returns `None` under exactly the conditions
+/// [`MeshToVoxelOptions::honest_floor`] has always rejected — it is that
+/// function's original preamble, lifted verbatim so `honest_floor` and
+/// [`MeshToVoxelOptions::for_resolution`] cannot drift apart on what counts as
+/// a degenerate mesh:
+///
+/// - `vertices` is empty;
+/// - any coordinate is non-finite (NaN or Inf) — rejected on the FIRST such
+///   coordinate rather than skipped, because the NaN-comparison short-circuit
+///   in `v < min` / `v > max` would otherwise yield a plausible-looking bbox
+///   that silently ignores the offending vertex;
+/// - any extent is non-finite, or the longest extent is not positive (all
+///   vertices coincident).
+fn bbox_extents(mesh: &Mesh) -> Option<[f64; 3]> {
+    if mesh.vertices.is_empty() {
+        return None;
+    }
+
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for chunk in mesh.vertices.chunks_exact(3) {
+        for axis in 0..3 {
+            let v = chunk[axis];
+            if !v.is_finite() {
+                return None;
+            }
+            if v < min[axis] {
+                min[axis] = v;
+            }
+            if v > max[axis] {
+                max[axis] = v;
+            }
+        }
+    }
+
+    let extents = [
+        (max[0] - min[0]) as f64,
+        (max[1] - min[1]) as f64,
+        (max[2] - min[2]) as f64,
+    ];
+    for &e in &extents {
+        if !e.is_finite() {
+            return None;
+        }
+    }
+    if extents[0].max(extents[1]).max(extents[2]) <= 0.0 {
+        return None;
+    }
+    Some(extents)
+}
+
+/// Reject a caller-supplied length that is not finite and strictly positive.
+///
+/// `variant` names the [`VoxelResolution`] arm the value came from so the
+/// resulting [`VoxelResolutionError::InvalidRequest`] message points at the
+/// request site rather than at the arithmetic.
+fn validate_requested_length(
+    value: f64,
+    variant: &'static str,
+) -> Result<(), VoxelResolutionError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(VoxelResolutionError::InvalidRequest {
+            requested: value,
+            variant,
+        });
+    }
+    Ok(())
+}
+
 impl MeshToVoxelOptions {
     /// Derive honest-floor resolution options from the mesh bounding box.
     ///
@@ -118,44 +262,9 @@ impl MeshToVoxelOptions {
     /// mesh would yield a misleadingly-tight bbox; returning `None` forces
     /// the caller to reject or clean the mesh before voxelization.
     pub fn honest_floor(mesh: &Mesh) -> Option<Self> {
-        if mesh.vertices.is_empty() {
-            return None;
-        }
+        let extents = bbox_extents(mesh)?;
 
-        // Compute per-axis min/max over flat xyz triplets.
-        // Any NaN / Inf coordinate makes the bounding box undefined — return
-        // None immediately rather than silently skipping the bad value and
-        // computing a bbox over partial data (the NaN-comparison short-circuit
-        // in `v < min` / `v > max` would otherwise produce a plausible-looking
-        // bbox that ignores the offending vertex entirely).
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        for chunk in mesh.vertices.chunks_exact(3) {
-            for axis in 0..3 {
-                let v = chunk[axis];
-                if !v.is_finite() {
-                    return None;
-                }
-                if v < min[axis] { min[axis] = v; }
-                if v > max[axis] { max[axis] = v; }
-            }
-        }
-
-        // All extents must be finite and positive.
-        let extents = [
-            (max[0] - min[0]) as f64,
-            (max[1] - min[1]) as f64,
-            (max[2] - min[2]) as f64,
-        ];
-        for &e in &extents {
-            if !e.is_finite() {
-                return None;
-            }
-        }
         let longest = extents[0].max(extents[1]).max(extents[2]);
-        if longest <= 0.0 {
-            return None;
-        }
 
         let voxel_size = longest / VOXELS_PER_LONGEST_AXIS;
         // narrow_band × h ≥ longest/2 ≥ any interior point:
@@ -165,6 +274,75 @@ impl MeshToVoxelOptions {
         //               ≥ longest/2  ✓
         let narrow_band = VOXELS_PER_LONGEST_AXIS / 2.0 + BAND_MARGIN_VOXELS;
         Some(Self { voxel_size, narrow_band })
+    }
+
+    /// Derive conversion options from a kernel-agnostic [`VoxelResolution`]
+    /// request (task 6560 — the v0.4-shells `BRep→Voxel` resolution seam).
+    ///
+    /// # Why this exists alongside `honest_floor`
+    ///
+    /// [`Self::honest_floor`] derives the voxel size from the bounding box
+    /// ALONE (`longest_extent / VOXELS_PER_LONGEST_AXIS`), so it knows nothing
+    /// about the features inside the part. On the shells PRD's own motivating
+    /// geometry — a 1 mm flexure in a 100 mm part
+    /// (`docs/prds/v0_4/structural-analysis-shells.md`, "Background") — that
+    /// yields 1.5625 mm/voxel and the feature is entirely sub-voxel.
+    /// `for_resolution` is the seam through which a caller that KNOWS its
+    /// thinnest feature can ask for a grid that actually resolves it.
+    ///
+    /// # Per-variant behaviour
+    ///
+    /// - [`VoxelResolution::HonestFloor`] — delegated VERBATIM to
+    ///   [`Self::honest_floor`], so every pre-6560 caller keeps the grid it
+    ///   always got, bit-for-bit. `None` becomes
+    ///   [`VoxelResolutionError::DegenerateMesh`].
+    /// - [`VoxelResolution::TargetVoxelSize(h)`] — `h` is used verbatim after
+    ///   validation.
+    /// - [`VoxelResolution::MinFeature(t)`] — `h = t / MIN_FEATURE_VOXELS_ACROSS`.
+    ///
+    /// # Errors
+    ///
+    /// - [`VoxelResolutionError::DegenerateMesh`] — the mesh has no usable
+    ///   bounding box (see [`bbox_extents`]). Checked for EVERY variant,
+    ///   including the ones that do not derive `h` from the bbox, because the
+    ///   band width still is.
+    /// - [`VoxelResolutionError::InvalidRequest`] — the requested length was
+    ///   not finite and strictly positive.
+    pub fn for_resolution(
+        mesh: &Mesh,
+        resolution: VoxelResolution,
+    ) -> Result<Self, VoxelResolutionError> {
+        let voxel_size = match resolution {
+            // Delegated, never re-derived: this keeps the pre-6560 behaviour
+            // bit-identical by construction rather than by two implementations
+            // happening to agree.
+            VoxelResolution::HonestFloor => {
+                return Self::honest_floor(mesh).ok_or(VoxelResolutionError::DegenerateMesh);
+            }
+            VoxelResolution::TargetVoxelSize(h) => {
+                validate_requested_length(h, "TargetVoxelSize")?;
+                h
+            }
+            VoxelResolution::MinFeature(t) => {
+                validate_requested_length(t, "MinFeature")?;
+                t / MIN_FEATURE_VOXELS_ACROSS
+            }
+        };
+
+        let extents = bbox_extents(mesh).ok_or(VoxelResolutionError::DegenerateMesh)?;
+
+        // PLACEHOLDER (task 6560, step-4): reuse honest_floor's longest-extent
+        // band rule so the voxel-size arithmetic can be tested on its own.
+        // Step-6 replaces this with the min-half-extent rule that makes
+        // thickness-scale resolution affordable on a thin feature in a large
+        // part, and adds the dense-grid budget pre-check.
+        let _ = extents;
+        let narrow_band = VOXELS_PER_LONGEST_AXIS / 2.0 + BAND_MARGIN_VOXELS;
+
+        Ok(Self {
+            voxel_size,
+            narrow_band,
+        })
     }
 
     /// Produce a [`ContentHash`] of the conversion parameters.
@@ -563,8 +741,9 @@ mod tests {
     #[test]
     fn for_resolution_target_voxel_size_is_used_verbatim() {
         let plate = plate_100x100x1();
-        let opts = MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::TargetVoxelSize(0.25))
-            .expect("TargetVoxelSize(0.25) on the plate must succeed");
+        let opts =
+            MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::TargetVoxelSize(0.25))
+                .expect("TargetVoxelSize(0.25) on the plate must succeed");
         assert_eq!(
             opts.voxel_size, 0.25,
             "TargetVoxelSize must be honoured exactly, not re-derived"
@@ -577,7 +756,14 @@ mod tests {
     #[test]
     fn for_resolution_rejects_invalid_requested_sizes() {
         let plate = plate_100x100x1();
-        for bad in [0.0_f64, -1.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for bad in [
+            0.0_f64,
+            -1.0,
+            -0.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
             for resolution in [
                 VoxelResolution::TargetVoxelSize(bad),
                 VoxelResolution::MinFeature(bad),
@@ -590,9 +776,9 @@ mod tests {
                              requested={requested}, bad={bad}"
                         );
                     }
-                    other => panic!(
-                        "expected Err(InvalidRequest) for {resolution:?}; got {other:?}"
-                    ),
+                    other => {
+                        panic!("expected Err(InvalidRequest) for {resolution:?}; got {other:?}")
+                    }
                 }
             }
         }
@@ -641,9 +827,11 @@ mod tests {
     #[test]
     fn min_feature_voxels_across_is_at_least_the_prd_thickness_over_three() {
         assert_eq!(MIN_FEATURE_VOXELS_ACROSS, 4.0);
-        assert!(
-            MIN_FEATURE_VOXELS_ACROSS >= 3.0,
-            "must be at least as fine as the shells PRD's ≈ thickness/3"
-        );
+        const {
+            assert!(
+                MIN_FEATURE_VOXELS_ACROSS >= 3.0,
+                "must be at least as fine as the shells PRD's ~ thickness/3"
+            )
+        };
     }
 }
