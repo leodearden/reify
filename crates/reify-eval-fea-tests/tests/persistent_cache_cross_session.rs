@@ -133,6 +133,46 @@ fn slab_bits(result: &Value, field: &str) -> Vec<u64> {
     }
 }
 
+/// Extract the 32-hex input hash from a cache entry's `.bin` path.
+fn bin_input_hash(bin: &std::path::Path) -> String {
+    bin.file_stem()
+        .expect("a `.bin` path must have a stem")
+        .to_str()
+        .expect("cache filenames are ASCII hex")
+        .to_string()
+}
+
+/// Backdate the mtime of `path` to `age_secs` seconds in the past.
+///
+/// A file-local clone of `reify_eval::persistent_cache::backdate_mtime`
+/// (persistent_cache.rs:1737), which is `#[cfg(test)] pub(crate)` and so is
+/// invisible from an integration test in another crate — `cfg(test)` applies
+/// only when reify-eval is itself the crate under test, not when it is a
+/// dev-dependency. This is a deliberate mirror of that helper, not an
+/// accidental duplicate; keep the two bodies in step if either changes.
+///
+/// Directories are opened read-only and regular files write-only: on Linux
+/// `futimens` requires only ownership of the inode, not write access on the
+/// file descriptor, which is what makes the directory case work at all (a
+/// directory cannot be opened `O_WRONLY`).
+fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
+    use std::fs::FileTimes;
+    use std::time::{Duration, SystemTime};
+    let t = SystemTime::now()
+        .checked_sub(Duration::from_secs(age_secs))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let times = FileTimes::new().set_modified(t);
+    let f = if path.is_dir() {
+        std::fs::File::open(path).expect("opening a directory read-only must succeed")
+    } else {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("opening a file write-only must succeed")
+    };
+    f.set_times(times).expect("set_times must succeed");
+}
+
 /// Extract `max_von_mises` as a raw bit pattern.
 fn max_von_mises_bits(result: &Value) -> u64 {
     let Value::StructureInstance(data) = result else {
