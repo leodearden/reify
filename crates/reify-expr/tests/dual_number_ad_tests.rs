@@ -1291,13 +1291,20 @@ fn unbounded_user_function_recursion_yields_undef_and_no_tangent_rather_than_a_s
     // for the dual path's per-frame budget only while it is tight enough that a
     // frame-size regression actually overflows it.
     //
-    // The figure below is provisional until the dual path actually recurses
-    // here (it is measured, and this comment replaced with the numbers, in the
-    // step that implements `UserFunctionCall` in `dual_eval`).  If a toolchain
-    // bump reddens this, RE-MEASURE by bisecting rather than raising it for
-    // headroom.
+    // MEASURED on this tree at MAX_RECURSION_DEPTH (256), debug profile, by
+    // bisecting this constant: overflows at 2048 KiB, passes at 2176 KiB.  That
+    // is within noise of the evaluator's own measured 2304 KiB, i.e. the dual
+    // traversal costs no more per level than `eval_expr` does — which is the
+    // whole point of the `#[inline(never)]` split around `eval_dual_fn_body`
+    // and `eval_dual_lambda_apply`, and is what this test exists to keep true.
+    //
+    // 3 MiB = ~41% over the measured 2176 KiB requirement: enough that ordinary
+    // codegen drift does not redden the gate, tight enough that a further
+    // ~900 KiB (~3.5 KiB/level) regression does.  If a toolchain bump reddens
+    // this, RE-MEASURE by bisecting the constant and update the figures here —
+    // do not just raise it for headroom, which would silently retire the pin.
     let handle = std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(3 * 1024 * 1024)
         .spawn(|| {
             let f = user_fn("recur", &["a"], vec![], user_fn_call(
                 "recur",

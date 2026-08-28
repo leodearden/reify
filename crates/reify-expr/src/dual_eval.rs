@@ -133,6 +133,68 @@ impl Seeds {
     }
 }
 
+/// Tangents bound to cells that are **not** seed columns: a user function's or
+/// lambda's parameters, and a callee's `let` bindings, while its body is being
+/// evaluated.
+///
+/// A parameter cell is not a seed — it is an *interior* cell whose tangent was
+/// computed from the seeds at the call site — so `Seeds` alone cannot resolve
+/// it.  Without this overlay a function body would look seed-independent and
+/// every user-defined function would differentiate to zero.
+///
+/// Only NON-zero tangents are stored, so "is this cell bound?" and "does this
+/// cell carry a tangent?" are the same question, and an unbound lookup falls
+/// through to [`Tangent::Zero`] — which is the right answer for a parameter
+/// that genuinely does not move with the seeds.
+#[derive(Default)]
+pub struct DualEnv {
+    bindings: HashMap<ValueCellId, Tangent>,
+    /// Memo for [`DualEnv::carries_tangent`], invalidated on every new binding.
+    /// Scoped to one body evaluation, which is exactly where it pays.
+    carries: RefCell<HashMap<ContentHash, bool>>,
+}
+
+impl DualEnv {
+    /// The empty overlay — the state at the residual root.
+    pub fn new() -> Self {
+        DualEnv::default()
+    }
+
+    /// Bind `cell` to `tangent`.  A [`Tangent::Zero`] is deliberately NOT
+    /// stored: unbound already means zero.
+    fn bind(&mut self, cell: ValueCellId, tangent: Tangent) {
+        if tangent.is_zero() {
+            return;
+        }
+        self.bindings.insert(cell, tangent);
+        self.carries.borrow_mut().clear();
+    }
+
+    fn get(&self, cell: &ValueCellId) -> Option<&Tangent> {
+        self.bindings.get(cell)
+    }
+
+    /// True when `expr` references at least one bound cell.
+    fn carries_tangent(&self, expr: &CompiledExpr) -> bool {
+        if self.bindings.is_empty() {
+            return false;
+        }
+        if let Some(hit) = self.carries.borrow().get(&expr.content_hash) {
+            return *hit;
+        }
+        let answer = expr.collect_value_refs().iter().any(|id| self.bindings.contains_key(id));
+        self.carries.borrow_mut().insert(expr.content_hash, answer);
+        answer
+    }
+}
+
+/// Path segment marking a descent OUT of a call site and INTO the callee's
+/// body.  Argument children occupy `0..arity`, so `u16::MAX` cannot collide
+/// with them, and the call site's own path prefix keeps two call sites of the
+/// same function distinguishable — which is what lets λ tell which call site's
+/// kink moved.
+const CALLEE_MARKER: u16 = u16::MAX;
+
 /// Is THIS node (not its subtree) non-smooth?  O(1) on the node's kind.
 fn node_is_kink(e: &CompiledExpr) -> bool {
     match &e.kind {
@@ -169,23 +231,25 @@ pub fn eval_dual(
     record: &mut BranchRecord,
 ) -> DualValue {
     let mut path: Vec<u16> = Vec::new();
-    eval_dual_at(expr, ctx, seeds, record, &mut path)
+    eval_dual_at(expr, ctx, seeds, &DualEnv::new(), record, &mut path)
 }
 
 /// Recursive worker.  `path` is the structural child-index path from the
 /// residual root, pushed on descent and popped on return, so a kink's
 /// [`KinkSite`] is simply a snapshot of it.
+#[allow(clippy::too_many_arguments)]
 fn eval_dual_at(
     expr: &CompiledExpr,
     ctx: &EvalContext,
     seeds: &Seeds,
+    env: &DualEnv,
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
-    // Fast path: a subtree that can neither reach a seed nor hide a kink has a
-    // provably zero derivative and nothing to record, so evaluate it exactly as
-    // the rest of the system would and lift it.
-    if !seeds.depends_on_seed(expr) && !seeds.subtree_has_kink(expr) {
+    // Fast path: a subtree that can reach neither a seed nor a bound parameter,
+    // and hides no kink, has a provably zero derivative and nothing to record —
+    // so evaluate it exactly as the rest of the system would and lift it.
+    if !seeds.depends_on_seed(expr) && !env.carries_tangent(expr) && !seeds.subtree_has_kink(expr) {
         return DualValue::constant(crate::eval_expr(expr, ctx));
     }
 
@@ -205,22 +269,28 @@ fn eval_dual_at(
                 // zero row, which would claim the residual is flat in a
                 // variable it may well depend on.
                 Some(_) => DualValue::opaque(value),
-                None => DualValue::constant(value),
+                // Resolution order is seed column → overlay → zero.  A bound
+                // parameter's tangent is already expressed in seed columns, so
+                // it is adopted as-is.
+                None => match env.get(id) {
+                    Some(tangent) => DualValue { value, tangent: tangent.clone() },
+                    None => DualValue::constant(value),
+                },
             }
         }
 
         CompiledExprKind::UnOp { op, operand } => match op {
             UnOp::Neg => {
-                let inner = descend(operand, 0, ctx, seeds, record, path);
+                let inner = descend(operand, 0, ctx, seeds, env, record, path);
                 let value = crate::negate_value(inner.value.clone());
                 finish_unary(value, &inner, |_| -1.0)
             }
             // `not` is Bool-valued: there is no scalar derivative to take.
-            UnOp::Not => refuse_or_constant(expr, ctx, seeds),
+            UnOp::Not => refuse_or_constant(expr, ctx, seeds, env),
         },
 
         CompiledExprKind::BinOp { op, left, right } => {
-            eval_dual_binop(*op, left, right, ctx, seeds, record, path)
+            eval_dual_binop(*op, left, right, ctx, seeds, env, record, path)
         }
 
         CompiledExprKind::FunctionCall { function, args } => {
@@ -228,33 +298,39 @@ fn eval_dual_at(
             // only `qualified_name` comparison in the evaluator is the
             // `std::__interp_render` intercept, and that name is in neither
             // table, so it falls through to the refusal path.
-            eval_dual_builtin(expr, &function.name, args, ctx, seeds, record, path)
+            eval_dual_builtin(expr, &function.name, args, ctx, seeds, env, record, path)
         }
 
         CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
-            eval_dual_conditional(condition, then_branch, else_branch, ctx, seeds, record, path)
+            eval_dual_conditional(condition, then_branch, else_branch, ctx, seeds, env, record, path)
         }
 
         CompiledExprKind::Match { discriminant, arms } => {
-            eval_dual_match(discriminant, arms, ctx, seeds, record, path)
+            eval_dual_match(discriminant, arms, ctx, seeds, env, record, path)
+        }
+
+        CompiledExprKind::UserFunctionCall { function_name, args } => {
+            eval_dual_user_fn(function_name, args, ctx, seeds, env, record, path)
         }
 
         // Everything else is a kind this task does not differentiate.
-        _ => refuse_or_constant(expr, ctx, seeds),
+        _ => refuse_or_constant(expr, ctx, seeds, env),
     }
 }
 
 /// Descend into child `index`, keeping the structural path in sync.
+#[allow(clippy::too_many_arguments)]
 fn descend(
     child: &CompiledExpr,
     index: usize,
     ctx: &EvalContext,
     seeds: &Seeds,
+    env: &DualEnv,
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
     path.push(index as u16);
-    let result = eval_dual_at(child, ctx, seeds, record, path);
+    let result = eval_dual_at(child, ctx, seeds, env, record, path);
     path.pop();
     result
 }
@@ -262,9 +338,14 @@ fn descend(
 /// Evaluate `expr` with the real evaluator and attach the only honest tangent:
 /// [`Tangent::None`] when the node could move with a seed, [`Tangent::Zero`]
 /// when it provably cannot.
-fn refuse_or_constant(expr: &CompiledExpr, ctx: &EvalContext, seeds: &Seeds) -> DualValue {
+fn refuse_or_constant(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+) -> DualValue {
     let value = crate::eval_expr(expr, ctx);
-    if seeds.depends_on_seed(expr) {
+    if seeds.depends_on_seed(expr) || env.carries_tangent(expr) {
         DualValue::opaque(value)
     } else {
         DualValue::constant(value)
@@ -305,10 +386,11 @@ fn eval_dual_conditional(
     else_branch: &CompiledExpr,
     ctx: &EvalContext,
     seeds: &Seeds,
+    env: &DualEnv,
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
-    let cond = descend(condition, 0, ctx, seeds, record, path);
+    let cond = descend(condition, 0, ctx, seeds, env, record, path);
     // The entry is pushed BEFORE descending into the taken branch, so a flip
     // shows up as a differing `choice` at THIS site rather than as a
     // realignment of every entry that follows.  That is what makes
@@ -316,11 +398,11 @@ fn eval_dual_conditional(
     match cond.value {
         Value::Bool(true) => {
             note(record, path, KinkKind::Conditional, BranchChoice::Then);
-            descend(then_branch, 1, ctx, seeds, record, path)
+            descend(then_branch, 1, ctx, seeds, env, record, path)
         }
         Value::Bool(false) => {
             note(record, path, KinkKind::Conditional, BranchChoice::Else);
-            descend(else_branch, 2, ctx, seeds, record, path)
+            descend(else_branch, 2, ctx, seeds, env, record, path)
         }
         // Undef condition, or a non-bool type error: `eval_expr` yields Undef
         // without evaluating either branch.
@@ -337,10 +419,11 @@ fn eval_dual_match(
     arms: &[CompiledMatchArm],
     ctx: &EvalContext,
     seeds: &Seeds,
+    env: &DualEnv,
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
-    let disc = descend(discriminant, 0, ctx, seeds, record, path);
+    let disc = descend(discriminant, 0, ctx, seeds, env, record, path);
     // §9.2.5 — a wholly-undef discriminant short-circuits before any arm is
     // tried, exactly as in `eval_expr`.
     if disc.value.is_undef() {
@@ -374,10 +457,10 @@ fn eval_dual_match(
                     child.insert(cell.clone(), val);
                 }
                 let child_ctx = ctx.with_scope(&child);
-                descend(&arm.body, 1 + i, &child_ctx, seeds, record, path)
+                descend(&arm.body, 1 + i, &child_ctx, seeds, env, record, path)
             }
             CompiledPattern::Variant { .. } | CompiledPattern::Wildcard => {
-                descend(&arm.body, 1 + i, ctx, seeds, record, path)
+                descend(&arm.body, 1 + i, ctx, seeds, env, record, path)
             }
         };
     }
@@ -397,21 +480,22 @@ fn eval_dual_binop(
     right: &CompiledExpr,
     ctx: &EvalContext,
     seeds: &Seeds,
+    env: &DualEnv,
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
     match op {
         BinOp::And | BinOp::Or | BinOp::Implies => {
-            return eval_dual_kleene(op, left, right, ctx, seeds, record, path);
+            return eval_dual_kleene(op, left, right, ctx, seeds, env, record, path);
         }
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-            return eval_dual_comparison(op, left, right, ctx, seeds, record, path);
+            return eval_dual_comparison(op, left, right, ctx, seeds, env, record, path);
         }
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow | BinOp::Mod => {}
     }
 
-    let ld = descend(left, 0, ctx, seeds, record, path);
-    let rd = descend(right, 1, ctx, seeds, record, path);
+    let ld = descend(left, 0, ctx, seeds, env, record, path);
+    let rd = descend(right, 1, ctx, seeds, env, record, path);
 
     // THE PRIMAL COMES FROM THE EXISTING CODE.
     let value = match op {
@@ -494,11 +578,12 @@ fn eval_dual_comparison(
     right: &CompiledExpr,
     ctx: &EvalContext,
     seeds: &Seeds,
+    env: &DualEnv,
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
-    let ld = descend(left, 0, ctx, seeds, record, path);
-    let rd = descend(right, 1, ctx, seeds, record, path);
+    let ld = descend(left, 0, ctx, seeds, env, record, path);
+    let rd = descend(right, 1, ctx, seeds, env, record, path);
     let value = match op {
         BinOp::Eq => crate::eval_eq(&ld.value, &rd.value),
         BinOp::Ne => crate::eval_ne(&ld.value, &rd.value),
@@ -526,10 +611,11 @@ fn eval_dual_kleene(
     right: &CompiledExpr,
     ctx: &EvalContext,
     seeds: &Seeds,
+    env: &DualEnv,
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
-    let ld = descend(left, 0, ctx, seeds, record, path);
+    let ld = descend(left, 0, ctx, seeds, env, record, path);
     let Ok(lk) = KBool::try_from(&ld.value) else {
         // Short-circuit on type error: the right operand is never evaluated.
         note(record, path, KinkKind::Kleene(op), BranchChoice::LeftTypeError);
@@ -553,7 +639,7 @@ fn eval_dual_kleene(
     // `LeftAbsorbing` and `BothEvaluated` is visible AT this site rather than
     // as a shift of every entry the right subtree contributes.
     note(record, path, KinkKind::Kleene(op), BranchChoice::BothEvaluated);
-    let rd = descend(right, 1, ctx, seeds, record, path);
+    let rd = descend(right, 1, ctx, seeds, env, record, path);
     let Ok(rk) = KBool::try_from(&rd.value) else {
         return DualValue::opaque(Value::Undef);
     };
@@ -603,46 +689,56 @@ fn eval_dual_builtin(
     args: &[CompiledExpr],
     ctx: &EvalContext,
     seeds: &Seeds,
+    env: &DualEnv,
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
-    let smooth = is_differentiable_builtin(name, args.len());
-    let kinky = is_kink_builtin(name, args.len());
-    // Names in neither table (geometry, list, matrix, field ops) are not
-    // differentiated: a seed-dependent one is a loud refusal, a
-    // seed-independent one is a genuine zero.
-    if !smooth && !kinky {
-        return refuse_or_constant(expr, ctx, seeds);
-    }
-    // `eval_expr` lets a `Value::Field` cell named `__field__::<name>` shadow a
-    // builtin of the same name.  Rather than replicate that lookup's semantics,
-    // detect the shadow and hand the whole node back to the real evaluator, so
-    // the primal invariant cannot be broken by an exotic value map.
-    if args.len() == 1
-        && matches!(
-            ctx.values.get_or_undef(&ValueCellId::new(FIELD_ENTITY_PREFIX, name)),
-            Value::Field { .. }
-        )
-    {
-        return refuse_or_constant(expr, ctx, seeds);
-    }
-
+    // Arguments are evaluated FIRST, unconditionally, matching `eval_expr`'s
+    // own order — and so that a kink inside an argument is recorded even when
+    // the call itself is a name this task does not differentiate.  "The record
+    // is what was traversed" has to hold for arguments too.
     let duals: Vec<DualValue> = args
         .iter()
         .enumerate()
-        .map(|(i, a)| descend(a, i, ctx, seeds, record, path))
+        .map(|(i, a)| descend(a, i, ctx, seeds, env, record, path))
         .collect();
     let primal_args: Vec<Value> = duals.iter().map(|d| d.value.clone()).collect();
 
-    // Strict `Undef` propagation, matching `eval_expr`'s short-circuit.
+    // Strict `Undef` propagation, matching `eval_expr`'s short-circuit — which
+    // sits BEFORE the field-shadow lookup below, so this ordering is load-bearing.
     if primal_args.iter().any(|v| v.is_undef()) {
         return DualValue::opaque(Value::Undef);
+    }
+
+    // `eval_expr` lets a `Value::Field` cell named `__field__::<name>` shadow a
+    // builtin of the same name, applying its lambda to the single argument.
+    // That is the reachable scalar-in scalar-out lambda-application route in a
+    // residual, so it is differentiated rather than refused.
+    if args.len() == 1
+        && let Value::Field { lambda, .. } =
+            ctx.values.get_or_undef(&ValueCellId::new(FIELD_ENTITY_PREFIX, name))
+    {
+        return eval_dual_lambda_apply(&lambda, &duals[0], ctx, seeds, record, path);
     }
 
     // Field reductions are intercepted by `eval_expr` BEFORE `eval_builtin`,
     // so they must be intercepted here too or the primal invariant breaks.
     if let Some(kind) = field_reduction_kind(name, args.len(), &primal_args[0]) {
         return eval_field_reduction(kind, &primal_args[0], &duals[0], record, path);
+    }
+
+    let smooth = is_differentiable_builtin(name, args.len());
+    let kinky = is_kink_builtin(name, args.len());
+    // Names in neither table (geometry, list, matrix, field ops) are not
+    // differentiated.  The node's only children are its arguments, so "does it
+    // move with a seed?" is exactly "does any argument tangent survive?".
+    if !smooth && !kinky {
+        let value = crate::eval_expr(expr, ctx);
+        return if duals.iter().all(|d| d.tangent.is_zero()) {
+            DualValue::constant(value)
+        } else {
+            DualValue::opaque(value)
+        };
     }
 
     let value = reify_stdlib::eval_builtin(name, &primal_args);
@@ -944,4 +1040,163 @@ fn builtin_partials(name: &str, xs: &[f64]) -> Option<Vec<f64>> {
         }
         _ => return None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// User-defined functions and lambdas — "arbitrary user algebra"
+// ---------------------------------------------------------------------------
+
+/// A `UserFunctionCall` node, mirroring `eval_user_function_call`
+/// (`reify-expr/src/lib.rs:1946`) step for step on the value path so the primal
+/// invariant survives overload selection and the `@optimized` hook.
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_user_fn(
+    function_name: &str,
+    args: &[CompiledExpr],
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let duals: Vec<DualValue> = args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| descend(a, i, ctx, seeds, env, record, path))
+        .collect();
+
+    // Strict `Undef` propagation.
+    if duals.iter().any(|d| d.value.is_undef()) {
+        return DualValue::opaque(Value::Undef);
+    }
+    // The SAME recursion guard the evaluator uses.  Reaching it means the
+    // primal is `Undef`, so there is nothing to differentiate — and stopping
+    // here is what keeps the dual traversal off the stack cliff.
+    if ctx.recursion_depth >= crate::MAX_RECURSION_DEPTH {
+        return DualValue::opaque(Value::Undef);
+    }
+    // Overload selection by name, arity and param types, exactly as the
+    // evaluator resolves it — a different overload would be a different
+    // function and therefore a different derivative.
+    let Some(func) = crate::find_matching_compiled_function(ctx.functions, function_name, args)
+    else {
+        return DualValue::opaque(Value::Undef);
+    };
+
+    let primal_args: Vec<Value> = duals.iter().map(|d| d.value.clone()).collect();
+    if let Some(value) = crate::try_compute_dispatch(func, &primal_args, ctx) {
+        // An `@optimized` compute node is opaque to ε: its body was never
+        // traversed, so there is no chain rule to apply and no honest tangent
+        // to report.
+        return if duals.iter().all(|d| d.tangent.is_zero()) {
+            DualValue::constant(value)
+        } else {
+            DualValue::opaque(value)
+        };
+    }
+    eval_dual_fn_body(func, &duals, ctx, seeds, record, path)
+}
+
+/// Build the callee's scope — values AND tangents in parallel — and evaluate
+/// its body.
+///
+/// `#[inline(never)]`, and the `ValueMap`/`DualEnv` locals live here rather
+/// than in `eval_dual_user_fn`, for the same reason
+/// `eval_compiled_function_with_values` and `eval_variant_bind_arm` are
+/// extracted in `lib.rs`: this sits on the recursive user-function chain, whose
+/// per-frame size is budgeted against a fixed stack at `MAX_RECURSION_DEPTH`
+/// (256) levels.  Pinned by
+/// `unbounded_user_function_recursion_yields_undef_and_no_tangent_rather_than_a_stack_overflow`.
+#[inline(never)]
+fn eval_dual_fn_body(
+    func: &reify_ir::CompiledFunction,
+    duals: &[DualValue],
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let mut scope = reify_ir::ValueMap::new();
+    let mut body_env = DualEnv::new();
+    for ((param_name, _), dual) in func.params.iter().zip(duals.iter()) {
+        let cell = ValueCellId::new(&func.name, param_name);
+        scope.insert(cell.clone(), dual.value.clone());
+        body_env.bind(cell, dual.tangent.clone());
+    }
+
+    // Everything below this marker is inside the callee, so its sites cannot
+    // collide with the call site's own argument indices — nor with those of a
+    // second call site of the same function, which carries a different prefix.
+    path.push(CALLEE_MARKER);
+    for (i, (binding_name, binding_expr)) in func.body.let_bindings.iter().enumerate() {
+        let bound = {
+            let body_ctx = ctx.with_scope(&scope);
+            path.push(i as u16);
+            let d = eval_dual_at(binding_expr, &body_ctx, seeds, &body_env, record, path);
+            path.pop();
+            d
+        };
+        let cell = ValueCellId::new(&func.name, binding_name);
+        scope.insert(cell.clone(), bound.value.clone());
+        body_env.bind(cell, bound.tangent);
+    }
+
+    path.push(func.body.let_bindings.len() as u16);
+    let result = {
+        let body_ctx = ctx.with_scope(&scope);
+        eval_dual_at(&func.body.result_expr, &body_ctx, seeds, &body_env, record, path)
+    };
+    path.pop();
+    path.pop();
+    result
+}
+
+/// Apply a lambda to one already-dual argument, propagating its tangent
+/// through the body.
+///
+/// Mirrors `apply_lambda` / `apply_lambda_with_point_unpacking`: the same depth
+/// guard, the same arity rule, the same captures-plus-params scope.
+#[inline(never)]
+fn eval_dual_lambda_apply(
+    lambda: &Value,
+    arg: &DualValue,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let Value::Lambda { params, body, captures } = lambda else {
+        return DualValue::opaque(Value::Undef);
+    };
+    if ctx.recursion_depth >= crate::MAX_RECURSION_DEPTH {
+        return DualValue::opaque(Value::Undef);
+    }
+    // A multi-param lambda is applied by UNPACKING a Point/Vector argument into
+    // its components.  ε carries structured values primal-only (PRD §7.7 makes
+    // geometry derivatives the analytic source, not the AD one), so the primal
+    // still comes from the evaluator and the tangent is a loud refusal.
+    if params.len() != 1 {
+        let value = crate::apply_lambda_with_point_unpacking(lambda, &arg.value, ctx);
+        return if arg.tangent.is_zero() {
+            DualValue::constant(value)
+        } else {
+            DualValue::opaque(value)
+        };
+    }
+
+    let mut scope = captures.clone();
+    let mut body_env = DualEnv::new();
+    let (_, cell) = &params[0];
+    scope.insert(cell.clone(), arg.value.clone());
+    body_env.bind(cell.clone(), arg.tangent.clone());
+
+    path.push(CALLEE_MARKER);
+    path.push(0);
+    let result = {
+        let body_ctx = ctx.with_scope(&scope);
+        eval_dual_at(body, &body_ctx, seeds, &body_env, record, path)
+    };
+    path.pop();
+    path.pop();
+    result
 }
