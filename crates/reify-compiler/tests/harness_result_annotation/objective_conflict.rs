@@ -1086,3 +1086,147 @@ structure GuardedButInert {
 
     assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
 }
+
+// ── OBJECTIVE INHERITANCE: governing a descendant, not itself ───────────────
+//
+// Review round 1, finding 5. Under F-inherit (#4824) a container's objective
+// attaches to an objective-LESS descendant and suppresses synthetic centrality
+// there (INV-3/INV-4). The parent needs no auto of its own for that to happen,
+// so "the objective reaches no auto in this template" does not imply "the
+// objective governs nothing" — and "cannot govern anything" is then a factually
+// false thing to print at the author.
+//
+// `examples/objective_inheritance.ri` documents the observable signal directly:
+// `reify explain` reports `C.k: source=inherited, "governed by objective
+// inherited from P"`, and removing P's objective flips `C.k` to
+// `source=synthetic-centrality`. The objective's presence demonstrably changes
+// engine behaviour.
+//
+// WHY THE SHIPPED EXAMPLE DOES NOT ALREADY CATCH THIS: it declares
+// `param w: Length = auto`, so P's objective reads an auto directly and
+// obligation (5) bails long before the finding. The false positive needs `w`
+// made CONCRETE — still a legal, meaningful program: a parent whose own
+// dimension is fixed but which still governs its children's optimisation.
+
+/// The repro, minimal. `P` has a concrete `w` and no auto of its own, but its
+/// `minimize` is exactly what governs `C.k` by inheritance.
+///
+/// The objective is written as plain `minimize w`, not wrapped in
+/// `max(w, 0mm)`: the wrapper dodges the opaque-node allowlist and would make
+/// the test pass via obligation (2) instead of the inheritance bail, testing
+/// nothing.
+#[test]
+fn container_objective_governing_a_descendant_auto_is_compile_clean() {
+    let src = r#"module objective_inheritance_concrete
+
+structure C {
+    param k : Length = auto(free)
+}
+
+structure P {
+    param w : Length = 3mm
+    minimize w
+    sub c : C {}
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "P");
+    assert_no_inert(
+        &compiled,
+        "P's objective attaches to the objective-less descendant C under \
+         F-inherit, so it governs a real solver variable even though it reaches \
+         no auto in P's own scope",
+    );
+}
+
+/// The shipped `examples/objective_inheritance.ri` shape with `w` made
+/// concrete, C's two bracketing constraints kept.
+///
+/// Kept as a separate case from the minimal repro so the fix is pinned against
+/// the real example's structure — constraints and all — and not only against a
+/// stripped-down variant of it.
+#[test]
+fn objective_inheritance_example_with_a_concrete_parent_param_is_compile_clean() {
+    let src = r#"module objective_inheritance_example_concrete
+
+structure P {
+    param w : Length = 3mm
+
+    constraint w > 0mm
+
+    minimize w
+
+    sub c : C {}
+}
+
+structure C {
+    param k : Length = auto(free)
+
+    constraint k >= 2mm
+    constraint k <= 8mm
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "P");
+    assert_no_inert(
+        &compiled,
+        "this is examples/objective_inheritance.ri with `w` concrete — the one \
+         edit that takes obligation (5) out of the way and exposes the rule to \
+         the inheritance shape",
+    );
+}
+
+/// NEGATIVE GUARD 1 — nothing to inherit, because there is no descendant.
+///
+/// A template with a genuinely inert objective and NO `sub_components` must
+/// still be reported. This is what stops the inheritance bail from being
+/// implemented as "exempt anything that could conceivably have a child".
+#[test]
+fn inert_objective_on_a_template_with_no_subs_still_errors() {
+    let src = r#"module inert_no_subs
+
+structure InertNoSubs {
+    param k : Real = 3.0
+    minimize k * k
+}
+"#;
+
+    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+}
+
+/// NEGATIVE GUARD 2 — the load-bearing one. A template that DOES have a sub,
+/// whose transitively-contained templates carry no `auto` cells at all, must
+/// still be reported.
+///
+/// Without this, the coarse alternative the step considered — "restrict the
+/// rule to templates with no `sub_components`" — would be indistinguishable
+/// from the containment walk that shipped, and the rule would quietly go silent
+/// for every composite template in the language.
+///
+/// The chain is two levels deep (`HasSubs` → `MidNoAutos` → `LeafNoAutos`) so a
+/// walk that only checked immediate children, rather than transitively, would
+/// still be exercised by it.
+#[test]
+fn inert_objective_with_subs_that_contain_no_autos_still_errors() {
+    let src = r#"module inert_subs_no_autos
+
+structure LeafNoAutos {
+    param d : Real = 1.0
+}
+
+structure MidNoAutos {
+    param c : Real = 2.0
+    sub leaf : LeafNoAutos {}
+}
+
+structure HasSubs {
+    param k : Real = 3.0
+    minimize k * k
+    sub mid : MidNoAutos {}
+}
+"#;
+
+    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+}
