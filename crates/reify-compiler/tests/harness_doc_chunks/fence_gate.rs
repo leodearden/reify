@@ -1032,3 +1032,149 @@ fn a_missing_topics_literal_is_itself_a_violation() {
          got {violations:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The real-corpus gate
+//
+// Each test accumulates EVERY failure and panics once at the end (the
+// `examples_smoke.rs` shape), so a single run surfaces the whole backlog
+// instead of stopping at the first offender — which for a 66-fence corpus is
+// the difference between one fix cycle and sixty-six.
+// ---------------------------------------------------------------------------
+
+/// One chunk file, read and parsed once.
+struct ChunkDoc {
+    label: String,
+    content: String,
+    fences: Vec<Fence>,
+}
+
+/// Every chunk on disk, in stem order, parsed.
+fn corpus() -> Vec<ChunkDoc> {
+    discover_chunk_stems()
+        .into_iter()
+        .map(|stem| {
+            let label = chunk_label(&stem);
+            let content = read_chunk_file(&stem);
+            let fences = parse_fences(&content)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+            ChunkDoc {
+                label,
+                content,
+                fences,
+            }
+        })
+        .collect()
+}
+
+/// ANTI-VACUITY. Asserted BEFORE every corpus check.
+///
+/// A gate whose entire purpose is catching omission drift can itself drift into
+/// silence: a parser regression that discovers nothing would leave every loop
+/// below iterating zero times and every check GREEN, protecting nothing. This
+/// is the same defence `geometry_chunk_smoke.rs:661` already carries, applied
+/// to all three axes the checks depend on — files discovered, fences parsed,
+/// and bare ```` ```reify ```` fences actually reached.
+fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
+    assert!(
+        corpus.len() >= 16,
+        "the chunk-dir scan found only {} `.md` file(s) in {CHUNKS_DIR} — \
+         expected at least 16. The scan is vacuous (dir moved, or the glob \
+         broke) and the checks below protect NOTHING.",
+        corpus.len()
+    );
+
+    let total_fences: usize = corpus.iter().map(|doc| doc.fences.len()).sum();
+    assert!(
+        total_fences >= 60,
+        "the fence scan found only {total_fences} fence(s) across {} chunk \
+         file(s) — expected at least 60. The parser has regressed and every \
+         check below is passing trivially.",
+        corpus.len()
+    );
+
+    let reify_fences = corpus
+        .iter()
+        .flat_map(|doc| &doc.fences)
+        .filter(|fence| fence.tag.as_deref() == Some("reify"))
+        .count();
+    assert!(
+        reify_fences >= 2,
+        "the scan found only {reify_fences} bare ```reify fence(s) — expected \
+         at least 2. With none, `every_reify_tagged_fence_compiles_clean` \
+         compiles nothing and is a no-op."
+    );
+}
+
+/// Render an accumulated violation list as one panic message.
+fn report(check: &str, violations: &[String]) {
+    assert!(
+        violations.is_empty(),
+        "{check}: {} violation(s)\n\n{}\n",
+        violations.len(),
+        violations.join("\n\n")
+    );
+}
+
+/// CHECK 2 — no fence anywhere in the corpus is untagged.
+#[test]
+fn no_chunk_fence_is_untagged() {
+    let corpus = corpus();
+    assert_corpus_is_not_vacuous(&corpus);
+
+    let violations: Vec<String> = corpus
+        .iter()
+        .flat_map(|doc| untagged_fence_violations(&doc.label, &doc.content))
+        .collect();
+
+    report(
+        "untagged fences in the MCP language-reference chunks. Every fence must \
+         declare what it IS, so a reader can tell a copy-pasteable example from \
+         a schematic without trying it",
+        &violations,
+    );
+}
+
+/// CHECK 1 — every bare ```` ```reify ```` fence compiles standalone.
+#[test]
+fn every_reify_tagged_fence_compiles_clean() {
+    let corpus = corpus();
+    assert_corpus_is_not_vacuous(&corpus);
+
+    let violations: Vec<String> = corpus
+        .iter()
+        .flat_map(|doc| reify_fence_violations(&doc.label, &doc.content))
+        .collect();
+
+    report(
+        "```reify fences that do not compile. A fence carrying the bare `reify` \
+         tag CLAIMS to be a complete, copy-pasteable module; if the compiler \
+         rejects it, the doc is lying and the reader pays a probe cycle to find \
+         out",
+        &violations,
+    );
+}
+
+/// CHECK 4 — every chunk on disk is reachable through the MCP tool.
+#[test]
+fn every_chunk_is_reachable_through_the_mcp_tool() {
+    let stems = discover_chunk_stems();
+    assert!(
+        stems.len() >= 16,
+        "the chunk-dir scan found only {} `.md` file(s) — the reachability \
+         check is vacuous",
+        stems.len()
+    );
+
+    let src = std::fs::read_to_string(LANGUAGE_CHUNKS_RS).unwrap_or_else(|e| {
+        panic!("{LANGUAGE_CHUNKS_RS} must be readable ({e}) — update LANGUAGE_CHUNKS_RS if it moved")
+    });
+
+    report(
+        "chunk files that are unreachable through `reify_language_reference`. A \
+         chunk wired in neither place ships to nobody; one missing only from \
+         TOPICS compiles in and answers `get_chunk` yet cannot be enumerated, \
+         which is the drift a reader never sees",
+        &reachability_violations(&stems, &src),
+    );
+}
