@@ -93,11 +93,13 @@ impl AnalysisContext {
     /// of re-parsing. [`AnalysisContext::new`] delegates here after parsing.
     ///
     /// **Real constraint checker (task #6798, PRD `driver-contract-implementation.md`
-    /// leaf pi).** The compile stage below uses the real `SimpleConstraintChecker`,
-    /// matching `reify check` (`crates/reify-cli/src/main.rs:200`) and the GUI
-    /// (`gui/src-tauri/src/engine.rs:843`), instead of the compile-time
+    /// leaf pi).** The compile stage below uses the real `SimpleConstraintChecker`
+    /// — matching `reify check`'s `parse_and_compile` and the GUI's
+    /// `compile_single_file_with_stdlib` instead of the compile-time
     /// `CompileTimeIndeterminateChecker` stub — so hover/completion/goto-def/symbols
-    /// see the same `auto:` candidate-feasibility verdicts the CLI does.
+    /// see the same `auto:` candidate-feasibility verdicts the CLI does. Full
+    /// rationale: `crate::diagnostics::compute_diagnostics_with_state`'s "##
+    /// Compile-time checker" doc section.
     pub fn from_parsed(parsed: Arc<ParsedModule>) -> Self {
         // `&parsed` (`&Arc<ParsedModule>`) deref-coerces to the `&ParsedModule`
         // the compiler expects.
@@ -874,7 +876,6 @@ pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> Sou
 mod tests {
     use super::*;
     use reify_core::{DiagnosticCode, DimensionVector, Severity};
-    use std::collections::HashSet;
     use tower_lsp::lsp_types::Url;
 
     fn test_uri() -> Url {
@@ -890,14 +891,18 @@ mod tests {
     /// duplicating the fixture, so the two forward tests cannot drift
     /// apart.
     ///
-    /// Anti-vacuity guard first: assert the stub and the real checker
-    /// still genuinely diverge on the fixture before asserting
-    /// `AnalysisContext` matches the real one — mirrors the sibling guard
-    /// in
-    /// `diagnostics::tests::lsp_constant_constraint_agrees_with_reify_check_real_checker`.
-    /// If a future compiler change collapses AMBIGUOUS/NO_CANDIDATE into
-    /// the same verdict, this guard fails loudly instead of the
-    /// `AnalysisContext` assertion below passing vacuously.
+    /// Anti-vacuity guard first, via the shared
+    /// [`crate::diagnostics::assert_bt8_fixture_still_diverges`] helper:
+    /// assert the stub and the real checker still genuinely diverge on the
+    /// fixture before asserting `AnalysisContext` matches the real one. The
+    /// guard is extracted into that one shared function (task #6798
+    /// amendment, reviewer finding "duplication") rather than duplicated
+    /// here and in
+    /// `diagnostics::tests::lsp_constant_constraint_agrees_with_reify_check_real_checker`,
+    /// so the two call sites cannot drift apart. If a future compiler
+    /// change collapses AMBIGUOUS/NO_CANDIDATE into the same verdict, the
+    /// guard fails loudly instead of the `AnalysisContext` assertion below
+    /// passing vacuously.
     ///
     /// Asserts against the typed `reify_core::DiagnosticCode` (not the LSP
     /// wire string) because `AnalysisContext` holds the raw
@@ -905,40 +910,9 @@ mod tests {
     #[test]
     fn analysis_context_uses_real_constraint_checker() {
         let src = crate::diagnostics::BT8_CONSTANT_CONSTRAINT_SRC;
-        let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
 
         // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
-        let stub = reify_compiler::compile_with_stdlib(&parsed);
-        let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
-        let stub_codes: HashSet<DiagnosticCode> =
-            stub.diagnostics.iter().filter_map(|d| d.code).collect();
-        let real_codes: HashSet<DiagnosticCode> =
-            real.diagnostics.iter().filter_map(|d| d.code).collect();
-        assert!(
-            stub_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
-            "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
-             reproducing the stub's AutoTypeParamAmbiguous verdict — the \
-             fixture is no longer divergent and this test would pass \
-             vacuously. stub diagnostics: {:#?}",
-            stub.diagnostics
-        );
-        assert!(
-            real_codes.contains(&DiagnosticCode::AutoTypeParamNoCandidate)
-                && !real_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
-            "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
-             reproducing the real checker's AutoTypeParamNoCandidate \
-             verdict — the fixture is no longer divergent and this test \
-             would pass vacuously. real-checker diagnostics: {:#?}",
-            real.diagnostics
-        );
-        assert_ne!(
-            stub_codes, real_codes,
-            "anti-vacuity guard: stub and real-checker DiagnosticCode sets \
-             must differ on BT8_CONSTANT_CONSTRAINT_SRC — a constant \
-             constraint is the one compile-time shape where they diverge; \
-             stub: {:#?}, real: {:#?}",
-            stub.diagnostics, real.diagnostics
-        );
+        crate::diagnostics::assert_bt8_fixture_still_diverges();
 
         // --- AnalysisContext (the site under test) ---
         let ctx = AnalysisContext::new(src, &test_uri());

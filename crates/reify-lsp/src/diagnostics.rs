@@ -81,24 +81,31 @@ pub struct DiagnosticsResult {
 ///
 /// The compile stage below calls
 /// `reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)`,
-/// matching `reify check`'s compile path (`crates/reify-cli/src/main.rs:200`,
-/// `:280`) and the GUI (`gui/src-tauri/src/engine.rs:843`) instead of the
-/// compile-time `CompileTimeIndeterminateChecker` stub. So `auto:` candidate
-/// feasibility now sees the same constraint verdicts the CLI does: the LSP no
-/// longer reports `E_AUTO_TYPE_PARAM_AMBIGUOUS` on a constant constraint that
-/// the CLI resolves to `E_AUTO_TYPE_PARAM_NO_CANDIDATE` (PRD
+/// matching `reify check`'s compile path (`parse_and_compile` /
+/// `module_dag::compile_entry_with_stdlib_cfg_checked` in
+/// `crates/reify-cli/src/main.rs`) and the GUI
+/// (`compile_single_file_with_stdlib` in `gui/src-tauri/src/engine.rs`)
+/// instead of the compile-time `CompileTimeIndeterminateChecker` stub. So
+/// `auto:` candidate feasibility now sees the same constraint verdicts the
+/// CLI does: the LSP no longer reports `E_AUTO_TYPE_PARAM_AMBIGUOUS` on a
+/// constant constraint that the CLI resolves to
+/// `E_AUTO_TYPE_PARAM_NO_CANDIDATE` (PRD
 /// `docs/prds/v0_6/driver-contract-implementation.md` leaf pi / §5 BT8 / §12
-/// premise correction 3).
+/// premise correction 3). Cited by symbol rather than file:line — cheaper to
+/// keep truthful across refactors (task #6798 amendment, reviewer finding
+/// "docs-maintainability").
 ///
 /// This is a **compile-time change only**. The eval-time Engine built by
 /// [`EvalState::new`] is untouched: still a bare
 /// `Engine::new(SimpleConstraintChecker, None)`, with no
 /// `register_compute_fns` / `register_compute_trampolines` call, so no
 /// keystroke-time FEA/buckling/form-find solve ever runs — the Leo-ratified
-/// subtraction described in the next section stands unchanged. Locked by two
-/// executable contracts, both below in `mod tests`: the unchanged
-/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass` and the
-/// new `real_checker_injection_preserves_trampoline_free_posture`.
+/// subtraction described in the next section stands unchanged. Locked by one
+/// executable contract, below in `mod tests`:
+/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`, whose
+/// doc comment records that it also serves as the BT8-reverse lock for this
+/// compile-time change (task #6798 amendment: folded from a separate
+/// near-duplicate test — see that test's doc for why).
 ///
 /// ## Engine posture: deliberately NO compute trampolines
 ///
@@ -138,15 +145,15 @@ pub struct DiagnosticsResult {
 /// trampoline was registered, the other that a constraint was consequently not
 /// evaluated.
 ///
-/// This trampoline-free posture is an executable contract locked by two
-/// tests (both below, in `mod tests`):
+/// This trampoline-free posture is an executable contract locked by one
+/// test (below, in `mod tests`):
 /// `fea_bearing_constraint_produces_no_false_violation_or_false_pass` — the
 /// LSP-side analog of `cmd_check`'s `check_fea_violated_constraint_is_not_gated`
-/// lock (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`) — and
-/// `real_checker_injection_preserves_trampoline_free_posture`, which locks
-/// that task #6798's compile-time checker injection (see the section above)
-/// does not disturb this posture; changing this posture requires updating
-/// both tests intentionally.
+/// lock (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`), and also the
+/// lock that task #6798's compile-time checker injection (see the section
+/// above) does not disturb this posture, via an exhaustive probe over every
+/// target `reify_eval::compute_targets::register_compute_fns` registers —
+/// changing this posture requires updating that test intentionally.
 pub fn compute_diagnostics_with_state(
     state: &mut EvalState,
     source: &str,
@@ -178,11 +185,8 @@ pub fn compute_diagnostics_with_state(
         };
     }
 
-    // Compile. Real checker (task #6798, PRD leaf pi): matches `reify check`
-    // (crates/reify-cli/src/main.rs:200) and the GUI
-    // (gui/src-tauri/src/engine.rs:843) instead of the compile-time
-    // CompileTimeIndeterminateChecker stub, so `auto:` candidate feasibility
-    // sees the same constraint verdicts the CLI does.
+    // Compile. Real checker (task #6798, PRD leaf pi) — see this function's
+    // "## Compile-time checker" doc section above for the full rationale.
     let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
     for diag in &compiled.diagnostics {
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
@@ -784,11 +788,9 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
         result.push(convert::convert_parse_error(err, source, uri));
     }
 
-    // Compile. Real checker (task #6798, PRD leaf pi): matches `reify check`
-    // (crates/reify-cli/src/main.rs:200) and the GUI
-    // (gui/src-tauri/src/engine.rs:843) instead of the compile-time
-    // CompileTimeIndeterminateChecker stub, so `auto:` candidate feasibility
-    // sees the same constraint verdicts the CLI does.
+    // Compile. Real checker (task #6798, PRD leaf pi) — see
+    // `compute_diagnostics_with_state`'s "## Compile-time checker" doc
+    // section for the full rationale.
     let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
 
     // Convert compiler diagnostics
@@ -836,6 +838,18 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
 /// With `T` unused there is no such value cell, so both LSP entry points
 /// return cleanly and the AMBIGUOUS/NO_CANDIDATE divergence is preserved.
 /// Do not "simplify" this back to `param seal : T`.
+///
+/// **Reachability note (task #6798 amendment).** The checker swap this leaf
+/// makes WIDENS when the `param seal : T` hazard above can fire: a
+/// single-candidate `auto:` bound with a constant-false constraint used to
+/// resolve cleanly under the stub (Indeterminate → feasible) and now yields
+/// zero feasible candidates → NoCandidate → the same unsubstituted
+/// `TypeParam` cell that trips `assert_value_cell_types_representable`. The
+/// hazard is pre-existing (already reachable today via the multi-candidate
+/// case on either checker) and lives entirely in `reify-eval` /
+/// `reify-compiler`, out of this file's scope to fix — filed as a follow-up
+/// task rather than fixed or newly test-pinned here, since a test that
+/// reaches it would itself panic in debug builds (including `cargo test`).
 #[cfg(test)]
 pub(crate) const BT8_CONSTANT_CONSTRAINT_SRC: &str = r#"trait Seal {}
 structure def GasketSeal : Seal { param d : Real = 2.0 }
@@ -847,6 +861,63 @@ structure def Bearing<T: Seal> {
 structure def Assembly { sub b = Bearing<auto: Seal>() }
 "#;
 
+/// Anti-vacuity guard shared by every BT8 forward test: assert the
+/// compile-time stub and the real `SimpleConstraintChecker` still
+/// genuinely diverge on [`BT8_CONSTANT_CONSTRAINT_SRC`] before any
+/// downstream assertion compares an LSP entry point against the real
+/// checker's verdict.
+///
+/// Extracted (task #6798 amendment, reviewer finding "duplication") so the
+/// guard cannot drift between its two call sites —
+/// `diagnostics::tests::lsp_constant_constraint_agrees_with_reify_check_real_checker`
+/// and `analysis::tests::analysis_context_uses_real_constraint_checker` —
+/// which is exactly the kind of drift sharing the fixture const was already
+/// meant to prevent.
+///
+/// If a future compiler change collapses AMBIGUOUS/NO_CANDIDATE into the
+/// same verdict, this fails loudly instead of a caller's LSP assertion
+/// passing vacuously.
+#[cfg(test)]
+pub(crate) fn assert_bt8_fixture_still_diverges() {
+    let parsed = reify_compiler::parse_with_stdlib(
+        BT8_CONSTANT_CONSTRAINT_SRC,
+        ModulePath::single("test"),
+    );
+    // Real-checker call shape matches `reify-cli`'s `parse_and_compile`
+    // verbatim (`crates/reify-cli/src/main.rs:200`).
+    let stub = reify_compiler::compile_with_stdlib(&parsed);
+    let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    let stub_codes: std::collections::HashSet<DiagnosticCode> =
+        stub.diagnostics.iter().filter_map(|d| d.code).collect();
+    let real_codes: std::collections::HashSet<DiagnosticCode> =
+        real.diagnostics.iter().filter_map(|d| d.code).collect();
+    assert!(
+        stub_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
+        "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
+         reproducing the stub's AutoTypeParamAmbiguous verdict — the \
+         fixture is no longer divergent and BT8 forward tests would pass \
+         vacuously. stub diagnostics: {:#?}",
+        stub.diagnostics
+    );
+    assert!(
+        real_codes.contains(&DiagnosticCode::AutoTypeParamNoCandidate)
+            && !real_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
+        "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
+         reproducing the real checker's AutoTypeParamNoCandidate verdict — \
+         the fixture is no longer divergent and BT8 forward tests would \
+         pass vacuously. real-checker diagnostics: {:#?}",
+        real.diagnostics
+    );
+    assert_ne!(
+        stub_codes, real_codes,
+        "anti-vacuity guard: stub and real-checker DiagnosticCode sets must \
+         differ on BT8_CONSTANT_CONSTRAINT_SRC — a constant constraint is \
+         the one compile-time shape where they diverge; stub: {:#?}, real: \
+         {:#?}",
+        stub.diagnostics, real.diagnostics
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -856,7 +927,6 @@ mod tests {
     use reify_test_support::MockConstraintSolver;
     use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
     use reify_ir::Value;
-    use std::collections::HashSet;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -864,6 +934,28 @@ mod tests {
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
+    }
+
+    /// Compile `parsed` exactly the way the LSP's three production compile
+    /// sites do — `reify_compiler::compile_with_stdlib_checked(parsed,
+    /// &SimpleConstraintChecker)` (task #6798, PRD leaf pi) — rather than
+    /// the compile-time `CompileTimeIndeterminateChecker` stub.
+    ///
+    /// Any test below that independently reproduces what
+    /// `compute_diagnostics` / `compute_diagnostics_with_state` compute
+    /// internally (e.g. to precompute a `content_hash` or a `CompiledModule`
+    /// for a follow-up `check`/`check_snapshot` call) MUST route through
+    /// this helper rather than calling `compile_with_stdlib` directly — a
+    /// stub-compiled mirror agrees with production only by coincidence
+    /// today (no fixture below carries an `auto:` clause), and would
+    /// silently drift the moment one does (task #6798 amendment, reviewer
+    /// finding "test-mirror-drift").
+    ///
+    /// Do NOT use this helper in the BT8 anti-vacuity guards
+    /// ([`assert_bt8_fixture_still_diverges`]), which intentionally compile
+    /// both ways to prove the stub and the real checker still diverge.
+    fn compile_like_production(parsed: &reify_ast::ParsedModule) -> reify_compiler::CompiledModule {
+        reify_compiler::compile_with_stdlib_checked(parsed, &SimpleConstraintChecker)
     }
 
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
@@ -934,52 +1026,18 @@ mod tests {
     /// `reify check`'s real-checker verdict on a CONSTANT `auto:`
     /// constraint, not the compile-time stub's.
     ///
-    /// Anti-vacuity guard first: assert the stub and the real checker still
-    /// genuinely diverge on [`BT8_CONSTANT_CONSTRAINT_SRC`] before asserting
-    /// the LSP matches the real one — if a future compiler change collapses
+    /// Anti-vacuity guard first, via [`assert_bt8_fixture_still_diverges`]
+    /// (shared with `analysis::tests::analysis_context_uses_real_constraint_checker`
+    /// so the two forward tests' guards cannot drift apart): assert the stub
+    /// and the real checker still genuinely diverge on
+    /// [`BT8_CONSTANT_CONSTRAINT_SRC`] before asserting the LSP matches the
+    /// real one — if a future compiler change collapses
     /// AMBIGUOUS/NO_CANDIDATE into the same verdict, this guard fails loudly
     /// instead of the LSP assertions below passing vacuously.
     #[test]
     fn lsp_constant_constraint_agrees_with_reify_check_real_checker() {
-        let parsed = reify_compiler::parse_with_stdlib(
-            BT8_CONSTANT_CONSTRAINT_SRC,
-            ModulePath::single("test"),
-        );
-
         // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
-        // Real-checker call shape matches `reify-cli`'s `parse_and_compile`
-        // verbatim (`crates/reify-cli/src/main.rs:200`).
-        let stub = reify_compiler::compile_with_stdlib(&parsed);
-        let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
-        let stub_codes: HashSet<DiagnosticCode> =
-            stub.diagnostics.iter().filter_map(|d| d.code).collect();
-        let real_codes: HashSet<DiagnosticCode> =
-            real.diagnostics.iter().filter_map(|d| d.code).collect();
-        assert!(
-            stub_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
-            "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
-             reproducing the stub's AutoTypeParamAmbiguous verdict — the \
-             fixture is no longer divergent and this test would pass \
-             vacuously. stub diagnostics: {:#?}",
-            stub.diagnostics
-        );
-        assert!(
-            real_codes.contains(&DiagnosticCode::AutoTypeParamNoCandidate)
-                && !real_codes.contains(&DiagnosticCode::AutoTypeParamAmbiguous),
-            "anti-vacuity guard: BT8_CONSTANT_CONSTRAINT_SRC has stopped \
-             reproducing the real checker's AutoTypeParamNoCandidate \
-             verdict — the fixture is no longer divergent and this test \
-             would pass vacuously. real-checker diagnostics: {:#?}",
-            real.diagnostics
-        );
-        assert_ne!(
-            stub_codes, real_codes,
-            "anti-vacuity guard: stub and real-checker DiagnosticCode sets \
-             must differ on BT8_CONSTANT_CONSTRAINT_SRC — a constant \
-             constraint is the one compile-time shape where they diverge; \
-             stub: {:#?}, real: {:#?}",
-            stub.diagnostics, real.diagnostics
-        );
+        assert_bt8_fixture_still_diverges();
 
         // --- Stateless surface: compute_diagnostics ---
         let diags = compute_diagnostics(BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
@@ -1013,6 +1071,104 @@ mod tests {
              `reify check`'s real-checker AutoTypeParamNoCandidate verdict \
              on a constant constraint, not the compile-time stub's \
              AutoTypeParamAmbiguous; got diagnostics: {:#?}",
+            result.diagnostics
+        );
+    }
+
+    /// Amendment (task #6798, reviewer finding "test-coverage" — Gap-C
+    /// honesty warning). The checker swap's OTHER user-visible consequence,
+    /// uncovered by every other BT8 test in this file: injecting the real
+    /// `SimpleConstraintChecker` un-gates
+    /// `W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED`
+    /// (`crates/reify-compiler/src/auto_type_param.rs`,
+    /// `emit_unevaluated_constraint_warnings`, gated on
+    /// `!constraint_checker.is_compile_time_stub()`), which fires whenever
+    /// an `auto:` candidate's constraint reads a cell whose default is a
+    /// computed (non-literal) expression — the literal-only compile-time
+    /// seeder skips such cells, so the constraint is honestly
+    /// `Indeterminate` rather than silently treated as satisfied. This is
+    /// already the CLI's behaviour (`SimpleConstraintChecker` is not the
+    /// stub there either); the LSP simply never surfaced it before this
+    /// leaf.
+    ///
+    /// Single candidate, deliberately NOT the BT8 AMBIGUOUS/NO_CANDIDATE
+    /// shape: `derived_bound`'s default (`bore * 2.0`) is non-literal, so
+    /// `derived_bound > 0.0` evaluates to `Undef` → `Indeterminate` under
+    /// BOTH checkers alike (the literal-only seeder skips the cell
+    /// regardless of which checker runs) — the sole candidate resolves the
+    /// same way either way, so the new diagnostic under test is additive,
+    /// not a stand-in for AMBIGUOUS/NO_CANDIDATE. `T` stays unused in
+    /// `Bearing`'s body, matching [`BT8_CONSTANT_CONSTRAINT_SRC`]'s
+    /// documented reason for avoiding the `assert_value_cell_types_representable`
+    /// panic hazard.
+    ///
+    /// Anti-vacuity guard: assert the stub does NOT emit
+    /// `AutoTypeParamConstraintUnevaluated` on this fixture (gated off by
+    /// `CompileTimeIndeterminateChecker::is_compile_time_stub() == true`)
+    /// before asserting that the real checker — and both LSP entry points —
+    /// do.
+    #[test]
+    fn lsp_surfaces_auto_type_param_constraint_unevaluated_warning() {
+        const GAP_C_SRC: &str = r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    let derived_bound = bore * 2.0
+    constraint derived_bound > 0.0
+}
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+"#;
+        let unevaluated_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamConstraintUnevaluated".to_string(),
+        ));
+
+        // --- Anti-vacuity guard: stub must NOT emit the honesty warning ---
+        let parsed = reify_compiler::parse_with_stdlib(GAP_C_SRC, ModulePath::single("test"));
+        let stub = reify_compiler::compile_with_stdlib(&parsed);
+        assert!(
+            !stub
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::AutoTypeParamConstraintUnevaluated)),
+            "anti-vacuity guard: the compile-time stub must not emit \
+             AutoTypeParamConstraintUnevaluated (gated on \
+             !is_compile_time_stub(), which the stub fails) — if it now \
+             does, this fixture no longer isolates the real-checker-only \
+             behaviour and this test would pass vacuously; stub \
+             diagnostics: {:#?}",
+            stub.diagnostics
+        );
+        let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+        assert!(
+            real.diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::AutoTypeParamConstraintUnevaluated)),
+            "anti-vacuity guard: the real checker must emit \
+             AutoTypeParamConstraintUnevaluated on GAP_C_SRC — if it no \
+             longer does, this fixture has stopped exercising Gap-C and \
+             this test would pass vacuously; real-checker diagnostics: \
+             {:#?}",
+            real.diagnostics
+        );
+
+        // --- Stateless surface: compute_diagnostics ---
+        let diags = compute_diagnostics(GAP_C_SRC, &test_uri());
+        assert!(
+            diags.iter().any(|d| d.code == unevaluated_code),
+            "BT8 amendment (compute_diagnostics): must surface \
+             AutoTypeParamConstraintUnevaluated now that the real checker \
+             is injected, matching `reify check`; got diagnostics: {:#?}",
+            diags
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, GAP_C_SRC, &test_uri());
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == unevaluated_code),
+            "BT8 amendment (compute_diagnostics_with_state): must surface \
+             AutoTypeParamConstraintUnevaluated now that the real checker \
+             is injected, matching `reify check`; got diagnostics: {:#?}",
             result.diagnostics
         );
     }
@@ -1451,10 +1607,13 @@ structure S {
         let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
 
         // Pre-compile to obtain the content_hash for this exact source.
-        // Must use compile_with_stdlib + ModulePath::single("test") to match
-        // what compute_diagnostics_with_state derives from "file:///test.ri".
+        // Must use compile_like_production + ModulePath::single("test") to
+        // match what compute_diagnostics_with_state derives from
+        // "file:///test.ri" (task #6798 amendment, reviewer finding
+        // "test-mirror-drift": compile_like_production is what production
+        // now actually calls).
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         // Inject a matching hash while leaving the engine uninitialized.
         // (private-field write from child mod — same pattern as the
@@ -1745,7 +1904,7 @@ structure S {
         // (the unfold.rs / engine_eval.rs circular let-binding paths).
         let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -1804,7 +1963,7 @@ structure S {
     fn build_param_override_diags(override_value: Value) -> Vec<Diagnostic> {
         let source = "structure S { param width: Length = 100mm }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
         let _ = engine.eval(&compiled);
         engine.set_param_and_invalidate(&ValueCellId::new("S", "width"), override_value);
@@ -1821,7 +1980,7 @@ structure S {
     ) -> (Arc<AtomicUsize>, Vec<Diagnostic>) {
         let source = "structure S {\n    param x: Length = auto\n    constraint x > 1mm\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let counter = solver.counter_handle();
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(solver));
@@ -1930,7 +2089,7 @@ structure S {
     fn eval_diag_format_sub_component_unknown() {
         let source = "structure S { sub x = Unknown() }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
         let diags = engine.eval(&compiled).diagnostics;
 
@@ -2034,7 +2193,7 @@ structure S {
     fn build_eval_state_with_failed_cell(cell_id: ValueCellId) -> EvalState {
         let source = reify_test_support::bracket_source();
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -2097,7 +2256,7 @@ structure S {
         // avoids a hardcoded line number (which would drift if bracket_source changes)
         // and is resilient to stdlib templates adding extra let cells in the future.
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let volume_span = compiled
             .templates
             .iter()
@@ -2148,7 +2307,7 @@ structure S {
         let base_id = ValueCellId::new("S", "base");
 
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -2222,7 +2381,7 @@ structure S {
         let base_id = ValueCellId::new("S", "base");
 
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -2468,7 +2627,7 @@ structure S {
             dummy_span(),
             body,
         )]);
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let source = source_stub();
         let uri = test_uri();
 
@@ -2625,6 +2784,38 @@ structure S {
         );
     }
 
+    /// Every compute target registered by
+    /// `reify_eval::compute_targets::register_compute_fns` — that function's
+    /// own doc comment calls it "the single place that registers the full
+    /// production set of compute trampolines". Exhaustive, not a sample:
+    /// used below to probe that the LSP's engine ([`EvalState::new`], which
+    /// never calls `register_compute_fns`) carries none of them registered.
+    /// If `register_compute_fns` gains or loses a target, update this list
+    /// to match — a stale list would silently narrow the probe back to a
+    /// sample (task #6798 amendment, reviewer finding "test-coverage": the
+    /// probe used to name only 3 of the 18 registered targets while
+    /// claiming "all three").
+    const ALL_PRODUCTION_COMPUTE_TARGETS: &[&str] = &[
+        "solver::elastic_static",
+        "solver::buckling",
+        "solver::form_find",
+        "solver::form_find_free",
+        "solver::tensegrity_load",
+        "solver::membrane_load",
+        "solver::multi_case",
+        "solver::buckling_multi_case",
+        "fdm::as_printed_material_r_fast",
+        "fdm::as_printed_material_r0",
+        "fdm::slice",
+        "modal::free_vibration",
+        "modal::transient_response",
+        "modal::displacement_at",
+        "modal::mechanism_modal",
+        "dynamics::inverse_dynamics",
+        "trajectory::simulate",
+        "trajectory::input_shape",
+    ];
+
     /// Posture lock (PRD `compute-fea-hardening.md` task C1, INV-FEA-1) for
     /// the trampoline-free posture — see [`compute_diagnostics_with_state`]'s
     /// doc comment for the authoritative posture writeup; this test is its
@@ -2635,12 +2826,42 @@ structure S {
     /// the CLI's `check_fea_violated_constraint_is_not_gated`
     /// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`). GREEN before and after:
     /// this locks pre-existing gate behaviour, not new runtime behaviour.
+    ///
+    /// **Also the BT8 REVERSE lock** (task #6798, PRD
+    /// `driver-contract-implementation.md` leaf pi / §5 BT8 / §12 matrix
+    /// ruling 2): the compute-trampoline probe below enumerates
+    /// [`ALL_PRODUCTION_COMPUTE_TARGETS`] — every target
+    /// `register_compute_fns` registers, not a sample — so it doubles as
+    /// the lock that injecting the real `SimpleConstraintChecker` at
+    /// compile time (this leaf's change) does not disturb the
+    /// Leo-ratified trampoline-free posture. Matrix ruling 2 retires the
+    /// CLI-side FEA lock but explicitly KEEPS this LSP-side subtraction.
+    /// `FEA_BEARING_SRC` has no `auto:` type parameter, so the injected
+    /// compile-time checker is never even consulted on it — the checker
+    /// swap is a no-op here by construction (see
+    /// [`compute_diagnostics_with_state`]'s "## Compile-time checker" doc
+    /// section), which is exactly why this stays a posture lock rather
+    /// than a BT8-forward-style divergence test, and why it is GREEN
+    /// before and after task #6798's impl steps: the compile-time checker
+    /// change never touches the eval-time Engine built by
+    /// [`EvalState::new`].
+    ///
+    /// (Amendment note: this test previously had a standalone sibling,
+    /// `real_checker_injection_preserves_trampoline_free_posture`. Its
+    /// only genuinely new signal over this one was the broadened probe —
+    /// its own "compile-time no-op" assertion was unfalsifiable for the
+    /// reason noted above (no `auto:` clause means the two compile
+    /// functions provably take the same code path regardless of which
+    /// checker is passed), and its false-violation/false-pass assertion
+    /// exactly duplicated this test's stateful half. Folded in here
+    /// instead of maintained as a near-duplicate — reviewer finding
+    /// "test-coverage".)
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
         let uri = test_uri();
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         // Guard: the fixture must compile with zero errors, so the
         // Indeterminate result asserted below is attributable to
@@ -2671,14 +2892,14 @@ structure S {
 
         let checker = SimpleConstraintChecker;
         let mut stateless_probe = reify_eval::Engine::new(Box::new(checker), None);
-        assert!(
-            stateless_probe
-                .compute_dispatch("solver::elastic_static")
-                .is_none(),
-            "sanity: Engine::new(SimpleConstraintChecker, None) — the exact \
-             construction compute_diagnostics uses internally — must carry \
-             no pre-registered solver::elastic_static compute trampoline"
-        );
+        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
+            assert!(
+                stateless_probe.compute_dispatch(target).is_none(),
+                "sanity: Engine::new(SimpleConstraintChecker, None) — the \
+                 exact construction compute_diagnostics uses internally — \
+                 must carry no pre-registered '{target}' compute trampoline"
+            );
+        }
         let stateless_check_result = stateless_probe.check(&compiled);
         assert_no_false_violation_or_pass(
             &stateless_diags,
@@ -2696,15 +2917,17 @@ structure S {
         // rather than a hand-rebuilt one.
         let mut state = EvalState::new();
         let stateful_result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
-        assert!(
-            state
-                .engine
-                .compute_dispatch("solver::elastic_static")
-                .is_none(),
-            "the actual persistent Engine used by compute_diagnostics_with_state \
-             must carry no registered solver::elastic_static compute trampoline \
-             — this is the trampoline-free posture documented on that function"
-        );
+        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
+            assert!(
+                state.engine.compute_dispatch(target).is_none(),
+                "the actual persistent Engine used by \
+                 compute_diagnostics_with_state must carry no registered \
+                 '{target}' compute trampoline — this is the \
+                 trampoline-free posture documented on that function, and \
+                 (task #6798) the compile-time checker injection must not \
+                 disturb it"
+            );
+        }
         let stateful_check_result = state.engine.check_snapshot(&compiled).expect(
             "state.engine should hold a snapshot for FEA_BEARING_SRC's content \
              hash immediately after compute_diagnostics_with_state evaluated it",
@@ -2713,102 +2936,6 @@ structure S {
             &stateful_result.diagnostics,
             &stateful_check_result,
             "compute_diagnostics_with_state",
-        );
-    }
-
-    /// BT8 REVERSE (task #6798, PRD `driver-contract-implementation.md`
-    /// leaf pi / §5 BT8 / §12 matrix ruling 2): locks that injecting the
-    /// real `SimpleConstraintChecker` at compile time (step-2/step-4 of
-    /// this leaf) does not disturb the Leo-ratified trampoline-free
-    /// posture — see [`compute_diagnostics_with_state`]'s "## Engine
-    /// posture" doc block for the authoritative writeup. Matrix ruling 2
-    /// retires the CLI-side FEA lock but explicitly KEEPS this LSP-side
-    /// subtraction.
-    ///
-    /// **GREEN before and after** this leaf's impl steps: like its sibling
-    /// [`fea_bearing_constraint_produces_no_false_violation_or_false_pass`],
-    /// this locks pre-existing gate behaviour — the compile-time checker
-    /// change never touches the eval-time Engine — rather than new runtime
-    /// behaviour, so there is no honest RED state to manufacture for it.
-    ///
-    /// Three assertions:
-    /// 1. The checker swap is a strict compile-time no-op on
-    ///    [`FEA_BEARING_SRC`]: identical `(severity, code, message)`
-    ///    diagnostics AND identical `content_hash` on both compile entry
-    ///    points. `FEA_BEARING_SRC` has no `auto:` type parameter, so the
-    ///    injected checker is never even consulted on it.
-    /// 2. No compute trampolines are registered — broadens the sibling
-    ///    lock's single-name probe (`solver::elastic_static`) to all three
-    ///    real registered targets in `register_compute_fns`
-    ///    (`crates/reify-eval/src/compute_targets/mod.rs:249-278`):
-    ///    keystroke-time FEA/buckling/form-find solves are rejected
-    ///    outright, not merely deferred (PRD `compute-fea-hardening.md`
-    ///    INV-FEA-1 §2), and the checker change is compile-time only.
-    /// 3. No false violation and no false pass — reuses
-    ///    [`assert_no_false_violation_or_pass`] exactly as the sibling
-    ///    lock does.
-    #[test]
-    fn real_checker_injection_preserves_trampoline_free_posture() {
-        let uri = test_uri();
-        let parsed =
-            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-
-        // --- (1) The checker swap is a strict compile-time no-op here ---
-        let stub_compiled = reify_compiler::compile_with_stdlib(&parsed);
-        let real_compiled =
-            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
-        let stub_diags: Vec<(Severity, Option<DiagnosticCode>, &str)> = stub_compiled
-            .diagnostics
-            .iter()
-            .map(|d| (d.severity, d.code, d.message.as_str()))
-            .collect();
-        let real_diags: Vec<(Severity, Option<DiagnosticCode>, &str)> = real_compiled
-            .diagnostics
-            .iter()
-            .map(|d| (d.severity, d.code, d.message.as_str()))
-            .collect();
-        assert_eq!(
-            stub_diags, real_diags,
-            "real-checker injection must be a strict compile-time no-op on \
-             FEA_BEARING_SRC — it has no `auto:` type parameter, so the \
-             injected checker is never consulted; stub diagnostics: {:#?}, \
-             real-checker diagnostics: {:#?}",
-            stub_compiled.diagnostics, real_compiled.diagnostics
-        );
-        assert_eq!(
-            stub_compiled.content_hash, real_compiled.content_hash,
-            "real-checker injection must produce an identical content_hash \
-             on FEA_BEARING_SRC (compile-time no-op)"
-        );
-
-        // --- (2) No compute trampolines are registered ---
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
-        for target in [
-            "solver::elastic_static",
-            "solver::buckling",
-            "solver::form_find",
-        ] {
-            assert!(
-                state.engine.compute_dispatch(target).is_none(),
-                "the real-checker injection is a COMPILE-time change only: \
-                 the persistent Engine used by compute_diagnostics_with_state \
-                 must still carry no registered '{target}' compute \
-                 trampoline — keystroke-time FEA/buckling/form-find solves \
-                 are rejected outright, not deferred (PRD \
-                 compute-fea-hardening.md INV-FEA-1 §2)"
-            );
-        }
-
-        // --- (3) No false violation and no false pass ---
-        let check_result = state.engine.check_snapshot(&real_compiled).expect(
-            "state.engine should hold a snapshot for FEA_BEARING_SRC's content \
-             hash immediately after compute_diagnostics_with_state evaluated it",
-        );
-        assert_no_false_violation_or_pass(
-            &result.diagnostics,
-            &check_result,
-            "compute_diagnostics_with_state (post real-checker injection)",
         );
     }
 
@@ -2916,7 +3043,7 @@ structure S {
         let uri = test_uri();
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
@@ -3050,7 +3177,7 @@ structure S {
 }"#;
 
         let parsed = reify_compiler::parse_with_stdlib(SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         // Guard fixture validity like C1's lock: a fixture typo must fail
         // loudly here rather than making the assertions below vacuous.
@@ -3268,7 +3395,7 @@ structure S {
 
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let check_result = state.engine.check_snapshot(&compiled).expect(
             "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
              immediately after compute_diagnostics_with_state evaluated it",
@@ -3330,7 +3457,7 @@ structure S {
         let uri = test_uri();
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
