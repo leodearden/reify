@@ -520,7 +520,8 @@ fn lower_type_alias(a: &CompiledTypeAlias) -> ItemDoc {
         // parametric — so the old "<parameterized>" sentinel was actively
         // misleading here. "<unresolved>" is accurate and matches the house
         // `<...>` sentinel style already used by reify_core::Type's Display
-        // for Type::Error ("<error>", ty.rs:660).
+        // for Type::Error (`impl Display for Type` in reify-core's `ty.rs`
+        // writes "<error>" for the `Type::Error` arm).
         (None, None) => "<unresolved>".to_string(),
     };
 
