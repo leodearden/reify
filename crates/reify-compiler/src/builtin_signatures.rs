@@ -2732,4 +2732,154 @@ mod tests {
             diags
         );
     }
+
+    // ── Task 6862: `Type::ScalarParam` at a dimension slot ────────────────────
+
+    /// A dimension-kinded generic fn PARAMETER must DEFER at a LENGTH slot,
+    /// never reject.
+    ///
+    /// `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid { extrude(circle(l), l) }`
+    /// resolves `l` to `Type::ScalarParam("Q")` (`type_resolution.rs`'s
+    /// `classify_dim_slot`), which displays as `Scalar<Q>`. Its FAMILY is known —
+    /// it is a scalar — and only its DIMENSION is open, so at a dimension slot
+    /// there is nothing to compare: `Q` is bound at instantiation, and whether
+    /// that binding conforms is decided there. Judging the UNINSTANTIATED body
+    /// under strict `DimensionVector` equality can only ever REJECT, so every
+    /// such site is a false positive.
+    ///
+    /// Three names, so the fix cannot be accidentally index-specific: `circle`
+    /// (slot 0), `extrude` (slot 1) and `box` (slots 0/1/2).
+    ///
+    /// End-to-end sibling: `dim_kinded_generic_param_at_length_slot_compiles_clean`
+    /// in `tests/builtin_arg_signature_tests.rs`, over the fixture
+    /// `tests/fixtures/dim_kinded_length_slot.ri`.
+    #[test]
+    fn scalar_param_defers_at_length_slot() {
+        let q = || arg_expr(Type::ScalarParam("Q".to_string()));
+
+        // circle(radius) — the slot is index 0.
+        let mut diags = Vec::new();
+        check_builtin_arg_types("circle", &[q()], dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "ScalarParam at circle's LENGTH radius slot must defer, got: {:?}",
+            diags
+        );
+
+        // extrude(profile, distance) — the slot is index 1, so a defer that only
+        // covered index 0 would survive the `circle` case and die here.
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "extrude",
+            &[arg_expr(Type::Geometry), q()],
+            dummy_span(),
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "ScalarParam at extrude's LENGTH distance slot must defer, got: {:?}",
+            diags
+        );
+
+        // box(w, d, h) — slots 0, 1 AND 2 at once.
+        let mut diags = Vec::new();
+        check_builtin_arg_types("box", &[q(), q(), q()], dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "ScalarParam at box's three LENGTH slots must defer, got: {:?}",
+            diags
+        );
+    }
+
+    /// NEGATIVE CONTROL (green before AND after task 6862) — a bare `Int` at a
+    /// LENGTH slot is still a definite mismatch.
+    ///
+    /// The defer added for `ScalarParam` is a DIMENSION argument; it must not
+    /// leak into the family check that catches `circle(5)`.
+    #[test]
+    fn bare_int_at_length_slot_still_rejected() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types("circle", &[arg_expr(Type::Int)], dummy_span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "a bare Int radius must still be rejected exactly once, got: {:?}",
+            diags
+        );
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::ArgTypeMismatch));
+        for needle in ["circle", "radius", "Length", "got Int"] {
+            assert!(
+                d.message.contains(needle),
+                "message missing {:?}: {}",
+                needle,
+                d.message
+            );
+        }
+    }
+
+    /// NEGATIVE CONTROL (green before AND after task 6862) — a CONCRETE
+    /// wrong-dimension scalar at a LENGTH slot is still rejected.
+    ///
+    /// This is the assertion that proves the `ScalarParam` defer does not blanket
+    /// -disable the slot: a `Scalar{MASS}` has a known dimension, so the
+    /// comparison is decidable and rejecting is correct.
+    #[test]
+    fn wrong_dimension_scalar_at_length_slot_still_rejected() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "circle",
+            &[arg_expr(Type::Scalar {
+                dimension: DimensionVector::MASS,
+            })],
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "a concrete MASS radius must still be rejected exactly once, got: {:?}",
+            diags
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("Length"),
+            "message must still name the expected Length: {}",
+            diags[0].message
+        );
+    }
+
+    /// NARROWNESS PIN (green before AND after task 6862) — `ScalarParam` must
+    /// STILL be rejected at an `ExpectedArg::Int` slot.
+    ///
+    /// This is what makes the asymmetry in `check_builtin_arg_types` ENFORCEABLE
+    /// rather than merely conventional. The defer is a DIMENSION-comparison
+    /// argument and an `Int` count slot is not a dimension slot: `Scalar<Q>` is a
+    /// dimensioned scalar for EVERY binding of `Q` (at Q = DIMENSIONLESS it is
+    /// `Real`, which the `Int` arm's own comment already names as a definite
+    /// mismatch), so the family mismatch is decidable without instantiating.
+    #[test]
+    fn scalar_param_still_rejected_at_int_slot() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "generate",
+            &[arg_expr(Type::ScalarParam("Q".to_string()))],
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "ScalarParam at generate's Int count slot must still be rejected, got: {:?}",
+            diags
+        );
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("expects Int"),
+            "message should pin the expected Int type: {}",
+            diags[0].message
+        );
+    }
 }

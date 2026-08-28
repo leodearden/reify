@@ -1015,3 +1015,79 @@ fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
         compiled.diagnostics
     );
 }
+
+
+// ── Task 6862: a dimension-kinded generic param at a LENGTH slot ─────────────
+
+/// The task-6862 regression fixture: `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid`
+/// whose body passes `l` straight into two LENGTH compile slots (`circle` arg0
+/// radius, `extrude` arg1 distance), instantiated at `beam(10mm)`.
+const DIM_KINDED_LENGTH_SLOT: &str = include_str!("fixtures/dim_kinded_length_slot.ri");
+
+/// SIGNAL — a dimension-kinded generic fn parameter used at a slotted LENGTH
+/// argument is CORRECT user code and must compile clean.
+///
+/// Both halves are load-bearing:
+///
+/// (i) zero `ArgTypeMismatch` diagnostics — the specific defect. MEASURED on the
+///     base before the fix: two of them, `circle: radius argument expects Length,
+///     got Scalar<Q>; …` and `extrude: distance argument expects Length, got
+///     Scalar<Q>; …`.
+///
+/// (ii) zero Error-severity diagnostics of ANY code — the compile-layer
+///      equivalent of the acceptance criterion's `reify check` exit 0, since that
+///      exit code is derived from Error-severity diagnostics. Without (ii) the
+///      test would pass on a fix that merely renamed the diagnostic code.
+#[test]
+fn dim_kinded_generic_param_at_length_slot_compiles_clean() {
+    let compiled = compile_source_with_stdlib(DIM_KINDED_LENGTH_SLOT);
+
+    let mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "a dimension-kinded generic param at a LENGTH slot is correct user code \
+         (Q binds to LENGTH at `beam(10mm)`) and must emit no ArgTypeMismatch.\n\
+         Got: {:#?}\nAll diagnostics: {:#?}",
+        mismatches,
+        compiled.diagnostics
+    );
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the fixture must compile with NO Error-severity diagnostic — the \
+         compile-layer equivalent of `reify check` exit 0.\nGot: {:#?}",
+        errors
+    );
+}
+
+/// NEGATIVE CONTROL (green before AND after task 6862) — bare `Int` operands at
+/// the very same two slots are still rejected end-to-end.
+///
+/// `extrude(circle(5), 12)` is the fixture's shape with the generic parameter
+/// replaced by bare integers, so it isolates exactly what the defer must NOT
+/// swallow.
+#[test]
+fn bare_int_at_generic_call_site_still_rejected() {
+    let compiled = compile_struct_body("    let s = extrude(circle(5), 12)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "bare Int operands at LENGTH slots must still be rejected.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("got Int")),
+        "at least one rejection must name the bare Int operand: {:#?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
