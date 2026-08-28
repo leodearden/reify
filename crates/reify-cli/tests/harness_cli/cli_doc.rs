@@ -4,8 +4,9 @@
 //! `CARGO_BIN_EXE_reify`) and asserts on exit code, stdout, and stderr.
 //! Exit-code conventions:
 //! - `0` — success.
-//! - `1` — parse / compile errors prevented doc generation.
-//! - `2` — CLI usage errors (bad flag, missing positional, conflicting flags).
+//! - `1` — any failure: parse / compile errors that prevented doc generation,
+//!   I/O failures, and CLI usage errors (bad flag, missing positional,
+//!   conflicting flags).
 
 use crate::common;
 
@@ -31,13 +32,13 @@ fn run_doc(args: &[&str]) -> (ExitStatus, String, String) {
 }
 
 #[test]
-fn doc_no_args_prints_usage_and_exits_two() {
+fn doc_no_args_prints_usage_and_exits_one() {
     let (status, stdout, stderr) = run_doc(&[]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc with no args must exit 2 (usage error).\nstdout: {stdout}\nstderr: {stderr}"
+        Some(1),
+        "reify doc with no args must exit 1 (usage error).\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("Usage: reify doc"),
@@ -271,14 +272,14 @@ fn doc_default_format_is_real_html() {
 }
 
 #[test]
-fn doc_split_with_json_exits_two() {
+fn doc_split_with_json_exits_one() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--format", "json", "--split", &path]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --format json --split must exit 2 (usage error).\n\
+        Some(1),
+        "reify doc --format json --split must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -292,14 +293,14 @@ fn doc_split_with_json_exits_two() {
 }
 
 #[test]
-fn doc_split_with_html_exits_two() {
+fn doc_split_with_html_exits_one() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--format", "html", "--split", &path]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --format html --split must exit 2 (usage error).\n\
+        Some(1),
+        "reify doc --format html --split must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -313,14 +314,14 @@ fn doc_split_with_html_exits_two() {
 }
 
 #[test]
-fn doc_compact_with_markdown_exits_two() {
+fn doc_compact_with_markdown_exits_one() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--format", "markdown", "--compact", &path]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --format markdown --compact must exit 2 (usage error).\n\
+        Some(1),
+        "reify doc --format markdown --compact must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -334,14 +335,14 @@ fn doc_compact_with_markdown_exits_two() {
 }
 
 #[test]
-fn doc_compact_with_html_exits_two() {
+fn doc_compact_with_html_exits_one() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--format", "html", "--compact", &path]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --format html --compact must exit 2 (usage error).\n\
+        Some(1),
+        "reify doc --format html --compact must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -494,15 +495,15 @@ fn doc_o_flag_writes_html_without_extra_trailing_newline() {
 }
 
 #[test]
-fn doc_format_without_value_exits_two() {
+fn doc_format_without_value_exits_one() {
     // Pins the `--format` requires-a-value branch in cmd_doc's arg loop.
     // Easy regression to introduce when refactoring; this test catches it.
     let (status, stdout, stderr) = run_doc(&["--format"]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --format with no value must exit 2.\n\
+        Some(1),
+        "reify doc --format with no value must exit 1.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -512,8 +513,8 @@ fn doc_format_without_value_exits_two() {
 }
 
 #[test]
-fn doc_format_with_invalid_value_exits_two() {
-    // Pins the unknown-`--format` value path: must exit 2 with a usage-error on
+fn doc_format_with_invalid_value_exits_one() {
+    // Pins the unknown-`--format` value path: must exit 1 with a usage-error on
     // stderr naming the bad value and the valid choices.
     // The input positional is required because cmd_doc's missing-input check
     // runs *before* format resolution, so omitting it would test the wrong branch.
@@ -522,8 +523,8 @@ fn doc_format_with_invalid_value_exits_two() {
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --format xml must exit 2 (usage error).\n\
+        Some(1),
+        "reify doc --format xml must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -545,14 +546,14 @@ fn doc_format_with_invalid_value_exits_two() {
 }
 
 #[test]
-fn doc_o_without_value_exits_two() {
+fn doc_o_without_value_exits_one() {
     // Pins the `-o` requires-a-value branch in cmd_doc's arg loop.
     let (status, stdout, stderr) = run_doc(&["-o"]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc -o with no path must exit 2.\n\
+        Some(1),
+        "reify doc -o with no path must exit 1.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -607,7 +608,7 @@ fn doc_split_markdown_writes_files_to_directory() {
 }
 
 #[test]
-fn doc_split_without_output_path_exits_two() {
+fn doc_split_without_output_path_exits_one() {
     // Regression guard: step 28's Split arm requires `-o <dir>`.  This test
     // pins that behaviour; if a future refactor accidentally allows
     // `--split` without `-o`, this test fails loudly.
@@ -616,8 +617,8 @@ fn doc_split_without_output_path_exits_two() {
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --format markdown --split without -o must exit 2.\n\
+        Some(1),
+        "reify doc --format markdown --split without -o must exit 1.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -627,14 +628,14 @@ fn doc_split_without_output_path_exits_two() {
 }
 
 #[test]
-fn doc_unknown_flag_exits_two() {
+fn doc_unknown_flag_exits_one() {
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc with an unknown flag must exit 2.\nstdout: {stdout}\nstderr: {stderr}"
+        Some(1),
+        "reify doc with an unknown flag must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("unknown flag"),
@@ -747,14 +748,14 @@ fn walkdir_html(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     results
 }
 
-/// `reify doc --stdlib` without `--out` must exit 2 and print the usage hint.
+/// `reify doc --stdlib` without `--out` must exit 1 and print the usage hint.
 #[test]
-fn doc_stdlib_without_out_exits_two() {
+fn doc_stdlib_without_out_exits_one() {
     let (status, _stdout, stderr) = run_doc(&["--stdlib"]);
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --stdlib without --out must exit 2.\nstderr: {stderr}"
+        Some(1),
+        "reify doc --stdlib without --out must exit 1.\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("Usage: reify doc"),
@@ -762,7 +763,7 @@ fn doc_stdlib_without_out_exits_two() {
     );
 }
 
-/// `reify doc --stdlib --out <dir> --format json` must exit 2 because
+/// `reify doc --stdlib --out <dir> --format json` must exit 1 because
 /// --stdlib is HTML-only.
 #[test]
 fn doc_stdlib_rejects_json_format() {
@@ -772,8 +773,8 @@ fn doc_stdlib_rejects_json_format() {
     let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str, "--format", "json"]);
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --stdlib --format json must exit 2.\nstderr: {stderr}"
+        Some(1),
+        "reify doc --stdlib --format json must exit 1.\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("Usage: reify doc"),
