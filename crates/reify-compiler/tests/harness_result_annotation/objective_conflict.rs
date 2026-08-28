@@ -779,3 +779,48 @@ structure A {
         compiled.diagnostics
     );
 }
+
+/// The MODULE-PRIVATE half of the monomorph route — the case that proves the
+/// visibility bail alone is not enough.
+///
+/// MEASURED while implementing the fix: with `Bearing` declared WITHOUT `pub`
+/// in `child.ri`, main's compiled templates still contain
+/// `Bearing$ORingSeal visibility=Private objective=true`, and
+/// `E_OBJECTIVE_INERT` still fired. `phase_auto_type_param_resolution` builds
+/// its `template_registry` from `prelude.iter().flat_map(|m| m.templates)`
+/// with no visibility filter, so a private target monomorphises just the same.
+///
+/// Kept as a sibling of the `pub` case above deliberately: the two differ in
+/// exactly one token, and a fix that keyed only on visibility would pass the
+/// `pub` one and fail this.
+#[test]
+fn imported_private_generic_monomorph_objective_is_compile_clean() {
+    let dag = compile_child_and_main(
+        r#"module child
+
+trait Seal {}
+
+pub structure def ORingSeal : Seal { param d : Real = 10.0 }
+
+structure def Bearing<T: Seal> {
+    param bore : Real = 25.0
+    constraint bore > 0.0
+    minimize bore
+}
+"#,
+        r#"module main
+
+import child
+
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+
+structure Root { sub a : Assembly {} }
+"#,
+    );
+    assert_dag_module_has_no_inert(
+        &dag,
+        "main",
+        "a private imported generic monomorphises into this module all the same, \
+         so the clone's `Private` visibility does not make its objective judgeable here",
+    );
+}

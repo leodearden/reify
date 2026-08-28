@@ -737,7 +737,13 @@ pub fn compile_with_prelude_context_checked_with_config(
     // other post-passes; it mutates only `diagnostics`, so the hash is
     // unaffected either way. Purposes are excluded structurally — the pass
     // walks `ctx.templates` and never touches `CompiledPurpose.objective`.
-    compile_builder::post_passes::phase_inert_objective_check(&mut compile_ctx);
+    //
+    // `prelude_refs` is passed for ONE reason: to name the imported templates
+    // the pass must refuse to judge, including the monomorph clones
+    // `phase_auto_type_param_resolution` pushed into `ctx.templates` above. It
+    // does NOT widen the override search — see `inert_objective_finding`'s
+    // obligation 0′.
+    compile_builder::post_passes::phase_inert_objective_check(&mut compile_ctx, prelude_refs);
 
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);

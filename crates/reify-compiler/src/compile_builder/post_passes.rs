@@ -22,6 +22,7 @@ use crate::termination::check_recursive_termination;
 use crate::traits::compile_purpose;
 use crate::types::{
     CompiledField, CompiledFieldSource, CompiledPurpose, TopologyTemplate, ValueCellDecl,
+    Visibility,
 };
 
 /// Phase-12 post-compilation: detect recursive sub-component cycles via
@@ -457,6 +458,10 @@ fn auto_override_possible(
 /// the asymmetry is deliberate (PRD §3 decision 5).
 ///
 /// The proof obligations, in order:
+/// 0. the template is **module-private**;
+/// 0′. the template is not an imported one, nor a monomorph clone of one.
+///    Both of these are checked first, because they are the obligations
+///    `all_templates` cannot speak to at all — see below;
 /// 1. the template declares an objective at all;
 /// 2. every node of every objective term is data-transparent
 ///    ([`is_data_transparent`]);
@@ -469,11 +474,97 @@ fn auto_override_possible(
 ///    instance of this one that lands in that closure
 ///    ([`auto_override_possible`]).
 ///
-/// `all_templates` is the whole module, `template` included.
+/// `all_templates` is the **module currently being compiled**, `template`
+/// included — and nothing else. It is `ctx.templates`, which is initialised
+/// empty (`ctx.rs`'s ctor: "no prelude content is seeded here"); imported
+/// templates live in borrow-only prelude registries during compilation and are
+/// appended to the finished `CompiledModule` only afterwards, by
+/// `merge_imported_pub_templates`. An earlier revision of this doc claimed
+/// `all_templates` "is the whole module", which read as *the whole program*
+/// and was the false premise behind review round 1's finding 1.
+///
+/// Obligation 0 exists because of that boundary. Obligation 6 —
+/// [`auto_override_possible`] — is the only thing that can rescue a template
+/// whose own cells are all non-`auto`, and it can only see overrides declared
+/// in `all_templates`. For a `pub` template the rescuing override may live in
+/// a module that imports this one, and the set of such modules is unknowable
+/// here **in principle**, not merely unavailable: a consumer may not have been
+/// written yet. Threading the prelude does not help, because a prelude holds
+/// the modules this one IMPORTS (upstream) and the override is DOWNSTREAM. So
+/// for an exported template no positive proof of inertness exists, and PRD §3
+/// decision 5 makes that silence.
+///
+/// The measured repro: `pub structure def Widget { param k : Real = 3.0
+/// constraint k > 0.0  minimize k }` in `child.ri`, made governing by
+/// `sub w : Widget { k = auto }` in a downstream `main.ri`, drew
+/// `E_OBJECTIVE_INERT` on legal code.
+///
+/// Obligation 0′ closes a SECOND route to the same mistake, one that
+/// obligation 0 does **not** subsume. `phase_auto_type_param_resolution` clones
+/// an imported generic into `ctx.templates` (`let mut mono = target.clone();`)
+/// without substituting `objective`, so the clone carries the *defining*
+/// module's `minimize` — judged here against the *importing* module's
+/// templates, and anchored at a span that indexes into the other module's
+/// source text.
+///
+/// It would be tempting to argue obligation 0 already covers this, since the
+/// clone inherits the target's `visibility` verbatim (the clone site reassigns
+/// `name`, `type_params` and `content_hash`, and nothing else), so a clone of a
+/// `pub` generic is `Public`. MEASURED, and false: a **module-private**
+/// imported generic is monomorphed all the same. Compiling
+/// `structure def Bearing<T: Seal> { param bore : Real = 25.0  minimize bore }`
+/// — no `pub` — in `child.ri`, against a `main.ri` whose only reference is
+/// `sub b = Bearing<auto: Seal>()`, puts `Bearing$ORingSeal` in main's
+/// templates with `visibility=Private`, and `E_OBJECTIVE_INERT` fires.
+/// `phase_auto_type_param_resolution` builds its `template_registry` from
+/// `prelude.iter().flat_map(|m| m.templates)` with no visibility filter, which
+/// is what lets a private target through. (That the private target is
+/// reachable across the import boundary at all looks like a separate defect;
+/// it is not this function's to fix, and obligation 0′ does not depend on
+/// whether it is one.)
+///
+/// So `imported_template_names` is threaded in and a template whose name
+/// resolves to a prelude template — directly, or through
+/// [`names_same_structure`]'s `Generic$Arg` split — is refused. A local
+/// template that merely SHADOWS an imported name is refused too; that is
+/// silence on a legal program, which is the side of the asymmetry this rule is
+/// built to fall on.
+///
+/// The UPSTREAM direction needs no such thread, and this is a proof rather than
+/// an omission. `auto_override_possible` can miss a rescuing override only if
+/// some template outside `all_templates` declares a `sub` of `template`. For a
+/// template that survives obligations 0 and 0′ — module-private, and not a
+/// clone of anything imported — there are exactly three places such a `sub`
+/// could live: this module (that IS `all_templates`); a downstream module
+/// (which cannot name it, since `merge_imported_pub_templates` exports only
+/// `Visibility::Public` templates); or an upstream prelude module (which would
+/// have to import this one, and `ModuleDag`'s `in_progress` DFS rejects the
+/// resulting import cycle). The set is therefore closed.
 pub(crate) fn inert_objective_finding(
     template: &TopologyTemplate,
     all_templates: &[TopologyTemplate],
+    imported_template_names: &[&str],
 ) -> Option<InertObjectiveFinding> {
+    // (0) module-private only. `all_templates` spans this module alone, so an
+    // exported template's rescuing `auto` override — which may live in a module
+    // that imports this one, or in one nobody has written yet — is invisible
+    // here by construction. Review round 1, finding 1.
+    if template.visibility == Visibility::Public {
+        return None;
+    }
+
+    // (0′) not an imported template, and not a monomorph clone of one. Reuses
+    // `names_same_structure` so the `Generic$Arg` convention is not re-derived
+    // here; a clone of an imported generic carries the DEFINING module's
+    // objective and its overrides live in that module, which is not
+    // `all_templates`.
+    if imported_template_names
+        .iter()
+        .any(|imported| names_same_structure(&template.name, imported))
+    {
+        return None;
+    }
+
     // (1) + (2) — an objective exists and is wholly readable.
     let objective = template.objective.as_ref()?;
     if !objective
@@ -558,12 +649,31 @@ fn objective_sense_word(objective: &ObjectiveSet) -> &'static str {
 /// touches. A purpose's `subject` is bound at application time, so there is no
 /// template whose autos could even be counted.
 ///
+/// `prelude` is taken for one purpose only — to name the imported templates
+/// [`inert_objective_finding`]'s obligation 0′ refuses to judge. It is NOT used
+/// to widen the search for `auto` overrides; see that function's doc for why
+/// the upstream direction is provably vacuous.
+///
 /// **Ordering.** Must run after `phase_sub_override_autos` /
 /// `phase_connect_auto_params`, because those are what mint the parent-scoped
 /// `Parent.sub`/`member` cells that prove a child objective is governing after
 /// all; running earlier would report exactly the templates the override was
 /// written to rescue.
-pub(crate) fn phase_inert_objective_check(ctx: &mut CompilationCtx) {
+pub(crate) fn phase_inert_objective_check(
+    ctx: &mut CompilationCtx,
+    prelude: &[&crate::CompiledModule],
+) {
+    // Every name the prelude declares, flattened once for the whole walk.
+    // Deliberately UNFILTERED by visibility, mirroring the registry
+    // `phase_auto_type_param_resolution` monomorphises from: a private imported
+    // generic reaches `ctx.templates` as a clone too (measured — see
+    // `inert_objective_finding`'s obligation 0′), so filtering here would
+    // reopen exactly the route this closes.
+    let imported_template_names: Vec<&str> = prelude
+        .iter()
+        .flat_map(|m| m.templates.iter().map(|t| t.name.as_str()))
+        .collect();
+
     // Collect first, extend after: the predicate borrows `ctx.templates`
     // immutably for the whole walk (the NLL idiom `phase_sub_override_autos`
     // and `phase_pending_bound_checks` already use).
@@ -573,7 +683,9 @@ pub(crate) fn phase_inert_objective_check(ctx: &mut CompilationCtx) {
         let Some(objective) = template.objective.as_ref() else {
             continue;
         };
-        let Some(finding) = inert_objective_finding(template, &ctx.templates) else {
+        let Some(finding) =
+            inert_objective_finding(template, &ctx.templates, &imported_template_names)
+        else {
             continue;
         };
 
@@ -647,12 +759,24 @@ mod inert_objective_tests {
 
     // ── builders ────────────────────────────────────────────────────────────
 
+    /// No prelude. These cases hand-build a single-module world, so obligation
+    /// 0′ has nothing to match and the visibility/override axes stay isolated.
+    /// `imported_generic_clone_is_never_reported` supplies the non-empty case.
+    const NO_IMPORTS: &[&str] = &[];
+
+    /// Build a bare template. **`Visibility::Private` is load-bearing, not an
+    /// arbitrary default**: obligation 0 bails on `Visibility::Public`, so a
+    /// `Public` builder would silently turn every positive below into a
+    /// vacuous pass. Module-private is also the shape these cases model — each
+    /// one reasons about overrides that must all be in `all_templates` for the
+    /// proof to hold. `exported_template_is_never_reported` pins the other
+    /// side.
     fn tmpl(name: &str) -> TopologyTemplate {
         TopologyTemplate {
             name: name.to_string(),
             doc: None,
             entity_kind: EntityKind::Structure,
-            visibility: Visibility::Public,
+            visibility: Visibility::Private,
             type_params: vec![],
             trait_bounds: vec![],
             value_cells: vec![],
@@ -788,6 +912,99 @@ mod inert_objective_tests {
         t
     }
 
+    // ── OBLIGATION 0: visibility ────────────────────────────────────────────
+
+    /// The byte-identical template that IS reported when module-private must go
+    /// silent the moment it is `pub`. Obligation 0, review round 1 finding 1.
+    ///
+    /// The pair is deliberately a one-field perturbation of
+    /// `objective_over_literal_param_with_no_autos_is_inert` above: nothing
+    /// about the objective, the cells, or `all_templates` differs, so the
+    /// visibility axis is isolated. A `pub` template's rescuing `auto` override
+    /// may live in a downstream module — one that need not even exist yet — and
+    /// `all_templates` is this module alone, so inertness is unprovable rather
+    /// than merely unproven.
+    #[test]
+    fn exported_template_is_never_reported() {
+        let mut t = no_autos_template();
+        t.visibility = Visibility::Public;
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
+            "a `pub` template's consumers are unknowable at compile time, so no \
+             positive proof of inertness exists and PRD §3 decision 5 forces silence"
+        );
+    }
+
+    /// The negative half of the same axis, stated as its own case so a future
+    /// change that widens obligation 0 into "never report anything" goes red
+    /// here rather than silently.
+    ///
+    /// This duplicates the assertion in
+    /// `objective_over_literal_param_with_no_autos_is_inert`, on purpose: that
+    /// test is about the *fixture*, this one is about the *discriminator*.
+    #[test]
+    fn module_private_template_with_the_same_objective_is_still_reported() {
+        let t = no_autos_template();
+        assert_eq!(t.visibility, Visibility::Private, "builder precondition");
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_some(),
+            "obligation 0 must discriminate on visibility, not disable the rule"
+        );
+    }
+
+    // ── OBLIGATION 0′: provenance ───────────────────────────────────────────
+
+    /// A monomorph clone of an IMPORTED generic must never be reported, even
+    /// though the clone lands in `ctx.templates` looking local and (measured)
+    /// inherits a `Private` visibility when the imported generic is private —
+    /// so obligation 0 does not catch it.
+    ///
+    /// The clone's name carries the `Generic$Arg` mangling, which is why the
+    /// check goes through `names_same_structure` rather than an equality test.
+    #[test]
+    fn imported_generic_clone_is_never_reported() {
+        let mut t = no_autos_template();
+        t.name = "DicMinNoAutos$ORingSeal".to_string();
+        // Cells stay scoped to the pre-mangling entity, exactly as the clone
+        // site leaves them (it reassigns `name`, not the value-cell ids).
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t), &["DicMinNoAutos"]).is_none(),
+            "a clone of an imported generic carries the DEFINING module's objective, \
+             whose overrides are not in `all_templates`"
+        );
+    }
+
+    /// The directly-imported (unmangled) case: same refusal, no `$` involved.
+    #[test]
+    fn imported_template_itself_is_never_reported() {
+        let t = no_autos_template();
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t), &["DicMinNoAutos"]).is_none(),
+            "an imported template's overrides live in its defining module"
+        );
+    }
+
+    /// NEGATIVE GUARD for the same axis: an unrelated prelude name must not
+    /// suppress anything. Without this, an obligation 0′ that ignored its
+    /// argument and always bailed would still pass the two cases above.
+    ///
+    /// `DicMinNoAutosExtra` is chosen to share a PREFIX with the template
+    /// under test, pinning that the match is `names_same_structure`
+    /// (prefix + `$`) and not a bare `starts_with`.
+    #[test]
+    fn unrelated_prelude_names_do_not_suppress() {
+        let t = no_autos_template();
+        assert!(
+            inert_objective_finding(
+                &t,
+                std::slice::from_ref(&t),
+                &["SomethingElse", "DicMinNoAutosExtra"]
+            )
+            .is_some(),
+            "obligation 0′ must match the template's own name, not merely be non-empty"
+        );
+    }
+
     // ── POSITIVE: the two target fixtures ───────────────────────────────────
 
     /// `docs/prds/v0_6/fixtures/dic_min_no_autos.ri` — a declared objective in a
@@ -796,7 +1013,7 @@ mod inert_objective_tests {
     #[test]
     fn objective_over_literal_param_with_no_autos_is_inert() {
         let t = no_autos_template();
-        let finding = inert_objective_finding(&t, std::slice::from_ref(&t))
+        let finding = inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS)
             .expect("minimize k*k over a never-auto param must be reported inert");
 
         assert_eq!(
@@ -833,7 +1050,7 @@ mod inert_objective_tests {
             vref("DicMinUnread", "k"),
         )));
 
-        let finding = inert_objective_finding(&t, std::slice::from_ref(&t))
+        let finding = inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS)
             .expect("an objective that reads only `k` is inert even when `a` is auto");
         assert_eq!(
             finding.never_auto_cells,
@@ -856,7 +1073,7 @@ mod inert_objective_tests {
         )));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "an objective that reads an auto directly governs a solver variable"
         );
     }
@@ -873,7 +1090,7 @@ mod inert_objective_tests {
         t.objective = Some(minimize(vref("Indirect", "v")));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "the closure over default_expr must reach the auto through the let"
         );
     }
@@ -891,7 +1108,7 @@ mod inert_objective_tests {
         t.objective = Some(minimize(vref("Chain", "w")));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "the closure must be transitive, not single-hop"
         );
     }
@@ -911,7 +1128,7 @@ mod inert_objective_tests {
         })));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "a MethodCall term is not data-transparent — its coupling is invisible \
              at compile time, so the predicate must stay silent"
         );
@@ -931,7 +1148,7 @@ mod inert_objective_tests {
         })));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "a structural query is not data-transparent"
         );
     }
@@ -949,7 +1166,7 @@ mod inert_objective_tests {
         })));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "a Lambda term is not data-transparent"
         );
     }
@@ -967,7 +1184,7 @@ mod inert_objective_tests {
         )));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "a CrossSubGeometryRef reaches another scope's cell — not provable here"
         );
     }
@@ -985,7 +1202,7 @@ mod inert_objective_tests {
         t.objective = Some(minimize(mul(vref("DicMinNoAutos", "k"), poisoned)));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "a Type::Error subexpr marks already-poisoned IR — stay silent"
         );
     }
@@ -1002,7 +1219,7 @@ mod inert_objective_tests {
         t.objective = Some(minimize(lit(1.0)));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "a pure-literal objective has no references — the rule presupposes ≥1"
         );
     }
@@ -1018,7 +1235,7 @@ mod inert_objective_tests {
         )));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "a ref that resolves to no cell of this template is unproven"
         );
     }
@@ -1035,7 +1252,7 @@ mod inert_objective_tests {
         t.objective = Some(minimize(vref("Guarded", "a")));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "guarded_groups[*].members must participate in cell resolution"
         );
     }
@@ -1050,7 +1267,7 @@ mod inert_objective_tests {
         t.objective = Some(minimize(vref("GuardedElse", "a")));
 
         assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t)).is_none(),
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
             "guarded_groups[*].else_members must participate in cell resolution"
         );
     }
@@ -1071,7 +1288,7 @@ mod inert_objective_tests {
 
         let all = vec![parent, child.clone()];
         assert!(
-            inert_objective_finding(&child, &all).is_none(),
+            inert_objective_finding(&child, &all, NO_IMPORTS).is_none(),
             "a parent-scoped `Parent.c`/`k` auto override makes Child's objective \
              governing — the predicate must see the whole module"
         );
@@ -1088,7 +1305,7 @@ mod inert_objective_tests {
 
         let all = vec![parent, child.clone()];
         assert!(
-            inert_objective_finding(&child, &all).is_none(),
+            inert_objective_finding(&child, &all, NO_IMPORTS).is_none(),
             "when the scoped auto's sub cannot be resolved to a structure, the \
              predicate cannot prove the override is unrelated — bail"
         );
@@ -1107,7 +1324,7 @@ mod inert_objective_tests {
 
         let all = vec![parent, other, child.clone()];
         assert!(
-            inert_objective_finding(&child, &all).is_some(),
+            inert_objective_finding(&child, &all, NO_IMPORTS).is_some(),
             "an override on an unrelated structure must not rescue this objective"
         );
     }
@@ -1129,7 +1346,7 @@ mod inert_objective_tests {
             vref("Deterministic", "b"),
         )));
 
-        let first = inert_objective_finding(&t, std::slice::from_ref(&t))
+        let first = inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS)
             .expect("objective over three never-auto params is inert");
         assert_eq!(
             first.never_auto_cells,
@@ -1141,7 +1358,7 @@ mod inert_objective_tests {
             "cells must be sorted, not in source/traversal order"
         );
 
-        let second = inert_objective_finding(&t, std::slice::from_ref(&t))
+        let second = inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS)
             .expect("second call must agree with the first");
         assert_eq!(first.never_auto_cells, second.never_auto_cells);
         assert_eq!(first.anchor_span, second.anchor_span);
@@ -1151,7 +1368,7 @@ mod inert_objective_tests {
     #[test]
     fn repeated_refs_are_deduplicated() {
         let t = no_autos_template();
-        let finding = inert_objective_finding(&t, std::slice::from_ref(&t)).unwrap();
+        let finding = inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).unwrap();
         assert_eq!(
             finding.never_auto_cells.len(),
             1,
@@ -1164,6 +1381,6 @@ mod inert_objective_tests {
     fn template_without_an_objective_yields_nothing() {
         let mut t = no_autos_template();
         t.objective = None;
-        assert!(inert_objective_finding(&t, std::slice::from_ref(&t)).is_none());
+        assert!(inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none());
     }
 }
