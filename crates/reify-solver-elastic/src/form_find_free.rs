@@ -604,7 +604,7 @@ fn assemble_surface_matrix(
 /// [`FREE_SURFACE_EQUILIBRIUM_REL_TOL`]'s doc for the calibration that keeps
 /// this in a known, auditable relationship to the previous absolute bound.
 ///
-/// `d_scale <= 0` (including NaN, via the `!(d_scale > 0.0)` spelling)
+/// `d_scale <= 0` (including NaN, which fails the `d_scale_positive` bind)
 /// returns `f64::INFINITY` rather than dividing by zero: a node block
 /// touched by neither a member nor a triangle has every row of `D`
 /// identically zero, so `resid` above is vacuously 0 — not because
@@ -644,7 +644,8 @@ fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f
         }
         d_scale = d_scale.max(row);
     }
-    if !(d_scale > 0.0) {
+    let d_scale_positive = d_scale > 0.0;
+    if !d_scale_positive {
         return f64::INFINITY;
     }
 
@@ -913,7 +914,7 @@ fn form_find_group_ratios_combined(
 /// gauge-invariant too, so the SAME `geo_step` produces the SAME
 /// displacement regardless of gauge.
 ///
-/// `max_mag <= 0` (including NaN, via the `!(max_mag > 0.0)` spelling)
+/// `max_mag <= 0` (including NaN, which fails the `max_mag_positive` bind)
 /// returns `0.0`: an identically-zero `D` (or an all-zero spectrum) has no
 /// spectral gap left to close, so a perfect (zero) score is the honest
 /// answer — unlike [`all_node_equilibrium_residual_relative`]'s vacuous-zero
@@ -949,7 +950,8 @@ fn combined_eig_gap_objective(
                 .iter()
                 .map(|v| v.abs())
                 .fold(0.0_f64, f64::max);
-            if !(max_mag > 0.0) {
+            let max_mag_positive = max_mag > 0.0;
+            if !max_mag_positive {
                 return 0.0;
             }
             spec.eigenvalues
