@@ -369,8 +369,8 @@ impl MeshToVoxelOptions {
 #[cfg(test)]
 mod tests {
     use super::{
-        MIN_FEATURE_VOXELS_ACROSS, MeshToVoxelOptions, VOXELS_PER_LONGEST_AXIS,
-        VoxelResolutionError,
+        BAND_MARGIN_VOXELS, DENSIFY_BUDGET_VOXELS, MIN_FEATURE_VOXELS_ACROSS, MeshToVoxelOptions,
+        VOXELS_PER_LONGEST_AXIS, VoxelResolutionError,
     };
     use reify_ir::{Mesh, VoxelResolution};
     // Import the authoritative sentinel — not a hand-copied literal — so this
@@ -833,5 +833,161 @@ mod tests {
                 "must be at least as fine as the shells PRD's ~ thickness/3"
             )
         };
+    }
+
+    // -----------------------------------------------------------------------
+    // Narrow-band tightness + densify-budget guard (task 6560, step-5 RED)
+    // -----------------------------------------------------------------------
+    //
+    // Pure arithmetic, no FFI: these run in stub builds too.
+
+    /// The band must still reach every interior point at the new, much finer
+    /// resolution.
+    ///
+    /// The bound is an IDENTITY, not a tuned number: the body is contained in
+    /// its bounding box, so any interior point's distance to the BODY boundary
+    /// is at most its distance to the BBOX boundary, which is at most the
+    /// minimum half-extent (any path leaving the bbox must exit the body
+    /// first). For the 100 × 100 × 1 plate that is 0.5.
+    #[test]
+    fn for_resolution_band_covers_the_interior() {
+        let plate = plate_100x100x1();
+        let opts = MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::MinFeature(1.0))
+            .expect("MinFeature(1.0) on the plate must succeed");
+
+        let band_depth = opts.narrow_band * opts.voxel_size;
+        assert!(
+            band_depth >= 0.5,
+            "band depth (narrow_band={} × voxel_size={}) = {band_depth} must cover the \
+             plate's minimum half-extent (0.5); a shallower band saturates the interior \
+             SDF to a sentinel instead of the true distance",
+            opts.narrow_band,
+            opts.voxel_size
+        );
+    }
+
+    /// The band is derived from the MINIMUM half-extent, not the longest extent.
+    ///
+    /// This is the assertion that makes thickness-scale resolution affordable
+    /// on a thin feature inside a large part: at h = 0.25 on the 100 mm plate,
+    /// `honest_floor`'s `longest_extent / 2` rule would demand 200+ band voxels
+    /// (100/2 ÷ 0.25 = 200), whereas the containment identity needs only
+    /// 0.5 / 0.25 + BAND_MARGIN_VOXELS = 4.
+    #[test]
+    fn for_resolution_band_is_derived_from_min_half_extent() {
+        let plate = plate_100x100x1();
+        let opts = MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::MinFeature(1.0))
+            .expect("MinFeature(1.0) on the plate must succeed");
+
+        assert_eq!(
+            opts.narrow_band,
+            0.5 / 0.25 + BAND_MARGIN_VOXELS,
+            "narrow_band must be min_half_extent / voxel_size + BAND_MARGIN_VOXELS"
+        );
+        assert_eq!(opts.narrow_band, 4.0, "0.5/0.25 + 2.0 is exact in f64");
+        assert!(
+            opts.narrow_band < 100.0 / 2.0 / opts.voxel_size,
+            "the min-half-extent rule must be strictly cheaper than honest_floor's \
+             longest-extent rule on a thin feature in a large part"
+        );
+    }
+
+    /// `honest_floor`'s own band policy is untouched by task 6560 — regression
+    /// pin on the existing `VOXELS_PER_LONGEST_AXIS / 2 + BAND_MARGIN_VOXELS`
+    /// constant, so every pre-existing caller and test is unchanged.
+    #[test]
+    fn honest_floor_band_policy_is_unchanged() {
+        let panel = thin_panel();
+        let opts = MeshToVoxelOptions::honest_floor(&panel)
+            .expect("honest_floor must return Some for a valid panel");
+        assert_eq!(
+            opts.narrow_band,
+            VOXELS_PER_LONGEST_AXIS / 2.0 + BAND_MARGIN_VOXELS,
+            "honest_floor must keep its longest-extent band rule"
+        );
+        assert_eq!(opts.narrow_band, 34.0, "64.0/2.0 + 2.0");
+    }
+
+    /// The dense-grid budget is checked BEFORE any FFI work.
+    ///
+    /// `OpenVdbGridSource` (ingest.rs:64-79) and `SampledField`
+    /// (reify-ir/src/value.rs:94-114) are both dense row-major `Vec<f64>`, and
+    /// the only ceiling before this guard was the C++ `GRID_DENSIFY_MAX_VOXELS`
+    /// throw inside `grid_densify_to_buffer` — i.e. AFTER a full `meshToVolume`
+    /// allocation, surfaced as a mis-typed `IngestError::FileReadError`. This
+    /// pre-check is pure Rust, so it also fires in stub builds.
+    ///
+    /// 100 / 0.001 = 1e5 per lateral axis ⇒ nx·ny ≈ 1e10 ≫ 256M.
+    #[test]
+    fn for_resolution_rejects_an_over_budget_request_before_any_ffi() {
+        let plate = plate_100x100x1();
+        match MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::TargetVoxelSize(0.001)) {
+            Err(VoxelResolutionError::DensifyBudgetExceeded {
+                requested_voxel_size,
+                implied_voxels,
+                budget,
+            }) => {
+                assert_eq!(
+                    requested_voxel_size, 0.001,
+                    "the error must name the requested voxel size verbatim"
+                );
+                assert_eq!(
+                    budget, DENSIFY_BUDGET_VOXELS,
+                    "the error must name the budget it was measured against"
+                );
+                assert!(
+                    implied_voxels > budget,
+                    "implied_voxels ({implied_voxels}) must exceed the budget ({budget})"
+                );
+            }
+            other => panic!("expected Err(DensifyBudgetExceeded); got {other:?}"),
+        }
+    }
+
+    /// The guard must not false-positive on the very request this task exists
+    /// to enable: `MinFeature(1.0)` on the 100 mm plate implies a densify bbox
+    /// of roughly 408 × 408 × 12 ≈ 2.0M voxels — three orders of magnitude
+    /// under the 256M budget.
+    #[test]
+    fn for_resolution_budget_guard_does_not_false_positive() {
+        let plate = plate_100x100x1();
+        assert!(
+            MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::MinFeature(1.0)).is_ok(),
+            "the thickness-scale request the shells gate needs must stay within budget"
+        );
+    }
+
+    /// The Rust-side budget mirrors the C++ `GRID_DENSIFY_MAX_VOXELS`
+    /// (cpp/openvdb_wrapper.h:146): 256M voxels ≈ 1 GiB at 4 bytes/float.
+    #[test]
+    fn densify_budget_matches_the_cpp_ceiling() {
+        assert_eq!(DENSIFY_BUDGET_VOXELS, 256 * 1024 * 1024);
+    }
+
+    /// A request whose per-axis counts would overflow `i64` under naive
+    /// multiplication must return the budget `Err` — never panic, never wrap
+    /// to a small positive product that sneaks past the cap.
+    ///
+    /// At h = 1e-12 on the plate the lateral axes are ~1e14 voxels each, so
+    /// nx·ny ≈ 1e28 — far outside `i64`. The check compares against
+    /// `budget / next` BEFORE multiplying, exactly as openvdb_wrapper.cpp:377-393
+    /// does, so the wrap can never happen.
+    #[test]
+    fn for_resolution_budget_guard_is_overflow_safe() {
+        let plate = plate_100x100x1();
+        match MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::TargetVoxelSize(1e-12)) {
+            Err(VoxelResolutionError::DensifyBudgetExceeded {
+                implied_voxels,
+                budget,
+                ..
+            }) => {
+                assert!(
+                    implied_voxels > budget,
+                    "an overflowing request must still report an over-budget count, \
+                     not a wrapped small positive one; got {implied_voxels}"
+                );
+            }
+            other => panic!("expected Err(DensifyBudgetExceeded) for 1e-12; got {other:?}"),
+        }
     }
 }
