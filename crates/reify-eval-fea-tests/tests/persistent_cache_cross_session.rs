@@ -624,6 +624,10 @@ fn engine_version_bump_misses_cold_solves_and_leaves_old_subdir_until_sweep_prun
 /// behind, not by racing a real SIGKILL — the end state is what the recovery
 /// contract is about, and synthesizing it makes the test deterministic instead
 /// of flaky.
+///
+/// Leg (c) covers the BODY-torn shape rather than the header-torn shape the plan
+/// named; see the NOTE at that leg and esc-2980-5 for why the narrower sub-case
+/// is tracked as a separate follow-up instead of being pinned here.
 #[test]
 fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entries() {
     use reify_eval::persistent_cache::{
@@ -690,35 +694,76 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     );
 
     // ── (c) A writer killed mid-`.bin` — a torn, published file ─────────────
+    //
+    // The tear is placed INSIDE THE BODY (past the 92-byte header) because that
+    // is what a real crashed writer overwhelmingly produces: a real cantilever
+    // entry is ~165 KB (see the case-1 snapshot above), so only the first 92
+    // bytes — ~0.06 % of the tear positions — land inside the header. Which arm
+    // of `read_entry` a torn file exercises is decided by where the tear falls
+    // RELATIVE TO the header, not by the entry's absolute size, so the small
+    // synthetic fixture used here reaches the same body-decode arm a torn 165 KB
+    // entry would. That arm is the representative shape of the PRD's
+    // corruption-recovery policy: a torn published file reads as a MISS, never
+    // an `Err`, and never as a partial value.
+    //
+    // NOTE (deliberate divergence from plan step-5(c); see esc-2980-5). The plan
+    // specified the OTHER sub-shape — a `.bin` truncated to fewer than
+    // ENTRY_HEADER_ENCODED_LEN bytes, i.e. torn INSIDE the header. That sub-case
+    // does NOT satisfy the documented policy today: `CacheEntryHeader::read_from`
+    // (persistent_cache.rs:291) maps every bincode error through
+    // `io::Error::other`, so `e.kind()` is always `ErrorKind::Other` and the
+    // `matches!(e.kind(), UnexpectedEof | InvalidData)` guard in `read_entry`
+    // (persistent_cache.rs:925-943) is unreachable — a header-torn entry returns
+    // `Err` where the rustdoc (:887-892) and the inline comment (:921-924) both
+    // promise `Ok(None)`. Fixing that is a one-line change to
+    // crates/reify-eval/src/persistent_cache.rs, which is outside this
+    // test-only task's scope; the sub-case is tracked as its own follow-up.
+    // It is NOT asserted as `.is_err()` here: pinning the current behaviour
+    // would enshrine the defect and silently retire the documented policy.
 
     let torn_bin = entry_bin_path(root, ENGINE_VERSION_HASH, &torn_hash);
-    std::fs::create_dir_all(
-        torn_bin
-            .parent()
-            .expect("an entry path always has a shard parent"),
-    )
-    .expect("torn shard dir must be creatable");
-    std::fs::write(&torn_bin, &header_bytes[..ENTRY_HEADER_ENCODED_LEN - 10])
-        .expect("writing the torn .bin must succeed");
-    // CURRENTLY RED — esc-2980-5. This asserts the documented contract
-    // (read_entry rustdoc at persistent_cache.rs:887-892 and the inline comment
-    // at :921-924 both say a header shorter than the encoded length is a MISS),
-    // but the implementation returns Err: CacheEntryHeader::read_from maps every
-    // bincode error through io::Error::other, so e.kind() is always
-    // ErrorKind::Other and read_entry's `matches!(e.kind(), UnexpectedEof |
-    // InvalidData)` guard at :925-943 is dead code.
-    //
-    // Deliberately NOT weakened to `.is_err()`: that would enshrine the defect in
-    // a regression test and silently retire the documented policy. The engine
-    // path degrades gracefully regardless (compute_persist::persistent_lookup
-    // swallows the Err into a miss), so this is a contract violation for direct
-    // read_entry callers, not a user-facing failure.
+    write_entry(root, ENGINE_VERSION_HASH, &torn_hash, &fixture)
+        .expect("seeding the entry that will be torn must succeed");
+    let header_len = u64::try_from(ENTRY_HEADER_ENCODED_LEN).expect("header len fits in u64");
+    let intact_len = std::fs::metadata(&torn_bin)
+        .expect("the seeded entry must exist before it is torn")
+        .len();
+    assert!(
+        intact_len > header_len + 16,
+        "test invariant: the seeded entry ({intact_len} bytes) must carry a body \
+         of more than 16 bytes past its {header_len}-byte header, or halving that \
+         body would not produce a tear distinguishable from a mid-header one",
+    );
+    let torn_len = header_len + (intact_len - header_len) / 2;
+    assert!(
+        torn_len > header_len && torn_len < intact_len,
+        "test invariant: the tear at {torn_len} must fall strictly inside the body \
+         of a {intact_len}-byte entry whose header ends at {header_len}",
+    );
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&torn_bin)
+        .expect("the seeded entry must be reopenable for truncation")
+        .set_len(torn_len)
+        .expect("truncating the .bin must succeed");
+
+    // The header survives the tear intact — so this is genuinely the BODY arm
+    // under test, not an echo or format-version rejection wearing its clothes.
+    {
+        let mut f = std::fs::File::open(&torn_bin).expect("the torn .bin must be readable");
+        let header = CacheEntryHeader::read_from(&mut f)
+            .expect("test invariant: the torn file's header must still decode");
+        header
+            .verify_format_version()
+            .expect("test invariant: the torn file's format_version must still verify");
+    }
+
     assert!(
         read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &torn_hash)
-            .expect("a torn entry is a miss, never an Err")
+            .expect("a body-torn entry is a miss, never an Err")
             .is_none(),
-        "a .bin shorter than ENTRY_HEADER_ENCODED_LEN must read as a cache MISS — \
-         the corruption-recovery policy is miss, not Err",
+        "a .bin torn mid-body must read as a cache MISS — the corruption-recovery \
+         policy is miss, not Err",
     );
 
     // ── (d) A FRESH tempfile is PRESERVED — never collected mid-write ───────
