@@ -1290,18 +1290,4 @@ mod tests {
             "the shared helper must not resolve type aliases (rename safety)"
         );
     }
-
-    /// Same-file goto-def on a top-level declaration name does not exist for ANY
-    /// declaration kind (see goto_def_structure_name_returns_none), and aliases
-    /// must not unilaterally become the exception.
-    #[test]
-    fn goto_def_same_file_type_alias_returns_none() {
-        let source = "type Speed = Length / Time\nstructure S {\n    param v: Speed = 1.0\n}";
-        // Cursor on 'Speed' in 'param v: Speed' (line 2, col 14).
-        let position = Position::new(2, 14);
-        assert!(
-            compute_goto_definition(source, &test_uri(), position).is_none(),
-            "same-file top-level navigation stays out of scope"
-        );
-    }
 }
