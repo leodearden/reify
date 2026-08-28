@@ -4052,6 +4052,43 @@ pub enum DiagnosticCode {
     /// automatically (same non-breaking argument as `ExpressionNestingTooDeep`
     /// and `DimensionedArgRejected` above).
     RepresentationBoundUnenforcedOnExport,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::Engine::eval_cached`
+    /// (task **5240**) — the guarded-groups fall-through at the head of that
+    /// function.
+    ///
+    /// Emitted as a `Severity::Warning` when `eval_cached` is handed a module
+    /// whose templates carry a non-empty `guarded_groups` (a `where`-block).
+    /// The incremental path cannot evaluate guarded cells, so it delegates
+    /// wholesale to the cold `eval()` — which handles them correctly — and
+    /// tags the delegation with this code.
+    ///
+    /// **This is an INTERNAL engine note, not a user fault.** Unlike every
+    /// other eval-time diagnostic (circular let-binding, param-override
+    /// mismatch, sub-component lookup failure, solver Infeasible/NoProgress),
+    /// nothing about the user's source is wrong when it fires: the values
+    /// returned are the correct cold-eval ones. It exists so a caller can tell
+    /// "the incremental cache was bypassed for this call" from "the cache
+    /// served everything" — the two are otherwise indistinguishable, because
+    /// the bypass branch's `CacheStats` hit/miss/early-cutoff counters are all
+    /// zero either way.
+    ///
+    /// Because it is not user-facing, `reify-lsp`'s eval-diagnostic merge
+    /// (`crates/reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state`)
+    /// is the one consumer that deliberately DROPS it: every valid `.ri` file
+    /// using `where` — including the shipped stdlib
+    /// `crates/reify-compiler/stdlib/determinacy_purposes.ri` and
+    /// `examples/m5_guarded_enum.ri` — would otherwise show a spurious editor
+    /// warning that flickers in and out as the user types, depending on
+    /// whether that keystroke took the warm path. That filter matches on this
+    /// code, never on the message prose, so a copy-edit to the wording cannot
+    /// silently re-open the leak.
+    ///
+    /// Minting rationale: same as `RepresentationBoundUnenforcedOnExport`
+    /// above — `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self anywhere in the workspace, so adding one variant is
+    /// non-breaking and round-trips through the feature-gated serde derives
+    /// automatically.
+    EvalCachedGuardedGroupsFallback,
 }
 
 /// A diagnostic message with location and optional labels.

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{
-    ConstraintNodeId, ContentHash, Diagnostic, ModulePath, SourceSpan, ValueCellId, VersionId,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, ModulePath, SourceSpan, ValueCellId,
+    VersionId,
 };
 use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
@@ -247,11 +248,33 @@ pub fn compute_diagnostics_with_state(
     //   - param_override type-kind / dimension mismatch (engine_eval.rs)
     //   - sub-component lookup failure (engine_eval.rs)
     //   - solver Infeasible / NoProgress (engine_eval.rs)
-    // No filter is applied here: if the invariant ever breaks, the cluster fails
-    // loudly in CI and a maintainer must add a filter or update the merge loop.
-    // Keeping a silent defensive filter would hide the very regression the cluster
-    // is designed to detect.
+    // No *format*-based filter is applied here: if the invariant ever breaks, the
+    // cluster fails loudly in CI and a maintainer must add a filter or update the
+    // merge loop. Keeping a silent defensive filter would hide the very regression
+    // the cluster is designed to detect.
+    //
+    // Exactly one code-based exclusion applies (task 5240):
+    // `DiagnosticCode::EvalCachedGuardedGroupsFallback`. Every diagnostic in the
+    // list above reports a genuine USER fault. That one does not — it is an
+    // internal engine note saying `eval_cached` delegated to the cold `eval()`
+    // because the module carries `where`-guarded groups. The values returned are
+    // the correct cold-eval ones, so nothing user-facing is wrong and nothing
+    // belongs in the editor. Without this drop, every valid `.ri` file using
+    // `where` — including the shipped stdlib
+    // `crates/reify-compiler/stdlib/determinacy_purposes.ri` and
+    // `examples/m5_guarded_enum.ri` — would show a spurious warning that
+    // flickers in and out as the user types, appearing only on the keystrokes
+    // that take the `content_unchanged` warm path above.
+    //
+    // Matched by CODE, not by message substring, per this crate's
+    // `FEA_NOT_EVALUATED_CODE` precedent (below): a copy-edit to the engine's
+    // wording must never silently re-open the leak. Its presence on the engine
+    // side is locked by
+    // `crates/reify-eval/tests/harness_engine/eval_cached_guarded_groups.rs`.
     for diag in &eval_diagnostics {
+        if diag.code == Some(DiagnosticCode::EvalCachedGuardedGroupsFallback) {
+            continue;
+        }
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
 

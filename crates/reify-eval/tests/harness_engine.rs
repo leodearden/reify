@@ -67,3 +67,9 @@ mod let_tracing_transitive_e2e;
 // same anti-re-accretion reason as #5196's, #5045's and #5360's above.
 #[path = "harness_engine/instance_path_underdetermined_e2e.rs"]
 mod instance_path_underdetermined_e2e;
+// Task #5240's `eval_cached` guarded-groups fall-through tests land here for the
+// same anti-re-accretion reason as #5196's, #5045's and #5360's above. They are
+// also a topical fit: they drive `Engine::eval_cached`, the engine-level
+// incremental evaluation entry point.
+#[path = "harness_engine/eval_cached_guarded_groups.rs"]
+mod eval_cached_guarded_groups;
