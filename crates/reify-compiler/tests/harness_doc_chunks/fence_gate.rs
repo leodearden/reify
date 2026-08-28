@@ -58,6 +58,8 @@
 //! `enums.md`'s `## Option Type` fence — which passes today only because of
 //! that injected wrapper — is `reify-fragment`, not `reify`.
 
+use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
+
 // ---------------------------------------------------------------------------
 // Fence parser
 // ---------------------------------------------------------------------------
@@ -188,6 +190,71 @@ fn untagged_fence_violations(path: &str, content: &str) -> Vec<String> {
                  language it actually is (`ebnf`, `text`, …).",
                 fence.open_line, fence.ordinal
             )
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Check 1 — a bare ```reify fence must compile standalone
+// ---------------------------------------------------------------------------
+
+/// Every fence tagged EXACTLY ```` ```reify ```` whose body does not compile
+/// as a complete module with zero `Severity::Error` diagnostics.
+///
+/// # EXACT tag match, never a prefix
+///
+/// The filter is `tag.as_deref() == Some("reify")`. `starts_with("reify")`
+/// would sweep in `reify-fragment` / `reify-schematic` / `reify-invalid` and
+/// trial-compile the entire exempt half of the corpus, which is precisely what
+/// those tags exist to prevent.
+///
+/// # Why `_allow_parse_errors`
+///
+/// `compile_source_with_stdlib` (helpers.rs:236) PANICS on parse errors. One
+/// malformed fence would then abort the whole gate with a backtrace naming no
+/// file and no fence — defeating the "names file + fence ordinal +
+/// diagnostics" contract at exactly the moment it matters most. The
+/// `_allow_parse_errors` variant (helpers.rs:354) folds parse errors into
+/// `.diagnostics` at Error severity via `parse_errors_as_diagnostics`, so the
+/// same filter reports a malformed fence as a normal, fully-attributed
+/// violation. Same accumulate-rather-than-panic reasoning `examples_smoke.rs`
+/// applies in its parse phase.
+///
+/// The body is compiled VERBATIM — no wrapper. That is what makes bare
+/// ```` ```reify ```` mean "compiles standalone" rather than "compiles under
+/// whatever scaffolding some harness happens to inject".
+fn reify_fence_violations(path: &str, content: &str) -> Vec<String> {
+    let fences = match parse_fences(content) {
+        Ok(fences) => fences,
+        Err(error) => return vec![format!("{path}: {error}")],
+    };
+
+    fences
+        .iter()
+        .filter(|fence| fence.tag.as_deref() == Some("reify"))
+        .filter_map(|fence| {
+            let compiled = compile_source_with_stdlib_allow_parse_errors(&fence.body);
+            let errors = errors_only(&compiled);
+            if errors.is_empty() {
+                return None;
+            }
+            let rendered = errors
+                .iter()
+                .map(|diagnostic| format!("    - {}", diagnostic.message))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Some(format!(
+                "{path}:{} — fence #{} is tagged ```reify but does NOT compile \
+                 standalone; {} Error diagnostic(s):\n{rendered}\n  --- fence \
+                 body ---\n{}\n  --- end fence body ---\n  Either fix the body, \
+                 or retag: `reify-fragment` if it is real reify syntax needing \
+                 context it cannot carry, `reify-schematic` if it is not reify \
+                 source at all, `reify-invalid` if the error is the lesson.",
+                fence.open_line,
+                fence.ordinal,
+                errors.len(),
+                fence.body
+            ))
         })
         .collect()
 }
@@ -631,11 +698,19 @@ fn the_same_phantom_body_under_an_exempt_tag_is_never_compiled() {
 /// the moment it matters most. The `_allow_parse_errors` variant folds parse
 /// errors into `.diagnostics` at Error severity instead, so a malformed fence
 /// reports like any other violation.
+///
+/// The fixture is empty-brace construction, which `enums.md` itself documents
+/// as a GRAMMAR-level restriction: "`Point {}` reports `Parse error: syntax
+/// error: {}` — write the bare variant as `Point`". A merely-unbalanced brace
+/// will not do — the parser recovers from those and emits no parse error at
+/// all, so it would exercise the compile path rather than the parse path this
+/// test exists to cover.
 #[test]
 fn a_reify_fence_with_a_parse_error_is_a_named_violation_not_a_panic() {
     let md = "```reify\n\
               structure def Broken {\n\
-              \x20   let x = 1mm\n\
+              \x20   let p = Point {}\n\
+              }\n\
               ```\n";
 
     let violations = reify_fence_violations("chunks/x.md", md);
