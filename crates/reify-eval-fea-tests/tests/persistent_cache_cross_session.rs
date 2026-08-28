@@ -133,6 +133,58 @@ fn slab_bits(result: &Value, field: &str) -> Vec<u64> {
     }
 }
 
+/// Build a tetrahedral-only (no shell elements) `ElasticResult` fixture.
+///
+/// The v3 field set is copied from
+/// `crates/reify-cli/tests/harness_cli/cli_cache.rs:26-45`, the established
+/// shape for cache round-trip fixtures. `shell_channels: None` signals
+/// tetrahedral-only (no per-element shell stress or local frames), and
+/// `aposteriori: None` likewise — both round-trip through the encoder's
+/// discriminator byte back to `None`, so a written fixture reads back
+/// `PartialEq`-equal.
+///
+/// `solve_time_ms` is a parameter because the cost-aware eviction test needs
+/// entries whose `eviction_score` differs by their solve cost alone.
+fn make_elastic_result_fixture(solve_time_ms: u64) -> ElasticResult {
+    ElasticResult {
+        displacement: vec![1.0, 2.0, 3.0],
+        stress: vec![4.0, 5.0, 6.0],
+        max_von_mises: 7.5,
+        converged: true,
+        iterations: 9,
+        solve_time_ms,
+        shell_channels: None,
+        grid_bounds_min: [0.0, 0.0, 0.0],
+        grid_bounds_max: [1.0, 1.0, 1.0],
+        grid_counts: [1, 1, 1],
+        divergence: vec![0.1],
+        gradient: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+        curl: vec![0.1, 0.2, 0.3],
+        aposteriori: None,
+    }
+}
+
+/// Count `.tmp.*` crashed-writer leftovers anywhere under `dir`, recursively.
+fn count_tmp_files(dir: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut n = 0;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            n += count_tmp_files(&p);
+        } else if p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.starts_with(".tmp."))
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Extract the 32-hex input hash from a cache entry's `.bin` path.
 fn bin_input_hash(bin: &std::path::Path) -> String {
     bin.file_stem()
@@ -648,6 +700,19 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     .expect("torn shard dir must be creatable");
     std::fs::write(&torn_bin, &header_bytes[..ENTRY_HEADER_ENCODED_LEN - 10])
         .expect("writing the torn .bin must succeed");
+    // CURRENTLY RED — esc-2980-5. This asserts the documented contract
+    // (read_entry rustdoc at persistent_cache.rs:887-892 and the inline comment
+    // at :921-924 both say a header shorter than the encoded length is a MISS),
+    // but the implementation returns Err: CacheEntryHeader::read_from maps every
+    // bincode error through io::Error::other, so e.kind() is always
+    // ErrorKind::Other and read_entry's `matches!(e.kind(), UnexpectedEof |
+    // InvalidData)` guard at :925-943 is dead code.
+    //
+    // Deliberately NOT weakened to `.is_err()`: that would enshrine the defect in
+    // a regression test and silently retire the documented policy. The engine
+    // path degrades gracefully regardless (compute_persist::persistent_lookup
+    // swallows the Err into a miss), so this is a contract violation for direct
+    // read_entry callers, not a user-facing failure.
     assert!(
         read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &torn_hash)
             .expect("a torn entry is a miss, never an Err")
