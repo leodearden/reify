@@ -24,9 +24,9 @@ static LSP_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// to worry about; silent recovery is strictly better than propagating the
 /// poison. This pattern is used at several other sites in the codebase,
 /// e.g. `priority_promotion.rs` and `mocks.rs`. It was also used by
-/// `reify-eval/src/concurrent.rs` (deleted in ffb85f0627, task o step-4)
-/// and by `reify-runtime/src/concurrent.rs` / `concurrent_eval.rs`
-/// (deleted in c1b8dba3f7, task o step-2); neither file exists any more.
+/// `reify-runtime/src/concurrent.rs` and
+/// `reify-runtime/src/concurrent_eval.rs`, both deleted in c1b8dba3f7
+/// (task 5065, task ο step-2); neither file exists any more.
 fn acquire_lsp_test_lock() -> std::sync::MutexGuard<'static, ()> {
     LSP_TEST_LOCK
         .get_or_init(|| Mutex::new(()))
