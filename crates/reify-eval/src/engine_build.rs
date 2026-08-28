@@ -380,11 +380,13 @@ struct RealizationOpsInput<'a> {
     // for the fail-closed region-capability gate (task #4812, P0β) inside
     // `resolve_selector_to_list`. `None` (the default) means "no snapshot" and
     // is fail-OPEN — an absent repr skips the gate and falls through to the
-    // generic-error path, exactly as the tessellate-path hydration call sites
-    // already do. The `build` / `build_snapshot` surfaces override it with the
-    // same `realized_reprs_snapshot` they already thread into
+    // generic-error path, exactly as the tessellate-path hydration call site
+    // already does (`tessellate_from_values`' `realized_reprs_tess`). The
+    // `build` surface (`build_with_geometry_output`) overrides it with the same
+    // `realized_reprs_snapshot` it already threads into
     // `hydrate_value_cell_in_loop`, so a cell-hydrated selector and an
-    // inline-argument selector are gated identically.
+    // inline-argument selector are gated identically there. `build_snapshot`
+    // runs no `HydrateCell` walk at all, so it keeps the fail-open default.
     realized_reprs: Option<&'a HashMap<RealizationNodeId, ReprKind>>,
 }
 

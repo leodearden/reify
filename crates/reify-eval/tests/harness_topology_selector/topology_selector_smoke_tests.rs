@@ -190,7 +190,9 @@ fn block_inertia_ri_parses_cleanly() {
 /// `crates/reify-compiler/src/geometry_modify.rs`
 /// (`"fillet" => match compiled_args.len() { 2 | 3 => ... }`, #3205), so the
 /// example's `fillet(b, top_edges, 1mm)` compiles with no Error diagnostics.
-/// The bulk walker `crates/reify-compiler/tests/examples_smoke.rs` covers the
+/// The bulk walker
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// covers the
 /// same file now that its `SKIP_SET` entry is gone; this test is kept as the
 /// named, PRD-anchored assertion for the topology-selector family.
 ///

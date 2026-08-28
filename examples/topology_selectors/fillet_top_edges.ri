@@ -52,8 +52,9 @@
 //   parse               → active (fillet_top_edges_ri_parses_cleanly)
 //   compile-with-stdlib → active (fillet_top_edges_compiles_with_stdlib_no_errors)
 //                         — un-ignored by #5208. This file is also no longer
-//                         in the crates/reify-compiler/tests/examples_smoke.rs
-//                         SKIP_SET, so the bulk walker compiles it too.
+//                         in the SKIP_SET of
+//                         crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs,
+//                         so the bulk walker compiles it too.
 //   eval (bare MockGeometryKernel) → #[ignore] (fillet_top_edges_evals_to_solid_via_topology_walk)
 //                         — still blocked on #4727 (pending): the bare mock
 //                         kernel records only the Box op and never reaches
