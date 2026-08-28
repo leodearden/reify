@@ -13,7 +13,7 @@ use reify_ast::ParsedModule;
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type, ValueCellId,
 };
-use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet};
+use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::functions::{check_field_composition_types, collect_composed_field_dependencies};
@@ -22,7 +22,7 @@ use crate::termination::check_recursive_termination;
 use crate::traits::compile_purpose;
 use crate::types::{
     CompiledField, CompiledFieldSource, CompiledPurpose, TopologyTemplate, ValueCellDecl,
-    Visibility,
+    ValueCellKind, Visibility,
 };
 
 /// Phase-12 post-compilation: detect recursive sub-component cycles via
@@ -367,6 +367,65 @@ fn declared_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCel
     )
 }
 
+/// Does this declaration carry the shape `guards.rs` produces for a
+/// `where`-guarded `let m = auto`?
+///
+/// That arm of `compile_guarded_members` does **not** call `extract_auto_free`
+/// — unlike its own `MemberDecl::Param` arm, and unlike the top-level auto-let
+/// path in `entity.rs` — so the cell is pushed with `ValueCellKind::Let` and
+/// the bare `auto` node falls through to the expression fallback, yielding a
+/// `Literal(Value::Undef)` default. The author's `auto` is gone by the time
+/// this pass runs, and obligation (5) (`decl.kind.is_auto()`) walks past it.
+///
+/// MEASURED, not inferred. Both reachable spellings lower identically —
+/// `let m : Real = auto` and `let m : Real = auto(free)` each produce
+/// `kind=Let, default_expr=Literal(Undef)` — and there is no third spelling to
+/// miss: `let m : Real = auto * 2.0` is rejected by the parser
+/// ("invalid guarded block"), so `auto` cannot reach a guarded let buried
+/// inside a larger expression. The default's `result_type` is a dimensionless
+/// `Scalar`, **not** `Type::Error`, so a poison-type test would not find it;
+/// the `Literal(Undef)` payload is the discriminator.
+///
+/// This is deliberately the NARROW test. The alternative — refusing to conclude
+/// on any template with a non-empty `guarded_groups` — would silence the rule
+/// for every guarded template including the ones it judges correctly. Measured
+/// cost of the narrow choice being wrong is bounded: across the 261-file
+/// `examples/` corpus exactly one file (`integration_full_v01.ri`, its
+/// `Assembly`) has both a guard block and an objective, and none of the
+/// rule's three existing positives is guarded at all.
+///
+/// **This bail is removable**, and that is the point of naming its cause here:
+/// it exists only because the `MemberDecl::Let` arm skips `extract_auto_free`.
+/// Fixing that lowering makes the cell a real `ValueCellKind::Auto`, obligation
+/// (5) catches it on its own, and this obligation becomes dead. That lowering
+/// fix is tracked as its own work item, ticket
+/// `tkt_0RSZ2Y7HC64HCWNVKR2BGSVKBR`, spawned from #5417 — cited in prose rather
+/// than as a TODO marker because a ticket id is not yet the `#NNNN` task id the
+/// repo's citation convention requires.
+fn is_auto_shaped_guarded_let(decl: &ValueCellDecl) -> bool {
+    matches!(decl.kind, ValueCellKind::Let)
+        && matches!(
+            decl.default_expr.as_ref().map(|e| &e.kind),
+            Some(CompiledExprKind::Literal(Value::Undef))
+        )
+}
+
+/// Every cell id the lowering parked in a guarded group, as opposed to in
+/// `value_cells`.
+///
+/// [`declared_cells`] deliberately erases that distinction — cell *resolution*
+/// must span both — but obligation (5′) needs it back, because
+/// [`is_auto_shaped_guarded_let`] is only meaningful for a cell that came
+/// through `compile_guarded_members`.
+fn guarded_cell_ids(template: &TopologyTemplate) -> HashSet<&ValueCellId> {
+    template
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.members.iter().chain(g.else_members.iter()))
+        .map(|d| &d.id)
+        .collect()
+}
+
 /// Does `template_name` denote the structure `structure_name`, allowing for
 /// monomorphisation?
 ///
@@ -470,6 +529,10 @@ fn auto_override_possible(
 /// 4. every named cell resolves to a declaration of *this* template;
 /// 5. the transitive closure of those cells through their `default_expr`s
 ///    reaches no `auto` — a `let` may not launder one;
+/// 5′. no cell in that closure is an `auto` the guarded-`let` lowering erased
+///    ([`is_auto_shaped_guarded_let`]). Obligation 5 asks what the cell *is*;
+///    this one asks what the author *wrote*, and the two diverge for exactly
+///    one shape;
 /// 6. no other template in the module installs an `auto` override onto an
 ///    instance of this one that lands in that closure
 ///    ([`auto_override_possible`]).
@@ -590,8 +653,10 @@ pub(crate) fn inert_objective_finding(
         return None;
     }
 
-    // (4) + (5) — close over `default_expr` inside this template, refusing to
-    // conclude anything the moment a cell is unknown, opaque, or `auto`.
+    // (4) + (5) + (5′) — close over `default_expr` inside this template,
+    // refusing to conclude anything the moment a cell is unknown, opaque,
+    // `auto`, or an `auto` the guarded-let lowering erased.
+    let guarded_ids = guarded_cell_ids(template);
     let mut closure: BTreeSet<ValueCellId> = BTreeSet::new();
     let mut pending: Vec<ValueCellId> = named.clone();
     while let Some(id) = pending.pop() {
@@ -600,6 +665,14 @@ pub(crate) fn inert_objective_finding(
         }
         let decl = cells.get(&id)?;
         if decl.kind.is_auto() {
+            return None;
+        }
+        // (5′) the author wrote `auto`, but a `where`-guarded `let` lost it in
+        // lowering. Judging the residue would print "`m` … is never `auto`"
+        // over a source line that says `let m = auto`. Review round 1,
+        // finding 4; see `is_auto_shaped_guarded_let` for the measurement and
+        // for the condition under which this bail can be deleted.
+        if guarded_ids.contains(&id) && is_auto_shaped_guarded_let(decl) {
             return None;
         }
         if let Some(default_expr) = &decl.default_expr {

@@ -1028,3 +1028,61 @@ structure GuardedElseAutoLet {
          `.members`",
     );
 }
+
+
+
+/// PROBE C, `auto(free)` spelling. MEASURED as a distinct live false positive
+/// while choosing step-24's predicate: it lowers to the identical
+/// `kind=Let, default_expr=Literal(Undef)` shape and drew its own
+/// `E_OBJECTIVE_INERT`. Pinned so the bail cannot be narrowed to the bare
+/// `auto` spelling alone.
+///
+/// These two are the whole reachable space, not a sample. `auto` inside a
+/// larger expression — `let m : Real = auto * 2.0` — does not parse in a
+/// guarded block ("invalid guarded block"), so there is no third spelling for
+/// the predicate to miss.
+#[test]
+fn guarded_auto_free_let_read_by_an_objective_is_compile_clean() {
+    let src = r#"module guarded_auto_free_let
+
+structure GuardedAutoFreeLet {
+    param g : Real = 1.0
+    where g > 0.0 {
+        let m : Real = auto(free)
+    }
+    minimize m
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "GuardedAutoFreeLet");
+    assert_no_inert(
+        &compiled,
+        "`auto(free)` in a guarded let lowers to the same erased shape as `auto`",
+    );
+}
+
+/// NEGATIVE GUARD for obligation (5′). A guarded template whose objective
+/// reaches only a genuinely never-`auto` cell must STILL be reported.
+///
+/// Without this, the coarse bail the step considered — "refuse to conclude on
+/// any template with a non-empty `guarded_groups`" — would be
+/// indistinguishable from the narrow one that shipped. This test is what makes
+/// the choice observable: it passes only because the bail keys on the erased
+/// auto-let shape rather than on the mere presence of a guard.
+#[test]
+fn a_guarded_template_with_a_genuinely_inert_objective_still_errors() {
+    let src = r#"module guarded_but_inert
+
+structure GuardedButInert {
+    param g : Real = 1.0
+    param k : Real = 3.0
+    where g > 0.0 {
+        param p : Real = 2.0
+    }
+    minimize k * k
+}
+"#;
+
+    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+}
