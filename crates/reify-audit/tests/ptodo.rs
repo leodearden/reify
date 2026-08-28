@@ -736,11 +736,23 @@ mod tests {
         let mut git = MockGitOps::new();
         git.set_ls_files(vec!["scenario17_delta_b_cited_deferral.rs".to_string()]);
 
-        // Seed EVERY id the fixture cites as terminal. A `done`/`cancelled`
-        // status is the worst case for this lane — it is what turns a `Cited`
-        // entry into a High `orphaned` finding — so seeding them terminal means
-        // the fixture's silence is proof the GUARDS held, not an artefact of a
-        // missing or live task row.
+        // Seed every id the fixture cites TERMINAL wherever a terminal status is
+        // safe. `done`/`cancelled` is the worst case for this lane — it is what
+        // turns a `Cited` entry into a High `orphaned` finding — so the
+        // fixture's silence is proof the GUARDS held, not an artefact of a
+        // missing or still-live task row.
+        //
+        // #7777 is the discriminating class-(d) cite: the G-allow lane exempts
+        // it under its own rule (c) (`PRD ` immediately left), so seeding it
+        // terminal isolates δ-B's `g_allow_marker_body` guard as the ONLY thing
+        // preventing a finding on that line.
+        //
+        // #5235 is the exception, and deliberately non-terminal. It is the
+        // owner cite of the VERBATIM live G-allow shape, which rule (c) does NOT
+        // exempt — so a terminal #5235 would make the independent G-allow lane
+        // fire `g-allow-orphaned` on that line, breaking this fixture's
+        // zero-findings contract for a reason that has nothing to do with δ-B.
+        // Live today it is `pending`, and the fixture mirrors that.
         crate::common::schema::seed_tasks_db_at(
             &root.join(".taskmaster/tasks/tasks.db"),
             &[
@@ -748,7 +760,8 @@ mod tests {
                 ("master", 2330, "done"),
                 ("master", 2335, "done"),
                 ("master", 4739, "done"),
-                ("master", 5235, "done"),
+                ("master", 7777, "done"),
+                ("master", 5235, "pending"),
             ],
         );
 
