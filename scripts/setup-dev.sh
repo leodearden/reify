@@ -414,9 +414,18 @@ install_build_services() {
         && [ -x "$main_checkout/scripts/jobserver-balancer.py" ] \
         && [ -x "$main_checkout/scripts/jobserver-canary.sh" ]; then
         jobserver_dir="$main_checkout"
-    elif [ "$main_checkout" != "$repo_dir" ]; then
+    else
+        # Deliberately NOT gated on `[ "$main_checkout" != "$repo_dir" ]`.  When
+        # the invoking checkout IS the main one but the two scripts are missing
+        # or non-executable there, the units are still about to be pinned at a
+        # tree that cannot run them — the exact 203/EXEC failure this block
+        # exists to prevent — so it must be reported, not silently fallen
+        # through.  This is also the ONE branch whose guard being wrong
+        # re-creates the original defect, so it says so out loud; B6 in
+        # tests/infra/test_host_global_unit_pinning.sh asserts both the pin and
+        # this warn.
         warn "no executable jobserver scripts at the stable main checkout (${main_checkout:-<unresolved>})"
-        warn "  — pinning the host-global jobserver units at the invoking checkout instead: $repo_dir"
+        warn "  — pinning the host-global jobserver units at the invoking checkout: $repo_dir"
     fi
 
     cat > "$unit_dir/sccache.service" <<EOF
@@ -502,10 +511,20 @@ WantedBy=timers.target
 EOF
 
     # Same tree the two ExecStarts above name — not necessarily the invoking one.
-    # When that is the main checkout this is a no-op by construction (the -x
-    # guard above already required both to be executable there), so it never
-    # silently mutates another worktree.
-    chmod +x "$jobserver_dir/scripts/jobserver-canary.sh" "$jobserver_dir/scripts/jobserver-balancer.py"
+    # When the main-checkout pin was taken this is a MODE-BIT no-op by
+    # construction (the -x guard above already required both executable there),
+    # so it never silently mutates another worktree.
+    #
+    # NON-FATAL on purpose.  "No-op" covers the mode bits, NOT chmod(2)'s
+    # ownership requirement: chmod fails EPERM if $jobserver_dir is owned by
+    # another uid, and EROFS on a read-only mount.  This file runs under
+    # `set -euo pipefail`, so an unguarded failure here would abort
+    # install_build_services AFTER all four units are already written but
+    # BEFORE daemon-reload/enable — leaving stale, unreloaded units on disk,
+    # which is a worse end state than a warned-about un-chmod'ed script.
+    chmod +x "$jobserver_dir/scripts/jobserver-canary.sh" \
+             "$jobserver_dir/scripts/jobserver-balancer.py" \
+        || warn "could not chmod +x the jobserver scripts under $jobserver_dir — leaving their existing modes"
     systemctl --user daemon-reload
     # γ/4517 rewrote jobserver-canary.sh for the dual-FIFO pools; η/4521
     # validated the end-to-end acceptance criteria before landing.  The C2
