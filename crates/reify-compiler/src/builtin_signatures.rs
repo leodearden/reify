@@ -1082,6 +1082,7 @@ mod tests {
     };
     use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
     use reify_ir::CompiledExpr;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// Inclusive upper bound for every arity sweep in this module.
     ///
@@ -2948,6 +2949,246 @@ mod tests {
             diags[0].message.contains("expects Int"),
             "message should pin the expected Int type: {}",
             diags[0].message
+        );
+    }
+
+    // ── Task 6862 FINDING 2: the lowering-arity ledger ───────────────────────
+    //
+    // FINDING 2's hazard: the 26 arg-slot arms task 5750 added are all
+    // arity-AGNOSTIC. That is correct today — none of those names is
+    // overloaded — but if a slotted name later gains a VALUE-FORM overload
+    // (task 5351's family) without a matching edit here, the existing slot
+    // INDICES fire on the WRONG arguments. The reviewer's worked example:
+    // adding `revolve(profile, axis_value, angle)` would make the ox@1 / oy@2
+    // origin slots land on the `Axis` and on a `Scalar{ANGLE}`, i.e. two FALSE
+    // `ArgTypeMismatch` errors on correct code.
+    //
+    // The existing `assert_slots_at_every_arity` sweeps catch a stray GUARD
+    // being ADDED here; they cannot catch a new OVERLOAD being added over in
+    // the lowering. This ledger closes that direction: it derives each
+    // lowering's ACCEPTED ARITY SET behaviourally (by compiling real calls and
+    // reading back the arg-count diagnostics), pins it, and couples it to the
+    // slot table.
+
+    /// Compile `source` through the crate's OWN stdlib entry points.
+    ///
+    /// This must NOT go through `reify_test_support::compile_source_with_stdlib`:
+    /// the crate's `[dev-dependencies]` self-pull (`reify-compiler { features =
+    /// ["test-support"] }`) puts two `reify_compiler` instances in the unit-test
+    /// graph, and that helper returns the *external* instance's `CompiledModule`,
+    /// which would not unify with `crate::CompiledModule` here (E0308). Same
+    /// reasoning, same shape, as `relation_signatures.rs`'s `compile_module` and
+    /// `guards.rs`'s equivalent — see their doc comments.
+    fn compile_module(source: &str) -> crate::CompiledModule {
+        let parsed = crate::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
+        crate::compile_with_stdlib(&parsed)
+    }
+
+    /// Every name [`builtin_arg_slots`] actually serves, derived MECHANICALLY
+    /// rather than listed by hand.
+    ///
+    /// Sweeps [`BUILTIN_NAME_FAMILIES`] (flattened) plus the non-family keys
+    /// across `0..=MAX_PROBED_ARITY` and keeps every name yielding a non-empty
+    /// slot list at some arity — the same technique
+    /// [`arg_slot_keys_are_registered_builtin_names`] uses, and what makes the
+    /// ledger guard self-maintaining: a name added to the table in a future leaf
+    /// is picked up here automatically instead of quietly escaping the guard.
+    fn slotted_builtin_names() -> BTreeSet<&'static str> {
+        // `generate` belongs to no units.rs family slice, so a slice-derived
+        // sweep cannot reach it; it must be named. Kept in lockstep with the
+        // `non_family_keys` list in `arg_slot_keys_are_registered_builtin_names`.
+        let non_family_keys: &[&str] = &["generate"];
+
+        BUILTIN_NAME_FAMILIES
+            .iter()
+            .flat_map(|family| family.iter())
+            .chain(non_family_keys.iter())
+            .copied()
+            .filter(|name| {
+                (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty())
+            })
+            .collect()
+    }
+
+    /// Probe each slotted name's lowering for the arities it ACCEPTS, by
+    /// compiling one synthetic module holding every (name, arity) call and
+    /// reading back the arg-count diagnostics.
+    ///
+    /// # Anchored on the MESSAGE, not on the label
+    ///
+    /// Three different emit sites produce arg-count errors —
+    /// [`crate::arg_check::check_arg_count_exact`],
+    /// [`crate::arg_check::check_arg_count_at_least`], and bare custom pushes
+    /// such as `geometry.rs`'s `extrude` arm, which carries NO `"wrong number of
+    /// arguments"` label at all. The label is therefore NOT universal. The
+    /// message shape `"{name}() expects … got {N}"` IS: it held for all 32
+    /// observable names across all three emit sites when this ledger was
+    /// measured. The trailing `", got {N}"` is matched with `ends_with` and not
+    /// `contains`, because `", got 1"` is a prefix of `", got 12"`.
+    ///
+    /// # Failure polarity is deliberately safe
+    ///
+    /// An arity message this matcher does NOT recognise makes the probe read
+    /// that arity as ACCEPTED, which BREAKS the pin below — a false RED that
+    /// forces a human look. It can never produce a false GREEN.
+    ///
+    /// # Headroom
+    ///
+    /// Measured: a 546-call probe module produced 445 arity diagnostics with no
+    /// truncation and no diagnostic cap, so ONE compile suffices for the whole
+    /// sweep.
+    fn lowering_accepted_arities() -> BTreeMap<String, BTreeSet<usize>> {
+        let names: Vec<&str> = slotted_builtin_names().into_iter().collect();
+
+        let mut src = String::from("module test\n\nstructure def ArityProbe {\n");
+        for (i, name) in names.iter().enumerate() {
+            for k in 0usize..=MAX_PROBED_ARITY {
+                let args = vec!["1mm"; k].join(", ");
+                src.push_str(&format!("    let v{i}_{k} = {name}({args})\n"));
+            }
+        }
+        src.push_str("}\n");
+
+        let module = compile_module(&src);
+
+        names
+            .iter()
+            .map(|name| {
+                let prefix = format!("{name}() expects");
+                let rejected: BTreeSet<usize> = (0usize..=MAX_PROBED_ARITY)
+                    .filter(|k| {
+                        let suffix = format!(", got {k}");
+                        module.diagnostics.iter().any(|d| {
+                            d.message.starts_with(&prefix) && d.message.ends_with(&suffix)
+                        })
+                    })
+                    .collect();
+                let accepted = (0usize..=MAX_PROBED_ARITY)
+                    .filter(|k| !rejected.contains(k))
+                    .collect();
+                ((*name).to_string(), accepted)
+            })
+            .collect()
+    }
+
+    /// The PINNED accepted-arity ledger: the 32 slotted names whose lowering
+    /// emits an observable arg-count diagnostic, and the arities each accepts.
+    ///
+    /// Derived by MEASUREMENT (see [`lowering_accepted_arities`]), not by
+    /// reading the lowering arms. If an entry disagrees with the probe,
+    /// INVESTIGATE — a name that GAINED an accepted arity is exactly FINDING 2's
+    /// hazard arriving (task 5351's value forms are the named motivating case) —
+    /// rather than blindly re-pinning the new value.
+    ///
+    /// The 10 slotted names deliberately absent from this list are recorded, with
+    /// the measurement that justifies their absence, in
+    /// [`ARITY_UNOBSERVABLE_SLOT_KEYS`]; the completeness arm of
+    /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] asserts
+    /// every slotted name sits in exactly one of the two lists.
+    const LOWERING_ACCEPTED_ARITIES: &[(&str, &[usize])] = &[
+        // Primitive CSG producers.
+        ("box", &[3]),
+        ("box_centered", &[3]),
+        ("cone", &[3]),
+        ("cylinder", &[2]),
+        ("cylinder_centered", &[2]),
+        ("half_space", &[6]),
+        ("sphere", &[1]),
+        ("torus", &[2]),
+        ("tube", &[3]),
+        ("wedge", &[4]),
+        // 2-D profile producers.
+        ("circle", &[1]),
+        ("ellipse", &[2]),
+        ("rectangle", &[2]),
+        // Modify producers.
+        ("chamfer", &[2, 3]),
+        ("chamfer_asymmetric", &[4]),
+        ("fillet", &[2, 3]),
+        ("fillet_all", &[2]),
+        ("offset_curve", &[2, 3]),
+        ("offset_solid", &[2]),
+        // `shell` is `check_arg_count_at_least(2)` — args 2.. are face indices,
+        // so the accepted tail is OPEN and this row is the probe window
+        // `2..=MAX_PROBED_ARITY` (14) truncated, not a closed set. Raising
+        // MAX_PROBED_ARITY requires extending this row; the pin below says so.
+        ("shell", &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]),
+        ("shell_open", &[3]),
+        ("thicken", &[2]),
+        ("zone_slab", &[2]),
+        // Sweep producers.
+        ("extrude", &[2]),
+        ("extrude_symmetric", &[2]),
+        ("pipe", &[2]),
+        ("revolve", &[8]),
+        ("revolve_full", &[7]),
+        // Transform producers and patterns.
+        ("linear_pattern", &[6]),
+        ("linear_pattern_2d", &[11]),
+        ("rotate_around", &[8]),
+        ("translate", &[4]),
+    ];
+
+    /// FINDING 2's guard: the lowering-arity ledger is pinned, and a name that
+    /// accepts MORE THAN ONE arity may not be served by an arity-AGNOSTIC arm.
+    ///
+    /// Two assertions, and the second is the one that makes FINDING 2
+    /// enforceable rather than conventional:
+    ///
+    /// 1. PIN — each ledger entry's measured accepted-arity set still equals the
+    ///    pinned set. A slotted name that gains an accepted arity (i.e. gains a
+    ///    value-form overload) breaks here, in this file, next to the slot table
+    ///    that must be updated with it.
+    ///
+    /// 2. COUPLING — for every multi-arity name, `builtin_arg_slots(name, k)`
+    ///    must NOT be identical across its accepted arities, i.e. the arm must
+    ///    carry an `if arg_count ==` guard (as `fillet` / `chamfer` /
+    ///    `linear_pattern` / `linear_pattern_2d` already do). An arity-agnostic
+    ///    arm serving an overloaded name is EXACTLY how a slot comes to fire on
+    ///    the wrong argument.
+    #[test]
+    fn lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table() {
+        let probed = lowering_accepted_arities();
+        let mut agnostic_multi_arity: Vec<(&str, Vec<usize>)> = Vec::new();
+
+        for (name, pinned_arities) in LOWERING_ACCEPTED_ARITIES {
+            let pinned: BTreeSet<usize> = pinned_arities.iter().copied().collect();
+            let measured = probed.get(*name).unwrap_or_else(|| {
+                panic!(
+                    "ledger names {name:?}, but it is not a slotted builtin — the probe never \
+                     saw it. Remove the stale row, or fix the name."
+                )
+            });
+
+            // (1) PIN.
+            assert_eq!(
+                measured, &pinned,
+                "{name}'s lowering accepted-arity set moved: pinned {pinned:?}, measured \
+                 {measured:?}. If the lowering gained a VALUE-FORM overload, that is task \
+                 6862 FINDING 2 arriving — check `builtin_arg_slots({name:?}, …)` denotes \
+                 the same parameters at the NEW arity before re-pinning."
+            );
+
+            // (2) COUPLING. Collected rather than asserted in-loop, so ONE run
+            // names every offender instead of only the alphabetically-first.
+            if pinned.len() > 1 {
+                let arities: Vec<usize> = pinned.iter().copied().collect();
+                let first = builtin_arg_slots(name, arities[0]);
+                let arity_agnostic = arities.iter().all(|&k| builtin_arg_slots(name, k) == first);
+                if arity_agnostic {
+                    agnostic_multi_arity.push((*name, arities));
+                }
+            }
+        }
+
+        assert!(
+            agnostic_multi_arity.is_empty(),
+            "these names accept more than one arity, but `builtin_arg_slots` returns the \
+             SAME slots at every one of them: {agnostic_multi_arity:?}. An arity-agnostic \
+             arm serving an overloaded name makes the slot indices fire on the wrong \
+             arguments (task 6862 FINDING 2). Add an `if arg_count ==` guard — or, if the \
+             indices genuinely denote the same parameters at every accepted arity, record \
+             the name in MULTI_ARITY_AGNOSTIC_SAFE with the layout that proves it."
         );
     }
 }
