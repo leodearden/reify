@@ -30,6 +30,56 @@ pub(crate) fn scalar_f64(v: &Value) -> Option<f64> {
     }
 }
 
+/// Extract an f64 from a value at a DIMENSIONLESS position, rejecting a
+/// dimensioned `Scalar` instead of silently stripping its unit.
+///
+/// Some trampoline inputs are genuinely bare RATIOS rather than physical
+/// quantities — force densities, seed ratios and surface stresses are read as
+/// relative magnitudes, so their overall scaling carries no information. The
+/// dimension-checked-readers PRD puts exactly these in its Leg B "Deliberately
+/// bare" bucket (`docs/prds/v0_6/dimension-checked-readers.md`): stay accepting
+/// of a bare `Real`, but do not quietly accept a *dimensioned* `Scalar` and
+/// reinterpret its SI magnitude as the ratio. Reading `1 N/m` as the ratio `1.0`
+/// is a silent reinterpretation of the author's intent, so it is a located error
+/// here instead.
+///
+/// This is the dimensionless counterpart of the `crack_dimensioned_scalar`
+/// helpers in `tensegrity_load.rs` and `membrane_load.rs`, which reject a
+/// wrong-unit `Scalar` against a specific EXPECTED dimension. The acceptance
+/// sets differ (those want one particular unit; this one wants no unit at all),
+/// so it is a sibling rather than a hoist candidate — but the "has the wrong
+/// unit" wording is deliberately shared so the tensegrity trampolines present
+/// one diagnostic vocabulary.
+///
+/// Both `code` and `hint` stay caller-owned, per this module's contract: `code`
+/// is the `E_*Infeasible` mnemonic and `hint` is the trailing clause explaining
+/// what the caller wanted instead.
+///
+/// Forward pointer: task alpha (#5791) proposes an `arg_acceptance::
+/// dimensionless_spec`. Today's `accept_arg` rejects a bare `Value::Real`
+/// outright, so it cannot express the stay-accepting half of the Leg B contract;
+/// once alpha lands that additive redesign, this helper should become a thin
+/// adapter over it rather than a second definition site.
+pub(crate) fn crack_dimensionless_scalar(
+    v: &Value,
+    what: &str,
+    code: &str,
+    hint: &str,
+) -> Result<f64, String> {
+    match v {
+        Value::Real(r) => Ok(*r),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if dimension.is_dimensionless() => Ok(*si_value),
+        Value::Scalar { dimension, .. } => Err(format!(
+            "{code}: {what} has the wrong unit — expected a dimensionless ratio \
+             (a bare Real or a dimensionless Scalar), got a Scalar in {dimension}; {hint}"
+        )),
+        other => Err(format!("{code}: {what} must be a real, got {other:?}")),
+    }
+}
+
 /// Range-check a signed node index against `0..n`, returning a located
 /// `"{code}: {ctx} index N is out of range 0..n"` error. A negative index — or
 /// one at/after the node count — is rejected here rather than wrapping to a huge

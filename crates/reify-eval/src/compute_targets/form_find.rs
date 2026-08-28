@@ -13,6 +13,13 @@
 //! [3] surface_stresses  : List<Real>      (OPTIONAL; γ / NFDM surfaces)
 //! ```
 //!
+//! The `List<Real>` positions — `force_densities` and `surface_stresses` here,
+//! plus `seed_ratios` on the free-standing path — are DIMENSIONLESS-GATED: they
+//! are nullity-invariant relative ratios, so a bare `Real` (or a dimensionless
+//! `Scalar`) is accepted while a *dimensioned* `Scalar` is rejected with a
+//! located wrong-unit diagnostic rather than having its unit silently stripped.
+//! The gate lives in `tensegrity_crack::crack_dimensionless_scalar`.
+//!
 //! It cracks the Tensegrity into node coordinates + member connectivity (struts
 //! then cables, so `force_densities` indexing is unambiguous — the same ordering
 //! `tensegrity_wires` emits) + surface triangle connectivity (from
@@ -61,7 +68,7 @@ use reify_solver_elastic::{
 };
 
 use super::tensegrity_crack::{
-    check_index, crack_index_pairs, crack_index_triples, crack_nodes, scalar_f64,
+    check_index, crack_dimensionless_scalar, crack_index_pairs, crack_index_triples, crack_nodes,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -69,6 +76,18 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// `tensegrity_crack` helpers so their located errors carry the same prefix as
 /// the inline guards below.
 const CODE: &str = "E_FormFindInfeasible";
+
+/// Trailing clause on every wrong-unit diagnostic from a dimensionless position
+/// (`force_densities` / `seed_ratios` / `surface_stresses`), threaded into
+/// [`crack_dimensionless_scalar`] as its caller-owned `hint`.
+///
+/// Grounded in the landed `form_find_free` stdlib doc ("Overall scaling of q is
+/// nullity-invariant, so only relative ratios matter"): these positions are read
+/// as RELATIVE ratios, so attaching a unit does not make the input more precise
+/// — it makes the reader guess which magnitude the author meant.
+const DIMENSIONLESS_HINT: &str = "force densities, seed ratios and surface stresses are \
+     nullity-invariant RELATIVE ratios, not physical quantities — only their relative \
+     magnitudes and signs matter, so drop the unit (write `1.0`, not `1N/1m`)";
 
 /// Trampoline for `solver::form_find`. See the module doc for the input/output
 /// contract.
@@ -226,7 +245,15 @@ fn crack_anchors(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     Ok(out)
 }
 
-/// Crack a `List<Real>` (accepting bare Real or dimensionless Scalar entries).
+/// Crack a `List<Real>` at a DIMENSIONLESS position, accepting a bare `Real` or
+/// a dimensionless `Scalar` and REJECTING a dimensioned one.
+///
+/// Serves all three of this trampoline's dimensionless positions —
+/// `force_densities` (anchored + free), `seed_ratios`, and `surface_stresses`.
+/// Each entry goes through [`crack_dimensionless_scalar`], so a dimensioned
+/// `Scalar` yields a located `"{what}[{i}] has the wrong unit …"` error rather
+/// than being silently stripped to its SI magnitude and reinterpreted as the
+/// bare ratio. See that helper for the Leg B "Deliberately bare" rationale.
 fn crack_reals(v: &Value, what: &str) -> Result<Vec<f64>, String> {
     let list = match v {
         Value::List(items) => items,
@@ -238,14 +265,12 @@ fn crack_reals(v: &Value, what: &str) -> Result<Vec<f64>, String> {
     };
     let mut out = Vec::with_capacity(list.len());
     for (i, item) in list.iter().enumerate() {
-        match scalar_f64(item) {
-            Some(x) => out.push(x),
-            None => {
-                return Err(format!(
-                    "E_FormFindInfeasible: {what}[{i}] must be a real, got {item:?}"
-                ));
-            }
-        }
+        out.push(crack_dimensionless_scalar(
+            item,
+            &format!("{what}[{i}]"),
+            CODE,
+            DIMENSIONLESS_HINT,
+        )?);
     }
     Ok(out)
 }
