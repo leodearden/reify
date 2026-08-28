@@ -1,0 +1,40 @@
+module gdt_illegal_modifier_purpose_geometry
+
+// gdt_illegal_modifier_purpose_geometry.ri — task 5748 / esc-5748-7.
+//
+// The GEOMETRY-BEARING twin of `gdt_illegal_modifier_purpose.ri`: same illegal
+// GD&T callout (Flatness with an MMC modifier — RFS-only family, so
+// `GdtIllegalModifier`) and same deliberately-satisfiable purpose constraint,
+// but with a `param geometry : Solid` so `module_has_geometry` is
+// unambiguously TRUE and `cmd_check`'s sub-path (c) takes the `used_build`
+// branch introduced by this task's D1 item 2.
+//
+// That branch is the one where the legality pass runs TWICE if the CLI-side
+// `run_gdt_check_passes` fold-in is a bare `extend`:
+// `realize_for_check` → `build_with_geometry_output` seeds its diagnostic list
+// from `self.check(module)`, and `Engine::check` already ends with
+// `diagnostics.extend(self.run_gdt_check_passes(...))`. The regression lock
+// lives in `cli_gdt_legality.rs::check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once`.
+//
+// The purpose constraint is `subject.width > 0mm` (80mm → satisfied), so the
+// ONLY source of a non-zero exit is the GdtIllegalModifier escalation.
+//
+// Compiles CLEAN (legality is a check-time lint, not a compile error).
+
+structure FlatnessMmcPurposeGeometry {
+    param width : Length = 80mm
+
+    let body = box(10mm, 10mm, 10mm)
+
+    let flatness = Flatness(
+        tolerance_value: 0.1mm,
+        material_condition: MaterialCondition.MMC,
+        feature: body
+    )
+
+    param geometry : Solid = body
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint subject.width > 0mm
+}
