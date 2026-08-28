@@ -12,7 +12,32 @@
 //! different smooth functions, and a solver that treats their Jacobians as
 //! samples of one function will chatter across the kink forever.
 //!
-//! [`BranchRecord`] is that record.  λ (#6679) consumes it to detect chatter.
+//! [`BranchRecord`] is that record.  λ (#6679) consumes it to detect chatter,
+//! through exactly two primitives: [`BranchRecord::differs_from`] (did the
+//! active branch set change, and *where*) and [`BranchRecord::signature_key`]
+//! (a hashable identity for a branch set, so alternation between two
+//! signatures more than K times can be counted without retaining every
+//! record).
+//!
+//! # Two properties λ depends on
+//!
+//! **A [`KinkSite`] is a STRUCTURAL PATH, deliberately not a `SourceSpan`.**
+//! `CompiledExpr` carries no general span field — only `StructureInstanceCtor`
+//! has one (`reify-ir/src/expr.rs:209`) — so there is no user-facing position
+//! to record here even in principle.  λ must resolve the span for
+//! `W_SOLVER_NONSMOOTH_STALL` from the owning constraint's
+//! `ConstraintNodeId`, which `reify-constraints` already carries alongside
+//! every `CompiledExpr`.
+//!
+//! **A site is stable under branch flips BY CONSTRUCTION.**  It is the
+//! child-index path from the residual root, so it is a property of the tree
+//! rather than of the traversal.  The alternative — a pre-order visit counter
+//! — would fail precisely where it matters: short-circuiting
+//! `Conditional`/`And`/`Or` skips whole subtrees, so every kink after a flip
+//! would renumber by however many nodes the skipped branch contains, at
+//! exactly the moment λ is trying to identify which kink moved.
+
+use std::hash::{Hash, Hasher};
 
 use reify_ir::{BinOp, Value};
 
@@ -123,7 +148,7 @@ pub enum BranchChoice {
     Unresolved,
 }
 
-impl std::hash::Hash for BranchChoice {
+impl Hash for BranchChoice {
     /// Hand-written because `Value` implements `PartialEq`/`Eq`/`Ord` (all via
     /// `total_cmp` for floats) but **not** `Hash`.
     ///
@@ -134,7 +159,7 @@ impl std::hash::Hash for BranchChoice {
     /// differing only in NaN payload are unequal under `PartialEq` yet hash
     /// alike.  That is a deliberate documented exception in `Value::content_hash`
     /// itself, and it only ever costs a hash collision, never a wrong `==`.
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
         match self {
             BranchChoice::Arm(i) | BranchChoice::Operand(i) => i.hash(state),
@@ -194,5 +219,53 @@ impl BranchRecord {
     /// True when the traversal encountered no non-smooth node.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The first site, in traversal order, at which these two records
+    /// disagree — or `None` when they took exactly the same branches.
+    ///
+    /// `Some(site)` means the two evaluations sampled two *different* smooth
+    /// functions, so their Jacobians are not two samples of one function.
+    /// That is the "branch-change signature difference contracts the trust
+    /// region" primitive η (#6675) and λ (#6679) call.
+    ///
+    /// Records are compared entry-by-entry rather than as sets, because the
+    /// order is itself meaningful: it is evaluation order, and a kink that
+    /// stops being traversed at all is as much a change as one that flips.
+    /// A disagreement is therefore reported when the site, the kind or the
+    /// choice differs, and also when one record simply has an entry the other
+    /// lacks — in which case the site named is the extra entry's own.
+    pub fn differs_from(&self, other: &BranchRecord) -> Option<KinkSite> {
+        for (a, b) in self.entries.iter().zip(other.entries.iter()) {
+            if a != b {
+                return Some(a.site.clone());
+            }
+        }
+        // One ran out first: the next entry of the longer record is the
+        // divergence.
+        match self.entries.len().cmp(&other.entries.len()) {
+            std::cmp::Ordering::Greater => Some(self.entries[other.entries.len()].site.clone()),
+            std::cmp::Ordering::Less => Some(other.entries[self.entries.len()].site.clone()),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+
+    /// A stable, order-sensitive key for this branch set.
+    ///
+    /// Equal records hash equal; a change to any single `site`, `kind` or
+    /// `choice` changes the key.  The key is a pure function of the entries,
+    /// so re-evaluating at the same point reproduces it exactly — λ counts
+    /// alternations between keys, and a key that wobbled would manufacture
+    /// phantom chatter.
+    ///
+    /// The length is folded in first so that one record being a prefix of
+    /// another cannot collide.
+    pub fn signature_key(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.entries.len().hash(&mut hasher);
+        for entry in &self.entries {
+            entry.hash(&mut hasher);
+        }
+        hasher.finish()
     }
 }
