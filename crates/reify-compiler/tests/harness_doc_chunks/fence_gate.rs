@@ -57,6 +57,32 @@
 //! This gate settles the disagreement in favour of the standalone reading, so
 //! `enums.md`'s `## Option Type` fence — which passes today only because of
 //! that injected wrapper — is `reify-fragment`, not `reify`.
+//!
+//! # What this gate structurally CANNOT reach (do not read green as "verified")
+//!
+//! A fence gate sees fences. The two chunk claims most often cited as
+//! overstating v1 are **unfenced prose**, so no tagging decision this task made
+//! touches them and no cosmetic green arises from their still being wrong:
+//!
+//! - `collections.md:19` — the bullet advertising `fold`, `all`, `any`,
+//!   `concat` (and `map`) as List operations.
+//! - `functions.md:28` — the bullet "**Recursion permitted** (infinite
+//!   recursion is a runtime error)".
+//!
+//! Both are markdown list items, not code blocks. They are #5393's to correct;
+//! that task's own seam note (ii) expects to land after this gate. This module
+//! deliberately does not touch them — a gate that quietly widened itself into
+//! prose scanning would be asserting a coverage claim it cannot keep.
+//!
+//! The one *fenced* body that does overstate v1 is `functions.md`'s
+//! `## Overloading` listing, whose 3-arg `rotate(geometry, axis, angle)`
+//! overload is the very phantom
+//! `a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported`
+//! plants below. It is `reify-schematic` (a signature listing, not compilable
+//! source), so this gate exempts it by design; rather than let the tag make it
+//! cosmetically green, the chunk carries a markdown annotation directly above
+//! that fence naming the real 2-/5-arity dispatch and citing the follow-up
+//! ticket filed for the correction.
 
 use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
 
