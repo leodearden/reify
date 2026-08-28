@@ -1210,6 +1210,20 @@ fn fea_owned_defs() -> &'static std::collections::BTreeSet<String> {
 /// [`ctor_type_name_at`] recovers any identifier followed by `(` and therefore
 /// cannot tell a ctor from a function call; guessing in the touchable direction
 /// is the one classification error with a real cost.
+///
+/// # Approximation: one global namespace, not per-file module scope
+///
+/// `structure_defs` is accumulated across the WHOLE corpus plus the stdlib, with
+/// no module scoping, so `Owner::NonFea` means "some file declares this name" —
+/// not "the file this site sits in can see that declaration". That over-includes
+/// in the touchable direction: a site constructing `Widget` is called actionable
+/// whenever ANY unrelated corpus member declares `structure def Widget`. The FEA
+/// direction has the same shape but fails conservatively (over-deferring costs γ
+/// sizing accuracy, never a wrong edit), so only the `NonFea` direction is
+/// exposed. Removing it needs each member's import graph resolved — more
+/// machinery than a one-shot snapshot warrants — so the renderer STATES the
+/// approximation in the artifact's named limitations, and the `non-FEA` group
+/// blurb points γ at it, rather than leaving it for a reader to infer.
 fn d9_owner(
     def: Option<&str>,
     fea_defs: &std::collections::BTreeSet<String>,
@@ -2112,7 +2126,10 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
                 "The recovered name IS a `structure def` declared in the corpus or the stdlib,\n\
                  and it is not FEA-owned. D9's per-case judgment applies: fix the call site or\n\
                  the declared field type, whichever is the actual bug — γ's ruling, recorded in\n\
-                 γ's diff. **This is the group to size γ against.**\n\n",
+                 γ's diff. **This is the group to size γ against.**\n\n\
+                 That check is against ONE GLOBAL namespace — *some* corpus or stdlib file\n\
+                 declares the name, not necessarily one this row's file can see. See named\n\
+                 limitation 3 below before treating a row here as actionable.\n\n",
             ),
             Owner::UnresolvedDef => md.push_str(
                 "An identifier was recovered at the diagnostic's anchor, but it is not a\n\
@@ -2218,6 +2235,25 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
            (the `examples/module_visibility/consumer.ri` class) therefore cannot resolve\n\
            standalone and appear above under *not surveyed* or *partially surveyed* with\n\
            their reason, rather than being silently dropped.\n\
+        3. **`def` resolution uses ONE GLOBAL namespace, not per-file module scope.** The\n\
+           `owner` grouping cross-checks a recovered name against every `structure def`\n\
+           declared anywhere in the corpus plus the stdlib — it does NOT ask whether that\n\
+           declaration is visible from the file the row sits in. Two consequences, and\n\
+           only one of them is safe:\n\
+           **(a)** a row lands in *non-FEA — γ per-case judgment* whenever SOME corpus\n\
+           file declares that name, even if the row's own file cannot see it. That is\n\
+           over-inclusion in the TOUCHABLE direction, so **before treating a `non-FEA` row\n\
+           as actionable, confirm the `def` is declared in that row's own file or one of\n\
+           its imports.** The `message` and `severity` columns usually settle it in one\n\
+           read.\n\
+           **(b)** symmetrically, a non-FEA file that happened to declare a name the FEA\n\
+           stdlib also declares would pull its sites into the do-not-touch partition. That\n\
+           direction over-defers rather than over-touches, so it costs γ sizing accuracy,\n\
+           never a wrong edit.\n\
+           Per-member scoping (each file's own declarations plus its imports) would remove\n\
+           the approximation, at the cost of resolving the import graph for every member —\n\
+           more machinery than a one-shot snapshot warrants, so the approximation is stated\n\
+           here instead of hidden.\n\
         \n",
     );
 
