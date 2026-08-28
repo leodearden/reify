@@ -1016,7 +1016,6 @@ fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
     );
 }
 
-
 // ── Task 6862: a dimension-kinded generic param at a LENGTH slot ─────────────
 
 /// The task-6862 regression fixture: `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid`

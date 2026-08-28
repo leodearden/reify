@@ -809,10 +809,16 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// # Gradualism (PRD decision 6)
 ///
 /// The check fires only when a definite concrete type is available:
-/// - `Type::Error` — poison sentinel; silently skipped (avoids cascading
-///   diagnostics off an unrelated root-cause error).
-/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped
-///   (constraint-aware / auto-type-param resolution is out of scope for ζ).
+/// - `Type::Error` — poison sentinel; silently skipped at BOTH arms (avoids
+///   cascading diagnostics off an unrelated root-cause error).
+/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped at BOTH
+///   arms (constraint-aware / auto-type-param resolution is out of scope for ζ).
+/// - `Type::ScalarParam(_)` — unresolved DIMENSION placeholder (`Scalar<Q>`);
+///   silently skipped at the [`ExpectedArg::Scalar`] arm ONLY, and still
+///   REJECTED at the [`ExpectedArg::Int`] arm (task 6862). The scope is
+///   per-arm, not global, because the defer is a DIMENSION-comparison argument
+///   and an `Int` count slot is not a dimension slot; each arm states its own
+///   half of the reasoning below.
 /// - Any other variant — a concrete known type; compared against the slot's
 ///   expected dimension.
 ///
@@ -875,7 +881,49 @@ pub(crate) fn check_builtin_arg_types(
                 migration_hint,
             } => match &arg.result_type {
                 // Gradualism: poison + unresolved pass silently.
-                Type::Error | Type::TypeParam(_) => continue,
+                //
+                // `Type::ScalarParam(Q)` (task 6862) is the third member, and
+                // the only one whose membership is arm-SPECIFIC. It is the
+                // unresolved-DIMENSION placeholder a dim-kinded generic
+                // produces: `fn beam<Q: Dimension>(l: Scalar<Q>)` resolves `l`
+                // to `ScalarParam("Q")` (`type_resolution.rs`'s
+                // `classify_dim_slot`), which displays as `Scalar<Q>`. Its
+                // FAMILY is known — it IS a scalar, so it belongs at a
+                // dimension slot — and only its DIMENSION is open. There is
+                // therefore nothing here to compare: `Q` is bound at
+                // instantiation, and whether THAT binding conforms is decided
+                // there. Judging the UNINSTANTIATED body under the strict
+                // `DimensionVector` equality the next arm applies can only ever
+                // REJECT, so every such site is a false positive.
+                //
+                // Two precedents make the same call elsewhere in the compiler,
+                // and this arm aligns with both rather than inventing a rule:
+                // `type_compat::is_mul_div_gradualism_skip` (type_compat.rs,
+                // cited from expr.rs:2037) already lists `ScalarParam`
+                // alongside `TypeParam` as a DEFER kind; and
+                // `conformance::scalar_param_arg_defers_at_scalar_slot`
+                // (conformance/mod.rs, task 5627 γ D4-5 / PRD invariant I5)
+                // makes the identical call at the struct-ctor layer.
+                //
+                // MEASURED symptom this closes: before task 6862,
+                // `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid { extrude(circle(l), l) }`
+                // instantiated at `beam(10mm)` hard-errored at `reify check`
+                // (exit 1) with two `ArgTypeMismatch`es — `circle: radius
+                // argument expects Length, got Scalar<Q>; …` and `extrude:
+                // distance argument expects Length, got Scalar<Q>; …` — on code
+                // that is correct at Q = LENGTH. Fixture:
+                // `tests/fixtures/dim_kinded_length_slot.ri`; pinned by
+                // `scalar_param_defers_at_length_slot` below and by
+                // `dim_kinded_generic_param_at_length_slot_compiles_clean` in
+                // `tests/builtin_arg_signature_tests.rs`. The defer is fenced
+                // on the other side by `bare_int_at_length_slot_still_rejected`
+                // and `wrong_dimension_scalar_at_length_slot_still_rejected`,
+                // so it cannot widen into a blanket disable of the slot.
+                //
+                // Reach: this table was introduced by task 4493 over 7 LENGTH
+                // slots and widened to 33 slotted names by task 5750, so the
+                // gap was pre-existing but its exposed surface is now large.
+                Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => continue,
 
                 // Dimensioned scalar: mismatch only when the dimension differs.
                 Type::Scalar { dimension } => {
@@ -911,6 +959,26 @@ pub(crate) fn check_builtin_arg_types(
 
             ExpectedArg::Int { type_name } => match &arg.result_type {
                 // Gradualism: poison + unresolved pass silently.
+                //
+                // `Type::ScalarParam(_)` is DELIBERATELY absent here, and the
+                // asymmetry with the `Scalar` arm above is the point (task
+                // 6862). That defer is a DIMENSION-comparison argument — it
+                // holds because at a dimension slot there is nothing to compare
+                // until `Q` binds. An `Int` count slot is not a dimension slot:
+                // `Scalar<Q>` is a dimensioned scalar for EVERY binding of `Q`,
+                // and at Q = DIMENSIONLESS it is precisely the `Real` this
+                // arm's own comment below already names as a definite mismatch.
+                // The FAMILY mismatch is therefore decidable without
+                // instantiating, so rejecting is correct and loses nothing.
+                //
+                // The precedent is narrow in exactly the same way:
+                // `conformance::scalar_param_arg_defers_at_scalar_slot` gates
+                // on `matches!(param_type, Type::Scalar { .. })`, so it too
+                // defers only at a scalar slot and nowhere else.
+                //
+                // Pinned by `scalar_param_still_rejected_at_int_slot` below,
+                // which is what makes this asymmetry ENFORCEABLE rather than
+                // merely conventional.
                 Type::Error | Type::TypeParam(_) => continue,
 
                 // Correct — a true `Int` count.
