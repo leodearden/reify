@@ -5225,13 +5225,23 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * TypeError survives only as the motivation for the `String()` coercion, in
    * `escapeAttrValue`'s docblock.)
    */
-  const BOUNDARY_GUARD_SITES: {
+  type BoundaryGuardSite = {
     label: string;
     /** The testid the decoy carries — what the coerced value would look up. */
     decoyTestId: string;
     dispatch: () => [string, Record<string, unknown>];
     expected: unknown;
-  }[] = [
+    /**
+     * Optional fixture, run after `initDebugBridge` and before `dispatchCmd`.
+     * Where present it is LOAD-BEARING, not decoration: it installs context a
+     * handler checks BELOW its boundary guard, so the row fails at the guard
+     * rather than at an earlier, unrelated precondition. The eight rows that
+     * need no such context leave it undefined.
+     */
+    setup?: () => void;
+  };
+
+  const BOUNDARY_GUARD_SITES: BoundaryGuardSite[] = [
     {
       label: 'dom_query',
       decoyTestId: '3',
@@ -5295,6 +5305,48 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
       ],
       expected: { error: 'predicate.testId is required for selector kind' },
     },
+    // driveTreeNode's `path` — the NINTH guard copy, and the only one on a
+    // handler shared by two tool names. Derived off the same `TREE_PANELS`
+    // table as the `ESCAPE_SITES` driveTreeNode rows rather than copy-pasted,
+    // so what varies between these two rows is only what varies in bridge.ts:
+    // the testid prefix and the accessor.
+    //
+    // `collapse_tree_node` needs no row of its own — it is the SAME function
+    // and therefore the SAME single guard copy. That is this table's actual
+    // invariant: one row per guard COPY, with a row per distinct interpolation
+    // prefix where one copy serves several, NOT one row per tool name.
+    //
+    // Both rows drive `expand_tree_node` (wantExpanded === true) deliberately.
+    // `collapse_tree_node {path: 3}` passes wantExpanded === false, which equals
+    // the `false` an empty accessor reports for `expandedNow`, so it SKIPS the
+    // click branch entirely and returns `{ok: true, path: 3, expanded: false}`
+    // without ever touching the decoy — still red on the error assertion, but
+    // green on both decoy assertions, i.e. a materially weaker RED.
+    ...(
+      [
+        { kind: 'design', params: {} },
+        { kind: 'constraint', params: { panel: 'constraint' } },
+      ] as const
+    ).map(
+      ({ kind, params }): BoundaryGuardSite => ({
+        label: `expand_tree_node (${kind})`,
+        // The prefix is read from the table bridge.ts's own interpolation is
+        // modelled on, so the decoy carries exactly what `${prefix}${String(3)}`
+        // would look up.
+        decoyTestId: `${TREE_PANELS[kind].testIdPrefix}3`,
+        dispatch: () => ['expand_tree_node', { path: 3, ...params }],
+        expected: { error: 'path is required' },
+        // LOAD-BEARING. `driveTreeNode` checks `!ctx.designTree` /
+        // `!ctx.constraintPanel` immediately after the path check, so without
+        // the accessor this row would go red with `{error: 'design tree not
+        // registered'}` — a RED that proves nothing about the boundary, because
+        // the decoy is never reached. An EMPTY set is what forces the
+        // `expandedNow !== wantExpanded` mismatch and therefore the
+        // querySelector-and-click branch, the only branch that reaches the
+        // escape.
+        setup: () => TREE_PANELS[kind].install(() => new Set<string>()),
+      }),
+    ),
   ];
 
   describe('boundary guards above the escape', () => {
@@ -5302,6 +5354,7 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
       it(`${site.label}: a JSON-supplied non-string is rejected at the boundary, never coerced into a DOM lookup`, async () => {
         const stores = makeStores();
         await initDebugBridge(stores);
+        site.setup?.();
         const { el: decoy, clickSpy } = mountTestIdTarget(site.decoyTestId);
 
         const result = await dispatchCmd(nextId++, ...site.dispatch());
