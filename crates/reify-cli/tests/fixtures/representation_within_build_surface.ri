@@ -1,0 +1,75 @@
+// Fixture: ζ — attributable Indeterminate on a surface that does not measure
+// (PRD C-SURFACE 1). Task ζ (6169), cli_representation_within.rs.
+//
+// Same shape as the sibling representation_within_satisfied.ri — a fine-precision
+// 1 m-radius sphere with a RepresentationWithin(subject, 1mm) assertion:
+//
+//   #precision(0.3mm) — fine deflection
+//   sphere(1000mm)    — 1 m radius
+//   bound 1mm         — assertion bound = 1e-3 m
+//
+// That BT7 combination's achieved deviation is measured and pinned by
+// `bt7_fine_sphere_tight_bound_yields_satisfied` in
+// `crates/reify-eval/tests/representation_within_assertion.rs` (see its
+// OCCT_SOURCE_FINE doc for the value, the full precision→deviation sweep and the
+// re-measurement recipe). It is deliberately NOT restated here, so retuning the
+// precision cannot leave a stale number behind in this file.
+//
+// What this fixture adds over its sibling: `subject` carries a DEFAULT.
+//
+// That default is load-bearing for this fixture's purpose. `reify build` never
+// calls set_capture_repr_tol, so achieved_repr_tol stays empty on that surface.
+// Before ζ, an empty map sent the assertion to the language-level constraint
+// checker, whose reason depends on whether the operands are defined:
+//
+//   param subject : Sphere            (sibling, no default)
+//     → "undefined inputs: SphereCheck.subject" — correctly attributed
+//   param subject : Sphere = Sphere() (here)
+//     → "operator undefined for these operand kinds: StructureInstance"
+//     → MISATTRIBUTED: blames the operand kinds for what is really a property
+//       of the evaluation surface, which is exactly the defect ζ removes.
+//
+// So only a DEFINED subject exercises the misattribution this fixture gates.
+//
+// Under `reify build` (either kernel mode): nothing measures → RepresentationWithin
+// → Indeterminate, explained by an Info naming the surface → exit 0.
+// Indeterminate is not a failure. The REMEDY that Info offers is terminal-first
+// and so differs by kernel mode: with OCCT it points at `reify check` (which
+// registers a kernel and measures); on a stub binary `reify check` cannot
+// measure either, so it names the geometry kernel directly rather than sending
+// the user on a two-hop dead end.
+//
+// Under `reify check` + OCCT: tessellate_realizations populates
+// achieved_repr_tol["Sphere#realization[0]"] below the 1mm bound → Satisfied →
+// exit 0, with no attribution diagnostic (that surface DID measure).
+//
+// Under `reify check` + stub (no OCCT): realization cannot run → map stays empty
+// → Indeterminate (C1 graceful degradation), now carrying the same attributable
+// Info in place of the misattributed message → exit 0.
+//
+// Every mode satisfies the standing gate invariants: exit 0 AND stdout has no
+// "VIOLATED".
+//
+// Declares its module explicitly, matching the sibling
+// representation_within_no_realization.ri: without it `reify build`/`reify check`
+// also emit W_MODULE_DECL_MISSING (spec §7.1), and a committed fixture should not
+// carry an avoidable warning.
+
+module representation_within_build_surface
+
+#precision(0.3mm)
+
+// Sphere: 1 m-radius sphere realized at fine precision.
+structure Sphere {
+    let r = sphere(1000mm)
+}
+
+// SphereCheck: declares the RepresentationWithin assertion.
+// param subject : Sphere types the subject as StructureRef("Sphere"), which is
+// the type-name the engine uses to scan achieved_repr_tol for a matching
+// "Sphere#realization[0]" entry after tessellation. The `= Sphere()` default
+// makes the operand defined at check time — see the header for why that matters.
+structure SphereCheck {
+    param subject : Sphere = Sphere()
+    constraint RepresentationWithin(subject, 1mm)
+}

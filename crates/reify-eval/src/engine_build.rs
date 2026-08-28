@@ -3173,6 +3173,7 @@ impl Engine {
             constraint_checker: _, // language-level checker (engine-scoped)
             geometry_kernels: _,   // registered kernels
             default_kernel_name: _, // default-kernel selection
+            repr_capable_kernel: _, // construction-recorded kernel capability (task 6169)
             solver: _,             // fallback constraint solver
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude

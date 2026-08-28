@@ -381,6 +381,12 @@ impl Engine {
             // hot path pays zero overhead (no BRepExtrema projection) when γ
             // assertions are not active. Enable via set_capture_repr_tol(true).
             capture_repr_tol: false,
+            // Task 6169: "not recorded". Only the inventory-driven constructors
+            // can answer the declared-capability question (they alone hold the
+            // KernelRegistration); they overwrite this after construction. The
+            // caller-supplied-kernel seam leaves it None and gets the
+            // benefit-of-the-doubt scan in `has_repr_capable_kernel`.
+            repr_capable_kernel: None,
             // Task 4198 (Determinacy β): empty until tessellate_realizations()
             // / tessellate_snapshot() populates it via measure_mesh_deviation.
             achieved_repr_tol: BTreeMap::new(),
@@ -910,11 +916,24 @@ impl Engine {
             crate::kernel_registry::emit_kernel_selection(reg.name, total);
         }
         let single_kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());
-        Self::with_prelude(
+        // Task 6169 (review round): record the picked adapter's DECLARED BRep
+        // capability here, while the `KernelRegistration` is still in hand.
+        // `with_prelude` files the adapter under the synthetic
+        // `DEFAULT_KERNEL_NAME` key, which is absent from the static registry,
+        // so this answer is unrecoverable downstream — and every production
+        // constraint-dispatching surface (reify-cli `cmd_check`/`cmd_build`,
+        // the GUI `EngineSession`) constructs through exactly this path.
+        // `None` (empty registry) → `false`: there is no adapter at all, which
+        // matches the empty-`geometry_kernels` semantics.
+        let repr_capable = picked
+            .is_some_and(|reg| (reg.descriptor)().supports_any_repr(reify_ir::ReprKind::BRep));
+        let mut engine = Self::with_prelude(
             constraint_checker,
             single_kernel,
             reify_compiler::stdlib_loader::load_stdlib(),
-        )
+        );
+        engine.repr_capable_kernel = Some(repr_capable);
+        engine
     }
 
     /// Construct an Engine using the inventory-driven multi-kernel registry,
@@ -1042,6 +1061,16 @@ impl Engine {
             geometry_kernels,
             default_kernel_name,
             reify_compiler::stdlib_loader::load_stdlib(),
+        );
+        // Task 6169 (review round): record declared BRep capability across the
+        // loaded set. This path keys `geometry_kernels` by real registry names,
+        // so the registry scan would also answer correctly — recording it makes
+        // both inventory-driven constructors answer from the same place rather
+        // than leaving one on a lookup shape the other cannot use.
+        engine.repr_capable_kernel = Some(
+            registry
+                .values()
+                .any(|reg| (reg.descriptor)().supports_any_repr(reify_ir::ReprKind::BRep)),
         );
         // Wire manifest-level knobs that need a post-construction setter
         // (mirrors the set_persistent_cache_dir pattern for cache-dir wiring).
