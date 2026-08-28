@@ -573,10 +573,24 @@ impl GeometryKernel for GmshKernel {
     ///
     /// # Why `repair_cfg = None`
     ///
-    /// The attribution producer rejects vertex-merging repair (it would
-    /// invalidate per-node attribution). The caller (the engine realization
-    /// edge, step-18) is therefore responsible for supplying a watertight
-    /// surface and degrades to the plain producer on any error here.
+    /// `None` does not disable welding: since task ξ (#5116), `repair_cfg`
+    /// only *selects* the weld configuration (`None` means
+    /// `RepairConfig::default()`) rather than gating whether welding can
+    /// happen at all, as it did pre-ξ. With `None` the weld is on demand,
+    /// not unconditional — a cheap watertightness preflight on the raw
+    /// surface decides whether the O(n²) merge scan is worth paying for:
+    /// an already-watertight surface is used as-is, an unwelded one is
+    /// welded with the default config. This is safe for attribution
+    /// because attribution is derived from gmsh entity membership after
+    /// re-meshing, never from input-vertex identity, and the entity
+    /// anchors here are face-centroid positions that a weld never moves
+    /// (survivors keep their exact coordinates) — see the repair/welding
+    /// discussion on [`crate::mesh_surface_to_volume_with_attribution`]
+    /// for the full argument. A surface with a genuine open boundary
+    /// still fails the post-weld watertightness check and returns
+    /// `Err`, which the engine realization edge (task 4092 step-18,
+    /// `reify-eval`'s `engine_build.rs`) degrades to the plain
+    /// [`Self::mesh_surface_to_volume`] path (boundary `None`).
     #[cfg(feature = "mesh-morph")]
     fn mesh_surface_to_volume_attributed(
         &self,
