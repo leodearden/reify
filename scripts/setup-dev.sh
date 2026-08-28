@@ -371,10 +371,53 @@ ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 install_build_services() {
     local unit_dir="$HOME/.config/systemd/user"
     local sccache_bin="$HOME/.cargo/bin/sccache"
-    local repo_dir size
+    local repo_dir size jobserver_dir main_checkout
     repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     size="${REIFY_SCCACHE_SIZE:-100G}"
     mkdir -p "$unit_dir"
+
+    # ---- HOST-GLOBAL ExecStart pinning (task 5888) --------------------------
+    # $unit_dir is host-global: a unit written here outlives whatever checkout
+    # installed it.  setup-dev.sh is routinely run from a warm-lane worktree
+    # (/home/leo/src/warm-lanes/worktrees/_lane-N), so a ${repo_dir}-derived
+    # ExecStart pins the jobserver units at a path that vanishes the moment
+    # that lane is reclaimed and re-seeded: every subsequent start then fails
+    # with status=203/EXEC, the dual-pool jobserver never comes up, and every
+    # verify silently fails open to a private -j(nproc) — silently, because
+    # nothing Requires= these units.  Host convention is therefore that a
+    # host-global unit names the stable MAIN checkout; see the inline notes on
+    # deploy/systemd/reify-warm-lane{,-gc}.service (#4720) and the identical
+    # fix shape in scripts/setup-agent-cache-redirect.sh:498-507,549-560.
+    #
+    # ONLY the two jobserver ExecStarts (and the chmod that makes exactly those
+    # two executables runnable) are pinned.  sccache.service's ExecStart is
+    # $HOME/.cargo/bin/sccache — already checkout-independent — and every
+    # PER-WORKTREE call site in this script (hooks wiring, the debug port, the
+    # .cargo config, the warm-lane FS, the agent cache redirect) must stay
+    # relative to the INVOKING checkout or running from a lane would provision
+    # the wrong tree.  Do not widen this.
+    jobserver_dir="$repo_dir"
+    main_checkout=""
+    if [ -r "$repo_dir/scripts/lib_main_checkout.sh" ]; then
+        # shellcheck source=scripts/lib_main_checkout.sh
+        . "$repo_dir/scripts/lib_main_checkout.sh" || true
+    fi
+    if declare -F reify_main_checkout >/dev/null 2>&1; then
+        main_checkout="$(reify_main_checkout "$repo_dir" 2>/dev/null || true)"
+    fi
+    # A resolved path is not enough: it must actually HOLD the executables, or
+    # we would pin a unit at a silently dead ExecStart.  Falling back to the
+    # invoking copy (and saying so) keeps a contributor clone with no main
+    # checkout working — same posture as install_boot_unit() in
+    # scripts/setup-agent-cache-redirect.sh.
+    if [ -n "$main_checkout" ] \
+        && [ -x "$main_checkout/scripts/jobserver-balancer.py" ] \
+        && [ -x "$main_checkout/scripts/jobserver-canary.sh" ]; then
+        jobserver_dir="$main_checkout"
+    elif [ "$main_checkout" != "$repo_dir" ]; then
+        warn "no executable jobserver scripts at the stable main checkout (${main_checkout:-<unresolved>})"
+        warn "  — pinning the host-global jobserver units at the invoking checkout instead: $repo_dir"
+    fi
 
     cat > "$unit_dir/sccache.service" <<EOF
 [Unit]
@@ -425,7 +468,7 @@ Type=simple
 # write_owner_stamp()'s tmp+rename sidecar in case a prior incarnation
 # crashed mid-write (rare, best-effort — see jobserver-balancer.py).
 ExecStartPre=-/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back /tmp/reify-jobserver-merge.owner /tmp/reify-jobserver-task.owner /tmp/reify-jobserver-merge.owner.tmp /tmp/reify-jobserver-task.owner.tmp
-ExecStart=${repo_dir}/scripts/jobserver-balancer.py
+ExecStart=${jobserver_dir}/scripts/jobserver-balancer.py
 ExecStopPost=/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back /tmp/reify-jobserver-merge.owner /tmp/reify-jobserver-task.owner /tmp/reify-jobserver-merge.owner.tmp /tmp/reify-jobserver-task.owner.tmp
 Restart=on-failure
 RestartSec=2
@@ -440,7 +483,7 @@ Description=Re-seed the dual-pool cargo jobserver (merge+task FIFOs) if tokens h
 
 [Service]
 Type=oneshot
-ExecStart=${repo_dir}/scripts/jobserver-canary.sh
+ExecStart=${jobserver_dir}/scripts/jobserver-canary.sh
 StandardOutput=journal
 StandardError=journal
 EOF
@@ -458,7 +501,11 @@ AccuracySec=15s
 WantedBy=timers.target
 EOF
 
-    chmod +x "$repo_dir/scripts/jobserver-canary.sh" "$repo_dir/scripts/jobserver-balancer.py"
+    # Same tree the two ExecStarts above name — not necessarily the invoking one.
+    # When that is the main checkout this is a no-op by construction (the -x
+    # guard above already required both to be executable there), so it never
+    # silently mutates another worktree.
+    chmod +x "$jobserver_dir/scripts/jobserver-canary.sh" "$jobserver_dir/scripts/jobserver-balancer.py"
     systemctl --user daemon-reload
     # γ/4517 rewrote jobserver-canary.sh for the dual-FIFO pools; η/4521
     # validated the end-to-end acceptance criteria before landing.  The C2

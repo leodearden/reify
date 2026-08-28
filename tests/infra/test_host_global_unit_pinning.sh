@@ -6,16 +6,21 @@
 # ephemeral) checkout that happened to invoke the installer.
 #
 # Background (task 5888): setup-dev.sh's install_build_services() writes four
-# units into the host-global $HOME/.config/systemd/user, but derived their
-# ExecStart from ${BASH_SOURCE[0]} — the INVOKING checkout.  Run once from a
-# warm lane (/home/leo/src/warm-lanes/worktrees/_lane-N), the two jobserver
-# units were pinned at a path that vanishes the moment that lane is reclaimed
-# and re-seeded.  From then on every start fails with status=203/EXEC, the
-# dual-pool cargo jobserver never comes up, and every verify silently
-# fails-open to a private -j(nproc) — completely silently, because nothing
-# Requires= those units.  Same defect class, same fix shape, as the prior art
-# in scripts/setup-agent-cache-redirect.sh:498-507,549-560, and the same host
-# convention already encoded on deploy/systemd/reify-warm-lane{,-gc}.service
+# units into the host-global $HOME/.config/systemd/user.  Until the fix that
+# lands WITH this suite, the two jobserver units derived their ExecStart from
+# ${BASH_SOURCE[0]} — the INVOKING checkout.  Run once from a warm lane
+# (/home/leo/src/warm-lanes/worktrees/_lane-N), those two units were pinned at
+# a path that vanishes the moment that lane is reclaimed and re-seeded.  From
+# then on every start fails with status=203/EXEC, the dual-pool cargo jobserver
+# never comes up, and every verify silently fails-open to a private -j(nproc) —
+# completely silently, because nothing Requires= those units.  The fix sources
+# scripts/lib_main_checkout.sh from install_build_services() and interpolates
+# the resolved main checkout into both ExecStarts (and the chmod that makes
+# exactly those two executables runnable), leaving every per-worktree call site
+# alone — which is what B5b/B5c pin.  Same defect class, same fix shape, as the
+# prior art in scripts/setup-agent-cache-redirect.sh:498-507,549-560, and the
+# same host convention already encoded on
+# deploy/systemd/reify-warm-lane{,-gc}.service
 # (#4720): a host-global unit names the stable main checkout.
 #
 # Part A — the RESOLVER contract (scripts/lib_main_checkout.sh).
