@@ -12,15 +12,24 @@
 # here.  Cited by SECTION NUMBER only: a bolded paragraph title is not a stable
 # anchor (#6241's retitle stranded six such cites at once), a section number is.
 #
-# WHAT THIS FILE PINS — the mechanical consequence of that NO:
+# WHAT THIS FILE PINS — the mechanical consequence of that NO, in BOTH
+# DIRECTIONS, one invocation each:
 #
-#   DIRECTION (i), this step: a committed-baseline entry that is ABSENT from
-#   the live set must NOT red the ratchet.  This is the §6.7 DB-degradation
-#   tolerance: the committed baseline is generated WITH the task DB and so
-#   carries liveness-lane kinds (orphaned, g-allow-orphaned) that a degraded
+#   DIRECTION (i): a committed-baseline entry that is ABSENT from the live set
+#   must NOT red the ratchet.  This is the §6.7 DB-degradation tolerance: the
+#   committed baseline is generated WITH the task DB and so carries
+#   liveness-lane kinds (orphaned, g-allow-orphaned) that a degraded
 #   structural-only run cannot reproduce.  Every context the gate actually runs
 #   in — task worktrees and the _merge-verify lane — lacks .taskmaster/, so a
 #   set-equality oracle would red there unconditionally.
+#
+#   DIRECTION (ii), the ANTI-DEGENERACY control: a LIVE fingerprint absent from
+#   the committed baseline must STILL red the ratchet.  Direction (i) alone
+#   cannot distinguish a live subset-oracle from one disarmed to `return 0` —
+#   both tolerate everything — so a one-directional guard would stay green
+#   after the behaviour it pins had disappeared.  This is the same
+#   both-directions discipline test_reify_audit_ptodo_ratchet_vacuity.sh states
+#   in its header and applies across its two invocations.
 #
 # Design (mirrors test_reify_audit_ptodo_ratchet_vacuity.sh end to end):
 #   - FRESHNESS INVERSION.  test_reify_audit_ptodo_orphan_hardgate.sh copies the
@@ -31,14 +40,16 @@
 #   - STUB GENERATOR via the documented REIFY_PTODO_GEN_BIN seam
 #     (test_reify_audit_ptodo.sh, task #4624).  Being executable it also
 #     short-circuits the `[ ! -x "$GEN" ]` cargo-build branch, so this test is
-#     cold-build-free.  The stub is --project-root AWARE: at the repo root it
-#     emits a PROPER SUBSET of the committed baseline (its first line, read AT
-#     RUNTIME) plus well-formed scan evidence on stderr, so the vacuity floor
-#     passes and the subset oracle is the only thing under test; for any other
-#     root it emits one synthetic untracked line so scenario (b) — which drives
-#     the same binary against a hermetic fixture and asserts its output is
-#     non-empty — still passes.  An unconditionally-subset stub would take (b)
-#     down too and the exit code could not then discriminate.
+#     cold-build-free.  Both stubs are --project-root AWARE and differ ONLY in
+#     their repo-root branch: direction (i) emits a PROPER SUBSET of the
+#     committed baseline (its first line, read AT RUNTIME); direction (ii)
+#     emits one synthetic fingerprint that is NOT in the baseline.  Both emit
+#     well-formed scan evidence on stderr, so the vacuity floor passes in both
+#     and the subset oracle is the only thing under test.  For any other root
+#     both emit the same synthetic untracked line, so scenario (b) — which
+#     drives the same binary against a hermetic fixture and asserts its output
+#     is non-empty — still passes.  A root-blind stub would take (b) down too
+#     and the exit code could not then discriminate.
 #   - READ AT RUNTIME, not inlined.  Required twice over: it keeps this .sh
 #     source free of literal baseline text (SELF-MATCH SAFETY below — the
 #     entries are δ-A attribute anchors carrying real marker text), and it keeps
@@ -57,6 +68,20 @@
 #       Both tokens are matched case-sensitively and appear nowhere else in the
 #       captured stream: every assert() DESCRIPTION in the underlying script
 #       spells the regression lowercase, so only the real diagnostic matches.
+#
+# Assertions (direction (ii)):
+#   (3) test_reify_audit_ptodo.sh exits 1 — a live fingerprint absent from the
+#       baseline is a REGRESSION, and the subset oracle must still say so.
+#   (4) ...and for the RIGHT reason: the captured output carries
+#       _ratchet_check_subset's `RATCHET REGRESSION` diagnostic AND names the
+#       synthetic path, AND @@RATCHET_VACUITY_FIRED@@ is ABSENT.  The token
+#       absence is what discriminates the SUBSET ORACLE firing from the VACUITY
+#       FLOOR firing — both produce exit 1 from the same scenario, and without
+#       it the two failure modes are indistinguishable.
+#   (5) EXACTLY one assert failed (`Results: <N> passed, 1 failed`), which turns
+#       "the subset oracle fired" into a positive observation rather than an
+#       inference that the RED was collateral damage from the stub.  Mirrors
+#       test_reify_audit_ptodo_ratchet_vacuity.sh's own assertion (3).
 #
 # SELF-MATCH SAFETY: this file must not contain any literal marker token the
 # PTODO structural lane sweeps for.  The stub's synthetic line assembles its
@@ -232,5 +257,105 @@ assert "the GREEN is real: 0 failed, no vacuity token, no RATCHET REGRESSION dia
     bash -c "grep -qE 'Results: [0-9]+ passed, 0 failed' '$RSM_OUTPUT_FILE' \
              && ! grep -qF '@@RATCHET_VACUITY_FIRED@@' '$RSM_OUTPUT_FILE' \
              && ! grep -qF 'RATCHET REGRESSION' '$RSM_OUTPUT_FILE'"
+
+# ---------------------------------------------------------------------------
+# DIRECTION (ii) stub ptodo-baseline-gen — the ANTI-DEGENERACY control.
+#
+# Same seam, same freshness inversion, same heredoc discipline as direction (i);
+# only the repo-root branch differs.  Here it emits ONE synthetic fingerprint
+# that is NOT in the committed baseline, so `comm -23 <live> <baseline>` is
+# non-empty and _ratchet_check_subset must fire.
+#
+# The synthetic path is deliberately non-existent: it can never collide with a
+# real baseline entry, and it survives any future drain of the baseline (unlike
+# a real path, which would start matching once its own entry was removed).
+#
+# Scan evidence is emitted here too, and that is load-bearing rather than
+# cosmetic: it keeps the VACUITY FLOOR silent, so the exit-1 under test is
+# attributable to the subset oracle alone.  Assertion (4) below checks that
+# attribution explicitly rather than trusting it.
+#
+# The non-repo-root branch is IDENTICAL to direction (i)'s, so scenario (b)
+# still passes and assertion (5)'s "exactly one failure" is exercisable.
+# ---------------------------------------------------------------------------
+SYNTHETIC_PATH="crates/does-not-exist/synthetic.rs"
+REGRESSION_GEN="$RSM_TMPDIR/ptodo-baseline-gen-regression"
+cat > "$REGRESSION_GEN" <<EOF
+#!/usr/bin/env bash
+# Stub ptodo-baseline-gen (direction ii) — generated at run time by
+# tests/infra/test_reify_audit_ptodo_ratchet_superset.sh.  Never committed.
+set -u
+_root=""
+while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+        --project-root)
+            _root="\${2:-}"
+            shift
+            shift 2>/dev/null || true
+            ;;
+        *) shift ;;
+    esac
+done
+# Run evidence on stderr, every run — keeps the vacuity floor SILENT so the
+# RED below is unambiguously the subset oracle.
+printf '@@PTODO_SCAN@@ files_scanned=3067 markers_examined=42\n' >&2
+if [ "\$_root" = "${REPO_ROOT}" ]; then
+    # Scenario (a): one live fingerprint that is NOT in the committed baseline.
+    # A live entry absent from the baseline is a REGRESSION and must red the
+    # ratchet — the direction that keeps the subset oracle from degenerating
+    # into a constant-true (PRD §17).
+    printf '%s :: untracked :: // %s: synthetic fingerprint minted by the direction-(ii) stub\n' \
+        '${SYNTHETIC_PATH}' '${M}'
+    exit 0
+fi
+# Any other root is scenario (b)'s hermetic fixture — identical to direction
+# (i), so (b)'s two asserts still pass and exactly one failure is expected.
+printf 'src/fresh.rs :: untracked :: // %s: wire this into the real implementation\n' '${M}'
+exit 0
+EOF
+chmod +x "$REGRESSION_GEN"
+
+echo ""
+echo "--- (ii) Invoking test_reify_audit_ptodo.sh with a NOT-IN-BASELINE generator ---"
+
+RSM_REGRESSION_OUTPUT_FILE="$RSM_TMPDIR/ptodo-output-regression"
+set +e
+REIFY_AUDIT_BIN="$FRESH_BIN" \
+REIFY_PTODO_GEN_BIN="$REGRESSION_GEN" \
+REIFY_AUDIT_NO_COLD_BUILD=1 \
+    bash "$PTODO_TEST" >"$RSM_REGRESSION_OUTPUT_FILE" 2>&1
+RSM_REGRESSION_EXIT=$?
+set -e
+
+echo "test_reify_audit_ptodo.sh (not-in-baseline generator) exited: $RSM_REGRESSION_EXIT"
+echo "--- Captured output (tail) ---"
+tail -20 "$RSM_REGRESSION_OUTPUT_FILE"
+echo "--- End captured output ---"
+
+# ---------------------------------------------------------------------------
+# Assertions — direction (ii)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertions (direction ii: live ⊄ baseline still REDS) ---"
+
+# (3) The subset oracle is still live: a fingerprint the baseline does not
+#     grandfather is a regression.  Without this, direction (i) alone would
+#     stay green against an oracle disarmed to `return 0`.
+assert "a LIVE fingerprint ABSENT from the committed baseline DOES red the ratchet (exit 1)" \
+    bash -c '[ "$1" -eq 1 ]' -- "$RSM_REGRESSION_EXIT"
+
+# (4) ...and the RED is the subset oracle, not the vacuity floor.  Both fire
+#     from scenario (a) and both produce exit 1; the token absence is the
+#     discriminator.  The offending path must be NAMED (the item-3 contract
+#     _ratchet_check_subset carries, task 5260).
+assert "the RED is the subset oracle: RATCHET REGRESSION names the synthetic path, vacuity token absent" \
+    bash -c "grep -qF 'RATCHET REGRESSION' '$RSM_REGRESSION_OUTPUT_FILE' \
+             && grep -qF '$SYNTHETIC_PATH' '$RSM_REGRESSION_OUTPUT_FILE' \
+             && ! grep -qF '@@RATCHET_VACUITY_FIRED@@' '$RSM_REGRESSION_OUTPUT_FILE'"
+
+# (5) Exactly one assert failed — the subset oracle, not collateral damage from
+#     the stub taking other scenarios down with it.
+assert "exactly one assert failed (the subset oracle, not stub collateral damage)" \
+    bash -c "grep -qE 'Results: [0-9]+ passed, 1 failed' '$RSM_REGRESSION_OUTPUT_FILE'"
 
 test_summary
