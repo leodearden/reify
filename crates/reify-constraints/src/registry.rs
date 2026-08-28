@@ -344,7 +344,7 @@ impl SolverRegistry {
             //
             // It is kept because that cost is paid ONCE PER COMPONENT, not per
             // trial, and the sub-problem it builds then drives a best-of-K
-            // multistart of `K = 2 * (dim + 1)` starts (`multistart_seeds`),
+            // multistart of `K = 2 * (dim + 1)` starts (`multistart_points`),
             // each running Nelder-Mead for up to
             // `min(FEASIBLE_OPT_ITERS_PER_DIM * (dim + 1), MAX_ITERS)`
             // iterations warm-started, or `MAX_ITERS = 5000` cold — so 9k–30k

@@ -845,20 +845,22 @@ fn solve_ranked_registry_cross_merges_independent_component_into_every_candidate
 /// filter of any kind.
 ///
 /// `SolverRegistry::solve_inner` builds each component's sub-problem from a
-/// `..problem.clone()` spread and today ALSO rebuilds `current_values` cell by
+/// `..problem.clone()` spread. It USED TO also rebuild `current_values` cell by
 /// cell into a fresh `ValueMap` under a comment claiming to "Filter
-/// current_values to only this component's params". That comment misdescribes
-/// the code: the loop copies EVERY entry, so the rebuild is an exact — and
-/// strictly more expensive — reproduction of what the spread already supplies
-/// (`ValueMap` is a persistent `im::HashMap`, so the spread's clone is O(1)
-/// structural sharing rather than n inserts + 2n key/value clones).
+/// current_values to only this component's params"; that comment misdescribed
+/// the code, because the loop copied EVERY entry, so the rebuild was an exact
+/// — and strictly more expensive — reproduction of what the spread already
+/// supplies (`ValueMap` is a persistent `im::HashMap`, so the spread's clone is
+/// O(1) structural sharing rather than n inserts + 2n key/value clones). Both
+/// the rebuild and that comment were removed by task #5721 item 1; the spread
+/// is now the sole source of each sub-problem's `current_values`.
 ///
-/// This test pins the observable contract the deletion relies on: with the
+/// This test pins the observable contract that deletion relied on: with the
 /// fixture decomposing into an objective component {x,y} and a genuinely
 /// independent component {z}, BOTH sub-problems must still see all three
 /// cells — the {z} component sees x and y, and the {x,y} component sees z.
-/// It is therefore expected to be GREEN both before and after the rebuild is
-/// deleted; that is exactly what makes the deletion provably a no-op.
+/// It was GREEN both before and after the rebuild was deleted; that is exactly
+/// what makes the deletion provably a no-op.
 ///
 /// The pass-through is not incidental, it is load-bearing: the #5720
 /// per-component `dependent_cells` filter is justified in registry.rs on the
