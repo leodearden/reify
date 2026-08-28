@@ -39,7 +39,8 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// (`as_printed_material_r0.rs`, `reify-fdm/src/r0.rs`), so grepping `MM_TO_M`
 /// enumerates all of them. Note the OUTBOUND direction in this same file
 /// deliberately does not use it: the PrusaSlicer boundary scales m→mm by an
-/// explicit `* 1000.0` (see `export_body_stl` / `read_slice_settings`).
+/// explicit `* 1000.0` (see `read_slice_settings`, and the STL write reached
+/// from `export_body_stl`).
 const MM_TO_M: f64 = 1.0e-3;
 
 /// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
@@ -739,7 +740,7 @@ mod tests {
             "bead 0 speed (1800 mm/min)",
         );
         // 210 °C = 483.15 K. The +273.15 offset is not a free choice — it is the
-        // offset the language itself declares for degC (stdlib/units.ri:41,
+        // offset the language itself declares for degC (stdlib/units.ri,
         // `pub unit degC : Temperature = 1 offset 273.15`). A Temperature-
         // dimensioned Scalar carries kelvin, so a design author writing
         // `bead.nominal_temp > 200degC` only gets the right answer in K.
