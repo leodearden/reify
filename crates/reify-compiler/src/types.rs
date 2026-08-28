@@ -910,11 +910,17 @@ pub(crate) struct PreludeRegistries<'r, 't> {
 ///    a local `structure def Color` bound to stdlib `Color`
 ///    (`materials_appearance.ri:17`) and hard-errored `unknown member 'alpha'
 ///    on sub 'c'` — a new build failure on source that compiled clean before.
-///    Scope limit: `local_entity_names` comes from `ctx.seen_entity_names`,
-///    which `pre_pass::collect_decl_refs` fills from top-level declarations
-///    only, so a purpose-NESTED structure shadowing a prelude name is not
-///    covered by the guard (it still shadows via the module-first arm once
-///    compiled).
+///    Guard reach: `local_entity_names` comes from `ctx.seen_entity_names`,
+///    which `pre_pass::collect_decl_refs` fills via
+///    `CompilationCtx::record_or_report_duplicate` from EVERY entity
+///    declaration in the module — top-level `Declaration::Structure` /
+///    `Declaration::Occurrence` AND the structures nested inside a
+///    `Declaration::Purpose` body (task 4639), all recorded under a
+///    "structure"/"occurrence" kind. So a purpose-nested definition shadows a
+///    prelude name exactly as a top-level one does. What the guard does NOT
+///    see is a template that was never a source declaration — a synthesized
+///    monomorph — whose name is mangled and so cannot collide with a prelude
+///    entity name in the first place.
 /// 2. **The prelude fallback is load-bearing, not belt-and-braces.** Stdlib
 ///    templates live in the prelude and are deliberately NOT merged into
 ///    `CompiledModule::templates` (io-export δ / esc-4287-15), so a bare

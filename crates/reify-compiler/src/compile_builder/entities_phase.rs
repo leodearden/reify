@@ -156,8 +156,14 @@ pub(crate) fn phase_entities(
     // differ only if the prelude ever held a `structure def X` AND an
     // `occurrence def X`: filter-then-collect would keep the structure, whereas
     // this derivation inherits the unfiltered map's last-wins dedup. The entity
-    // namespace is unified (spec §4.2.1) and the stdlib has zero duplicate
-    // entity-def names across its 131 defs, so the two are identical today.
+    // namespace is unified (spec §4.2.1) only WITHIN a module, so the two can
+    // diverge in principle once `prelude` carries user modules (compile_project
+    // / ModuleDag) as well as the stdlib. MEASURED on the tree: the stdlib
+    // declares no name twice at all, and repo-wide exactly one entity name is
+    // spelled both ways (`Pipe`, structure in examples/m9_constraint_def.ri,
+    // occurrence in examples/m5_connect_chain.ri) — two files with no import
+    // edge between them, so they are never in one prelude. The two maps are
+    // therefore identical today.
     let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude_sub_target_registry
         .iter()
         .filter(|(_, t)| t.entity_kind == EntityKind::Structure)
