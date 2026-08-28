@@ -1000,7 +1000,7 @@ fn check_one(
                 // bias toward fewer false-Highs; it is now FILTERED, because
                 // the failure it produces is a false NEGATIVE — a genuine
                 // phantom-done silently downgraded to Low. The criterion is a
-                // non-ASCII-digit boundary (see `subject_references_task`), so
+                // non-ASCII-digit boundary (see `hit_references_task`), so
                 // "Merge task/5937 into main" no longer rescues task 593.
                 {
                     let siblings = task_referencing_commits(ctx, &meta.task_id);
@@ -1169,7 +1169,7 @@ fn check_one(
     // on a genuine phantom-done by matching an unrelated commit. That was an
     // ACCEPTED risk under task 4464's bias toward fewer false-Highs; it is now
     // FILTERED, because the failure it produces is a false NEGATIVE. The
-    // criterion is a non-ASCII-digit boundary (see `subject_references_task`),
+    // criterion is a non-ASCII-digit boundary (see `hit_references_task`),
     // so "Merge task/5937 into main" no longer rescues task 593.
     let siblings = task_referencing_commits(ctx, &meta.task_id);
     if !siblings.is_empty() {
