@@ -47,6 +47,20 @@
 //!   (instantiation / collection / specialization + keyed member block): it
 //!   must fail loudly if the grammar delta disturbs any of them.
 //!
+//! - [`derived_sub_ambiguities_resolve_as_loud_parse_errors`] — **GREEN before
+//!   and after**, but for OPPOSITE reasons on four of its six rows, which is
+//!   why it is a negative control rather than a RED→GREEN test: before the
+//!   grammar step nothing about `mirror of` parsed at all, so of course it
+//!   errored. Its job from here on is to pin that each ambiguity stays LOUD.
+//!   Two rows (`sub x = mirror(a: 1mm)`, `sub y = image(a: 1mm)`) genuinely
+//!   INVERT across the grammar step: they parsed cleanly on the base commit
+//!   and must error from here on.
+//! - [`contextual_keywords_still_lex_as_identifiers`] — **GREEN before and
+//!   after**. The regression floor that matters most: it fails loudly if any
+//!   of the new words becomes reserved.
+//! - [`corpus_cases_match_the_live_parser`] — **RED before the grammar step**
+//!   (its four corpus sources do not parse), GREEN after.
+//!
 //! The CST-shape group below (`derived_sub_cst_exposes_*`, `derived_body_*`,
 //! `keep_disposition_*`, `exclude_disposition_*`, `derived_sub_accepts_at_*`,
 //! `derived_sub_modifiers_*`) is **RED before the grammar step** — every one of
@@ -143,7 +157,6 @@ fn assert_parses_clean(label: &str, source: &str) {
 }
 
 /// Assert `source` DOES contain an `ERROR` node, naming `label`.
-#[allow(dead_code)]
 fn assert_has_error(label: &str, source: &str) {
     let mut parser = make_parser();
     let tree = parser.parse(source, None).expect("parse failed");
@@ -500,6 +513,256 @@ fn derived_sub_modifiers_priv_and_aux_are_preserved() {
         assert!(
             kinds.iter().any(|k| k == modifier),
             "the `{modifier}` modifier token must survive into the CST; got {kinds:?}"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INV-SF-7: every ambiguity resolves as a LOUD parse error, never a quiet pick
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Sources that MUST NOT parse.
+///
+/// These are hand-rolled Rust assertions rather than corpus rows on purpose:
+/// the `tree-sitter test` corpus format has no way to express "this source must
+/// FAIL to parse" — every row asserts a successful parse against an expected
+/// S-expression. The positive half of the INV-SF-7 evidence does live in
+/// `test/corpus/derived_sub_arm.txt`; this is the negative half.
+#[test]
+fn derived_sub_ambiguities_resolve_as_loud_parse_errors() {
+    for (label, source) in [
+        // Seam 1 — the body brace is REQUIRED. With an optional body the
+        // derivation's trailing `$._expression` would be free to absorb the
+        // next line's tokens; requiring `{` makes omission loud instead.
+        (
+            "body omitted",
+            "structure S { sub b = mirror of a across P }",
+        ),
+        // Seam 2 — the losing direction of the variant_construction brace
+        // fork. `P { x: 1mm }` reduces as a variant construction, which
+        // consumes the brace; the derived body is then missing and the parse
+        // fails, rather than quietly reinterpreting the member.
+        (
+            "variant_construction eats the brace",
+            "structure S { sub b = mirror of a across P { x: 1mm } }",
+        ),
+        // `keep` is a plain token inside a derived body, so a param literally
+        // NAMED `keep` cannot be assigned there. It fails loudly rather than
+        // being silently read as a disposition.
+        (
+            "param named `keep` inside a derived body",
+            "structure S { sub b = mirror of a across P { keep = 5mm } }",
+        ),
+        // The prototype is a bare sibling-sub `<ident>` (PRD), not a path — so
+        // a dotted prototype is a parse error here rather than something
+        // A-beta would have to reject later.
+        (
+            "dotted prototype",
+            "structure S { sub b = mirror of a.child across P { } }",
+        ),
+        // The MEASURED lexer-rule-#2 capture, deliberate and documented in the
+        // grammar comment. On the base commit these parsed as the
+        // instantiation arm with structure_name == "mirror"/"image"; from the
+        // grammar step on, the anonymous `'mirror'`/`'image'` tokens win the
+        // equal-length match against the `identifier` regex and the parse
+        // fails. This is the same mechanism the `'List'` collection arm
+        // documents at length on the specialization arm in grammar.js. ZERO
+        // committed `.ri` is affected — the only `sub <name> = mirror|image`
+        // occurrence in the tree is the A-alpha target fixture itself.
+        (
+            "lowercase `mirror` as a structure name",
+            "structure S { sub x = mirror(a: 1mm) }",
+        ),
+        (
+            "lowercase `image` as a structure name",
+            "structure S { sub y = image(a: 1mm) }",
+        ),
+    ] {
+        assert_has_error(label, source);
+    }
+}
+
+/// The new words stay CONTEXTUAL keywords: `identifier` still matches every one
+/// of them everywhere else.
+///
+/// grammar.js declares no `word:` rule, so none of these tokens is reserved.
+/// That is load-bearing rather than incidental — MEASURED occurrences of each
+/// as ordinary source text across the 673 committed `.ri` files are mirror 65,
+/// image 15, across 64, under 143, keep 21, symmetry 5, exclude 0 (`of` 937).
+/// Reserving any of them would un-pin committed source.
+///
+/// The `symmetry` row is the RUNTIME evidence that PRD §8 contract item (ii)'s
+/// reservation is comment-only: `symmetry` gets no production, so it must still
+/// lex as an ordinary identifier.
+///
+/// The `mirrored` row is the lexer rule #1 (longest-match) guard — the
+/// counterpart to the rule #2 capture asserted above. It must keep working:
+/// `mirrored` is 8 characters against `'mirror'`'s 6, so the identifier wins
+/// and the instantiation arm is taken.
+#[test]
+fn contextual_keywords_still_lex_as_identifiers() {
+    for (label, source) in [
+        ("mirror as a called function", "structure S { let mi = mirror(solid, plane_xy(0mm)) }"),
+        ("image as a called function", "structure S { let im = image(m, v) }"),
+        ("keep as a value", "structure S { let k = keep }"),
+        ("exclude as a value", "structure S { let e = exclude }"),
+        ("under as a value", "structure S { let u = under }"),
+        ("across as a value", "structure S { let ac = across }"),
+        ("using as a value", "structure S { let us = using }"),
+        ("of as a value", "structure S { let o = of }"),
+        // PRD §8 item (ii): reserved by comment only, no production.
+        ("symmetry as a value", "structure S { let sy = symmetry }"),
+        ("keyword-named argument labels", "structure S { let r = g(at: 1, keep: 2, mirror: 3) }"),
+        ("of as a param name", "structure S { param of : Length = 1mm }"),
+        ("of as an argument label", "structure S { let u = Unit(of: 3mm) }"),
+        // Lexer rule #1 longest-match guard.
+        ("mirrored as a structure name", "structure S { sub y = mirrored(a: 1mm) }"),
+    ] {
+        assert_parses_clean(label, source);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Corpus drift guard
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The corpus file states the same CST contract as this file, in
+// `tree-sitter test` S-expression form. `tree-sitter test` is not CI-invoked
+// (see the module header), so on its own that copy has nothing keeping it
+// honest: the next grammar tweak would be forced to update the Rust assertions
+// and would leave the corpus quietly wrong — worse than absent, because a
+// reader treats it as the CST reference. So instead of deleting or trimming it,
+// the test below reads the corpus file directly and validates every case
+// against the live parser. The corpus is therefore load-bearing without
+// depending on the `tree-sitter test` CLI being green.
+
+/// One `tree-sitter test` corpus case: name, source, expected S-expression.
+struct CorpusCase {
+    name: String,
+    source: String,
+    expected_sexp: String,
+}
+
+/// True when `line` is a corpus rule line — three or more repetitions of `c`
+/// and nothing else. `=` rules delimit a case header, `-` rules separate a
+/// case's source from its expected S-expression.
+fn is_rule_line(line: &str, c: char) -> bool {
+    let t = line.trim_end();
+    t.len() >= 3 && t.chars().all(|ch| ch == c)
+}
+
+/// True when a `=` header block starts at `i` (`===` / name / `===`).
+fn is_header_start(lines: &[&str], i: usize) -> bool {
+    is_rule_line(lines[i], '=') && i + 2 < lines.len() && is_rule_line(lines[i + 2], '=')
+}
+
+/// Parse the `tree-sitter test` corpus format into cases.
+///
+/// Deliberately minimal — it handles exactly the subset this corpus file uses
+/// (`===` header, source, `---` divider, expected sexp) and asserts loudly on
+/// anything malformed rather than skipping it, so a broken corpus file cannot
+/// silently reduce this test to a no-op. Leading `;` comment lines before the
+/// first header are ignored, as `tree-sitter test` itself ignores them.
+fn parse_corpus(text: &str) -> Vec<CorpusCase> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut cases = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !is_header_start(&lines, i) {
+            i += 1;
+            continue;
+        }
+        let name = lines[i + 1].trim().to_string();
+        let mut j = i + 3;
+        let mut source = String::new();
+        while j < lines.len() && !is_rule_line(lines[j], '-') {
+            source.push_str(lines[j]);
+            source.push('\n');
+            j += 1;
+        }
+        assert!(
+            j < lines.len(),
+            "corpus case `{name}` has no `---` divider between source and \
+             expected S-expression"
+        );
+        j += 1; // consume the `---` divider
+        let mut expected_sexp = String::new();
+        while j < lines.len() && !is_header_start(&lines, j) {
+            expected_sexp.push_str(lines[j]);
+            expected_sexp.push('\n');
+            j += 1;
+        }
+        assert!(
+            !source.trim().is_empty(),
+            "corpus case `{name}` has an empty source block"
+        );
+        assert!(
+            !expected_sexp.trim().is_empty(),
+            "corpus case `{name}` has an empty expected S-expression block"
+        );
+        cases.push(CorpusCase {
+            name,
+            source,
+            expected_sexp,
+        });
+        i = j;
+    }
+    cases
+}
+
+/// Collapse all whitespace runs to single spaces so a multi-line corpus
+/// S-expression compares equal to `Node::to_sexp()`'s single-line form.
+fn normalize_sexp(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Every case in `test/corpus/derived_sub_arm.txt` parses cleanly AND matches
+/// the expected S-expression the corpus file records.
+///
+/// This is what keeps the corpus from drifting: it is `include_str!`'d, so a
+/// grammar change that alters the derived-sub CST fails HERE, in the CI-run
+/// surface, until the corpus expectations are updated too. `tree-sitter test`
+/// remains uninvoked by CI — this test deliberately reimplements the corpus
+/// reader rather than depending on that CLI.
+///
+/// The comparison is whole-root because that is the only form `tree-sitter
+/// test` itself accepts, so the corpus stays runnable under the CLI. The
+/// brittleness that would otherwise imply is bounded at the SOURCE end instead:
+/// every case is kept minimal (bare-identifier plane/transform, no pose, no
+/// constructor arguments), so the only shapes pinned here are
+/// `structure_definition`, `sub_declaration` and the derived arm's own nodes.
+///
+/// The case count is asserted so silently dropping a case is also a failure.
+#[test]
+fn corpus_cases_match_the_live_parser() {
+    const CORPUS: &str = include_str!("../test/corpus/derived_sub_arm.txt");
+    let cases = parse_corpus(CORPUS);
+    assert_eq!(
+        cases.len(),
+        4,
+        "expected 4 corpus cases in test/corpus/derived_sub_arm.txt \
+         (four-item mirror body, image arm + sibling member, variant-construction \
+         brace fork, `mirror` as an identifier inside the body), got {}: {:?}",
+        cases.len(),
+        cases.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+
+    let mut parser = make_parser();
+    for case in &cases {
+        let label = format!("corpus case `{}`", case.name);
+        assert_parses_clean(&label, &case.source);
+        let tree = parser
+            .parse(case.source.as_bytes(), None)
+            .expect("tree-sitter parse failed for corpus case");
+        let actual = normalize_sexp(&tree.root_node().to_sexp());
+        let expected = normalize_sexp(&case.expected_sexp);
+        assert_eq!(
+            actual, expected,
+            "{label}: the corpus S-expression has drifted from the live parser.\n\
+             expected (from the corpus file):\n{expected}\n\
+             actual (from the grammar):\n{actual}\n\
+             Fix the corpus file — it is documentation OF the grammar, not a \
+             second source of truth."
         );
     }
 }
