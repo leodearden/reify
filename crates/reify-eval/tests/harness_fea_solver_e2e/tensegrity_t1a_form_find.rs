@@ -1196,3 +1196,194 @@ fn cli_membrane_prints_converged() {
          `reify eval` stdout; got:\n{stdout}"
     );
 }
+
+// ── task #6120: dimensionless gate on force_densities / surface_stresses ──────
+//
+// `force_densities`, `seed_ratios` and `surface_stresses` are nullity-invariant
+// RELATIVE ratios, not physical quantities — the dimension-checked-readers PRD
+// Leg B "Deliberately bare" bucket. The reader must therefore ACCEPT a bare
+// `Real` (and a dimensionless `Scalar`) while REJECTING a dimensioned `Scalar`
+// with a located `E_FormFindInfeasible … has the wrong unit` diagnostic, rather
+// than silently stripping the unit and reinterpreting its SI magnitude as the
+// bare ratio.
+//
+// Reachability note: a HOMOGENEOUS dimensioned list (`[1N/1m, 1N/1m, …]`) never
+// reaches the trampoline — `resolve_function_overload`'s strict `param_ty ==
+// arg_ty` gate rejects `List<Scalar[kg·s^-2]>` against the `List<Real>` param at
+// COMPILE time. The `.ri`-reachable form of the defect is a MIXED list, whose
+// element type infers as `List<Real>` (Int→Real widening) while the runtime
+// `Value` keeps its dimension — which is what the e2e test below exercises.
+
+/// A force-density-dimensioned Scalar (N/m — `kg·s^-2`), the unit an author
+/// would reach for if they believed `force_densities` were a physical quantity.
+fn force_density_scalar(v: f64) -> Value {
+    Value::Scalar {
+        si_value: v,
+        dimension: DimensionVector::FORCE_DENSITY,
+    }
+}
+
+/// (#6120-a) A dimensioned `Scalar` in `force_densities` must be REJECTED with a
+/// located wrong-unit diagnostic — not silently stripped to its SI magnitude.
+#[test]
+fn trampoline_dimensioned_force_density_is_failed_wrong_unit() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![
+            Value::Real(1.0),
+            Value::Real(1.0),
+            Value::Real(1.0),
+            force_density_scalar(1.0), // ← dimensioned: must not be accepted
+        ]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    ];
+
+    // Both needles: the wrong-unit vocabulary shared with the sibling tensegrity
+    // trampolines, and the located index of the offending entry.
+    assert_failed_infeasible(call_form_find(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_form_find(&value_inputs), "force_densities[3]");
+}
+
+/// (#6120-b) The same gate on the OPTIONAL 4th `surface_stresses` input: a
+/// Pressure-dimensioned Scalar is rejected, located to its index.
+#[test]
+fn trampoline_dimensioned_surface_stress_is_failed_wrong_unit() {
+    let value_inputs = vec![
+        membrane_tensegrity(),
+        Value::List(vec![]), // no struts/cables ⇒ empty force_densities
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::List(vec![
+            Value::Real(1.0),
+            Value::Real(1.0),
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::PRESSURE,
+            }, // ← dimensioned: must not be accepted
+        ]),
+    ];
+
+    assert_failed_infeasible(call_form_find(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_form_find(&value_inputs), "surface_stresses[3]");
+}
+
+/// (#6120-c) ACCEPTANCE FLOOR — the narrowing must not over-reach: a
+/// `Scalar{DIMENSIONLESS}` is still a valid ratio spelling and must solve
+/// identically to its bare-`Real` twin. Green today; guards the gate's upper
+/// bound so a future tightening to "bare Real only" is caught.
+#[test]
+fn trampoline_dimensionless_scalar_force_density_still_solves() {
+    let dimensionless = Value::Scalar {
+        si_value: 1.0,
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![dimensionless; 4]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    ];
+
+    let fields = match call_form_find(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => d.fields,
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!(
+            "a dimensionless Scalar is a valid ratio spelling and must still \
+             solve; got {other:?}"
+        ),
+    };
+
+    let nodes = match fields.get(&"nodes".to_string()) {
+        Some(Value::List(ns)) => ns,
+        other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
+    };
+    let n0 = match &nodes[0] {
+        Value::Point(c) if c.len() == 3 => [coord(&c[0]), coord(&c[1]), coord(&c[2])],
+        other => panic!("nodes[0] must be a 3-component Point, got {other:?}"),
+    };
+    for (i, (got, exp)) in n0.iter().zip([0.0, 0.0, 0.5].iter()).enumerate() {
+        assert!(
+            (got - exp).abs() < 1e-9,
+            "nodes[0][{i}] = {got}, expected anchor-centroid component {exp}",
+        );
+    }
+    assert_eq!(
+        fields.get(&"converged".to_string()),
+        Some(&Value::Bool(true)),
+        "a dimensionless-Scalar q solve must report converged == true"
+    );
+}
+
+/// (#6120-d) END-TO-END: the `.ri`-reachable form of the defect. A MIXED list
+/// infers as `List<Real>` and passes the overload gate, but the last element
+/// reaches the reader as a still-dimensioned `Value::Scalar`.
+///
+/// MEASURED RED before the gate lands: this source evaluates with EXIT 0, zero
+/// diagnostics, and `force_densities: [1, 1, 1, 1]` — the unit silently stripped
+/// and its SI magnitude reinterpreted as the bare ratio.
+///
+/// Uses an INLINE source (not a `tests/prd-gate/fixtures/*.ri` file) so no
+/// `_RUST_COUPLED_RI_FIXTURES` registration is required — the same shape the
+/// other e2e tests in this file use.
+#[test]
+fn e2e_mixed_list_dimensioned_force_density_is_error() {
+    const SOURCE: &str = r#"
+structure CableNet {
+    let net = Tensegrity(
+        nodes: [
+            point3(0.3m, 0.2m, 0.4m),
+            point3(1m, 0m, 0m),
+            point3(-1m, 0m, 0m),
+            point3(0m, 1m, 1m),
+            point3(0m, -1m, 1m)
+        ],
+        struts: [],
+        cables: [[0, 1], [0, 2], [0, 3], [0, 4]]
+    )
+    let qs = [1.0, 1.0, 1.0, 1.0 * 1N / 1m]
+    let anchors = [1, 2, 3, 4]
+    let form = form_find(net, qs, anchors)
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let errors: Vec<&reify_core::Diagnostic> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let joined = errors
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        joined.contains("E_FormFindInfeasible"),
+        "a dimensioned force-density entry must surface an E_FormFindInfeasible \
+         Error diagnostic rather than being silently stripped; got: {joined:?}"
+    );
+    assert!(
+        joined.contains("wrong unit"),
+        "expected the diagnostic to name the wrong unit; got: {joined:?}"
+    );
+}
