@@ -31,7 +31,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use reify_core::{ContentHash, ValueCellId};
+use reify_core::{ContentHash, FIELD_ENTITY_PREFIX, ValueCellId};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, UnOp, Value};
 
 use crate::EvalContext;
@@ -155,6 +155,14 @@ pub fn eval_dual(
             eval_dual_binop(expr, *op, left, right, ctx, seeds, record)
         }
 
+        CompiledExprKind::FunctionCall { function, args } => {
+            // Dispatch on the BARE name — that is what `eval_expr` does.  The
+            // only `qualified_name` comparison in the evaluator is the
+            // `std::__interp_render` intercept, and that name is not in the
+            // derivative table, so it falls through to the refusal path below.
+            eval_dual_builtin(expr, &function.name, args, ctx, seeds, record)
+        }
+
         // Everything else is a kind this step does not yet differentiate.  The
         // primal still comes from the real evaluator; the tangent is a loud
         // refusal carrying the offending kind's name.
@@ -272,4 +280,165 @@ fn pow_tangent(a: f64, b: f64, ap: f64, bp: f64, exponent_is_constant: bool) -> 
         return b * a.powf(b - 1.0) * ap;
     }
     a.powf(b) * (bp * a.ln() + b * ap / a)
+}
+
+/// A `FunctionCall` node.
+///
+/// The PRIMAL comes from `reify_stdlib::eval_builtin(name, &primal_args)` —
+/// the exact call `eval_expr` makes — so every builtin's dimension handling
+/// (`sqrt` → `dimension.root(2)`, `pow` → a bare `Real`, `asin`/`acos`/`atan`/
+/// `atan2` → `DimensionVector::ANGLE`) is INHERITED rather than restated here.
+/// This function supplies only the local partial derivatives, applied to the
+/// argument tangents by the chain rule.
+fn eval_dual_builtin(
+    expr: &CompiledExpr,
+    name: &str,
+    args: &[CompiledExpr],
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+) -> DualValue {
+    // Names outside the derivative table (geometry, list, matrix, field ops)
+    // are not differentiated.  They can only reach here when they DO depend on
+    // a seed — a seed-independent call already short-circuited to
+    // `Tangent::Zero` at the top of `eval_dual` — so the honest answer is a
+    // loud refusal, not a zero row.
+    if !is_differentiable_builtin(name, args.len()) {
+        return DualValue::opaque(crate::eval_expr(expr, ctx));
+    }
+    // `eval_expr` lets a `Value::Field` cell named `__field__::<name>` shadow a
+    // builtin of the same name.  Rather than replicate that lookup's semantics,
+    // detect the shadow and hand the whole node back to the real evaluator, so
+    // the primal invariant cannot be broken by an exotic value map.
+    if args.len() == 1
+        && matches!(
+            ctx.values.get_or_undef(&ValueCellId::new(FIELD_ENTITY_PREFIX, name)),
+            Value::Field { .. }
+        )
+    {
+        return DualValue::opaque(crate::eval_expr(expr, ctx));
+    }
+
+    let duals: Vec<DualValue> =
+        args.iter().map(|a| eval_dual(a, ctx, seeds, record)).collect();
+    let primal_args: Vec<Value> = duals.iter().map(|d| d.value.clone()).collect();
+
+    // Strict `Undef` propagation, matching `eval_expr`'s short-circuit.
+    if primal_args.iter().any(|v| v.is_undef()) {
+        return DualValue::opaque(Value::Undef);
+    }
+
+    let value = reify_stdlib::eval_builtin(name, &primal_args);
+    if value.is_undef() {
+        return DualValue::opaque(value);
+    }
+    if duals.iter().any(|d| d.tangent.is_none()) {
+        return DualValue::opaque(value);
+    }
+    if duals.iter().all(|d| d.tangent.is_zero()) {
+        return DualValue::constant(value);
+    }
+
+    // Join the three numeric scalar variants through `as_f64` (Invariant V:
+    // a dimensionless `Scalar` is already a `Real` by the time it gets here).
+    let Some(xs) = primal_args.iter().map(|v| v.as_f64()).collect::<Option<Vec<f64>>>() else {
+        return DualValue::opaque(value);
+    };
+    let Some(partials) = builtin_partials(name, &xs) else {
+        return DualValue::opaque(value);
+    };
+    // A non-finite local derivative — `sqrt(0)`, `log(0)`, `asin(±1)`, `abs(0)`
+    // — is a refusal, never a NaN or Inf smuggled into a Jacobian.
+    if partials.iter().any(|p| !p.is_finite()) {
+        return DualValue::opaque(value);
+    }
+
+    let width = seeds.width();
+    let mut row = vec![0.0; width];
+    for (i, d) in duals.iter().enumerate() {
+        if d.tangent.is_zero() {
+            continue;
+        }
+        let Some(t) = d.tangent.materialize(width) else {
+            return DualValue::opaque(value);
+        };
+        for (j, slot) in row.iter_mut().enumerate() {
+            *slot += partials[i] * t[j];
+        }
+    }
+    DualValue::with_row(value, row)
+}
+
+/// True when `name` at this arity has an entry in [`builtin_partials`].
+fn is_differentiable_builtin(name: &str, arity: usize) -> bool {
+    matches!(
+        (name, arity),
+        ("sqrt" | "exp" | "log" | "log10", 1)
+            | ("sin" | "cos" | "tan" | "asin" | "acos" | "atan", 1)
+            | ("sinh" | "cosh" | "tanh" | "abs", 1)
+            | ("atan2" | "pow", 2)
+            | ("lerp", 3)
+            | ("remap", 5)
+    )
+}
+
+/// The local partial derivatives `∂f/∂arg_i` of a smooth builtin at `xs`.
+///
+/// `None` when the name/arity has no entry.  A derivative that does not exist
+/// at this point is returned as `NaN`, which the caller's finiteness guard
+/// turns into `Tangent::None`.
+fn builtin_partials(name: &str, xs: &[f64]) -> Option<Vec<f64>> {
+    Some(match (name, xs.len()) {
+        ("sqrt", 1) => vec![0.5 / xs[0].sqrt()],
+        ("exp", 1) => vec![xs[0].exp()],
+        // `log` IS the natural logarithm — there is no `ln` binding.
+        ("log", 1) => vec![1.0 / xs[0]],
+        ("log10", 1) => vec![1.0 / (xs[0] * std::f64::consts::LN_10)],
+        ("sin", 1) => vec![xs[0].cos()],
+        ("cos", 1) => vec![-xs[0].sin()],
+        ("tan", 1) => {
+            let c = xs[0].cos();
+            vec![1.0 / (c * c)]
+        }
+        ("asin", 1) => vec![1.0 / (1.0 - xs[0] * xs[0]).sqrt()],
+        ("acos", 1) => vec![-1.0 / (1.0 - xs[0] * xs[0]).sqrt()],
+        ("atan", 1) => vec![1.0 / (1.0 + xs[0] * xs[0])],
+        ("sinh", 1) => vec![xs[0].cosh()],
+        ("cosh", 1) => vec![xs[0].sinh()],
+        ("tanh", 1) => {
+            let t = xs[0].tanh();
+            vec![1.0 - t * t]
+        }
+        // `abs` is smooth away from the origin with derivative sign(x).  AT the
+        // origin there is no derivative: `signum()` would confidently return
+        // ±1, so an explicit NaN is emitted for the finiteness guard to catch.
+        ("abs", 1) => vec![if xs[0] == 0.0 { f64::NAN } else { xs[0].signum() }],
+        // NOTE the argument order: atan2(y, x).
+        ("atan2", 2) => {
+            let (y, x) = (xs[0], xs[1]);
+            let d = x * x + y * y;
+            vec![x / d, -y / d]
+        }
+        ("pow", 2) => {
+            let (x, y) = (xs[0], xs[1]);
+            vec![y * x.powf(y - 1.0), x.powf(y) * x.ln()]
+        }
+        // lerp(a, b, t) = a + t(b − a)
+        ("lerp", 3) => {
+            let (a, b, t) = (xs[0], xs[1], xs[2]);
+            vec![1.0 - t, t, b - a]
+        }
+        // remap(x, flo, fhi, tlo, thi) = tlo + (x − flo)·(thi − tlo)/(fhi − flo)
+        // With s = fhi − flo, d = thi − tlo, u = (x − flo)/s and k = d/s:
+        //   ∂/∂x = k, ∂/∂flo = −k + u·k, ∂/∂fhi = −u·k,
+        //   ∂/∂tlo = 1 − u, ∂/∂thi = u
+        ("remap", 5) => {
+            let (x, flo, fhi, tlo, thi) = (xs[0], xs[1], xs[2], xs[3], xs[4]);
+            let s = fhi - flo;
+            let k = (thi - tlo) / s;
+            let u = (x - flo) / s;
+            vec![k, -k + u * k, -u * k, 1.0 - u, u]
+        }
+        _ => return None,
+    })
 }

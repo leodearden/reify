@@ -759,7 +759,7 @@ fn central_difference(expr: &CompiledExpr, values: &ValueMap, target: &ValueCell
     // absolute floor so the step does not collapse to zero near the origin.
     let h = 1e-6_f64 * x.abs().max(1e-3);
 
-    let mut at = |v: f64| -> f64 {
+    let at = |v: f64| -> f64 {
         let mut perturbed = values.clone();
         perturbed.insert(target.clone(), Value::from_real_scalar(v, dim));
         let ctx = EvalContext::simple(&perturbed);
