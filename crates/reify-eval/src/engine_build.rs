@@ -12830,7 +12830,7 @@ pub(crate) fn build_mixed_region_mesh(
         nearest3.sort_by(|&m1, &m2| {
             let p1 = dot3(nodes[n_shell + m1], iface.normal);
             let p2 = dot3(nodes[n_shell + m2], iface.normal);
-            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — all node coords finite here (non-finite → early Err from the guard at :12588-12611) and `iface.normal` unit-checked above (:12633-12641), so `dot3` is finite and `partial_cmp` never returns None
+            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — all node coords finite here (non-finite → early `Err(NonFiniteNodeCoordinate)` from the node-coordinate finiteness guard above) and `iface.normal` unit-checked by the `normal_is_unit` binding above, so `dot3` is finite at any physically-realizable coordinate magnitude and `partial_cmp` never returns None
         });
         let tet_top = n_shell + nearest3[0];
         let tet_mid = n_shell + nearest3[1];
