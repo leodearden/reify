@@ -69,6 +69,13 @@ structure def PrinterPrintEnvelope {
     //
     // Reuses the box-beam gantry setup from examples/modal/printer_gantry_modes.ri:
     //   500 mm span, 60 × 40 mm Aluminium_6061_T6 crossbeam, pin-pin end mounts.
+    // A gantry crossbeam RESTS ON its two end mounts, so the mounts are pinned,
+    // not clamped: two `PinnedSupport`s targeting "x_min" and "x_max". Since
+    // task 6663 `build_dirichlet_bcs` reads the support KIND per face, so two
+    // `FixedSupport`s here would now mean a genuinely CLAMPED-CLAMPED crossbeam
+    // (a ~2.27× higher fundamental) — this file kept the pin-pin physics it has
+    // always documented by migrating the spelling alongside
+    // examples/modal/printer_gantry_modes.ri.
     // The asymmetric 60 × 40 mm cross-section keeps vertical/lateral bending
     // families non-degenerate so modes are strictly distinct.
     //
@@ -88,8 +95,8 @@ structure def PrinterPrintEnvelope {
     let material = Aluminium_6061_T6()
     let mi = FEAMaterialInput(material: material)
 
-    let mount_left  = FixedSupport(target: "x_min")
-    let mount_right = FixedSupport(target: "x_max")
+    let mount_left  = PinnedSupport(target: "x_min")
+    let mount_right = PinnedSupport(target: "x_max")
 
     let modal_opts = ModalOptions(
         n_modes: 7,
