@@ -3197,6 +3197,16 @@ mod tests {
         ("translate", &[4]),
     ];
 
+    /// Slotted names whose lowering emits NO observable arg-count diagnostic, so
+    /// [`lowering_accepted_arities`] cannot derive an accepted-arity set for them
+    /// and a [`LOWERING_ACCEPTED_ARITIES`] row would be vacuous rather than
+    /// merely absent.
+    ///
+    /// EMPTY as landed by step-5 of task 6862 — deliberately, so the completeness
+    /// arm below is RED and names its own exemption set rather than having one
+    /// asserted into place. Step-6 populates it with the measurement.
+    const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[];
+
     /// Names that legitimately accept MORE THAN ONE arity while being served by
     /// an arity-AGNOSTIC arm in [`builtin_arg_slots`].
     ///
@@ -3322,6 +3332,71 @@ mod tests {
                 "MULTI_ARITY_AGNOSTIC_SAFE names {name:?}, but its arm is no longer \
                  arity-agnostic — it now carries an `if arg_count ==` guard, which is the \
                  stronger fix. Delete the entry; the guard already satisfies the rule."
+            );
+        }
+    }
+
+    /// COMPLETENESS: every name the slot table serves is accounted for by the
+    /// FINDING-2 guard — either it carries a measured [`LOWERING_ACCEPTED_ARITIES`]
+    /// row, or it is a recorded [`ARITY_UNOBSERVABLE_SLOT_KEYS`] entry.
+    ///
+    /// Without this arm the ledger has a silent hole: a name newly added to
+    /// [`builtin_arg_slots`] in a future leaf would simply not appear in the
+    /// ledger, and
+    /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] — which
+    /// iterates the LEDGER, not the table — would never look at it. The new name
+    /// would escape the coupling rule entirely, which is exactly the class of
+    /// silent escape task 6862 FINDING 2 exists to close.
+    ///
+    /// The served-name set is derived MECHANICALLY by [`slotted_builtin_names`],
+    /// so this is self-maintaining: nobody has to remember to update a list.
+    ///
+    /// The no-dead-entries companion holds the other direction — an
+    /// [`ARITY_UNOBSERVABLE_SLOT_KEYS`] entry must still yield slots AND still be
+    /// genuinely unobservable, so a name that later gains an arity check cannot
+    /// sit in the wrong list forever.
+    #[test]
+    fn every_slotted_name_is_ledgered_or_recorded_unobservable() {
+        let probed = lowering_accepted_arities();
+
+        let unaccounted: Vec<&str> = slotted_builtin_names()
+            .into_iter()
+            .filter(|name| {
+                !LOWERING_ACCEPTED_ARITIES.iter().any(|(n, _)| n == name)
+                    && !ARITY_UNOBSERVABLE_SLOT_KEYS.contains(name)
+            })
+            .collect();
+        assert!(
+            unaccounted.is_empty(),
+            "these names yield arg slots but are accounted for by neither list: \
+             {unaccounted:?}. A new slotted name must be added to \
+             LOWERING_ACCEPTED_ARITIES with its measured accepted arities — or, if its \
+             lowering emits no arity diagnostic at all, recorded in \
+             ARITY_UNOBSERVABLE_SLOT_KEYS with the measurement that shows it."
+        );
+
+        // No dead entries, direction 1: still in the table.
+        for &name in ARITY_UNOBSERVABLE_SLOT_KEYS {
+            assert!(
+                (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty()),
+                "ARITY_UNOBSERVABLE_SLOT_KEYS names {name:?}, but it yields no slots at any \
+                 arity — the key left the table. Remove the stale entry."
+            );
+        }
+
+        // No dead entries, direction 2: still genuinely UNOBSERVABLE. A name
+        // whose lowering has gained an arity check now has a real accepted-arity
+        // set, so it belongs in the ledger where the pin and the coupling rule
+        // can see it — not in the exemption list.
+        for &name in ARITY_UNOBSERVABLE_SLOT_KEYS {
+            let measured = probed.get(name).expect("slotted name must have been probed");
+            let fully_accepted: BTreeSet<usize> = (0usize..=MAX_PROBED_ARITY).collect();
+            assert_eq!(
+                measured, &fully_accepted,
+                "ARITY_UNOBSERVABLE_SLOT_KEYS names {name:?}, but the probe now sees it \
+                 REJECT some arities ({measured:?} accepted of {fully_accepted:?}) — its \
+                 lowering has gained an observable arity check. Move it to \
+                 LOWERING_ACCEPTED_ARITIES with the measured set."
             );
         }
     }
