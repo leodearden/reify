@@ -168,13 +168,15 @@ assert "docs/yaml-only: zero command leaves (preamble only)" \
 # family below (plan_for_branch is not defined until then).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks (RED until step-2) ---"
+echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks, ONE cheap PTODO leaf (task 6817; RED until step-2) ---"
 plan_for staged docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
     tests/prd-gate/fixtures/new_prd_fixture.ri
 assert "PG-1/docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
-assert "PG-1/docs+fixture: zero command leaves (hook completes in seconds — no cargo nextest --workspace)" \
-    test "$(plan_cmdcount)" -eq 0
+assert "PG-1/docs+fixture: exactly one command leaf — the cheap PTODO gate (task 6817), not a re-escalation" \
+    test "$(plan_cmdcount)" -eq 1
+assert "PG-1/docs+fixture: hook still completes in seconds — no cargo nextest --workspace" \
+    plan_lacks 'cargo (test|nextest run) --workspace'
 
 echo ""
 echo "--- Scenario PG-2: Rust-consumed prd-gate fixture -> stays conservative (control, green before AND after) ---"
@@ -384,6 +386,50 @@ while IFS= read -r _pg_gui_path; do
     assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.test.ts EXPECTED_CLEAN; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
         plan_has 'RUN_GUI=1'
 done <<< "$_PG_GUI_PINS"
+
+# ---------------------------------------------------------------------------
+# Scenario PT-*: cheap PTODO gate on the hook-gated --scope staged path
+# (task 6817).
+#
+# PG-1 (above) pins that a staged, uncoupled tests/prd-gate/fixtures/*.ri
+# keeps RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0 — task 5536's win. But
+# hooks/pre-commit -> hooks/project-checks is the ONLY production caller of
+# `--scope staged`, and until this task that classification produced a
+# ZERO-command plan: `verify.sh all --profile debug --scope staged
+# --include-infra --print-plan` on such a fixture emitted no command leaves
+# at all ("nothing to verify (action=all scope=staged) — no commands in
+# plan", measured on branch tip 9c1bed42a7). That gap is why 108d1d9226's
+# phantom-tracking marker landed on `main` and reddened post-merge
+# verification for every task until 9ebebcec22 reworded it: the PTODO ratchet
+# (tests/infra/test_reify_audit_ptodo.sh) that would have caught it lives only
+# in the MERGE-tier run_all.sh pool (task 5125), and a hook-gated main commit
+# is not a merge.
+#
+# PT-1 is the user-observable signal (RED until step-2): the hook-gated path
+# must also run the cheap PTODO ratchet as its own selective-infra leaf,
+# alongside — not instead of — 5536's no-heavy-checks classification.
+# PT-1-vacuity guards the emitted loop's `[ -f "$_vt" ] || continue` from
+# silently no-op'ing on a selected path that doesn't resolve (mirrors
+# VS-coverage above).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-1: staged uncoupled prd-gate .ri fixture -> cheap PTODO gate leaf emitted (RED until step-2) ---"
+plan_for staged tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PT-1: plan contains tests/infra/test_reify_audit_ptodo.sh selective leaf" \
+    plan_has 'tests/infra/test_reify_audit_ptodo\.sh'
+assert "PT-1: leaf runs through the selective-infra timeout+bash loop shape" \
+    plan_has 'test_reify_audit_ptodo.*timeout.*bash'
+assert "PT-1: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0 unchanged (gate ADDED, not a re-escalation)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "PT-1: still no cargo test/nextest workspace pass (5536's win preserved)" \
+    plan_lacks 'cargo (test|nextest run) --workspace'
+assert "PT-1: still no cargo clippy (5536's win preserved)" \
+    plan_lacks 'cargo clippy'
+
+echo ""
+echo "--- Scenario PT-1-vacuity: the selected ptodo gate path resolves in the repo (mirrors VS-coverage) ---"
+assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted loop's [ -f ] guard would otherwise silently no-op)" \
+    test -f "$REPO_ROOT/tests/infra/test_reify_audit_ptodo.sh"
 
 # ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
