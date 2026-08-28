@@ -225,6 +225,47 @@ fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
     f.set_times(times).expect("set_times must succeed");
 }
 
+/// Seed one cache entry and age it, returning its on-disk `.bin` size.
+///
+/// The age is applied to the `.meta` SIDECAR, not the `.bin`: that sidecar's
+/// mtime is the last-access signal `evict_over_cap` reads via
+/// `read_sidecar_mtime`, which falls back to the `.bin` mtime only when the
+/// sidecar is absent. Backdating the sidecar is therefore what actually moves
+/// an entry's `eviction_score`.
+///
+/// The returned `.bin` size is what lets a caller derive a cap from real
+/// on-disk footprints instead of guessing at one — the eviction loop stops the
+/// moment `remaining <= cap`, so a guessed cap silently changes how many
+/// entries are evicted.
+fn seed_entry(
+    root: &std::path::Path,
+    hash: &str,
+    solve_time_ms: u64,
+    age_secs: u64,
+) -> u64 {
+    use reify_eval::persistent_cache::{entry_bin_path, entry_meta_path, write_entry};
+
+    write_entry(
+        root,
+        ENGINE_VERSION_HASH,
+        hash,
+        &make_elastic_result_fixture(solve_time_ms),
+    )
+    .expect("seeding a cache entry must succeed");
+
+    let meta = entry_meta_path(root, ENGINE_VERSION_HASH, hash);
+    assert!(
+        meta.is_file(),
+        "write_entry must leave a .meta sidecar for {hash}, or the backdate below \
+         would silently age nothing",
+    );
+    backdate_mtime(&meta, age_secs);
+
+    std::fs::metadata(entry_bin_path(root, ENGINE_VERSION_HASH, hash))
+        .expect("a seeded entry must have a .bin on disk")
+        .len()
+}
+
 /// Extract `max_von_mises` as a raw bit pattern.
 fn max_von_mises_bits(result: &Value) -> u64 {
     let Value::StructureInstance(data) = result else {
@@ -844,10 +885,10 @@ fn eviction_order_follows_score_and_expensive_recent_entries_survive() {
     //
     // score = age_secs / max(solve_time_ms, 1)   (persistent_cache.rs:1371-1381)
     //
-    //   cheap_old        1 ms,  1_000_000 s  -> 1e6     evicted 1st
-    //   expensive_old    1_000 ms, 1_000_000 s -> 1e3   evicted 2nd
-    //   cheap_recent     1 ms,  100 s        -> 1e2     survives
-    //   expensive_recent 1_000 ms, 10 s      -> 1e-2    survives (lowest score)
+    //   cheap_old          1 ms, 1_000_000 s -> 1e6     evicted 1st
+    //   expensive_old  1_000 ms, 1_000_000 s -> 1e3     evicted 2nd
+    //   cheap_recent       1 ms,        10 s -> 1e1     survives
+    //   expensive_recent 1_000 ms,       1 s -> 1e-3    survives (lowest score)
     //
     // WHY THE >= 10x SEPARATION IS REQUIRED, and why a future author must not
     // tighten these fixtures: `evict_over_cap` takes its own `SystemTime::now()`
@@ -855,11 +896,21 @@ fn eviction_order_follows_score_and_expensive_recent_entries_survive() {
     // the ages it computes differ from the ones computed here by however long
     // the test takes to reach the call. A 10x margin makes the ORDER immune to
     // that drift; scores closer than that would turn this into a flake.
+    //
+    // The gaps above are 1000x / 100x / 10000x — deliberately well clear of the
+    // 10x floor rather than sitting on it. An earlier draft used RECENT_SECS =
+    // 100, which puts expensive_old and cheap_recent at EXACTLY 10x; the drift
+    // then lands the measured ratio a hair BELOW the floor (observed: 1000.0000
+    // vs 100.0070, i.e. 9.99993x). Do not tune these back toward the boundary.
+    //
+    // Note the drift is additive and identical for all four entries (one `now`
+    // advances), so it is the SMALLEST nominal age that is most distorted by it
+    // — which is why the lowest-scoring entry gets the largest relative gap.
     const CHEAP_MS: u64 = 1;
     const EXPENSIVE_MS: u64 = 1_000;
     const OLD_SECS: u64 = 1_000_000;
-    const RECENT_SECS: u64 = 100;
-    const VERY_RECENT_SECS: u64 = 10;
+    const RECENT_SECS: u64 = 10;
+    const VERY_RECENT_SECS: u64 = 1;
 
     let cheap_old = "aa".to_string() + &"0".repeat(30);
     let expensive_old = "bb".to_string() + &"0".repeat(30);
