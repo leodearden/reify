@@ -981,7 +981,8 @@ pub trait Plain { param value : Real }
 /// genuinely parametric alias like `Container<T> = T`.
 ///
 /// Expected strings are read directly off `impl Display for TypeExpr`
-/// (reify-ast/src/ast.rs:342-355): a bare `Named { name, type_args: [] }`
+/// (`impl fmt::Display for TypeExpr` in `reify-ast/src/ast.rs`, the
+/// `TypeExprKind::Named` arm): a bare `Named { name, type_args: [] }`
 /// renders as `name`; a `Named` with args renders `name<arg1, arg2>`.
 #[test]
 fn alias_with_unresolved_body_renders_its_type_expr() {
@@ -1074,14 +1075,15 @@ fn alias_with_no_body_renders_unresolved_not_parameterized() {
         .type_alias(alias)
         .build();
 
-    // "" as source deliberately mirrors build_stdlib_doc_model's call
-    // (build.rs:676): proves the renderer never depends on source text.
+    // "" as source deliberately mirrors the `build_doc_model(compiled, "")`
+    // call inside `reify_doc_build::build_stdlib_doc_model`: proves the
+    // renderer never depends on source text.
     let model: DocModel = build_doc_model(&compiled, "");
     let module = &model.modules[0];
 
     let item = find_item(module, "Bodyless");
     match &item.kind {
-        ItemKind::TypeAlias { type_repr } => {
+        ItemKind::TypeAlias { type_repr, .. } => {
             assert!(
                 !type_repr.is_empty(),
                 "Bodyless type_repr must be non-empty"
