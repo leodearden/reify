@@ -30,8 +30,20 @@
 //! | sphere/plane      | `tangent(Point, Plane, r)`    | 1    |
 //! | sphere/sphere     | `tangent(Point, Point, r1, r2)` | 1  |
 //!
-//! Safe to police: no `.ri` file in the repo called `tangent(` before this task,
-//! so this puts arity + operand rules on a surface with no existing users.
+//! Safe to police: the one pre-existing `.ri` caller is
+//! `tests/prd-gate/fixtures/solver_unification_tangent_silent_accept.ri`, a
+//! PRD-evidence probe for this very silent no-solve — it calls
+//! `tangent(Axis, Axis)` and `tangent(Plane, Plane)`, both at arity 2, and pins
+//! today's exit-0 `All constraints satisfied.` This gate deliberately turns both
+//! into typed rejections: an arity error (cylinder/cylinder needs two radii) and
+//! an unsupported-combo error. That probe has no automated consumer — no
+//! probe-set entry, no Rust test target reads it, and it is in neither
+//! `_RUST_COUPLED_RI_FIXTURES` nor `_GUI_COUPLED_RI_FIXTURES`
+//! (`scripts/verify.sh`); the GUI grammar corpus walk sweeps the directory but
+//! asserts only over its pinned `EXPECTED_CLEAN` list, which omits this file.
+//! Its PRD (geometry-algebra-solver-unification, signal B1, task #6669) asks for
+//! `E_RELATION_NOT_LOWERABLE` specifically, so satisfying B1's exact-code
+//! assertion remains that task's job, not this one's.
 //!
 //! RED until the `TangentOperandsUnsupported` variant + the tangent arm land —
 //! the file fails to compile against the missing variant, the established

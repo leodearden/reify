@@ -270,7 +270,7 @@ cylinder on end, where the axis pierces the plane and the offset row could never
 read the radius.)
 
 **The `<HasAxis & HasRadius>` surface above is INTENDED, not shipped.** Trait-bound
-call-site conformance is deferred (`crates/reify-core/src/ty.rs:163` —
+call-site conformance is deferred (`crates/reify-core/src/ty.rs`'s
 `Type::TraitObject` "records the declaration only"), and, more decisively, the
 kernel's analytic-surface projection DISCARDS the radius: a cylindrical face
 projects to a bare `Axis` and a spherical one to a bare centre `Point`, so a radius
