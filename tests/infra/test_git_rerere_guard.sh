@@ -1361,7 +1361,27 @@ assert "(g-k) a LIVE armed lane in the same store is still reported" \
 assert "(g-k) ...so the verdict is non-zero for the live lane alone" \
     bash -c "! bash '$GUARD' check '$GK_REPO' >/dev/null 2>&1"
 
-unset GK_REPO GK_A GK_B GK_A_GITDIR
+# The gate FAILS SAFE on a gitdir shape git does not write. Skipping is its only
+# direction that can hide an armed lane, so an unresolvable pointer must report,
+# not silence: a spurious ARMED is advisory, a spurious skip is invisible.
+read -r GKS_REPO GKS_A GKS_B <<< "$(make_wt_repo)"
+GKS_A_GITDIR="$(git -C "$GKS_A" rev-parse --absolute-git-dir)"
+git -C "$GKS_A" config --worktree rerere.enabled true
+
+printf 'some/relative/path/.git\n' > "$GKS_A_GITDIR/gitdir"
+
+assert "(g-k) a RELATIVE gitdir pointer is treated as live, not silently skipped" \
+    bash -c "bash '$GUARD' check '$GKS_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtA'\""
+
+# An empty gitdir file is git's other prunable shape ("gitdir file does not
+# exist"), and unlike the above it is unambiguous — no working tree can be named
+# by it at all — so it stays a silent skip.
+: > "$GKS_A_GITDIR/gitdir"
+
+assert "(g-k) an EMPTY gitdir file is a stale entry -> check exits 0" \
+    bash "$GUARD" check "$GKS_REPO"
+
+unset GK_REPO GK_A GK_B GK_A_GITDIR GKS_REPO GKS_A GKS_B GKS_A_GITDIR
 
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving

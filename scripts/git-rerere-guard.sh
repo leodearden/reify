@@ -406,7 +406,17 @@ _linked_worktree_is_live() {
     IFS= read -r pointer < "$wt_dir/gitdir" || true
     [ -n "$pointer" ] || return 1
 
-    # The file names the worktree's own .git FILE, e.g. /path/to/lane/.git.
+    # The file names the worktree's own .git FILE, e.g. /path/to/lane/.git, and
+    # git always writes it ABSOLUTE (strbuf_realpath).  A relative pointer is a
+    # shape git does not produce, so rather than resolve it against an arbitrary
+    # CWD, fail SAFE and call the entry live: skipping is the only direction of
+    # this gate that can hide an armed lane, and a spurious ARMED report is
+    # merely advisory where a spurious skip is silent.
+    case "$pointer" in
+        /*) ;;
+        *)  return 0 ;;
+    esac
+
     [ -e "$pointer" ] || return 1
 
     return 0
