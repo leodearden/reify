@@ -10610,6 +10610,130 @@ mod tests {
         }
     }
 
+    /// RED (task 6560, step-1) — the `VoxelResolution` request type and the
+    /// defaulted `GeometryKernel::ingest_mesh_at_resolution` seam.
+    ///
+    /// # What this pins
+    ///
+    /// 1. `VoxelResolution` is a `Debug + Clone + Copy + PartialEq` enum with
+    ///    the three request variants (`HonestFloor`, `TargetVoxelSize(f64)`,
+    ///    `MinFeature(f64)`).
+    /// 2. `ingest_mesh_at_resolution`'s DEFAULT body delegates to
+    ///    [`GeometryKernel::ingest_mesh`], ignoring the resolution.
+    ///
+    /// (2) is the compile-time contract that keeps every other kernel, stub
+    /// and mock in the workspace unchanged: a kernel that cannot honour a
+    /// resolution request simply never overrides the method, and the
+    /// delegation makes the request a no-op rather than a hard error. Only
+    /// `OpenVdbKernel` overrides it (task 6560, step-8).
+    #[test]
+    fn ingest_mesh_at_resolution_default_delegates_to_ingest_mesh() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// In-test kernel that overrides ONLY `ingest_mesh`: it counts calls
+        /// and records the vertex count of the mesh it was handed, returning
+        /// a handle whose id encodes the call ordinal. Every other trait
+        /// member uses the not-supported default or a stub error, following
+        /// the in-file `CountingKernel` / `StubKernel` shape.
+        struct RecordingIngestKernel {
+            ingest_calls: AtomicUsize,
+            last_vertex_len: AtomicUsize,
+        }
+
+        impl GeometryKernel for RecordingIngestKernel {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed("stub".into()))
+            }
+            fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+                Err(QueryError::QueryFailed("stub".into()))
+            }
+            fn export(
+                &self,
+                _h: GeometryHandleId,
+                _f: ExportFormat,
+                _w: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                Err(ExportError::FormatError("stub".into()))
+            }
+            fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+                Err(TessError::TessellationFailed("stub".into()))
+            }
+            fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+                let ordinal = self.ingest_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                self.last_vertex_len
+                    .store(mesh.vertices.len(), Ordering::SeqCst);
+                Ok(GeometryHandle {
+                    id: GeometryHandleId(ordinal as u64),
+                    repr: None,
+                })
+            }
+        }
+
+        // (1) The request type itself: Debug + Clone + Copy + PartialEq, three variants.
+        let honest = VoxelResolution::HonestFloor;
+        let target = VoxelResolution::TargetVoxelSize(0.25);
+        let feature = VoxelResolution::MinFeature(1.0);
+
+        let copied = honest; // Copy (no move out of `honest`)
+        assert_eq!(copied, honest, "VoxelResolution must be PartialEq + Copy");
+        assert_eq!(target.clone(), VoxelResolution::TargetVoxelSize(0.25));
+        assert_ne!(target, feature, "distinct variants must not compare equal");
+        assert_ne!(
+            VoxelResolution::MinFeature(1.0),
+            VoxelResolution::MinFeature(2.0),
+            "payload must participate in equality"
+        );
+        assert!(
+            format!("{honest:?}").contains("HonestFloor"),
+            "Debug must name the variant"
+        );
+
+        // (2) The default body delegates to `ingest_mesh`, ignoring the resolution.
+        let mut kernel = RecordingIngestKernel {
+            ingest_calls: AtomicUsize::new(0),
+            last_vertex_len: AtomicUsize::new(0),
+        };
+        let mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+
+        for (i, resolution) in [honest, target, feature].into_iter().enumerate() {
+            let handle = kernel
+                .ingest_mesh_at_resolution(&mesh, resolution)
+                .unwrap_or_else(|e| panic!("default must delegate to ingest_mesh; got {e:?}"));
+            assert_eq!(
+                kernel.ingest_calls.load(Ordering::SeqCst),
+                i + 1,
+                "each ingest_mesh_at_resolution call must reach ingest_mesh exactly once \
+                 (resolution {resolution:?})"
+            );
+            assert_eq!(
+                handle.id,
+                GeometryHandleId((i + 1) as u64),
+                "the handle must be exactly what ingest_mesh returned"
+            );
+            assert_eq!(
+                kernel.last_vertex_len.load(Ordering::SeqCst),
+                9,
+                "the mesh must be forwarded unmodified"
+            );
+        }
+
+        // The seam is object-safe: reachable through `Box<dyn GeometryKernel>`.
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(RecordingIngestKernel {
+            ingest_calls: AtomicUsize::new(0),
+            last_vertex_len: AtomicUsize::new(0),
+        });
+        assert!(
+            boxed
+                .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
+                .is_ok(),
+            "ingest_mesh_at_resolution must remain callable through a trait object"
+        );
+    }
+
     /// Default `densify_grid_to_sampled` returns `Err(QueryError::QueryFailed(_))`
     /// when called through a trait object on a kernel that does not override it.
     ///
