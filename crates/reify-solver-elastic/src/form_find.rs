@@ -516,12 +516,13 @@ fn solve_reduced(
 /// calibration that keeps this in a known, auditable relationship to the
 /// catenoid integration golden's independent (un-normalised) check.
 ///
-/// `d_scale <= 0` (including NaN, via the `!(d_scale > 0.0)` spelling) returns
-/// `f64::INFINITY` rather than dividing by zero: a free block touched by
-/// neither a member nor a triangle has every free row of `D` identically
-/// zero, so `resid` above is vacuously 0 — not because equilibrium was
-/// reached, but because nothing acts on the node at all. Returning `INFINITY`
-/// forces the fixed point to fall through to `solve_reduced`, which reports
+/// `d_scale <= 0` (including NaN, via the `d_scale.is_nan() || d_scale <= 0.0`
+/// spelling) returns `f64::INFINITY` rather than dividing by zero: a free
+/// block touched by neither a member nor a triangle has every free row of
+/// `D` identically zero, so `resid` above is vacuously 0 — not because
+/// equilibrium was reached, but because nothing acts on the node at all.
+/// Returning `INFINITY` forces the fixed point to fall through to
+/// `solve_reduced`, which reports
 /// `SingularReducedStiffness` (no path to any anchor) instead of breaking out
 /// at iteration 0 and echoing the caller's unsolved initial guess back as a
 /// "converged" result (task 6119).
@@ -559,7 +560,7 @@ fn free_equilibrium_residual_relative(
         }
         d_scale = d_scale.max(row);
     }
-    if !(d_scale > 0.0) {
+    if d_scale.is_nan() || d_scale <= 0.0 {
         return f64::INFINITY;
     }
 
@@ -1744,16 +1745,16 @@ mod tests {
         );
     }
 
-    // (g) TASK 6119 — pin BOTH degenerate branches of the `d_scale` guard
-    // BEFORE step-6 rewrites its `!(d_scale > 0.0)` spelling to clear
-    // `clippy::neg_cmp_op_on_partial_ord`. The NaN branch is reachable only
-    // through this negated-comparison spelling: an obvious rewrite like
-    // `if d_scale <= 0.0` silently drops NaN rejection, since every
-    // comparison against NaN (including `<=`) is false — a NaN residual would
-    // then run the full iteration cap and report `converged == false` instead
-    // of surfacing the degeneracy immediately. Calls the private function
-    // directly with hand-built `Mat<f64>` inputs (no `assemble_d` involved),
-    // so both branches are exercised in isolation.
+    // (g) TASK 6119 — pin BOTH degenerate branches of the `d_scale` guard,
+    // which is spelled `d_scale.is_nan() || d_scale <= 0.0` (not the
+    // `!(d_scale > 0.0)` this replaced, which tripped
+    // `clippy::neg_cmp_op_on_partial_ord`). The NaN branch is the load-bearing
+    // one: the "obvious" simplification `if d_scale <= 0.0` silently drops
+    // NaN rejection, since every comparison against NaN (including `<=`) is
+    // false — a NaN residual would then run the full iteration cap and report
+    // `converged == false` instead of surfacing the degeneracy immediately.
+    // Calls the private function directly with hand-built `Mat<f64>` inputs
+    // (no `assemble_d` involved), so both branches are exercised in isolation.
     #[test]
     fn free_equilibrium_residual_relative_returns_infinity_on_non_positive_or_nan_d_scale() {
         let nodes = vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]];
