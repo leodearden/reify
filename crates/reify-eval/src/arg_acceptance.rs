@@ -111,15 +111,22 @@
 //! - reify-stdlib's OWN `decompose_transform` (`crates/reify-stdlib/src/geometry.rs`)
 //!   and its three consumers. Measured on ζ's final tree, they are NOT uniform,
 //!   which is why ζ did not fold them in wholesale: `affine_from_transform`
-//!   DISCARDS the translation dimension into `_dim` outright; `transform_log`
-//!   still carries the `LENGTH || DIMENSIONLESS` admission that R8 has just
-//!   dropped on the reify-eval side; and `transform_inverse` propagates
-//!   whatever dimension arrived through `make_dimensioned_component`. All three
-//!   are one call away from ζ's R12 gate, but none sits on ANY route in the
-//!   research inventory (`docs/notes/units-gating-gap-research-2026-07-28.md`),
-//!   and folding them in would widen a LEAF whose file lock is deliberately
-//!   serialized against its siblings. This one IS a RESIDUAL — see the owner
-//!   list below.
+//!   DISCARDS the translation dimension into `_dim` outright, and
+//!   `transform_inverse` propagates whatever dimension arrived through
+//!   `make_dimensioned_component`. Both are one call away from ζ's R12 gate, but
+//!   neither sits on ANY route in the research inventory
+//!   (`docs/notes/units-gating-gap-research-2026-07-28.md`), and folding them in
+//!   would widen a LEAF whose file lock is deliberately serialized against its
+//!   siblings. These two ARE a RESIDUAL — see the owner list below.
+//!
+//!   The THIRD consumer, `transform_log`, was in that list when ζ was written and
+//!   is NOT any more: **RULING #6126** (task 6126, landed 2026-08-28) dropped its
+//!   `LENGTH || DIMENSIONLESS` admission to `t_dim != TWIST_LINEAR_DIM` and gave
+//!   it a `Severity::Error` arm in `geometry::diagnose`, on the same D11 grounds
+//!   ζ argues from. The two rulings AGREE: LENGTH is the one admitted spatial
+//!   dimension on both the log↔exp seam and the affine constructors, so nothing
+//!   here is a competing narrowing. `transform_exp`'s LINEAR half went with it;
+//!   its ANGULAR half is #6080's and is still open.
 //!
 //! Contract C is NOT yet exhaustive, and this note stays open until the closure
 //! guard of task 5752 replaces it with a pointer. What remains un-gated, and
@@ -138,15 +145,14 @@
 //!   `Range`, `String` — including `resolve_int_value_ref`) plus Contract B.
 //!
 //! - The reify-stdlib `decompose_transform` consumers described above
-//!   (`affine_from_transform`, `transform_log`, `transform_inverse`) — owned by
-//!   task #5752. That task needs to OWN them explicitly rather than assume its
-//!   harness sweeps them up: its probe is SOURCE-TEXT-DRIVEN over
-//!   `reify_compiler::units::GEOMETRY_FUNCTION_NAMES` and asserts on the
-//!   resulting `CompiledGeometryOp`s, so it reaches positions that compile down
-//!   to a geometry op — and these three are pure VALUE-layer stdlib builtins
-//!   that mint an `AffineMap`/`Transform`/twist `Value` and never produce one.
+//!   (`affine_from_transform`, `transform_inverse`; `transform_log` was closed by
+//!   RULING #6126) — owned by task #5752. That task needs to OWN them explicitly
+//!   rather than assume its harness sweeps them up: its probe is
+//!   SOURCE-TEXT-DRIVEN over `reify_compiler::units::GEOMETRY_FUNCTION_NAMES` and
+//!   asserts on the resulting `CompiledGeometryOp`s, so it reaches positions that
+//!   compile down to a geometry op — and these are pure VALUE-layer stdlib
+//!   builtins that mint an `AffineMap`/`Transform` `Value` and never produce one.
 //!
-
 //! Deliberately NOT gated, and not a residual — the DECODED-VALUE counterparts
 //! of the unit-vector row below, each with the justification task 5752's
 //! closure-guard allowlist can lift verbatim (D14). All three are the remaining

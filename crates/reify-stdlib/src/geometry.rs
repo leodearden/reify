@@ -1613,9 +1613,17 @@ fn dimension_label(dim: DimensionVector) -> String {
 /// BOTH sides. It builds its reference string from the OWNER and `assert_eq!`s it
 /// against what this function renders, so a reword of `length_spec` fails there
 /// instead of silently forking the two crates.
+///
+/// HALF of the mirror is no longer hand-copied. Task 5750 (leaf η, landed after ζ was
+/// written) hoisted the migration hint to [`reify_core::units::LENGTH_MIGRATION_HINT`]
+/// — reify-core sits BELOW both crates, so this file can and does read it directly,
+/// and the hint cannot drift at all. What still has to be mirrored is the SENTENCE
+/// SHAPE (`{builtin}: {arg_name} argument expects {expected}, got {got}; {hint}`) plus
+/// `length_spec().type_name`, both of which live behind `pub(crate)` in reify-eval.
+/// That residue is what the guard test above still covers.
 fn length_rejection_message(builtin: &str, arg_name: &str, got: &str) -> String {
     let base = format!("{builtin}: {arg_name} argument expects Length, got {got}");
-    format!("{base}; pass a dimensioned length such as `5mm`")
+    format!("{base}; {}", reify_core::units::LENGTH_MIGRATION_HINT)
 }
 
 /// Mirror of `reify_eval::arg_acceptance::value_short_label`, narrowed to exactly
