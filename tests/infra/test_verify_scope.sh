@@ -432,6 +432,62 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
     test -f "$REPO_ROOT/tests/infra/test_reify_audit_ptodo.sh"
 
 # ---------------------------------------------------------------------------
+# Scenario PT-DRIFT: the bash extension list in verify.sh's
+# select_cheap_ptodo_gate is a DERIVED COPY of reify-audit's swept-extension
+# set (crates/reify-audit/src/ptodo.rs::is_swept_ext). This scenario
+# re-derives the set from that function's SOURCE on every infra run and
+# asserts every member fires the gate — do not hand-edit either side without
+# re-running this file (same derive-from-source idiom as PG-DRIFT /
+# PG-DRIFT-GUI above).
+#
+# `docs/pt_probe.<ext>` is used because docs/* is a no-heavy-checks path arm
+# for EVERY extension (Scenario 1 above), which isolates the extension rule
+# from path classification: any gate leaf seen here can only come from
+# select_cheap_ptodo_gate's own extension test.
+#
+# RED until step-4 for every extension but .ri (step-2 keyed the selector on
+# `.ri` only).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-DRIFT: every is_swept_ext-derived extension fires the cheap PTODO gate under docs/* (RED until step-4, except .ri) ---"
+_PT_EXTS="$(sed -n '/^pub fn is_swept_ext/,/^}/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
+    | grep -o 'ends_with("\.[a-z]*")' | sed 's/.*("\.\([a-z]*\)")/\1/' | sort -u)"
+# Non-empty FIRST: a renamed/reshaped is_swept_ext or a broken sed range must
+# fail loudly here rather than vacuously pass an empty loop.
+assert "PT-DRIFT: derived swept-extension set is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_PT_EXTS"
+while IFS= read -r _pt_ext; do
+    [ -n "$_pt_ext" ] || continue
+    plan_for staged "docs/pt_probe.$_pt_ext"
+    assert "PT-DRIFT: docs/pt_probe.$_pt_ext -> cheap PTODO gate leaf emitted (is_swept_ext-derived extension)" \
+        plan_has 'tests/infra/test_reify_audit_ptodo\.sh'
+done <<< "$_PT_EXTS"
+
+# ---------------------------------------------------------------------------
+# Scenario PT-CASE: pins the bash `${_f,,}` case-fold in select_cheap_ptodo_gate
+# against is_swept_ext's `path.to_lowercase()` — an uppercase extension must
+# still fire the gate.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-CASE: staged uppercase .RI still fires the cheap PTODO gate (case-fold parity with is_swept_ext) ---"
+plan_for staged tests/prd-gate/fixtures/Probe.RI
+assert "PT-CASE: plan contains tests/infra/test_reify_audit_ptodo.sh (case-insensitive match)" \
+    plan_has 'tests/infra/test_reify_audit_ptodo\.sh'
+
+# ---------------------------------------------------------------------------
+# Scenario PT-CTRL-DOCS: fence re-asserting Scenario 1's shape under the new
+# rule — a genuinely non-swept docs landing stays a zero-command plan.
+# Control: green before AND after step-4.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-CTRL-DOCS: non-swept docs/*.md + *.yaml stays a zero-command plan (control, green before AND after) ---"
+plan_for staged docs/note.md config/thing.yaml
+assert "PT-CTRL-DOCS: plan lacks the cheap PTODO gate leaf (neither extension is reify-audit-swept)" \
+    plan_lacks 'tests/infra/test_reify_audit_ptodo\.sh'
+assert "PT-CTRL-DOCS: still zero command leaves (5536's win is preserved for a genuinely non-swept docs landing)" \
+    test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
 # ---------------------------------------------------------------------------
 echo ""
@@ -697,6 +753,21 @@ plan_for_branch docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yam
 assert "PG-1b/branch docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "PG-1b/branch docs+fixture: zero command leaves (empty plan)" \
+    test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
+# Scenario PT-CTRL-BRANCH: per-task --scope branch lanes are untouched by the
+# cheap PTODO gate (task 6817's selector is keyed on SCOPE=staged only — task
+# 5125's merge-tier-only PTODO stands deliberately for branch scope). Lives
+# here, not beside PT-1/PT-DRIFT above, because plan_for_branch is not
+# defined until this section (mirrors why PG-1b lives here too).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-CTRL-BRANCH: staged->branch twin of PT-1 -> NO cheap PTODO gate leaf, still zero command leaves (control) ---"
+plan_for_branch tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PT-CTRL-BRANCH: plan lacks the cheap PTODO gate leaf (task 5125's merge-tier-only PTODO stands for --scope branch; the merge gate remains the authority there)" \
+    plan_lacks 'tests/infra/test_reify_audit_ptodo\.sh'
+assert "PT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task 6817)" \
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
@@ -1576,6 +1647,37 @@ assert "MG-hook: pre-merge-commit calls verify.sh with --scope all" \
     grep -qE 'verify\.sh.*--scope all' "$REPO_ROOT/hooks/pre-merge-commit"
 assert "MG-hook: pre-merge-commit does NOT pass --scope branch or --scope staged" \
     bash -c '! grep -qE "verify\.sh.*--scope (branch|staged)" "$1"' _ "$REPO_ROOT/hooks/pre-merge-commit"
+
+# ---------------------------------------------------------------------------
+# Scenario PT-CTRL-MERGE: DF_VERIFY_ROLE=merge -> the selective ptodo leaf is
+# ABSENT (INV-5 exactly-one, task 5125/6817). Reuses the inline merge-role
+# capture idiom established by MG-B6a/MG-B6b/MG-B5 above (make_branch_fixture
+# + commit on a branch + a bare `DF_VERIFY_ROLE=merge ... --print-plan`
+# capture) rather than a new helper. role=merge forces --scope all before
+# decide_scope even runs (contract C2), so CHANGED_FILES_RAW stays "" and
+# select_cheap_ptodo_gate's own `[ "$SCOPE" = "staged" ]` guard already
+# no-ops; the selective-infra emission block is ALSO unconditionally
+# suppressed under DF_VERIFY_ROLE=merge (verify.sh's add_tool site). Either
+# mechanism alone would suffice; this scenario just pins the observable
+# result — a selective copy here would double-run the ratchet the full
+# run_all.sh pool already runs wholesale at merge.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-CTRL-MERGE: role=merge + --scope staged requested -> scope=all forced, selective ptodo leaf ABSENT (control, INV-5) ---"
+FIX_PT_MERGE=""
+make_branch_fixture FIX_PT_MERGE
+git -C "$FIX_PT_MERGE" checkout -q -b task-branch
+mkdir -p "$FIX_PT_MERGE/tests/prd-gate/fixtures"
+printf 'x\n' > "$FIX_PT_MERGE/tests/prd-gate/fixtures/new_prd_fixture.ri"
+git -C "$FIX_PT_MERGE" add tests/prd-gate/fixtures/new_prd_fixture.ri
+git -C "$FIX_PT_MERGE" commit -q -m "task changes"
+PLAN_PT_MERGE="$(cd "$FIX_PT_MERGE" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_PT_MERGE" checkout -q main
+git -C "$FIX_PT_MERGE" branch -q -D task-branch
+assert "PT-CTRL-MERGE: scope=all in plan header (role=merge forces full scope even though --scope staged was requested)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_PT_MERGE"
+assert "PT-CTRL-MERGE: plan lacks the selective ptodo leaf (INV-5 exactly-one — the full run_all.sh pool already runs test_reify_audit_ptodo.sh wholesale at merge; a selective copy would double-run it)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "tests/infra/test_reify_audit_ptodo\.sh"' _ "$PLAN_PT_MERGE"
 
 # ===========================================================================
 # Background-gate contract guard (task 5210, mirrors T2/C2 for
