@@ -4329,6 +4329,61 @@ pub trait KernelAttributeHook: Send + Sync {
     ) -> Result<KernelAttributeOutcome, QueryError>;
 }
 
+/// A kernel-agnostic **request** for the spatial resolution at which a
+/// [`Mesh`] should be sampled into a voxel grid (task 6560).
+///
+/// # What this is (and is not)
+///
+/// This is a *request*, not a set of OpenVDB parameters: it says what the
+/// caller needs resolved, and leaves the kernel to derive its own native
+/// settings (voxel size, narrow-band width, …) from it. That is why it lives
+/// in `reify-ir` rather than following the bare-scalar precedent of
+/// [`GeometryKernel::realize_mesh_from_voxel`] (geometry.rs ~line 4882),
+/// whose signature takes bare `f64`/`bool` args only because the type it
+/// would otherwise name — `MarchingCubesOptions` — is owned by
+/// `reify-kernel-openvdb`, which depends on `reify-eval` → `reify-ir`;
+/// naming it in the trait would be a reverse dependency (a cycle).
+/// `VoxelResolution` carries no kernel-specific vocabulary, so defining it
+/// here lets `reify-eval` and every kernel crate name it directly with no
+/// cycle and no bare-scalar tuple to keep in sync.
+///
+/// # Why this exists
+///
+/// The only voxelization resolution policy before this type was
+/// `MeshToVoxelOptions::honest_floor` — `voxel_size = longest_extent / 64`,
+/// derived purely from the bounding box. For the shells PRD's own motivating
+/// case (`docs/prds/v0_4/structural-analysis-shells.md`, "Background" — a
+/// 1 mm flexure in a 100 mm part) that yields 1.5625 mm/voxel and the
+/// feature is entirely sub-voxel. `VoxelResolution` is the seam through
+/// which a caller that KNOWS its thinnest feature can ask for a grid that
+/// actually resolves it.
+///
+/// # No `Eq` / `Hash`
+///
+/// Two variants carry `f64`, which is only `PartialEq`. This matches the
+/// house rule already followed by `MeshToVoxelOptions`,
+/// `MarchingCubesOptions` and `TessellateOptions` in the kernel crates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VoxelResolution {
+    /// Today's default: let the kernel derive the voxel size from the mesh's
+    /// bounding box alone (`MeshToVoxelOptions::honest_floor`'s
+    /// `longest_extent / VOXELS_PER_LONGEST_AXIS`). Bit-identical to the
+    /// pre-6560 behaviour, so every existing caller that does not care about
+    /// resolution keeps the grid it always got.
+    HonestFloor,
+    /// An explicit voxel side length, in the mesh's own units (SI metres, per
+    /// [`Mesh::vertices`]). The kernel uses it verbatim after validating that
+    /// it is finite, strictly positive, and within the kernel's dense-grid
+    /// budget.
+    TargetVoxelSize(f64),
+    /// The thinnest feature that MUST be resolved, in the mesh's own units.
+    /// The kernel derives a voxel size fine enough to resolve a feature of
+    /// this size (openvdb: `t / MIN_FEATURE_VOXELS_ACROSS`). Prefer this over
+    /// [`Self::TargetVoxelSize`] when the caller knows a physical dimension
+    /// (a wall thickness, a flexure width) but not a grid spacing.
+    MinFeature(f64),
+}
+
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
 /// implemented in reify-kernel-occt, consumed by reify-eval via reify-geometry.
 pub trait GeometryKernel: Send + Sync {
@@ -4670,6 +4725,46 @@ pub trait GeometryKernel: Send + Sync {
             "{} does not accept Mesh inputs",
             std::any::type_name::<Self>()
         )))
+    }
+
+    /// Ingest a [`Mesh`] at a caller-requested spatial resolution
+    /// (task 6560 — the v0.4-shells `BRep→Voxel` resolution seam).
+    ///
+    /// # Contract
+    ///
+    /// Semantically identical to [`Self::ingest_mesh`] except that the kernel
+    /// is told what resolution the caller needs. A kernel whose native
+    /// representation has no notion of spatial resolution (OCCT's B-reps,
+    /// Manifold's meshes, Fidget's implicit SDFs, mocks, stubs) has nothing
+    /// to honour, so the **default body ignores `resolution` and delegates to
+    /// [`Self::ingest_mesh`]**.
+    ///
+    /// That delegation — rather than the `Err(OperationFailed)` default used
+    /// by [`Self::ingest_mesh`] itself — is deliberate and is the reason this
+    /// method could be added without touching a single other kernel, stub or
+    /// mock in the workspace: a resolution request is *advisory*, so a kernel
+    /// that cannot act on one must degrade to plain ingest, not to failure.
+    /// Contrast [`Self::register_mesh_handle`], which delegates for the same
+    /// structural reason.
+    ///
+    /// `OpenVdbKernel` is the only current override: it maps `resolution`
+    /// through `MeshToVoxelOptions::for_resolution` to a voxel size and
+    /// narrow-band width before calling its `meshToVolume` primitive, and
+    /// rejects a request that is non-finite, non-positive, or would exceed
+    /// its dense-grid budget (`Err(GeometryError::OperationFailed(_))`, with
+    /// the offending value named in the message).
+    ///
+    /// # Object safety
+    ///
+    /// `Self` appears only in the `&mut self` receiver, so the trait stays
+    /// object-safe and `Box<dyn GeometryKernel>` call sites keep compiling.
+    fn ingest_mesh_at_resolution(
+        &mut self,
+        mesh: &Mesh,
+        resolution: VoxelResolution,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let _ = resolution;
+        self.ingest_mesh(mesh)
     }
 
     /// Register a [`Mesh`] directly as an honestly-Mesh-repr handle, WITHOUT
