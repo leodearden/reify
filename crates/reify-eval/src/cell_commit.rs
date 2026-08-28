@@ -409,10 +409,11 @@ pub(crate) fn commit_cell_result(
 /// those Durations to the commit's own (sub-microsecond) cost, while every
 /// non-migrated sibling sub-path in the SAME loop kept the full-resolution
 /// span — so one pass's journal would have mixed two incompatible `Duration`
-/// semantics per cell. No production consumer reads `Duration` today (only
-/// existence-matching, in `concurrent.rs`), which is why nothing failed; a
-/// future profiler reading the journal would simply have got wrong numbers for
-/// exactly the dominant cells.
+/// semantics per cell. No consumer reads a `Duration`'s MAGNITUDE today —
+/// every one existence-matches `EventPayload::Duration(_)` (the same
+/// "presence only" wording `engine_eval.rs`'s own migration notes use) —
+/// which is why nothing failed; a future profiler reading the journal would
+/// simply have got wrong numbers for exactly the dominant cells.
 ///
 /// Passing `started_at` also back-dates the `Started` event's own timestamp to
 /// the same instant, matching `record_subpath_started`'s behaviour, so the pair
