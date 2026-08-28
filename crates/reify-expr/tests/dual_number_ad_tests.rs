@@ -982,3 +982,344 @@ fn nested_sqrt_and_tanh_composite_gradient_agrees_with_central_differences() {
         binop(BinOp::Mul, norm, call1("tanh", binop(BinOp::Sub, pref("x"), pref("y"))));
     assert_ad_matches_cd("sqrt_tanh_composite", &expr, &values, &seed_cells);
 }
+
+// ===========================================================================
+// Step-11: arbitrary user algebra — the chain rule through user functions
+// ===========================================================================
+//
+// PRD §7.7 gives AD one job the other two derivative sources cannot do:
+// "constraint residuals of arbitrary user algebra".  Arbitrary means the
+// residual may call functions the user wrote, which call functions the user
+// wrote, and the chain rule has to survive the trip.
+
+use std::sync::Arc;
+
+use reify_core::ContentHash;
+use reify_core::ValueCellId as VCell;
+use reify_ir::{CompiledFnBody, CompiledFunction, FieldSourceKind};
+use reify_test_support::builders::expr::{conditional_expr, user_fn_call};
+
+fn dl() -> Type {
+    Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }
+}
+
+/// A cell inside function `fname`'s own scope — the shape
+/// `eval_compiled_function_with_values` binds params under.
+fn param_ref(fname: &str, pname: &str) -> CompiledExpr {
+    CompiledExpr::value_ref(VCell::new(fname, pname), dl())
+}
+
+fn user_fn(
+    name: &str,
+    param_names: &[&str],
+    let_bindings: Vec<(String, CompiledExpr)>,
+    result_expr: CompiledExpr,
+) -> CompiledFunction {
+    let params: Vec<(String, Type)> =
+        param_names.iter().map(|p| ((*p).to_string(), dl())).collect();
+    CompiledFunction {
+        name: name.to_string(),
+        doc: None,
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: dl(),
+        body: CompiledFnBody { let_bindings, result_expr },
+        content_hash: ContentHash::of(name.as_bytes()),
+        annotations: vec![],
+        optimized_target: None,
+        type_params: vec![],
+    }
+}
+
+/// `fn hyp(a, b) = sqrt(a*a + b*b)`
+fn hyp_fn() -> CompiledFunction {
+    user_fn(
+        "hyp",
+        &["a", "b"],
+        vec![],
+        call1(
+            "sqrt",
+            binop(
+                BinOp::Add,
+                binop(BinOp::Mul, param_ref("hyp", "a"), param_ref("hyp", "a")),
+                binop(BinOp::Mul, param_ref("hyp", "b"), param_ref("hyp", "b")),
+            ),
+        ),
+    )
+}
+
+/// The step-5 central-difference driver, with user functions in scope.
+fn assert_ad_matches_cd_with_fns(
+    label: &str,
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    seed_cells: &[ValueCellId],
+    functions: &[CompiledFunction],
+) {
+    let ctx = EvalContext::new(values, functions);
+    let seeds = Seeds::new(seed_cells);
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(expr, &ctx, &seeds, &mut record);
+    assert_eq!(dual.value, eval_expr(expr, &ctx), "{label}: the primal invariant");
+
+    let ad = dual
+        .tangent
+        .materialize(seed_cells.len())
+        .unwrap_or_else(|| panic!("{label}: expected a differentiable tangent, got Tangent::None"));
+
+    for (j, target) in seed_cells.iter().enumerate() {
+        // Central differences, driven only through `eval_expr`.
+        let base = values.get(target).cloned().expect("probe cell");
+        let x = base.as_f64().expect("numeric probe cell");
+        let dim = base.dimension();
+        let h = 1e-6_f64 * x.abs().max(1e-3);
+        let at = |v: f64| -> f64 {
+            let mut perturbed = values.clone();
+            perturbed.insert(target.clone(), Value::from_real_scalar(v, dim));
+            eval_expr(expr, &EvalContext::new(&perturbed, functions))
+                .as_f64()
+                .expect("perturbed evaluation must stay numeric")
+        };
+        let cd = (at(x + h) - at(x - h)) / (2.0 * h);
+        assert!(
+            cd.abs() >= 0.1,
+            "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 so the relative arm \
+             binds; got {cd:?}"
+        );
+        let tol = 1e-6 * cd.abs() + 1e-8;
+        assert!(
+            (ad[j] - cd).abs() <= tol,
+            "{label} column {j}: ad={:?} vs central-difference {cd:?} (tol {tol:?})",
+            ad[j]
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (1) + (2) A user-function residual: tangent vs central differences, and the
+//           primal invariant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_user_function_residual_gradient_agrees_with_central_differences() {
+    // r(x, y) = hyp(x, y) − 5, the distance constraint written as user algebra.
+    // ∂r/∂x = x/hyp = 0.6, ∂r/∂y = 0.8 at (3, 4).
+    let (values, seed_cells) = probe(&[("x", 3.0), ("y", 4.0)]);
+    let expr = binop(
+        BinOp::Sub,
+        user_fn_call("hyp", vec![pref("x"), pref("y")], dl()),
+        literal(Value::Real(5.0)),
+    );
+    assert_ad_matches_cd_with_fns("hyp_residual", &expr, &values, &seed_cells, &[hyp_fn()]);
+}
+
+#[test]
+fn a_user_function_call_keeps_the_primal_invariant_exactly() {
+    let (values, seed_cells) = probe(&[("x", 3.0), ("y", 4.0)]);
+    let fns = [hyp_fn()];
+    let ctx = EvalContext::new(&values, &fns);
+    let expr = user_fn_call("hyp", vec![pref("x"), pref("y")], dl());
+    let seeds = Seeds::new(&seed_cells);
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(&expr, &ctx, &seeds, &mut record);
+    assert_eq!(dual.value, Value::Real(5.0));
+    assert_eq!(dual.value, eval_expr(&expr, &ctx));
+}
+
+#[test]
+fn a_user_function_let_binding_carries_its_tangent_into_the_result_expression() {
+    // fn norm2(a, b) { let s = a*a + b*b; sqrt(s) }
+    let f = user_fn(
+        "norm2",
+        &["a", "b"],
+        vec![(
+            "s".to_string(),
+            binop(
+                BinOp::Add,
+                binop(BinOp::Mul, param_ref("norm2", "a"), param_ref("norm2", "a")),
+                binop(BinOp::Mul, param_ref("norm2", "b"), param_ref("norm2", "b")),
+            ),
+        )],
+        call1("sqrt", CompiledExpr::value_ref(VCell::new("norm2", "s"), dl())),
+    );
+    let (values, seed_cells) = probe(&[("x", 3.0), ("y", 4.0)]);
+    let expr = user_fn_call("norm2", vec![pref("x"), pref("y")], dl());
+    assert_ad_matches_cd_with_fns("norm2_let", &expr, &values, &seed_cells, &[f]);
+}
+
+// ---------------------------------------------------------------------------
+// (3) Nested user-function calls
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_user_function_calling_another_user_function_propagates_the_chain_rule() {
+    // fn twice_hyp(a, b) = hyp(a, b) * 2
+    let outer = user_fn(
+        "twice_hyp",
+        &["a", "b"],
+        vec![],
+        binop(
+            BinOp::Mul,
+            user_fn_call("hyp", vec![param_ref("twice_hyp", "a"), param_ref("twice_hyp", "b")], dl()),
+            literal(Value::Real(2.0)),
+        ),
+    );
+    let (values, seed_cells) = probe(&[("x", 3.0), ("y", 4.0)]);
+    let expr = user_fn_call("twice_hyp", vec![pref("x"), pref("y")], dl());
+    assert_ad_matches_cd_with_fns("nested", &expr, &values, &seed_cells, &[hyp_fn(), outer]);
+}
+
+// ---------------------------------------------------------------------------
+// (4) A Lambda applied through `apply_lambda`
+// ---------------------------------------------------------------------------
+
+/// A `Value::Field` whose source is Analytical and whose lambda is `p ↦ p·p·p`.
+/// Registering it at the cell `__field__::cube` makes `cube(x)` in an
+/// expression resolve to `apply_lambda`, which is the reachable scalar-in
+/// scalar-out lambda-application route in a residual.
+fn cube_field_cell() -> (ValueCellId, Value) {
+    let p = VCell::new("$lambda_cube", "p");
+    let body = binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(p.clone(), dl()),
+        binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(p.clone(), dl()),
+            CompiledExpr::value_ref(p.clone(), dl()),
+        ),
+    );
+    let lambda = Value::Lambda {
+        params: vec![("p".to_string(), p)],
+        body: Box::new(body),
+        captures: ValueMap::new(),
+    };
+    let field = Value::Field {
+        domain_type: dl(),
+        codomain_type: dl(),
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda),
+    };
+    (ValueCellId::new(reify_core::FIELD_ENTITY_PREFIX, "cube"), field)
+}
+
+#[test]
+fn a_lambda_applied_inside_a_residual_propagates_its_argument_tangent() {
+    // cube(x) with x = 2 → 8, d/dx = 3x² = 12.
+    let (mut values, seed_cells) = probe(&[("x", 2.0)]);
+    let (cell_id, field) = cube_field_cell();
+    values.insert(cell_id, field);
+    let expr = call1("cube", pref("x"));
+    assert_ad_matches_cd_with_fns("lambda_cube", &expr, &values, &seed_cells, &[]);
+}
+
+// ---------------------------------------------------------------------------
+// (5) A kink inside a user-function body
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_kink_inside_a_user_function_body_is_recorded_at_a_site_that_includes_the_call_site() {
+    // fn clip(a) = if a > 1 then a*a else a
+    let f = user_fn(
+        "clip",
+        &["a"],
+        vec![],
+        conditional_expr(
+            binop(BinOp::Gt, param_ref("clip", "a"), literal(Value::Real(1.0))),
+            binop(BinOp::Mul, param_ref("clip", "a"), param_ref("clip", "a")),
+            param_ref("clip", "a"),
+        ),
+    );
+    let fns = [f];
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    let ctx = EvalContext::new(&values, &fns);
+    let seeds = Seeds::new(&seed_cells);
+
+    let expr = user_fn_call("clip", vec![pref("x")], dl());
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(&expr, &ctx, &seeds, &mut record);
+    assert_eq!(dual.value, Value::Real(9.0));
+    assert_eq!(
+        dual.tangent.materialize(1).expect("differentiable"),
+        vec![6.0],
+        "the ACTIVE branch's derivative: d(a²)/da = 2a = 6"
+    );
+
+    // The comparison and the conditional are both kinks, and both are inside
+    // the callee — so neither may report the bare root site, or two distinct
+    // call sites of `clip` would be indistinguishable to λ.
+    assert_eq!(record.len(), 2, "the `>` comparison and the `if`");
+    for entry in record.entries() {
+        assert!(
+            !entry.site.path().is_empty(),
+            "a kink inside a callee must carry the call-site descent in its path, got {:?}",
+            entry.site.path()
+        );
+    }
+
+    // Two distinct call sites of the same function get distinct sites.
+    let two_calls = binop(
+        BinOp::Add,
+        user_fn_call("clip", vec![pref("x")], dl()),
+        user_fn_call("clip", vec![pref("x")], dl()),
+    );
+    let mut rec2 = BranchRecord::new();
+    let _ = eval_dual(&two_calls, &ctx, &seeds, &mut rec2);
+    assert_eq!(rec2.len(), 4, "two calls × two kinks each");
+    let sites: Vec<&[u16]> = rec2.entries().iter().map(|e| e.site.path()).collect();
+    assert_ne!(sites[0], sites[2], "the same kink at two call sites must not collide");
+    assert_ne!(sites[1], sites[3]);
+}
+
+// ---------------------------------------------------------------------------
+// (6) The recursion guard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unbounded_user_function_recursion_yields_undef_and_no_tangent_rather_than_a_stack_overflow() {
+    // fn recur(a) = recur(a) — `eval_user_function_call` stops at
+    // MAX_RECURSION_DEPTH (256) and returns Undef.  The dual evaluator must
+    // hit the SAME guard, not run deeper and blow the 3 MiB test-thread stack.
+    //
+    // THE STACK SIZE IS PINNED, NOT "GENEROUS" — the same discipline as
+    // `eval_user_fn_recursion_depth_exceeded` in `reify-expr/src/lib.rs`, which
+    // this test is the dual-path sibling of.  Rust's test harness gives a
+    // SPAWNED test thread only 2 MiB, which is already short of what plain
+    // `eval_expr` needs at depth 256, so the wrapper is mandatory rather than
+    // decorative.  `eval_dual`'s own frames sit on top of that budget, so this
+    // figure is larger than the evaluator's 3 MiB — and it stays a working pin
+    // for the dual path's per-frame budget only while it is tight enough that a
+    // frame-size regression actually overflows it.
+    //
+    // The figure below is provisional until the dual path actually recurses
+    // here (it is measured, and this comment replaced with the numbers, in the
+    // step that implements `UserFunctionCall` in `dual_eval`).  If a toolchain
+    // bump reddens this, RE-MEASURE by bisecting rather than raising it for
+    // headroom.
+    let handle = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let f = user_fn("recur", &["a"], vec![], user_fn_call(
+                "recur",
+                vec![param_ref("recur", "a")],
+                dl(),
+            ));
+            let fns = [f];
+            let (values, seed_cells) = probe(&[("x", 2.0)]);
+            let ctx = EvalContext::new(&values, &fns);
+            let seeds = Seeds::new(&seed_cells);
+            let expr = user_fn_call("recur", vec![pref("x")], dl());
+
+            assert_eq!(eval_expr(&expr, &ctx), Value::Undef, "the existing guard returns Undef");
+            let mut record = BranchRecord::new();
+            let dual = eval_dual(&expr, &ctx, &seeds, &mut record);
+            assert_eq!(dual.value, Value::Undef, "the dual path must hit the same guard");
+            assert_eq!(
+                dual.tangent,
+                Tangent::None,
+                "an Undef primal has no derivative — least of all a zero one"
+            );
+        })
+        .expect("spawn");
+    handle.join().expect("the recursion guard must fire before the stack runs out");
+}
