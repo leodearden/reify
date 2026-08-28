@@ -1,10 +1,10 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `a46387d1f58fb469ed226cc0f2bfbaafa7cf63be`
+**Base commit:** `12d6b19353a2a8b0712108b0e8441762d3272b2a`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
-**Sites:** 17
-**Corpus:** 660 tracked `.ri`; 652 surveyed, 8 not surveyed, 69 partial
+**Sites:** 18
+**Corpus:** 662 tracked `.ri`; 654 surveyed, 8 not surveyed, 70 partial
 
 This is a point-in-time **snapshot**, not a freshness-gated golden file. γ will
 legitimately invalidate it — that is the point. Its job is to enumerate and size,
@@ -21,7 +21,7 @@ diagnostic's own label span; `expected`/`found` come from the label message.
 Nothing below was typed in by hand, and a column that could not be recovered
 renders as `—` rather than as a guess.
 
-Two things to know before reading a row:
+Three things to know before reading a row:
 
 - **`line` is the CTOR CALL-SITE line, not the offending argument's line.** α
 anchors the label at the `Foo(...)` call's own span (PRD §10 Q1;
@@ -30,11 +30,18 @@ its opening `Foo(`. The offending argument is named in the `field` column and
 sits within that call — e.g.
 `examples/trajectory/printer_print_envelope.ri:169` is the `TOTSShaper(` line,
 while `velocity_limit: 300.0` is three lines further down.
-- **`def` is the identifier at that anchor,** which is a `structure def` name for
-the ctor path. A few rows carry codes that reach this survey from a NON-ctor
-path (selector composition, overload resolution) and are Error- rather than
-Warning-severity; for those the anchor identifier can be a *function* name.
-The `severity` and `message` columns disambiguate.
+- **`def` is whatever identifier sits at that anchor, and `def source` says where
+it came from.** The recovery reads an identifier followed by `(` — which cannot
+by itself tell a `structure def` ctor from a plain function call. A few rows
+carry codes that reach this survey from a NON-ctor path (selector composition,
+overload resolution), where that identifier is a *function* name. Those are not
+left in the actionable group: a recovered name is cross-checked against every
+`structure def` declared in the corpus and the stdlib, and a name that does not
+resolve is filed under *name recovered, but it is not a known structure def*.
+- **A `—` in `def` is explained, not asserted.** The `def source` column carries
+the machine-derived reason recovery failed for that specific row (span starts at
+a non-identifier, identifier not followed by `(`, span out of range, …), so no
+prose here has to guess a cause on a reader's behalf.
 
 The **`hint` column is ADVISORY**, derived purely from the (expected, found)
 type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class
@@ -60,48 +67,66 @@ Per PRD §4 D9, these defs are declared in the FEA stdlib modules: γ may make
 (`docs/prds/v0_6/fea-load-support-selector-migration.md`). **DO NOT FIX the
 declared field types here.**
 
-| site | def | field | expected | found | code | severity | hint (advisory) | message |
-|---|---|---|---|---|---|---|---|---|
-| `tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri:28` | PointLoad | force | Real | Scalar[m·kg·s^-2] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'force' has type 'Scalar[m·kg·s^-2]' but param 'force' requires type 'Real' |
-| `tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri:31` | TractionLoad | traction | Real | Scalar[kg·m^-1·s^-2] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'traction' has type 'Scalar[kg·m^-1·s^-2]' but param 'traction' requires type 'Real' |
-| `tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri:34` | PointLoad | force | Real | Scalar[m·kg·s^-2] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'force' has type 'Scalar[m·kg·s^-2]' but param 'force' requires type 'Real' |
-| `tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31` | Steel_AISI_1045 | yield_stress | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'yield_stress' has type 'Scalar[m]' but param 'yield_stress' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
+| site | def | def source | field | expected | found | code | severity | hint (advisory) | message |
+|---|---|---|---|---|---|---|---|---|---|
+| `tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri:28` | PointLoad | ctor call-site anchor | force | Real | Scalar[m·kg·s^-2] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'force' has type 'Scalar[m·kg·s^-2]' but param 'force' requires type 'Real' |
+| `tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri:31` | TractionLoad | ctor call-site anchor | traction | Real | Scalar[kg·m^-1·s^-2] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'traction' has type 'Scalar[kg·m^-1·s^-2]' but param 'traction' requires type 'Real' |
+| `tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri:34` | PointLoad | ctor call-site anchor | force | Real | Scalar[m·kg·s^-2] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'force' has type 'Scalar[m·kg·s^-2]' but param 'force' requires type 'Real' |
+| `tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31` | Steel_AISI_1045 | ctor call-site anchor | yield_stress | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'yield_stress' has type 'Scalar[m]' but param 'yield_stress' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
 
-### non-FEA — γ per-case judgment — 11 site(s)
+### non-FEA structure def — γ per-case judgment — 9 site(s)
 
-D9's per-case judgment applies: fix the call site or the declared field type,
-whichever is the actual bug — γ's ruling, recorded in γ's diff.
+The recovered name IS a `structure def` declared in the corpus or the stdlib,
+and it is not FEA-owned. D9's per-case judgment applies: fix the call site or
+the declared field type, whichever is the actual bug — γ's ruling, recorded in
+γ's diff. **This is the group to size γ against.**
 
-| site | def | field | expected | found | code | severity | hint (advisory) | message |
-|---|---|---|---|---|---|---|---|---|
-| `crates/reify-eval/tests/fixtures/selectors/bt1_wrong_kind_union.ri:15` | union | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | selector composition kind mismatch: cannot compose FaceSelector and EdgeSelector |
-| `crates/reify-eval/tests/fixtures/selectors/bt6_kind_typed_param.ri:24` | needs_face | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | no matching overload for needs_face(EdgeSelector), candidates: needs_face(FaceSelector) -> Int |
-| `examples/trajectory/printer_print_envelope.ri:169` | TOTSShaper | acceleration_limit | Scalar[m·s^-2] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'acceleration_limit' has type 'Real' but param 'acceleration_limit' requires type 'Scalar[m·s^-2]'; pass a dimensioned Acceleration literal such as `1m/s^2` |
-| `examples/trajectory/printer_print_envelope.ri:169` | TOTSShaper | velocity_limit | Scalar[m·s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'velocity_limit' has type 'Real' but param 'velocity_limit' requires type 'Scalar[m·s^-1]'; pass a dimensioned Velocity literal such as `1m/s` |
-| `tests/prd-gate/fixtures/dcr_material_dimension_silent.ri:24` | Material | youngs_modulus | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'youngs_modulus' has type 'Scalar[m]' but param 'youngs_modulus' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
-| `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:28` | MassProperties | mass | Scalar[kg] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'mass' has type 'Scalar[m]' but param 'mass' requires type 'Scalar[kg]'; pass a dimensioned Mass literal such as `1kg` |
-| `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:29` | ZVShaper | target_frequency | Scalar[s^-1] | Scalar[rad·s^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'target_frequency' has type 'Scalar[rad·s^-1]' but param 'target_frequency' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
-| `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:31` | AsPrintedOptions | line_width | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'line_width' has type 'Real' but param 'line_width' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
-| `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:32` | FDMCouponOverride | ex | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'ex' has type 'Scalar[m]' but param 'ex' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
-| `tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri:37` | ZVShaper | target_frequency | Scalar[s^-1] | Scalar[rad·s^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'target_frequency' has type 'Scalar[rad·s^-1]' but param 'target_frequency' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
-| `tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri:59` | StepForce | at | Selector | String | `ArgTypeMismatch` | Warning | selector field given a string — typed ctor such as face(b, "x_max") or vertex(b, "tip") is the usual replacement | argument 'at' has type 'String' but param 'at' requires selector type 'Selector' |
+| site | def | def source | field | expected | found | code | severity | hint (advisory) | message |
+|---|---|---|---|---|---|---|---|---|---|
+| `examples/trajectory/printer_print_envelope.ri:169` | TOTSShaper | ctor call-site anchor | acceleration_limit | Scalar[m·s^-2] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'acceleration_limit' has type 'Real' but param 'acceleration_limit' requires type 'Scalar[m·s^-2]'; pass a dimensioned Acceleration literal such as `1m/s^2` |
+| `examples/trajectory/printer_print_envelope.ri:169` | TOTSShaper | ctor call-site anchor | velocity_limit | Scalar[m·s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'velocity_limit' has type 'Real' but param 'velocity_limit' requires type 'Scalar[m·s^-1]'; pass a dimensioned Velocity literal such as `1m/s` |
+| `tests/prd-gate/fixtures/dcr_material_dimension_silent.ri:24` | Material | ctor call-site anchor | youngs_modulus | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'youngs_modulus' has type 'Scalar[m]' but param 'youngs_modulus' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
+| `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:28` | MassProperties | ctor call-site anchor | mass | Scalar[kg] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'mass' has type 'Scalar[m]' but param 'mass' requires type 'Scalar[kg]'; pass a dimensioned Mass literal such as `1kg` |
+| `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:29` | ZVShaper | ctor call-site anchor | target_frequency | Scalar[s^-1] | Scalar[rad·s^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'target_frequency' has type 'Scalar[rad·s^-1]' but param 'target_frequency' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
+| `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:31` | AsPrintedOptions | ctor call-site anchor | line_width | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'line_width' has type 'Real' but param 'line_width' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri:32` | FDMCouponOverride | ctor call-site anchor | ex | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'ex' has type 'Scalar[m]' but param 'ex' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
+| `tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri:37` | ZVShaper | ctor call-site anchor | target_frequency | Scalar[s^-1] | Scalar[rad·s^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'target_frequency' has type 'Scalar[rad·s^-1]' but param 'target_frequency' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
+| `tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri:59` | StepForce | ctor call-site anchor | at | Selector | String | `ArgTypeMismatch` | Warning | selector field given a string — typed ctor such as face(b, "x_max") or vertex(b, "tip") is the usual replacement | argument 'at' has type 'String' but param 'at' requires selector type 'Selector' |
 
-### unattributed def — needs manual triage — 2 site(s)
+### name recovered, but it is not a known structure def — needs manual triage — 2 site(s)
 
-The structure def could not be attributed mechanically — these sites come
-through the sub `=` per-arg anchor, which carries no ctor name, and the
-diagnostic prose names none either. Deliberately its own group: folding an
+An identifier was recovered at the diagnostic's anchor, but it is not a
+`structure def` declared anywhere in the corpus or the stdlib. Recovery reads
+an identifier followed by `(`, which cannot distinguish a ctor from a plain
+function call, so these are typically FUNCTION names reaching the survey from
+a non-ctor path (selector composition, overload resolution) — the `severity`
+and `message` columns show which. Held out of the actionable group rather than
+sized into it. **Triage manually before touching.**
+
+| site | def | def source | field | expected | found | code | severity | hint (advisory) | message |
+|---|---|---|---|---|---|---|---|---|---|
+| `crates/reify-eval/tests/fixtures/selectors/bt1_wrong_kind_union.ri:15` | union | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | selector composition kind mismatch: cannot compose FaceSelector and EdgeSelector |
+| `crates/reify-eval/tests/fixtures/selectors/bt6_kind_typed_param.ri:24` | needs_face | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | no matching overload for needs_face(EdgeSelector), candidates: needs_face(FaceSelector) -> Int |
+
+### unattributed def — needs manual triage — 3 site(s)
+
+No def name could be attributed. The `def source` column gives the
+machine-derived reason PER ROW rather than asserting one cause for the group:
+known shapes that land here include the sub `=` per-arg anchor and param
+default-initializer checks, both of which anchor the label somewhere other
+than a `Def(` call site. Deliberately its own group: folding an
 unattributable site into the touchable pile is the one classification error
 with a real cost. **Triage manually before touching.**
 
-| site | def | field | expected | found | code | severity | hint (advisory) | message |
-|---|---|---|---|---|---|---|---|---|
-| `tests/prd-gate/fixtures/curvature_rad_literal.ri:12` | — | kc | Scalar[m^-1] | Scalar[rad·m^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'kc' has type 'Scalar[rad·m^-1]' but param 'kc' requires type 'Scalar[m^-1]'; pass a dimensioned AbsorptionCoeff literal |
-| `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4` | — | rated_torque | Scalar[m^2·kg·s^-2·rad^-1] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'rated_torque' has type 'Int' but param 'rated_torque' requires type 'Scalar[m^2·kg·s^-2·rad^-1]'; pass a dimensioned Torque literal such as `1m^2*kg/s^2/rad` |
+| site | def | def source | field | expected | found | code | severity | hint (advisory) | message |
+|---|---|---|---|---|---|---|---|---|---|
+| `tests/prd-gate/fixtures/curvature_rad_literal.ri:12` | — | unrecovered: identifier not followed by `(` | kc | Scalar[m^-1] | Scalar[rad·m^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | argument 'kc' has type 'Scalar[rad·m^-1]' but param 'kc' requires type 'Scalar[m^-1]'; pass a dimensioned AbsorptionCoeff literal |
+| `tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri:21` | — | unrecovered: identifier not followed by `(` | material | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | type 'Field<<error>, AnisotropicMaterial>' does not conform to trait 'ConstitutiveLaw' required by param 'material' |
+| `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4` | — | unrecovered: identifier not followed by `(` | rated_torque | Scalar[m^2·kg·s^-2·rad^-1] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'rated_torque' has type 'Int' but param 'rated_torque' requires type 'Scalar[m^2·kg·s^-2·rad^-1]'; pass a dimensioned Torque literal such as `1m^2*kg/s^2/rad` |
 
 ## Coverage and limitations
 
-Of 660 tracked `.ri` members, **652 were surveyed** and **8 were not**. A further **69** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
+Of 662 tracked `.ri` members, **654 were surveyed** and **8 were not**. A further **70** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
 
 ### Not surveyed (contributed no sites)
 
@@ -171,6 +196,7 @@ Of 660 tracked `.ri` members, **652 were surveyed** and **8 were not**. A furthe
 | `tests/prd-gate/fixtures/purpose_nested_structure.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/quantifier_expr_member_access_rejected.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/quantifier_expr_range_domain_rejected.ri` | `compile-error` |
+| `tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/scalar_codomain_mismatch.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/self_collection_count_redirect_rejected.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/shear_angles_component_deg_compare_pre.ri` | `compile-error` |
