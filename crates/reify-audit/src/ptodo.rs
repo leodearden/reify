@@ -1090,6 +1090,11 @@ enum LineClass {
 ///    `//` rationale carries deferral prose → canonical cite → `Cited(ids)`;
 ///    else `Structural(Untracked)`.
 /// 6. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+/// 7. lane δ-B (`.rs`): an ordinary comment line (trimmed, starts `//` — so
+///    `//`, `///` and `//!` alike) that carries BOTH a canonical `#NNNN` cite
+///    and deferral prose, and is not a `// G-allow:` marker →
+///    `Cited(on-line cites)`. Cite-ANCHORED: it emits no structural kind, so an
+///    uncited deferral comment produces no entry.
 fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
@@ -1201,6 +1206,62 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
         } else if phantom_phrase(line) && !has_canon {
             // (6) phantom tracking — claim of tracking with no canonical cite.
             out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
+        } else if is_rust
+            && line.trim_start().starts_with("//")
+            && has_canon
+            && has_deferral_prose(line)
+            && g_allow_marker_body(line).is_none()
+        {
+            // (7) lane δ-B (.rs only): an ordinary comment — no TODO-family
+            // marker, no attribute — that both DEFERS work and NAMES the task
+            // it is deferred to. The live deliverable is
+            // `crates/reify-core/src/diagnostics.rs`'s `HexWedgeMeshOutcome`
+            // rustdoc, "blocked on VolumeMesh realization (task #2947)", whose
+            // cite is `cancelled`: a promise pinned to a task that will never
+            // arrive, invisible to every other arm.
+            //
+            // Four load-bearing choices:
+            //
+            // (i) APPENDED LAST, after the phantom arm (6). This minimises
+            // perturbation of the existing precedence chain — every earlier arm
+            // keeps every line it owned before — and the `else if` chain is what
+            // guarantees at-most-one entry per line, which the `fingerprint` /
+            // §6.6 baseline machinery assumes.
+            //
+            // (ii) CITE-ANCHORED, hence NO structural kind. δ-A has an attribute
+            // to anchor on and can therefore afford to report the uncited case
+            // as `Untracked`; δ-B has nothing but the comment itself, so the
+            // cite IS the anchor. An uncited deferral comment is not a δ-B
+            // candidate at all — which is exactly what stops this lane firing on
+            // every prose comment containing "pending". Consequently the lane
+            // emits only `Cited` and reaches ONLY the unchanged β liveness lane
+            // (`orphaned` / `unknown-id` / `parked-on-anchor`); §8.3's taxonomy,
+            // `VALID_KINDS` and the §8.4 severity map are untouched by it.
+            //
+            // (iii) Both predicates match the WHOLE line, not a stripped comment
+            // body. Safe here — unlike δ-A, where prose is deliberately matched
+            // against the extracted rationale so the `dead_code` token inside
+            // the attribute cannot be misread as prose — because on a δ-B line
+            // the entire line IS comment text; there is no attribute text to
+            // confuse. Stripping the `//` would change nothing but cost a scan.
+            //
+            // (iv) The `g_allow_marker_body` guard DELEGATES `// G-allow:` lines
+            // to their owner lane, which runs an independent
+            // `scan_g_allow_markers` → `resolve_g_allow_owner_liveness` pass
+            // with its own `g-allow-orphaned` kind. Without the guard, such a
+            // line would emit TWO findings under two different kinds once its
+            // owner cite went terminal. Live today at
+            // `crates/reify-ir/src/value.rs` (two sites, both citing #5235) —
+            // benign while #5235 is `pending`, latent otherwise, and cheapest to
+            // close now.
+            //
+            // The lane's false-positive control is entirely inherited, not new:
+            // `has_deferral_prose`'s three guards kill the identifier class
+            // (`mark_pending_with_cause`), and §8.2's `prd_relative_cite` — via
+            // `has_canonical_cite` — kills the PRD-relative class
+            // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
+            // 48% false-positive rate; those two guards are what changed.
+            out.push((line_no, LineClass::Cited(extract_cites(line)), line.trim().to_string()));
         }
 
         prev = Some(line);
