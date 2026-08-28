@@ -469,8 +469,123 @@ pub struct SubDecl {
     /// would (`MemberDecl::Relate`); both homes enforce `Type::Relation`
     /// identically (`E_RELATE_EXPECTS_RELATION`).
     pub relate_relations: Vec<Expr>,
+    /// The derivation clause of a DERIVED sub — `sub b = mirror of a across
+    /// <plane> { … }` / `sub b = image of a under <transform> { … }`
+    /// (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+    ///
+    /// `Some(_)` only for the derived arm; `None` for the bare instantiation,
+    /// collection and specialization arms.
+    ///
+    /// # Discriminator invariant
+    ///
+    /// When `derivation.is_some()`, every specialization-scope field is empty:
+    /// `structure_name.is_empty()`, `body.is_none()`,
+    /// `spec_param_overrides.is_empty()`, `keyed_members.is_empty()`,
+    /// `args.is_empty()`, `type_args.is_empty()`, `is_collection == false`.
+    ///
+    /// This is enforced at the single producer (`ts_parser::lower_sub`) rather
+    /// than encoded in the type, and it is load-bearing rather than tidy:
+    /// existing compiler consumers read `structure_name` / `args` /
+    /// `is_collection` as SPECIALIZATION-SCOPE signals, so a derived sub that
+    /// left any of them populated would be silently mistaken for one of their
+    /// own. Any new producer must uphold it; it is pinned by
+    /// `derived_sub_leaves_every_specialization_scope_field_empty` in
+    /// reify-syntax's `harness_syntax::derived_sub_arm_parser_tests`.
+    ///
+    /// Note that `pose_expr` is deliberately NOT part of that invariant: an
+    /// explicit `at` on a derived sub parses and lowers here, and is rejected
+    /// one layer down as `E_DERIVED_SUB_EXPLICIT_AT` (T8) — a compile-scope
+    /// diagnostic, per the D3-adversary ownership ruling.
+    ///
+    /// Parsed and stored here (A-alpha); first consumed by A-beta (#6616),
+    /// which owns every compile-scope rejection for the derived arm.
+    pub derivation: Option<SubDerivation>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// The derivation clause of a derived sub: which prototype, under which
+/// transform, and what the derived copy overrides or drops.
+///
+/// `docs/prds/v0_6/assembly-derivation-toolbox.md` leaf A-alpha (task #6615).
+#[derive(Debug, Clone)]
+pub struct SubDerivation {
+    /// Which derivation constructor this is, carrying its transform operand.
+    pub kind: SubDerivationKind,
+    /// The prototype sub this one is derived FROM — the `a` in `mirror of a`.
+    ///
+    /// A `SpannedIdent` rather than a bare `String` because A-beta's unknown /
+    /// non-sibling / cyclic-prototype diagnostics must underline the prototype
+    /// token ALONE; a derivation-wide span would degrade all three messages.
+    ///
+    /// The PRD names a bare sibling-sub identifier, so the grammar admits no
+    /// dotted path here and `mirror of a.child` is a parse error.
+    pub prototype: SpannedIdent,
+    /// Param overrides from the derived body: `z = 55mm`, `w = auto(free)`.
+    ///
+    /// Mirrors `SubDecl::spec_param_overrides` in shape and in lowering path
+    /// (both route through `lower_binding_value`), so an `auto` override in a
+    /// derived body resolves identically to one in a specialization body.
+    /// Ordinary overrides only — a `<param> = default` RESET goes to
+    /// `param_resets` instead.
+    pub param_overrides: Vec<(String, Expr)>,
+    /// Params RESET to the prototype's declared default by `<param> = default`.
+    ///
+    /// Kept separate from `param_overrides` rather than encoded as a sentinel
+    /// value: a reset carries no expression at all, so there is nothing
+    /// meaningful to put in an `Expr`, and a consumer must be able to tell
+    /// "inherit the default" from "override with this value" without
+    /// pattern-matching for a magic node. `SpannedIdent` so a diagnostic about
+    /// resetting an unknown param can underline the param name.
+    pub param_resets: Vec<SpannedIdent>,
+    /// `keep` / `exclude` dispositions, in SOURCE ORDER.
+    ///
+    /// Order is load-bearing: A-beta resolves each path against the
+    /// prototype's feature tree and reports failures positionally, so a
+    /// reordered list would point its diagnostics at the wrong item.
+    pub dispositions: Vec<SubDisposition>,
+    /// `let` and `constraint` members declared inside the derived body.
+    pub members: Vec<MemberDecl>,
+    pub span: SourceSpan,
+}
+
+/// Which derivation constructor a [`SubDerivation`] uses.
+///
+/// An ELEMENT type with several constructors (PRD §6 D1), NOT a flattened
+/// plane-or-transform pair: Layer-3 group elements become FURTHER constructors
+/// here, and consumers are expected to switch on the constructor. Flattening it
+/// to a bare `plane: Option<Expr>` / `transform: Option<Expr>` would make every
+/// such addition a breaking change to every consumer.
+#[derive(Debug, Clone)]
+pub enum SubDerivationKind {
+    /// `mirror of <prototype> across <plane>`
+    Mirror { plane: Expr },
+    /// `image of <prototype> under <transform>`
+    Image { transform: Expr },
+}
+
+/// One `keep` / `exclude` item in a derived body.
+#[derive(Debug, Clone)]
+pub struct SubDisposition {
+    pub kind: SubDispositionKind,
+    /// The dotted feature path, split into segments: `web.hub` → `["web",
+    /// "hub"]`. Resolution against the prototype's feature tree is A-beta's.
+    pub path: Vec<String>,
+    /// The plane from the RESERVED `keep <path> using <plane>` tail (PRD
+    /// §3.3/§11).
+    ///
+    /// Stored only — it has no v1 meaning and no lowering consequence. Parsing
+    /// and storing it now keeps the surface stable for v2 without committing to
+    /// a semantics; `None` on every `exclude`, and on a `keep` with no tail.
+    pub using_plane: Option<Expr>,
+    pub span: SourceSpan,
+}
+
+/// `keep` or `exclude`.
+#[derive(Debug, Clone)]
+pub enum SubDispositionKind {
+    Keep,
+    Exclude,
 }
 
 /// `minimize volume`

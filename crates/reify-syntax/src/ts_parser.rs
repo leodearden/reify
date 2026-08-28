@@ -3359,6 +3359,7 @@ impl<'a> Lowering<'a> {
             index_binder,
             index_domain,
             relate_relations,
+            derivation: None,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -4305,6 +4306,9 @@ impl<'a> Lowering<'a> {
             index_binder: None,
             index_domain: None,
             relate_relations: Vec::new(),
+            // The match-arm sub grammar is `sub name : structure_name` only —
+            // no derivation clause is reachable here.
+            derivation: None,
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };
