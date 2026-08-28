@@ -4077,12 +4077,40 @@ describe('reify.grammar snippets — derived sub arm', () => {
     expect(countNodesNamed(MIRROR_SRC, 'ExcludeDisposition')).toBe(1);
   });
 
-  it('parses the image arm and `<param> = default`', () => {
+  /**
+   * MEASURED DIVERGENCE FROM grammar.js, pinned so it stays a decision.
+   *
+   * Upstream gives `<param> = default` its own `default_reset` node, so
+   * lowering can tell a RESET from an override without re-reading source text.
+   * lezer cannot reproduce that node, and this asserts the shape it produces
+   * instead: `default` reduces to a plain `Identifier`.
+   *
+   * WHY, measured not assumed: `DefaultReset { ekw<"default"> }` in this slot
+   * generates with zero conflicts and then never matches, and a
+   * `!derivedDefault` precedence marker changes nothing — the choice is made in
+   * the TOKENIZER. `@extend` yields its keyword token only where the parser
+   * state does not otherwise admit `Identifier`, and this slot admits one
+   * (`bindingValue` → `expression` → `Identifier`). Upstream separates them
+   * with tree-sitter lexer rule #2, which lezer does not share — the same
+   * divergence the `List` collection arm records. `kw<"default">`
+   * (`@specialize`) would force it and is the wrong instrument: it is
+   * context-FREE, and `default` occurs 333 times in the committed corpus.
+   *
+   * Nothing is lost: the reset/override discrimination is consumed only by the
+   * Rust lowering, which reads the tree-sitter CST (pinned by
+   * `image_arm_lowers_with_param_resets_separated_from_overrides` in
+   * reify-syntax), never by GUI code.
+   */
+  it('parses the image arm, with `default` reading as an Identifier', () => {
     expect(countErrorNodes(IMAGE_SRC)).toBe(0);
     const names = nodeNames(IMAGE_SRC);
     expect(names).toContain('SubDerivation');
-    expect(names).toContain('DefaultReset');
+    expect(names).toContain('DerivedParamAssignment');
     expect(countNodesNamed(IMAGE_SRC, 'SubDerivation')).toBe(1);
+    // The divergence itself. `not.toContain` alone would pass vacuously if the
+    // whole arm stopped parsing, so the positive reading is asserted too.
+    expect(names).not.toContain('DefaultReset');
+    expect(nodeNamesSpanning(IMAGE_SRC, 'default')).toContain('Identifier');
   });
 
   /**
@@ -4634,6 +4662,10 @@ describe('reifyLanguage — fold and indent coverage', () => {
     // { let a = 1.0; a }`).
     FnBody: 'fn g() -> Real { let a = 1.0; a }',
     SpecializationBody: 'structure def S { sub x : Foo<T> { bore = 5mm } }',
+    // The derived sub's body (task #6615). Brace-FIRST: the `{` opens the
+    // node, with `mirror of a across P` sitting in the sibling
+    // `SubDerivation`.
+    DerivedBody: 'structure def S { sub b = mirror of a across P { z = 55mm } }',
     PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
     ConnectBody:
       'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',

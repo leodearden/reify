@@ -22,6 +22,10 @@ export const BRACE_FIRST_BODIES = [
   'ConnectBody',
   'ImportItems',
   'KeyedMemberBlock',
+  // The derived sub's body (task #6615). Brace-FIRST, not keyword-led: the
+  // `{` opens the node — `mirror of a across P` is the sibling `SubDerivation`,
+  // not a prefix inside this one.
+  'DerivedBody',
   // The joint family (:781-802). `JointBody`'s block arm and `JointDof`'s
   // record arm both OPEN with the brace; each also has a brace-less arm
   // (a single expression, a bare DOF field), which `foldBody` already handles
