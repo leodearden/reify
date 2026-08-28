@@ -824,3 +824,207 @@ structure Root { sub a : Assembly {} }
          so the clone's `Private` visibility does not make its objective judgeable here",
     );
 }
+
+// ── GUARDED `let x = auto`: a shape the lowering mangles ─────────────────────
+//
+// Review round 1, finding 4. `guards.rs`'s `MemberDecl::Let` arm does not call
+// `extract_auto_free` — unlike its own `MemberDecl::Param` arm, and unlike the
+// top-level auto-let path in `entity.rs` — so a `where`-guarded `let m = auto`
+// lowers to `ValueCellKind::Let` whose `default_expr` is the bare-`auto`
+// fallback literal, not to `ValueCellKind::Auto`. Obligation (5) of
+// `inert_objective_finding` (`if decl.kind.is_auto() { return None; }`) walks
+// straight past a `Let`, the fallback literal is wholly transparent with no
+// further refs, and the objective is reported inert.
+//
+// Three probes isolate it to the `Let` arm exactly. A and B are the passing
+// CONTROLS and are kept so a regression in either is attributed correctly
+// rather than blamed on guards in general:
+//
+//   A. unguarded `let m : Real = auto`  → clean (entity.rs mints Auto)
+//   B. guarded  `param m : Real = auto` → clean (the Param arm mints Auto)
+//   C. guarded  `let m : Real = auto`   → E_OBJECTIVE_INERT on legal code
+//
+// SCOPE BOUNDARY. The underlying miscompile is NOT fixed here, and these tests
+// deliberately do not assert that `m` resolves to a solved value — it will not.
+// The guarded auto-let is silently DROPPED: the cell becomes a `Let` bound to
+// the fallback literal, and the `let cell_type = compiled_expr.result_type`
+// line discards the declared type annotation in favour of the fallback's
+// dimensionless scalar. That is a pre-existing defect at auto binding site 3 of
+// the four in `examples/auto_binding_sites.ri`, filed as its own follow-up
+// (ticket tkt_0RSZ2Y7HC64HCWNVKR2BGSVKBR, spawned from #5417). What #5417 owes
+// here is only the obligation it created: its new compile Error must not fire
+// on the shape.
+
+/// CONTROL A — the unguarded auto-let. `entity.rs`'s top-level path *does* run
+/// `extract_auto_free`, so this lowers to `ValueCellKind::Auto` and obligation
+/// (5) bails. Green before and after step-24; it fails only if the guarded fix
+/// spills into the unguarded path.
+#[test]
+fn unguarded_auto_let_read_by_an_objective_is_compile_clean() {
+    let src = r#"module unguarded_auto_let
+
+structure UnguardedAutoLet {
+    param g : Real = 1.0
+    let m : Real = auto
+    constraint m >= 1.0
+    constraint m <= 5.0
+    minimize m
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "UnguardedAutoLet");
+    assert_no_inert(
+        &compiled,
+        "an UNGUARDED `let m = auto` lowers to ValueCellKind::Auto, so the \
+         objective reaches a solver variable",
+    );
+}
+
+/// CONTROL B — the guarded auto-*param*. This is the decisive control: guards
+/// are not the problem, the `Let` arm is. `compile_guarded_members`' `Param`
+/// arm calls `extract_auto_free`, so the cell lands in
+/// `guarded_groups[0].members` as `ValueCellKind::Auto` and obligation (5)
+/// bails exactly as it does unguarded.
+#[test]
+fn guarded_auto_param_read_by_an_objective_is_compile_clean() {
+    let src = r#"module guarded_auto_param
+
+structure GuardedAutoParam {
+    param g : Real = 1.0
+    where g > 0.0 {
+        param m : Real = auto
+    }
+    minimize m
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "GuardedAutoParam");
+    assert_no_inert(
+        &compiled,
+        "a guarded `param m = auto` lowers to ValueCellKind::Auto — guards as \
+         such are not what breaks this",
+    );
+}
+
+/// MEASUREMENT, pinned as a test rather than left as prose.
+///
+/// Review round 1 recommended DELETING one of the two `guarded_group` unit
+/// tests in `post_passes.rs` on the ground that they "pin a shape the lowering
+/// never produces". MEASURED HERE, and false: `compile_guarded_members` serves
+/// BOTH `members` and `else_members`, and its `Param` arm runs
+/// `extract_auto_free`, so `ValueCellKind::Auto` inside a guarded group is a
+/// shape the compiler emits every time someone writes CONTROL B. Both unit
+/// tests are therefore kept, and this test is what stops that decision from
+/// resting on an unchecked claim: if the lowering ever stops minting `Auto`
+/// here, this goes red and the unit tests become the dead fixtures the review
+/// believed them to be.
+#[test]
+fn a_guarded_auto_param_really_lowers_to_an_auto_cell_in_the_group() {
+    use reify_compiler::ValueCellKind;
+
+    let src = r#"module guarded_auto_param_shape
+
+structure GuardedAutoParamShape {
+    param g : Real = 1.0
+    where g > 0.0 {
+        param m : Real = auto
+    } else {
+        param n : Real = auto
+    }
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "GuardedAutoParamShape")
+        .expect("fixture must compile");
+
+    let group = template
+        .guarded_groups
+        .first()
+        .expect("the `where` block must produce a guarded group");
+
+    let member = group
+        .members
+        .iter()
+        .find(|d| d.id.member == "m")
+        .expect("`m` must land in guarded_groups[0].members, not value_cells");
+    assert!(
+        matches!(member.kind, ValueCellKind::Auto { .. }),
+        "a guarded `param m = auto` must lower to ValueCellKind::Auto, got {:?}",
+        member.kind
+    );
+
+    let else_member = group
+        .else_members
+        .iter()
+        .find(|d| d.id.member == "n")
+        .expect("`n` must land in guarded_groups[0].else_members");
+    assert!(
+        matches!(else_member.kind, ValueCellKind::Auto { .. }),
+        "the else branch runs the same `compile_guarded_members`, so it must \
+         mint Auto too, got {:?}",
+        else_member.kind
+    );
+}
+
+/// PROBE C — the false positive itself. A `where`-guarded `let m = auto` read
+/// by the objective must not draw `E_OBJECTIVE_INERT`.
+///
+/// The program is legal: the author wrote an auto and an objective over it.
+/// That the lowering currently drops the auto is a separate defect (see the
+/// scope boundary above); a compile Error is not the right response to it, and
+/// the message it prints — "`m` … is never `auto`" — is factually false about
+/// the source in front of the reader.
+#[test]
+fn guarded_auto_let_read_by_an_objective_is_compile_clean() {
+    let src = r#"module guarded_auto_let
+
+structure GuardedAutoLet {
+    param g : Real = 1.0
+    where g > 0.0 {
+        let m : Real = auto
+    }
+    minimize m
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "GuardedAutoLet");
+    assert_no_inert(
+        &compiled,
+        "the author declared `m` as `auto`; that the guarded-let lowering drops \
+         the auto is a separate defect, not grounds to reject the program",
+    );
+}
+
+/// PROBE C, else-branch variant. The `else` list runs the same
+/// `compile_guarded_members`, so it carries the identical `Let`-arm gap; a bail
+/// that covered only `members` would pass PROBE C and fail here.
+#[test]
+fn guarded_else_auto_let_read_by_an_objective_is_compile_clean() {
+    let src = r#"module guarded_else_auto_let
+
+structure GuardedElseAutoLet {
+    param g : Real = 1.0
+    where g > 0.0 {
+        param p : Real = 2.0
+    } else {
+        let m : Real = auto
+    }
+    minimize m
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "GuardedElseAutoLet");
+    assert_no_inert(
+        &compiled,
+        "guarded_groups[*].else_members carries the same `Let`-arm gap as \
+         `.members`",
+    );
+}
