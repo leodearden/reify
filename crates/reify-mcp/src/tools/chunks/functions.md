@@ -4,7 +4,7 @@ Functions (`fn`) are non-entity declarations: no identity, no determinacy state.
 
 ## Syntax
 
-```
+```reify-fragment
 fn von_mises(t : Tensor<2, 3, Pressure>) -> Scalar<Pressure> {
     let dx = t.xx - t.yy;
     let dy = t.yy - t.zz;
@@ -30,7 +30,7 @@ fn clamp(x : Real, lo : Real, hi : Real) -> Real {
 ## Overloading
 
 Function overloading by parameter types IS permitted:
-```
+```reify-schematic
 fn area(surface: Surface) -> Scalar<Area> { ... }
 fn area(solid: Solid) -> Scalar<Area> { ... }
 
@@ -42,7 +42,7 @@ Exactly one candidate must match at each call site.
 
 ## Lambda Expressions
 
-```
+```reify-fragment
 |x| x * 2
 |p : Point3<Length>| distance(p, origin)
 ```

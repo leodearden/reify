@@ -4,7 +4,7 @@ Traits are non-entity declarations: no identity, no determinacy state. They are 
 
 ## Syntax
 
-```
+```reify
 pub trait Rigid : Physical {
     let moment_of_inertia = compute_moi(geometry, material.density) // illustrative placeholder helper, not a compiler/stdlib function — pdoccover:allow — placeholder
 }
@@ -26,7 +26,7 @@ Traits do NOT contain geometry or identity/state.
 
 ## Trait Composition
 
-```
+```reify-fragment
 trait MechatronicActuator : MechanicalActuator + ElectricalDevice + Controllable
 ```
 
@@ -37,7 +37,7 @@ Conflict resolution:
 
 ## Defaults
 
-```
+```reify-fragment
 trait StandardThread {
     param handedness : Handedness = Handedness.Right
 }

@@ -7,7 +7,7 @@ Dimensions are part of the type. Units are part of literal syntax. Two quantitie
 ## Dimension Representation
 
 A vector of rational exponents over 10 base dimensions (7 SI + Angle + SolidAngle + Money):
-```
+```reify-schematic
 [Length, Mass, Time, Current, Temperature, Amount, Luminosity, Angle, SolidAngle, Money]
 
 Length       = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -19,7 +19,7 @@ Multiplication adds exponent vectors. Division subtracts. Checked at compile tim
 
 ## Unit Declarations
 
-```
+```reify-fragment
 unit mm : Length = 0.001m
 unit USD : Money
 unit degC : Temperature offset 273.15K
@@ -27,7 +27,7 @@ unit degC : Temperature offset 273.15K
 
 ## Named Dimension Aliases
 
-```
+```reify-fragment
 type Force    = Mass * Length / Time^2
 type Pressure = Force / Length^2
 type Density  = Mass / Length^3
@@ -38,7 +38,7 @@ type Density  = Mass / Length^3
 ## Temperature Handling
 
 `degC` and `degF` are offset units:
-```
+```reify-fragment
 param max_temp : Temperature = 150degC        // Absolute: 423.15 K
 param delta_t  : TemperatureDiff = 20degC      // Difference: 20 K
 ```
@@ -215,7 +215,7 @@ When you have a geometric ratio and want an angle — or you have an angle and w
 
 **Which ratio, though.** This crossing is for an **arc-measure** ratio — `s / r`, a length over a length that *is* an angle in radians. A **trigonometric** ratio already has a named producer and needs no crossing: `atan`, `atan2`, `asin`, `acos` and the geometry `angle` / `angle_between_surfaces` queries all return `Angle` directly. Do not put `* 1rad` on a producer's result. On an *annotated* binding that is a hard error — `let bad : Angle = atan(o / a) * 1rad` declares `rad` but computes `rad^2`. Everywhere else the compiler stays quiet: unannotated, `let unann = atan(o / a) * 1rad` checks green and evaluates to `1.19… rad^2`; and on the **argument** side `atan((o / a) * 1rad)` also checks green, returning the same `1.19… rad` as `atan(o / a)` — the `rad` ignored rather than consumed. Picking the wrong one of the two readings is silent as well: for `o / a = 2.5`, `atan(o / a)` is `1.19… rad` and `(o / a) * 1rad` is `2.5 rad`, and both typecheck. `* 1rad` is one row of the crossing catalogue, not the whole of it.
 
-```
+```reify-fragment
 let s : Length     = 5mm                 // an arc measured along the rim
 let r : Length     = 2mm                 // its radius
 
@@ -236,7 +236,7 @@ Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error
 
 This is not a style preference — the crossing is what makes the binding compile. On an annotated `param`/`let` whose initializer is an *expression*, omitting it is a hard error:
 
-```
+```reify-invalid
 let theta : Angle  = s / r      // error: declares rad, initializer is dimensionless
 let arc   : Length = r * theta  // error: declares m, initializer is m·rad
 ```

@@ -5,7 +5,7 @@ Enums are tagged-union types. Each variant is either **bare** (no payload) or ca
 ## Declaration
 
 Bare variants — simple named alternatives with no payload:
-```
+```reify
 enum Directionality { In, Out, Bidi }
 enum FitType { Clearance, Transition, Interference }
 enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
@@ -13,7 +13,7 @@ enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
 
 Named-field payload variants — bare and payload-carrying variants may be mixed in one
 declaration:
-```
+```reify
 enum Shape {
     Circle { radius: Length },
     Rect { width: Length, height: Length },
@@ -23,7 +23,7 @@ enum Shape {
 
 Generic payloads — an `enum` may take type parameters, and payload field types may
 reference them. Type arguments are inferred from the payload at construction:
-```
+```reify-fragment
 enum Result<T, E> {
     Ok { value: T },
     Err { error: E },
@@ -40,7 +40,7 @@ param r : Result<Length, String> = Ok { value: 5mm }
 ## Usage
 
 Enum values are accessed with dot notation:
-```
+```reify-fragment
 param fit_type : FitType = FitType.Clearance
 param direction : Directionality
 ```
@@ -50,7 +50,7 @@ param direction : Directionality
 Pattern matching on enums with exhaustiveness checking. Patterns name the variant
 **unqualified** — `FitType.Clearance` is how a *value* is written (see Usage above), but
 `FitType.Clearance =>` as a *pattern* is a parse error:
-```
+```reify-fragment
 let clearance = match fit_type {
     Clearance => 0.1mm,
     Transition => 0.02mm,
@@ -68,7 +68,7 @@ A payload-carrying variant is constructed in brace form, naming **all** of its d
 fields. A `match` arm binds the payload by naming each field: the binder introduces that
 name as a local in the arm's body, so `Circle { radius: r }` makes `r` available as the
 radius value.
-```
+```reify-fragment
 param outline : Shape = Rect { width: 20mm, height: 10mm }
 
 let area = match outline {
