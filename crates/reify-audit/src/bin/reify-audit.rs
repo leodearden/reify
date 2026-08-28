@@ -55,9 +55,11 @@ use std::process::ExitCode;
 
 // `NoopJCodemunchOps` — the inert stub bound for `--no-jcodemunch` and for
 // detector runs that never touch the seam — now lives in the library, where
-// its doc records the three call sites. It used to be copy-pasted into this
-// bin and both `*-baseline-gen` bins; the library's `MockJCodemunchOps`
-// remains test-only via the `test-support` feature.
+// its doc records the call sites. It used to be copy-pasted into this bin and
+// both `*-baseline-gen` bins; this bin and `pdiag-baseline-gen` now bind the
+// library's, while `ptodo-baseline-gen` still carries its own (see that doc).
+// The library's `MockJCodemunchOps` remains test-only via the `test-support`
+// feature.
 use reify_audit::{
     AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
     TimeWindow, fused_memory_client::FusedMemoryClient, jcodemunch_client::RealJCodemunchOps,

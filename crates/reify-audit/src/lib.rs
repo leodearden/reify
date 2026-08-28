@@ -1520,13 +1520,16 @@ pub trait JCodemunchOps {
 ///    produces zero findings without opening a socket.
 /// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`):
 ///    P5/pre-done, P2-only, and the purely structural lanes (PTODO, PDIAG).
-/// 3. The `*-baseline-gen` bins, which are structural censuses but still have
-///    to populate [`AuditContext`]'s field.
+/// 3. `pdiag-baseline-gen`, a structural census that still has to populate
+///    [`AuditContext`]'s field.
 ///
 /// Lives here rather than in each bin because it was copy-pasted into three of
 /// them, so every future change to the trait had to be replayed by hand in
 /// three places — a silent drift hazard with no compiler backstop until one
-/// copy stopped building. Adding a trait method now breaks exactly one impl.
+/// copy stopped building. Two of the three now bind this one. The third,
+/// `ptodo-baseline-gen`, still carries a private copy; migrating it is a
+/// mechanical one-line change deliberately left outside this task's file
+/// scope, so a new trait method breaks two impls rather than three.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopJCodemunchOps;
 
