@@ -1310,7 +1310,28 @@ structure RivetedPanel {
 ///     m_i        = max(REL_MARGIN × |bound_i|, ABS_FLOOR_SI)
 ///     REL_MARGIN   = 0.02   (`const REL_MARGIN`, solver.rs)
 ///     ABS_FLOOR_SI = 1e-9   (`const ABS_FLOOR_SI`, solver.rs)
-///     floored_lo = bracket + m_i
+///
+/// solver.rs itself states the floor in SLACK form, not per-side bound
+/// form — the comment block above reads `slack_i(x) >= m_i`, and
+/// `synthesise_floor_constraints` appends exactly that, as
+/// `Ge(slack_i, m_i)`. `collect_floor_terms` is what fixes what `slack_i`
+/// IS per direction: for a `q >= bracket` constraint, slack = `q - bracket`,
+/// so the floor `q - bracket >= m` rearranges to `q >= bracket + m`; for a
+/// `q <= bracket` constraint, slack = `bracket - q`, so `bracket - q >= m`
+/// rearranges the OTHER way, to `q <= bracket - m`. The per-side bounds
+/// below are this DERIVED consequence — not a further quotation from
+/// solver.rs:
+///
+///     floored_lo = bracket + m_i   (from a `>= bracket` slack)
+///     floored_hi = bracket - m_i   (from a `<= bracket` slack)
+///
+/// That sign flip is also the missing justification for a figure the
+/// header already publishes: the upper bracket `q <= 100.0` has
+/// `m = max(0.02×100.0, 1e-9) = 2.0`, and the `<=`-slack derivation floors
+/// it DOWNWARD to `100.0 - 2.0 = 98.0`, not upward to `102.0`. Cross-checked
+/// against solver.rs's own unit test `derive_intervals_floor_slack_shapes`,
+/// which asserts both `(lo.0 - 1.02).abs() < 1e-12` and
+/// `(hi.0 - 98.0).abs() < 1e-12` for this exact bracket pair.
 ///
 /// `line_cost = 0.50USD × quantity_produced` is strictly increasing, so the
 /// argmin sits exactly on the floored LOWER bound in both regimes below —
