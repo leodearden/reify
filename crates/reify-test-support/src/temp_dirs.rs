@@ -1237,9 +1237,9 @@ mod tests {
     ///
     /// Re-measured (not merely trusted) at debug-fix time for this task:
     /// `crates/reify-build-utils/src/lib.rs` was the sole exception when this
-    /// ratchet was authored, because #5639 (which migrates its `fn
-    /// tempdir()` test helper off the hand-rolled std-library accessor) had
-    /// not yet landed on `main`. #5639 has since landed and this branch
+    /// ratchet was authored, because it predated #5639 (which migrates its
+    /// `fn tempdir()` test helper off the hand-rolled std-library accessor)
+    /// landing on `main`. #5639 has since landed and this branch
     /// picked it up, so that file no longer violates — exactly the
     /// self-cleaning failure this table's staleness check exists to force:
     /// the ratchet went RED with a stale entry, and the entry was deleted

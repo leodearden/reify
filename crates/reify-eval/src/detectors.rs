@@ -668,7 +668,7 @@ mod tests {
         // `engine_eval.rs:4662-4762`. This asserts only on this detector's
         // own output — it cannot catch a wording change made only on the
         // `engine_eval.rs` side; see [`MassPropertiesPsdDetector`]'s doc
-        // comment for that drift-risk trade-off (deferred to task μ, #5062).
+        // comment for that drift-risk trade-off (resolved by task μ, #5062).
         let run1_messages: Vec<&str> =
             run1.diagnostics.iter().map(|d| d.message.as_str()).collect();
         assert!(
