@@ -442,6 +442,92 @@ fn names_same_structure(template_name: &str, structure_name: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('$'))
 }
 
+/// Does this template declare an `auto` cell anywhere — top-level or guarded?
+///
+/// Counts the guarded-`let` shape the lowering erases
+/// ([`is_auto_shaped_guarded_let`]) as well as a real [`ValueCellKind::Auto`],
+/// because the question this answers is "did the author write an auto here",
+/// and answering it too generously only ever produces more silence.
+fn declares_any_auto(template: &TopologyTemplate) -> bool {
+    let guarded = guarded_cell_ids(template);
+    declared_cells(template)
+        .any(|d| d.kind.is_auto() || (guarded.contains(&d.id) && is_auto_shaped_guarded_let(d)))
+}
+
+/// Could this template's objective be INHERITED by some descendant, and govern
+/// an `auto` there?
+///
+/// Under F-inherit (#4824) an objective attaches to an objective-**less**
+/// descendant and suppresses synthetic centrality for its autos (INV-3/INV-4).
+/// The container needs no auto of its own for that to happen, so a template
+/// whose objective reaches nothing in its own scope may still be governing
+/// something entirely real one level down.
+///
+/// **This is deliberately a structural question, not a semantic one, and it
+/// must stay that way.** It asks only whether inheritance is POSSIBLE. It does
+/// not — and must not — try to work out which objective actually wins at eval
+/// time; that is `governing_objective`'s job in `reify-eval`, it depends on
+/// runtime scope resolution the compiler does not have, and a second
+/// implementation of it here would be a lockstep duplicate that drifts. A later
+/// reader tempted to "improve" this into a real inheritance resolver should
+/// stop: the extra precision buys nothing, because the only thing this caller
+/// does with a `true` is stay quiet.
+///
+/// The walk:
+/// - descends `sub_components`, resolving each `structure_name` through
+///   [`names_same_structure`] so a monomorphised child still matches;
+/// - **prunes at an objective-bearing descendant** — the nearest
+///   objective-bearing ancestor is the one that governs, so that subtree
+///   inherits from the descendant, not from `template`;
+/// - answers `true` the moment an objective-less descendant declares an auto;
+/// - answers `true` for a sub whose structure does not resolve in
+///   `all_templates`, matching the "cannot be ruled out ⇒ assume the worst"
+///   convention [`auto_override_possible`] documents;
+/// - carries a `seen` set keyed on template name, so a recursive structure
+///   terminates. Recursion is detected elsewhere ([`phase_recursion_detection`])
+///   but this walk must not assume that ran, or that it ran first.
+///
+/// The narrow walk is preferred over the coarse alternative — "never conclude
+/// about a template that has any `sub_components`" — because the coarse form
+/// silences the rule for every composite template in the language, which is
+/// most of the interesting ones.
+/// `inert_objective_with_subs_that_contain_no_autos_still_errors` in
+/// `objective_conflict.rs` is what keeps the two distinguishable: it goes red
+/// under the coarse bail and green under this one.
+fn objective_inheritance_possible(
+    template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
+) -> bool {
+    let mut seen: HashSet<&str> = HashSet::new();
+    seen.insert(template.name.as_str());
+    let mut frontier: Vec<&TopologyTemplate> = vec![template];
+
+    while let Some(current) = frontier.pop() {
+        for sub in &current.sub_components {
+            let Some(child) = all_templates
+                .iter()
+                .find(|t| names_same_structure(&t.name, &sub.structure_name))
+            else {
+                // A sub we cannot resolve may contain anything at all.
+                return true;
+            };
+            if !seen.insert(child.name.as_str()) {
+                continue;
+            }
+            if child.objective.is_some() {
+                // `child` and everything under it inherit from `child`.
+                continue;
+            }
+            if declares_any_auto(child) {
+                return true;
+            }
+            frontier.push(child);
+        }
+    }
+
+    false
+}
+
 /// Does any template in the module install an `auto` override on an instance of
 /// `template` that lands on one of `closure`'s members?
 ///
@@ -516,9 +602,16 @@ fn auto_override_possible(
 /// legal code, whereas a missed one merely leaves today's silence in place, so
 /// the asymmetry is deliberate (PRD §3 decision 5).
 ///
-/// The proof obligations, in order:
-/// 0. the template is **module-private**;
-/// 0′. the template is not an imported one, nor a monomorph clone of one.
+/// The proof obligations, in order. Each of the five primed/0-numbered ones was
+/// added by review round 1, and each names the route by which the unprimed list
+/// alone reported legal code:
+///
+/// 0. the template is **module-private**. An exported template's rescuing
+///    `auto` override may live in a module that imports this one — possibly one
+///    nobody has written yet — and `all_templates` is this module alone;
+/// 0′. the template is not an imported one, nor a monomorph clone of one. A
+///    clone carries the DEFINING module's objective while being judged against
+///    the IMPORTING module's templates.
 ///    Both of these are checked first, because they are the obligations
 ///    `all_templates` cannot speak to at all — see below;
 /// 1. the template declares an objective at all;
@@ -535,7 +628,18 @@ fn auto_override_possible(
 ///    one shape;
 /// 6. no other template in the module installs an `auto` override onto an
 ///    instance of this one that lands in that closure
-///    ([`auto_override_possible`]).
+///    ([`auto_override_possible`]);
+/// 7. the objective cannot be INHERITED by a descendant that has autos of its
+///    own ([`objective_inheritance_possible`]). Obligations 1–6 all ask what
+///    happens in *this* scope; F-inherit means an objective can govern one
+///    level down without touching anything here at all.
+///
+/// What survives all nine is therefore a narrower claim than the rule was first
+/// written to make. It is not "this objective governs nothing" — obligations 0,
+/// 0′ and 7 exist precisely because that is not decidable here. It is: *no cell
+/// this objective reads is ever `auto` within this template, and no route by
+/// which it could still be governing something is open.* The diagnostic's
+/// wording tracks that narrower claim.
 ///
 /// `all_templates` is the **module currently being compiled**, `template`
 /// included — and nothing else. It is `ctx.templates`, which is initialised
@@ -688,6 +792,13 @@ pub(crate) fn inert_objective_finding(
         return None;
     }
 
+    // (7) — the objective may not be for this scope at all. Under F-inherit it
+    // attaches to an objective-less descendant and governs the autos there,
+    // with no auto needed in this template. Review round 1, finding 5.
+    if objective_inheritance_possible(template, all_templates) {
+        return None;
+    }
+
     // Anchor on the declaration that proves the inertness, so the reader lands
     // on the `param` they must turn into an `auto`.
     let anchor_span = cells.get(&named[0])?.span;
@@ -778,19 +889,30 @@ pub(crate) fn phase_inert_objective_check(
             "are"
         };
 
+        // WORDING. The first draft opened "cannot govern anything", and every
+        // false positive review round 1 found made that sentence untrue: the
+        // objective was governing a downstream override, an imported generic's
+        // cells, an auto the guarded-let lowering had eaten, or a descendant's
+        // autos by inheritance. The claim here is now exactly the one the
+        // obligations actually establish — nothing this objective reads is ever
+        // `auto` *within this template* — so a reader who does know better is
+        // being told something true and narrow rather than something confident
+        // and wrong. See `inert_objective_finding`'s obligation list.
         findings.push(
             Diagnostic::error(format!(
-                "E_OBJECTIVE_INERT: the `{sense}` declared in `{}` cannot govern \
-                 anything — it reads only {cells}, which {verb} never `auto`, so no solver \
-                 variable can change its value. Declare one of them `auto` (e.g. \
-                 `= auto` in place of the literal default) to make the objective \
-                 effective, or remove the objective.",
-                template.name
+                "E_OBJECTIVE_INERT: the `{sense}` declared in `{name}` reads only \
+                 {cells}, which {verb} never `auto` anywhere in `{name}` — so no solver \
+                 variable can change its value and the objective has nothing to \
+                 optimise. Declare one of them `auto` (e.g. `= auto` in place of the \
+                 literal default) to make the objective effective, or remove the \
+                 objective.",
+                name = template.name
             ))
             .with_code(DiagnosticCode::ObjectiveInert)
             .with_label(DiagnosticLabel::new(
                 finding.anchor_span,
-                "this cell is never `auto`, so the objective above cannot move it",
+                "this cell is never `auto` in this template, so the objective above \
+                 cannot move it",
             )),
         );
     }

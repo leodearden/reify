@@ -1093,8 +1093,11 @@ structure GuardedButInert {
 // attaches to an objective-LESS descendant and suppresses synthetic centrality
 // there (INV-3/INV-4). The parent needs no auto of its own for that to happen,
 // so "the objective reaches no auto in this template" does not imply "the
-// objective governs nothing" — and "cannot govern anything" is then a factually
-// false thing to print at the author.
+// objective governs nothing". The diagnostic's first draft opened "cannot
+// govern anything", which was a factually false thing to print at an author
+// who had written exactly this; step-26 narrowed the wording to the claim the
+// pass can actually establish, and added the bail below so it is not printed
+// here at all.
 //
 // `examples/objective_inheritance.ri` documents the observable signal directly:
 // `reify explain` reports `C.k: source=inherited, "governed by objective
