@@ -151,6 +151,48 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Check 2 — the bare-fence ban
+// ---------------------------------------------------------------------------
+
+/// Every fence in `content` that carries no language tag, one message each, in
+/// document order.
+///
+/// Deliberately does NOT validate the tag against an allow-list. Task rule 3
+/// makes the vocabulary open: the gate only ever asks "is the tag exactly
+/// `reify`" (that is `reify_fence_violations`' job), so any explicit tag
+/// exempts here. The point is not to police notation — it is to force the doc
+/// author to make a CLAIM about the fence, which then shows up as a
+/// one-line diff a reviewer can challenge.
+///
+/// A `parse_fences` failure is reported as a violation rather than panicking,
+/// so a malformed file lands in the same accumulate-then-report-all output as
+/// everything else.
+fn untagged_fence_violations(path: &str, content: &str) -> Vec<String> {
+    let fences = match parse_fences(content) {
+        Ok(fences) => fences,
+        Err(error) => return vec![format!("{path}: {error}")],
+    };
+
+    fences
+        .iter()
+        .filter(|fence| fence.tag.is_none())
+        .map(|fence| {
+            format!(
+                "{path}:{} — fence #{} has NO language tag. Every fence must \
+                 carry an explicit one: `reify` ONLY if the body compiles \
+                 STANDALONE as a complete module; else `reify-fragment` (real \
+                 reify syntax that is member-level or context-dependent), \
+                 `reify-schematic` (not reify source at all — signature \
+                 listing, metavariable notation, `{{ ... }}` elision), \
+                 `reify-invalid` (a deliberate-error teaching sample), or the \
+                 language it actually is (`ebnf`, `text`, …).",
+                fence.open_line, fence.ordinal
+            )
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Hermetic parser tests
 //
 // Every case below runs on SYNTHETIC in-memory markdown. No chunk file on disk
