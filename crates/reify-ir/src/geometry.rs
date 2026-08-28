@@ -8691,7 +8691,7 @@ mod tests {
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
             Operation::PrimitiveHalfSpace,
-            // Modify (8)
+            // Modify (9)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,

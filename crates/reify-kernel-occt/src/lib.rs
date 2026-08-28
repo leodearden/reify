@@ -256,8 +256,8 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 /// boundary. Neither subsumes the other, so this one keeps working if the
 /// first is bypassed or has a hole.
 ///
-/// `OcctKernel::execute`'s 46 numeric-extraction sites split 46 = 41 + 3 + 2:
-/// the 41 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
+/// `OcctKernel::execute`'s 47 numeric-extraction sites split 47 = 42 + 3 + 2:
+/// the 42 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
 /// (dimensionless unit-normal components) and `CircularPattern.angle` /
 /// `Draft.angle` (ANGLE — PRD 3's surface) stay on the context-free
 /// [`extract_f64`], each marked at its call site with a
@@ -2984,7 +2984,7 @@ impl OcctKernel {
             }
             GeometryOp::OffsetSurface { target, distance } => {
                 let shape = self.get_shape(*target)?;
-                let d = extract_f64(distance)?;
+                let d = extract_length_f64(distance, op, "distance")?;
                 let out = ffi::ffi::make_offset_surface(shape, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 // `BRepKind::Face` assumes a single-face input/result, true
