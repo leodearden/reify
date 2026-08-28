@@ -311,3 +311,209 @@ fn cross_session_hit_returns_byte_identical_entry_and_does_not_rewrite_it() {
         "max_von_mises must be bit-identical across the cross-session hit",
     );
 }
+
+/// A synthetic 32-ASCII-char stand-in for a *different* build's engine-version
+/// hash.
+///
+/// `cache_key_to_ascii_32` validates LENGTH only (hex-ness is unchecked), which
+/// is what makes a fabricated version usable as a directory name. The same
+/// idiom is used at `crates/reify-cli/tests/harness_cli/cli_cache.rs:1065` and
+/// inside `persistent_cache.rs`'s own `mod tests`.
+const FAKE_EVH: &str = "beef0000000000000000000000000eef";
+
+/// Case 2 — an engine-version bump misses and cold-solves, and the superseded
+/// generation stays on disk until the startup sweep's grace period expires.
+///
+/// `ENGINE_VERSION_HASH` is `env!("REIFY_ENGINE_VERSION_HASH")`, a compile-time
+/// const emitted unconditionally by `crates/reify-eval/build.rs` — there is no
+/// runtime, env or builder override to point the engine at a different version.
+/// So the bump is simulated from the other side: session 1 writes under the live
+/// version, the directory is then RENAMED to `FAKE_EVH`, and session 2's live
+/// lookup finds nothing where it looks. That reproduces the post-bump on-disk
+/// state exactly — a stale generation parked beside a freshly-minted live one —
+/// with no override hook needed.
+#[test]
+fn engine_version_bump_misses_cold_solves_and_leaves_old_subdir_until_sweep_prunes_it() {
+    let tmp = tempfile::TempDir::new().expect("tmp dir creation must succeed");
+    let source = cantilever_source();
+
+    assert_eq!(
+        FAKE_EVH.len(),
+        32,
+        "test invariant: a fabricated engine version must be 32 ASCII chars, or \
+         cache_key_to_ascii_32 rejects it before any filesystem work",
+    );
+    assert_ne!(
+        FAKE_EVH, ENGINE_VERSION_HASH,
+        "test invariant: the fabricated stale version must differ from the live one",
+    );
+
+    // ── Session 1: cold solve under the LIVE engine version ─────────────────
+
+    let mut engine_a = make_simple_engine();
+    engine_a.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+    reify_eval::compute_targets::register_compute_fns(&mut engine_a);
+    let compiled_a = parse_and_compile_with_stdlib(source);
+    let diags_a = engine_a.eval(&compiled_a);
+    assert!(
+        !diags_a
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "session 1 eval must succeed with no Error diagnostics",
+    );
+
+    let live_dir = tmp.path().join(ENGINE_VERSION_HASH);
+    let old_bin = find_single_bin(&live_dir);
+    let old_hash = bin_input_hash(&old_bin);
+    let old_bytes = std::fs::read(&old_bin).expect("the session-1 .bin must be readable");
+
+    // ── Simulate the engine-version bump by renaming the generation aside ───
+
+    let orphan_dir = tmp.path().join(FAKE_EVH);
+    std::fs::rename(&live_dir, &orphan_dir).expect("renaming the generation aside must succeed");
+    assert!(
+        !live_dir.exists(),
+        "after the rename the live engine-version subdir must be absent, so \
+         session 2 genuinely starts cold",
+    );
+
+    // ── Session 2: the live lookup must MISS and cold-solve ─────────────────
+
+    let mut engine_b = make_simple_engine();
+    engine_b.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+    reify_eval::compute_targets::register_compute_fns(&mut engine_b);
+    let compiled_b = parse_and_compile_with_stdlib(source);
+    let diags_b = engine_b.eval(&compiled_b);
+    assert!(
+        !diags_b
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "session 2 eval must succeed with no Error diagnostics",
+    );
+    assert_eq!(
+        engine_b.persistent_hit_count(),
+        0,
+        "a version bump must invalidate every entry — session 2 must get 0 hits",
+    );
+    assert!(
+        engine_b.persistent_miss_count() >= 1,
+        "session 2 must register at least one MISS (the lookup that fell through \
+         to a cold solve), got {}",
+        engine_b.persistent_miss_count(),
+    );
+
+    // A fresh live-version subdir was recreated with its own entry.
+    assert!(
+        live_dir.is_dir(),
+        "session 2 must recreate the live engine-version subdir",
+    );
+    let new_bin = find_single_bin(&live_dir);
+    let new_hash = bin_input_hash(&new_bin);
+
+    // The INPUT hash is content-derived and does not move with the engine
+    // version: the same input keys to the same filename under a new version
+    // dir. This is the PRD's "bumps invalidate cleanly via miss with no
+    // migration code" made concrete — only the directory generation changed.
+    assert_eq!(
+        new_hash, old_hash,
+        "the input hash is derived from the input, not the engine version, so a \
+         version bump must re-key the SAME filename under a new generation dir",
+    );
+
+    // ── The superseded generation is intact, not corrupted ──────────────────
+
+    assert!(
+        orphan_dir.is_dir(),
+        "the superseded generation must remain on disk after the bump — it is \
+         pruned on an age schedule, never eagerly",
+    );
+    let orphan_bin = find_single_bin(&orphan_dir);
+    assert!(
+        std::fs::read(&orphan_bin).expect("the orphan .bin must be readable") == old_bytes,
+        "the superseded generation's bytes must be untouched by session 2",
+    );
+
+    // "Intact" means the entry is still self-consistent: its header still echoes
+    // the version it was WRITTEN under (the live one), not the directory it now
+    // happens to sit in.
+    //
+    // NOTE: this is deliberately NOT `read_entry(tmp, FAKE_EVH, &old_hash) ==
+    // Ok(Some(_))`. `read_entry` verifies the header echoes against the key
+    // components taken from the PATH, and the echo is baked into the file at
+    // write time — so an entry relocated under a different version dir is
+    // reported as a miss by design. The assertion below reads the header
+    // directly and checks it against the version the entry actually belongs to,
+    // which is what "intact" really means here.
+    let mut f = std::io::BufReader::new(
+        std::fs::File::open(&orphan_bin).expect("the orphan .bin must open"),
+    );
+    let header =
+        reify_eval::persistent_cache::CacheEntryHeader::read_from(&mut f).expect("header decodes");
+    header
+        .verify_format_version()
+        .expect("the superseded entry's format_version must still be current");
+    let mut expected_engine = [0u8; 32];
+    expected_engine.copy_from_slice(ENGINE_VERSION_HASH.as_bytes());
+    let mut expected_input = [0u8; 32];
+    expected_input.copy_from_slice(old_hash.as_bytes());
+    header
+        .verify_field_echoes(&expected_engine, &expected_input)
+        .expect(
+            "the superseded entry must still echo the engine version it was written \
+             under — the rename moved the directory, not the file's contents",
+        );
+
+    // And the safety property that falls out of the same mechanism: the
+    // relocated entry is NOT served under the version it does not belong to.
+    // A stale generation can never be mistaken for a live one.
+    assert!(
+        read_entry::<ElasticResult>(tmp.path(), FAKE_EVH, &old_hash)
+            .expect("a mismatched echo is a miss, never an Err")
+            .is_none(),
+        "an entry sitting under a version dir it was not written for must read as \
+         a MISS (echo mismatch), never as a stale value",
+    );
+
+    // ── Startup sweep: a 30-day grace, not an eager delete ──────────────────
+
+    let report_fresh = reify_eval::sweep_persistent_cache_at_startup(tmp.path());
+    assert_eq!(
+        report_fresh.orphan_dirs_removed, 0,
+        "a freshly-mtimed orphan generation must SURVIVE the sweep — ORPHAN_DIR_AGE \
+         is a 30-day grace, not an immediate deletion",
+    );
+    assert!(
+        orphan_dir.is_dir(),
+        "the orphan generation must still exist after the grace-period sweep",
+    );
+
+    // Age the orphan past the grace period and sweep again.
+    backdate_mtime(
+        &orphan_dir,
+        reify_eval::persistent_cache::ORPHAN_DIR_AGE.as_secs() + 24 * 3600,
+    );
+    let report_aged = reify_eval::sweep_persistent_cache_at_startup(tmp.path());
+    assert_eq!(
+        report_aged.orphan_dirs_removed, 1,
+        "an orphan generation older than ORPHAN_DIR_AGE must be pruned",
+    );
+    assert!(
+        !orphan_dir.exists(),
+        "the aged orphan generation must be gone after the sweep",
+    );
+
+    // The LIVE generation is untouched by the prune — the whole point of the
+    // exact-name check that runs before any age test.
+    assert!(
+        live_dir.is_dir(),
+        "the live engine-version subdir must survive the orphan prune",
+    );
+    assert!(
+        read_entry::<ElasticResult>(tmp.path(), ENGINE_VERSION_HASH, &new_hash)
+            .expect("read_entry must not error on the live entry")
+            .is_some(),
+        "the live generation's entry must still be readable after the orphan prune",
+    );
+}
