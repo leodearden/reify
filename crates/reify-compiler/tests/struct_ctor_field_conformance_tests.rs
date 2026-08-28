@@ -1479,11 +1479,16 @@ fn assert_single_arg_type_mismatch_warning(source: &str, param_name: &str, label
 /// non-vacuity guard `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
 /// documents — so the guard and the assertion share ONE compile of the source
 /// plus the whole stdlib instead of doing it twice.
-fn assert_single_arg_type_mismatch_warning_in(
-    module: &CompiledModule,
+///
+/// Returns the diagnostics it filtered, so a caller adding further assertions
+/// (the quantity sibling below) does not re-run [`ctor_conformance_diags`] over
+/// the module. Matches `assert_quantity_slot_conflict` (`conformance/mod.rs`),
+/// its fn-call twin, which returns its `Vec<Diagnostic>` for the same reason.
+fn assert_single_arg_type_mismatch_warning_in<'a>(
+    module: &'a CompiledModule,
     param_name: &str,
     label: &str,
-) {
+) -> Vec<&'a Diagnostic> {
     let diags = ctor_conformance_diags(module);
     assert_eq!(
         diags.len(),
@@ -1507,6 +1512,7 @@ fn assert_single_arg_type_mismatch_warning_in(
         "{label}: message must name the offending param {param_name:?}, got: {:?}",
         diags[0].message
     );
+    diags
 }
 
 /// Quantity-rule sibling of [`assert_single_arg_type_mismatch_warning_in`]: the
@@ -1534,8 +1540,7 @@ fn assert_single_quantity_conflict_warning_in(
     expected_arg_quantity: &str,
     label: &str,
 ) {
-    assert_single_arg_type_mismatch_warning_in(module, param_name, label);
-    let diags = ctor_conformance_diags(module);
+    let diags = assert_single_arg_type_mismatch_warning_in(module, param_name, label);
     let has_quantity = format!("has quantity '{expected_arg_quantity}'");
     let requires_quantity = format!("requires quantity '{expected_param_quantity}'");
     assert!(
