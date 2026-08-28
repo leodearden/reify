@@ -151,6 +151,35 @@ require_tree_sitter_cli() {
     fi
 }
 
+provision_fixture_parser_c() {
+    # Usage: provision_fixture_parser_c <dest-path> || return 1
+    #
+    # src/parser.c is a GITIGNORED generated artifact: in a freshly-seeded warm
+    # lane (tracked-files-only + `git clean -xfd`) it does not exist until
+    # something generates it. Under scripts/verify.sh it always does — the
+    # tree-sitter-generate.sh plan leaf runs before any infra pole (measured:
+    # generate at plan line 16, this file's pole at line 31 on a task-scope
+    # plan) — but a STANDALONE run of this file has no such guarantee, and a
+    # bare `cp` of it then dies with `cp: cannot stat`. That is the same
+    # standalone-crash class task #6361 fixed for
+    # test_auto_generation_rebuilds_parser; this is its hermetic-fixture
+    # counterpart.
+    #
+    # The callers below build a fixture tree that is only ever FINGERPRINTED —
+    # hashed and mtime-stamped, never compiled — so parser.c's CONTENT is
+    # irrelevant to what they assert. A placeholder is therefore strictly
+    # better than self-provisioning via the tree-sitter CLI: it is instant, it
+    # adds no CLI dependency, and it cannot turn into a vacuous SKIP that hides
+    # a real regression.
+    local dest="$1"
+    if [ -f "$TS_DIR/src/parser.c" ]; then
+        cp "$TS_DIR/src/parser.c" "$dest" || return 1
+    else
+        printf '/* placeholder parser.c — fixture is fingerprinted, never compiled */\n' \
+            > "$dest" || return 1
+    fi
+}
+
 # --- Guard Helper ---
 # run_guarded_cargo_check <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
@@ -1413,7 +1442,7 @@ test_freshness_ensure_forces_and_is_idempotent() {
     local ts="$tmp/ts"
     mkdir -p "$ts/src/tree_sitter"
     cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
-    cp "$TS_DIR/src/parser.c"  "$ts/src/parser.c"
+    provision_fixture_parser_c "$ts/src/parser.c" || return 1
     cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
     cp "$TS_DIR"/src/tree_sitter/*.h "$ts/src/tree_sitter/"
 
@@ -2882,7 +2911,7 @@ test_freshness_refuses_partial_fingerprint_on_unhashable_input() {
     local ts="$tmp/ts" target="$tmp/target"
     mkdir -p "$ts/src/tree_sitter" "$target"
     cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
-    cp "$TS_DIR/src/parser.c"  "$ts/src/parser.c"
+    provision_fixture_parser_c "$ts/src/parser.c" || return 1
     cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
     cp "$TS_DIR"/src/tree_sitter/*.h "$ts/src/tree_sitter/"
 
