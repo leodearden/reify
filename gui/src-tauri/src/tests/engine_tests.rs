@@ -13773,7 +13773,7 @@ fn get_entity_tree_realization_trait_geometry_propagates() {
 /// only — for `structure def Flange : Rigid` it is exactly `["Rigid"]`. The
 /// current test is a substring probe (`b.contains("Physical")`), which never
 /// sees that `trait Rigid : Physical`
-/// (`crates/reify-compiler/stdlib/structural_physical.ri:76`) refines it. So
+/// (`crates/reify-compiler/stdlib/structural_physical.ri`) refines it. So
 /// both `geometry` nodes report `trait_geometry == false`.
 ///
 /// The `Rigid -> Physical` refinement edge lives in the PRELUDE, not in the
@@ -14009,7 +14009,7 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
     // follow-up, and this is that flip.
     //
     // Resolved contract: the flag follows the refinement chain
-    // `BoltFlange : Rigid : Physical` (stdlib/structural_physical.ri:76),
+    // `BoltFlange : Rigid : Physical` (stdlib/structural_physical.ri),
     // resolved by `reify_eval::conforms_to_trait` against the merged module +
     // prelude trait defs. See `build_template_node`'s `parent_has_physical`.
     //

@@ -5404,7 +5404,7 @@ fn surface_geometry_derived_cells(
 /// holds only the traits that module declares — `structure def X : Rigid`
 /// compiles to a module with an EMPTY `trait_defs`, because `Rigid` and its
 /// `Rigid : Physical` refinement edge live in the stdlib prelude
-/// (`stdlib/structural_physical.ri:76`). Resolving any refinement chain that
+/// (`stdlib/structural_physical.ri`). Resolving any refinement chain that
 /// reaches a stdlib trait therefore requires the merge.
 ///
 /// Mirrors `engine_build.rs::build_outputs_with_result`. Shared by
