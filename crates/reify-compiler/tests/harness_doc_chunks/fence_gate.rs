@@ -341,3 +341,128 @@ fn an_empty_fence_body_parses_as_the_empty_string() {
     assert_eq!(fences.len(), 1, "got {fences:#?}");
     assert_eq!(fences[0].body, "");
 }
+
+// ---------------------------------------------------------------------------
+// Check 2 — the bare-fence ban
+// ---------------------------------------------------------------------------
+
+/// An untagged OPENING fence is one violation, and the message carries both the
+/// file path and `:<line>` of the opening delimiter.
+///
+/// `file:line` specifically, not just a count: the whole value of this check is
+/// that a doc author who trips it can jump straight to the offending line. A
+/// bare "3 untagged fences" would send them re-counting delimiters by hand.
+#[test]
+fn an_untagged_opening_fence_is_reported_with_file_and_line() {
+    let md = "# Collections\n\
+              \n\
+              ```\n\
+              let xs = [1, 2, 3]\n\
+              ```\n";
+
+    let violations = untagged_fence_violations("chunks/collections.md", md);
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains("chunks/collections.md"),
+        "the violation must name the file, got: {}",
+        violations[0]
+    );
+    assert!(
+        violations[0].contains(":3"),
+        "the violation must name `:<opening line>` (here `:3`), got: {}",
+        violations[0]
+    );
+}
+
+/// The bare CLOSING delimiter of a tagged fence is never a violation.
+///
+/// This is the false positive that would make the check unusable: in markdown
+/// every fence closes with a bare ```, so a stateless scan would report a
+/// violation for every single compliant fence in the corpus. Only the parser's
+/// open/close state distinguishes them.
+#[test]
+fn the_bare_closing_delimiter_of_a_tagged_fence_is_not_a_violation() {
+    let md = "```reify\n\
+              structure def S { let n = 1 }\n\
+              ```\n";
+
+    assert!(
+        untagged_fence_violations("chunks/whatever.md", md).is_empty(),
+        "a compliant tagged fence closes with a bare ``` and must stay clean"
+    );
+}
+
+/// ANY explicit tag exempts — the vocabulary is deliberately OPEN.
+///
+/// The check never validates the tag against an allow-list. A closed list would
+/// force this task to predict every notation a future chunk might need; instead
+/// the tag itself is the sanction, because retagging a fence away from `reify`
+/// is a one-line diff a reviewer sees.
+#[test]
+fn every_explicit_tag_exempts_including_ones_this_task_never_anticipated() {
+    for tag in [
+        "reify",
+        "reify-fragment",
+        "reify-schematic",
+        "reify-invalid",
+        "text",
+        "ebnf",
+        "json",
+        "some-future-notation",
+    ] {
+        let md = format!("```{tag}\nbody\n```\n");
+        assert!(
+            untagged_fence_violations("chunks/x.md", &md).is_empty(),
+            "tag `{tag}` is explicit and must exempt the fence — the allow-list \
+             is open by design"
+        );
+    }
+}
+
+/// Several offending fences produce one violation each, in document order, so a
+/// single run surfaces the whole backlog rather than one fence at a time.
+#[test]
+fn multiple_untagged_fences_are_each_reported_in_document_order() {
+    let md = "```\n\
+              first\n\
+              ```\n\
+              prose\n\
+              ```reify-schematic\n\
+              exempt\n\
+              ```\n\
+              more prose\n\
+              ```\n\
+              second\n\
+              ```\n";
+
+    let violations = untagged_fence_violations("chunks/units.md", md);
+
+    assert_eq!(violations.len(), 2, "got {violations:#?}");
+    assert!(
+        violations[0].contains(":1"),
+        "first violation must be the line-1 fence, got: {}",
+        violations[0]
+    );
+    assert!(
+        violations[1].contains(":9"),
+        "second violation must be the line-9 fence, got: {}",
+        violations[1]
+    );
+}
+
+/// The remedy is spelled out in the message, so the fix does not require
+/// reading this module first.
+#[test]
+fn the_violation_message_points_at_the_tag_vocabulary() {
+    let violations = untagged_fence_violations("chunks/x.md", "```\nbody\n```\n");
+
+    let message = &violations[0];
+    for expected in ["reify-fragment", "reify-schematic"] {
+        assert!(
+            message.contains(expected),
+            "the remedy must name `{expected}` so the fix needs no source dive, \
+             got: {message}"
+        );
+    }
+}
