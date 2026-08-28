@@ -508,3 +508,165 @@ fn the_violation_message_points_at_the_tag_vocabulary() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Check 1 — a bare ```reify fence must compile standalone
+//
+// THE RED-FIRST DEMONSTRATION. Every case runs against SYNTHETIC markdown, so
+// the gate is proven to go red without ever mutating a shipped chunk file and
+// without leaving a planted defect behind. The fixtures then survive as
+// permanent regression tests rather than as a one-off manual demonstration
+// that rots.
+// ---------------------------------------------------------------------------
+
+/// A ```` ```reify ````-tagged fence containing the PHANTOM 3-arg `rotate` is
+/// reported, with the compiler's own words.
+///
+/// # Why THIS phantom
+///
+/// The demo must plant an ARITY error on a KNOWN name, not an invented
+/// identifier. `geometry_chunk_smoke.rs`'s scope statement establishes that an
+/// unknown call NAME is frequently NOT an error — a `structure def` body types
+/// an unresolved call from its first argument's `result_type` — so a made-up
+/// name would compile clean and this demo would silently prove nothing, leaving
+/// a vacuous gate behind. `rotate` instead dispatches purely on arity at
+/// `geometry_transform.rs:37` (2 or 5 args only); a 3-arg call reaches the
+/// `n =>` arm and calls `push_labeled_arg_count_error` (`arg_check.rs:67`),
+/// which builds a genuine `Severity::Error` `Diagnostic`.
+///
+/// This is not a hypothetical shape either: `functions.md`'s overloading
+/// example ships exactly this 3-arg `rotate` form today. Finding it costs a
+/// printer_v01 probe cycle; this gate is what makes the compiler say it first.
+#[test]
+fn a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported() {
+    let md = "prose\n\
+              ```reify\n\
+              structure def PhantomRotate {\n\
+              \x20   let blank = box(20mm, 20mm, 20mm)\n\
+              \x20   let turned = rotate(blank, vec3(0.0, 0.0, 1.0), 45deg)\n\
+              }\n\
+              ```\n";
+
+    let violations = reify_fence_violations("chunks/functions.md", md);
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    let message = &violations[0];
+    assert!(
+        message.contains("chunks/functions.md"),
+        "the violation must name the file, got: {message}"
+    );
+    assert!(
+        message.contains("fence #1"),
+        "the violation must name the fence ORDINAL, so a reader counting fences \
+         down a rendered chunk can find it without a line-numbered view, got: \
+         {message}"
+    );
+    assert!(
+        message.contains(":2"),
+        "the violation must name the fence's OPENING line (`:2`), got: {message}"
+    );
+    assert!(
+        message.contains("rotate() expects 2 or 5 arguments, got 3"),
+        "the violation must carry the COMPILER'S OWN diagnostic text — that is \
+         the whole point: the gate replaces a printer_v01 probe cycle with the \
+         compiler saying it directly. Got: {message}"
+    );
+}
+
+/// A clean self-contained `structure def` fence produces no violation.
+///
+/// The control for the phantom above: without it, a `reify_fence_violations`
+/// that flagged everything would pass the phantom test while being useless.
+#[test]
+fn a_clean_self_contained_reify_fence_is_not_reported() {
+    let md = "```reify\n\
+              structure def Clean {\n\
+              \x20   let blank = box(20mm, 20mm, 20mm)\n\
+              }\n\
+              ```\n";
+
+    assert!(
+        reify_fence_violations("chunks/x.md", md).is_empty(),
+        "a self-contained module that compiles clean must not be flagged"
+    );
+}
+
+/// The IDENTICAL phantom body under an exempt tag is never compiled.
+///
+/// This pins that the phantom is caught by the TAG contract and not
+/// incidentally — and it is the property the whole retag sweep rests on. If
+/// exempt tags were compiled anyway, retagging a fence would change nothing and
+/// the sweep would be theatre; if bare `reify` were matched by prefix, every
+/// `reify-fragment` in the corpus would be trial-compiled instead.
+#[test]
+fn the_same_phantom_body_under_an_exempt_tag_is_never_compiled() {
+    let phantom = "structure def PhantomRotate {\n\
+                   \x20   let blank = box(20mm, 20mm, 20mm)\n\
+                   \x20   let turned = rotate(blank, vec3(0.0, 0.0, 1.0), 45deg)\n\
+                   }";
+
+    // Control: bare `reify` DOES catch it (same body, one tag apart).
+    assert_eq!(
+        reify_fence_violations("chunks/x.md", &format!("```reify\n{phantom}\n```\n")).len(),
+        1,
+        "control: the bare `reify` tag must still catch the phantom"
+    );
+
+    for tag in ["reify-schematic", "reify-fragment", "reify-invalid", "text"] {
+        let md = format!("```{tag}\n{phantom}\n```\n");
+        assert!(
+            reify_fence_violations("chunks/x.md", &md).is_empty(),
+            "tag `{tag}` is exempt and its body must never reach the compiler — \
+             one tag apart from a body that IS reported"
+        );
+    }
+}
+
+/// A fence with a genuine PARSE error is a NAMED violation, not an
+/// unattributed panic.
+///
+/// `compile_source_with_stdlib` (helpers.rs:236) panics on parse errors, which
+/// would abort the whole gate with a backtrace naming no file and no fence —
+/// defeating the "names file + fence ordinal + diagnostics" contract at exactly
+/// the moment it matters most. The `_allow_parse_errors` variant folds parse
+/// errors into `.diagnostics` at Error severity instead, so a malformed fence
+/// reports like any other violation.
+#[test]
+fn a_reify_fence_with_a_parse_error_is_a_named_violation_not_a_panic() {
+    let md = "```reify\n\
+              structure def Broken {\n\
+              \x20   let x = 1mm\n\
+              ```\n";
+
+    let violations = reify_fence_violations("chunks/x.md", md);
+
+    assert_eq!(
+        violations.len(),
+        1,
+        "a malformed fence must be reported, not panicked on; got {violations:#?}"
+    );
+    assert!(
+        violations[0].contains("chunks/x.md") && violations[0].contains("fence #1"),
+        "even a parse failure must be attributed to file + fence ordinal, got: {}",
+        violations[0]
+    );
+}
+
+/// The violation echoes the fence body, so a failure is fixable without
+/// re-opening the chunk — the same courtesy `assert_module_compiles`
+/// (`geometry_chunk_smoke.rs:105`) already extends.
+#[test]
+fn the_violation_echoes_the_offending_fence_body() {
+    let md = "```reify\n\
+              structure def PhantomRotate {\n\
+              \x20   let turned = rotate(box(1mm, 1mm, 1mm), vec3(0.0, 0.0, 1.0), 45deg)\n\
+              }\n\
+              ```\n";
+
+    let violations = reify_fence_violations("chunks/x.md", md);
+    assert!(
+        violations[0].contains("structure def PhantomRotate"),
+        "the fence body must be echoed in the violation, got: {}",
+        violations[0]
+    );
+}
