@@ -161,12 +161,14 @@ Three distinct error shapes exist depending on which layer the error originates.
 A **wrong-typed** parameter is a schema violation, and gets a §2a error that
 says so — never a not-found. `{"testId": 3}` does not come back as
 `element with data-testid="3" not found`, which would send a harness author
-hunting in the DOM for an element that was never asked for; every
-testid-resolving tool rejects the type at its own boundary before resolution.
-That rule is stated once as THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS` in
-`bridge.ts`, and pinned **per tool** — the guards are independent copies, so one
-row per tool is what keeps any single one from regressing — by the
-`boundary guards above the escape` block in `debugBridge.test.tsx`.
+hunting in the DOM for an element that was never asked for; every tool that
+resolves an element from a caller-supplied value rejects the type at its own
+boundary before resolution — whether that value is `testId`, `open_menu`'s
+`name`, or the tree-node tools' `path`. That rule is stated once as THE BOUNDARY
+RULE on `RESOLVE_BY_TESTID_ERRORS` in `bridge.ts`, which carries the canonical
+enumeration, and is pinned **per guard copy** — the guards are independent
+copies, so one row per copy is what keeps any single one from regressing — by
+the `boundary guards above the escape` block in `debugBridge.test.tsx`.
 
 The Rust transport passes this object through verbatim: the JSON string
 returned by the JS bridge is parsed by `DebugBridge::resolve` →

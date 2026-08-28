@@ -4975,10 +4975,10 @@ type EscapeSite = {
  *
  * ONE ROW PER CALL SITE, NOT PER TOOL. Seven #5891 tools reach the testId row's
  * escape through the ONE shared `escapeAttrValue`, so covering that escape once
- * covers all seven. The per-TOOL boundary guards ABOVE the escape are the
- * opposite shape — eight independent hand-written copies — so they are tabled
- * separately, one row per tool, in the `boundary guards above the escape` block
- * below.
+ * covers all seven. The boundary guards ABOVE the escape are the opposite shape
+ * — nine independent hand-written copies across ten tool names — so they are
+ * tabled separately, one row per guard COPY, in the `boundary guards above the
+ * escape` block below.
  */
 const ESCAPE_SITES: EscapeSite[] = [
   // resolveByTestId's testId arm — the busiest site: all SEVEN #5891 scoped
@@ -5185,18 +5185,28 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
 
   /**
    * THE BOUNDARY RULE on `RESOLVE_BY_TESTID_ERRORS` in bridge.ts: every tool
-   * that resolves by testid rejects a wrong-typed param at its OWN boundary,
-   * BEFORE resolution — so `{"testId": 3}` can never coerce to `"3"` and be
-   * answered with a claim about the DOM.
+   * that resolves an element from a caller-supplied value rejects a wrong-typed
+   * param at its OWN boundary, BEFORE resolution — so `{"testId": 3}` can never
+   * coerce to `"3"` and be answered with a claim about the DOM. Most of them
+   * resolve by `testId`; `open_menu` resolves by `name` and the tree-node tools
+   * by `path`, and the rule binds those identically.
    *
    * These are a separate table from `ESCAPE_SITES` because they are a different
    * SHAPE of duplication. The escape is one shared helper, so the table above is
    * one row per CALL SITE and seven tools ride on its `resolveByTestId testId`
-   * row. The guards are EIGHT independent hand-written copies, so a row here
-   * that covered only one of them would leave the other seven free to regress
-   * with the suite green — which is what #6178's review measured. One row per
-   * name in THE BOUNDARY RULE's list, therefore, and a ninth tool joining that
-   * list needs a ninth row.
+   * row. The guards are NINE independent hand-written copies, so a row here that
+   * covered only one of them would leave the other eight free to regress with
+   * the suite green — which is what #6178 measured for the five guards it
+   * rewrote, and its review measured again for the ninth.
+   *
+   * The unit is therefore the guard COPY, not the tool name: nine copies, TEN
+   * rows across ten tool names. `driveTreeNode` carries TWO rows off its single
+   * copy because it interpolates two different testid prefixes (`chevron-` and
+   * `constraint-row-`), and `collapse_tree_node` carries NONE because it shares
+   * `expand_tree_node`'s copy. Maintenance rule: a new tool needs its own row
+   * unless it demonstrably shares an existing copy — in which case name the
+   * sharer here, so the count stays arithmetically checkable against THE
+   * BOUNDARY RULE's enumeration in bridge.ts.
    *
    * Each row mounts a DECOY carrying the coerced value as its literal testid,
    * so a reverted guard does not merely misword an error — it finds and DRIVES a
@@ -5206,15 +5216,19 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * reply to a malformed REQUEST), `click_element` and `focus_element` answer
    * `{ok: true}` having clicked/focused the decoy, `scroll` answers
    * `{ok: true, scrollTop: 40}` having really scrolled it, and `open_menu`
-   * answers `{ok: true, open: 3}`. Without a decoy every one of those would be
-   * the far milder `element with data-testid="3" not found`, so the decoy is
-   * what raises the stakes from wrong-diagnostic to wrong-element-driven.
+   * answers `{ok: true, open: 3}`. The WORST entry is `expand_tree_node`, still
+   * unguarded when the review measured it: it answers
+   * `{ok: true, path: 3, expanded: false}` having really CLICKED the decoy — it
+   * both drives a real element and reports success, where `open_menu` merely
+   * reported success. Without a decoy every one of those would be the far
+   * milder `element with data-testid="3" not found`, so the decoy is what
+   * raises the stakes from wrong-diagnostic to wrong-element-driven.
    *
-   * The last three rows — `element_screenshot`, `wait_for_selector` and
-   * `wait_for`'s selector arm — guarded the type BEFORE #6178 and are unchanged
-   * by it. They are here because the argument above is about the guards being
-   * independent copies, which is as true of the three this task did not touch as
-   * of the five it did.
+   * Three rows — `element_screenshot`, `wait_for_selector` and `wait_for`'s
+   * selector arm — guarded the type BEFORE #6178 and are unchanged by it. They
+   * are here because the argument above is about the guards being independent
+   * copies, which is as true of the three this task did not touch as of the five
+   * it rewrote and the ninth its review added.
    *
    * Run ONCE, not per `ESCAPE_ARMS` arm: the guard returns before
    * `escapeAttrValue` is reached, and `escapeAttrValue` coerces with `String(v)`

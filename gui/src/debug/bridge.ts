@@ -69,23 +69,36 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // never be the answer to a WRONG-TYPED request: `{"testId": 3}` would otherwise
 // coerce to `"3"` and come back as `element with data-testid="3" not found`,
 // sending a harness author hunting in the DOM instead of fixing the payload.
-// Every tool that resolves by testid therefore rejects a non-string at its OWN
-// boundary, BEFORE resolution, reusing that tool's existing required-param
-// wording rather than adding a seventh error constant — dom_query,
-// click_element, focus_element, scroll, element_screenshot, wait_for_selector
-// and wait_for's selector arm all do, and `open_menu` gives its `name` the same
-// treatment. Six spell the guard `typeof testId !== 'string' || testId === ''`;
-// element_screenshot's `!testId || typeof testId !== 'string'` is the same
-// predicate written the other way round, kept as it stood. Those guards are also
-// what makes `resolveByTestId(testId: string, …)` honest: the call sites used to
-// reach it through a `params.testId as string` cast that the JSON payload could
-// falsify. `escapeAttrValue`'s `String()` coercion sits BELOW this boundary as a
-// backstop, not as the validation (task #6178 review amendment).
+// Every tool that resolves by a caller-supplied value therefore rejects a
+// non-string at its OWN boundary, BEFORE resolution, reusing that tool's
+// existing required-param wording rather than adding a seventh error constant.
+// The canonical enumeration is TEN tool names served by NINE guard copies:
+// dom_query, click_element, focus_element, scroll, element_screenshot,
+// wait_for_selector and wait_for's selector arm each guard `testId`; open_menu
+// guards `name`; and expand_tree_node and collapse_tree_node SHARE one guard,
+// on `path`, because both are served by the single `driveTreeNode` function.
+// EIGHT of the nine spell the guard `typeof … !== 'string' || … === ''` — six
+// on `testId`, one on `name`, one on `path`; the ninth, element_screenshot's
+// `!testId || typeof testId !== 'string'`, is the same predicate written the
+// other way round, kept as it stood. `open_menu`'s `name` and `driveTreeNode`'s
+// `path` are the two guards on a param not called `testId`. (Grep
+// `typeof .* !== 'string'` in this file and you will also hit wait_for's
+// `predicate.path is required for store kind` — that one is NOT in this list:
+// a store path is a dotted store address, never interpolated into a selector.)
+// Those guards are also what makes `resolveByTestId(testId: string, …)` honest:
+// the call sites used to reach it through a `params.testId as string` cast that
+// the JSON payload could falsify. `escapeAttrValue`'s `String()` coercion sits
+// BELOW this boundary as a backstop, not as the validation (task #6178, and its
+// review amendment for driveTreeNode).
 //
 // The guards are INDEPENDENT COPIES, not one shared helper, so each needs its
-// own coverage or it can be reverted alone with the suite green. One row per
-// tool lives in the `boundary guards above the escape` block of
-// debugBridge.test.tsx; add a row there when a new tool joins this list.
+// own coverage or it can be reverted alone with the suite green. That makes the
+// unit of coverage the guard COPY, not the tool name: the `boundary guards above
+// the escape` block of debugBridge.test.tsx carries one row per copy — ten rows
+// for nine copies, since driveTreeNode's single copy interpolates two different
+// testid prefixes and so earns a row each. A new tool joining this list needs
+// its own row unless it demonstrably SHARES an existing copy, as
+// collapse_tree_node shares expand_tree_node's — in which case name the sharer.
 export const RESOLVE_BY_TESTID_ERRORS = {
   notFound: (testId: string) => `element with data-testid="${testId}" not found`,
   notFoundForViewport: (testId: string, id: string) =>
@@ -273,7 +286,9 @@ function pickFeaChannelSelect(
  * caller-supplied value that reaches this helper has already passed a `typeof`
  * guard at its OWN tool boundary — see THE BOUNDARY RULE on
  * `RESOLVE_BY_TESTID_ERRORS` — which is what turns a wrong-typed request into
- * `testId is required` rather than into any diagnostic about the DOM.
+ * that tool's own required-param error (`testId is required`, or `path is
+ * required` for the tree-node tools) rather than into any diagnostic about the
+ * DOM.
  */
 function escapeAttrValue(v: string): string {
   const s = String(v);
@@ -589,9 +604,17 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
    * then re-reads the state post-click for the truthful return value.
    */
   function driveTreeNode(params: Record<string, unknown>, wantExpanded: boolean): unknown {
-    const path = params.path as string | undefined;
-    if (!path) return { error: 'path is required' };
+    // Boundary guard, per THE BOUNDARY RULE on RESOLVE_BY_TESTID_ERRORS: `path`
+    // is interpolated into a `[data-testid=…]` lookup below, so a non-string
+    // must be rejected HERE rather than coerced into a claim about the DOM. The
+    // wording is unchanged, so nothing previously rejected is newly accepted —
+    // `undefined`, `''` and `0` all still get this message.
+    const path = params.path;
+    if (typeof path !== 'string' || path === '') return { error: 'path is required' };
 
+    // `panel` needs no such guard: the equality check below already rejects any
+    // non-string with `unknown panel '3'`, a schema-violation answer rather than
+    // a DOM claim — so it is type-safe as it stands and only `path` gained one.
     const panelParam = params.panel ?? 'design';
     if (panelParam !== 'design' && panelParam !== 'constraint') {
       return { error: `unknown panel '${String(panelParam)}'; expected 'design' or 'constraint'` };
