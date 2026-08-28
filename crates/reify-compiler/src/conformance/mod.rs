@@ -1391,72 +1391,47 @@ fn quantity_slot(ty: &Type) -> Option<&Type> {
 }
 
 /// Apply the quantity-slot rule at one shape arm, emitting
-/// [`DiagnosticCode::ArgTypeMismatch`] at `ctx.severity` when it fires. Rule:
-/// `crates/reify-core/src/ty.rs`.
+/// [`DiagnosticCode::ArgTypeMismatch`] at `ctx.severity` when it fires.
 ///
-/// Callers MUST invoke this only AFTER their own family/arity check has passed.
-/// That ordering plus the [`quantity_slot`] gate is how PRD 4's D4-5
-/// unknown-ness fence survives at these arms: a placeholder scalar carries no
-/// slot and so never reaches the comparison, and a `String` is rejected before
-/// it. Routing all three arms here also keeps the diagnostic
-/// [`DiagnosticCode::ArgTypeMismatch`] at every one, leaving the `Vector` arm's
-/// bespoke `TypeNotConformingToVector` owning ARITY/FAMILY failures only.
+/// Rule, rationale and residuals: the "Point / Vector quantity-slot convention"
+/// section of `crates/reify-core/src/ty.rs`. This is its implementation, not a
+/// second source of truth.
 ///
-/// The CONFLICT test is spelled out inline rather than delegated to a
-/// two-`&Type` predicate: the rule is ASYMMETRIC, so a transposed pair would
-/// silently invert it, and only asking each side's own
-/// `*_quantity_slot_dimension` by name makes the direction structurally evident
-/// here rather than enforced by a doc comment elsewhere. The comparison is the
-/// derived `PartialEq` on [`DimensionVector`] — the same primitive the
-/// bare-`Scalar` leaf rule uses, so the two rules provably agree on "the same
-/// dimension".
+/// # Caller contract
 ///
-/// # Why the emission is INLINE here rather than its own emitter fn
+/// Call this ONLY after the arm's own family/arity check has passed, and ONLY
+/// from an arm whose `param_type` is a quantity-carrying shape — the
+/// `debug_assert!` below is that second half, made loud in tests rather than
+/// left to no-op silently. That ordering plus the [`quantity_slot`] gate is how
+/// PRD 4's D4-5 unknown-ness fence survives at these arms: a placeholder scalar
+/// carries no slot and so never reaches the comparison, and a `String` is
+/// rejected before it. Routing all three arms here also keeps the diagnostic
+/// `ArgTypeMismatch` at every one, leaving the `Vector` arm's bespoke
+/// `TypeNotConformingToVector` owning ARITY/FAMILY failures only.
 ///
-/// Everything the message needs — both whole types and both quantity slots — is
-/// already bound and non-optional inside the `if let` below. A separate emitter
-/// could only take those values back as parameters or re-derive them: taking
-/// them back means four consecutive `&Type` parameters in alternating param/arg
-/// order, any pair of which a call site could transpose with no type error while
-/// emitting a message stating the exact opposite of the rule that fired;
-/// re-deriving them means extracting the same two slots twice AND an
-/// `Option` arm its only caller has already excluded, whose release-build
-/// behaviour would be to drop the diagnostic silently. Emitting where the
-/// values are bound has neither hazard — there is no parameter list to transpose
-/// and no unreachable arm to mis-handle.
+/// The rule is ASYMMETRIC, so each side is asked by its own
+/// `*_quantity_slot_dimension` by NAME and the emission is INLINE, where both
+/// types and both slots are already bound — leaving no parameter list of
+/// adjacent `&Type`s for a call site to transpose. The comparison itself is the
+/// derived `PartialEq` on [`DimensionVector`], the same primitive the bare-`Scalar`
+/// leaf rule uses.
 ///
-/// # Why this is not [`emit_arg_type_mismatch`]
-///
-/// That emitter's whole-type rendering misleads here: at the `Matrix`/`Tensor`
-/// arm a `Tensor2x3` arg at a `Matrix3x3` param is ACCEPTED (Rule 3, and no
-/// arity check), so a message naming those two types points at the one
-/// difference that is fine and never names the dimension that caused the
-/// rejection. The code stays `ArgTypeMismatch` — that contract is pinned by the
-/// fixtures and stated in `crates/reify-core/src/ty.rs`.
-///
-/// The parenthetical therefore claims ACCEPTANCE, not shape EQUALITY: two of the
-/// three arms reach here with a genuinely different shape — the `Matrix`/`Tensor`
-/// arm applies no arity check at all (a `Tensor2x3` arg at a `Matrix3x3` param),
-/// and the `Vector` arm admits a rank-1 `Type::Tensor` regardless of its element
-/// count. Wording it as "conforms in shape to" would stop the reader chasing the
-/// shape difference by telling them something false about it.
-///
-/// It names the COMPARED SHAPES rather than "the arg type" / "the param type",
-/// because on the wrapper recursion those two are NOT the types the user wrote.
-/// `walk_param_against_arg_type`'s `Option`/`List`/`Set`/`Map` arms re-enter on
-/// their inner types, so a `List<Vector3<Mass>>` arg at a `List<Vector3<Length>>`
-/// param reaches here with the ELEMENT types — and a definite-article claim about
-/// "the arg type" would then name a type appearing nowhere in the source.
-/// "The compared shape" is true at every arm, wrapped or not. Naming BOTH (what
-/// the user wrote AND what was compared) would need the outermost pair threaded
-/// through [`WalkCtx`]; that is a larger change than this wording buys, so the
-/// message is instead accurate about the one pair it does name.
-///
-/// The rendering is pinned whole exactly once, by
-/// `dimensionless_quantity_param_rejects_dimensioned_vector_arg`; every other
-/// probe pins only the two discriminating `has quantity` / `requires quantity`
-/// fragments (see `assert_quantity_slot_conflict`).
+/// Two wording choices below are deliberate and are pinned by test, not by this
+/// comment: the parenthetical claims ACCEPTANCE rather than shape EQUALITY (two
+/// arms reach here with a genuinely different shape), and it names "the compared
+/// shape" rather than "the arg type", which on the `Option`/`List`/`Set`/`Map`
+/// wrapper recursion is the INNER type, not the one the user wrote.
+/// `assert_quantity_slot_conflict` pins the discriminating fragments at every
+/// probe and `dimensionless_quantity_param_rejects_dimensioned_vector_arg` pins
+/// the whole rendering once.
 fn emit_if_quantity_conflict(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    debug_assert!(
+        quantity_slot(param_type).is_some(),
+        "emit_if_quantity_conflict must be called from a quantity-carrying param arm \
+         (Vector/Point/Matrix/Tensor), got param type '{param_type}'. A shape arm added \
+         by copy/paste whose family `quantity_slot` does not cover would otherwise \
+         compile, run, and never emit, with no signal."
+    );
     if let (Some(param_quantity), Some(arg_quantity)) =
         (quantity_slot(param_type), quantity_slot(arg_ty))
         && let (Some(param_dim), Some(arg_dim)) = (
@@ -7424,39 +7399,19 @@ mod tests {
     /// after S4; what changes is the REJECTION leg in test (a).
     #[test]
     fn vector_param_accepts_dimensionless_vector_arg() {
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        // A dimensionless Vec3 arg: `vec3(0.0, 0.0, 1.0)` compiles to Vector{n:3, Real}.
-        let compiled_arg = CompiledExpr::value_ref(
-            ValueCellId::new("Test", "v"),
+        assert_quantity_slot_clean(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            // A dimensionless Vec3 arg: `vec3(0.0, 0.0, 1.0)` compiles to Vector{n:3, Real}.
             Type::Vector {
                 n: 3,
                 quantity: Box::new(Type::dimensionless_scalar()),
             },
-        );
-        let param_type = Type::vec3(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        });
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_fn_arg_conformance(
-            &param_type,
             "axis",
-            &compiled_arg,
-            SourceSpan::empty(0),
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &mut diagnostics,
-        );
-        assert_eq!(
-            diagnostics.len(),
-            0,
-            "dimensionless Vector3 arg must be accepted for Vector3<Length> param \
-             (loose-quantity convention), got {}: {:?}",
-            diagnostics.len(),
-            diagnostics,
+            "a dimensionless Vector3 arg must be accepted for a Vector3<Length> param — the \
+             ARG side of the rule is TOLERANT, so a dimensionless slot names no dimension \
+             (loose-quantity convention).",
         );
     }
 
@@ -7522,38 +7477,18 @@ mod tests {
     /// intentional. Sibling of `vector_param_accepts_dimensionless_vector_arg`.
     #[test]
     fn point_param_accepts_dimensionless_point_arg() {
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let compiled_arg = CompiledExpr::value_ref(
-            ValueCellId::new("Test", "p"),
+        assert_quantity_slot_clean(
+            Type::point3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
             Type::Point {
                 n: 3,
                 quantity: Box::new(Type::dimensionless_scalar()),
             },
-        );
-        let param_type = Type::point3(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        });
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_fn_arg_conformance(
-            &param_type,
             "origin",
-            &compiled_arg,
-            SourceSpan::empty(0),
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &mut diagnostics,
-        );
-        assert_eq!(
-            diagnostics.len(),
-            0,
-            "dimensionless Point3 arg must be accepted for Point3<Length> param \
-             (loose-quantity convention), got {}: {:?}",
-            diagnostics.len(),
-            diagnostics,
+            "a dimensionless Point3 arg must be accepted for a Point3<Length> param — the \
+             ARG side of the rule is TOLERANT, so a dimensionless slot names no dimension \
+             (loose-quantity convention).",
         );
     }
 
@@ -7628,12 +7563,17 @@ mod tests {
         );
     }
 
-    /// The ONE scaffold every task 5766 / 6159 quantity-slot probe drives the
-    /// walker through: run `arg_ty` against `param_type` on the empty-registry
+    /// Run `arg_ty` against `param_type` on the empty-registry
     /// `check_fn_arg_conformance` entry point and return whatever it emitted.
     ///
-    /// Both assertions below and every probe that calls them share this, so a
-    /// future change to how these probes reach the walker is made in one place.
+    /// Every probe of the QUANTITY-SLOT rule (tasks 5766 / 6159) reaches the
+    /// walker through here, via [`assert_quantity_slot_clean`] or
+    /// [`assert_quantity_slot_conflict`] — accepting and rejecting legs alike —
+    /// so a future change to how they reach it is made in one place. The
+    /// hand-rolled `check_fn_arg_conformance` call sites remaining in this module
+    /// pin a DIFFERENT rule (the task 5465 family/arity checks, whose
+    /// expectations are `TypeNotConformingToVector` rather than a quantity
+    /// conflict) and are deliberately not routed here.
     fn quantity_slot_diags(param_type: Type, arg_ty: Type, arg_name: &str) -> Vec<Diagnostic> {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
         let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
@@ -7676,48 +7616,28 @@ mod tests {
     /// EVERY pair in this signature runs PARAM-then-ARG — the two `Type`s, then
     /// the two expected quantity renderings — so a call site reads in one
     /// direction top to bottom and the strings cannot silently run counter to the
-    /// types directly above them. That is the same property
-    /// [`emit_if_quantity_conflict`] holds on the production side; here it is
-    /// legibility rather than safety, since a transposed pair is caught by the
-    /// assertions below.
+    /// types directly above them.
     ///
-    /// Those two renderings are the DISCRIMINATING part of the message and are
-    /// written out by hand at each probe rather than derived from the `Type`s
-    /// under test: an expectation computed by the same extraction the emitter
-    /// uses could not detect a transposition. They also pin the QUANTITY phrasing
-    /// that separates this emitter from `emit_arg_type_mismatch`, whose
-    /// whole-type rendering leads with the `Tensor2x3`-vs-`Matrix3x3` difference
-    /// the `Matrix`/`Tensor` arm deliberately ACCEPTS.
-    ///
-    /// What this deliberately no longer does is pin the WHOLE rendering at every
-    /// call site. That cost nine hand-copied expectations differing only in four
-    /// substituted `Display` values, so any rewording of one diagnostic forced
-    /// nine mechanical edits — the same lockstep duplication task 6159 removed on
-    /// the production side by collapsing three inline gate-then-emit copies into
-    /// [`emit_if_quantity_conflict`]. The transposition hazard those nine were
-    /// buying against is now closed AT THE SOURCE instead: that fn emits inline,
-    /// where both types and both quantity slots are already bound, so there is no
-    /// parameter list of adjacent `&Type`s left to swap. The whole message is
-    /// still pinned exactly ONCE,
-    /// by `dimensionless_quantity_param_rejects_dimensioned_vector_arg`, whose
-    /// two quantities differ asymmetrically (`Scalar[m]` vs `Real`) so a
+    /// The two renderings are the DISCRIMINATING part of the message and are
+    /// written by hand at each probe rather than derived from the `Type`s under
+    /// test: an expectation computed by the same extraction the emitter uses
+    /// could not detect a transposition. They also pin the QUANTITY phrasing that
+    /// separates this emitter from `emit_arg_type_mismatch`. The label
+    /// expectation IS derived from those same two hand-written quantities — a
+    /// fixed two-slot rendering, so a transposition still swaps both
+    /// substitutions — and the WHOLE message is pinned exactly once, by
+    /// `dimensionless_quantity_param_rejects_dimensioned_vector_arg`, whose two
+    /// quantities differ asymmetrically (`Scalar[m]` vs `Real`) so a
     /// transposition there cannot render as a no-op.
     ///
-    /// The label expectation is DERIVED from the same two hand-written quantities
-    /// rather than hand-written again: it is a fixed two-slot rendering, so
-    /// deriving it still catches a transposition (the two substitutions would
-    /// swap) without duplicating the wording nine more times.
+    /// For a probe whose types are WRAPPERS (the `List<Vector3<…>>` recursion
+    /// probe), the quantities named are the INNER ones the rule fires on.
     ///
-    /// For a probe whose param/arg types are WRAPPERS (the `List<Vector3<…>>`
-    /// recursion probe), the quantities named are the INNER ones the rule
-    /// actually fires on — which is itself worth pinning.
-    ///
-    /// This is where the Error half of the rule's severity split is pinned — the
-    /// fn-call entry point this scaffold drives sets `Severity::Error` while the
-    /// ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α), which
-    /// the `.ri` fixtures in `struct_ctor_field_conformance_tests.rs` assert.
-    /// Both halves, and why the fn-call half is not reachable from a `.ri`
-    /// fixture today, are recorded in `crates/reify-core/src/ty.rs`.
+    /// This is where the ERROR half of the rule's severity split is pinned: the
+    /// fn-call entry point this scaffold drives sets `Severity::Error`, while the
+    /// ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α) and is
+    /// pinned by the `.ri` fixtures in `struct_ctor_field_conformance_tests.rs`.
+    /// Both halves are recorded in `crates/reify-core/src/ty.rs`.
     fn assert_quantity_slot_conflict(
         param_type: Type,
         arg_ty: Type,
@@ -8008,9 +7928,19 @@ mod tests {
     /// `dimensioned_quantity_param_accepts_generic_vector_arg`). Without this
     /// probe, adding `Type::Int => Some(DimensionVector::DIMENSIONLESS)` to
     /// [`param_quantity_slot_dimension`] leaves every other test in both files
-    /// green — and `Vector3<Int>` IS a writable param spelling
-    /// (`type_resolution.rs` maps `"Int"` to `Type::Int`), so the cell is
-    /// reachable, not hypothetical.
+    /// green.
+    ///
+    /// This is a fence on the PREDICATE's shape, not on a reachable source cell:
+    /// `Vector3<Int>` is NOT writable in `.ri`. `resolve_parameterized_builtin_type`'s
+    /// `"Vector3" if type_args.len() == 1` arm routes a concrete type-arg through
+    /// `resolve_type_alias_expr_to_dimension` → `resolve_dimension_type`, which
+    /// accepts `NAMED_DIMENSIONS` plus `"Dimensionless"` / `"Real"` only — `Int`
+    /// is in neither, so `param v : Vector3<Int>` is a resolution error and never
+    /// yields a `Type::Int` param quantity. (The `resolve_type_name` `"Int"` →
+    /// `Type::Int` mapping applies to a BARE type position, `param n : Int`, not
+    /// to a dimension slot.) `Type::Int` quantity slots arise on the ARG side
+    /// only, via `math_fn_result_type`'s `vec3`/`point3` arm — which is what
+    /// fence (b) directly above covers.
     ///
     /// Note what this does NOT say: the param-side strictness ruling is about a
     /// dimensionless `Type::Scalar` ONLY. `Int` is a different type, not a
