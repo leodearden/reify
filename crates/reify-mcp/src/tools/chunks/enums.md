@@ -107,7 +107,7 @@ Payloads shipped in v0.6; these bounds apply to the current surface.
 `Option<T>` with `some(value)` / `none` is compiler-intrinsic, not an enum — it has
 no `enum` declaration and no variants you can match on. An `Option` is read with the
 **recovery combinators**, which are prelude-registered (no import needed):
-```reify
+```reify-fragment
 param base : Length = 1mm
 param coating : Option<Length> = some(0.25mm)
 

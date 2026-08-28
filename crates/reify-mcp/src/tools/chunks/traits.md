@@ -78,7 +78,7 @@ Inside a trait instance `fn`, bare member names (`diameter`, `length`) are sugar
 
 **Required (bodyless) function** — no body; every conformer must supply a matching `fn`, or a conformance error is raised:
 
-```reify
+```reify-fragment
 fn loss_factor(self) -> Real
 ```
 
@@ -95,13 +95,13 @@ trait Defaultable {
 
 **Instance dispatch** — `obj.(Trait::fn)(args)`: resolves to the conformer's associated function (trait default or per-conformer override).
 
-```reify
+```reify-fragment
 let wetted = pin.(Cylindrical::lateral_area)()
 ```
 
 **Static dispatch** — `Trait::fn(args)`: calls a trait-static function directly; no receiver or conformance relationship required.
 
-```reify
+```reify-fragment
 let gap : Length = Defaultable::make_default()
 let wide : Length = Defaultable::scaled(3.0)
 ```
