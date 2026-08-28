@@ -138,8 +138,8 @@ the main checkout and any lane are interchangeable.
 
 | Subcommand | Effect | Exit 0 | Non-zero |
 |---|---|---|---|
-| `check` | Read-only. Never writes config anywhere. Reads `rerere.enabled` / `rerere.autoupdate` at **two scopes** — the effective value for `target_dir` *and* the shared (`--local`) fleet default it may be masking — then sweeps every `config.worktree` in the store, the **main checkout's own** as well as every linked worktree's. | safe | **1** — rerere effectively armed |
-| `arm` | Idempotently writes `rerere.enabled=false` + `rerere.autoupdate=false` to shared local config, then re-verifies via `check`. Never prunes `rr-cache`. | disarmed | **2** — shared config pinned, but an out-of-reach override survives; **any other non-zero** — a failure of this run |
+| `check` | Read-only. Never writes config anywhere. Reads `rerere.enabled` / `rerere.autoupdate` at **two scopes** — the effective value for `target_dir` *and* the shared (`--local`) fleet default it may be masking — then sweeps every `config.worktree` in the store, the **main checkout's own** as well as every linked worktree's. | safe **and fully verified** | **1** — rerere effectively armed; **3** — UNVERIFIABLE: nothing found armed, but ≥1 worktree's state could not be determined |
+| `arm` | Idempotently writes `rerere.enabled=false` + `rerere.autoupdate=false` to shared local config (`--replace-all`), then re-verifies via `check`. Never prunes `rr-cache`. | disarmed | **2** — shared config pinned, but something out of reach survives: an override `arm` cannot clear, *or* a lane it cannot verify; **any other non-zero** — a failure of this run |
 | `scan-locks` | Read-only census of `MERGE_RR.lock` across the **main checkout and every linked worktree**, classified STALE vs OPERATION-IN-PROGRESS. Never deletes. | clean | **1** — lock(s) found |
 
 All diagnostics go to **stderr**; stdout stays empty so the exit code is the machine-readable signal.
@@ -170,6 +170,73 @@ script could offer. On exit 2 it warns and points here.
 The `config.worktree` sweep is itself gated on `extensions.worktreeConfig` being true, because git
 does not read those files at all while the extension is off — an inert plant would otherwise produce
 a false ARMED that `arm` could never clear.
+
+`arm` also returns 2 for the *other* out-of-reach case: a lane the guard could not verify at all
+(`check` exit 3, below). The shared write still landed; nothing is known to be armed; but the store
+was not fully verified. Advisory for the same reason — `arm` writes `--local` and cannot repair a
+lane whose config it cannot read, so aborting `setup-dev.sh` over it would help no one. Its stderr
+says which of the two it is: *"rerere is STILL armed"* vs *"N worktree(s) could not be verified"*.
+
+### `check` exit 3 — UNVERIFIABLE is not safe
+
+The sweep skips a lane it cannot read — an unreadable `config.worktree`, or an `include.path` chain
+git cannot resolve (circular, or an unreadable target: both exit 128 with **no stdout**, which is
+byte-for-byte indistinguishable from "no rerere keys here"). It prints a `WARNING: … UNKNOWN, not
+verified safe` and continues, so one broken lane cannot mask the rest.
+
+That skip used to leave the exit code at **0**, which made `check` **fail-open on its only
+machine-readable channel**: a store whose one armed lane was a lane the guard could not read answered
+"the fleet is clean". Exit **3** is now that third state — *nothing found armed, but not everything
+was checked*.
+
+- **`ARMED` wins over `UNVERIFIABLE`.** A store that is both exits **1**: that is the half an operator
+  can act on, and it is how `arm` tells "an override survived my write" from "I could not read a lane".
+- **3 is not 1**, deliberately. `arm` writes `--local` and cannot clear a per-worktree file, so folding
+  UNKNOWN into ARMED would strand the store on a permanent failure — the same trap the
+  `extensions.worktreeConfig` gate avoids.
+- **A consumer must treat any non-zero as "not verified safe"**, and only `1` as "armed". This matters
+  most for the periodic-probe use in §8: reading `!= 1` as clean re-opens the fail-open hole.
+
+### Stale worktree entries are inert, not armed
+
+The sweep walks `<common-git-dir>/worktrees/*/config.worktree` straight off disk. When a lane's
+**working tree** is deleted without `git worktree prune`, the administrative dir — `config.worktree`
+included — survives, and git marks the entry `prunable gitdir file points to non-existent location`.
+No git command can run in that worktree again, so git will never read that file again; reporting it
+would be an inert-config false positive of the same class (and the same uniquely damaging shape) as
+the `extensions.worktreeConfig` case. Reify's pool creates and destroys lanes continuously
+(`warm-lane-gc.sh`), so a prunable entry is a realistic transient — measured on 2026-08-28, two
+read-only passes over the live store minutes apart saw **0** and then **1** (`_merge-8af90d00`, a
+merge lane whose working tree was gone but whose admin dir had not yet been pruned) out of 242
+entries. Neither is a defect; the churn is the point.
+
+Each linked entry is therefore gated on liveness first, using git's own prunability test — does the
+path named by the entry's `gitdir` file still exist — read with a bash redirect rather than a
+`git worktree list --porcelain` fork (whose output would then need a reverse mapping from worktree
+path back to admin-dir name; they are not 1:1, since git de-duplicates names). A stale entry is
+skipped **silently** and is **not** counted as UNVERIFIABLE: it is verified irrelevant, not
+unverifiable, and counting it would pin a lane-churning pool at exit 3 forever. The gate is
+deliberately *not* conditioned on `locked` — lockedness stops `git worktree prune`, but it does not
+make an absent working tree readable; a locked worktree on a detached removable device is skipped
+while absent and reported again once it is back, since `check` is re-run rather than one-shot.
+
+### `arm` writes with `--replace-all`
+
+`git config --add rerere.enabled true` — precisely what an unidentified re-armer (§7) would leave
+behind — makes the shared key **multi-valued**, and a plain single-value write then fails:
+measured on git 2.43.0, `git config --local rerere.enabled false` against a `true`/`true` shared
+config reports `error: cannot overwrite multiple values with a single value` and exits 5. That was
+not inert: `arm` returned 1, and `setup-dev.sh`'s `*` arm turns any non-zero into `err` + `exit 1`,
+killing the build-accelerator systemd block, npm and the smoke test for every developer — while the
+fleet stayed **armed**, the exact outcome the guard exists to prevent.
+
+`--replace-all` is a strict superset of the old write: **byte-identical** output for the unset and
+single-valued cases (so idempotence is unchanged), and it collapses a multi-valued key to one
+`false` instead of failing. The idempotence probe reads `--get-all`, not `--get`, for the matching
+reason: `--get` resolves a multi-valued key to its **last** value, so a shared config holding
+`enabled = true` followed by `enabled = false` would answer "false" and skip the write, leaving the
+stale `true` line one `--unset` away from re-arming the fleet. The probe still deliberately omits
+`--includes` — see below.
 
 ### Why a guard, and not a one-time `git config` write
 
@@ -256,8 +323,9 @@ Three properties of that fix are deliberate, and a future editor should not tidy
   "no matching key" answer and stays clean, anything else warns (naming the worktree and the config
   path) and the sweep continues so one broken lane cannot mask the rest. It is not folded into
   `armed`, because `arm` cannot fix a lane the guard merely fails to read — the same trap the
-  `extensions.worktreeConfig` gate avoids. A *missing* include target is benign (git ignores it) and
-  stays silent.
+  `extensions.worktreeConfig` gate avoids; it surfaces as `check` **exit 3** instead, so "never
+  clean" holds on the exit code and not merely in the prose. A *missing* include target is benign
+  (git ignores it) and stays silent.
 
 Pinned by `test_git_rerere_guard.sh` (g-h), (g-i) and (g-j), each with its negative control asserted
 before the plant and its fixture preconditions measured.
@@ -354,7 +422,10 @@ not to hold for even a day — which is the whole argument for shipping a re-run
    per-run re-assertion **narrows the window between re-arm and disarm — it does not close it.** Any
    resolution recorded inside that window still lands in the one shared cache. Closing it requires
    naming the writer, which requires sampling the effective config over time rather than reading it
-   once; `check` is the natural probe, since it already exits 1 on an armed store.
+   once; `check` is the natural probe, since it already exits 1 on an armed store. **Such a probe
+   must treat any non-zero as "not clean", not just 1** — `check` exit **3** means it could not
+   determine some lane's state at all (§6), and reading that as healthy would put the fail-open hole
+   back in the one place the probe exists to close.
 
    `Hypothesis:` the store could have been re-armed through an `include.path` chain rather than a
    direct key — a shape `check` was blind to until the round documented in §6, and one that would

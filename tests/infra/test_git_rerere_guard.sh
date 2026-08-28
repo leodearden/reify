@@ -1165,11 +1165,28 @@ assert "(g-j-b) ...reporting that lane as UNKNOWN rather than verified safe" \
 # merely fails to read, so folding this into the armed verdict would strand the
 # store on a permanent failure — the trap the extensions.worktreeConfig gate
 # already avoids.
-assert "(g-j-b) an unverifiable lane is UNKNOWN, not ARMED — check still exits 0" \
-    bash "$GUARD" check "$GJ_REPO"
+#
+# But UNKNOWN is NOT "safe" either, and the exit code is `check`'s ONLY
+# machine-readable channel: returning 0 here made it FAIL-OPEN for exactly the
+# use the runbook proposes for it (a periodic probe for the unidentified
+# re-armer), so a store whose one armed lane is a lane the guard cannot read
+# would answer "the fleet is clean".  Hence a distinct third code, 3.
+_gj_status=0
+bash "$GUARD" check "$GJ_REPO" >/dev/null 2>&1 || _gj_status=$?
+
+assert "(g-j-b) an unverifiable lane exits 3 (UNVERIFIABLE), NOT 0 (safe)" \
+    test "$_gj_status" -eq 3
+
+assert "(g-j-b) ...and NOT 1 either — UNKNOWN is still not ARMED" \
+    test "$_gj_status" -ne 1
+
+assert "(g-j-b) ...and the verdict counts the unverifiable worktrees" \
+    bash -c "bash '$GUARD' check '$GJ_REPO' 2>&1 >/dev/null | grep -qF 'UNVERIFIABLE: 1 worktree(s)'"
 
 assert "(g-j-b) ...and no ARMED line is printed for it" \
     bash -c "! bash '$GUARD' check '$GJ_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtA'\""
+
+unset _gj_status
 
 # (g-j-c) One broken lane must not abort the sweep and mask every LATER lane.
 # The glob is lexical, so wtA (broken) is traversed before wtB (genuinely armed).
@@ -1183,6 +1200,18 @@ assert "(g-j-c) ...and the WARNING precedes it, so the skip really was traversed
 
 assert "(g-j-c) ...and the verdict is non-zero because of that armed lane" \
     bash -c "! bash '$GUARD' check '$GJ_REPO' >/dev/null 2>&1"
+
+# ARMED WINS over UNVERIFIABLE.  This store is now BOTH (wtA unreadable, wtB
+# armed), and it must report 1, not 3: the armed lane is the half an operator
+# can act on, and `arm`'s re-verify distinguishes "an override survived my
+# write" from "I could not read a lane" by exactly this code.
+_gj_both=0
+bash "$GUARD" check "$GJ_REPO" >/dev/null 2>&1 || _gj_both=$?
+
+assert "(g-j-c) a store that is BOTH armed and unverifiable exits 1, not 3" \
+    test "$_gj_both" -eq 1
+
+unset _gj_both
 
 # (g-j-d) NOISE FLOOR.  A missing include target is BENIGN — git ignores it — and
 # an include contributing no rerere key is simply clean.  Neither may produce a
@@ -1239,12 +1268,100 @@ else
     assert "(g-j-e) ...reporting that lane as UNKNOWN rather than verified safe" \
         bash -c "bash '$GUARD' check '$GJU_REPO' 2>&1 >/dev/null | grep -qF 'UNKNOWN, not verified safe'"
 
-    assert "(g-j-e) ...and UNKNOWN is not ARMED, so check exits 0" \
-        bash "$GUARD" check "$GJU_REPO"
+    _gju_status=0
+    bash "$GUARD" check "$GJU_REPO" >/dev/null 2>&1 || _gju_status=$?
+
+    assert "(g-j-e) ...and UNKNOWN is not ARMED, so check exits 3 rather than 1" \
+        test "$_gju_status" -eq 3
+
+    # `arm` must not turn an unverifiable lane into a hard failure: setup-dev.sh
+    # runs it under `set -e` and branches `0 | 2 | *`, so anything but the
+    # advisory 2 here would abort every later setup step over a lane whose
+    # config the guard merely cannot read — and `arm` writes --local, so it
+    # could never fix it anyway.  The shared write must still have landed.
+    _gju_arm=0
+    bash "$GUARD" arm "$GJU_REPO" >/dev/null 2>&1 || _gju_arm=$?
+
+    assert "(g-j-e) arm on an unverifiable store exits the advisory 2, not a failure" \
+        test "$_gju_arm" -eq 2
+
+    assert "(g-j-e) ...and still pinned the shared config (its half of the job)" \
+        bash -c "[ \"\$(git -C '$GJU_REPO' config --local --bool --get rerere.enabled)\" = false ]"
+
+    assert "(g-j-e) ...and says the lanes are unverified, not that an override survived" \
+        bash -c "bash '$GUARD' arm '$GJU_REPO' 2>&1 >/dev/null | grep -qF 'could not be verified'"
+
+    assert "(g-j-e) ...and does NOT claim rerere is STILL armed" \
+        bash -c "! bash '$GUARD' arm '$GJU_REPO' 2>&1 >/dev/null | grep -qF 'STILL armed'"
 
     chmod 644 "$GJU_A_GITDIR/secret.cfg"
-    unset GJU_REPO GJU_A GJU_B GJU_A_GITDIR
+    unset GJU_REPO GJU_A GJU_B GJU_A_GITDIR _gju_status _gju_arm
 fi
+
+# ── (g-k) A STALE (PRUNABLE) WORKTREE ENTRY IS INERT, NOT ARMED ───────────────
+# The sweep walks <common>/worktrees/*/config.worktree straight off disk.  When a
+# lane's WORKING TREE is deleted without `git worktree prune`, the admin dir —
+# config.worktree included — survives, and git marks the entry `prunable gitdir
+# file points to non-existent location`.  No git command can ever run in that
+# worktree again, so git will never read that config.worktree again: reporting it
+# ARMED is an inert-config false positive of exactly the class the
+# extensions.worktreeConfig gate already guards against, and the same uniquely
+# damaging shape — `arm` writes --local and can never clear a per-worktree file,
+# so the store would park on the advisory exit 2 and setup-dev.sh would warn on
+# every developer setup until someone pruned by hand.
+#
+# Reify's pool creates and destroys lanes continuously (warm-lane-gc.sh), so a
+# prunable entry is a realistic transient rather than a pathology.
+echo ""
+echo "--- (g-k) a deleted-but-unpruned worktree's config.worktree is inert ---"
+
+read -r GK_REPO GK_A GK_B <<< "$(make_wt_repo)"
+GK_A_GITDIR="$(git -C "$GK_A" rev-parse --absolute-git-dir)"
+
+assert "(g-k) negative control: nothing planted -> check exits 0" \
+    bash "$GUARD" check "$GK_REPO"
+
+git -C "$GK_A" config --worktree rerere.enabled true
+
+# POSITIVE CONTROL, asserted while the worktree is still LIVE: the plant really
+# is one the sweep detects, so a clean verdict after the delete can only be the
+# liveness gate firing, never the detector failing to see the file.
+assert "(g-k) positive control: while the lane is LIVE the plant IS reported" \
+    bash -c "! bash '$GUARD' check '$GK_REPO' >/dev/null 2>&1"
+
+rm -rf "$GK_A"
+
+# Fixture preconditions MEASURED, not assumed.
+assert "(g-k) fixture: git itself calls the entry prunable" \
+    bash -c "git -C '$GK_REPO' worktree list --porcelain | grep -q '^prunable'"
+
+assert "(g-k) fixture: the admin dir and its config.worktree SURVIVE the delete" \
+    bash -c "test -f '$GK_A_GITDIR/config.worktree' && grep -q 'true' '$GK_A_GITDIR/config.worktree'"
+
+assert "(g-k) fixture: the surviving entry's gitdir names a path that is gone" \
+    bash -c "! test -e \"\$(cat '$GK_A_GITDIR/gitdir')\""
+
+assert "(g-k) a stale entry's armed config.worktree is NOT reported -> check exits 0" \
+    bash "$GUARD" check "$GK_REPO"
+
+assert "(g-k) ...and the stale lane is not named at all" \
+    bash -c "! bash '$GUARD' check '$GK_REPO' 2>&1 >/dev/null | grep -q \"worktree '.*wtA'\""
+
+# A stale entry is verified IRRELEVANT, not unverifiable: counting it as UNKNOWN
+# would pin a lane-churning pool at exit 3 forever.
+assert "(g-k) ...and is NOT counted as UNVERIFIABLE either" \
+    bash -c "! bash '$GUARD' check '$GK_REPO' 2>&1 >/dev/null | grep -q 'UNVERIFIABLE'"
+
+# The gate must not swallow the LIVE lanes with it.
+git -C "$GK_B" config --worktree rerere.enabled true
+
+assert "(g-k) a LIVE armed lane in the same store is still reported" \
+    bash -c "bash '$GUARD' check '$GK_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtB'\""
+
+assert "(g-k) ...so the verdict is non-zero for the live lane alone" \
+    bash -c "! bash '$GUARD' check '$GK_REPO' >/dev/null 2>&1"
+
+unset GK_REPO GK_A GK_B GK_A_GITDIR
 
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
@@ -1435,6 +1552,88 @@ else
 
     unset RO_REPO RO_COMMON RO_ERR _ro_status _ro_precond
 fi
+
+# ── (h-h) A MULTI-VALUED SHARED KEY must SELF-HEAL, not hard-abort setup ──────
+# `git config --add rerere.enabled true` — precisely what an unidentified
+# re-armer would leave behind (runbook §7) — makes the key multi-valued, and a
+# plain single-value write then FAILS: measured on git 2.43.0, `git config
+# --local rerere.enabled false` on a `true`/`true` shared config reports
+# `error: cannot overwrite multiple values with a single value` and exits 5.
+# That was not inert: the guarded branch returned 1, and setup-dev.sh's `*` arm
+# turns that into `err` + `exit 1`, killing the build-accelerator systemd block,
+# npm and the smoke test for every developer — while the fleet stayed ARMED,
+# which is the exact failure this guard exists to prevent.
+#
+# --replace-all is a strict superset of the old write: byte-identical for the
+# unset and single-valued cases (pinned below), and it collapses a multi-valued
+# key to one `false` instead of failing.
+echo ""
+echo "--- (h-h) arm self-heals a multi-valued shared key ---"
+
+MV_REPO="$(make_repo)"
+git -C "$MV_REPO" config --add rerere.enabled true
+git -C "$MV_REPO" config --add rerere.enabled true
+git -C "$MV_REPO" config --add rerere.autoupdate true
+git -C "$MV_REPO" config --add rerere.autoupdate true
+
+# FIXTURE LIVENESS.  Assert the old write really does fail here, so a later PASS
+# cannot be --replace-all quietly papering over a shape git never minded.
+_mv_precond=0
+git -C "$MV_REPO" config --local rerere.enabled false >/dev/null 2>&1 || _mv_precond=$?
+
+assert "(h-h) fixture: a single-value write really FAILS on the multi-valued key" \
+    test "$_mv_precond" -ne 0
+
+assert "(h-h) fixture: ...and the key really is multi-valued (two values, both true)" \
+    bash -c "[ \"\$(git -C '$MV_REPO' config --local --get-all rerere.enabled | tr '\n' ' ')\" = 'true true ' ]"
+
+_mv_status=0
+bash "$GUARD" arm "$MV_REPO" >/dev/null 2>&1 || _mv_status=$?
+
+assert "(h-h) arm exits 0 on a multi-valued shared key (self-healed, not aborted)" \
+    test "$_mv_status" -eq 0
+
+assert "(h-h) rerere.enabled collapses to a SINGLE resolved false" \
+    bash -c "[ \"\$(git -C '$MV_REPO' config --local --get-all rerere.enabled | tr '\n' ' ')\" = 'false ' ]"
+
+assert "(h-h) rerere.autoupdate collapses to a SINGLE resolved false" \
+    bash -c "[ \"\$(git -C '$MV_REPO' config --local --get-all rerere.autoupdate | tr '\n' ' ')\" = 'false ' ]"
+
+assert "(h-h) ...so the effective value a lane inherits is false" \
+    bash -c "[ \"\$(git -C '$MV_REPO' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(h-h) check agrees afterwards" \
+    bash "$GUARD" check "$MV_REPO"
+
+# A `true` followed by a `false` resolves to false ALREADY, so the old
+# --get probe skipped the write and left the stale `true` line in place — one
+# `git config --unset` away from re-arming the fleet.  --get-all sees the
+# literal set of values, so the skip fires only on a single, genuine `false`.
+MV2_REPO="$(make_repo)"
+git -C "$MV2_REPO" config --add rerere.enabled true
+git -C "$MV2_REPO" config --add rerere.enabled false
+
+assert "(h-h) fixture: git already resolves true-then-false to false" \
+    bash -c "[ \"\$(git -C '$MV2_REPO' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(h-h) arm on an already-false-by-last-wins key exits 0" \
+    bash "$GUARD" arm "$MV2_REPO"
+
+assert "(h-h) ...and REMOVES the stale 'true' line rather than leaving it latent" \
+    bash -c "[ \"\$(git -C '$MV2_REPO' config --local --get-all rerere.enabled | tr '\n' ' ')\" = 'false ' ]"
+
+# IDEMPOTENCE is unchanged by --replace-all: the ordinary single-valued re-run
+# must still be a byte-level no-op, since setup-dev.sh runs `arm` every time.
+_mv_cd="$(common_dir "$MV_REPO")"
+cp "$_mv_cd/config" "$_SUITE_TMP/mv.before"
+
+assert "(h-h) a re-run on the healed store exits 0" \
+    bash "$GUARD" arm "$MV_REPO"
+
+assert "(h-h) ...and leaves .git/config byte-identical (--replace-all is still a no-op)" \
+    cmp -s "$_SUITE_TMP/mv.before" "$_mv_cd/config"
+
+unset MV_REPO MV2_REPO _mv_precond _mv_status _mv_cd
 
 # ==============================================================================
 # (i) `scan-locks` — the M3 recurrence detector.  A failed rr-cache preimage

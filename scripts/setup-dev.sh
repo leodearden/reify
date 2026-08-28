@@ -358,10 +358,13 @@ ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 # The shared-config write is the success criterion here, NOT a globally clean
 # verdict.  `arm` re-verifies with `check`, which sweeps every lane's
 # config.worktree — and `arm` writes --local only, so a FOREIGN lane that armed
-# itself is a condition it can never clear.  Under this script's `set -e`, one
-# self-armed lane would otherwise abort everything after this point (the
+# itself is a condition it can never clear; nor is a lane whose config.worktree
+# the guard cannot read at all (an unreadable file, or an include.path chain git
+# cannot resolve), which `check` reports as UNVERIFIABLE.  Under this script's
+# `set -e`, either would otherwise abort everything after this point (the
 # build-accelerator systemd units, npm, the smoke test) for every developer, with
-# no remediation the script could offer.  Exit 2 is that advisory case.
+# no remediation the script could offer.  Exit 2 covers both advisory cases; the
+# guard's own stderr says which.
 #
 # The branch below is `0 | 2 | *`, NOT a closed set {0,1,2}, and deliberately so:
 # `arm`'s failure code is normally 1, but it runs under its own `set -euo
@@ -376,8 +379,9 @@ _rerere_arm_rc=0
 if [ "$_rerere_arm_rc" -eq 0 ]; then
     ok "git rerere disarmed (rerere.enabled=false, rerere.autoupdate=false)"
 elif [ "$_rerere_arm_rc" -eq 2 ]; then
-    warn "shared config pinned, but a per-worktree config.worktree still arms rerere"
-    warn "  run 'scripts/git-rerere-guard.sh check' — it names the offending worktree"
+    warn "shared config pinned, but rerere is still armed — or unverifiable — in a scope"
+    warn "  'arm' cannot reach (another lane's config.worktree, or one it cannot read)"
+    warn "  run 'scripts/git-rerere-guard.sh check' — it names the worktree either way"
     warn "  see docs/notes/git-rerere-shared-worktree-hazard.md"
 else
     err "git-rerere-guard.sh arm failed (exit $_rerere_arm_rc)"

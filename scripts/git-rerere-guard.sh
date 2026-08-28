@@ -30,7 +30,21 @@
 #               every config.worktree in the store (the main checkout's own
 #               included, since git dir == common dir there).
 #               Read-only: never writes config anywhere.
-#               Exit 0 = safe, 1 = armed (the machine-readable signal).
+#               Exit 0 = safe AND every scope was actually verified;
+#                    1 = armed (the machine-readable signal);
+#                    3 = UNVERIFIABLE — no armed scope was found, but at least
+#                        one worktree's rerere state could not be determined at
+#                        all (unreadable config.worktree, or an include.path
+#                        chain git cannot resolve).  This is deliberately NOT 0:
+#                        a periodic probe that read an unverifiable store as
+#                        clean would report the fleet healthy while a lane it
+#                        could not read was armed.  It is deliberately NOT 1
+#                        either — `arm` writes --local and cannot fix a lane the
+#                        guard merely fails to read, so folding UNKNOWN into
+#                        ARMED would strand the store on a permanent failure.
+#               ARMED WINS over UNVERIFIABLE: a store that is both exits 1,
+#               because that is the half an operator can act on.  Treat any
+#               non-zero as "not verified safe"; only 1 means "armed".
 #   arm         Idempotently write rerere.enabled=false and rerere.autoupdate=false
 #               to the SHARED local config, then re-verify via `check`.
 #               NEVER deletes or prunes rr-cache — see below.
@@ -80,7 +94,10 @@ Usage: git-rerere-guard.sh <subcommand> [target_dir]
 
 Subcommands:
   check       Report whether git rerere is effectively armed for the target
-              store (read-only).  Exit 0 = safe, 1 = armed.
+              store (read-only).  Exit 0 = safe and fully verified, 1 = armed,
+              3 = at least one worktree could not be verified (UNKNOWN — not
+              the same as safe).  Only 1 means armed; any non-zero means "not
+              verified safe".
   arm         Idempotently disable rerere in the shared local config, then
               re-verify.  Never deletes rr-cache.  Exit 0 = disarmed,
               2 = pinned but an out-of-reach override survives, any other
@@ -161,6 +178,14 @@ WORKTREES_DIR="$COMMON_DIR/worktrees"
 # A literal newline, for the sweep's fork-free prefilter membership test.
 LF=$'\n'
 
+# Count of worktrees whose rerere state the sweep could not determine at all.
+# Set by _sweep_worktree_configs, read by cmd_check, which turns a non-zero
+# count into exit 3 (UNVERIFIABLE) rather than letting it pass as 0 (safe).
+# Script-level, not local: the sweep returns 0/1 for the ARMED verdict, and
+# UNKNOWN is a third, orthogonal state that must not be smuggled into that
+# boolean.  Initialised here because the script runs under `set -u`.
+_SWEEP_UNKNOWN=0
+
 # ── subcommand implementations ────────────────────────────────────────────────
 
 # cmd_check — report whether rerere is effectively armed for the target store.
@@ -179,10 +204,16 @@ LF=$'\n'
 # fleet-wide default this guard exists to pin, and `arm` (a --local writer) can
 # always clear it, so reporting it is both actionable and self-healing.
 #
-# Exit code is the machine-readable signal (0 = safe, 1 = armed); stdout stays
-# empty so a caller can use this in a pipeline without parsing prose.
+# Exit code is the machine-readable signal (0 = safe and fully verified,
+# 1 = armed, 3 = at least one lane UNVERIFIABLE); stdout stays empty so a caller
+# can use this in a pipeline without parsing prose.
 cmd_check() {
     local armed=0 value
+
+    # Reset before every run: cmd_arm calls cmd_check a second time to
+    # re-verify, and a count carried over from the first call would make the
+    # re-verify report lanes it never re-examined.
+    _SWEEP_UNKNOWN=0
 
     # rerere.enabled — the master switch.
     #
@@ -238,7 +269,30 @@ cmd_check() {
         armed=1
     fi
 
-    return "$armed"
+    # ARMED WINS over UNVERIFIABLE.  A store that is both is reported as armed:
+    # that is the half an operator can act on, and `arm` needs the 1 to know its
+    # re-verify found a surviving override.
+    if [ "$armed" -ne 0 ]; then
+        return 1
+    fi
+
+    # UNVERIFIABLE is a THIRD state, not a flavour of safe.  Every UNKNOWN lane
+    # already printed a WARNING above, but stderr prose is not the contract —
+    # the exit code is, and it was the ONLY machine-readable channel.  Reporting
+    # 0 here made `check` fail-open for exactly the use the runbook proposes for
+    # it (a periodic probe for the unidentified re-armer): a store with one lane
+    # the guard could not read at all would answer "safe" while that lane was
+    # armed through an include chain.  3, not 1: see the header — `arm` cannot
+    # clear a lane it cannot read, so 1 would strand the store on a permanent
+    # failure.
+    if [ "$_SWEEP_UNKNOWN" -gt 0 ]; then
+        echo "UNVERIFIABLE: $_SWEEP_UNKNOWN worktree(s) could not be checked — see the WARNINGs above." >&2
+        echo "  No armed scope was found, but this store is NOT verified safe: exit 3, distinct" >&2
+        echo "  from 0 so a probe cannot read an unverifiable store as clean." >&2
+        return 3
+    fi
+
+    return 0
 }
 
 # _check_shared_default KEY — report an armed SHARED (--local) value that
@@ -313,8 +367,53 @@ _report_armed_worktree() {
     echo "  git reads config.worktree FIRST, so this beats the shared .git/config." >&2
 }
 
+# _linked_worktree_is_live WT_DIR — 0 if the linked worktree administrative dir
+# still backs a working tree that exists on disk, 1 if the entry is STALE
+# (git's own term: prunable).
+#
+# WHY: the sweep walks <common>/worktrees/*/config.worktree straight off disk,
+# and a stale entry keeps its config.worktree long after the working tree it
+# describes was deleted — `git worktree prune` has to run before the admin dir
+# goes away, and reify's pool creates and destroys lanes continuously, so a
+# prunable entry is a realistic transient rather than a pathology.  git never
+# reads that file again for any live worktree, so reporting it is an INERT-CONFIG
+# false positive of exactly the class the extensions.worktreeConfig gate already
+# guards against — and the same uniquely damaging shape, because `arm` writes
+# --local and can never clear a per-worktree file: the store would park on the
+# advisory exit 2 and setup-dev.sh would warn on every developer setup until an
+# operator pruned by hand.  Measured on git 2.43.0: deleting a lane's working
+# directory leaves worktrees/<name>/config.worktree intact, `git worktree list
+# --porcelain` marks the entry `prunable gitdir file points to non-existent
+# location`, and the guard reported `ARMED: worktree '<name>'` for it.
+#
+# The test is the same one git's own prune uses — does the path named by the
+# entry's `gitdir` file still exist — read with a bash redirect rather than
+# `git worktree list --porcelain`, which would cost a fork per sweep and then
+# need a reverse mapping from worktree path back to admin-dir name (they are not
+# 1:1: git de-duplicates names).
+#
+# DELIBERATELY NOT gated on `locked`: git refuses to prune a locked entry, but
+# lockedness does not make an absent working tree readable, and this asks "can
+# any git command run there and honour this file?", not "will prune reclaim it?".
+# A locked worktree on a detached removable device is therefore skipped while it
+# is absent and reported again once it is back — `check` is re-run, not one-shot.
+_linked_worktree_is_live() {
+    local wt_dir="$1" pointer=""
+
+    # Missing or empty gitdir file — git calls this prunable too ("gitdir file
+    # does not exist").
+    [ -r "$wt_dir/gitdir" ] || return 1
+    IFS= read -r pointer < "$wt_dir/gitdir" || true
+    [ -n "$pointer" ] || return 1
+
+    # The file names the worktree's own .git FILE, e.g. /path/to/lane/.git.
+    [ -e "$pointer" ] || return 1
+
+    return 0
+}
+
 _sweep_worktree_configs() {
-    local armed=0 wt_config wt_name mentions key value
+    local armed=0 wt_config wt_dir wt_name mentions key value
     local last_enabled last_autoupdate read_out read_status
 
     # config.worktree is DEAD BYTES unless extensions.worktreeConfig is true —
@@ -378,15 +477,27 @@ _sweep_worktree_configs() {
         if [ "$wt_config" = "$COMMON_DIR/config.worktree" ]; then
             wt_name="<main checkout>"
         else
-            wt_name="${wt_config%/config.worktree}"
-            wt_name="${wt_name##*/}"
+            wt_dir="${wt_config%/config.worktree}"
+            wt_name="${wt_dir##*/}"
+
+            # STALE ENTRY: the admin dir outlived the working tree it describes
+            # and `git worktree prune` has not reclaimed it yet.  git will never
+            # read this config.worktree again, so it is inert — skip SILENTLY,
+            # and specifically do NOT count it as UNKNOWN: it is verified
+            # irrelevant, not unverifiable, and a routine transient on a pool
+            # that churns lanes would otherwise pin `check` at exit 3 forever.
+            # The main checkout is never stale, hence the else-branch placement.
+            _linked_worktree_is_live "$wt_dir" || continue
         fi
 
         # One unreadable config.worktree must not abort the sweep and mask every
-        # other lane — report it and keep going.
+        # other lane — report it and keep going.  UNKNOWN, counted separately
+        # from armed: cmd_check turns a non-zero count into exit 3, so a store
+        # the guard could not fully read never answers 0 = safe.
         if [ ! -r "$wt_config" ]; then
             echo "WARNING: cannot read $wt_config — skipping worktree '$wt_name'." >&2
             echo "  This lane's rerere state is UNKNOWN, not verified safe." >&2
+            _SWEEP_UNKNOWN=$((_SWEEP_UNKNOWN + 1))
             continue
         fi
 
@@ -442,6 +553,7 @@ _sweep_worktree_configs() {
             echo "  git config exited $read_status; a circular chain and an unreadable include" >&2
             echo "  target both report 128 with no output, which is indistinguishable from clean." >&2
             echo "  This lane's rerere state is UNKNOWN, not verified safe." >&2
+            _SWEEP_UNKNOWN=$((_SWEEP_UNKNOWN + 1))
             continue
         fi
 
@@ -482,7 +594,7 @@ EOF
 # fleet.  The explicit `false` neutralises the residual cache in place — that is
 # measured behaviour, not an assumption (see the suite's behavioural oracles).
 cmd_arm() {
-    local changed=0 key before
+    local changed=0 key before before_display check_rc
 
     for key in rerere.enabled rerere.autoupdate; do
         # Compare against the current LOCAL value and skip a redundant write, so
@@ -498,26 +610,52 @@ cmd_arm() {
         # happens to set false would make `arm` skip the write entirely, leaving
         # .git/config with no direct pin and re-armable the moment another lane
         # edits or removes that included file.  Do not "tidy" all four reads into
-        # agreement.  (--get is mechanically safe with --includes — measured,
-        # multiple values resolve to the LAST one, exit 0 — so the reason to omit
-        # it here is semantic, not mechanical.)
-        before="$(git -C "$TARGET" config --local --get "$key" 2>/dev/null || true)"
+        # agreement.  (--includes is mechanically safe here — measured, it merely
+        # widens which files are read — so the reason to omit it is semantic, not
+        # mechanical.)
+        #
+        # --get-all, not --get: `--get` resolves a multi-valued key to its LAST
+        # value, so a shared config holding `enabled = true` followed by
+        # `enabled = false` would answer "false" and skip the write, leaving the
+        # stale `true` line one deletion away from re-arming the fleet.  With
+        # --get-all the answer is the literal set of values the file holds, and
+        # the skip fires only when that set is exactly one `false` — which is
+        # also what makes a re-run a byte-level no-op in the ordinary case.
+        before="$(git -C "$TARGET" config --local --get-all "$key" 2>/dev/null || true)"
         if [ "$before" = "false" ]; then
             continue
         fi
-        # Guarded, not bare.  Under `set -euo pipefail` a bare write that loses a
-        # race on .git/config.lock (200+ lanes share one shared config), hits a
-        # read-only store, or trips over a multi-valued key would abort the script
-        # with git's own status — never the documented 1 — and a consumer
-        # branching on `1 => fatal` would read that as success.
-        if ! git -C "$TARGET" config --local "$key" false; then
+        # A multi-valued key is rendered on one line so the SET diagnostic below
+        # stays a single line an operator can grep.
+        before_display="${before:-<unset>}"
+        before_display="${before_display//$LF/, }"
+        # --replace-all, and guarded rather than bare.
+        #
+        # --replace-all is a strict superset of a plain single-value write:
+        # byte-identical output when the key is unset or single-valued (measured
+        # on git 2.43.0), and it COLLAPSES a multi-valued key to one `false`
+        # instead of failing.  A plain write aborts on that shape with
+        # `error: cannot overwrite multiple values with a single value` and
+        # git's own exit 5 — and `git config --add rerere.enabled true`, exactly
+        # what an unidentified re-armer would leave behind (runbook §7), creates
+        # it.  Without --replace-all the guard could not self-heal the very
+        # shape it exists to fix, and the failure was not inert: setup-dev.sh's
+        # `*` arm turns a non-zero `arm` into `err` + `exit 1`, killing every
+        # later setup step for every developer while the fleet stayed armed.
+        #
+        # Still GUARDED: under `set -euo pipefail` a bare write that loses a race
+        # on .git/config.lock (200+ lanes share one shared config) or hits a
+        # read-only store would abort the script with git's own status — never
+        # the documented 1 — and a consumer branching on `1 => fatal` would read
+        # that as success.
+        if ! git -C "$TARGET" config --local --replace-all "$key" false; then
             echo "ERROR: failed to write $key=false to $COMMON_DIR/config." >&2
             echo "  The shared config was NOT pinned, so rerere may still be armed fleet-wide." >&2
             echo "  Common causes: a lost race on $COMMON_DIR/config.lock (every lane of the" >&2
-            echo "  store writes that one file), a read-only store, or a multi-valued $key." >&2
+            echo "  store writes that one file), or a read-only store." >&2
             return 1
         fi
-        echo "SET: $key=false (was ${before:-<unset>}) in $COMMON_DIR/config" >&2
+        echo "SET: $key=false (was $before_display) in $COMMON_DIR/config" >&2
         changed=1
     done
 
@@ -534,7 +672,30 @@ cmd_arm() {
     # Re-verify through the SAME logic `check` uses, so `arm` can never report
     # success while a per-worktree override or an inherited global value still
     # wins over the shared write just made.
-    if ! cmd_check; then
+    check_rc=0
+    cmd_check || check_rc=$?
+
+    if [ "$check_rc" -eq 0 ]; then
+        return 0
+    fi
+
+    # check's exit 3 = at least one lane UNVERIFIABLE, none found armed.  The
+    # shared write succeeded and nothing is known to be wrong, but the store was
+    # not fully verified, so this is not the clean 0 either.  Advisory 2, the
+    # same code as a surviving foreign override and for the same reason: what
+    # remains is out of `arm`'s reach (a --local writer cannot repair a lane it
+    # cannot read), and setup-dev.sh must warn rather than abort.
+    if [ "$check_rc" -eq 3 ]; then
+        echo "WARNING: the shared config is pinned, but $_SWEEP_UNKNOWN worktree(s) could not be verified." >&2
+        echo "  No armed scope was found; those lanes' rerere state is UNKNOWN, not safe." >&2
+        echo "  See the WARNINGs above for which, and make each config.worktree readable." >&2
+        return 2
+    fi
+
+    # Any other non-zero: armed (1), or an exit this run does not recognise.
+    # Unconditional rather than a further `if`, so a future `check` code can
+    # never fall through to a clean 0 — an unverified store must stay non-zero.
+    {
         echo "WARNING: rerere is STILL armed after writing the shared config." >&2
         echo "  The shared write above SUCCEEDED — what survives is an override this run" >&2
         echo "  cannot reach: another lane's config.worktree, the user's global gitconfig, or" >&2
@@ -550,9 +711,7 @@ cmd_arm() {
         # override survives" (advisory, actionable by an operator); 1 stays
         # reserved for a genuine failure of this run.
         return 2
-    fi
-
-    return 0
+    }
 }
 
 # cmd_scan_locks — read-only census of MERGE_RR.lock across the WHOLE store —
