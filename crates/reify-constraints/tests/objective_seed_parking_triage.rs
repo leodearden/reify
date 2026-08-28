@@ -58,8 +58,8 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::Type;
 use reify_ir::{
-    AutoParam, CompiledExpr, ConstraintSolver, ObjectiveSense, ObjectiveSet, ResolutionProblem,
-    SolveResult, ValueMap,
+    AutoParam, BestFoundReason, CompiledExpr, ConstraintSolver, ObjectiveSense, ObjectiveSet,
+    OptimalityStatus, RankedSolveResult, ResolutionProblem, SolveResult, ValueMap,
 };
 use reify_test_support::*;
 
@@ -236,4 +236,113 @@ fn p3_maximize_one_sided_upper_bound_parks_at_nudged_seed() {
          This is the discriminator against P2's 24mm.",
         got * 1000.0
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P4/P5 — the DISCRIMINATING probes. P4 rules out candidates (b) and (d);
+// P5 rules out candidate (b) independently.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **P4 — SEED-VARYING: the decisive discriminator for candidate (a).**
+///
+/// The same `minimize x` s.t. `x >= 8mm` problem as P1, re-solved with `current_values`
+/// seeded at 30mm and then at 12mm — plus the two-sided `8mm <= x <= 40mm` `maximize`
+/// shape seeded at 11mm. `extract_initial_point` arm 1 takes the current value
+/// (`solver.rs:402-419`), so PREDICTION: the answer TRACKS the seed **exactly**.
+///
+/// Held fixed across all three: the constraints, the objective, and its sense. Only the
+/// seed moves. An output that moves *with the seed* under those conditions can only be
+/// the seed being returned — which rules out, in one shot:
+///
+/// * a fixed attractor (the answer is not pinned to any one value),
+/// * a bound-seeking failure that merely stops short (12mm and 30mm bracket the
+///   8.8mm one-sided seed from both sides — a "stops short of 8mm" story cannot
+///   produce 30mm, and 11mm is *below* the two-sided 24mm midpoint),
+/// * candidate (d), an objective-plumbing defect (a mis-plumbed objective would still
+///   not make the output a function of the seed).
+///
+/// Asserted bit-exactly (`to_bits()`), because the drift fallback returns the
+/// **exact** initial point (`solver.rs:2025-2031`; pinned by
+/// `solver_integration.rs:1483`).
+#[test]
+fn p4_answer_tracks_the_seed_bit_exactly() {
+    for seed_mm in [30.0_f64, 12.0_f64] {
+        let got = probe_si(vec![ge_8mm()], ObjectiveSense::Minimize, Some(seed_mm));
+        let seed_si = mm(seed_mm).as_f64().expect("mm() builds a numeric Scalar");
+        assert_eq!(
+            got.to_bits(),
+            seed_si.to_bits(),
+            "P4 `minimize x` s.t. `x >= 8mm` seeded at {seed_mm}mm: expected the answer to \
+             be the SEED, bit-for-bit ({seed_si} m); got {got} m ({} mm). Only the seed \
+             moved — constraints, objective and sense were held fixed.",
+            got * 1000.0
+        );
+    }
+
+    // Two-sided variant, opposite sense, seed BELOW the 24mm derived-box midpoint:
+    // the answer still tracks the seed rather than the midpoint or the 40mm bound.
+    let got = probe_si(
+        vec![ge_8mm(), le_40mm()],
+        ObjectiveSense::Maximize,
+        Some(11.0),
+    );
+    let seed_si = mm(11.0).as_f64().expect("mm() builds a numeric Scalar");
+    assert_eq!(
+        got.to_bits(),
+        seed_si.to_bits(),
+        "P4 `maximize x` s.t. `8mm <= x <= 40mm` seeded at 11mm: expected the SEED \
+         bit-for-bit ({seed_si} m); got {got} m ({} mm). Maximizing would reach 40mm, \
+         and the unseeded two-sided answer (P2) is 24mm.",
+        got * 1000.0
+    );
+}
+
+/// **P5 — OPTIMALITY STATUS: rules out candidate (b), Nelder-Mead stalling.**
+///
+/// `solve_ranked` on P1's problem. PREDICTION: `OptimalityStatus::BestFound { reason }`
+/// with `reason` **not** `BestFoundReason::IterationLimit` — i.e. Nelder-Mead terminated
+/// on its sd-tolerance, not on the iteration cap. The optimiser is not stalling; its
+/// answer is computed and then DISCARDED by the feasibility reject + seed fallback.
+///
+/// Corroborated in-tree by `reify-eval/tests/solver_optimality_unproven.rs:123-127`,
+/// which documents the identical 1-param case.
+///
+/// Consequence: `W_SOLVER_OPTIMALITY_UNPROVEN` cannot fire — the warning is gated on
+/// the `IterationLimit` variant at `reify-eval/src/engine_eval.rs:6120-6136` — so the
+/// wrong number is returned **silently**. That is what makes loudness (#6654 arm 3) a
+/// separate, real deliverable from the fix itself.
+///
+/// Asserted via the **variant**, never a message substring, and deliberately in the weak
+/// `!IterationLimit` form rather than pinning `ConvergedWithinBudget`: the
+/// budget-exhaustion spelling is actively being minted by whichever of #6654 / #6671 /
+/// #6692 lands first, so pinning the positive variant would invite a doomed RED.
+///
+/// `SolveMeta` (`solver.rs:89`) and `solve_with_meta` (`solver.rs:2802`) are private, so
+/// `solve_ranked` is the only public route to this signal.
+#[test]
+fn p5_optimality_status_is_not_iteration_limited() {
+    let problem = probe_problem(vec![ge_8mm()], Some(ObjectiveSense::Minimize), None);
+    let ranked = DimensionalSolver.solve_ranked(&problem);
+
+    match &ranked {
+        RankedSolveResult::Ranked {
+            candidates,
+            optimality,
+        } => {
+            assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
+            match optimality {
+                OptimalityStatus::BestFound { reason } => assert!(
+                    !matches!(reason, BestFoundReason::IterationLimit),
+                    "P5: Nelder-Mead is NOT iteration-limited here, so candidate (b) \
+                     (optimizer stalling) cannot explain the seed parking; got {:?}",
+                    reason
+                ),
+                other => panic!(
+                    "P5: Nelder-Mead is derivative-free → always BestFound; got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!("P5 expected Ranked, got {:?}", other),
+    }
 }
