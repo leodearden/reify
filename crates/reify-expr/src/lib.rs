@@ -1320,11 +1320,16 @@ fn eval_ad_hoc_selector(
 /// Mirrors the compile-time `reify_compiler::type_compat::resolve_function_overload`
 /// so eval re-selects the SAME overload the compiler chose (task 4231 β-eval):
 /// - For a non-generic candidate (`type_params` empty) every *concrete* param keeps
-///   **exact** type equality, but a **trait-object**-carrying param (e.g.
-///   `List<Load>`) acts as a wildcard — mirroring compile-side
+///   **exact** type equality against a concrete arg, but a **trait-object**-carrying
+///   param (e.g. `List<Load>`) acts as a wildcard — mirroring compile-side
 ///   `resolve_function_overload`, which applies the trait-object wildcard to ALL
-///   candidates regardless of genericity (esc-4093-152). Non-generic fns with no
-///   trait-object params are bit-for-bit unchanged (INV-6).
+///   candidates regardless of genericity (esc-4093-152). A type-param-carrying
+///   ARG is a wildcard too (D4 / task-4232 γ), so a concrete param DOES accept a
+///   `T`-typed value handed to it from inside a generic fn body — pinned by
+///   `bare_type_param_arg_resolves_a_non_generic_concrete_candidate`. That
+///   disjunct is self-scoping to generic fn bodies, which are the only place an
+///   arg type can carry a type param, so for CONCRETE-arg callers a non-generic
+///   fn with no trait-object params is bit-for-bit unchanged (INV-6).
 /// - For a *generic* candidate a type-param-carrying param acts as a **wildcard**
 ///   (matches any arg type) — eval is type-erased (INV-2), so the concrete arg
 ///   binds the param positionally with no runtime type check.
@@ -1368,19 +1373,23 @@ fn eval_ad_hoc_selector(
 /// through to tier 3 unchanged — so a subject whose head matches nothing still
 /// resolves exactly as it did before tier 3 gained a predecessor.
 ///
-/// A useful corollary: for a NON-generic candidate the tier-2 predicate is a
-/// superset of the tier-3 one, so `wildcard AND head == wildcard` — tier 2 can
-/// never DROP a non-generic candidate. An overload set whose candidates are ALL
-/// non-generic therefore resolves bit-for-bit as it did before tier 2 existed
-/// (INV-6); `solve_elastic_static`, `solve_load_cases`, `displacement_at` and
-/// the esc-4093-152 trait-object path are all such sets.
+/// The DIRECTION of that narrowing is worth stating exactly, because #5689
+/// inverted it here: tier 2 is NOT a superset of tier 3 for a non-generic
+/// candidate. With `is_generic == false` the head tier's `heads_unifiable` arm
+/// is gated off and head genuinely IS a subset of wildcard — the same relation
+/// [`reify_core::overload`]'s module doc states. So tier 2 CAN drop a
+/// non-generic candidate: a concrete param facing an arg that CARRIES a type
+/// param without BEING a bare `Type::TypeParam` (e.g. `Option<T>`) passes tier
+/// 3's arg-side `type_carries_type_param` disjunct (D4) and fails tier 2's
+/// bare-`TypeParam` one. Being a filter over tier 3's survivors, tier 2 can
+/// still only ever narrow — never admit a candidate tier 3 rejected.
 ///
-/// That corollary is per-CANDIDATE, not per-set, and the distinction matters in
-/// a MIXED set: tier 2 may drop a head-mismatched GENERIC candidate and thereby
-/// promote a non-generic one that table order had kept behind it. That is the
-/// intended answer, not a side effect — it is what compile-side
-/// `resolve_function_overload` resolves to, its own `head_matches` tier
-/// narrowing the same set the same way. Pinned by
+/// The narrowing is per-CANDIDATE but its effect is per-SET, and the
+/// distinction matters in a MIXED set: tier 2 may drop a head-mismatched
+/// GENERIC candidate and thereby promote a non-generic one that table order
+/// had kept behind it. That is the intended answer, not a side effect — it is
+/// what compile-side `resolve_function_overload` resolves to, its own
+/// `head_matches` tier narrowing the same set the same way. Pinned by
 /// `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`.
 ///
 /// If the resolution rule ever grows (e.g. subtyping, coercion ranking,

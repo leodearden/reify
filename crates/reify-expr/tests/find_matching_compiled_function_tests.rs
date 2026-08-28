@@ -675,15 +675,20 @@ fn prelude_option_subject_selects_option_overload() {
 /// Head narrowing can drop a GENERIC candidate and thereby promote a
 /// NON-generic one that table order had kept behind it.
 ///
-/// The per-candidate no-op corollary — head narrowing never DROPS a non-generic
-/// candidate, because for `type_params.is_empty()` the head predicate is a
-/// superset of the wildcard one — is what keeps entirely-non-generic overload
-/// sets (`solve_elastic_static`, `solve_load_cases`, `displacement_at`)
-/// bit-for-bit unchanged. It says nothing about a MIXED set, which is what this
-/// test pins: a generic `f<T>(x: Option<T>)` declared FIRST loses to a
-/// non-generic `f(x: List<Load>)` for a `List<PointLoad>` arg, because only the
-/// latter head-matches. Both candidates are wildcard-eligible, so before head
-/// narrowing existed first-match-wins handed this to the generic one.
+/// For a non-generic candidate the head predicate is a SUBSET of the wildcard
+/// one — with `type_params.is_empty()` the `heads_unifiable` arm is gated off —
+/// so head narrowing CAN drop a non-generic candidate: one whose concrete param
+/// faces an arg that CARRIES a type param without BEING a bare
+/// `Type::TypeParam`. Whether an entirely-non-generic set such as
+/// `solve_elastic_static`, `solve_load_cases` or `displacement_at` is affected
+/// therefore turns on the CALLER's arg types, not on the set alone;
+/// concrete-arg call sites are unchanged. None of that is what this test pins,
+/// which is a MIXED set: a generic `f<T>(x: Option<T>)` declared FIRST loses to
+/// a non-generic `f(x: List<Load>)` for a `List<PointLoad>` arg, because only
+/// the latter head-matches. Both candidates are wildcard-eligible, so before
+/// head narrowing existed first-match-wins handed this to the generic one. This
+/// test's own arg is the concrete `List<PointLoad>`, so its assertion stands
+/// either way.
 ///
 /// The promotion is the intended answer, not a tolerated side effect: it is
 /// what compile-side `resolve_function_overload` resolves to — pinned, not
