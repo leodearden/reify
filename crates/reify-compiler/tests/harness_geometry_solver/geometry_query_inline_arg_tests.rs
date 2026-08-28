@@ -8,6 +8,12 @@
 //! `compile_linear_pattern_2d_nested_target_hoists_into_preceding_op` structural
 //! pin (in `compile_api_tests.rs`), applied to a whole-handle query value cell.
 //!
+//! LAYOUT (C1, PRD `docs/prds/merge-gate-compile-cost.md` §5): this file is a
+//! `#[path]`-declared module of the `harness_geometry_solver` compile unit, not
+//! a standalone `tests/*.rs` binary — the sanctioned remedy for a NEW test in
+//! one of the 5 consolidatable crates. Growing
+//! `tests/infra/harness-layout-baseline.manifest` is superseded (esc-5056-11).
+//!
 //! The e2e numeric acceptance (real-OCCT Volume/Area/Centroid dispatch) lives in
 //! `crates/reify-eval/tests/harness_geometry/geometry_query_kernel_dispatch.rs`;
 //! this file pins the compile-time IR shape (hoisted `Primitive` op + rewritten

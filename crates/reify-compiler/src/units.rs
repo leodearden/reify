@@ -903,7 +903,8 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
 ///
 /// **Parity contract**: this slice MUST equal the eval `is_geometry_query_call`
 /// name-set and remain a subset of [`GEOMETRY_QUERY_NAMES`]. Both directions
-/// are pinned by `tests/geometry_query_inline_arg_tests.rs`.
+/// are pinned by
+/// `tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs`.
 pub const WHOLE_HANDLE_GEOMETRY_QUERY_NAMES: &[&str] =
     &["volume", "area", "centroid", "bounding_box"];
 
