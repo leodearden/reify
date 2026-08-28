@@ -161,6 +161,15 @@ const PERTURB: f64 = 0.02;
 /// identity to rounding.
 const LAMBDA: f64 = 1_048_576.0;
 
+/// Reciprocal gauge factor `λ = 2^-20` — also exact in IEEE-754 (dividing by a
+/// power of two is exact, same as multiplying), so the bit-exactness argument
+/// above holds equally here. Locks the OTHER half of the pre-fix defect: a
+/// LARGE λ inflated the absolute residual so the solve never converged (the
+/// measured RED at [`LAMBDA`]); a SMALL λ instead SHRINKS the residual below
+/// an absolute tolerance and stops PREMATURELY on an unconverged geometry —
+/// the half of the defect a large-λ-only suite cannot see (task 6119).
+const LAMBDA_SMALL: f64 = 1.0 / 1_048_576.0;
+
 /// Bound for the relative agreement between the base-gauge and λ-gauge
 /// solves. MEASURED agreement is bit-exact (`0.0`) for a power-of-two `λ`;
 /// `1e-13` is deliberately ~13 orders of margin above that measurement so a
@@ -199,6 +208,28 @@ fn max_rel_diff_scaled(base: &[f64], scaled: &[f64], lambda: f64) -> f64 {
         scale = scale.max(expected.abs());
     }
     num / (1.0 + scale)
+}
+
+/// Per-element floor below which a base-gauge quantity would make its own ×λ
+/// covariance check vacuous: `max_rel_diff_scaled` compares `λ·base` against
+/// `scaled`, which collapses to `0 == 0·λ` — trivially true for EVERY λ — when
+/// `base` is zero. Mirrors the non-vacuity floor task/6095 added to its own
+/// gauge-covariance suite (commit f0ec8d5e9f) so a regression that collapsed
+/// member forces, density echoes, or stress echoes to zero cannot land green.
+const NON_VACUOUS_FLOOR: f64 = 1e-9;
+
+/// Asserts `values` is non-empty and every element clears
+/// [`NON_VACUOUS_FLOOR`], so a subsequent `max_rel_diff_scaled(values, ...)`
+/// call cannot pass by vacuously comparing `0 == 0·λ`.
+fn assert_all_non_vacuous(label: &str, values: &[f64]) {
+    assert!(!values.is_empty(), "{label} must be non-empty");
+    for (i, &v) in values.iter().enumerate() {
+        assert!(
+            v.abs() > NON_VACUOUS_FLOOR,
+            "{label}[{i}] = {v} at the base gauge makes the ×λ covariance check \
+             vacuous — 0 == 0·λ holds for any λ (task 6119)",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
