@@ -557,3 +557,147 @@ fn engine_version_bump_misses_cold_solves_and_leaves_old_subdir_until_sweep_prun
         "the live generation's entry must still be readable after the orphan prune",
     );
 }
+
+/// Case 5 — a crashed writer's leftovers read as a MISS and are swept without
+/// harming live entries.
+///
+/// Asserted through the COMPOSED public path
+/// (`reify_eval::sweep_persistent_cache_at_startup`) rather than by calling
+/// `sweep_stale_tempfiles` directly: that unit is already covered by
+/// `persistent_cache.rs`'s own `mod tests`, so re-testing it here would be
+/// lockstep duplication. What is new is that the whole startup path leaves a
+/// live entry alone while collecting debris around it.
+///
+/// The crash is simulated by constructing the end state a killed writer leaves
+/// behind, not by racing a real SIGKILL — the end state is what the recovery
+/// contract is about, and synthesizing it makes the test deterministic instead
+/// of flaky.
+#[test]
+fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entries() {
+    use reify_eval::persistent_cache::{
+        CacheEntryHeader, ENTRY_FORMAT_VERSION, ENTRY_HEADER_ENCODED_LEN, STALE_TEMPFILE_AGE,
+        entry_bin_path, entry_meta_path, shard_dir, write_entry,
+    };
+
+    let tmp = tempfile::TempDir::new().expect("tmp dir creation must succeed");
+    let root = tmp.path();
+
+    let good_hash = "a".repeat(32);
+    let victim_hash = "b".repeat(32);
+    let torn_hash = "c".repeat(32);
+
+    // ── (a) One GOOD entry that must survive everything below ───────────────
+
+    let fixture = make_elastic_result_fixture(42);
+    write_entry(root, ENGINE_VERSION_HASH, &good_hash, &fixture)
+        .expect("seeding the good entry must succeed");
+    let good_meta = entry_meta_path(root, ENGINE_VERSION_HASH, &good_hash);
+    assert!(
+        good_meta.is_file(),
+        "write_entry must leave a .meta sidecar beside the good entry",
+    );
+
+    // ── (b) A writer killed between tempfile creation and persist() ─────────
+    //
+    // The tempfile exists, holding a truncated prefix of a real entry; the
+    // rename never happened, so no `.bin` was ever published.
+
+    let victim_shard = shard_dir(root, ENGINE_VERSION_HASH, &victim_hash);
+    std::fs::create_dir_all(&victim_shard).expect("victim shard dir must be creatable");
+    let mut header_bytes = Vec::new();
+    let mut engine_echo = [0u8; 32];
+    engine_echo.copy_from_slice(ENGINE_VERSION_HASH.as_bytes());
+    let mut input_echo = [0u8; 32];
+    input_echo.copy_from_slice(victim_hash.as_bytes());
+    CacheEntryHeader {
+        format_version: ENTRY_FORMAT_VERSION,
+        engine_version_hash: engine_echo,
+        input_hash: input_echo,
+        solve_time_ms: 1234,
+        byte_size: 4321,
+        written_at: 1_700_000_000_000,
+    }
+    .write_to(&mut header_bytes)
+    .expect("encoding a header must succeed");
+    assert_eq!(
+        header_bytes.len(),
+        ENTRY_HEADER_ENCODED_LEN,
+        "test invariant: the encoded header must be exactly ENTRY_HEADER_ENCODED_LEN \
+         bytes, or the truncation below is not measuring what it claims",
+    );
+    let tempfile_path = victim_shard.join(".tmp.deadbeef");
+    std::fs::write(&tempfile_path, &header_bytes[..40])
+        .expect("writing the crashed-writer tempfile must succeed");
+
+    // A crashed write is a plain MISS — never an error, never a partial value.
+    assert!(
+        read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &victim_hash)
+            .expect("a never-published entry is a miss, never an Err")
+            .is_none(),
+        "a tempfile that never reached persist() must read as a cache MISS",
+    );
+
+    // ── (c) A writer killed mid-`.bin` — a torn, published file ─────────────
+
+    let torn_bin = entry_bin_path(root, ENGINE_VERSION_HASH, &torn_hash);
+    std::fs::create_dir_all(
+        torn_bin
+            .parent()
+            .expect("an entry path always has a shard parent"),
+    )
+    .expect("torn shard dir must be creatable");
+    std::fs::write(&torn_bin, &header_bytes[..ENTRY_HEADER_ENCODED_LEN - 10])
+        .expect("writing the torn .bin must succeed");
+    assert!(
+        read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &torn_hash)
+            .expect("a torn entry is a miss, never an Err")
+            .is_none(),
+        "a .bin shorter than ENTRY_HEADER_ENCODED_LEN must read as a cache MISS — \
+         the corruption-recovery policy is miss, not Err",
+    );
+
+    // ── (d) A FRESH tempfile is PRESERVED — never collected mid-write ───────
+
+    assert_eq!(
+        count_tmp_files(root),
+        1,
+        "test invariant: exactly one .tmp.* must exist before the first sweep",
+    );
+    let report_fresh = reify_eval::sweep_persistent_cache_at_startup(root);
+    assert_eq!(
+        report_fresh.tempfiles_removed, 0,
+        "a freshly-mtimed .tmp.* must survive the sweep — STALE_TEMPFILE_AGE is 1 h, \
+         so an in-flight write is never collected out from under a live writer",
+    );
+    assert!(
+        tempfile_path.is_file(),
+        "the fresh tempfile must still exist after the grace-period sweep",
+    );
+
+    // ── (e) Aged past the grace period, the debris is collected ─────────────
+
+    backdate_mtime(&tempfile_path, STALE_TEMPFILE_AGE.as_secs() + 60);
+    let report_aged = reify_eval::sweep_persistent_cache_at_startup(root);
+    assert_eq!(
+        report_aged.tempfiles_removed, 1,
+        "a .tmp.* older than STALE_TEMPFILE_AGE must be swept",
+    );
+    assert_eq!(
+        count_tmp_files(root),
+        0,
+        "no .tmp.* may remain anywhere under the cache root after the sweep",
+    );
+
+    // THE SURVIVORSHIP CLAIM: the live entry is untouched by all of the above.
+    let survivor: ElasticResult = read_entry(root, ENGINE_VERSION_HASH, &good_hash)
+        .expect("read_entry must not error on the good entry")
+        .expect("the good entry must survive the crashed-writer sweep");
+    assert!(
+        survivor == fixture,
+        "the surviving entry must decode PartialEq-equal to what was written",
+    );
+    assert!(
+        good_meta.is_file(),
+        "the good entry's .meta sidecar must survive the sweep intact",
+    );
+}
