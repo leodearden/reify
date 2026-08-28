@@ -52,11 +52,14 @@
 //      mᵢ = Φᵢᵀ·M·Φᵢ = kg · (1/√kg)² is dimensionless under `Φᵀ·M·Φ = I`
 //      (PRD §4.1 + §7.5). Reify's dimension grammar has no SI-root extension,
 //      so 1/√mass is not yet expressible; `Dimensionless` is the closest
-//      encoding available today. (`Vector3<Real>` is not valid .ri syntax —
-//      the `Vector3<Q>` resolver requires `Q` to resolve to a
-//      `DimensionVector`; `Real` is a primitive scalar, not a dimension
-//      name.) Tightening to a future `Scalar<InvRootMass>` (or equivalent)
-//      is left to the kinematic-completion sweep.
+//      encoding available today. (`Vector3<Real>` is likewise valid .ri
+//      syntax as of γ/4375 — `Real` and `Dimensionless` both resolve to the
+//      same dimensionless scalar quantity slot in dimension position, so
+//      `Vector3<Real>` and `Vector3<Dimensionless>` are synonyms here; the
+//      choice between the two spellings is cosmetic, not a rigor gain, and
+//      `Dimensionless` is kept as the more explicit spelling.) Tightening
+//      to a future `Scalar<InvRootMass>` (or equivalent) is left to the
+//      kinematic-completion sweep.
 //   5. `ModalOptions.reference_direction : Vector3<Dimensionless>` is the
 //      correct semantics (unit vector — dimensionless). The constraint
 //      `reference_direction.norm() > 0` is NOT expressible in Reify's
@@ -169,10 +172,13 @@ structure def RayleighDamping : DampingDescriptor {
 //                        §7.5). Reify's dimension grammar has no SI-root
 //                        extension, so 1/√mass is not yet expressible;
 //                        `Dimensionless` is the closest currently-resolvable
-//                        spelling. (`Vector3<Real>` is not valid .ri syntax
-//                        — the `Vector3<Q>` resolver requires `Q` to be a
-//                        dimension name; `Real` is a primitive scalar.)
-//                        Tightening to a future `Scalar<InvRootMass>` (or
+//                        spelling. (`Vector3<Real>` is likewise valid .ri
+//                        syntax as of γ/4375 — `Real` and `Dimensionless`
+//                        resolve to the same dimensionless scalar quantity
+//                        slot in dimension position, so the two spellings
+//                        are synonyms here; switching is cosmetic, not a
+//                        rigor gain.) Tightening to a future
+//                        `Scalar<InvRootMass>` (or
 //                        equivalent) is left to the kinematic-completion
 //                        sweep. (Contrast with buckling's
 //                        `BucklingMode.mode_shape
@@ -331,9 +337,13 @@ structure def ModalResult {
 //                          mathematically accurate (unlike `Mode.shape`,
 //                          whose 1/√mass components are merely encoded as
 //                          Dimensionless pending an SI-root grammar
-//                          extension). `Vector3<Real>` is not valid .ri
-//                          syntax — the `Vector3<Q>` resolver requires `Q`
-//                          to be a dimension name. Required at construction
+//                          extension). `Vector3<Real>` is likewise valid
+//                          .ri syntax as of γ/4375 — `Real` and
+//                          `Dimensionless` resolve to the same
+//                          dimensionless scalar quantity slot in dimension
+//                          position, so either spelling could be written
+//                          here; `Dimensionless` is kept as the more
+//                          explicit one. Required at construction
 //                          (no default — there is no canonical excitation
 //                          direction). The `reference_direction.norm() > 0`
 //                          invariant is NOT expressible in Reify's
