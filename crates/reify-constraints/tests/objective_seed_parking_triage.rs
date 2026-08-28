@@ -40,10 +40,75 @@
 //! (`solver.rs:2694-2730`) overwrites it — an all-`free` problem skips the uniqueness
 //! re-solve entirely and reports `unique: false` (`solver.rs:2723-2728`).
 //!
+//! | P4a | `min x` s.t. `x >= 8mm` | 30mm | **30.000000 mm** (bits `0x3f9eb851eb851eb8`) | the seed | yes — bit-exact |
+//! | P4b | `min x` s.t. `x >= 8mm` | 12mm | **12.000000 mm** (bits `0x3f889374bc6a7efa`) | the seed | yes — bit-exact |
+//! | P4c | `max x` s.t. `8mm <= x <= 40mm` | 11mm | **11.000000 mm** (bits `0x3f86872b020c49ba`) | the seed | yes — bit-exact |
+//!
+//! P5 (`solve_ranked` on P1's problem) measured
+//! `Ranked { candidates: [ { objective_score: Some(0.0088) } ], optimality: BestFound
+//! { reason: ConvergedWithinBudget } }` — 1 candidate, and **not** `IterationLimit`.
+//!
 //! P2 vs P3 settles the open question from the filing: a genuinely **one-sided**
 //! `<= 40mm` returns **36mm**, so the reported 24mm can only have come from a
 //! **two-sided** shape. It is the derived-box midpoint seed — the *same* mechanism as
 //! P1's 8.8mm, not the separate unexplained effect the filing assumed.
+//!
+//! # Mechanism — VERDICT: candidate (a), the silent seed-fallback, CONFIRMED
+//!
+//! Five links, all in `crates/reify-constraints/src/solver.rs`:
+//!
+//! 1. **SEED.** `extract_initial_point` (`:420-440`, doc `:402-419`) arm 3 — the
+//!    constraint-derived box (task #5618): the midpoint when BOTH sides are derived,
+//!    otherwise nudged inward from the single derived bound by
+//!    `max(SEED_NUDGE_REL × |bound|, SEED_NUDGE_ABS)` (`SEED_NUDGE_REL = 0.1` at
+//!    `:239`, `SEED_NUDGE_ABS = 1e-6` at `:244`). Arm 1 takes `current_values` when
+//!    present — which is what P4 varies.
+//! 2. **NO CLAMP WALL.** The clamp box handed to the optimiser is gated on
+//!    `floor_applied` (`:1809-1825`): the constraint-derived clamp box is used ONLY
+//!    when the Money robustness floor fired. A `Length` objective is not Money
+//!    (`objective_is_money` `:820`, gate `:1755-1760`), so the else-branch takes
+//!    `effective_bounds` = `default_bounds_for(Length)` = `(1e-6, 10.0)` (`:1585-1594`).
+//!    With `AutoParam.bounds` always `None` in production (`:993-997`), there is no
+//!    wall anywhere near the user's bound.
+//! 3. **PENALTY UNDERSHOOT.** Cost is `obj + PENALTY_WEIGHT × violation +
+//!    PENALTY_WEIGHT × bound_penalty` (`:1539-1548`) with `PENALTY_WEIGHT = 1e6`
+//!    (`:25`). Minimising `x + 1e6·(b − x)²` is stationary at
+//!    `b − 1/(2 × PENALTY_WEIGHT)` = `b − 5e-7`, i.e. 5e-7 OUTSIDE the active bound.
+//!    `solver.rs:1017-1021` and `:1776-1781` state this verbatim, and `:1780-1781`
+//!    already names the symptom: "a feasible-but-badly-suboptimal answer (the seed,
+//!    returned via the drift fallback)".
+//! 4. **FEASIBILITY REJECT.** The final check measures the LINEAR residual against
+//!    `FEASIBILITY_THRESHOLD = 1e-12` (`:20`, `:1997`). `5e-7 >> 1e-12`, so the
+//!    converged optimum is rejected.
+//! 5. **SILENT SEED-FALLBACK.** Because the seed *is* feasible (`initially_feasible`),
+//!    the rejected optimum is replaced by the untouched initial point and returned as
+//!    `Solved` (`:1997-2031`). The objective is ignored, and the only trace is a
+//!    `tracing::debug!` — no diagnostic.
+//!
+//! What each probe rules out:
+//!
+//! * **P4 rules out candidates (b) and (d).** The answer is a bit-exact function of
+//!   the seed while constraints, objective and sense are held fixed. No stalling
+//!   optimizer and no mis-plumbed objective produces that.
+//! * **P5 rules out candidate (b) independently.** Nelder-Mead terminated on its
+//!   sd-tolerance, not the iteration cap. It converges fine; its answer is DISCARDED
+//!   at link 4.
+//! * **P3 corrects the filing's reading of the reported 24mm** (link 1, two-sided arm).
+//! * Candidate (c), the Money robustness floor / centrality blend, needs no probe:
+//!   the floor is Money-gated (`:820`, `:1755-1760`) and
+//!   `tests/robustness_floor.rs:397` (`non_money_objective_unchanged`) already pins
+//!   that a non-Money objective is untouched, while `build_centrality_objective` is
+//!   synthesised only when `problem.objective.is_none()` (`:1847`) and so cannot fire
+//!   when the author wrote `minimize`/`maximize`.
+//!
+//! # These probes are a TRIPWIRE, not a specification
+//!
+//! They characterise CURRENT behaviour and are **expected to go RED when the owning
+//! fix lands** — `#5711` (the `floor_applied` clamp gate, bound by `solver.rs:1801-1809`
+//! and `:2605-2612` to the `verify_uniqueness` contract: "Revisit both together;
+//! neither is actionable in isolation") or `#6678` (retire `PENALTY_WEIGHT`, the 5e-7
+//! trigger; `#6688` was cancelled-absorbed into `#6678` on 2026-08-27). A RED here is
+//! the signal to RE-MEASURE and update the table, not a regression to revert.
 //!
 //! # Production shape
 //!
@@ -264,6 +329,11 @@ fn p3_maximize_one_sided_upper_bound_parks_at_nudged_seed() {
 /// Asserted bit-exactly (`to_bits()`), because the drift fallback returns the
 /// **exact** initial point (`solver.rs:2025-2031`; pinned by
 /// `solver_integration.rs:1483`).
+///
+/// MEASURED at HEAD `9c1bed42a7`, all `Solved { unique: false }`: seed 30mm →
+/// **30.000000 mm** (bits `0x3f9eb851eb851eb8`), seed 12mm → **12.000000 mm** (bits
+/// `0x3f889374bc6a7efa`), two-sided seed 11mm → **11.000000 mm** (bits
+/// `0x3f86872b020c49ba`). Each output is bit-identical to `mm(seed)`.
 #[test]
 fn p4_answer_tracks_the_seed_bit_exactly() {
     for seed_mm in [30.0_f64, 12.0_f64] {
@@ -319,6 +389,12 @@ fn p4_answer_tracks_the_seed_bit_exactly() {
 ///
 /// `SolveMeta` (`solver.rs:89`) and `solve_with_meta` (`solver.rs:2802`) are private, so
 /// `solve_ranked` is the only public route to this signal.
+///
+/// MEASURED at HEAD `9c1bed42a7`: `Ranked { candidates: [ { values: {Probe.x: 0.0088},
+/// objective_score: Some(0.0088), unique: false } ], optimality: BestFound { reason:
+/// ConvergedWithinBudget } }`. Note the ranked candidate's value is the SEED (0.0088 m)
+/// too — the fallback happens upstream of the ranking, so even the "best found"
+/// candidate the solver reports is the seed.
 #[test]
 fn p5_optimality_status_is_not_iteration_limited() {
     let problem = probe_problem(vec![ge_8mm()], Some(ObjectiveSense::Minimize), None);
