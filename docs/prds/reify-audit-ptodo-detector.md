@@ -200,10 +200,10 @@ even while grandfathered violations are being burned down. Baseline is shrink-on
 (ratchet-above-baseline oracle pattern, Leo-ratified jun11 on 4521) — **a convention
 enforced by nothing**: the implemented oracle is subset-of, and no assertion anywhere
 requires the baseline to shrink, or a baseline entry to still be live. Adding that second
-assertion was considered and **declined** on measurement — **§17** (2026-08-28, task
+assertion was considered and **declined** on measurement — **§18** (2026-08-28, task
 #6859), the single home for that ruling. After δ the baseline should be ≈ empty —
 **an aspiration with no mechanism**: measured unchanged from the 2026-08-07 seed through
-2026-08-28 (**§17**).
+2026-08-28 (**§18**).
 
 **Sequencing rule for a new lane — re-seed in the same diff (2026-08-07, task #6087).**
 Widening marker recognition necessarily discovers pre-existing debt, so the lane's own
@@ -1004,3 +1004,139 @@ on the `git show`, at the cost of a wider diff per lookup), or if `C`-status cop
 up in practice. A further inverse kind must arrive with the same shape of evidence: a
 dated live-corpus measurement, the fail-safe argument for why git failure cannot
 manufacture it, and a row here.
+
+## 18. Assessment 2026-08-28 (task #6859): baseline liveness assertion — NO
+
+**DECISION: NO.** The §6.6 ratchet oracle stays `comm -23 <live> <baseline>` (subset-of).
+No second `comm -13 <live> <baseline>` (baseline ⊆ live) assertion is added — in neither
+the full set-equality form nor the structural-kinds-only variant (c) below. This section
+is the **single home** for that ruling; §6.6 carries a pointer, not a restatement.
+
+**The question.** The ratchet asserts only that the live violation set is a *subset* of
+the committed baseline. Nothing asserts the converse, and two consequences follow — both
+real: (1) there is **no drain forcing function** — a grandfathered entry may sit in
+`ptodo-baseline.txt` forever at zero cost; (2) a grandfathered fingerprint is a
+**re-entry permit** — since fingerprints erase line numbers (§6.6), the same marker text
+may be re-introduced *anywhere in the same file* without the gate noticing. Should the
+ratchet also assert `baseline ⊆ live`?
+
+### Measurements (2026-08-28, this branch tip — re-measured, not copied from analysis)
+
+| Measure | Value |
+|---|---|
+| Degraded live set (`env -u REIFY_PTODO_TASKS_DB` — the mode the gate actually runs in) | **4** fingerprints: `untracked` ×3, `malformed-cite` ×1 |
+| Committed `crates/reify-audit/ptodo-baseline.txt` | **5** fingerprints |
+| `comm -13 <live> <baseline>` (baseline entries NOT live) | **exactly 1** — the `orphaned` entry (`engine_build.rs`, cite #4744 `done`), a DB-dependent liveness-lane kind that §6.7 drops in the no-task-DB mode |
+| `comm -23 <live> <baseline>` (the implemented oracle) | **empty** — green |
+| Scan evidence, same run | `@@PTODO_SCAN@@ files_scanned=3069 markers_examined=42` |
+| Fingerprint **multiplicity** in the tree | `T12 layer-B seam …` **×8**; `deferred to task 4050` ×3; `GHR-ζ` ×1; `RBD-ε RNEA` ×1; `pending task #4744` ×1 |
+| **Churn** since 2026-06-01, the three baseline-bearing files | `engine_build.rs` **351**; `significance_filter.rs` 13; `joints.rs` 17 commits |
+| Baseline history | seeded `96961ab605` (2026-08-07), amended `48dbd973a3` (2026-08-09) — **never shrunk** in 21 days |
+| DB-present regeneration | exceeded **5 minutes** without completing (the ζ inverse lane walks git history per finding). Measured at analysis time and deliberately not re-run: regenerating the baseline is **not** a fast local action |
+
+### 1. The premise is false — set-equality is not a drain forcing function
+
+Consequence (1) above is real, but the proposed mechanism does not address it. Set-equality
+constrains the **baseline** to track the **live set**; it places *zero* pressure on the live
+set to shrink. A tree in which all five entries stay live forever satisfies set-equality
+forever. Recording this correction is the most valuable output of this assessment: it stops
+a future reader from re-proposing set-equality as a drain mechanism. **The drain mechanism
+is doing the work** — fixing the markers — not guarding it.
+
+### 2. The re-entry permit is real, but the mechanism's reach is anti-correlated with the risk
+
+`ptodo-baseline-gen` dedupes through a `BTreeSet`, so a fingerprint leaves the live set only
+when its population in the file reaches **zero**. Crossing multiplicity with churn:
+
+- `engine_build.rs :: untracked :: T12 layer-B seam …` — **8 copies**, in a file at ~351
+  commits/quarter, where copy-paste re-introduction of byte-identical rationale text is a
+  **demonstrated mechanism**, not a hypothesis: `1812b5cce9` added 4 (2026-05-30) and the
+  later `c7bd324106` added 4 more the same day. This is where the permit is *maximally*
+  exercisable — and set-equality is **inert** here: it needs all 8 copies gone.
+- `significance_filter.rs` and `joints.rs` — **1 copy each**, 13 and 17 commits. Set-equality
+  is fully effective, but the exposure is minimal.
+
+The proposal is strongest exactly where the risk is smallest and weakest exactly where the
+risk is largest. Bounding re-entry would require ratcheting the **count**, not set
+membership — see the alternatives below.
+
+### 3. The permit is the price of line-number erasure, which §6.6 chose deliberately
+
+§6.6 erases line numbers because "they drift". A grandfather list of **texts** rather than
+**sites** is precisely what makes re-entry free. Set-equality does not buy back what
+line-number erasure gave away; it only detects the **last** removal. That is not
+proportionate to a kind-partition, a new generator machine-contract, and a new false-RED
+surface on the hottest file in the crate.
+
+### 4. Constraint (a) is confirmed by measurement — and it bites twice
+
+The committed baseline is generated **with** the task DB and therefore carries liveness-lane
+kinds (§6.7) that a degraded structural-only run cannot reproduce. Every context the gate
+actually runs in — task worktrees and the `_merge-verify` lane — lacks `.taskmaster/`.
+
+1. **On the assertion.** A naive set-equality assert REDs *today*, in every no-DB context,
+   on that one `orphaned` line. Not argued — measured.
+2. **On the remediation path.** The natural fix ("just regenerate") is *unavailable in a
+   task worktree*: regenerating in degraded mode drops the `orphaned` line, yielding a
+   4-line baseline that then REDs the **subset** direction wherever the DB *is* present. A
+   correct regen also takes >5 minutes. So the cost lands on third parties — authors of the
+   ~4 commits/day into `engine_build.rs` who have never heard of `ptodo-baseline.txt` — with
+   no cheap remedy available to them.
+
+### 5. Variant (c) — structural-kinds-only — is implementable, but disproportionate
+
+Restricting the converse assertion to the structural kinds is **measured green today**: all
+4 structural baseline entries are live in degraded mode. But per constraint (b) the kind
+partition must **not** live in bash. Task #6241 removed exactly that list and restored the
+"derivation lives only in `ptodo-baseline-gen`" invariant **in full** (§6.6). Re-establishing
+it correctly costs: a generator-emitted machine token or emit-mode, Rust unit tests for the
+partition, a shell parse, and a two-directional wiring meta-test — roughly the size of the
+#6241 change — to close a hole whose *effective* reach, per §18.2, is **2 cold-file
+fingerprints**.
+
+### 6. For the record — set-equality would NOT recreate the #6127 false-RED
+
+State this so a future reader does not re-litigate constraint (b) on the wrong ground. The
+retired #6127 floor keyed on the live finding **count** and fired when it hit 0, which is
+why a burn-down commit false-RED it. Set-equality compares two **sets**, and a burn-down
+that shrinks the baseline in the same diff leaves both sides equal (empty ⊆ empty). The bite
+of constraint (b) is the **kind list**, not the false-RED — which is why §18.5, not (b),
+carries the decision.
+
+### Alternatives considered and rejected
+
+| Alternative | Why rejected |
+|---|---|
+| (a) Full set-equality (`comm -13` unconditionally) | REDs today in every no-DB context (§18.4), and does not do the job it is named for (§18.1). |
+| (b) Structural-kinds-only (variant (c)) | Implementable and green today, but re-introduces a kind partition that #6241 deliberately removed; ~#6241-sized cost for 2 cold-file fingerprints (§18.5). |
+| (c) DB-conditional set-equality — assert only when the task DB is reachable | Needs no kind list at all, which is its appeal. But it would be **dark everywhere the gate actually runs**: both task worktrees and the `_merge-verify` lane lack `.taskmaster/`. A guard that never executes in the gate is not a guard. |
+| (d) Count-ratcheting the baseline (`live_count <= baseline_count`) | The **only** shape that actually bounds re-entry, and named here so a future YES starts from it rather than from set-equality. Rejected on cost: it changes the baseline format and re-couples the gate to line-level churn in the hottest file in the crate — strictly worse on friction than the permit it closes. |
+
+### What this ruling does NOT claim
+
+It does not claim the two consequences are acceptable in general — only that **this**
+mechanism does not buy them down at a proportionate price. They stand as **known
+limitations** of §6.6, now stated in print rather than implied away.
+
+### Revisit condition
+
+Re-open when the cost/benefit inverts — measurably, either:
+
+- **no baseline fingerprint has multiplicity > 1** (at which point set-equality's reach
+  becomes total and its false-RED surface is one commit per drain); or
+- **a baseline fingerprint is ever observed re-entering after its population reached zero**
+  (the permit exercised in fact rather than in principle).
+
+Re-measure the multiplicity and churn table before adopting anything, per the §16 evidence
+standard — including a dated row here when the answer is again no.
+
+### Mechanical pin
+
+Prose-only guidance in *this* PRD has a measured track record of failing: §12's η signal was
+wrong for two months (esc-6088-2), and §6.6's "keeps the gate green" needed an amendment for
+the same reason. §6.6's surviving "shrink-only" phrasing is exactly what invites the naive
+`comm -13` edit — the edit this assessment declines. The ruling is therefore pinned by
+`tests/infra/test_reify_audit_ptodo_ratchet_superset.sh`, which asserts both directions: a
+committed-baseline entry absent from the live set must **not** red the ratchet, and a live
+fingerprint absent from the baseline must **still** red it (the second direction exists so
+the guard cannot degenerate into a constant-true after the oracle it pins is disarmed).
