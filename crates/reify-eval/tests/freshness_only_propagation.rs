@@ -127,12 +127,11 @@ fn walk_over_engine_propagates_intermediate_to_final_without_value_recomputation
     // reverse_index through to the walk.
     //
     // `ReverseDependencyIndex` is `Clone`-able specifically to support
-    // this idiom (see `concurrent.rs:172` for another instance). When
-    // this walk is eventually wired into `engine_edit.rs::edit_param`
-    // (out-of-scope for task #2335 — see plan design-decision #5), the
-    // call site will own both `&mut self.cache` and `&self.eval_state`
-    // through the `Engine` struct's interior fields and the clone won't
-    // be necessary.
+    // this idiom. When this walk is eventually wired into
+    // `engine_edit.rs::edit_param` (out-of-scope for task #2335 — see plan
+    // design-decision #5), the call site will own both `&mut self.cache`
+    // and `&self.eval_state` through the `Engine` struct's interior fields
+    // and the clone won't be necessary.
     let reverse_index_clone = engine
         .eval_state()
         .expect("eval_state populated by Engine::eval")
