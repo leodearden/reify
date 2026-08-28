@@ -6601,6 +6601,29 @@ pub(crate) fn normalize_unit_label(label: &str) -> String {
     label.replace('\u{00B2}', "^2").replace('\u{00B3}', "^3")
 }
 
+/// The SUPERSCRIPT spelling of a curated unit label — the inverse of
+/// [`normalize_unit_label`] over the same two-glyph alphabet.
+///
+/// WHY IT EXISTS. Until task λ (#5788) the curated ladders were themselves
+/// spelled with U+00B2/U+00B3, so [`COMPOSED_UNIT_INDEX`] got the superscript
+/// spelling for free — it was the rung's own label, and only the ASCII form had
+/// to be synthesized. λ relabelled the tables to the ASCII `^`-exponent
+/// alphabet, which flips that around: the label IS the normal form now, and it
+/// is the legacy spelling that has to be synthesized or it silently leaves the
+/// index. Registering it keeps the accept-set from NARROWING as a side effect of
+/// a display relabel — a value a user could commit before λ still commits after.
+///
+/// Identity on a label carrying no caret exponent, so the builder can push it
+/// unconditionally and let `push`'s dedup collapse the no-op.
+///
+/// This is a legacy-input alias, NOT a second display spelling: nothing renders
+/// its output, `reify_core::display_units::ascii_label_spelling` remains the one
+/// direction the compiler's `@display` hint speaks, and the frontend gate still
+/// admits only the ASCII form.
+pub(crate) fn superscript_label_spelling(label: &str) -> String {
+    label.replace("^2", "\u{00B2}").replace("^3", "\u{00B3}")
+}
+
 /// One resolvable unit spelling in [`composed_unit_index`].
 #[derive(Debug)]
 pub(crate) struct ComposedUnit {
@@ -6716,12 +6739,17 @@ pub(crate) fn dimension_requires_unit(
 ///     `reify_core::unit_symbol_to_si` is a faithful view of. Contributes the SI
 ///     bases no ladder carries (`s`, `K`, `A`, `mol`, `cd`).
 ///
-/// BOTH SPELLINGS of every curated rung are registered: the raw superscript one
-/// a user can copy-paste from the picker, and the ASCII one
-/// [`normalize_unit_label`] produces — the only one the frontend gate admits,
-/// since `normalizeUnitLabel` is one-way. That makes this a strict SUPERSET of
-/// the frontend gate, so no frontend-accepted spelling can be refused on commit.
-/// Pinned by `parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings`.
+/// BOTH SPELLINGS of every curated rung are registered — the ASCII one
+/// [`normalize_unit_label`] produces, which is the only one the frontend gate
+/// admits (`normalizeUnitLabel` is one-way) and, since task λ (#5788), also the
+/// one the curated tables themselves carry; and the superscript one
+/// [`superscript_label_spelling`] produces, which the picker showed before λ and
+/// which a pre-λ file or copy-paste can still carry. Registering both makes this
+/// a strict SUPERSET of the frontend gate, so no frontend-accepted spelling can
+/// be refused on commit, and keeps the accept-set from narrowing when a display
+/// relabel moves which of the two the table happens to hold. Pinned by
+/// `parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings` and
+/// `parse_value_string_also_accepts_the_raw_superscript_ladder_spellings`.
 ///
 /// ORDERING IS LOAD-BEARING: [`resolve_quantity_suffix`] takes the first
 /// matching suffix, so descending label length is what stops `m` shadowing `cm`
@@ -6803,10 +6831,25 @@ static COMPOSED_UNIT_INDEX: std::sync::LazyLock<Vec<ComposedUnit>> =
                 continue;
             };
             for opt in ladder.units {
-                let normalized = normalize_unit_label(&opt.label);
-                if normalized != opt.label {
-                    push(&mut entries, normalized, opt.si_scale, dimension);
-                }
+                // Three spellings, pushed unconditionally and deduped by
+                // `push`: the rung's own label, its ASCII normal form and its
+                // superscript form. Which two of the three collapse depends on
+                // how the curated table is spelled TODAY — before task λ
+                // (#5788) the label was the superscript one, since λ it is the
+                // ASCII one — and the index must not care, because what it
+                // owes its callers is that BOTH spellings resolve either way.
+                push(
+                    &mut entries,
+                    normalize_unit_label(&opt.label),
+                    opt.si_scale,
+                    dimension,
+                );
+                push(
+                    &mut entries,
+                    superscript_label_spelling(&opt.label),
+                    opt.si_scale,
+                    dimension,
+                );
                 push(&mut entries, opt.label, opt.si_scale, dimension);
             }
         }
