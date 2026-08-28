@@ -1350,12 +1350,15 @@ mod alias_to_entity_type_parity {
     //
     // Both PASS on `main` and are regression locks on task #6259's diff, not
     // new-feature tests. The deferred use-site arm re-resolves the alias body
-    // in the CALLER's scope; a type alias is always a top-level declaration
+    // in an EMPTY type/dim parameter scope — NEVER the caller's. A type alias is
+    // always a top-level declaration
     // (`reify-ast/src/decl.rs:36` — `Declaration` is "A top-level declaration
     // in a module", and there is no nested-scope alias form), so the body of a
     // NON-parametric alias can never legitimately name a type or dimension
-    // parameter. Threading the use site's parameter scope into the body is
-    // therefore capture, never a feature.
+    // parameter: the empty set IS the alias's own declaration-site scope.
+    // Threading the use site's parameter scope into the body is therefore
+    // capture, never a feature — these two locks are what catch a regression
+    // back to it.
     //
     // Note the asymmetry in what each row asserts, and why: `dim_param_names`
     // is non-empty ONLY at fn-signature callers (`src/functions.rs:64,600` are
