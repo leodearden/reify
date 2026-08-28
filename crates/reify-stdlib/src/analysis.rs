@@ -966,7 +966,10 @@ mod tests {
             ],
             DimensionVector::PRESSURE,
         );
-        let result = eval_analysis("principal_stresses", &[nan_tensor]).unwrap();
+        // Registry α: `eval_analysis` is gone; the family's entry point is
+        // `eval_builtin`, which returns the `Value` directly rather than an
+        // `Option`. Same kernel, same assertion.
+        let result = eval_builtin("principal_stresses", &[nan_tensor]);
         assert!(
             result.is_undef(),
             "principal_stresses(all-NaN tensor) must be Undef itself, not a List, got {:?}",
