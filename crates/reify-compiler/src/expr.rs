@@ -3389,14 +3389,16 @@ fn compile_expr_guarded_with_expected_inner(
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
+                    // `is_flexure_typed_fn` (task #5476) →
                     // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
                     // `is_field_op` → `is_parse_typed_fn` →
                     // `is_orientation_typed_fn` (task 5344) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
-                    // `is_field_op` family (task 4219), and the #4629 W2
-                    // `fea_envelope_result_type` family are pinned disjoint in
+                    // `is_field_op` family (task 4219), the #4629 W2
+                    // `fea_envelope_result_type` family, and the task-#5476
+                    // `is_flexure_typed_fn` family are pinned disjoint in
                     // `units.rs::tests::*_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates. `selector_composition_result_type` is

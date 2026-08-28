@@ -1219,8 +1219,8 @@ structure def FlexureComplianceBareLength {
 /// declared `structure def FlexureJoint : DrivingJoint { }` — a reader seeing
 /// that bound may reasonably assume any `DrivingJoint` matches. It does not:
 /// `type_compat.rs::resolve_function_overload` compares parameter types by exact
-/// equality, so `Spherical()` (`structure def Spherical : DrivingJoint { }`,
-/// kinematic.ri:171) is as rejected as a bare `5mm`.
+/// equality, so `Spherical()` (`structure def Spherical : DrivingJoint { }` in
+/// kinematic.ri) is as rejected as a bare `5mm`.
 ///
 /// The bound on the marker does real work, just not HERE — it is what keeps the
 /// #4310 compile-time `bind`/`sweep`/`dim` bound checks accepting a flexure

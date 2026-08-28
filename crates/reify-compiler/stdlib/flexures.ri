@@ -197,7 +197,7 @@ structure def FlexureCompliance {
 // §7.1 keeps the joints→typed-StructureInstance migration REJECTED, exactly as
 // KCC-ζ (task 3845, esc-3845-91) left it. Giving this marker fields would start
 // that declined migration; it is a type-layer tag only. Precedent for the empty
-// form: `structure def Spherical : DrivingJoint { }` (kinematic.ri:171).
+// form: `structure def Spherical : DrivingJoint { }` in kinematic.ri.
 //
 // `: DrivingJoint` so the #4310 compile-time bound checks on `bind` / `sweep` /
 // `dim` treat a flexure joint uniformly with every other driving joint — to the

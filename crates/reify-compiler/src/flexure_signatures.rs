@@ -76,7 +76,8 @@ use reify_core::Type;
 ///
 /// NOTE: `prb_validity_range` is deliberately EXCLUDED despite the `prb_`
 /// prefix — it is a `FlexureCompliance` FIELD (emitted by all five family
-/// modules; declared at flexures.ri:160), not a constructor. This is also why
+/// modules; declared as the `prb_validity_range` param of `structure def
+/// FlexureCompliance` in flexures.ri), not a constructor. This is also why
 /// the family is 13 and not the 14 stated in PRD §3.2. `__flexure_compliance_get`
 /// is likewise excluded: it CONSUMES a joint and returns a `FlexureCompliance`.
 /// Both exclusions are pinned by `is_flexure_typed_fn_rejects_non_family_names`.
@@ -182,11 +183,12 @@ mod tests {
     /// This is the compiler-side half of the anti-drift guard. The count is
     /// asserted explicitly at **13**: the PRD §3.2 and task #5476's description
     /// both say "all 14 `prb_*` ctors", but the range they cite
-    /// (`flexures/diagnostics.rs:163-175`) holds 13 — and that file's own doc
+    /// (`flexures/diagnostics.rs::PRB_CTOR_NAMES`) holds 13 — and that file's own doc
     /// comment reads "The 13 PRB flexure constructor names". The repo's 14th
     /// `prb_*` identifier is `prb_validity_range`, which is a
     /// `FlexureCompliance` FIELD name (it appears in all five family modules and
-    /// at flexures.ri:160), not a builtin. Typing it `FlexureJoint` would be
+    /// as the `prb_validity_range` param of `structure def FlexureCompliance`
+    /// in flexures.ri), not a builtin. Typing it `FlexureJoint` would be
     /// wrong, so it is excluded — and pinned as excluded below.
     #[test]
     fn flexure_ctor_fn_names_match_independent_fixture() {
@@ -240,7 +242,8 @@ mod tests {
     ///
     /// - **`prb_validity_range`** — carries the `prb_` prefix and so would be
     ///   swept up by any prefix-matching implementation, but it is a
-    ///   `FlexureCompliance` FIELD (flexures.ri:160; emitted by all five family
+    ///   `FlexureCompliance` FIELD (the `prb_validity_range` param of
+    ///   `structure def FlexureCompliance` in flexures.ri; emitted by all five family
     ///   modules). Typing it `FlexureJoint` would corrupt the record's own
     ///   validity-range field. The family must match by exact name, never by
     ///   prefix.
@@ -256,7 +259,8 @@ mod tests {
         assert!(
             !is_flexure_typed_fn("prb_validity_range"),
             "must reject 'prb_validity_range' — it is a FlexureCompliance FIELD \
-             (flexures.ri:160), not a ctor; matching it would mean the family is \
+             (the `prb_validity_range` param of `structure def \
+             FlexureCompliance`), not a ctor; matching it would mean the family is \
              matching on the `prb_` PREFIX instead of exact names"
         );
         assert!(
