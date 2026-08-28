@@ -1125,6 +1125,70 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Medium);
     }
 
+    /// The ALL-gitignored declared set must reach `check_pre_done_landing`'s
+    /// `declared.is_empty()` early return, not the `absent.is_empty()` one.
+    ///
+    /// `cli-invocation.md` promises the gate "never refuses" on "a list
+    /// consisting solely of gitignored entries", and the code implements that
+    /// by `retain`-ing the gitignored subset away FIRST and returning on the
+    /// resulting empty set. The sibling test
+    /// `pre_done_gate_does_not_refuse_on_gitignored_entry` mixes one gitignored
+    /// entry with one tracked-on-main entry, so it exits through the LATER
+    /// `absent.is_empty()` leg and leaves the promised branch unexecuted — a
+    /// refactor that moved the gitignored filter after the tracked-on-main
+    /// filter would keep it green while refusing every all-gitignored flip.
+    ///
+    /// Here the single declared entry is gitignored AND not tracked on main
+    /// (the `path_tracked_on` default), so only the first return can produce
+    /// the empty result.
+    #[test]
+    fn pre_done_gate_does_not_refuse_when_every_entry_is_gitignored() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_gitignored("target/debug/generated.rs", true);
+        // `path_tracked_on` stays false and `is_ancestor("main", "main")` stays
+        // false: if control ever reached the refusal road, the MAIN_BASE probe
+        // would fire and this test would see an advisory Low — so a green run
+        // proves the gitignored filter ran FIRST.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345GALL".to_string(),
+            pre_done_meta("6345GALL", "in-progress", &["target/debug/generated.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345GALL");
+
+        assert!(
+            findings.iter().all(|f| f.pattern != Pattern::P5PhantomDone),
+            "a declared set consisting solely of gitignored entries must never \
+             produce a pre-done refusal at ANY severity; got {:?}",
+            findings
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly the gitignored breadcrumb; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].pattern, Pattern::P5MetadataFilesGitignored);
+        assert_eq!(findings[0].severity, Severity::Medium);
+    }
+
     /// Defect 2, on the SWEEP path: a task whose claimed commit has LANDED
     /// must corroborate via that commit's own delta, not via `main..<commit>`.
     ///
@@ -1487,6 +1551,14 @@ mod tests {
     /// Case (b) pins that the prefix match is anchored: a sibling directory
     /// with a shared textual prefix (`crates/reify-x/src/gone_too/`) must not
     /// satisfy a declared `crates/reify-x/src/gone` entry.
+    ///
+    /// Case (c) is the same directory written WITH a trailing slash —
+    /// `metadata.files` is hand-authored and nothing normalises it. Without
+    /// trimming, the anchor check indexes the byte after the slash and can
+    /// never see a `/`, so the entry stays absent and the flip is refused for
+    /// work that did land. The healthy `path_tracked_on` leg cannot mask it:
+    /// `git ls-tree main -- <dir>/` is equally empty once the directory is
+    /// gone from main.
     #[test]
     fn pre_done_gate_accepts_deleted_directory_entry_via_landing_commit() {
         let conn = seed_db();
@@ -1529,6 +1601,22 @@ mod tests {
             vec!["crates/reify-x/src/gone_too/mod.rs".to_string()],
         );
 
+        // (c) the SAME removed directory as (a), but declared with a trailing
+        // slash — the form `metadata.files` may legitimately carry.
+        git.set_log_grep(
+            "main",
+            "6345SLASH",
+            vec![GitCommit {
+                sha: "slashmerge".to_string(),
+                subject: "Merge task/6345SLASH into main".to_string(),
+            }],
+        );
+        git.set_is_ancestor("slashmerge", "main", true);
+        git.set_changed_paths_in_commit(
+            "slashmerge",
+            vec!["crates/reify-x/src/gone/mod.rs".to_string()],
+        );
+
         // `path_tracked_on` stays false for both declared entries — the
         // directory is gone from main, which is the whole premise.
 
@@ -1540,6 +1628,10 @@ mod tests {
         task_metadata.insert(
             "6345PFX".to_string(),
             pre_done_meta("6345PFX", "review", &["crates/reify-x/src/gone"]),
+        );
+        task_metadata.insert(
+            "6345SLASH".to_string(),
+            pre_done_meta("6345SLASH", "review", &["crates/reify-x/src/gone/"]),
         );
 
         let jc = MockJCodemunchOps::new();
@@ -1573,6 +1665,15 @@ mod tests {
             findings
         );
         assert_eq!(findings[0].severity, Severity::High);
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345SLASH");
+        assert!(
+            findings.is_empty(),
+            "a declared directory written WITH a trailing slash must behave exactly \
+             like the un-slashed form — the trailing separator is not evidence that \
+             the work failed to land; got {:?}",
+            findings
+        );
     }
 
     /// A pre-done refusal must rest on evidence actually gathered.

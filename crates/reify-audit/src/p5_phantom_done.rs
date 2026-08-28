@@ -783,7 +783,25 @@ fn check_pre_done_landing(
 /// check anchors the prefix: `crates/x/gone_too/a.rs` must NOT satisfy a
 /// declared `crates/x/gone`. Allocation-free on purpose — this runs inside the
 /// per-sibling loop on the write-lock-held pre-done path.
+///
+/// A declared entry may be written WITH a trailing slash (`crates/x/gone/`) —
+/// `metadata.files` is hand-authored and nothing normalises it. That form must
+/// be trimmed before the prefix compare, or the anchor check indexes the byte
+/// AFTER the slash (`'a'` of `a.rs`), never sees `/`, and the entry is reported
+/// as still-absent. The healthy `path_tracked_on` leg does NOT mask this:
+/// `git ls-tree main -- crates/x/gone/` returns nothing for a directory the
+/// landing commit removed, so a removal/rename task declaring a trailing-slash
+/// directory reaches this rescue and would be wrongly refused for work that
+/// did land.
+///
+/// An entry that trims to empty names no deliverable, so nothing can cover it
+/// — returning `false` there also preserves the pre-normalisation behaviour
+/// (a repo-relative `changed` never begins with `/`).
 fn covers_path(changed: &str, declared: &str) -> bool {
+    let declared = declared.trim_end_matches('/');
+    if declared.is_empty() {
+        return false;
+    }
     changed == declared
         || (changed.len() > declared.len()
             && changed.starts_with(declared)
