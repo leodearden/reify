@@ -106,20 +106,43 @@ const CC_FIXTURE_FIXED_ANALYTIC_HZ: f64 = 900.699;
 /// section and mesh (−1.58% vs analytic), and task 6663 leaves the pin-pin
 /// realization (`simply_supported_pin_pin_bcs`) untouched — so this is a
 /// MEASURED reference with 1.42% of margin, not a guessed tolerance.
+///
+/// RE-MEASURED in release after the fix landed: **391.0495 Hz**, −1.58% — the
+/// dogfood number to four decimals, i.e. the pin-pin realization really is
+/// bit-preserved and this band really is a measured reference.
 const CC_FIXTURE_PINNED_REL_TOL: f64 = 0.03;
 
-/// Clamped-clamped band — deliberately looser than the pinned one because it is
-/// derived rather than directly measured at this mesh. Bounded ABOVE by 899.98 Hz:
-/// a clamped-clamped probe of this exact section measured 899.978 Hz at nx=16, and
-/// the conforming P2 displacement method is a Rayleigh quotient, so frequencies
-/// bound the exact 3-D value from above and fall monotonically under refinement —
-/// the eval mesh (nx=108/nz=6) is strictly finer, hence f_eval ≤ 899.98. Bounded
-/// BELOW by scaling this section's MEASURED pinned deviation (−1.58%) by the
-/// (βL)² ratio 22.373/9.870 = 2.267 → ≈ −3.6% → ≈ 868 Hz, then DOUBLING that
-/// deviation for safety → ≈ 836 Hz. The 10% band [810.6, 990.8] Hz therefore
-/// contains [836, 900] with margin at both ends, and excludes the defect value
-/// (391.05 Hz, the pinned answer) by a factor of 2.
-const CC_FIXTURE_FIXED_REL_TOL: f64 = 0.10;
+/// Clamped-clamped band. **MEASURED at this exact mesh**, in release:
+///
+/// ```text
+/// [modal bc-kind] f1_fixed = 887.5474 Hz (analytic 900.699, err -1.46%)
+/// ```
+///
+/// (`cargo test --release -p reify-eval-fea-tests
+/// e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported -- --nocapture`)
+///
+/// 3% around the analytic value therefore leaves 1.54% of margin on a measured
+/// reference — deliberately the SAME construction and nearly the same margin as
+/// [`CC_FIXTURE_PINNED_REL_TOL`]'s 1.42%, so the two headline bands are read the
+/// same way. It excludes the defect value (391.05 Hz, the pinned answer) by 57%,
+/// i.e. by 19 band-widths.
+///
+/// This REPLACES a derived 10% band whose bounds came from an nx=16 probe plus a
+/// Rayleigh-monotonicity argument (which does not strictly apply — an
+/// nx=108/nz=6 mesh is not a nested refinement of nx=16) and a doubled scaled
+/// deviation, and which would have first executed at the release merge gate
+/// because this test is `#[cfg_attr(debug_assertions, ignore)]`. The measurement
+/// retires that reasoning, and shows it was pessimistic in the interesting
+/// direction: the derived floor was ≈ 836 Hz (scaling the pinned −1.58%
+/// deviation by the (βL)² ratio 22.373/9.870 = 2.267 → ≈ −3.6%, then doubling),
+/// but the clamped section actually deviates −1.46% — essentially the same as
+/// the pinned case, not 2.3× worse. The section is stubby (L/h ≈ 18), so shear
+/// and rotary inertia are NOT negligible here; the measured sign is consistent
+/// with that (the 3-D FE model carries shear, the Euler–Bernoulli reference does
+/// not, so the FE value sits below analytic), and the magnitude says the effect
+/// is ~1.5% at this mesh rather than the several percent the derivation guarded
+/// against.
+const CC_FIXTURE_FIXED_REL_TOL: f64 = 0.03;
 
 /// The headline acceptance signal: clamping both end faces must be a genuinely
 /// DIFFERENT structure from pinning both. The analytic ratio is a pure BC ratio,
@@ -127,6 +150,11 @@ const CC_FIXTURE_FIXED_REL_TOL: f64 = 0.10;
 /// [2.14, 2.30]. A 2.0 floor is insensitive to every modelling uncertainty in the
 /// two bands above. Under the defect this ratio read exactly 1.0 — the two BC sets
 /// were bit-identical.
+///
+/// MEASURED in release: **2.2697** — within 0.1% of the analytic BC ratio, and
+/// the cleanest evidence that the two realizations now differ by exactly the
+/// physics and not by a modelling artifact (the two solves share one section,
+/// one mesh and one material, so everything but the BC set cancels).
 const CC_FIXTURE_MIN_FIXED_PINNED_RATIO: f64 = 2.0;
 
 // ── step-13: RED — trampoline registration + seam pin ────────────────────────
