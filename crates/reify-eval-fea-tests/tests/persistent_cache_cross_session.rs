@@ -1,9 +1,49 @@
 //! Cross-session persistent-FEA-cache integration tests (task #2980).
 //!
-//! Step-1 RED: the test body below references file-local helpers
-//! (`find_single_bin`, `find_elastic_result`, `slab_bits`, `has_bin_file`)
-//! that step-2 adds. Until then this binary does not compile — that failure
-//! IS the RED signal.
+//! PRD: `docs/prds/v0_3/persistent-fea-cache.md`. This binary is the home for
+//! the PRD cases whose subject is the composed public surface — `Engine` plus
+//! `reify_eval::persistent_cache`'s free functions plus
+//! `reify_eval::sweep_persistent_cache_at_startup` — rather than any one unit.
+//!
+//! ## Observable signal
+//!
+//! The two existing round-trips (`reify-eval`'s
+//! `persistent_cache_compute_round_trip.rs` and this crate's
+//! `buckling_persistent_cache_round_trip.rs`) already establish that a fresh
+//! engine on a warm cache dir HITS, and that one headline scalar survives.
+//! They stop there. The layer above is what this file pins:
+//!
+//! * **case 1** — a HIT leaves the on-disk entry byte-for-byte untouched, and
+//!   the reconstructed `Value` is bit-identical across the whole `displacement`
+//!   and `stress` slabs, not merely to a tolerance on one scalar.
+//!
+//! ## Dispatch-count probe
+//!
+//! "The trampoline was not invoked" is read off the engine counters, which move
+//! only for persistable targets (`solver::elastic_static` here):
+//! `persistent_hit_count() == 1` means the lookup-before-invoke path returned
+//! the cached result; `persistent_miss_count() == 0` means nothing fell through
+//! to a solve.
+//!
+//! ## Structure
+//!
+//! One ephemeral `TempDir` per test, shared across the two engines that stand
+//! in for two sessions. Engine A cold-solves and writes; Engine B is a brand-new
+//! `Engine` on the same root, which is what makes it a *cross-session* rather
+//! than an in-process-cache observation.
+//!
+//! ## Helpers are file-local by design
+//!
+//! `reify-eval-fea-tests` has no harness: it is 30 standalone `tests/*.rs`
+//! binaries whose helpers are duplicated per file deliberately. The helpers
+//! below follow that convention and are not an oversight.
+//!
+//! ## Cost
+//!
+//! One cantilever solve per session, ~0.7 s each in debug. Deliberately
+//! **not** `debug_assertions`-gated, matching the ungated sibling
+//! `persistent_cache_compute_round_trip.rs` (the buckling round-trip is gated
+//! only because a buckling solve is ~1000 s in debug).
 
 use reify_core::Severity;
 use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, ElasticResult, read_entry};
@@ -13,6 +53,95 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 /// Cantilever smoke source (compile-time include for binary/source sync).
 fn cantilever_source() -> &'static str {
     include_str!("../../../examples/fea_cantilever_smoke.ri")
+}
+
+/// Recursively check whether a `.bin` file exists anywhere under `dir`.
+///
+/// Mirrors the same-named helper in `buckling_persistent_cache_round_trip.rs`
+/// (this crate duplicates helpers per standalone binary by design).
+fn has_bin_file(dir: &std::path::Path) -> bool {
+    !collect_bin_files(dir).is_empty()
+}
+
+/// Collect every `.bin` path under `dir`, recursively.
+fn collect_bin_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            out.extend(collect_bin_files(&p));
+        } else if p.extension().is_some_and(|x| x == "bin") {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Locate THE single `.bin` under `dir`, panicking if there is not exactly one.
+///
+/// The exactly-one check is load-bearing: a second entry would mean the eval
+/// dispatched a compute target this test did not account for, which would make
+/// "snapshot the entry" ambiguous rather than merely noisy.
+fn find_single_bin(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut found = collect_bin_files(dir);
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one .bin under {}, found {}: {:?}",
+        dir.display(),
+        found.len(),
+        found,
+    );
+    found.pop().expect("length was just asserted to be 1")
+}
+
+/// Find the `ElasticResult` `StructureInstance` in an engine's snapshot.
+fn find_elastic_result(engine: &reify_eval::Engine) -> Value {
+    let state = engine
+        .eval_state()
+        .expect("Engine must have eval_state after eval");
+    state
+        .snapshot
+        .values
+        .values()
+        .find(|(v, _)| matches!(v, Value::StructureInstance(d) if d.type_name == "ElasticResult"))
+        .map(|(v, _)| v.clone())
+        .expect("An ElasticResult StructureInstance must exist in the snapshot")
+}
+
+/// Extract the raw bit patterns of a sampled field's flat data slab.
+///
+/// `ElasticResult.displacement` / `.stress` are
+/// `Value::Field { source: Sampled, lambda: Arc<Value::SampledField(sf)> }`,
+/// and `sf.data` is the row-major slab in SI units. Comparing `to_bits()`
+/// rather than `==` is what makes the assertion an EXACTNESS claim: it
+/// distinguishes `+0.0` from `-0.0` and treats same-bit NaNs as equal, so a
+/// reconstruction that is merely numerically close cannot pass.
+fn slab_bits(result: &Value, field: &str) -> Vec<u64> {
+    let Value::StructureInstance(data) = result else {
+        panic!("result must be a StructureInstance, got: {result:?}");
+    };
+    match data.fields.get(field) {
+        Some(Value::Field { lambda, .. }) => match lambda.as_ref() {
+            Value::SampledField(sf) => sf.data.iter().map(|x| x.to_bits()).collect(),
+            other => panic!("`{field}` must carry a SampledField lambda, got: {other:?}"),
+        },
+        other => panic!("`{field}` must be a Value::Field, got: {other:?}"),
+    }
+}
+
+/// Extract `max_von_mises` as a raw bit pattern.
+fn max_von_mises_bits(result: &Value) -> u64 {
+    let Value::StructureInstance(data) = result else {
+        panic!("result must be a StructureInstance, got: {result:?}");
+    };
+    match data.fields.get("max_von_mises") {
+        Some(Value::Scalar { si_value, .. }) => si_value.to_bits(),
+        other => panic!("max_von_mises must be a Scalar, got: {other:?}"),
+    }
 }
 
 /// Case 1 — a cross-session HIT returns the identical entry and never rewrites it.
@@ -165,10 +294,7 @@ fn cross_session_hit_returns_byte_identical_entry_and_does_not_rewrite_it() {
             bits_a.len(),
             bits_b.len(),
         );
-        let first_diff = bits_a
-            .iter()
-            .zip(bits_b.iter())
-            .position(|(x, y)| x != y);
+        let first_diff = bits_a.iter().zip(bits_b.iter()).position(|(x, y)| x != y);
         assert!(
             first_diff.is_none(),
             "the `{field}` slab is not bit-identical across the cross-session hit \
