@@ -258,7 +258,7 @@ If the pre-done hook returns Err, `set_task_status` raises an exception; the orc
 The pre-done gating loop is **active** on the Reify host as of 2026-05-16 (F-infra T-8, task 3675). The hook command was subsequently rewired to flow through a snapshot-materializer wrapper (task 3731, 2026-05-16+) after the Taskmaster removal (2026-05-12) left the direct binary invocation pointing at a non-existent default path.
 
 - **Systemd unit:** `/home/leo/.config/systemd/user/fused-memory.service`
-- **Env var:** `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`
+- **Env var (target, NOT the live state — see §11.1.3):** `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`
 - **Wrapper (snapshot + invoke):** `/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh` — materializes a TaskMetadata JSON snapshot from `mcp__fused-memory__get_tasks`, then invokes `reify-audit` with `--tasks-file <tempfile>` (snapshot cleaned up on EXIT). → uses `scripts/reify-audit-snapshot-filter.jq`; see §11.2 for the `done_at` proxy rationale.
 - **Binary:** `/home/leo/.cargo/bin/reify-audit` (invoked by wrapper; installed via `cargo install --path crates/reify-audit --root ~/.cargo --force`). The binary requires an explicit `--tasks-file`; there is no default path (removed in task 3731 after the Taskmaster deletion made the old default non-existent).
 - **Smoke test:** `bash scripts/smoke-predone-hook.sh` (exits 0 when wiring AND wrapper round-trip both succeed; assertion 4 catches re-introduction of the dead default).
@@ -318,6 +318,46 @@ subject, so the digit-boundary collision filter can only adjudicate hits whose
 subject contains the id. A hit matched on the body or a trailer is KEPT
 unchanged — dropping it would silently narrow "reject digit collisions" into
 "reject every body-only reference".
+
+#### 11.1.3 Live wiring as measured (2026-08-28, task 6345)
+
+The **Env var** bullet in §11.1 records the *target* wiring. Measured on the
+Reify host, the live unit does not match it —
+`/home/leo/.config/systemd/user/fused-memory.service:54` reads:
+
+```
+Environment="FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/.cargo/bin/reify-audit --task {id} --pre-done"
+```
+
+— the RAW binary, not the wrapper. The **Operator action required** rewire at the
+end of §11.1 is therefore still outstanding as of this task.
+
+- **The wrapper's freshness guard is bypassed on the live hook path.** Invoking
+  the binary directly skips `scripts/reify-audit-predone-wrapper.sh`, and with it
+  the REFUSE-mode freshness guard that would exit 125 rather than run a stale
+  detector; a stale install is served silently instead. Measured:
+  `/home/leo/.cargo/bin/reify-audit` has mtime `2026-06-09 23:32`, while the last
+  commit touching `crates/reify-audit/` on `main` is `d8e36e3e4c` (2026-08-25) —
+  ~77 days newer, i.e. stale by the guard's own freshness reference.
+- **This task's armed gate does not reach the live hook until a reinstall.** The
+  deployed binary predates every commit on this branch, so it cannot contain the
+  `--pre-done` gate armed here. Post-merge operator action:
+  `cargo install --path crates/reify-audit --root ~/.cargo --force`. (Measured
+  separately, for readers of the **Binary** bullet above: the unit's exact
+  command run from the repo root completes — `0 findings`, exit 0 — it does not
+  error out for want of a `--tasks-file`.)
+- **The freshness check cannot move into the binary to close this.** See the
+  "WHY THE GUARD IS EXTERNAL" block in `scripts/reify-audit-freshness.sh`: the
+  staleness to catch is precisely a binary built before any guard existed, so a
+  Rust self-check can never fire from it. The guard must stay in the caller,
+  which leaves the rewire plus the reinstall — both operator actions outside this
+  repo — as the only fix.
+- **Why the drift went unrecorded.** `scripts/smoke-predone-hook.sh` asserts that
+  the env var is set, that its first token is executable and survives `--help`,
+  and that the value carries `--task` / `{id}` / `--pre-done` — but never that the
+  first token is the *wrapper*, and assertion 4 deliberately round-trips the
+  binary directly. The smoke test is therefore green under the raw-binary wiring
+  and cannot be used as evidence that the rewire happened.
 
 ### 11.2 Snapshot filter and the `updatedAt`→`done_at` proxy
 
