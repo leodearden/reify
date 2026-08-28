@@ -2899,6 +2899,205 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.1 lane δ-B — cited deferral in an ordinary comment (.rs)
+    // -------------------------------------------------------------------
+
+    /// The deliverable signal at unit level: an ordinary `///` comment that
+    /// states the work is deferred AND names the task becomes `Cited`, so the
+    /// UNCHANGED β liveness lane resolves it.
+    ///
+    /// Both lines are lifted VERBATIM from the live corpus
+    /// (`crates/reify-core/src/diagnostics.rs`, the `HexWedgeMeshOutcome`
+    /// rustdoc). Cite #2947 is `cancelled` — a terminal status — so β turns each
+    /// into a High `orphaned` finding. These two lines ARE the reason this lane
+    /// exists: neither carries a TODO-family marker, neither sits on an
+    /// attribute, so no existing arm can reach them. Note they are `///` doc
+    /// comments with no attribute above, which is why δ-A provably cannot cover
+    /// this shape.
+    #[test]
+    fn scan_file_delta_b_cited_deferral_positives() {
+        for line in [
+            "/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring",
+            "/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![(1, LineClass::Cited(vec![2947]), line.trim().to_string())],
+                "δ-B positive not classified Cited([2947]): {line}"
+            );
+        }
+    }
+
+    /// The lane fires on all three Rust comment openers, not just `///` — the
+    /// predicate is `trim_start().starts_with("//")`, so a plain `//` and a
+    /// `//!` module doc are equally in scope.
+    #[test]
+    fn scan_file_delta_b_all_comment_openers() {
+        for line in [
+            "    // hydration is blocked on task #2947 landing first",
+            "//! Envelope assembly is deferred to task #2947.",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![(1, LineClass::Cited(vec![2947]), line.trim().to_string())],
+                "δ-B opener not recognised: {line}"
+            );
+        }
+    }
+
+    /// Class (a) — the IDENTIFIER false-positive class, killed by
+    /// [`has_deferral_prose`]'s guard 3. Every line is VERBATIM from
+    /// `crates/reify-eval/src/cache.rs`; every one carries a genuine canonical
+    /// cite, so nothing but the prose guard stands between them and a High
+    /// `orphaned` finding. This class was 100% of what sank δ-B's first
+    /// proposal (task #6087) and is now fully eliminated.
+    #[test]
+    fn scan_file_delta_b_negatives_identifier_class() {
+        for line in [
+            "            // cause via mark_pending_with_cause (task #2330 §9.2 invariant).",
+            "    /// / `mark_pending_with_cause` (tasks #2326, #2335) and all Failed transitions",
+            "    // --- pending_cause / mark_failed / mark_pending_with_cause tests (task #2330 step-3) ---",
+            "    // --- mark_pruned_pending producer tests (task #4739 γ) ---",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![],
+                "δ-B over-fired on an identifier-class line: {line}"
+            );
+        }
+    }
+
+    /// Class (b) — the PRD-RELATIVE false-positive class, killed by
+    /// [`prd_relative_cite`] (§8.2). Every line is VERBATIM from the live
+    /// corpus and every one carries BOTH deferral prose and a `#N`, so the
+    /// prose guard alone does NOT save them — only the cite grammar does. That
+    /// is precisely why SCOPE-1 is a prerequisite of this lane rather than an
+    /// unrelated tidy-up: without it these six live lines would each become a
+    /// spurious High `orphaned` finding naming a PRD document index.
+    #[test]
+    fn scan_file_delta_b_negatives_prd_relative_class() {
+        for line in [
+            // crates/reify-stdlib/src/fea.rs — family 3, `task #10`.
+            "/// Diagnostic emission is deferred to PRD task #10 (Diagnostic mapping for",
+            "/// Diagnostic emission is deferred to PRD task #10.",
+            "///    is deferred to PRD task #10 (Diagnostic mapping for multi-case-",
+            "    // Empty Map → Undef. Diagnostic emission deferred to PRD task #10",
+            // crates/reify-solver-elastic/src/boundary/dirichlet.rs — `task #12`.
+            "    /// a uniaxial-stretch scenario is deferred to the downstream PRD task #12",
+            // crates/reify-eval/src/geometry_ops.rs — family 2, `invariant #2`.
+            "            //   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:",
+            // Two more PRD-relative live shapes that carry no deferral prose —
+            // belt and braces: they must stay silent on BOTH guards.
+            "    /// (v0.3.x multi-load-case FEA PRD task #10).",
+            "    /// rather than partially constructing a sub-handle (PRD invariant #2).",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![],
+                "δ-B over-fired on a PRD-relative line: {line}"
+            );
+        }
+    }
+
+    /// Class (c) — δ-B is cite-ANCHORED. A deferral comment with NO canonical
+    /// cite is not a δ-B candidate at all, so the lane emits no structural kind
+    /// and cannot degenerate into "flag every comment containing `pending`".
+    /// Contrast δ-A, which anchors on the attribute and therefore CAN emit
+    /// `Untracked` for the uncited case.
+    #[test]
+    fn scan_file_delta_b_negative_uncited_deferral() {
+        for line in [
+            "/// wiring is pending the morph rewrite",
+            "// the envelope path is blocked on the solver rewrite",
+        ] {
+            assert_eq!(
+                scan_file(line, true),
+                vec![],
+                "δ-B is cite-anchored and must not emit a structural kind: {line}"
+            );
+        }
+    }
+
+    /// Class (d) — a `// G-allow:` line carrying both a cite and deferral prose
+    /// belongs to the G-allow lane, which runs its own independent
+    /// `scan_g_allow_markers` → `resolve_g_allow_owner_liveness` pass. Without
+    /// the guard the same line would emit TWO findings under two different
+    /// kinds (`orphaned` and `g-allow-orphaned`) once its owner cite goes
+    /// terminal. VERBATIM from `crates/reify-ir/src/value.rs` (two live sites,
+    /// both citing #5235, which is `pending` today — so this is latent, not
+    /// live, which is exactly when it is cheapest to close).
+    #[test]
+    fn scan_file_delta_b_negative_g_allow_line() {
+        let line = "// G-allow: shared display formatter input type (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then";
+        assert_eq!(
+            scan_file(line, true),
+            vec![],
+            "δ-B must delegate G-allow lines to their owner lane"
+        );
+    }
+
+    /// Precedence 1: a line carrying BOTH a comment marker and a cited deferral
+    /// stays owned by arm (3) — ONE entry, no double-count. The `else if` chain
+    /// is what the fingerprint/§6.6 baseline machinery relies on for
+    /// at-most-one-entry-per-line.
+    #[test]
+    fn scan_file_delta_b_marker_lane_wins() {
+        let line = "// TODO(#1234): blocked on task #2947 landing";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![1234, 2947]), line.to_string())]
+        );
+    }
+
+    /// Precedence 2: a δ-A line stays owned by arm (5). δ-B is appended LAST,
+    /// after the phantom arm, so it can never steal a line an earlier arm owns.
+    /// (Independently, the attribute line does not start with `//`, so δ-B's
+    /// own predicate would reject it too — belt and braces.)
+    #[test]
+    fn scan_file_delta_b_allow_dead_code_lane_wins() {
+        let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![4744]), line.to_string())]
+        );
+    }
+
+    /// The §6.8 inline escape opts a δ-B line out of the whole sweep, like
+    /// every other lane.
+    #[test]
+    fn scan_file_delta_b_escape_wins() {
+        let line = "/// wiring is blocked on task #2947 // ptodo:allow";
+        assert_eq!(scan_file(line, true), vec![]);
+    }
+
+    /// δ-B is `.rs`-only. Asserted through `scan_file` rather than
+    /// `classify_file`, because `classify_file` discards `Cited` entries and so
+    /// would report "nothing" even if the lane HAD fired — the assertion has to
+    /// be able to fail.
+    #[test]
+    fn scan_file_delta_b_non_rust() {
+        let line = "// wiring is blocked on task #2947";
+        assert_eq!(scan_file(line, false), vec![]);
+        assert_eq!(classify_file(line, false), vec![]);
+    }
+
+    /// δ-B emits NO structural kind, ever — the whole lane is invisible to α
+    /// and reaches only the unchanged β liveness lane. Pinned as its own
+    /// assertion because it is the property that keeps §8.3's taxonomy (and
+    /// therefore `VALID_KINDS`, `fingerprint` and the §8.4 severity map)
+    /// byte-unchanged by this lane.
+    #[test]
+    fn scan_file_delta_b_emits_no_structural_kind() {
+        let content = [
+            "/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring",
+            "/// wiring is pending the morph rewrite",
+            "//! Envelope assembly is deferred to task #2947.",
+        ]
+        .join("\n");
+        assert_eq!(classify_file(&content, true), vec![]);
+    }
+
+    // -------------------------------------------------------------------
     // §8.3 γ cite-first path — reason with canonical cite → Cited (β lane)
     // -------------------------------------------------------------------
 
