@@ -404,9 +404,66 @@ fn is_greek(c: char) -> bool {
 
 /// §8.2/§6.4 malformed citation: the case-insensitive token `task` immediately
 /// followed — after an optional single space — by a Greek letter, OR
-/// `task-`/`task_`/`task `+ ASCII digit (PRD-relative / legacy forms). Banned
-/// from day one; δ migrates valid cites to canonical `#NNNN`.
+/// `task-`/`task_`/`task `+ ASCII digit (legacy forms), OR a `#N` sitting in
+/// PRD-relative left-context ([`prd_relative_cite`]). Banned from day one; δ
+/// migrates valid cites to canonical `#NNNN`.
+///
+/// The `#N` register is the second half of the §8.2 grammar fix and DELEGATES
+/// to [`prd_relative_cite`] rather than re-spelling its three families, so the
+/// two halves — "this `#N` is not a canonical cite" (`has_canonical_cite` /
+/// `extract_cites`) and "this `#N` is a banned citation form" (here) — cannot
+/// drift apart. Without it, a marker line whose only cite is PRD-relative loses
+/// its canonical anchor and collapses into `untracked`, which §8.4 rates High
+/// (hard gate) where a malformed cite is Medium (advisory) — over-reporting an
+/// author who cited imprecisely as untracked debt. CLAUDE.md's TODO-citation
+/// convention already mandates the `malformed-cite` disposition for
+/// PRD-relative indices; this closes the `#N` spelling of it.
+///
+/// The scan is a SEPARATE pass over `line.as_bytes()` rather than being fused
+/// into the `char` loop below: the Greek arm needs `char` indices (Greek
+/// letters are multi-byte) while [`prd_relative_cite`] takes a byte offset, and
+/// fusing the two would require maintaining both cursors in lock-step for no
+/// gain. Both passes are O(n) over a single line.
+///
+/// `is_g_allow_cite_exempt` rule (c) and [`extract_g_allow_owner_cites`] are
+/// deliberately NOT refactored to delegate here — the G-allow owner-cite lane
+/// has its own narrower `"PRD "`-immediately-left rule and its own
+/// `g-allow-orphaned` baseline exposure, so widening it would perturb a
+/// decoupled lane. The pre-existing `extract_g_allow_owner_cites_*` tests
+/// staying green is the proof of that decoupling.
 fn has_malformed_cite(line: &str) -> bool {
+    // Pass 1 (§8.2 `#N` register): mirror `has_canonical_cite`'s `#`+digit-run
+    // scan — 1..=5 digit run, parse to u32, id ≥ 1 — and report the line
+    // malformed when ANY occurrence lands in PRD-relative left-context. "Any",
+    // not "all", because arm (3) consults this only AFTER `has_canonical_cite`
+    // has already returned false, so reaching here means no occurrence on the
+    // line was a genuine cite.
+    let bytes = line.as_bytes();
+    let mut b = 0;
+    while b < bytes.len() {
+        if bytes[b] == b'#' {
+            let mut j = b + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let run = j - (b + 1);
+            if (1..=5).contains(&run) {
+                // `line[b + 1..j]` is a 1..=5-digit ASCII run, so it always
+                // fits in u32 (max 99999) and the parse cannot fail.
+                if let Ok(id) = line[b + 1..j].parse::<u32>()
+                    && id >= 1
+                    && prd_relative_cite(bytes, b, id)
+                {
+                    return true;
+                }
+                b = j; // skip past the consumed digit run
+                continue;
+            }
+        }
+        b += 1;
+    }
+
+    // Pass 2 (Greek + legacy `task-N`/`task_N`/`task N` registers), unchanged.
     let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
     let mut i = 0;
