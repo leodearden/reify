@@ -753,8 +753,9 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // BOTH spellings are accepted, where `Frame` accepts only the bare one.
         // The bare `Orientation` is required because that is what joints.ri
         // writes.  `Orientation3` is required to honour the Display/resolver
-        // round-trip: `Type::Orientation(3)` displays as "Orientation3"
-        // (reify-core/src/ty.rs:696), so a user copying a type name out of a
+        // round-trip: `Type::Orientation(3)` displays as "Orientation3" (the
+        // `Type::Orientation(n)` arm of `impl std::fmt::Display for Type` in
+        // reify-core/src/ty.rs), so a user copying a type name out of a
         // compiler message must get back a resolvable name.  `Frame` breaks
         // that round-trip only because `Frame3` collides with the `structure
         // Frame3` in ports.ri; no .ri declaration anywhere in stdlib or
@@ -5424,8 +5425,9 @@ mod tests {
     /// convention `transform3_display_matches_resolver_spelling` pins for
     /// Transform3 (task 4577).
     ///
-    /// The Display half is GREEN from the existing arm in ty.rs:696; the
-    /// resolver half is RED until `"Orientation3"` joins the arm.
+    /// The Display half is GREEN from the existing `Type::Orientation(n)` arm
+    /// of `impl std::fmt::Display for Type` in ty.rs; the resolver half is RED
+    /// until `"Orientation3"` joins the arm.
     #[test]
     fn orientation3_display_matches_resolver_spelling() {
         assert_eq!(
