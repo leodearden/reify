@@ -23,8 +23,8 @@
 //! # Why the expensive walk is `#[ignore]`d and the decisions are not
 //!
 //! Compiling the ~261 `examples/` files is documented as "the single most
-//! expensive thing this binary does" (`examples_smoke.rs`); 660 tracked files
-//! is ~2.5× that, and paying it on every merge gate would directly fight the
+//! expensive thing this binary does" (`examples_smoke.rs`); the ~660 tracked
+//! files are ~2.5× that, and paying it on every merge gate would directly fight the
 //! merge-gate-compile-cost PRD. So the full corpus walk is ONE `#[ignore]`d
 //! generator, run on demand — while everything it *decides* (corpus
 //! enumeration, span→line, ctor-name recovery, field/expected/found
@@ -103,11 +103,15 @@ fn tracked_ri_corpus() -> Vec<String> {
 #[test]
 fn tracked_ri_corpus_is_non_empty_and_covers_the_whole_tracked_tree() {
     let corpus = tracked_ri_corpus();
-    // A FLOOR, never an exact count: 660 measured at plan time and the corpus
+    // A FLOOR, never an exact count: ~660 measured at plan time and the corpus
     // legitimately grows. An exact assertion would go red on every new `.ri`.
+    // The live count belongs in the artifact this module generates, which states
+    // it as a measured header field — not in prose here, which cannot be kept
+    // in step with a corpus that grows between runs.
     assert!(
         corpus.len() >= 600,
-        "tracked .ri corpus must have >= 600 entries (660 measured 2026-08-27), got {}",
+        "tracked .ri corpus must have >= 600 entries (~660 measured 2026-08-27; the \
+         artifact header carries the live count), got {}",
         corpus.len()
     );
 }
@@ -158,7 +162,7 @@ fn tracked_ri_corpus_entries_all_resolve_to_existing_files() {
 #[test]
 fn tracked_ri_corpus_reaches_outside_examples() {
     // The landed `discover_ri_files()` walk is rooted at `examples/` and would
-    // miss ~399 of the 660 tracked files. Widening the root IS β.
+    // miss ~399 of the ~660 tracked files. Widening the root IS β.
     let corpus = tracked_ri_corpus();
     assert!(
         corpus
@@ -812,12 +816,22 @@ fn survey_site_extracts_field_from_the_argument_prose_prefix() {
     let site = survey_site_from_diagnostic("a.ri", "", &d).expect("ctor-coded diag yields a site");
     assert_eq!(site.field.as_deref(), Some("label"));
 
-    // `emit_selector_mismatch` kind-vs-kind — same `argument '` prefix.
+    // `emit_selector_mismatch` kind-vs-kind — same `argument '` prefix. The
+    // kind renderings are CONSTRUCTED from `reify_core::Type` rather than
+    // transcribed: `emit_selector_mismatch` (conformance/mod.rs) interpolates
+    // the `Type` Display, which is `FaceSelector`/`EdgeSelector`. An earlier
+    // draft of this fixture wrote `Selector(Face)` — a string the compiler never
+    // emits, and exactly the bug `is_selector_type` already shipped once — which
+    // this helper's "the exact shape a given emitter produces" contract forbids.
+    let face = reify_core::Type::Selector(reify_core::ty::SelectorKind::Face).to_string();
+    let edge = reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge).to_string();
     let d = synth(
         DiagnosticCode::SelectorKindMismatch,
-        "argument 'face' has selector kind 'Selector(Edge)' but param 'face' \
-         requires selector kind 'Selector(Face)'",
-        Some("expected 'Selector(Face)', got 'Selector(Edge)'"),
+        &format!(
+            "argument 'face' has selector kind '{edge}' but param 'face' \
+             requires selector kind '{face}'"
+        ),
+        Some(&format!("expected '{face}', got '{edge}'")),
     );
     let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
     assert_eq!(site.field.as_deref(), Some("face"));
@@ -1129,6 +1143,16 @@ fn collect_structure_defs_into(source: &str, defs: &mut std::collections::BTreeS
 ///
 /// Seeds the known-def set so a site constructing a stdlib def still resolves
 /// even when the declaring stdlib file was not itself part of the swept corpus.
+///
+/// # Panics
+///
+/// On ANY I/O failure — an unreadable directory entry, or a `*.ri` under
+/// [`STDLIB_DIR`] that cannot be read. Same loud-failure contract as
+/// [`scan_structure_defs`], and for the same reason: a silently-shrunk known-def
+/// set does not fail visibly, it DEMOTES real ctor sites to
+/// [`Owner::UnresolvedDef`] with no signal anywhere in the artifact. An earlier
+/// draft swallowed both failures (`entries.flatten()` and an `if let Ok(…)`),
+/// which is the same silent-shrink class the sibling scanner already panics on.
 fn stdlib_structure_defs() -> std::collections::BTreeSet<String> {
     let mut defs = std::collections::BTreeSet::new();
     let dir = std::path::Path::new(STDLIB_DIR);
@@ -1138,14 +1162,29 @@ fn stdlib_structure_defs() -> std::collections::BTreeSet<String> {
             dir.display()
         )
     });
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| {
+            panic!(
+                "ctor_conformance_corpus_survey: cannot read an entry of the stdlib dir \
+                 {}: {e}. A dropped entry would silently shrink the known-def set and \
+                 demote real ctor sites to `UnresolvedDef`.",
+                dir.display()
+            )
+        });
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("ri") {
             continue;
         }
-        if let Ok(source) = std::fs::read_to_string(&path) {
-            collect_structure_defs_into(&source, &mut defs);
-        }
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "ctor_conformance_corpus_survey: cannot read the stdlib module {}: {e}. \
+                 An unreadable stdlib file would silently drop its defs from the \
+                 known-def set and demote every site constructing one of them to \
+                 `UnresolvedDef`.",
+                path.display()
+            )
+        });
+        collect_structure_defs_into(&source, &mut defs);
     }
     defs
 }
@@ -1436,8 +1475,15 @@ fn remedy_hint_is_a_pure_deterministic_function_of_the_type_pair() {
     assert_eq!(a, b, "remedy_hint must be deterministic");
 
     // Distinct recognised pairs map to DISTINCT fixed strings.
+    //
+    // `Frame3`, NOT `Frame(3)`: `Type::Frame(3)` Displays as `Frame3`
+    // (`crates/reify-core/src/ty.rs`, pinned by that crate's own test) and
+    // `is_pose_type` requires the dimension digit immediately after the prefix.
+    // An earlier draft passed `"Frame(3)"` here, which yields `(3)` after the
+    // prefix strip and is therefore NOT a pose — so `pose_at_selector` silently
+    // held NO_HINT and every assertion below about it was vacuous.
     let string_at_selector = remedy_hint(Some("FaceSelector"), Some("String"));
-    let pose_at_selector = remedy_hint(Some("FaceSelector"), Some("Frame(3)"));
+    let pose_at_selector = remedy_hint(Some("FaceSelector"), Some("Frame3"));
     let bare_at_dimensioned = remedy_hint(Some("Scalar[m·s^-1]"), Some("Real"));
     assert_ne!(string_at_selector, pose_at_selector);
     assert_ne!(string_at_selector, bare_at_dimensioned);
@@ -1455,6 +1501,12 @@ fn remedy_hint_is_a_pure_deterministic_function_of_the_type_pair() {
     assert_ne!(
         neutral, string_at_selector,
         "the neutral string must be distinguishable from a real hint"
+    );
+    assert_ne!(
+        neutral, pose_at_selector,
+        "the D2 pose arm must produce a REAL hint, not the neutral fallback — \
+         without this the pose fixture above can silently degrade to NO_HINT again \
+         and every `assert_ne!` naming it still passes"
     );
 }
 
@@ -1706,9 +1758,10 @@ const SYNTH_BROKEN: &str = "module test.broken\n((( this is not reify at all ]]]
 /// The known-COMPILE-ERROR member: parses cleanly, then emits an Error-severity
 /// diagnostic (`unresolved name: no_such_binding`).
 ///
-/// This is the `partial` bucket's only coverage. 69 of the 660 tracked members
-/// land there in the committed artifact — every multi-module file the single-file
-/// `compile_with_stdlib` path cannot resolve — yet without this member the
+/// This is the `partial` bucket's only coverage. Roughly a tenth of the tracked
+/// corpus lands there — every multi-module file the single-file
+/// `compile_with_stdlib` path cannot resolve; the artifact header carries the
+/// exact figure, which drifts as the corpus grows — yet without this member the
 /// synthetic sweep never populates `run.partial` at all, and a regression that
 /// stopped filling it (or that moved compile-error files into `not_surveyed`,
 /// breaking the coverage arithmetic) would go undetected while every other test
@@ -1819,10 +1872,10 @@ fn survey_corpus_records_a_compile_error_member_as_partial_not_missing() {
         run.partial,
         vec![("compile_error.ri".to_owned(), "compile-error".to_owned())],
         "a member that PARSES and then emits an Error-severity diagnostic belongs in \
-         `partial` with its reason named. 69 of the 660 tracked members land here — \
-         every multi-module file the single-file `compile_with_stdlib` path cannot \
-         resolve — so an empty `partial` on the real corpus would be a silent \
-         coverage overstatement: {:#?}",
+         `partial` with its reason named. Roughly a tenth of the tracked corpus lands \
+         here — every multi-module file the single-file `compile_with_stdlib` path \
+         cannot resolve; the artifact header carries the exact count — so an empty \
+         `partial` on the real corpus would be a silent coverage overstatement: {:#?}",
         run.partial
     );
 
@@ -2207,8 +2260,11 @@ fn synth_site(file: &str, line: u32, def: &str, field: &str, owner: Owner) -> Su
         found: Some("String".to_owned()),
         code: "ArgTypeMismatch".to_owned(),
         severity: "Warning".to_owned(),
+        // `FaceSelector`, matching the `expected` cell above: that is the
+        // rendering `reify_core::Type::Selector(SelectorKind::Face)` actually
+        // Displays. `Selector(Face)` appears nowhere in real compiler output.
         message: format!(
-            "argument '{field}' has type 'String' but param '{field}' requires type 'Selector(Face)'"
+            "argument '{field}' has type 'String' but param '{field}' requires type 'FaceSelector'"
         ),
         owner,
     }
@@ -2660,7 +2716,7 @@ fn base_commit() -> String {
 /// pure helpers above, each unit-tested on every gate run, plus one cheap
 /// three-file end-to-end sweep.
 #[test]
-#[ignore = "corpus survey generator over all tracked .ri (660 files); run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
+#[ignore = "corpus survey generator over every tracked .ri (~660 files and growing); run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
 fn generate_ctor_conformance_corpus_survey() {
     let corpus = tracked_ri_corpus();
     let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), &corpus);
@@ -2686,11 +2742,13 @@ fn survey_output_path_defaults_to_the_committed_artifact_location() {
     // regeneration command committed INSIDE the artifact needs no path argument
     // and cannot drift from where the file actually lives.
     //
-    // `REIFY_CTOR_SURVEY_OUT` is read per call rather than memoized, but env
-    // vars are process-global and this binary runs tests in parallel — so this
-    // test asserts on the UNSET default without mutating the environment, and
-    // the override is exercised by `survey_output_path_for` below.
-    let path = survey_output_path();
+    // Asserted against the PURE seam `survey_output_path_for(None)`, never
+    // against `survey_output_path()`: the latter reads the process-global
+    // `REIFY_CTOR_SURVEY_OUT`, which this artifact itself tells operators to
+    // export when diffing a fresh run against the committed copy. A
+    // gate-resident test that reads it reds for an operator doing exactly what
+    // the artifact documents — no defect, pure false alarm.
+    let path = survey_output_path_for(None);
     let expected = std::path::Path::new(WORKSPACE_ROOT)
         .join("docs/prds/struct-ctor-field-type-conformance.survey.md");
     assert_eq!(
@@ -2715,14 +2773,18 @@ fn survey_output_path_honours_the_scratch_override() {
         std::path::PathBuf::from("/tmp/scratch-survey.md"),
         "REIFY_CTOR_SURVEY_OUT must override the default"
     );
+    // Both fallbacks are compared against the DEFAULT PATH ITSELF rather than
+    // against `survey_output_path()`, so nothing here depends on the ambient
+    // value of `REIFY_CTOR_SURVEY_OUT`.
+    let default_path = std::path::Path::new(WORKSPACE_ROOT).join(ARTIFACT_REL);
     assert_eq!(
         survey_output_path_for(None),
-        survey_output_path(),
+        default_path,
         "an unset override must fall back to the committed location"
     );
     assert_eq!(
         survey_output_path_for(Some(String::new())),
-        survey_output_path(),
+        default_path,
         "an EMPTY override must fall back too — an accidental `REIFY_CTOR_SURVEY_OUT=` \
          must not write the artifact to the current directory"
     );
