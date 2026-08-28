@@ -92,9 +92,10 @@ fn let_cell_si_value(quantity: &str) -> (f64, DimensionVector) {
 /// below is blind to.  `·` and `*` lower to the same `UnitExpr::Mul`, so each
 /// (si_value, dimension) comparison against a `*`-spelled twin is invariant under
 /// replacing `·` with `*` in the fixture.  Measured on this branch:
-/// `sed -i 's/·/*/g' tests/prd-gate/fixtures/unit_middot_mul.ri` left all four
-/// tests in this file GREEN.  Exercising U+00B7 is the fixture's entire reason to
-/// exist, so the spelling must be asserted directly rather than inferred.
+/// `sed -i 's/·/*/g' tests/prd-gate/fixtures/unit_middot_mul.ri` left every test
+/// that READS the fixture — (i) and (ii) below — GREEN.  Exercising U+00B7 is the
+/// fixture's entire reason to exist, so the spelling must be asserted directly
+/// rather than inferred.
 ///
 /// Counted over NON-COMMENT lines only: the fixture's header quotes `·` several
 /// times in prose, and a whole-file count would go RED on an unrelated comment
@@ -170,7 +171,7 @@ fn prd_gate_fixture_unit_middot_mul_compiles_clean() {
 /// `tests/prd-gate/fixtures/unit_middot_mul.ri` therefore goes RED here — which
 /// is the enforcement that fixture's header ("Editing the three `let` lines below
 /// therefore changes test inputs — don't") previously asserted with nothing
-/// behind it.  Tests (iii)/(iv) below compare `·` against `*` for INLINE strings;
+/// behind it.  Test (iii) below compares `·` against `*` for an INLINE string;
 /// only this test couples the two to the committed artifact.
 #[test]
 fn prd_gate_fixture_all_three_bindings_are_present() {
@@ -240,18 +241,38 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
     }
 }
 
-/// Compile each `(·-spelled, *-spelled)` pair as a `let` cell and assert the two
-/// evaluate identically.
+/// (iii) The ONE `·` shape no other layer pins, end to end.
 ///
-/// Comparing against the twin rather than a hard-coded number keeps the assertion
-/// honest if the stdlib's unit factors ever move — the two spellings must agree
-/// whatever they denote.  Shared by (iii) and (iv), which differ only in their
-/// input table; they stay separately named so a failure still reports which class
-/// of literal broke.
-fn assert_twins(pairs: &[(&str, &str)]) {
-    for (dot, star) in pairs {
+/// RULE FOR ADDING A ROW: only a `·` shape whose LOWERING is not already pinned
+/// one layer down.  `unit_expr_lowering_tests.rs` (reify-syntax) owns the
+/// AST-shape claims and already pins `5N·m`, `5N·m/rad`, `5m^2·kg·s^-2`,
+/// `7850kg·m^-3`, `9.81m·s^-2`, `5W·(m/K)` and `5W/(m·K)` against their `*`
+/// twins.  Two sources that lower to the SAME `UnitExpr` then evaluate through
+/// the same code with the same stdlib factors, so re-asserting their VALUES here
+/// is a tautology — more tests to edit on every change to unit lowering, and no
+/// claim the AST equality did not already make.
+///
+/// The four-factor chain qualifies: it is the exact unit substring `Display for
+/// DimensionVector` emits for a torque-per-angle quantity — the shape that
+/// motivated κ — and its `rad^-1` factor appears in no lowering test.  Only its
+/// CST is pinned (`unit_middot_mul_grammar_tests::
+/// accept_four_factor_left_associative_chain`), so everything after the parse is
+/// unobserved without this.  `let_cell_si_value` panics on a missing member, so
+/// the anti-silent-drop lock (INV-SF-7) covers this shape too.
+///
+/// Input whitespace-STRIPPED, and not verbatim eval output: `reify eval` prints
+/// `5 m^2·kg·s^-2·rad^-1` WITH a space, which still does not parse — its `*`
+/// twin fails identically, so that space is a separate open blocker (leaf λ / μ
+/// #5789), not a `·` regression.
+#[test]
+fn middot_shapes_no_other_layer_covers_match_their_star_twins() {
+    // (·-spelled, its `*`-spelled twin)
+    for (dot, star) in [("5m^2·kg·s^-2·rad^-1", "5m^2*kg*s^-2*rad^-1")] {
         let (dot_v, dot_d) = let_cell_si_value(dot);
         let (star_v, star_d) = let_cell_si_value(star);
+        // Against the twin rather than a hard-coded number, so the assertion
+        // stays honest if the stdlib's unit factors move: the two spellings must
+        // agree whatever they denote.
         assert_eq_rel(
             dot_v,
             star_v,
@@ -263,47 +284,4 @@ fn assert_twins(pairs: &[(&str, &str)]) {
             "`{dot}` and `{star}` must have the same dimension"
         );
     }
-}
-
-/// (iii) Each `·` binding evaluates identically to its `*` twin.
-///
-/// This is the literal wording of the task's user-observable signal: "`5N·m`
-/// evaluates identically to `5N*m`".
-#[test]
-fn each_middot_binding_matches_its_star_twin() {
-    assert_twins(&[
-        ("5N·m", "5N*m"),
-        ("5N·m/rad", "5N*m/rad"),
-        ("5m^2·kg·s^-2", "5m^2*kg*s^-2"),
-    ]);
-}
-
-/// (iv) The UNIT SUBSTRINGS of the lines `Display for DimensionVector` emits are
-/// readable.
-///
-/// These are not in the fixture, but they are the shapes that motivated κ: the
-/// density, acceleration and torque unit renderings a user copies out of `reify
-/// eval` output.
-///
-/// The inputs are whitespace-STRIPPED, and deliberately so — they are NOT verbatim
-/// eval output.  `reify eval` prints `7850 kg·m^-3` WITH a space, and that verbatim
-/// line still does not parse; its `*` twin `7850 kg*m^-3` fails identically, so the
-/// magnitude/unit space is a separate open blocker rather than a `·` regression.
-/// These are the right inputs for what κ closed.
-#[test]
-fn display_shaped_middot_literals_match_their_star_twins() {
-    assert_twins(&[
-        ("7850kg·m^-3", "7850kg*m^-3"),
-        ("9.81m·s^-2", "9.81m*s^-2"),
-        ("5m^2·kg·s^-2·rad^-1", "5m^2*kg*s^-2*rad^-1"),
-    ]);
-}
-
-/// (v) `·` adjacent to a parenthesised operand evaluates like its `*` twin.
-///
-/// `is_unit_start` accepts `(`, so this is a live accepted path, and it is the one
-/// that drives `lower_unit_expr`'s paren-unwrap arm beneath a `·`-spelled Mul.
-#[test]
-fn middot_beside_a_paren_group_matches_its_star_twin() {
-    assert_twins(&[("5W·(m/K)", "5W*(m/K)"), ("5W/(m·K)", "5W/(m*K)")]);
 }
