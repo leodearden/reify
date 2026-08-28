@@ -13089,7 +13089,8 @@ mod dependent_cells_admissibility_tests {
         );
     }
 
-    /// BT-11(a) (task #5189 step-14) — the INSTANCE-PATH ALIAS entry stage (g)
+    /// BT-12(a) (task #5189 step-14; renumbered from BT-11(a) by task #5764) —
+    /// the INSTANCE-PATH ALIAS entry stage (g)
     /// emits must be RESCOPED, not a verbatim clone of the template-keyed
     /// `default_expr`.
     ///
