@@ -27,8 +27,10 @@
 //! NEW modules land here too, not as fresh top-level `tests/<file>.rs` binaries — C1 is a
 //! shrinking ratchet, so a new realization-subsystem integration test is added below rather
 //! than re-accreting a standalone unit (`scripts/check-harness-baseline-registration.sh`).
-//! `selective_eviction_changed_realizations` (task #4729 β) is such an addition: it shares
-//! this harness's OCCT build path with `realization_input_cone_hash_pinning` (task #4728 α),
+//! `selective_eviction_changed_realizations` (task #4729 β) is such an addition
+//! — and, like the two purpose-named entries above, it has NO former standalone
+//! file, so the exception list above is not closed. It shares this harness's
+//! OCCT build path with `realization_input_cone_hash_pinning` (task #4728 α),
 //! whose `input_cone_hash` write it reads.
 #[path = "harness_kernel_realization/best_practices_clearance_oracle.rs"]
 mod best_practices_clearance_oracle;

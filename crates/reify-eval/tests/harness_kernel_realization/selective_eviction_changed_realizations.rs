@@ -442,18 +442,18 @@ structure BoolBody {
 /// `RealizationNodeData::content_hash` sees the op IR but not the values (it is
 /// `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))`, graph.rs:396), while
 /// the input-cone fold sees the values but not the ops (it folds only
-/// `(arg_name, value)` pairs and matches `Boolean { .. } => &[]`,
-/// engine_build.rs:12790).
+/// `(arg_name, value)` pairs and matches `Boolean { .. } => &[]`, in
+/// engine_build.rs).
 ///
 /// A blanket carry-forward stamps the OLD execution's input-cone hash onto a
 /// node whose ops just changed. The fold recomputed over the NEW ops is then
 /// byte-EQUAL to it — the flip is invisible to the fold — so
-/// `refresh_and_gate_demanded_realizations` reads `stored == Some(current)`
-/// (engine_build.rs:11555), marks the realization `exempt` (:11566),
-/// `demand_scoped_unified_pass` filters it out of the seed (:5766),
-/// `execute_realization_ops` is never called — and per the DELTA CONTRACT at
-/// engine_build.rs:5737-5751 the absent mesh means "retain the previously
-/// rendered mesh". The GUI keeps showing the union after the user typed
+/// `refresh_and_gate_demanded_realizations` reads `stored == Some(current)`,
+/// marks the realization `exempt`, `demand_scoped_unified_pass` filters it out
+/// of its `hash_exempt` seed, `execute_realization_ops` is never called — and
+/// per the DELTA CONTRACT comment in `demand_scoped_unified_pass` the absent
+/// mesh means "retain the previously rendered mesh". The GUI keeps showing the
+/// union after the user typed
 /// `difference`: a textbook 4317-class stale.
 ///
 /// The fix is a targeted skip, NOT a blanket revert — hence the SELECTIVITY

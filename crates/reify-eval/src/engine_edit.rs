@@ -574,7 +574,9 @@ pub(crate) fn compute_changed_realizations(
 /// come back EMPTY, and the whole propagation half compile, run, and silently
 /// do nothing — the same silent-no-op failure mode design §5.2 attributes to
 /// keying on `content_hash`. On cold eval the index is built at
-/// engine_eval.rs:4090 while `@optimized` nodes are inserted at :9964, and
+/// `engine_eval.rs`'s sole `ReverseDependencyIndex::build_from_graph_and_fields`
+/// call, while the `@optimized` `ComputeNodeData` nodes are inserted later in
+/// the same pass, and
 /// `edit_source` builds its index near the top while noting that "the new
 /// snapshot's compute_nodes map is empty until per-cell eval recreates them
 /// below" — so neither is admissible by default.
@@ -3216,7 +3218,7 @@ impl Engine {
         //     "unchanged content_hash" implies the ops are identical.
         //   • The input-cone fold sees the VALUES but not the ops. It folds
         //     only `(arg_name, evaluated value)` pairs and matches
-        //     `Boolean { .. } => &[]` (engine_build.rs:12790), mixing in no
+        //     `Boolean { .. } => &[]` — that fold's own match arm — mixing in no
         //     discriminant, op kind, op count, or operand GeomRef.
         //
         // So the carry-forward may NOT lean on "the recomputed fold will
@@ -3225,17 +3227,18 @@ impl Engine {
         // `input_cone_fold_is_blind_to_a_boolean_kind_flip`. Stamping the old
         // execution's hash onto such a node makes
         // `refresh_and_gate_demanded_realizations` read `stored ==
-        // Some(current)` (engine_build.rs:11555) → `exempt` (:11566) →
-        // `demand_scoped_unified_pass` filters it out of the seed (:5766) →
-        // `execute_realization_ops` is never called → and per the DELTA
-        // CONTRACT at engine_build.rs:5737-5751 the absent mesh means "retain
-        // the previously rendered mesh", so the GUI keeps showing the union
+        // Some(current)` → `exempt` → `demand_scoped_unified_pass` filters it
+        // out of its `hash_exempt` seed → `execute_realization_ops` is never
+        // called → and per the DELTA CONTRACT comment in
+        // `demand_scoped_unified_pass` the absent mesh means "retain the
+        // previously rendered mesh", so the GUI keeps showing the union
         // after the user typed `difference`. Restricting the carry-forward to
         // ops-identical nodes leaves a changed node with the `None`
         // `from_templates` seeds, which is exactly the pre-diff state that
         // forces the gate down its re-execute branch. Cost is bounded to one
         // transient re-execution: the gate unconditionally re-stamps the hash
-        // (:11570), so a skipped node holds `None` for exactly one build.
+        // (its `hash_updates.push` runs on both arms), so a skipped node holds
+        // `None` for exactly one build.
         //
         // Once the ops are known identical, a recomputed fold that differs
         // from the carried hash can only mean the VALUES moved — which is
@@ -7909,7 +7912,7 @@ structure GrowColl {
     ///
     /// `compute_realization_upstream_values_hash_from_ops` folds only
     /// `(arg_name, evaluated value)` pairs, and its match arm for a boolean is
-    /// `CompiledGeometryOp::Boolean { .. } => &[]` (engine_build.rs:12790) — so
+    /// `CompiledGeometryOp::Boolean { .. } => &[]` in `engine_build.rs` — so
     /// the arg loop never runs and the op contributes NOTHING to the hash. No
     /// arm mixes in the op discriminant, the op kind, the op count, or the
     /// operand `GeomRef`s either. Two op vectors that differ only in a
