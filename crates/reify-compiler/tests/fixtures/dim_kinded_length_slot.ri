@@ -1,0 +1,12 @@
+module dim_kinded_length_slot
+
+// Regression fixture for task 6862. A dimension-kinded generic fn PARAMETER
+// (`Type::ScalarParam("Q")`) used directly as a slotted LENGTH argument. This
+// is correct user code when instantiated at Q = LENGTH, and `reify check` must
+// accept it: `circle` arg0 (radius) and `extrude` arg1 (distance) are both
+// LENGTH compile slots in `builtin_signatures::builtin_arg_slots`.
+fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid { extrude(circle(l), l) }
+
+structure def DimKindedLengthSlot {
+    let s = beam(10mm)
+}
