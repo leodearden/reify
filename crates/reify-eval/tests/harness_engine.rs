@@ -18,10 +18,8 @@
 //! relative, so unaffected by an extra source subdirectory) or a runtime
 //! `std::fs::read_to_string` (process-CWD relative — the crate root under `cargo test`;
 //! `m8_stdlib_integration`'s 14 `../../examples/*.ri` reads are all of this kind).
-//! There are no `include_str!`/`include!` sites and no `#[global_allocator]`.
-//!
-//! Whole-unit size (this root plus every `harness_engine/*.rs` module below) is measured
-//! and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
+//! Among those 16 there are no `include_str!`/`include!` sites and no
+//! `#[global_allocator]`.
 //!
 //! The shared `common/differential.rs` harness is included HERE, at the unit root,
 //! rather than inside the one submodule that consumes it — the same placement
@@ -29,6 +27,14 @@
 //! way, so root placement keeps a second consumer from silently duplicating the
 //! include, and keeps the C2 external attribution readable as a single unit-level
 //! fact. Submodules reach it as `use crate::differential;`.
+//!
+//! Whole-unit size — this root, every `harness_engine/*.rs` module below, and the
+//! `common/differential.rs` include above, which escapes the module directory — is
+//! measured and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
+//!
+//! Module order: the modules carrying no rationale comment are listed alphabetically by
+//! stem; the commented block at the end keeps the accretion order its comments refer to
+//! ("… as #5196's above", and `underdetermined_support` before its two consumers).
 #[path = "common/differential.rs"]
 mod differential;
 

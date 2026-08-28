@@ -53,8 +53,9 @@
 //! as well as compiled so the fixture/example *content* is confirmed to still reach the
 //! assertions.
 //!
-//! Whole-unit size (this root plus every `harness_cache/*.rs` module below) is measured
-//! and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
+//! Whole-unit size — this root, every `harness_cache/*.rs` module below, and the
+//! `common/differential.rs` include above, which escapes the module directory — is
+//! measured and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
 #[path = "common/differential.rs"]
 mod differential;
 
