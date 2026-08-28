@@ -11996,11 +11996,12 @@ fn pose_translation_dimension(v: &reify_ir::Value) -> Option<reify_core::Dimensi
 /// **Invariant.** There is NO path from an `Undef` `child_world` back to `None`
 /// once both guards have been cleared. That is what makes "a failed pose is
 /// never silently swallowed into an identity fallback" structurally true rather
-/// than incidental: `compose_transforms` has several rejection paths that never
-/// reach its dimension gate (a mixed-dimension or non-finite translation via
-/// `decompose_xyz3`, a degenerate quaternion via `normalize_quat_input`), and a
-/// classifier that only recognised the dimension mismatch would re-open the
-/// exact silent drop this function exists to close. Pinned by
+/// than incidental: `compose_transforms` has several rejection paths BESIDE its
+/// dimension gate — a mixed-dimension or non-finite translation is refused by
+/// `decompose_xyz3` before that gate is reached, and a degenerate quaternion by
+/// `normalize_quat_input` after it has already passed — and a classifier that
+/// only recognised the dimension mismatch would re-open the exact silent drop
+/// this function exists to close. Pinned by
 /// `pose_composition_non_uniform_translation_dimensions_is_diagnosed` and
 /// `pose_composition_degenerate_rotation_is_diagnosed`.
 pub(crate) fn diagnose_pose_composition_failure(

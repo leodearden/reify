@@ -23499,13 +23499,14 @@
 
     // ── task 6099: malformed poses (not a clean two-dimension mismatch) ──────
     //
-    // `compose_transforms` rejects these BEFORE reaching its `t1_dim != t2_dim`
-    // gate — `decompose_xyz3` refuses a translation whose three components
-    // disagree or are non-finite, and `normalize_quat_input`'s 1e-24
-    // squared-norm gate refuses a degenerate quaternion. The composition still
-    // collapses to `Undef` and the sub still lands at the origin, so the
-    // diagnostic must still fire; it just must not fabricate a two-dimension
-    // mismatch that did not happen.
+    // `compose_transforms` rejects these WITHOUT its `t1_dim != t2_dim` gate
+    // ever firing — `decompose_xyz3` refuses a translation whose three
+    // components disagree or are non-finite before that gate is reached, and
+    // `normalize_quat_input`'s 1e-24 squared-norm gate refuses a degenerate
+    // quaternion after it has already passed. The composition still collapses
+    // to `Undef` and the sub still lands at the origin, so the diagnostic must
+    // still fire; it just must not fabricate a two-dimension mismatch that did
+    // not happen.
 
     #[test]
     fn pose_composition_non_uniform_translation_dimensions_is_diagnosed() {
