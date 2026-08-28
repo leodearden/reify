@@ -3033,6 +3033,18 @@ fn build_dirichlet_bcs(
 /// the six recognized face names still selects nothing — that gap is unchanged
 /// here — but it can no longer cause the rest of the model to be reinterpreted.)
 ///
+/// # Scope of that claim
+///
+/// It is about THIS function: given `(realization, face)` pairs, each pair is
+/// selected and emitted independently of the others. It is NOT a whole-pipeline
+/// claim, because the upstream realization DECISION is still count-dependent:
+/// [`face_realization`] takes `n_supports`, so adding an unrelated second
+/// support can flip a `Pinned` beam-end face from a clamp to a transverse-only
+/// pin without that face being mentioned again. That is a deliberate, documented
+/// trade-off (see [`face_realization`]'s "Why `Pinned` is not Z-only, always"),
+/// not an oversight — but it means "adds rather than reinterprets" holds for
+/// face SELECTION and DOF emission, not for the choice of realization.
+///
 /// The result is a raw union: repeats are possible when two faces share a corner
 /// node, so callers must pass it through [`normalize_bcs`].
 fn per_face_bcs(
