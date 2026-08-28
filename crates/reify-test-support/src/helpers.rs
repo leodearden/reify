@@ -1745,9 +1745,11 @@ mod tests {
     /// get_let_expr_in_template should return the default_expr of the named
     /// cell directly from a template the caller already holds (no module or
     /// template-name resolution step).
-    /// Uses a non-integer float (1.5) because whole-number float literals
-    /// (e.g. 1.0) are compiled as Type::Int by the Reify compiler when they
-    /// satisfy `*v == (*v as i64) as f64`.
+    /// The fixture uses a real-form literal (`1.5`) because the assertion is on
+    /// `result_type`: `classify_number_literal` (reify-ast/src/decl.rs) maps any
+    /// real-form token — one containing `.`, `e`, or `E`, whole-number or not —
+    /// to `Real`, and only integer-form tokens (`1`) reach the `Int` branch. So
+    /// `1.0` would work here too; `1` would not.
     #[test]
     fn test_get_let_expr_in_template_finds_cell() {
         let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
