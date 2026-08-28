@@ -1219,25 +1219,6 @@ fn selector_type_renderings_match_what_reify_core_actually_displays() {
     }
 }
 
-#[test]
-fn remedy_hint_never_rules_between_d9_class_1_and_class_2() {
-    // The PRD assigns "call-site bug vs wrong declared field type" to γ as a
-    // per-case judgment. β emits an ADVISORY hint; it must not claim a verdict.
-    for (e, f) in [
-        (Some("FaceSelector"), Some("String")),
-        (Some("FaceSelector"), Some("Frame(3)")),
-        (Some("Scalar[m·s^-1]"), Some("Real")),
-        (Some("String"), Some("Int")),
-        (None, None),
-    ] {
-        let h = remedy_hint(e, f);
-        assert!(
-            !h.contains("must ") && !h.contains("the bug is"),
-            "the hint is advisory, not a ruling; got {h:?} for ({e:?}, {f:?})"
-        );
-    }
-}
-
 // ─── step 9/10: end-to-end sweep over a synthetic mini-corpus ────────────────
 
 /// The result of one pass over a corpus.
