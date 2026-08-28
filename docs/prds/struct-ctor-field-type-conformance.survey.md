@@ -1,10 +1,10 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `12d6b19353a2a8b0712108b0e8441762d3272b2a`
+**Base commit:** `6f0e434eb881b7514101d35c8625728f9dbc869b`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
 **Sites:** 18
-**Corpus:** 662 tracked `.ri`; 654 surveyed, 8 not surveyed, 70 partial
+**Corpus:** 673 tracked `.ri`; 665 surveyed, 8 not surveyed, 70 partial
 
 This is a point-in-time **snapshot**, not a freshness-gated golden file. γ will
 legitimately invalidate it — that is the point. Its job is to enumerate and size,
@@ -81,6 +81,10 @@ and it is not FEA-owned. D9's per-case judgment applies: fix the call site or
 the declared field type, whichever is the actual bug — γ's ruling, recorded in
 γ's diff. **This is the group to size γ against.**
 
+That check is against ONE GLOBAL namespace — *some* corpus or stdlib file
+declares the name, not necessarily one this row's file can see. See named
+limitation 3 below before treating a row here as actionable.
+
 | site | def | def source | field | expected | found | code | severity | hint (advisory) | message |
 |---|---|---|---|---|---|---|---|---|---|
 | `examples/trajectory/printer_print_envelope.ri:169` | TOTSShaper | ctor call-site anchor | acceleration_limit | Scalar[m·s^-2] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | argument 'acceleration_limit' has type 'Real' but param 'acceleration_limit' requires type 'Scalar[m·s^-2]'; pass a dimensioned Acceleration literal such as `1m/s^2` |
@@ -126,7 +130,7 @@ with a real cost. **Triage manually before touching.**
 
 ## Coverage and limitations
 
-Of 662 tracked `.ri` members, **654 were surveyed** and **8 were not**. A further **70** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
+Of 673 tracked `.ri` members, **665 were surveyed** and **8 were not**. A further **70** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
 
 ### Not surveyed (contributed no sites)
 
@@ -234,6 +238,25 @@ user imports and runs `SimpleConstraintChecker`. Multi-module corpus members
 (the `examples/module_visibility/consumer.ri` class) therefore cannot resolve
 standalone and appear above under *not surveyed* or *partially surveyed* with
 their reason, rather than being silently dropped.
+3. **`def` resolution uses ONE GLOBAL namespace, not per-file module scope.** The
+`owner` grouping cross-checks a recovered name against every `structure def`
+declared anywhere in the corpus plus the stdlib — it does NOT ask whether that
+declaration is visible from the file the row sits in. Two consequences, and
+only one of them is safe:
+**(a)** a row lands in *non-FEA — γ per-case judgment* whenever SOME corpus
+file declares that name, even if the row's own file cannot see it. That is
+over-inclusion in the TOUCHABLE direction, so **before treating a `non-FEA` row
+as actionable, confirm the `def` is declared in that row's own file or one of
+its imports.** The `message` and `severity` columns usually settle it in one
+read.
+**(b)** symmetrically, a non-FEA file that happened to declare a name the FEA
+stdlib also declares would pull its sites into the do-not-touch partition. That
+direction over-defers rather than over-touches, so it costs γ sizing accuracy,
+never a wrong edit.
+Per-member scoping (each file's own declarations plus its imports) would remove
+the approximation, at the cost of resolving the import graph for every member —
+more machinery than a one-shot snapshot warrants, so the approximation is stated
+here instead of hidden.
 
 ## How to regenerate
 
