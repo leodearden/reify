@@ -1492,9 +1492,19 @@ select_cheap_ptodo_gate() {
     while IFS= read -r _f; do
         [ -n "$_f" ] || continue
         # ${_f,,} (bash case-fold) mirrors is_swept_ext's path.to_lowercase().
-        # .ri only for now — step-4 widens this to the full swept-extension set.
+        # This extension list is a DERIVED COPY of is_swept_ext in
+        # crates/reify-audit/src/ptodo.rs (cited by FUNCTION NAME, not line
+        # number — a line cite rots on the next edit to that file). Its
+        # source of truth is BEHAVIOURAL, not this comment:
+        # tests/infra/test_verify_scope.sh's PT-DRIFT scenario re-derives the
+        # set from is_swept_ext's source on every infra run and goes RED if
+        # either side drifts, so the two can never silently diverge. The
+        # direction of error on drift is over-selection (one extra ~3.4s
+        # leaf), never a silent coverage hole. Note `*.ts` also matches
+        # `*.tsx` under a bash glob; both are listed anyway so this reads as
+        # a faithful mirror of the Rust function rather than a minimal set.
         case "${_f,,}" in
-            *.ri) : ;;
+            *.rs|*.ri|*.sh|*.py|*.ts|*.tsx|*.js) : ;;
             *) continue ;;
         esac
         # Whole-token dedup via space sentinels (mirrors select_infra_tests).
