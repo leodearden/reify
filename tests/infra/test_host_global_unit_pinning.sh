@@ -67,6 +67,26 @@ trap cleanup EXIT
 echo "=== host-global systemd unit ExecStart pinning ==="
 
 # ---------------------------------------------------------------------------
+# _fixture_git <git args...> — git for FIXTURE CONSTRUCTION ONLY, with the
+# ambient repository environment stripped.
+#
+# reify runs its whole verify gate from hooks/pre-merge-commit, and git EXPORTS
+# GIT_DIR (and friends) into every hook.  An inherited GIT_DIR outranks `git -C`
+# — measured — so the `git init` / `worktree add` calls below would operate on
+# the REAL repository instead of the mktemp fixture.  Same precedent as
+# tests/infra/test_spec_anchor_lint.sh:1182.
+#
+# The asymmetry with _resolver_out below is DELIBERATE: fixture construction
+# sanitizes, the code under test does not get sanitized FOR it.  The resolver
+# has to survive a hostile ambient environment on its own — that is what A6
+# asserts, and a harness that pre-cleaned the environment would be certifying a
+# posture production never actually has.
+# ---------------------------------------------------------------------------
+_fixture_git() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git "$@"
+}
+
+# ---------------------------------------------------------------------------
 # _mk_two_checkout_fixture <stem> — MAIN-SHELL ONLY. Mints a temp MAIN checkout
 # with a REAL linked worktree beside it, and sets FIX_ROOT / FIX_MAIN /
 # FIX_LANE.
@@ -93,12 +113,20 @@ _mk_two_checkout_fixture() {
     FIX_ROOT="$root"
     FIX_MAIN="$root/main"
     FIX_LANE="$root/lane"
+    # A third, entirely UNRELATED repository. Only used as the poison target for
+    # A6: it is what an un-neutralized resolver answers when GIT_DIR (or
+    # GIT_COMMON_DIR) is exported into the environment, which is what makes that
+    # section non-vacuous.
+    FIX_OTHER="$root/other"
     mkdir -p "$FIX_MAIN/sub/deep" || return 1
-    git init -q -b main "$FIX_MAIN" || return 1
-    git -C "$FIX_MAIN" -c user.name=t -c user.email=t@example.invalid \
+    _fixture_git init -q -b main "$FIX_MAIN" || return 1
+    _fixture_git -C "$FIX_MAIN" -c user.name=t -c user.email=t@example.invalid \
         -c commit.gpgsign=false commit -q --allow-empty -m init || return 1
-    git -C "$FIX_MAIN" worktree add -q --detach "$FIX_LANE" >/dev/null 2>&1 || return 1
+    _fixture_git -C "$FIX_MAIN" worktree add -q --detach "$FIX_LANE" >/dev/null 2>&1 || return 1
     mkdir -p "$FIX_LANE/sub/deep" || return 1
+    _fixture_git init -q -b main "$FIX_OTHER" || return 1
+    _fixture_git -C "$FIX_OTHER" -c user.name=t -c user.email=t@example.invalid \
+        -c commit.gpgsign=false commit -q --allow-empty -m init || return 1
     return 0
 }
 
@@ -110,8 +138,14 @@ _mk_two_checkout_fixture() {
 # makes the ambient-CWD and REIFY_MAIN_CHECKOUT cases genuinely independent:
 # bash's rules for a `VAR=v func` prefix on a *function* are subtle, and a
 # leaked CWD or a leaked override would silently make a later case vacuous.
-# GIT_DIR/GIT_WORK_TREE are unset because either would defeat `git -C`
-# anchoring, and REIFY_MAIN_CHECKOUT is unset unless the caller re-supplies it.
+#
+# ONLY REIFY_MAIN_CHECKOUT is scrubbed here — it is the override UNDER TEST, so
+# an ambient one would make A2/A5 pass without the git derivation running at
+# all.  The git repository environment (GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR,
+# GIT_INDEX_FILE) is deliberately NOT scrubbed: those are exactly the variables
+# that outrank `git -C`, the resolver is responsible for neutralizing them
+# itself, and a harness that pre-cleaned them would leave that responsibility
+# permanently untested.  A6 poisons them on purpose.
 #
 # A FAILED call reads back as the EMPTY string at every call site below, never
 # as a placeholder: a non-empty sentinel would satisfy the `-n` guards in the
@@ -123,7 +157,7 @@ _resolver_out() {
     shift 2
     (
         cd "$cwd" || exit 1
-        env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u REIFY_MAIN_CHECKOUT "$@" \
+        env -u REIFY_MAIN_CHECKOUT "$@" \
             bash -c 'source "$1" || exit 1; reify_main_checkout "$2"' _ \
             "$LIB_MAIN_CHECKOUT" "$anchor"
     )
@@ -147,7 +181,7 @@ assert "sourcing scripts/lib_main_checkout.sh defines reify_main_checkout" \
 echo ""
 echo "--- A1: two-checkout fixture (real linked worktree) ---"
 
-FIX_ROOT=""; FIX_MAIN=""; FIX_LANE=""
+FIX_ROOT=""; FIX_MAIN=""; FIX_LANE=""; FIX_OTHER=""
 _mk_two_checkout_fixture reify-mainck   # main shell, NOT $( ) — see the header
 FIX_NOREPO="$FIX_ROOT/outside"
 mkdir -p "$FIX_NOREPO"
@@ -165,7 +199,8 @@ assert "fixture: the main checkout and the linked worktree are DISTINCT paths" \
     bash -c '[ "$1" != "$2" ]' _ "$FIX_MAIN" "$FIX_LANE"
 
 assert "fixture: the linked worktree really is a linked worktree of the main checkout" \
-    bash -c '[ "$(git -C "$2" rev-parse --path-format=absolute --git-common-dir)" = "$1/.git" ]' \
+    bash -c '[ "$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+        git -C "$2" rev-parse --path-format=absolute --git-common-dir)" = "$1/.git" ]' \
         _ "$FIX_MAIN" "$FIX_LANE"
 
 # Precondition for the "outside any repo" case: $FIX_NOREPO must genuinely be
@@ -173,7 +208,8 @@ assert "fixture: the linked worktree really is a linked worktree of the main che
 # nested inside a checkout would silently turn that case into a no-op, so the
 # requirement is asserted rather than assumed.
 assert "fixture: the non-repo scratch dir is genuinely outside any git repository" \
-    bash -c '! git -C "$1" rev-parse --git-common-dir >/dev/null 2>&1' _ "$FIX_NOREPO"
+    bash -c '! env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+        git -C "$1" rev-parse --git-common-dir >/dev/null 2>&1' _ "$FIX_NOREPO"
 
 echo ""
 echo "--- A2: reify_main_checkout resolves the MAIN checkout from every anchor ---"
@@ -257,6 +293,54 @@ fi
 assert "A5a: same anchor from CWD=/ and CWD=<fixture root> -> same answer, == main checkout" \
     test "$_CWD_INDEP" = yes
 
+echo ""
+echo "--- A6: a hostile ambient git environment does not redirect the answer ---"
+
+# GIT_DIR, GIT_WORK_TREE and GIT_COMMON_DIR all OUTRANK `git -C`, so without
+# explicit neutralization inside the resolver, the `git -C "$anchor"` anchoring
+# that A2/A5 pin is decorative: the answer comes from whatever repository the
+# environment names.  This is not a contrived environment — git EXPORTS GIT_DIR
+# into every hook, and reify runs its entire verify gate from
+# hooks/pre-merge-commit, so this is the posture the resolver most often runs in.
+#
+# The poison target is $FIX_OTHER, an UNRELATED repo, precisely so the assertions
+# below cannot pass vacuously: pointing the poison at the lane's own git dir
+# would resolve back to $FIX_MAIN anyway and prove nothing.
+_POISON_RAW=""
+_POISON_RAW="$(GIT_DIR="$FIX_OTHER/.git" GIT_WORK_TREE="$FIX_OTHER" \
+    git -C "$FIX_LANE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || _POISON_RAW=""
+
+# CONTROL, asserted FIRST: prove the poison actually works on a raw `git -C`.
+# If a future git release stopped honouring these variables (or they were simply
+# misspelled here), every assertion below would pass while testing nothing.
+assert "A6a: CONTROL — poisoned env really does redirect a raw \`git -C\` to the other repo" \
+    bash -c '[ -n "$1" ] && [ "$1" = "$2/.git" ] && [ "$2" != "$3" ]' \
+        _ "$_POISON_RAW" "$FIX_OTHER" "$FIX_MAIN"
+
+_R_POISON_DIR="$(_resolver_out / "$FIX_LANE" \
+    "GIT_DIR=$FIX_OTHER/.git" "GIT_WORK_TREE=$FIX_OTHER")" || _R_POISON_DIR=""
+
+assert "A6b: GIT_DIR+GIT_WORK_TREE exported, anchored at the lane -> still the MAIN checkout" \
+    test "$_R_POISON_DIR" = "$FIX_MAIN"
+
+# GIT_COMMON_DIR is the third override and the one most easily missed: it
+# redirects --git-common-dir specifically, which is the exact query this
+# resolver is built on.
+_R_POISON_COMMON="$(_resolver_out / "$FIX_LANE" "GIT_COMMON_DIR=$FIX_OTHER/.git")" \
+    || _R_POISON_COMMON=""
+
+assert "A6c: GIT_COMMON_DIR exported, anchored at the lane -> still the MAIN checkout" \
+    test "$_R_POISON_COMMON" = "$FIX_MAIN"
+
+# The hook shape: setup-dev.sh (or a consumer) invoked from inside the MAIN
+# checkout while git has exported a GIT_DIR for some other repository.
+_R_POISON_MAIN="$(_resolver_out / "$FIX_MAIN" \
+    "GIT_DIR=$FIX_OTHER/.git" "GIT_WORK_TREE=$FIX_OTHER")" || _R_POISON_MAIN=""
+
+assert "A6d: GIT_DIR exported, anchored at the MAIN checkout -> still the MAIN checkout" \
+    test "$_R_POISON_MAIN" = "$FIX_MAIN"
+
 # =============================================================================
 # PART B — the GENERATOR contract (setup-dev.sh install_build_services)
 #
@@ -268,14 +352,41 @@ assert "A5a: same anchor from CWD=/ and CWD=<fixture root> -> same answer, == ma
 # reify-jobserver.service re-seeds both FIFO pools and every in-flight verify
 # rustc holding a token loses it permanently, fleet-wide), touches a host FIFO,
 # or writes outside its mktemp root.
+#
+# CONTAINMENT IS BY CONSTRUCTION, not by assertion: _run_generator overrides
+# HOME to the fixture's, and $unit_dir is derived from $HOME inside
+# install_build_services(), so the real ~/.config/systemd/user is unreachable
+# from here. There is deliberately no assertion for it — an assertion could only
+# re-measure the override it already depends on.
 # =============================================================================
 echo ""
 echo "--- B0: generator fixture (function extracted into a FAKE LANE) ---"
 
 # ---------------------------------------------------------------------------
-# _mk_generator_fixture <stem> — MAIN-SHELL ONLY (see _mk_two_checkout_fixture
-# for why this sets globals rather than echoing them). Sets GEN_ROOT/GEN_MAIN/
-# GEN_LANE/GEN_HOME/GEN_UNITS.
+# _mk_generator_fixture <stem> [MODE] — MAIN-SHELL ONLY (see
+# _mk_two_checkout_fixture for why this sets globals rather than echoing them).
+# Sets GEN_ROOT/GEN_MAIN/GEN_LANE/GEN_HOME/GEN_UNITS/GEN_SYSTEMCTL_LOG.
+#
+# MODE selects which branch of the installer's pin decision the fixture drives:
+#   main-exec    (default) the main checkout resolves AND holds both executables
+#                -> the PIN is taken, units name the main checkout. B1-B4.
+#   main-noexec  the main checkout resolves but its two scripts are NOT
+#                executable -> the FALLBACK is taken, units name the invoking
+#                lane and the installer warns. B6.
+#   lane-norepo  the invoking tree is not a git worktree at all, so the resolver
+#                fails outright -> the FALLBACK is taken with an EMPTY
+#                main_checkout, exercising the `<unresolved>` message. B7.
+#   main-only    the invoking tree IS the main checkout, and its scripts are not
+#                executable -> main_checkout == repo_dir, the case an
+#                `!= "$repo_dir"`-gated warn would swallow. B8.
+#   fallback-noscripts
+#                the fallback is taken at a tree that does not hold the scripts
+#                at all, so the trailing `chmod +x` fails -> exercises the
+#                non-fatal chmod guard. B9.
+#
+# The fallback branch matters disproportionately: it is the one whose guard,
+# if it were ever inverted or dropped, silently re-creates the original 203/EXEC
+# defect. Covering only main-exec would leave it green under exactly that edit.
 #
 # The executable stubs and a copy of lib_main_checkout.sh are COMMITTED before
 # `git worktree add`, so the linked worktree carries them too — the installer
@@ -292,7 +403,7 @@ echo "--- B0: generator fixture (function extracted into a FAKE LANE) ---"
 # function.
 # ---------------------------------------------------------------------------
 _mk_generator_fixture() {
-    local stem="$1" root
+    local stem="$1" mode="${2:-main-exec}" root
     root="$(mktemp -d "${TMPDIR:-/tmp}/${stem}-XXXXXX")" || return 1
     root="$(cd "$root" && pwd -P)" || return 1
     _TMPDIRS+=("$root")
@@ -306,7 +417,14 @@ _mk_generator_fixture() {
 
     # A no-op `systemctl` earlier on PATH than the real one. The installer runs
     # `daemon-reload` and `enable --now`; neither may reach the host.
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$root/shim/systemctl" || return 1
+    #
+    # It RECORDS its argv to $GEN_ROOT/systemctl.log. install_build_services()
+    # writes the unit files well before its daemon-reload/enable tail, so unit
+    # PRESENCE cannot distinguish "installed" from "aborted two lines later".
+    # The log can, and B9c depends on that distinction.
+    GEN_SYSTEMCTL_LOG="$root/systemctl.log"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %s\nexit 0\n' \
+        "$GEN_SYSTEMCTL_LOG" > "$root/shim/systemctl" || return 1
     chmod +x "$root/shim/systemctl" || return 1
 
     # The two executables the jobserver units name in their ExecStart, plus the
@@ -316,13 +434,50 @@ _mk_generator_fixture() {
     cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$GEN_MAIN/scripts/lib_main_checkout.sh" || return 1
     chmod +x "$GEN_MAIN/scripts/jobserver-balancer.py" "$GEN_MAIN/scripts/jobserver-canary.sh" || return 1
 
-    git init -q -b main "$GEN_MAIN" || return 1
-    git -C "$GEN_MAIN" add -A || return 1
-    git -C "$GEN_MAIN" -c user.name=t -c user.email=t@example.invalid \
+    _fixture_git init -q -b main "$GEN_MAIN" || return 1
+    _fixture_git -C "$GEN_MAIN" add -A || return 1
+    _fixture_git -C "$GEN_MAIN" -c user.name=t -c user.email=t@example.invalid \
         -c commit.gpgsign=false commit -q -m init || return 1
-    git -C "$GEN_MAIN" worktree add -q --detach "$GEN_LANE" >/dev/null 2>&1 || return 1
 
-    mkdir -p "$GEN_LANE/scripts" || return 1
+    if [ "$mode" = main-only ]; then
+        # No linked worktree at all: the invoking tree IS the main checkout, so
+        # repo_dir and main_checkout resolve to the same path.
+        GEN_LANE="$GEN_MAIN"
+    elif [ "$mode" = lane-norepo ]; then
+        # A plain directory, NOT a worktree: `git worktree add` is skipped
+        # entirely so reify_main_checkout() fails outright from this anchor.
+        # It still carries the scripts and the resolver, so the ONLY thing being
+        # exercised is the unresolvable-anchor branch.
+        mkdir -p "$GEN_LANE/scripts" || return 1
+        cp "$GEN_MAIN/scripts/jobserver-balancer.py" \
+           "$GEN_MAIN/scripts/jobserver-canary.sh" \
+           "$GEN_MAIN/scripts/lib_main_checkout.sh" "$GEN_LANE/scripts/" || return 1
+    else
+        _fixture_git -C "$GEN_MAIN" worktree add -q --detach "$GEN_LANE" >/dev/null 2>&1 || return 1
+        mkdir -p "$GEN_LANE/scripts" || return 1
+    fi
+
+    if [ "$mode" = main-noexec ] || [ "$mode" = main-only ] \
+        || [ "$mode" = fallback-noscripts ]; then
+        # Strip the exec bit in the MAIN checkout ONLY, and only AFTER the
+        # worktree add: the lane's copies are separate inodes checked out at the
+        # committed mode 755, so they stay runnable. That asymmetry is exactly
+        # the shape the fallback exists for — the main checkout resolves, but
+        # cannot run what the units would name.
+        chmod -x "$GEN_MAIN/scripts/jobserver-balancer.py" \
+                 "$GEN_MAIN/scripts/jobserver-canary.sh" || return 1
+    fi
+
+    if [ "$mode" = fallback-noscripts ]; then
+        # ...and the tree the fallback lands on does not hold them AT ALL, so
+        # the installer's trailing `chmod +x` fails with ENOENT. A portable
+        # stand-in for the real-world failures (EPERM on a main checkout owned
+        # by another uid, EROFS on a read-only mount) that a hermetic test
+        # cannot manufacture.
+        rm -f "$GEN_LANE/scripts/jobserver-balancer.py" \
+              "$GEN_LANE/scripts/jobserver-canary.sh" || return 1
+    fi
+
     sed -n '/^install_build_services() {$/,/^}$/p' "$REPO_ROOT/scripts/setup-dev.sh" \
         > "$GEN_LANE/scripts/setup-dev.sh" || return 1
     return 0
@@ -381,7 +536,7 @@ _exec_lines() {
     done
 }
 
-GEN_ROOT=""; GEN_MAIN=""; GEN_LANE=""; GEN_HOME=""; GEN_UNITS=""
+GEN_ROOT=""; GEN_MAIN=""; GEN_LANE=""; GEN_HOME=""; GEN_UNITS=""; GEN_SYSTEMCTL_LOG=""
 _mk_generator_fixture reify-genfix   # main shell, NOT $( )
 
 # NON-VACUITY GUARDS on the extraction, asserted BEFORE the run. A future
@@ -422,7 +577,11 @@ assert "B1b: it wrote reify-jobserver.service into the sandboxed unit dir" \
 assert "B1c: it wrote reify-jobserver-canary.service into the sandboxed unit dir" \
     test -f "$GEN_UNITS/reify-jobserver-canary.service"
 
-assert "B1d: it wrote nothing outside the sandbox (real \$HOME untouched by construction)" \
+# What this actually measures is the unit COUNT: three .service files (sccache,
+# jobserver, jobserver-canary) landed in the sandboxed unit dir. Named for that,
+# not for containment — see the section banner for why containment carries no
+# assertion.
+assert "B1d: all three .service units were emitted into the sandboxed unit dir" \
     bash -c '[ "$(ls -1 "$1"/*.service 2>/dev/null | wc -l)" -ge 3 ]' _ "$GEN_UNITS"
 
 echo ""
@@ -500,6 +659,143 @@ _assert_worktree_relative provision-warm-lane-fs.sh
 _assert_worktree_relative install-warm-lane-units.sh
 _assert_worktree_relative setup-main-gate-worktree-config.sh
 _assert_worktree_relative setup-agent-cache-redirect.sh
+
+echo ""
+echo "--- B6: FALLBACK — main checkout resolves but cannot RUN the scripts ---"
+
+# The branch that matters most and was previously uncovered. B1-B5 above only
+# ever drove the happy path (the fixture always committed executable stubs), so
+# the fallback assignment, both `warn` lines, and the message shape had no
+# coverage at all: an edit that inverted the -x guard or deleted the fallback
+# would still have shown every assertion green.
+#
+# NOTE: this deliberately RE-BINDS the GEN_* globals to a second fixture. B6/B7
+# must therefore stay LAST — nothing after them may read the first fixture.
+_mk_generator_fixture reify-genfix-noexec main-noexec   # main shell, NOT $( )
+
+# NON-VACUITY, asserted before the run: the fallback branch is only the one
+# under test if the main checkout genuinely cannot run the scripts while the
+# invoking lane still can. If `chmod -x` had silently applied to both trees (or
+# to neither), the assertions below would be measuring some other branch.
+assert "B6a: the MAIN checkout's jobserver scripts are NOT executable" \
+    bash -c '[ ! -x "$1/scripts/jobserver-balancer.py" ] && [ ! -x "$1/scripts/jobserver-canary.sh" ]' \
+        _ "$GEN_MAIN"
+
+assert "B6b: the invoking lane's jobserver scripts ARE still executable" \
+    bash -c '[ -x "$1/scripts/jobserver-balancer.py" ] && [ -x "$1/scripts/jobserver-canary.sh" ]' \
+        _ "$GEN_LANE"
+
+_GEN2_RC=0
+_GEN2_ERR="$GEN_ROOT/generator.err"
+_run_generator >"$GEN_ROOT/generator.out" 2>"$_GEN2_ERR" || _GEN2_RC=$?
+
+# The fallback must DEGRADE, not abort: the units still have to be written,
+# reloaded and enabled.
+assert "B6c: install_build_services() still completes successfully on the fallback path" \
+    bash -c '[ "$1" = "0" ] || { cat "$2" >&2; exit 1; }' _ "$_GEN2_RC" "$_GEN2_ERR"
+
+assert "B6d: reify-jobserver.service ExecStart falls back to the INVOKING lane" \
+    bash -c '[ "$(grep -E "^ExecStart=" "$1" | head -1)" = "ExecStart=$2/scripts/jobserver-balancer.py" ]' \
+        _ "$GEN_UNITS/reify-jobserver.service" "$GEN_LANE"
+
+assert "B6e: reify-jobserver-canary.service ExecStart falls back to the INVOKING lane" \
+    bash -c '[ "$(grep -E "^ExecStart=" "$1" | head -1)" = "ExecStart=$2/scripts/jobserver-canary.sh" ]' \
+        _ "$GEN_UNITS/reify-jobserver-canary.service" "$GEN_LANE"
+
+# A silent fallback is the failure mode this whole task is about. Pinning at an
+# ephemeral lane is survivable when it is ANNOUNCED; it is the silence that let
+# the 2026-08-13 incident run for two days.
+assert "B6f: the installer WARNS that it pinned at the invoking checkout" \
+    grep -qF 'pinning the host-global jobserver units at the invoking checkout' "$_GEN2_ERR"
+
+# Message shape, resolved branch: the warn must name the tree it rejected, so an
+# operator reading the journal can see WHICH path lacked the executables.
+assert "B6g: the warn names the resolved main checkout, not the <unresolved> placeholder" \
+    bash -c 'grep -qF "stable main checkout ($2)" "$1" && ! grep -qF "<unresolved>" "$1"' \
+        _ "$_GEN2_ERR" "$GEN_MAIN"
+
+echo ""
+echo "--- B7: FALLBACK — the resolver fails outright (<unresolved> message shape) ---"
+
+# The other half of `${main_checkout:-<unresolved>}`: a checkout that is not a
+# git worktree at all, so reify_main_checkout() fails closed with EMPTY stdout.
+# The installer must still produce working units rather than interpolating an
+# empty path into an ExecStart (`ExecStart=/scripts/jobserver-balancer.py`).
+_mk_generator_fixture reify-genfix-norepo lane-norepo   # main shell, NOT $( )
+
+assert "B7a: the invoking tree is genuinely outside any git worktree" \
+    bash -c '! env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+        git -C "$1" rev-parse --git-common-dir >/dev/null 2>&1' _ "$GEN_LANE"
+
+_GEN3_RC=0
+_GEN3_ERR="$GEN_ROOT/generator.err"
+_run_generator >"$GEN_ROOT/generator.out" 2>"$_GEN3_ERR" || _GEN3_RC=$?
+
+assert "B7b: install_build_services() still completes with an unresolvable main checkout" \
+    bash -c '[ "$1" = "0" ] || { cat "$2" >&2; exit 1; }' _ "$_GEN3_RC" "$_GEN3_ERR"
+
+# The point of failing CLOSED: an empty answer must never reach the unit file.
+assert "B7c: the emitted ExecStart is an absolute path under the invoking tree, not /scripts/..." \
+    bash -c '[ "$(grep -E "^ExecStart=" "$1" | head -1)" = "ExecStart=$2/scripts/jobserver-balancer.py" ]' \
+        _ "$GEN_UNITS/reify-jobserver.service" "$GEN_LANE"
+
+assert "B7d: the warn renders the <unresolved> placeholder for an empty resolution" \
+    grep -qF 'stable main checkout (<unresolved>)' "$_GEN3_ERR"
+
+echo ""
+echo "--- B8: FALLBACK warn is NOT gated on the invoking tree differing ---"
+
+# The case a `[ "$main_checkout" != "$repo_dir" ]` guard on the warn would
+# swallow: a standalone clone that IS its own main checkout, whose jobserver
+# scripts are missing or non-executable. The units are still about to be pinned
+# at a tree that cannot run them — the same 203/EXEC end state — so silence here
+# would be the same class of bug as the original defect, just one layer in.
+_mk_generator_fixture reify-genfix-mainonly main-only   # main shell, NOT $( )
+
+# NON-VACUITY: this section is only meaningful if the two paths really coincide.
+assert "B8a: the invoking tree and the resolved main checkout are the SAME path" \
+    bash -c '[ "$1" = "$2" ]' _ "$GEN_LANE" "$GEN_MAIN"
+
+_GEN4_RC=0
+_GEN4_ERR="$GEN_ROOT/generator.err"
+_run_generator >"$GEN_ROOT/generator.out" 2>"$_GEN4_ERR" || _GEN4_RC=$?
+
+assert "B8b: install_build_services() still completes in the same-tree case" \
+    bash -c '[ "$1" = "0" ] || { cat "$2" >&2; exit 1; }' _ "$_GEN4_RC" "$_GEN4_ERR"
+
+assert "B8c: the installer STILL warns when the invoking tree is the main checkout" \
+    grep -qF 'pinning the host-global jobserver units at the invoking checkout' "$_GEN4_ERR"
+
+echo ""
+echo "--- B9: a failing chmod degrades to a warn, it does not abort the install ---"
+
+# install_build_services() runs under `set -euo pipefail`, and the trailing
+# `chmod +x` targets whichever tree was pinned — not necessarily one this uid
+# owns. An unguarded failure there aborts AFTER all four units are written but
+# BEFORE daemon-reload/enable, leaving stale unreloaded units on disk. Asserting
+# rc 0 here is what pins the `|| warn`.
+_mk_generator_fixture reify-genfix-nochmod fallback-noscripts   # main shell, NOT $( )
+
+assert "B9a: NON-VACUITY — the pinned tree really does lack the jobserver scripts" \
+    bash -c '[ ! -e "$1/scripts/jobserver-balancer.py" ] && [ ! -e "$1/scripts/jobserver-canary.sh" ]' \
+        _ "$GEN_LANE"
+
+_GEN5_RC=0
+_GEN5_ERR="$GEN_ROOT/generator.err"
+_run_generator >"$GEN_ROOT/generator.out" 2>"$_GEN5_ERR" || _GEN5_RC=$?
+
+assert "B9b: install_build_services() completes despite the chmod failing" \
+    bash -c '[ "$1" = "0" ] || { cat "$2" >&2; exit 1; }' _ "$_GEN5_RC" "$_GEN5_ERR"
+
+# Deliberately NOT an assertion on unit PRESENCE: the units are written well
+# before the chmod, so they would still be there had the install aborted at it.
+# Only the systemctl log distinguishes the two.
+assert "B9c: it went on to reach the daemon-reload/enable tail" \
+    bash -c 'grep -qF "daemon-reload" "$1" && grep -qF "enable --now" "$1"' \
+        _ "$GEN_SYSTEMCTL_LOG"
+
+assert "B9d: the chmod failure is reported rather than swallowed" \
+    grep -qF 'could not chmod +x the jobserver scripts' "$_GEN5_ERR"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
