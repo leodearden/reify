@@ -4301,15 +4301,26 @@ pub trait GeometryKernel: Send + Sync {
     /// long-lived kernel reused across GUI whole-file reloads does not
     /// accumulate the prior design's native geometry unbounded (task 5212).
     ///
-    /// The **default** is a no-op: kernels that hold no per-design native
-    /// resources across reloads (Manifold and OpenVDB rebuild from scratch;
-    /// mocks and stubs keep no growing shape table) need no teardown and stay
-    /// compiling unchanged. Only the OCCT handle — whose `OcctKernel` owns a
-    /// growing `HashMap<u64, UniquePtr<OcctShape>>` of native B-rep shapes —
-    /// overrides it, routing an eviction over its actor channel. Mirrors the
+    /// The **default** is a no-op, so mocks, stubs and every adapter that is
+    /// not on the reload path stay compiling unchanged. Mirrors the
     /// default-forwarding convention of
     /// [`execute_with_history`](GeometryKernel::execute_with_history) and
     /// [`query_many`](GeometryKernel::query_many).
+    ///
+    /// Only the OCCT handle overrides it today — whose `OcctKernel` owns a
+    /// growing `HashMap<u64, UniquePtr<OcctShape>>` of native B-rep shapes —
+    /// routing an eviction over its actor channel. That is scope, not a claim
+    /// that the other adapters are already bounded: OCCT is the only kernel
+    /// the GUI's reload path can reach, because `Engine::with_registered_kernel`
+    /// (the production boot constructor) instantiates the single lex-min
+    /// BRep-capable registration. The Manifold, OpenVDB and Fidget adapters
+    /// each keep their own monotonic per-handle table that nothing clears
+    /// (`ManifoldKernel::shapes`/`sub_shapes`, `OpenVdbKernel::handles` —
+    /// native `cxx::UniquePtr` grids — and `FidgetKernel::trees`), so each
+    /// needs its own override before it may join a reload path; wiring one in
+    /// without that override reintroduces exactly the leak this method exists
+    /// to close. A delegating wrapper must forward instead of inheriting the
+    /// default (see `reify_geometry::SingleKernelHolder::reset`).
     ///
     /// Callers must invoke this exactly once per whole-file reload (see
     /// `reify_eval::Engine::reset_geometry_for_reload`), never on a parameter
