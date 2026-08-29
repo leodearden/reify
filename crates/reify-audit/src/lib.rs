@@ -1371,7 +1371,12 @@ pub struct ChangedSymbol {
     pub name: String,
     /// Workspace-relative path of the file declaring the symbol.
     pub file: String,
-    /// 1-based line of the declaration (forensic evidence locator).
+    /// 1-based line of the declaration (forensic evidence locator) WHEN
+    /// the wire reports one. `0` is the sentinel for "not reported",
+    /// mirroring [`SymbolReference::line`]: a `get_changed_symbols` payload
+    /// that omits the `line` column still yields the symbol, located at
+    /// `0`, rather than dropping it. Suppression enrichment treats `0` as
+    /// unlocatable and leaves the flags below at their neutral defaults.
     pub line: usize,
     /// `true` when the declaration carries `#[allow(dead_code)]` — an
     /// intentional-orphan opt-out (suppresses the finding). Per

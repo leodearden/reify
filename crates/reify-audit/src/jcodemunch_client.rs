@@ -612,6 +612,17 @@ fn untested_symbols_from_wire(decoded: &Value) -> Vec<UntestedSymbol> {
 /// decoded but ignored). Maps `name/file/line` by column name; suppression
 /// flags are defaulted to `false/false/None` — enrichment happens later in
 /// [`RealJCodemunchOps::get_changed_symbols`].
+///
+/// `name` and `file` are MANDATORY — a row without them names no locatable
+/// symbol, so it is dropped. `line` is NOT: an absent or unparseable `line`
+/// decodes to the `0` "not reported" sentinel rather than dropping the
+/// whole symbol, mirroring [`references_from_rows`]. A version-drift
+/// grammar change that stops emitting `line` then under-reports the
+/// declaration LOCATION instead of silently shrinking the P1 sweep's input
+/// set — and the sentinel is already carried end-to-end:
+/// [`decl_line_out_of_range`] treats `0` as unlocatable,
+/// [`extract_suppression`] returns its neutral triple for it, and
+/// [`stale_decl_line_diagnostic`] surfaces it on stderr.
 fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
     let rows = match decoded
         .get("added_symbols")
@@ -624,7 +635,7 @@ fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
         .filter_map(|row| {
             let name = row.get("name")?.as_str()?.to_string();
             let file = row.get("file")?.as_str()?.to_string();
-            let line = row_u64(row, "line")? as usize;
+            let line = row_u64(row, "line").unwrap_or(0) as usize;
             Some(ChangedSymbol {
                 name,
                 file,
@@ -681,11 +692,23 @@ fn layer_violations_from_wire(decoded: &Value) -> Vec<LayerViolation> {
 
 /// Adapter: MUNCH-decoded value → `Vec<SymbolReference>`.
 ///
-/// Prefers the well-known `__rows__` table when present and carrying a
-/// `file` field; otherwise falls back to the first OTHER table whose rows
-/// carry a `file` field. Returns an empty vec when neither is found. `file`
-/// is the only column P1 consumes, so it is the selector; `line` is read
-/// when present and defaults to `0` otherwise.
+/// Treats a present `__rows__` ARRAY as AUTHORITATIVE — including when it
+/// is EMPTY — and only falls back to scanning the other tables for the
+/// first whose rows carry a `file` field when `__rows__` is absent
+/// entirely. Returns an empty vec when neither is found. `file` is the only
+/// column P1 consumes, so it is the fallback scan's selector; `line` is
+/// read when present and defaults to `0` otherwise.
+///
+/// The empty-`__rows__` case is precisely the case P1 cares about — a
+/// genuine producer-orphan has ZERO references — so it must NOT fall
+/// through to the scan. A future multi-table response pairing an empty
+/// `__rows__` with any other table whose rows happen to carry a `file`
+/// column (a summary or diagnostic table, say) would otherwise hand those
+/// unrelated rows back as the symbol's references, and
+/// `p1_producer_orphan`'s `has_non_test_caller` check would silently
+/// suppress a real orphan finding — the same hazard the `__rows__`-first
+/// preference below exists to close, left open on the empty-array edge.
+/// See `find_references_from_wire_empty_rows_table_beats_a_decoy_table`.
 ///
 /// The `__rows__`-first preference matters because `decoded` is a
 /// `serde_json::Map` — a `BTreeMap` (this crate does not enable
@@ -711,15 +734,15 @@ fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
         None => return Vec::new(),
     };
 
-    if let Some(rows) = obj.get("__rows__").and_then(Value::as_array)
-        && rows.iter().any(|r| r.get("file").is_some())
-    {
+    if let Some(rows) = obj.get("__rows__").and_then(Value::as_array) {
         return references_from_rows(rows);
     }
 
     for (table_name, table_val) in obj {
         if table_name == "__rows__" {
-            continue; // already tried above — avoids a double decode
+            // Handled above: an ARRAY `__rows__` already returned, and a
+            // non-array one carries no rows to scan either way.
+            continue;
         }
         if let Some(rows) = table_val.as_array()
             && rows.iter().any(|r| r.get("file").is_some())
@@ -1675,6 +1698,43 @@ mod tests {
         assert_eq!(symbols[0].line, 99);
     }
 
+    /// The other half of the same tolerance contract: `line` is OPTIONAL.
+    /// `name`/`file` are what make a symbol locatable at all, so a row
+    /// missing either is correctly dropped — but a wire that simply stops
+    /// emitting a `line` column (the `find_references` grammar already
+    /// does exactly that; see
+    /// `find_references_from_wire_decodes_line_less_real_wire_rows`) must
+    /// under-report the LOCATION, not delete the symbol from the P1 sweep.
+    /// `0` is the documented "not reported" sentinel and is already
+    /// handled downstream by `decl_line_out_of_range` /
+    /// `stale_decl_line_diagnostic`.
+    #[test]
+    fn changed_symbols_from_wire_keeps_a_symbol_whose_line_column_is_absent() {
+        let munch = concat!(
+            "#MUNCH/1 tool=get_changed_symbols enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:added_symbols:name|file:str|str\n",
+            "t,widget,a.rs\n",
+        );
+        let v = munch_decode(munch).expect("decode line-less added_symbols munch");
+        let symbols = changed_symbols_from_wire(&v);
+        assert_eq!(
+            symbols.len(),
+            1,
+            "an absent `line` column must not delete the symbol; got {symbols:?}"
+        );
+        assert_eq!(symbols[0].name, "widget");
+        assert_eq!(symbols[0].file, "a.rs");
+        assert_eq!(
+            symbols[0].line, 0,
+            "an unreported line decodes to the 0 sentinel"
+        );
+        assert!(
+            decl_line_out_of_range(symbols[0].line, 500),
+            "the 0 sentinel must still be treated as unlocatable downstream"
+        );
+    }
+
     /// Companion to
     /// [`changed_symbols_from_wire_tolerates_a_string_encoded_line_under_a_typeless_spec`]
     /// for the FLOAT half of the same second-order defect. Both captured
@@ -1939,6 +1999,32 @@ mod tests {
             "must select __rows__, not an alphabetically-earlier decoy table; got {refs:?}"
         );
         assert_eq!(refs[0].file, "right/actual.rs");
+    }
+
+    /// The empty-array edge of the same preference. A PRESENT but EMPTY
+    /// `__rows__` is the answer "this symbol has zero references" — which
+    /// is exactly the case P1 exists to detect — so it must be returned as
+    /// such, not treated as "no result here, keep looking". Before this
+    /// fix the `__rows__` arm was additionally gated on
+    /// `rows.iter().any(|r| r.get("file").is_some())`, so an empty
+    /// `__rows__` fell through to the scan and any other table carrying a
+    /// `file` column was handed back as the symbol's references —
+    /// silently suppressing a real producer-orphan finding via
+    /// `p1_producer_orphan`'s `has_non_test_caller` check.
+    #[test]
+    fn find_references_from_wire_empty_rows_table_beats_a_decoy_table() {
+        let decoded = json!({
+            "Aux": [
+                { "file": "wrong/decoy.rs", "line": 1 },
+            ],
+            "__rows__": [],
+        });
+        let refs = find_references_from_wire(&decoded);
+        assert!(
+            refs.is_empty(),
+            "an empty __rows__ means zero references and must not fall \
+             through to a decoy table; got {refs:?}"
+        );
     }
 
     // ------------------------------------------------------------------
