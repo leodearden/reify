@@ -4,6 +4,8 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Url,
 };
 
+use reify_core::units::LENGTH_MIGRATION_HINT;
+
 use crate::analysis::AnalysisContext;
 use crate::convert::position_to_offset;
 
@@ -208,11 +210,65 @@ fn push_builtins(items: &mut Vec<CompletionItem>) {
             detail: Some(info.signature.to_string()),
             documentation: Some(Documentation::MarkupContent(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: info.doc.to_string(),
+                value: builtin_doc_with_length_gate_note(info),
             })),
             sort_text: Some(format!("{}-{}", info.sort_group, info.name)),
             ..Default::default()
         });
+    }
+}
+
+/// Per-builtin dimensioned example for entries whose LENGTH-semantic
+/// arguments Contract C gates (task 6450). Keyed by name rather than a new
+/// `BuiltinFunctionInfo` field so the other ~80 non-geometry entries need no
+/// touch. This is NOT a restatement of the authoritative position table —
+/// that table is `pub(crate)` to reify-compiler/reify-eval and unreachable
+/// from here (see crates/reify-eval/src/arg_acceptance.rs:11-71) — it is
+/// pinned BEHAVIOURALLY by
+/// `completion::tests::gated_length_builtins_advertise_their_dimension_requirement`,
+/// which asserts the bare form of every row here is actually rejected and
+/// the dimensioned form actually evaluates clean.
+///
+/// `half_space`'s example deliberately leaves `nx`/`ny`/`nz` bare — only its
+/// `px`/`py`/`pz` point is LENGTH-gated (arg_acceptance.rs:109-119: the
+/// outward normal is a dimensionless unit vector, not a residual).
+const LENGTH_GATED_EXAMPLES: &[(&str, &str)] = &[
+    ("box", "box(20mm, 10mm, 30mm)"),
+    ("cylinder", "cylinder(5mm, 20mm)"),
+    ("sphere", "sphere(10mm)"),
+    ("box_centered", "box_centered(20mm, 10mm, 30mm)"),
+    ("cylinder_centered", "cylinder_centered(5mm, 20mm)"),
+    ("cone", "cone(10mm, 5mm, 20mm)"),
+    ("rounded_box", "rounded_box(20mm, 20mm, 10mm, 2mm)"),
+    ("torus", "torus(20mm, 5mm)"),
+    ("half_space", "half_space(0mm, 0mm, 0mm, 0, 0, 1)"),
+    ("wedge", "wedge(20mm, 20mm, 10mm, 5mm)"),
+    ("rectangle", "rectangle(20mm, 10mm)"),
+    ("circle", "circle(10mm)"),
+    ("rounded_rect", "rounded_rect(20mm, 20mm, 2mm)"),
+    ("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)"),
+    ("ellipse", "ellipse(10mm, 5mm)"),
+];
+
+/// Render a builtin's popup documentation, appending a units clause built
+/// from the shared [`LENGTH_MIGRATION_HINT`] const for entries in
+/// [`LENGTH_GATED_EXAMPLES`]. `doc` cannot carry this baked in as a
+/// `&'static str` literal: `concat!` only accepts literal tokens, not a
+/// named `const` (confirmed — `concat!("...", LENGTH_MIGRATION_HINT, "...")`
+/// fails to compile with "expected a literal"), so composing here at
+/// completion-render time is how the popup imports the one shared wording
+/// instead of hand-copying it (G7).
+fn builtin_doc_with_length_gate_note(info: &BuiltinFunctionInfo) -> String {
+    match LENGTH_GATED_EXAMPLES
+        .iter()
+        .find(|(name, _)| *name == info.name)
+    {
+        Some((_, example)) => format!(
+            "{} Length arguments must be dimensioned — a bare number is read as SI metres \
+             and rejected; {LENGTH_MIGRATION_HINT}, e.g. `{example}`.",
+            info.doc
+        ),
+        None => info.doc.to_string(),
     }
 }
 
