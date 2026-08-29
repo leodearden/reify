@@ -21,6 +21,18 @@
 //! * `EVAL_DEFERRED_BUILTIN_NAMES` — names that are eval-dispatchable but not
 //!   yet family-registered, whose typing is deliberately left to the fallback.
 //!
+//! The two manifests deliberately make DIFFERENT claims, and the difference is
+//! load-bearing. Membership in the allowlist asserts that the fallback types
+//! the name *correctly* — a falsifiable claim, evidenced per name against the
+//! eval body. Membership in the manifest asserts only that the name is
+//! *eval-dispatchable and not yet family-registered, with its typing left to
+//! the fallback* — a claim that is unconditionally true and says nothing about
+//! whether that typing is right. Both suppress the `UnresolvedFunction`
+//! warning identically; only the manifest can honestly hold a name whose
+//! fallback typing is known to be WRONG (`complex_mul` and friends). Collapsing
+//! the two would launder a known-false claim into an allowlist, so a name in
+//! both is a hard test failure.
+//!
 //! With the union in hand, `expr.rs` can emit a
 //! `DiagnosticCode::UnresolvedFunction` **warning** at the fallback when the
 //! callee is unknown, closing the open world without changing any typing.
@@ -140,9 +152,180 @@ pub const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// Eval-dispatchable names that are not yet family-registered, whose typing is
 /// deliberately left to the terminal fallback.
 ///
-/// Populated in step-8; forward-declared empty here so `is_known_builtin` can
-/// already reference it.
-pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[];
+/// # What membership asserts — and what it does NOT
+///
+/// An entry means exactly: *`reify_stdlib::eval_builtin` dispatches this name,
+/// no compiler classification family claims it, and its static type is
+/// therefore whatever the terminal first-arg fallback produces.* That claim is
+/// **unconditionally true** of every name below — it is an observation about
+/// the dispatch tables, not a judgement about the resulting type.
+///
+/// In particular it makes **no** assertion that the fallback types the name
+/// *correctly*. That stronger, falsifiable claim belongs to
+/// [`FIRST_ARG_TYPED_NAMES`], and the two must never be conflated: it is
+/// precisely this distinction that lets `complex_mul` / `complex_div` /
+/// `complex_pow` sit inside the closed world (so they do not warn at every
+/// call site) without laundering their known-WRONG first-arg typing into an
+/// allowlist. `tests::eval_deferred_names_are_disjoint_from_every_registered_family`
+/// enforces that no name is in both.
+///
+/// # Derivation (2026-08-29, re-measured on this branch)
+///
+/// Walk every arm of the `eval_builtin` dispatch chain
+/// (`reify-stdlib/src/lib.rs:225`) and its 25 per-module `eval_*(name: &str, ..)`
+/// matchers, then subtract everything [`is_known_builtin`] already accepts.
+/// 263 candidate spellings were screened; 119 were unclaimed; 37 of those were
+/// **false positives** and are deliberately absent (see "Screened out" below),
+/// leaving the 82 names here.
+///
+/// Every entry has a verified owning registry task — the manifest is a ledger
+/// of live deferrals, not a graveyard. Groups below are by owning task.
+///
+/// # Screened out — names that look eval-dispatchable but never reach a call site
+///
+/// Re-adding any of these would suppress a warning that *should* fire, so the
+/// reasons are recorded rather than left to be rediscovered:
+///
+/// * **Collection/tensor METHOD names** (`reify-expr/src/lib.rs:3864`
+///   `eval_method_call`): `all`, `any`, `concat`, `contains_key`, `count`,
+///   `filter`, `fold`, `keys`, `lower`, `map`, `span`, `sum`, `upper`,
+///   `values`, and the datum-projection members `dir`, `origin`, `normal`,
+///   `x`, `y`, `z`, `xy_plane`. These are `MethodCall`/`MemberAccess`
+///   receivers, not `FunctionCall` callees, so the terminal fallback never
+///   sees them.
+/// * **Euler convention STRING literals** (`reify-stdlib/src/orientation.rs:75-86`):
+///   `xyz`, `xzy`, `yxz`, `yzx`, `zxy`, `zyx`, `xyx`, `xzx`, `yxy`, `yzy`,
+///   `zxz`, `zyz` — matched against an argument's string VALUE, never a callee.
+/// * **DFM rule labels** (`reify-stdlib/src/dfm.rs`'s `diagnose(name, ..)`):
+///   `unsupported_overhang_faces`, `min_draft_angle`, `min_wall_thickness`,
+///   `min_feature_size_measure`. `diagnose` is a post-eval hook keyed by an
+///   internal rule name supplied from `reify-eval/src/engine_constraints.rs:1750`;
+///   none is dispatched by `eval_builtin`, and none appears as a callee in any
+///   `.ri` source. (`fits_build_volume` IS `eval_dfm`'s only real arm and is
+///   manifested below.)
+/// * **The joint-KIND string `coupling`** (`reify-stdlib/src/joints.rs:420`,
+///   a nested `match kind` inside `eval_joints`): the constructor spelling is
+///   `couple`, which `JOINT_TYPED_FN_NAMES` already claims.
+///
+/// # Lifetime
+///
+/// Each group is discharged by its owning τ task writing real registry rows;
+/// removing the group from this manifest is part of that task's diff, and
+/// `eval_deferred_names_are_disjoint_from_every_registered_family` is what
+/// turns a forgotten removal from a silent stale claim into a RED test.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
+    // --- numeric + trig — owner #6003 (registry τ1) / #6943 -----------------
+    // Ratified semantics this task must NOT pre-empt: dimensionless-only
+    // rulings for the hyperbolics and log10, a NEW 2-arg `floor(x, quantum)`
+    // overload, and a compile diagnostic for a dimensioned argument. Listing
+    // them here makes the deferral machine-visible without deciding any of it.
+    // (`mod` is NOT here — it is in FIRST_ARG_TYPED_NAMES, whose stronger
+    // claim holds for its `(Int, Int) -> Int` eval body.)
+    "floor",
+    "ceil",
+    "round",
+    "log10",
+    "remap",
+    "sinh",
+    "cosh",
+    "tanh",
+    // --- complex — owner #6008 (registry τ6) / #6943 ------------------------
+    // `re`/`im` are eval aliases of `real`/`imag` (complex.rs:65,73); only the
+    // long spellings are in MATH_OPERATION_NAMES, so the aliases fall through.
+    // The trio below is dimension-TRANSFORMING — see the exclusion note on
+    // FIRST_ARG_TYPED_NAMES.
+    "re",
+    "im",
+    "complex_mul",
+    "complex_div",
+    "complex_pow",
+    // --- joint accessors — owner #6005 (registry τ3) / #6945 ----------------
+    // Fallback-MISTYPED today: each is typed as its joint-StructureRef arg0.
+    "transform_at",
+    "joint_axis",
+    "joint_range",
+    "joint_ratio",
+    "joint_offset",
+    // --- orientation decomposers + BoundingBox — owner #6004 (registry τ2) --
+    // The four decomposers return heterogeneous Maps that τ2 gives nominal
+    // structures (`AxisAngle`, `Twist`); the bbox trio is ruled by #6081.
+    "orient_log",
+    "orient_to_axis_angle",
+    "orient_to_euler",
+    "transform_log",
+    "bbox",
+    "bbox_center",
+    "bbox_size",
+    // --- fea / flexures / stackup / dfm / tolerancing / loads / tensegrity --
+    // --- owner #6006 (registry τ4) -----------------------------------------
+    // The `std.fea` MultiCaseResult accessors (fea.rs:47-102) are the group
+    // the printer_v01 dogfood surfaced; τ4 names every one of them explicitly.
+    "case_names",
+    "envelope_argmax",
+    "envelope_argmin",
+    "envelope_critical_load",
+    "envelope_max",
+    "envelope_min",
+    "linear_combine",
+    "min_max_stress",
+    "result_for",
+    "solve_load_cases",
+    "worst_buckling_case",
+    "worst_case",
+    "prb_cantilever_beam",
+    "prb_cartwheel_flexure",
+    "prb_cross_spring_pivot",
+    "prb_double_parallelogram_flexure",
+    "prb_fixed_fixed_beam",
+    "prb_let_joint",
+    "prb_living_hinge",
+    "prb_notch_circular",
+    "prb_notch_elliptical",
+    "prb_notch_right_circular",
+    "prb_parallelogram_flexure",
+    "prb_prismatic_blade",
+    "prb_two_axis_pivot",
+    "contributor",
+    "contributor_asym",
+    "stackup_worst_case",
+    "stackup_rss",
+    "monte_carlo_stackup",
+    "fits_build_volume",
+    "iso_it_tolerance",
+    "gravity",
+    "tensegrity_wires",
+    "tensegrity_surfaces",
+    // --- mechanism / snapshot / sweep / dynamics / trajectory ---------------
+    // --- owner #6007 (registry τ5) -----------------------------------------
+    // The `*_lower` / `*_at` spellings are the undeclared intrinsics the typed
+    // `.ri` wrappers delegate to; τ5 registers the direct-eval names only.
+    // `piecewise_polynomial` is a permanent `Value::Undef` stub that τ5
+    // LEDGERS rather than types.
+    "world",
+    "bodies",
+    "transform_of",
+    "sweep_grid",
+    "ramp_profile_lower",
+    "inverse_dynamics_lower",
+    "inverse_dynamics_at_snapshot_lower",
+    "gcode_import",
+    "gcode_import_lower",
+    "input_shape",
+    "end_effector_track_at",
+    "deviation_from_nominal_at",
+    "peak_deviation_at",
+    "evaluate_profile",
+    "evaluate_profile_at",
+    "evaluate_profile_dot",
+    "evaluate_profile_dot_at",
+    "evaluate_profile_ddot",
+    "evaluate_profile_ddot_at",
+    "profile_duration",
+    "profile_duration_at",
+    "piecewise_polynomial",
+];
 
 /// Is `name` a builtin function name the compiler knows about *at all*?
 ///
@@ -349,7 +532,6 @@ mod tests {
         }
     }
 
-
     /// A hand-maintained name slice is only as good as its tie to the resolver
     /// it claims to describe. Step-2 gated each of the four resolver-only
     /// families ON its slice (a name cannot be in the `match` without being in
@@ -497,7 +679,6 @@ mod tests {
         );
     }
 
-
     /// The allowlist is pinned against an INDEPENDENT literal, not against the
     /// slice itself, so drift in EITHER direction fails — mirroring the
     /// `EXPECTED_NAMES` idiom in `orientation_signatures.rs`. A test that read
@@ -591,7 +772,6 @@ mod tests {
         }
     }
 
-
     /// A manifest entry says "no family owns this name yet". The moment a
     /// family DOES own it, the entry becomes a lie — and, worse, a silent one:
     /// `is_known_builtin` would still return `true`, so nothing would surface
@@ -650,7 +830,9 @@ mod tests {
     ///   machine-visible without deciding anything for those tasks.
     /// * the `std.fea` MultiCaseResult accessors, name-dispatched in
     ///   `reify-stdlib/src/fea.rs`'s `eval_fea` and absent from every compiler
-    ///   family — these have NO owning registry task yet.
+    ///   family. Owned by #6006 (registry τ4), which names every one of them
+    ///   explicitly — an earlier draft of this comment called them un-owned,
+    ///   which was wrong.
     #[test]
     fn eval_deferred_manifest_contains_the_known_deferred_names() {
         for name in [
