@@ -314,7 +314,7 @@ fn strip_comments_and_collect_literals(src: &str) -> (Vec<u8>, Vec<StrLit>) {
 /// (`use …;`) through its `;`. Operates on the comment-stripped buffer, so a
 /// brace inside a comment cannot unbalance the count; braces inside string
 /// literals are skipped using the collected literal spans.
-fn mask_cfg_test_blocks(code: &mut Vec<u8>, lits: &[StrLit]) {
+fn mask_cfg_test_blocks(code: &mut [u8], lits: &[StrLit]) {
     // Byte-level membership mask, built once: the naive
     // "is `pos` inside any literal?" scan is O(bytes x literals), which on a
     // 9k-line file like `reify-expr/src/lib.rs` costs tens of seconds.
