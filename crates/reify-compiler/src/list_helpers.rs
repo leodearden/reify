@@ -4,18 +4,23 @@ use reify_ir::CompiledExpr;
 /// The complete set of **list-helper** builtin names — the single source of
 /// truth for [`infer_list_helper_return_type`].
 ///
-/// # Maintenance contract
-///
-/// This slice and the resolver's `match` are the same fact stated twice; the
-/// resolver gates on the slice so the two cannot drift, and
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`infer_list_helper_return_type`]. Pinned in BOTH directions, so the slice
+/// and the resolver cannot drift: the resolver *reads* this slice as its
+/// membership gate (forward), and
 /// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
-/// pins the converse (every entry here resolves to `Some` for a well-shaped
-/// call). Adding a name here REQUIRES a parallel resolver arm.
+/// iterates this slice directly — not a hand-maintained fixture — asserting
+/// every entry resolves to `Some` for a well-shaped call, and `panic!`ing
+/// outright if the slice gains a name with no fixture there (reverse). Without
+/// the reverse test a stale entry could linger here after its resolver arm was
+/// removed, and `is_known_builtin` would keep vouching for a name the compiler
+/// no longer understands.
 ///
-/// The list-helper family has no `*_are_disjoint_from_other_families` slice of
-/// its own historically because it was resolver-only; `generate` (task 3994)
-/// is handled by the resolver and belongs here even though the older
-/// test-only fixtures predate it.
+/// **`generate` is deliberately included** even though the pre-existing
+/// test-only fixtures omit it: the resolver has handled it since task 3994, so
+/// its absence from a hand-maintained list is exactly the drift the reverse
+/// test above exists to prevent. That omission is why this family needed a
+/// production slice rather than another fixture.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map", "generate"];

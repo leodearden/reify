@@ -421,14 +421,18 @@ pub fn topology_selector_result_type(name: &str) -> Option<reify_core::Type> {
 /// The complete set of **selector-composition** builtin names — the single
 /// source of truth for [`selector_composition_result_type`].
 ///
-/// # Maintenance contract
-///
-/// This slice and the resolver's `matches!` gate are the same fact stated
-/// twice; the resolver reads the slice so they cannot drift, and
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`selector_composition_result_type`]. Pinned in BOTH directions, so the
+/// slice and the resolver cannot drift: the resolver *reads* this slice as its
+/// membership gate (forward — a name cannot reach the resolver without being
+/// here), and
 /// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
-/// pins the converse (every entry here is claimed by the resolver for
-/// well-shaped operands). Adding a name here REQUIRES a parallel resolver
-/// change.
+/// iterates this slice directly — not a hand-maintained fixture — asserting
+/// every entry is claimed for two `Selector`-typed operands (reverse). Without
+/// the reverse test a stale entry could linger here after its resolver arm was
+/// removed, and `is_known_builtin` would keep vouching for a name the compiler
+/// no longer understands — suppressing the very `UnresolvedFunction` warning
+/// this module exists to emit.
 ///
 /// **Deliberate overlap with [`GEOMETRY_FUNCTION_NAMES`]**: `union` and
 /// `difference` are ALSO CSG geometry functions. The collision is resolved by
@@ -623,14 +627,18 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// The complete set of **construction-datum constructor** names — the single
 /// source of truth for [`datum_constructor_result_type`].
 ///
-/// # Maintenance contract
-///
-/// This slice and the resolver's `match` are the same fact stated twice; the
-/// resolver gates on the slice so a name can never be in the `match` without
-/// being here, and
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`datum_constructor_result_type`]. Pinned in BOTH directions, so the slice
+/// and the resolver cannot drift: the resolver *reads* this slice as its
+/// membership gate (forward — a name can never be in the `match` without being
+/// here), and
 /// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
-/// pins the converse (every entry here resolves to `Some` for a well-shaped
-/// call). Adding a name here REQUIRES a parallel resolver arm.
+/// iterates this slice directly — not a hand-maintained fixture — asserting
+/// every entry resolves to `Some` at arity 2 (reverse). Without the reverse
+/// test a stale entry could linger here after its resolver arm was removed, and
+/// `is_known_builtin` would keep vouching for a name the compiler no longer
+/// understands — suppressing the very `UnresolvedFunction` warning this module
+/// exists to emit.
 ///
 /// **`offset` is arity-gated**, not arity-blind like its ten siblings: only
 /// the arity-2 `offset(Plane, Length) -> Plane` form is a construction datum
@@ -850,13 +858,18 @@ pub(crate) fn tolerancing_marker_result_type(name: &str) -> Option<reify_core::T
 /// The complete set of **AffineMap algebra** free-function names — the single
 /// source of truth for [`affine_map_algebra_result_type`].
 ///
-/// # Maintenance contract
-///
-/// This slice and the resolver's `match` are the same fact stated twice; the
-/// resolver gates on the slice so the two cannot drift, and
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`affine_map_algebra_result_type`]. Pinned in BOTH directions, so the slice
+/// and the resolver cannot drift: the resolver *reads* this slice as its
+/// membership gate (forward), and
 /// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
-/// pins the converse (every entry here resolves to `Some` for a well-shaped
-/// first argument). Adding a name here REQUIRES a parallel resolver arm.
+/// iterates this slice directly — not a hand-maintained fixture — asserting
+/// every entry resolves to `Some` for a PER-NAME well-shaped first argument
+/// (reverse). The per-name part matters: a single shared `AffineMap` fixture
+/// would silently under-test `affine_apply`, which gates on `Type::Point`.
+/// Without the reverse test a stale entry could linger here after its resolver
+/// arm was removed, and `is_known_builtin` would keep vouching for a name the
+/// compiler no longer understands.
 ///
 /// **Two members are shadowed in the `expr.rs` ladder** and are listed here
 /// because this slice describes the RESOLVER, not the ladder:

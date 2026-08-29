@@ -298,16 +298,20 @@ fn receiver_structure_name(scope: &CompilationScope, sub_name: &str) -> Option<S
 /// The four **determinacy predicate** intrinsics — the single source of truth
 /// for the `determinacy_kind` dispatch in the `NoUserFunctions` ladder below.
 ///
-/// # Maintenance contract
-///
 /// Unlike every other ladder family, this vocabulary has no `*_signatures.rs`
 /// module and no `*_result_type` resolver: the names are transformed into
 /// `DeterminacyPredicateKind` nodes inline. Promoting the list to a slice
 /// (task #5371) is what lets `unresolved_function::is_known_builtin` see the
-/// family at all, so that a call to `determined(x)` is not reported as an
-/// unresolved function. The dispatch `match` reads this slice, so the two
-/// cannot drift; adding a name here REQUIRES a parallel `match` arm and a new
-/// `DeterminacyPredicateKind` variant.
+/// family at all, so a call to `determined(x)` is not reported as an
+/// unresolved function.
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in the
+/// `determinacy_kind` dispatch below AND a new `DeterminacyPredicateKind`
+/// variant. The dispatch *reads* this slice as its membership gate, so a name
+/// cannot enter the vocabulary without appearing here. The reverse direction
+/// is covered by exhaustiveness, not a test: an entry here with no `match` arm
+/// falls to `_ => None` and the predicate silently becomes an ordinary
+/// function call — so treat a new entry as incomplete until its arm exists.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) const DETERMINACY_PREDICATE_NAMES: &[&str] = &[
