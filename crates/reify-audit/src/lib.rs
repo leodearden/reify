@@ -366,11 +366,54 @@ pub trait GitOps {
     /// returned commits' diffs and does not depend on the order; future
     /// detectors that DO care about order must rely on this contract
     /// explicitly.
-    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit>;
+    ///
+    /// Fail-safe: an empty vec on any git error, so "git found nothing" and
+    /// "git failed" are indistinguishable. Callers for whom that collapse is
+    /// unsafe must use [`GitOps::try_log_grep`] — see its note.
+    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
+        self.try_log_grep(branch, pattern).unwrap_or_default()
+    }
 
-    /// `git diff --name-only <from>..<to>`. Returns the set of paths
-    /// changed between the two refs.
+    /// Fallible variant of [`GitOps::log_grep`]: `Ok(hits)` when git ran (an
+    /// empty vec meaning it genuinely matched nothing), `Err(description)`
+    /// when it did not run or failed.
+    ///
+    /// Exists because the crate's blanket fail-safe direction INVERTS on the
+    /// P5 pre-done gate. In the sweep an empty result converges on "no
+    /// finding"; at the gate it empties the rescue candidate list and so
+    /// converges on a BLOCKING refusal, making an unreadable pack or an fd
+    /// exhaustion under orchestrator load indistinguishable from a genuine
+    /// phantom-done. The gate feeds the `Err` into its advisory channel, which
+    /// downgrades the refusal to a non-blocking `Low`.
+    fn try_log_grep(&self, branch: &str, pattern: &str) -> Result<Vec<GitCommit>, String>;
+
+    /// `git diff --name-only --no-renames <from>..<to>`. Returns the set of
+    /// paths changed between the two refs. Renames are reported as
+    /// delete + add (both sides), for the reason given on
+    /// [`GitOps::changed_paths_in_commit`].
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String>;
+
+    /// Returns the paths changed by commit `commit` itself, i.e.
+    /// `git diff --name-only <commit>^1..<commit>`. For a standard `--no-ff`
+    /// merge commit M (first parent M^1 = pre-merge main tip, result = M) this
+    /// is exactly the task's net delta. Deletions are reported like any other
+    /// change, and renames are reported as delete + add — the diff runs
+    /// `--no-renames`, so BOTH the old and the new path appear rather than
+    /// git's default of collapsing a detected rename to the destination alone.
+    /// That is load-bearing: a corroboration leg must be able to see the old
+    /// path, or a task declaring its pre-rename deliverable is refused for work
+    /// that did land. Fail-safe: returns an empty vec on any git error —
+    /// unreachable or recycled SHA, a root commit with no `^1`, or a non-repo.
+    ///
+    /// The `--name-only` sibling of [`GitOps::diff_added_lines_in_commit`], and
+    /// it exists for the same reason. `diff_changed_paths(main, X)` is
+    /// DEGENERATE once `X` is an ancestor of main: `main..X` is a two-point
+    /// TREE diff, so the paths the two trees agree on — which, post-merge, are
+    /// exactly the paths `X` introduced — are excluded by construction, and
+    /// what comes back is the reverse-delta of whatever landed after `X`. A
+    /// leg built on it can therefore never corroborate a landed task. Post-merge
+    /// the correct question is "what did this commit change".
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String>;
 
     /// `git check-ignore <path>` — true iff `path` is gitignored
     /// (or matches a negated rule that re-ignores).
@@ -380,8 +423,26 @@ pub trait GitOps {
     /// directory containing tracked files (git does not track empty dirs),
     /// equivalent to `git ls-tree <branch> -- <path>` returning non-empty.
     /// Used by P5's deliverable-presence rescue. Fail-safe: returns `false`
-    /// on any git error (missing repo/ref, unknown path).
-    fn path_tracked_on(&self, branch: &str, path: &str) -> bool;
+    /// on any git error (missing repo/ref, unknown path) — so "not tracked"
+    /// and "could not tell" are indistinguishable. Callers for whom that
+    /// collapse is unsafe must use [`GitOps::try_path_tracked_on`].
+    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
+        self.try_path_tracked_on(branch, path).unwrap_or(false)
+    }
+
+    /// Fallible variant of [`GitOps::path_tracked_on`]: `Ok(false)` means git
+    /// ran and the path does not resolve on `branch`; `Err(description)` means
+    /// git did not run or failed, and the question is UNANSWERED.
+    ///
+    /// Exists for the same inverted-fail-safe reason as
+    /// [`GitOps::try_log_grep`]. At the P5 pre-done gate a `false` from a
+    /// failed `git ls-tree` is read as "the declared deliverable is absent
+    /// from main", which is the first half of a blocking refusal — so a
+    /// transient (unreadable pack, fd exhaustion, index contention) would
+    /// refuse a legitimate done-flip. The gate routes the `Err` into its
+    /// advisory channel instead, downgrading the refusal to a non-blocking
+    /// `Low`.
+    fn try_path_tracked_on(&self, branch: &str, path: &str) -> Result<bool, String>;
 
     /// Returns the added lines in `git diff <from>..<to> -- <path>` as
     /// `(new_side_line_no, content)` pairs — one entry per `+` line in the
@@ -685,36 +746,40 @@ impl RealGitOps {
     }
 
     /// Run a git command, emitting a `reify-audit:` breadcrumb on failure and
-    /// returning `None` so callers can `else { return vec![]; }` in one line.
+    /// PRESERVING the error description for callers that must distinguish
+    /// "git answered no" from "git failed".
+    ///
     /// `label` is the human-readable git subcommand used in the breadcrumb
     /// (e.g. `"log --grep"`, `"diff --name-only"`, `"diff"`).
+    fn run_warned(&self, label: &str, args: &[&str]) -> Result<String, String> {
+        self.run(args).map_err(|e| {
+            eprintln!(
+                "reify-audit: git {} failed in {}: {}",
+                label,
+                self.project_root.display(),
+                e
+            );
+            e
+        })
+    }
+
+    /// [`RealGitOps::run_warned`] with the error discarded, so callers can
+    /// `else { return vec![]; }` in one line. The breadcrumb is identical —
+    /// only the recoverable error string is dropped.
     fn run_or_warn(&self, label: &str, args: &[&str]) -> Option<String> {
-        match self.run(args) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!(
-                    "reify-audit: git {} failed in {}: {}",
-                    label,
-                    self.project_root.display(),
-                    e
-                );
-                None
-            }
-        }
+        self.run_warned(label, args).ok()
     }
 }
 
 impl GitOps for RealGitOps {
-    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
-        let Some(stdout) = self.run_or_warn("log --grep", &[
+    fn try_log_grep(&self, branch: &str, pattern: &str) -> Result<Vec<GitCommit>, String> {
+        let stdout = self.run_warned("log --grep", &[
             "log",
             branch,
             &format!("--grep={}", pattern),
             &format!("--format={}", LOG_GREP_FORMAT),
-        ]) else {
-            return vec![];
-        };
-        stdout
+        ])?;
+        Ok(stdout
             .lines()
             .filter_map(|l| {
                 let mut parts = l.splitn(2, '\t');
@@ -722,13 +787,56 @@ impl GitOps for RealGitOps {
                 let subject = parts.next().unwrap_or("").to_string();
                 Some(GitCommit { sha, subject })
             })
-            .collect()
+            .collect())
     }
 
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
+        // `--no-renames`: see `changed_paths_in_commit` below for the full
+        // rationale. This seam has the identical exposure — it is the arm
+        // `changed_paths_for_claim` takes for the un-landed branch-tip case.
         let Some(stdout) = self.run_or_warn(
             "diff --name-only",
-            &["diff", "--name-only", &format!("{}..{}", from, to)],
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                &format!("{}..{}", from, to),
+            ],
+        ) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
+        // Goes through run_or_warn (not Command::output directly) so the
+        // single-RealGitOps-instance breadcrumb dedup stays intact.
+        //
+        // `--no-renames` is load-bearing, not cosmetic. `diff.renames` has
+        // defaulted to true since git 2.9 and this repo sets no override, so a
+        // detected rename collapses to the DESTINATION path alone and the
+        // source vanishes from the listing. The consumers of this seam only
+        // ever SUBTRACT from the pre-done gate's "absent from main" set, so a
+        // task declaring its pre-rename path would find that path neither
+        // tracked on main (renamed away) nor in its landing commit's delta
+        // (detection hid it) — a refused flip for work that did land. Widening
+        // a rename back to both paths cannot manufacture a refusal, and it
+        // cannot over-accept either: the rename really did touch both.
+        //
+        // Scope boundary: `diff_added_lines_in_commit` deliberately does NOT
+        // take this flag — see its own comment.
+        let Some(stdout) = self.run_or_warn(
+            "diff --name-only",
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                &format!("{}^1..{}", commit, commit),
+            ],
         ) else {
             return vec![];
         };
@@ -806,11 +914,9 @@ impl GitOps for RealGitOps {
         }
     }
 
-    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
-        match self.run_or_warn("ls-tree", &["ls-tree", branch, "--", path]) {
-            Some(stdout) => !stdout.trim().is_empty(),
-            None => false,
-        }
+    fn try_path_tracked_on(&self, branch: &str, path: &str) -> Result<bool, String> {
+        self.run_warned("ls-tree", &["ls-tree", branch, "--", path])
+            .map(|stdout| !stdout.trim().is_empty())
     }
 
     fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
@@ -852,6 +958,12 @@ impl GitOps for RealGitOps {
         //   - M^1 = pre-merge main tip
         //   - M   = merged result
         // This yields exactly the task's net delta on `path`.
+        //
+        // Deliberately NOT `--no-renames`, unlike the two `--name-only` path
+        // listing seams above. This is a pathspec-scoped CONTENT diff on P2's
+        // provenance path, not on the pre-done gate path, and `--no-renames`
+        // here would re-render a pure move as a whole-file add — a behaviour
+        // change with no defect behind it. Do not "finish the job".
         let range = format!("{}^1..{}", commit, commit);
         let Some(stdout) = self.run_or_warn(
             "diff (commit)",
@@ -921,11 +1033,19 @@ impl GitOps for RealGitOps {
 pub struct MockGitOps {
     log_grep: HashMap<(String, String), Vec<GitCommit>>,
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
+    changed_paths_in_commit: HashMap<String, Vec<String>>,
     is_gitignored: HashMap<String, bool>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
+    /// Simulated `git ls-tree` FAILURES, keyed like `path_tracked_on`. An
+    /// entry here makes `try_path_tracked_on` return `Err`, which is a
+    /// different observation from `Ok(false)` — see
+    /// [`GitOps::try_path_tracked_on`].
+    path_tracked_on_errors: HashMap<(String, String), String>,
+    /// Simulated `git log --grep` FAILURES, keyed like `log_grep`.
+    log_grep_errors: HashMap<(String, String), String>,
     is_ancestor: HashMap<(String, String), bool>,
     ls_files: Vec<String>,
     last_commit_for_path: HashMap<String, GitCommit>,
@@ -973,6 +1093,27 @@ impl MockGitOps {
             .insert((branch.to_string(), path.to_string()), present);
     }
 
+    /// Make `git ls-tree <branch> -- <path>` FAIL rather than answer.
+    ///
+    /// Distinct from `set_path_tracked_on(.., false)`: that is git answering
+    /// "not tracked", this is git not answering at all. The P5 pre-done gate
+    /// must not build a blocking refusal on the latter.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_path_tracked_on_error(&mut self, branch: &str, path: &str, err: &str) {
+        self.path_tracked_on_errors
+            .insert((branch.to_string(), path.to_string()), err.to_string());
+    }
+
+    /// Make `git log <branch> --grep=<pattern>` FAIL rather than answer.
+    ///
+    /// Distinct from `set_log_grep(.., vec![])`: that is git answering "no
+    /// matching commits", this is git not answering at all.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_log_grep_error(&mut self, branch: &str, pattern: &str, err: &str) {
+        self.log_grep_errors
+            .insert((branch.to_string(), pattern.to_string()), err.to_string());
+    }
+
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_is_ancestor(&mut self, commit: &str, branch: &str, ancestor: bool) {
         self.is_ancestor
@@ -988,6 +1129,11 @@ impl MockGitOps {
     ) {
         self.diff_added_lines_in_commit
             .insert((commit.to_string(), path.to_string()), added);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_changed_paths_in_commit(&mut self, commit: &str, paths: Vec<String>) {
+        self.changed_paths_in_commit.insert(commit.to_string(), paths);
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
@@ -1014,16 +1160,24 @@ impl MockGitOps {
 
 #[cfg(any(test, feature = "test-support"))]
 impl GitOps for MockGitOps {
-    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
-        self.log_grep
-            .get(&(branch.to_string(), pattern.to_string()))
-            .cloned()
-            .unwrap_or_default()
+    fn try_log_grep(&self, branch: &str, pattern: &str) -> Result<Vec<GitCommit>, String> {
+        let key = (branch.to_string(), pattern.to_string());
+        if let Some(err) = self.log_grep_errors.get(&key) {
+            return Err(err.clone());
+        }
+        Ok(self.log_grep.get(&key).cloned().unwrap_or_default())
     }
 
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
         self.diff_changed_paths
             .get(&(from.to_string(), to.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
+        self.changed_paths_in_commit
+            .get(commit)
             .cloned()
             .unwrap_or_default()
     }
@@ -1053,11 +1207,12 @@ impl GitOps for MockGitOps {
             .unwrap_or_default()
     }
 
-    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
-        self.path_tracked_on
-            .get(&(branch.to_string(), path.to_string()))
-            .copied()
-            .unwrap_or(false)
+    fn try_path_tracked_on(&self, branch: &str, path: &str) -> Result<bool, String> {
+        let key = (branch.to_string(), path.to_string());
+        if let Some(err) = self.path_tracked_on_errors.get(&key) {
+            return Err(err.clone());
+        }
+        Ok(self.path_tracked_on.get(&key).copied().unwrap_or(false))
     }
 
     fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
