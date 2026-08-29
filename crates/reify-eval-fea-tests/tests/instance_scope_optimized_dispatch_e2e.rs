@@ -15,11 +15,13 @@
 //! naming this defect) at the time of writing; removing it is deliberately
 //! out of this task's scope.
 //!
-//! Engine construction is copied verbatim from
-//! `solve_elastic_static_e2e.rs` — `make_simple_engine()` +
-//! `reify_eval::compute_targets::register_compute_fns(&mut engine)` — so this
-//! e2e cannot drift from how every other FEA e2e in this crate builds its
-//! engine.
+//! The FIRST e2e below builds its engine exactly as
+//! `solve_elastic_static_e2e.rs` does — `make_simple_engine()` +
+//! `reify_eval::compute_targets::register_compute_fns(&mut engine)` — so it
+//! cannot drift from how the other FEA e2es in this crate build theirs. It
+//! declares no `auto`, so it needs no constraint solver. The SECOND e2e does
+//! declare an `auto` and therefore attaches a real solver; see its doc comment
+//! for why that is load-bearing rather than gratuitous drift.
 
 use reify_core::{Severity, ValueCellId};
 use reify_ir::{Satisfaction, Value};
@@ -234,15 +236,61 @@ fn instance_scope_fea_cells_equal_template_solved_values() {
 /// with `Undef` by the solver's cost loop, or re-evaluated back to the
 /// body-inline sentinel by a reeval pass.
 ///
-/// The first e2e in this file cannot surface that: it has no `auto`, so the
-/// solver never engages and `build_dependent_cells` never runs. Here `budget`
-/// is an `auto` whose constraint reads `self.beam.k` — an FEA-derived INSTANCE
-/// cell — which is exactly what pulls the instance cell into the solver's
-/// dependent set.
+/// # Why this test builds its engine inline (load-bearing, not drift)
 ///
-/// Deliberately asserts NON-CLOBBERING, not the auto's resolved value: the
-/// point is that the dispatched value survives the solver pass, which holds
-/// regardless of what the solver decides for `budget`.
+/// `make_simple_engine()` is `Engine::new(Box::new(SimpleConstraintChecker),
+/// None)` (`crates/reify-test-support/src/helpers.rs`) — it installs no
+/// `ConstraintSolver`, so no `auto` is ever resolved and every constraint
+/// over one comes back `Indeterminate`. MEASURED on this tree: under
+/// `make_simple_engine()` this very fixture leaves `AsmAuto.budget == Undef`
+/// with both constraints `Indeterminate` (`constraint AsmAuto#constraint[0]
+/// indeterminate: undefined inputs: AsmAuto.budget`). That is what made an
+/// earlier revision of this guard VACUOUS: the solver never engaged, so
+/// `build_dependent_cells` never ran, the instance cell was never pulled into
+/// any dependent set, and the closing "constraints are non-empty" check passed
+/// trivially on all-`Indeterminate` entries — i.e. the non-clobbering property
+/// this test is named for was never exercised at all.
+///
+/// The `auto`'s TYPE is not the cause, and no fixture rewrite can work around
+/// it: `make_simple_engine()` passes no solver to `Engine::new` at all, so
+/// there is nothing that could resolve an `auto` of any type. The production
+/// path attaches the same registry
+/// (`crates/reify-cli/src/main.rs`), and inline `Engine::new(...)`
+/// construction already has precedent in this crate
+/// (`closed_chain_idyn_e2e.rs`, `rigid_body_dynamics_e2e.rs`). Only the solver
+/// differs from `make_simple_engine()` — the checker and the compute-fn
+/// registration are identical. The first e2e in this file is deliberately left
+/// on `make_simple_engine()` and UNCHANGED: it declares no `auto`.
+///
+/// # What makes the guard discriminate
+///
+/// MEASURED by swapping `crates/reify-eval/src/unfold.rs` to its pre-#6662
+/// state (`git show 47ace0bddf:crates/reify-eval/src/unfold.rs`; all three of
+/// this task's impl commits touch that one file, so the swap is clean) while
+/// keeping the solver attached. Pre-fix, with the assertions below replaced by
+/// prints so the whole state is observable rather than just the first panic:
+///
+/// - `AsmAuto.beam.r_static` is the sentinel shell, `AsmAuto.beam.k == Undef`
+///   and `AsmAuto.budget == Undef`, while `BeamAuto.k == Scalar(5.779e6)`
+///   stays fine at TEMPLATE scope — the exact scope asymmetry #6662 reports;
+/// - both constraints are `Indeterminate`, and constraint[0]'s diagnostic
+///   names the instance cell directly: `undefined inputs: AsmAuto.beam.k,
+///   AsmAuto.budget`;
+/// - the solver additionally emits an ERROR, `constraints could not be
+///   satisfied (max absolute residual: 1.00e0)`, so pre-fix the very first
+///   assertion in this test (`errors.is_empty()`) already fails, before
+///   (a)/(b)/(c) are even reached. Each of (a), (b) and (c) independently
+///   fails on that state too.
+///
+/// Post-fix: `budget == Scalar(1e6)`, `AsmAuto.beam.k == BeamAuto.k ==
+/// Scalar(5779103.214564631)`, both constraints `Satisfied`, no Error
+/// diagnostic. Stable over 3 consecutive runs (identical on each).
+///
+/// Asserting `Satisfied` on `budget <= self.beam.k` is the substantive claim:
+/// it proves the solver respected a bound derived from an FEA-solved
+/// INSTANCE-scope cell. The auto's resolved value is deliberately NOT pinned
+/// numerically — that is a Nelder-Mead `DimensionalSolver` output, and
+/// determinacy plus `Satisfied` is the robust signal.
 #[test]
 fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
     let source = r#"
@@ -272,7 +320,12 @@ fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
     "#;
     let compiled = parse_and_compile_with_stdlib(source);
 
-    let mut engine = make_simple_engine();
+    // Same checker and same compute-fn registration as `make_simple_engine()`;
+    // the ONLY difference is the attached solver, without which the `auto`
+    // below is never resolved and this guard is vacuous. See the doc comment.
+    let mut engine =
+        reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+            .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
 
     let result = engine.check(&compiled);
@@ -289,9 +342,28 @@ fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
         errors
     );
 
-    // The instance cell still holds the solved ElasticResult after the solver
-    // pass — not Undef (cost-loop clobber) and not the sentinel shell
-    // (reeval-cone revert).
+    // ── (a) The solver actually engaged ─────────────────────────────────────
+    //
+    // Without this the rest of the test is vacuous: an unresolved `auto` makes
+    // every constraint over it `Indeterminate`, so nothing is ever pulled into
+    // `build_dependent_cells` and no cost loop ever runs over the instance
+    // cell. Determinacy only — the resolved magnitude is a solver detail.
+    let budget = result
+        .values
+        .get(&ValueCellId::new("AsmAuto", "budget"))
+        .unwrap_or_else(|| panic!("cell AsmAuto.budget not found in check result"));
+    assert_ne!(
+        *budget,
+        Value::Undef,
+        "AsmAuto.budget is Undef — the `auto` was never resolved, so the solver \
+         never engaged and this guard would be vacuous. Diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    // ── (b) The instance cell survives the solver pass ──────────────────────
+    //
+    // Still the solved ElasticResult after solving: not Undef (cost-loop
+    // clobber) and not the sentinel shell (reeval-cone revert).
     let instance_val = result
         .values
         .get(&ValueCellId::new("AsmAuto.beam", "r_static"))
@@ -333,9 +405,34 @@ fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
         "AsmAuto.beam.k must still equal the template's BeamAuto.k after solving"
     );
 
-    // The constraints that read the instance cell were evaluated, not skipped.
-    assert!(
-        !result.constraint_results.is_empty(),
-        "expected the budget constraints in constraint_results, got none"
+    // ── (c) BOTH constraints were evaluated and are Satisfied ───────────────
+    //
+    // Pinning the COUNT (not merely non-emptiness) means a fixture that
+    // silently loses a constraint cannot pass; requiring `Satisfied` on every
+    // entry means an all-`Indeterminate` result — the pre-fix outcome, and the
+    // solverless outcome — cannot pass either. `budget <= self.beam.k` being
+    // Satisfied is the substantive claim: the solver honoured a bound derived
+    // from an FEA-solved instance-scope cell.
+    assert_eq!(
+        result.constraint_results.len(),
+        2,
+        "expected exactly the two `budget` constraints in constraint_results, \
+         got {:?}",
+        result
+            .constraint_results
+            .iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {:?} must be Satisfied, got {:?} — `Indeterminate` here \
+             is the undef-inputs outcome produced both by a solverless engine \
+             and by the pre-fix instance-scope sentinel shell",
+            entry.id,
+            entry.satisfaction
+        );
+    }
 }
