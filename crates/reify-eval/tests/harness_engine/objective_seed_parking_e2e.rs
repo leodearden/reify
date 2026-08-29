@@ -9,7 +9,7 @@
 //! * Measured at HEAD: **`9c1bed42a7cb949cfe15dcee67052c84d4d41ff3`** (`9c1bed42a7`,
 //!   "Merge task/6341 into main", 2026-08-28T19:52:47+01:00), branch `task/6756`.
 //! * Instrument: this file —
-//!   `cargo test -p reify-eval --test objective_seed_parking_e2e`.
+//!   `cargo test -p reify-eval --test harness_engine objective_seed_parking_e2e`.
 //! * Solver-level probe set (P1–P6, P8):
 //!   `crates/reify-constraints/tests/objective_seed_parking_triage.rs`.
 //! * Write-up: `docs/notes/objective-seed-parking-triage-2026-08-27.md`.

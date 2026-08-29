@@ -25,8 +25,8 @@ current `main` before building on one.
 - **Instrument (both files land with this task):**
   - `crates/reify-constraints/tests/objective_seed_parking_triage.rs` — probes P1–P6, P8.
     `cargo test -p reify-constraints --test objective_seed_parking_triage`
-  - `crates/reify-eval/tests/objective_seed_parking_e2e.rs` — probe P7, at the `.ri`
-    driver level. `cargo test -p reify-eval --test objective_seed_parking_e2e`
+  - `crates/reify-eval/tests/harness_engine/objective_seed_parking_e2e.rs` — probe P7, at the `.ri`
+    driver level. `cargo test -p reify-eval --test harness_engine objective_seed_parking_e2e`
 
 ## How to reproduce
 

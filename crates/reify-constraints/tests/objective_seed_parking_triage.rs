@@ -10,7 +10,7 @@
 //!   "Merge task/6341 into main", 2026-08-28T19:52:47+01:00), branch `task/6756`.
 //! * Instrument: this file —
 //!   `cargo test -p reify-constraints --test objective_seed_parking_triage`.
-//! * Companion driver-level probe: `crates/reify-eval/tests/objective_seed_parking_e2e.rs`.
+//! * Companion driver-level probe: `crates/reify-eval/tests/harness_engine/objective_seed_parking_e2e.rs`.
 //! * Write-up: `docs/notes/objective-seed-parking-triage-2026-08-27.md`.
 //!
 //! **All `file:line` anchors in this file are point-in-time, valid at the HEAD above —
@@ -104,7 +104,7 @@
 //!   region the objective moves the answer 20mm (25mm seed → 5mm floor); without one it
 //!   moves it 0mm. Every in-tree progress-asserting fixture sets that wall, and
 //!   production never does.
-//! * **P7** (`reify-eval/tests/objective_seed_parking_e2e.rs`) reproduces link 5 at the
+//! * **P7** (`reify-eval/tests/harness_engine/objective_seed_parking_e2e.rs`) reproduces link 5 at the
 //!   `.ri` driver level and measures the silence: 24.000000 mm returned with **zero**
 //!   diagnostics of any kind.
 //! * **P8 closes the verdict.** `minimize` and `maximize` over the same two-sided problem
