@@ -34,10 +34,15 @@ stamped into the filed task descriptions as `DECOMPOSE ADDENDUM — BINDING`.
 
 ### C1 — κ's scanner contract is factually wrong; coding to it yields a dead branch
 
-PRD §5 C2: *"`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`)"*; §3.8: *"a
+PRD §5 C2, **as it read at decompose**: *"`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`)"*; §3.8: *"a
 scanner-local widening … plus a **UTF-8-aware read**"*. `tree-sitter-reify/src/tree_sitter/parser.h:49`
 declares `int32_t lookahead;` — tree-sitter delivers **decoded codepoints**. U+00B7 arrives as the
 single value `0xB7`; `0xC2` is never observable and one unmodified `advance()` consumes both bytes.
+
+**Provenance (2026-08-29, task 5949).** Both quoted strings above are the PRD's **pre-correction**
+wording and no longer appear in the PRD: task 5949 corrected §5 C2 and §3.8 **in place**, preserving
+the superseded text in that PRD's `CORRECTION 2026-08-29` block. C1 remains the binding record of
+*why* the contract is a codepoint; every anchor, measurement and verdict below is unchanged.
 
 Controlled experiment (three isolated repo copies, isolated `XDG_CACHE_HOME`, recompilation proven
 by a deliberate `#error` variant that failed to build):
