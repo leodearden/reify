@@ -36,7 +36,7 @@ pub(crate) fn is_list_helper(name: &str) -> bool {
 /// Infer the return type of a list-helper stdlib call from the compiled
 /// argument list.
 ///
-/// Returns `Some(Type)` for the two recognised helpers when their structural
+/// Returns `Some(Type)` for the three recognised helpers when their structural
 /// pattern matches; `None` otherwise.  The caller's existing `else { fallback
 /// }` branch handles both unknown names AND structural-mismatch cases —
 /// preserving anti-cascade identically.
