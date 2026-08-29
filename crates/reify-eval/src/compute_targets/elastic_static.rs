@@ -850,9 +850,11 @@ pub fn solve_elastic_static_trampoline(
             // for the shell path (PRD §7). Undef = honest-absence sentinel,
             // consistent with the tet convention for frame/shell_channels.
             ("divergence".to_string(), Value::Undef),
-            // task 4565/β: gradient and curl are tet-only derivative channels.
+            // task 4565/β: gradient and curl are tet-only derivative channels;
+            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set.
             ("gradient".to_string(), Value::Undef),
             ("curl".to_string(), Value::Undef),
+            ("rotation".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -1196,6 +1198,12 @@ pub fn solve_elastic_static_trampoline(
     let stress_field = super::sampled_stress_field(stress_sf);
     let div_field = super::sampled_divergence_field(div_sf);
     let grad_field = super::sampled_gradient_field(grad_sf);
+    // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
+    // here rather than resampled independently — note there is deliberately NO
+    // 6th entry in the `resample_multi_nodal_to_grid` call above, so the channel
+    // costs no extra BVH pass and shares curl's grid bit-identically. Derived
+    // BEFORE `curl_sf` is moved into `sampled_curl_field` below.
+    let rotation_field = super::sampled_rotation_field(super::rotation_sf_from_curl(&curl_sf));
     let curl_field = super::sampled_curl_field(curl_sf);
 
     // ── A-posteriori adaptive refinement (task 4902; v1 mesh-free UNIFORM
@@ -1595,6 +1603,10 @@ pub fn solve_elastic_static_trampoline(
         // Shell path emits Undef (PRD §7).
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
+        // ruling #6164: rotation = ∇×u / 2, the designated crossing where the
+        // radian enters (Vector3<Angle>). Derived from the curl SampledField at
+        // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
+        ("rotation".to_string(), rotation_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -2199,6 +2211,13 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// | solve_time_ms     | (not stored in Value)                          | `0`             |
 /// | aposteriori       | see below (task #4942)                         | `None`          |
 ///
+/// `rotation` is intentionally ABSENT from this table: it is not extracted and
+/// not persisted. Ruling #6164 derives it from the `curl` slab at wrap time
+/// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
+/// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
+/// byte-exact golden test). So this direction needs no `rotation` arm, and
+/// existing persisted entries gain a correct `.rotation` for free.
+///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
 /// is set to `Vec::new()` on extraction; `value_from_elastic_result` does not
@@ -2468,6 +2487,16 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_curl_field(sf),
         None => Value::Undef,
     };
+    // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
+    // never persisted — the compute-contract wire header is frozen (`curl_len`
+    // at a fixed byte offset, byte-exact golden test), and rotation is a pure
+    // ×½ of a slab already on the wire. Deriving here means every EXISTING
+    // persisted cache entry gains a correct `.rotation` for free, with no
+    // format version bump and no new `elastic_result_from_value` extract arm.
+    let rotation_field = match build_sf(er.curl.clone(), "curl") {
+        Some(sf) => super::sampled_rotation_field(super::rotation_sf_from_curl(&sf)),
+        None => Value::Undef,
+    };
 
     // shell_channels: None → Value::Undef; Some(ch) → ShellStress StructureInstance.
     // shell_channels_to_value uses the stress_field as the mid-surface template for
@@ -2520,6 +2549,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("divergence".to_string(), div_field),
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
+        ("rotation".to_string(), rotation_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -9736,6 +9766,23 @@ mod tests {
             (
                 "curl".to_string(),
                 super::super::sampled_curl_field(make_sf("curl", 3, 500.0)),
+            ),
+            // ruling #6164: the live tet path emits a `rotation` channel derived
+            // from the curl SampledField (= curl/2), so the round-trip fixture
+            // must carry it too — it models what production actually produces.
+            //
+            // NOTE this makes the round trip a second, stronger guard on the
+            // derive: `elastic_result_from_value` deliberately does NOT extract
+            // rotation (no rotation slab is persisted — the wire header is
+            // frozen), so hash identity holds ONLY IF `value_from_elastic_result`
+            // re-derives byte-for-byte the same field from the curl slab. If the
+            // derive ever drifted between the live and cache paths, this test
+            // would red.
+            (
+                "rotation".to_string(),
+                super::super::sampled_rotation_field(super::super::rotation_sf_from_curl(
+                    &make_sf("curl", 3, 500.0),
+                )),
             ),
             (
                 "max_von_mises".to_string(),
