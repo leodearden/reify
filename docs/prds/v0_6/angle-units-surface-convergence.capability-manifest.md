@@ -40,9 +40,14 @@ declares `int32_t lookahead;` — tree-sitter delivers **decoded codepoints**. U
 single value `0xB7`; `0xC2` is never observable and one unmodified `advance()` consumes both bytes.
 
 **Provenance (2026-08-29, task 5949).** Both quoted strings above are the PRD's **pre-correction**
-wording and no longer appear in the PRD: task 5949 corrected §5 C2 and §3.8 **in place**, preserving
-the superseded text in that PRD's `CORRECTION 2026-08-29` block. C1 remains the binding record of
-*why* the contract is a codepoint; every anchor, measurement and verdict below is unchanged.
+wording and are no longer asserted there as fact: task 5949 corrected §5 C2 and §3.8 **in place**.
+Grepping the PRD for either still hits, by design — expect that rather than absence. `0xC2 0xB7`
+returns two lines: the superseded wording quoted inside that PRD's `CORRECTION 2026-08-29` block,
+and the corrected §5 C2 sentence's own explicit negation ("**not** the UTF-8 byte pair
+`0xC2 0xB7`"). `UTF-8-aware` also returns two: the full quoted phrase "UTF-8-aware read" inside
+that same correction block, and §3.8's corrected sentence negating it in its own words ("no
+UTF-8-aware decoding is required"). C1 remains the binding record of *why* the contract is a
+codepoint; every anchor, measurement and verdict below is unchanged.
 
 Controlled experiment (three isolated repo copies, isolated `XDG_CACHE_HOME`, recompilation proven
 by a deliberate `#error` variant that failed to build):
