@@ -263,10 +263,9 @@ measured sections sharing that one stamp. It routes its buckets to this PRD's mi
 all four, per the ledger's own §2.1 split), **δ (5780)** `draft`, **ε (5781)** `circular_pattern`,
 each migrating its own subset per contract C6. The counts in the table above are the
 **authoring-time snapshot** and have since moved; for sizing γ/δ/ε the ledger, not this table, is
-the live source of truth. Its
-numbers are deliberately **not** mirrored here — the ledger carries only measured data this PRD
-does not, and this PRD keeps the normative contract table, so a pointer beats a second copy to
-keep in sync.
+the live source of truth. Its numbers are deliberately **not** mirrored here — the ledger carries
+only measured data this PRD does not, and this PRD keeps the normative contract table, so a
+pointer beats a second copy to keep in sync.
 
 **`@display("…")` corpus uses: 0** (grep, whole repo). So normalizing S4's labels breaks no
 committed source, and the `@display` label validator (`annotations/schema.rs:334` + the
