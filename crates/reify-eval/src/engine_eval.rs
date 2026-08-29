@@ -278,8 +278,15 @@ pub(crate) fn compute_value_input_for_ref(
 
 /// task γ / #4954 regression guard: downgrade SYMBOLIC (not-yet-kernel-backed)
 /// `Value::GeometryHandle`s to `Value::Undef` before probing
-/// `build_compute_realization_inputs` at the two `@optimized` dispatch sites
-/// (primary and mirror).
+/// `build_compute_realization_inputs`.
+///
+/// Three call sites, and they must stay consistent — every path that feeds
+/// `build_compute_realization_inputs` goes through this downgrade:
+///   1. the primary `@optimized` dispatch site,
+///   2. its mirror, and
+///   3. `Engine::redispatch_geometry_consuming_compute_nodes` (task #5951 —
+///      the site that used to pass RAW `arg_values`; see the failure mode
+///      spelled out below, which that omission caused for real).
 ///
 /// Once γ gave top-level geometry lets a first-class value cell, the R3d
 /// in-walk mint (`Engine::mint_symbolic_geometry_handle_for_cell`, task
@@ -301,12 +308,31 @@ pub(crate) fn compute_value_input_for_ref(
 /// (task #4726) candidate gate (`realization_inputs.is_empty()`), permanently
 /// stranding the node's degraded (`lambda=Undef`) first-dispatch result.
 ///
+/// Call site 3 is pinned by
+/// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` in
+/// `reify-eval/tests/harness_engine/redispatch_template_order_regression.rs`,
+/// on the MIXED-arg shape (one hydrated geometry arg, one still symbolic) —
+/// the shape where nothing else in that pass keeps a content-free
+/// `realization_ref` out of `realization_inputs`. Reverting this downgrade at
+/// that call site reddens exactly that test.
+///
+/// Task #5951 measured exactly that stranding through call site 3. The
+/// redispatch runs once per template (`engine_build.rs`, inside `build()`'s
+/// `for (t_idx, template)` loop) and scans ALL compute nodes on every call, so
+/// any template declared AHEAD of a geometry-consuming one triggers a pass
+/// while that consumer's body is still symbolic. Passing raw `arg_values` there
+/// wrote a content-free `realization_inputs`, tripped the one-shot
+/// `is_empty()` latch, and the later — correct, post-hydration — pass for the
+/// consumer's own template was skipped forever. Silently: the `ReprKind::BRep`
+/// arm of `project_realization_read_handle` is identity-only by design (PRD
+/// §4 D1) and emits no diagnostic.
+///
 /// Only the probe fed to `build_compute_realization_inputs` is downgraded;
 /// the raw `arg_values` passed to `run_compute_dispatch`/`persistent_cache_key`
 /// is untouched, so the compute trampoline still sees the real arg shape
 /// (`body_aabb` etc. degrade gracefully via `.first()` on an empty handles
 /// slice — no panic).
-fn realization_probe_args(arg_values: &[Value]) -> Vec<Value> {
+pub(crate) fn realization_probe_args(arg_values: &[Value]) -> Vec<Value> {
     arg_values
         .iter()
         .map(|v| match v {

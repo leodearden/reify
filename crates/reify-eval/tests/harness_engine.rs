@@ -73,3 +73,10 @@ mod instance_path_underdetermined_e2e;
 // incremental evaluation entry point.
 #[path = "harness_engine/eval_cached_guarded_groups.rs"]
 mod eval_cached_guarded_groups;
+// Task #5951's geometry-redispatch template-order regressions land here for the
+// same anti-re-accretion reason as #5196's, #5045's and #5360's above. They are
+// also a topical fit: they drive `Engine::redispatch_geometry_consuming_compute_nodes`,
+// the per-template post-hydration pass in `engine_build.rs`, through the mock
+// geometry kernel — engine-level, kernel-independent.
+#[path = "harness_engine/redispatch_template_order_regression.rs"]
+mod redispatch_template_order_regression;
