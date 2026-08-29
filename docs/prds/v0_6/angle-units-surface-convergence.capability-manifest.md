@@ -41,13 +41,14 @@ single value `0xB7`; `0xC2` is never observable and one unmodified `advance()` c
 
 **Provenance (2026-08-29, task 5949).** Both quoted strings above are the PRD's **pre-correction**
 wording and are no longer asserted there as fact: task 5949 corrected §5 C2 and §3.8 **in place**.
-Grepping the PRD for either still hits, by design — expect that rather than absence. `0xC2 0xB7`
-returns two lines: the superseded wording quoted inside that PRD's `CORRECTION 2026-08-29` block,
-and the corrected §5 C2 sentence's own explicit negation ("**not** the UTF-8 byte pair
-`0xC2 0xB7`"). `UTF-8-aware` also returns two: the full quoted phrase "UTF-8-aware read" inside
-that same correction block, and §3.8's corrected sentence negating it in its own words ("no
-UTF-8-aware decoding is required"). C1 remains the binding record of *why* the contract is a
-codepoint; every anchor, measurement and verdict below is unchanged.
+Grepping the PRD for either still hits, by design — expect that rather than absence. Every such
+hit is one of two kinds, and neither is C2 or §3.8 asserting the byte contract: the superseded
+wording quoted inside that PRD's `CORRECTION 2026-08-29` block, or the corrected sentence's own
+explicit negation of it (§5 C2: "**not** the UTF-8 byte pair `0xC2 0xB7`"; §3.8: "no UTF-8-aware
+decoding is required"). No hit count is pinned here — that would be a transient fact about a
+companion file, falsified by any later rewording of C2 or §3.8 and checked by nothing. C1 remains
+the binding record of *why* the contract is a codepoint; every anchor, measurement and verdict
+below is unchanged.
 
 Controlled experiment (three isolated repo copies, isolated `XDG_CACHE_HOME`, recompilation proven
 by a deliberate `#error` variant that failed to build):
