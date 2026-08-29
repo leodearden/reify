@@ -418,6 +418,100 @@ mod tests {
         );
     }
 
+
+    /// The allowlist is pinned against an INDEPENDENT literal, not against the
+    /// slice itself, so drift in EITHER direction fails — mirroring the
+    /// `EXPECTED_NAMES` idiom in `orientation_signatures.rs`. A test that read
+    /// `FIRST_ARG_TYPED_NAMES` back would pass for any content at all.
+    ///
+    /// Each of the eight was verified against its EVAL BODY, not inferred from
+    /// its name; the per-name evidence table lives on the slice's doc comment.
+    #[test]
+    fn first_arg_typed_names_are_exactly_the_eight_verified_names() {
+        const EXPECTED_NAMES: &[&str] = &[
+            "project",
+            "mod",
+            "to_global",
+            "effective_tolerance_zone",
+            "input_shape_apply",
+            "complex_add",
+            "complex_exp",
+            "complex_sqrt",
+        ];
+        assert_eq!(
+            FIRST_ARG_TYPED_NAMES, EXPECTED_NAMES,
+            "FIRST_ARG_TYPED_NAMES drifted. Every entry asserts the terminal \
+             first-arg fallback types that name CORRECTLY — a claim that must \
+             be re-verified against the eval body before a name is added, and \
+             the doc comment's evidence table updated with it."
+        );
+    }
+
+    /// The two ways an entry could be WRONG, pinned as explicit negatives with
+    /// their reasons. Both were live candidates: the task's own brief listed
+    /// all eight of these names among "16 FALLBACK-CORRECT" callees.
+    #[test]
+    fn first_arg_typed_names_exclude_the_already_claimed_and_the_dimension_transforming() {
+        // (1) Already claimed by ORIENTATION_TYPED_FN_NAMES (#5344). These are
+        // not fallback-correct or fallback-incorrect — the fallback never sees
+        // them, because the orientation arm claims them first. Listing one
+        // here would break that family's disjointness contract AND make an
+        // unfalsifiable claim about dead code.
+        for name in [
+            "transform_inverse",
+            "transform_compose",
+            "orient_inverse",
+            "orient_compose",
+            "orient_slerp",
+        ] {
+            assert!(
+                ORIENTATION_TYPED_FN_NAMES.contains(&name),
+                "premise guard: {name:?} is no longer claimed by \
+                 ORIENTATION_TYPED_FN_NAMES, so the exclusion below has lost \
+                 its reason — re-derive before editing the allowlist"
+            );
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(&name),
+                "{name:?} must NOT be in FIRST_ARG_TYPED_NAMES — \
+                 ORIENTATION_TYPED_FN_NAMES already claims it (#5344)"
+            );
+        }
+
+        // (2) Dimension-TRANSFORMING, so first-arg typing is a KNOWN-FALSE
+        // claim, not merely an unverified one:
+        //   complex_mul  complex.rs:138  dimension = ad.mul(bd)
+        //   complex_div  complex.rs:160  dimension = ad.div(bd)
+        //   complex_pow  complex.rs:191  accumulates dim^n; n=0 -> DIMENSIONLESS
+        // Each is wrong whenever the second operand is dimensioned (or n != 1).
+        // They belong in EVAL_DEFERRED_BUILTIN_NAMES, whose claim is only
+        // "eval-dispatchable, not yet family-registered" — unconditionally
+        // true, and it suppresses the warning identically. That membership is
+        // pinned by `eval_deferred_manifest_contains_the_known_deferred_names`.
+        for name in ["complex_mul", "complex_div", "complex_pow"] {
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(&name),
+                "{name:?} must NOT be in FIRST_ARG_TYPED_NAMES — it is \
+                 dimension-transforming, so first-arg typing is wrong for it \
+                 whenever the second operand is dimensioned"
+            );
+        }
+    }
+
+    /// The allowlist is one of the unions inside `is_known_builtin`, so every
+    /// member must be visible to the oracle. Cheap, but it is what makes the
+    /// allowlist actually SUPPRESS the `UnresolvedFunction` warning rather
+    /// than merely document an intention.
+    #[test]
+    fn first_arg_typed_names_are_all_known_builtins() {
+        for name in FIRST_ARG_TYPED_NAMES {
+            assert!(
+                is_known_builtin(name),
+                "FIRST_ARG_TYPED_NAMES entry {name:?} is not accepted by \
+                 is_known_builtin — the family is not wired into the union"
+            );
+        }
+    }
+
     /// The closed world must actually be closed: a name in no family at all is
     /// rejected. Without this the oracle could trivially satisfy the test above
     /// by returning `true` unconditionally.
