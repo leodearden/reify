@@ -126,6 +126,10 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "                                   Low, making the gate advisory (exit 0).");
     let _ = writeln!(out, "                                   The finding is still emitted, prefixed");
     let _ = writeln!(out, "                                   '[warn-only]'. Default is ARMED.");
+    let _ = writeln!(out, "                                   Caveat: the dark-factory hook shows a");
+    let _ = writeln!(out, "                                   subprocess's stderr only on non-zero");
+    let _ = writeln!(out, "                                   exit, so warn-only is SILENT there.");
+    let _ = writeln!(out, "                                   Soak by running this binary directly.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Tasks source:");
     let _ = writeln!(out, "  By default, tasks are loaded live from the fused-memory MCP server.");

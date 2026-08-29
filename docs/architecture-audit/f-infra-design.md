@@ -359,6 +359,57 @@ end of §11.1 is therefore still outstanding as of this task.
   binary directly. The smoke test is therefore green under the raw-binary wiring
   and cannot be used as evidence that the rewire happened.
 
+#### 11.1.4 Arming the gate: rollout, and why a warn-only soak is silent (2026-08-29, task 6345)
+
+Until this task the `--pre-done` path returned `[]` unconditionally — `check_task`'s
+`status == "done"` guard made it structurally unable to fire on the one transition it
+exists to gate (§11.1.2). This task converts it, in one step and with no soak, into a
+fail-closed blocking gate that is **ARMED by default**. Two properties of the deployment
+are worth planning the rollout around; both are measured, not inferred.
+
+- **The break-glass costs the very restart it exists to avoid.**
+  `REIFY_AUDIT_PREDONE_WARN_ONLY=1` is read from the hook subprocess's environment, which
+  it inherits from fused-memory (§11.1.2: `create_subprocess_exec` with no `env=` kwarg).
+  Setting it therefore means editing `~/.config/systemd/user/fused-memory.service` and
+  running `systemctl --user daemon-reload && systemctl --user restart fused-memory` — the
+  red-tier restart. An operator hit by a misfire mid-incident cannot apply the break-glass
+  without the outage it was meant to prevent, so the decision to set it belongs *before*
+  the reinstall, not after a misfire.
+- **Warn-only makes the gate SILENT on the live hook path, not advisory.** Measured
+  read-only against dark-factory
+  `fused-memory/src/fused_memory/middleware/pre_done_hook.py`: the subprocess is launched
+  with `stdout=PIPE, stderr=PIPE` (so neither stream reaches fused-memory's journal), and
+  on `returncode == 0` the function returns `None` immediately — the captured
+  `stderr_bytes` is decoded and surfaced only on a NON-zero exit. Warn-only downgrades
+  every refusal to `Low` and so exits 0 by construction, which means its
+  `[warn-only] pre-done gate: …` line is captured and discarded. The same is true of the
+  advisory `Low` the fail-safe guards emit. **A soak run through the live hook observes
+  nothing.**
+
+Recommended sequence — all operator actions, outside this repo:
+
+1. **Soak out-of-band, before the reinstall.** The only observational soak available is to
+   run the gate directly and read its findings: build the crate on `main` and invoke
+   `--task <id> --pre-done --project-root /home/leo/src/reify` against the tasks that are
+   about to flip (or run the `/audit` sweep, whose P5 lane shares the corroboration legs).
+   Reading exit codes and findings here is what the hook path cannot give you.
+2. **If that run is clean**, `cargo install --path crates/reify-audit --root ~/.cargo --force`
+   (§11.1.3) and let the gate arm.
+3. **If it is not clean**, add `Environment="REIFY_AUDIT_PREDONE_WARN_ONLY=1"` to the unit
+   and `daemon-reload && restart fused-memory` *before* the reinstall, so the first live
+   exposure cannot block a flip — accepting that it is silent, and that the soak signal
+   must still come from step 1.
+4. **Disarming is a second restart.** Removing the `Environment=` line to arm the gate for
+   real needs another `daemon-reload && restart`; budget it rather than discovering it.
+
+Residual risk is reduced but not removed. The guards in §11.1.2, plus the fallible
+`try_path_tracked_on` / `try_log_grep` seams added in this task, mean a git failure now
+downgrades to an advisory `Low` rather than refusing — so the misfire surface is a task
+whose `metadata.files` genuinely does not correspond to what landed, which is the gate
+working as designed. And note the exposure is currently **deferred, not removed**: per
+§11.1.3 the live hook still runs the stale 2026-06-09 binary, so the armed gate has zero
+live effect until step 2 above is performed.
+
 ### 11.2 Snapshot filter and the `updatedAt`→`done_at` proxy
 
 `scripts/reify-audit-predone-wrapper.sh` and the `/audit` skill both materialize their TaskMetadata snapshots through a single canonical jq filter at `scripts/reify-audit-snapshot-filter.jq`. The filter takes a fused-memory `tools/call get_tasks` JSON-RPC response on stdin and emits a JSON array of TaskMetadata-shaped objects (matching `crates/reify-audit/src/lib.rs:127-158`).

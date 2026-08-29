@@ -997,17 +997,30 @@ fn pre_done_refusal(
 const PRE_DONE_SIBLING_SCAN_CAP: usize = 50;
 
 /// Break-glass: `REIFY_AUDIT_PREDONE_WARN_ONLY=1` downgrades the pre-done
-/// landing refusal from High to Low, making the gate advisory without
-/// silencing it — the finding is still emitted on stderr; only the exit code,
-/// which counts Highs, changes.
+/// landing refusal from High to Low, so it can no longer block a done-flip;
+/// the finding is still produced, and only the exit code — which counts Highs
+/// — changes.
 ///
 /// Why this exists: the gate is fail-closed production infrastructure that had
-/// never emitted a finding until this task. Without an escape hatch, an
-/// operator hit by a misfire must edit
-/// `~/.config/systemd/user/fused-memory.service` and restart fused-memory — a
-/// red-tier restart under a dirty-start guard. Mirrors the house
-/// `REIFY_MAIN_GATE_BYPASS` / `REIFY_STASH_GUARD_BYPASS` convention. Default
-/// is ARMED.
+/// never emitted a finding until this task. Without it, backing a misfire out
+/// means reinstalling an older binary or unsetting the hook command entirely.
+/// Mirrors the house `REIFY_MAIN_GATE_BYPASS` / `REIFY_STASH_GUARD_BYPASS`
+/// convention. Default is ARMED.
+///
+/// # Two limits to know BEFORE relying on it
+///
+/// 1. It is not cheaper than the outage it prevents. The value is read from
+///    the hook subprocess's environment, which it inherits from fused-memory
+///    (`create_subprocess_exec`, no `env=` kwarg), so setting it means editing
+///    `~/.config/systemd/user/fused-memory.service` and restarting
+///    fused-memory — the same red-tier restart. It has to be decided before
+///    exposure, not reached for mid-incident.
+/// 2. On the LIVE hook path it makes the gate silent, not advisory.
+///    dark-factory's `pre_done_hook.py` launches with `stdout=PIPE,
+///    stderr=PIPE` and surfaces the captured stderr only on a NON-zero exit;
+///    warn-only exits 0 by construction, so the `[warn-only]` line is captured
+///    and discarded. An observational soak has to run this binary out-of-band.
+///    Rollout sequence: `docs/architecture-audit/f-infra-design.md` §11.1.4.
 ///
 /// Deliberately scoped to THIS finding only. It must not widen into a general
 /// P5 mute: no sweep finding and no pre-existing High path in [`check_one`]

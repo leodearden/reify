@@ -278,19 +278,37 @@ exits non-zero and the transition is refused.
 **Break-glass:** `REIFY_AUDIT_PREDONE_WARN_ONLY=1` downgrades that refusal to
 `Low`, making the gate advisory (exit 0). The finding is still emitted, with
 `[warn-only] ` prefixed to the summary above. Default is ARMED. It is scoped to
-this finding only — a sweep `High` is unaffected by it.
+this finding only — a sweep `High` is unaffected by it. Two limits before you
+rely on it: setting it requires editing the fused-memory systemd unit and
+restarting fused-memory (the same red-tier restart it exists to avoid), and on
+the LIVE hook path it makes the gate silent rather than advisory, because
+dark-factory's `pre_done_hook.py` surfaces the subprocess's captured stderr only
+on a non-zero exit. Rollout sequence:
+`docs/architecture-audit/f-infra-design.md` §11.1.4.
 
 **Never refuses on incomplete evidence.** Every git leg fail-safes to
-`false`/empty, which on this path would converge on a blocking `High`, so two
+`false`/empty, which on this path would converge on a blocking `High`, so four
 guards downgrade to an advisory `Low` (exit 0) instead, prefixing
 `[advisory — <reason>] ` to the summary:
 - `git degraded: MAIN_BASE did not resolve` — the one-fork probe
   (`git merge-base --is-ancestor main main`) failed, so "absent from main" is
   the fail-safe default rather than an observation;
+- `git degraded: ls-tree errored for declared entry <path>` — the presence
+  check for that entry did not run, so its `false` is an unanswered question
+  rather than evidence of absence (the whole-repo probe above cannot see a
+  per-call failure like an unreadable pack or fd exhaustion);
+- `git degraded: log --grep errored, so no rescue candidate was inspected` —
+  the rescue search itself failed, so an empty candidate list is not evidence
+  that no commit references the task;
 - `incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP…` — the
   task-referencing-commit scan was truncated at 50, so the corroborating commit
   may simply be one that was never inspected (a `reify-audit:` breadcrumb is
   also written to stderr).
+
+A recorded git failure outranks truncation as the reported reason. Note the
+per-sibling delta seams (`changed_paths_in_commit` / `diff_changed_paths` /
+`is_ancestor`) still fail-safe silently — see the "Known residual" note on
+`check_pre_done_landing`.
 
 Read an `[advisory` prefix as "the gate could not decide", NOT as "this task is
 phantom-done at low confidence".
