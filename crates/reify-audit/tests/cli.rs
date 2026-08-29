@@ -2575,6 +2575,17 @@ fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
 /// with a client-minted id.
 const MOCK_SESSION_ID: &str = "mock-mcp-session";
 
+/// Which wire framing the mock's accept loop answers with. Mirrors the two
+/// branches `FusedMemoryClient::post` distinguishes on `content-type`
+/// (`fused_memory_client.rs:172`): [`Framing::Json`] drives the `else`
+/// bare-JSON-body branch, [`Framing::Sse`] drives the
+/// `ctype.contains("text/event-stream")` branch.
+#[derive(Clone, Copy, PartialEq)]
+enum Framing {
+    Json,
+    Sse,
+}
+
 fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
     write_response_with_session(stream, status, None, body)
 }
@@ -2591,10 +2602,34 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
 /// would turn all of those red. The jcodemunch-side contract is locked
 /// gate-resident by the hermetic unit tests in `jcodemunch_client.rs`,
 /// which assert the request headers directly.
+///
+/// Always [`Framing::Json`] — thin wrapper over [`write_response_framed`]
+/// kept byte-identical for its 13 existing call sites. Call
+/// `write_response_framed` directly to answer with SSE framing.
 fn write_response_with_session(
     stream: &mut TcpStream,
     status: u16,
     session: Option<&str>,
+    body: &[u8],
+) {
+    write_response_framed(stream, status, session, Framing::Json, body);
+}
+
+/// As [`write_response_with_session`], but with the wire framing an
+/// explicit parameter rather than always JSON.
+///
+/// Under [`Framing::Sse`] the body is wrapped as a realistic MCP
+/// streamable-HTTP frame — `event: message\ndata: <json>\n\n` — rather
+/// than a bare `data:` line. The `event:` line and trailing blank line
+/// matter: they prove the client's `body.lines()` scan
+/// (`fused_memory_client.rs:174-183`) actually skips a non-`data:` line
+/// rather than getting lucky on a single-line body. `Content-Length` is
+/// computed over the WRAPPED bytes, matching what a real server would send.
+fn write_response_framed(
+    stream: &mut TcpStream,
+    status: u16,
+    session: Option<&str>,
+    framing: Framing,
     body: &[u8],
 ) {
     let status_text = match status {
@@ -2602,16 +2637,31 @@ fn write_response_with_session(
         202 => "Accepted",
         _ => "OK",
     };
+    let content_type = match framing {
+        Framing::Json => "application/json",
+        Framing::Sse => "text/event-stream",
+    };
+    let framed_body = match framing {
+        Framing::Json => body.to_vec(),
+        Framing::Sse => {
+            let mut framed = Vec::with_capacity(body.len() + 32);
+            framed.extend_from_slice(b"event: message\n");
+            framed.extend_from_slice(b"data: ");
+            framed.extend_from_slice(body);
+            framed.extend_from_slice(b"\n\n");
+            framed
+        }
+    };
     let mut header = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        framed_body.len()
     );
     if let Some(session) = session {
         header.push_str(&format!("Mcp-Session-Id: {session}\r\n"));
     }
     header.push_str("\r\n");
     let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(body);
+    let _ = stream.write_all(&framed_body);
 }
 
 /// Handle returned by [`spawn_mock_mcp`]. Carries the bound `SocketAddr`
@@ -2641,16 +2691,51 @@ where
     spawn_mock_mcp_on(listener, task_responder)
 }
 
+/// Spawn a one-shot mock MCP server that answers every leg with
+/// `Content-Type: text/event-stream` framing (see [`Framing::Sse`]) rather
+/// than bare JSON, binding an OS-assigned ephemeral port. SSE counterpart
+/// to [`spawn_mock_mcp`]; see [`spawn_mock_mcp_on_framed`] for exactly which
+/// leg stays JSON-shaped regardless (the `notifications/initialized` 202).
+fn spawn_mock_mcp_sse<F>(task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    spawn_mock_mcp_on_framed(listener, Framing::Sse, task_responder)
+}
+
+/// Spawn a one-shot mock MCP server on an already-bound `listener`, speaking
+/// JSON framing. Thin [`Framing::Json`] wrapper over
+/// [`spawn_mock_mcp_on_framed`]; see that function for the accept-loop
+/// details (non-blocking poll, stop-flag teardown, per-leg responses).
+fn spawn_mock_mcp_on<F>(listener: TcpListener, task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    spawn_mock_mcp_on_framed(listener, Framing::Json, task_responder)
+}
+
 /// Spawn a one-shot mock MCP server on an ALREADY-BOUND `listener`, deriving
 /// the advertised `addr`/`url` from `listener.local_addr()`. Lets a caller
 /// stand a real MCP responder at a specific address (e.g. to play the
 /// adversary in a port-recycling regression lock) rather than at whatever
 /// ephemeral port the OS hands out.
 ///
+/// `framing` (see [`Framing`]) selects the wire framing every response in
+/// the session is written with, EXCEPT the `notifications/initialized`
+/// leg, which always answers 202 with an empty body regardless of framing
+/// — that matches real MCP, and `FusedMemoryClient::post` short-circuits
+/// on status 202 before sniffing content-type, so SSE-framing that leg
+/// would be untestable fiction.
+///
 /// The accept loop uses a short `set_nonblocking` poll so it wakes
 /// periodically to check the stop flag even without a wakeup connection —
 /// that way a stop request can't hang the test runner.
-fn spawn_mock_mcp_on<F>(listener: TcpListener, task_responder: F) -> MockServer
+fn spawn_mock_mcp_on_framed<F>(
+    listener: TcpListener,
+    framing: Framing,
+    task_responder: F,
+) -> MockServer
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
@@ -2711,14 +2796,18 @@ where
                             "serverInfo": {"name": "mock-mcp", "version": "0.1"}
                         }
                     });
-                    write_response_with_session(
+                    write_response_framed(
                         &mut stream,
                         200,
                         Some(MOCK_SESSION_ID),
+                        framing,
                         resp.to_string().as_bytes(),
                     );
                 }
                 "notifications/initialized" => {
+                    // Always 202/empty regardless of `framing` — see the
+                    // doc comment above for why SSE-framing this leg would
+                    // be untestable fiction.
                     write_response(&mut stream, 202, b"");
                 }
                 "tools/call" => {
@@ -2739,10 +2828,16 @@ where
                             "error": {"code": -32000, "message": "task not found"}
                         }),
                     };
-                    write_response(&mut stream, 200, resp_value.to_string().as_bytes());
+                    write_response_framed(
+                        &mut stream,
+                        200,
+                        None,
+                        framing,
+                        resp_value.to_string().as_bytes(),
+                    );
                 }
                 _ => {
-                    write_response(&mut stream, 200, b"{}");
+                    write_response_framed(&mut stream, 200, None, framing, b"{}");
                 }
             }
         }
