@@ -102,7 +102,7 @@ struct SolveMeta {
 pub struct DimensionalSolver;
 
 /// Extract the DimensionVector from a Type, defaulting to DIMENSIONLESS.
-fn dimension_of(ty: &Type) -> DimensionVector {
+pub(crate) fn dimension_of(ty: &Type) -> DimensionVector {
     match ty {
         Type::Scalar { dimension } => *dimension,
         _ => DimensionVector::DIMENSIONLESS,
@@ -145,7 +145,7 @@ fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, 
 /// `Value::Undef`, which is what makes FEA-in-the-loop optimisation possible: the
 /// hook fires on EVERY Nelder-Mead trial point, so the cost surface actually varies
 /// with the auto params the FEA call depends on.
-fn ctx_with<'a>(
+pub(crate) fn ctx_with<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
@@ -195,7 +195,7 @@ fn ctx_with<'a>(
 ///   evaluated. A collision is a membership BUG, so debug builds trip a
 ///   `debug_assert!` naming the offending cell; release builds skip the entry
 ///   and keep the trial point intact.
-fn build_trial_values(
+pub(crate) fn build_trial_values(
     base: &ValueMap,
     params: &[AutoParam],
     x: &[f64],

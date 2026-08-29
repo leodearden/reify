@@ -116,7 +116,7 @@ fn assert_row_matches_cd(
     x: &[f64],
 ) {
     assert_eq!(row.len(), params.len(), "{label}: every row is exactly auto_params wide");
-    for j in 0..params.len() {
+    for (j, &ad) in row.iter().enumerate() {
         let cd = central_difference(expr, base, params, x, j);
         assert!(
             cd.abs() >= 0.1,
@@ -125,9 +125,8 @@ fn assert_row_matches_cd(
         );
         let tol = 1e-6 * cd.abs() + 1e-8;
         assert!(
-            (row[j] - cd).abs() <= tol,
-            "{label} column {j}: ad={:?} vs central difference {cd:?} (tol {tol:?})",
-            row[j]
+            (ad - cd).abs() <= tol,
+            "{label} column {j}: ad={ad:?} vs central difference {cd:?} (tol {tol:?})"
         );
     }
 }

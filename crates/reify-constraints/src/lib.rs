@@ -7,6 +7,7 @@
 mod classifier;
 mod cpsat;
 mod decompose;
+pub mod dual_jacobian;
 pub mod relate_solve;
 mod registry;
 pub mod sketch;
@@ -46,6 +47,10 @@ pub use sketch::{
     SketchEntityDef, SketchEntityId, SketchEntityKind, SketchSlotKind, SketchSolveResult,
     SketchSystem, SketchValueField, SolvedSketchEntity,
 };
+// Task #6672 (solver-unification ε): the forward-mode AD adapter, published at
+// the crate root so η (#6675), μ (#6680) and λ (#6679) name
+// `reify_constraints::residual_jacobian` rather than reaching into the module.
+pub use dual_jacobian::{Jacobian, JacobianError, residual_jacobian};
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
 // compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend
