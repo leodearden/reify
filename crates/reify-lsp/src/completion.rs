@@ -904,21 +904,26 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "08-coordinate",
     },
     // --- 09-bbox: bounding box ---
+    // A BoundingBox is Length-valued by construction (task 6081), so the two
+    // accessors return `Vector3<Length>` / `Point3<Length>` — not an
+    // unqualified `Vector` / `Point`. `bbox` is the 2-point CONSTRUCTOR; the
+    // one-argument `bbox(solid)` form these entries used to declare is
+    // `bounding_box`'s signature, not this one.
     BuiltinFunctionInfo {
         name: "bbox",
-        signature: "bbox(solid) -> BoundingBox",
-        doc: "Returns the axis-aligned bounding box of a solid.",
+        signature: "bbox(min: Point3<Length>, max: Point3<Length>) -> BoundingBox",
+        doc: "Constructs an axis-aligned bounding box from its min and max corner points.",
         sort_group: "09-bbox",
     },
     BuiltinFunctionInfo {
         name: "bbox_size",
-        signature: "bbox_size(bb: BoundingBox) -> Vector",
+        signature: "bbox_size(bb: BoundingBox) -> Vector3<Length>",
         doc: "Returns the size (width × height × depth) of a bounding box.",
         sort_group: "09-bbox",
     },
     BuiltinFunctionInfo {
         name: "bbox_center",
-        signature: "bbox_center(bb: BoundingBox) -> Point",
+        signature: "bbox_center(bb: BoundingBox) -> Point3<Length>",
         doc: "Returns the centre point of a bounding box.",
         sort_group: "09-bbox",
     },
@@ -2165,6 +2170,69 @@ type Speed = Length
         assert!(
             func_labels.contains(&"bbox_center"),
             "should include 'bbox_center'"
+        );
+    }
+
+    // --- bbox declared signatures are Length-valued (task 6081) ---
+    //
+    // A bounding box is spatial by construction, so the two accessors return
+    // `Vector3<Length>` / `Point3<Length>`, not an unqualified `Vector` /
+    // `Point`. These are the only other USER-VISIBLE declared signatures for
+    // these builtins, so leaving them un-narrowed would reintroduce the exact
+    // static/runtime disagreement the ruling removes, just in another surface.
+    //
+    // `bbox`'s entry also carried a pre-existing ARITY bug: `bbox(solid)` is
+    // `bounding_box`'s signature, not the 2-point constructor's.
+    //
+    // Asserted by CONTENT, not by full-string equality against the table rows.
+    // What this pins is the semantic claim — the declared quantities are
+    // Length-narrowed, and `bbox` is the 2-point constructor. Parameter names,
+    // spacing and arrow rendering are cosmetic, and pinning them would mean a
+    // purely presentational reword reds these tests while saying nothing about
+    // behaviour.
+
+    fn builtin_signature(name: &str) -> &'static str {
+        BUILTIN_FUNCTIONS
+            .iter()
+            .find(|info| info.name == name)
+            .unwrap_or_else(|| panic!("{name:?} must be a registered builtin"))
+            .signature
+    }
+
+    #[test]
+    fn bbox_declared_signatures_are_length_narrowed() {
+        // (builtin, the qualified type its declared signature must carry)
+        for (name, qualified) in [
+            ("bbox", "Point3<Length>"),
+            ("bbox_size", "Vector3<Length>"),
+            ("bbox_center", "Point3<Length>"),
+        ] {
+            let sig = builtin_signature(name);
+            assert!(
+                sig.contains(qualified),
+                "{name}'s declared signature must carry the Length-narrowed \
+                 {qualified}; got: {sig}"
+            );
+            // The pre-narrowing spellings: an unqualified return type, which is
+            // the static/runtime disagreement this ruling removes.
+            assert!(
+                !sig.ends_with("-> Vector") && !sig.ends_with("-> Point"),
+                "{name} must not declare an unqualified Vector/Point return; got: {sig}"
+            );
+        }
+
+        // `bbox` is the 2-point CONSTRUCTOR. Its entry used to declare the
+        // one-argument `bbox(solid)`, which is `bounding_box`'s signature.
+        let bbox_sig = builtin_signature("bbox");
+        let params = bbox_sig
+            .split_once('(')
+            .and_then(|(_, rest)| rest.rsplit_once(')'))
+            .map(|(params, _)| params)
+            .unwrap_or_else(|| panic!("bbox signature must be a call form; got: {bbox_sig}"));
+        assert_eq!(
+            params.split(',').count(),
+            2,
+            "bbox takes two corner points; the 1-arg form is `bounding_box`. got: {bbox_sig}"
         );
     }
 

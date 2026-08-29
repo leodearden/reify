@@ -325,6 +325,12 @@ pub enum Type {
     /// (geometric-relations β).
     Direction,
     /// 3D axis-aligned bounding box defined by min and max corner points.
+    ///
+    /// Deliberately a bare unit variant: monomorphic at `Length` by the
+    /// task-6081 ruling — a bounding box is spatial by construction. The
+    /// canonical rationale (and the widening path to a later `BoundingBox<Q>`)
+    /// lives at the `// --- BoundingBox constructors ---` banner in
+    /// `reify_stdlib::geometry::eval_geometry`; do not restate it here.
     BoundingBox,
     /// A dimensioned scalar whose dimension is the named dimension-param
     /// (e.g. `Q` in `fn g<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q>`).
