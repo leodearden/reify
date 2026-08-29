@@ -296,6 +296,7 @@ impl Engine {
             last_guard_phase_group_evals: 0,
             last_role_flip_probes: 0,
             last_diff_value_cells: None,
+            last_changed_realizations: std::collections::HashSet::new(),
             last_param_override_type_kind_rejections: 0,
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
@@ -2031,6 +2032,36 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_diff_value_cells(&self) -> Option<&crate::engine_edit::ValueCellDiff> {
         self.last_diff_value_cells.as_ref()
+    }
+
+    /// The set of realizations whose INPUT-cone hash has moved since their
+    /// last EXECUTION, as recomputed by the most recent ACCEPTED `edit_param`
+    /// / `edit_source` (selective-realization-eviction PRD task β, #4729).
+    /// Empty means nothing is known to be stale.
+    ///
+    /// The measurement is against α's stored `input_cone_hash` — "the input
+    /// cone as of the last execution" — so it is cumulative until a `build()`
+    /// re-executes, NOT a per-edit delta: a realization edited but not yet
+    /// rebuilt keeps being reported across subsequent unrelated edits. A
+    /// REJECTED edit (`NotInitialized` / `CellNotFound` / a param-override
+    /// type or dimension mismatch) mutates nothing and leaves the prior
+    /// record intact. See the field doc in `lib.rs` for the full contract.
+    ///
+    /// Consumed by task γ (#4730) keyed eviction. Note this is the
+    /// INPUT-cone comparison, not the static
+    /// `RealizationNodeData::content_hash` diff that
+    /// [`Engine::last_diff_value_cells`]' realization analogue would give —
+    /// see `engine_edit::compute_changed_realizations` for why the static
+    /// hash provably never moves on a value-driven change.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_changed_realizations(
+        &self,
+    ) -> &std::collections::HashSet<reify_core::RealizationNodeId> {
+        &self.last_changed_realizations
     }
 
     /// Returns the number of param-override rejections due to `TypeKindMismatch`

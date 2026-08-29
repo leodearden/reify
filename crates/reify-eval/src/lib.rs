@@ -578,6 +578,38 @@ pub struct Engine {
     /// role (task 2170).
     #[allow(dead_code)]
     last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
+    /// The set of realizations whose INPUT-cone hash has moved since their
+    /// last EXECUTION, recomputed by the most recent ACCEPTED `edit_param` /
+    /// `edit_source` — selective-realization-eviction PRD task β (#4729).
+    ///
+    /// # Cumulative until execution, not per-edit (amend, review round 1)
+    ///
+    /// Each accepted edit recomputes the set from scratch, but it compares
+    /// against α's stored `input_cone_hash`, which means "the input cone as of
+    /// the last execution". So a realization edited but not yet rebuilt stays
+    /// reported across subsequent unrelated edits, and only a real execution
+    /// (α's write in `execute_realization_ops`) retires it — β is deliberately
+    /// read-only w.r.t. the stored hash so that stays true. A REJECTED edit
+    /// mutates nothing and therefore leaves the prior record intact: both
+    /// entry points reset this field only AFTER their fallible guards. See
+    /// `edit_param_reports_only_the_realization_whose_input_cone_moved`
+    /// (third assertion) and
+    /// `rejected_edit_param_does_not_wipe_the_changed_realization_record`.
+    ///
+    /// Produced by `engine_edit::compute_changed_realizations` (which
+    /// recomputes the GHR-β input-cone fold against the post-edit context
+    /// and compares it to α's stored `RealizationNodeData.input_cone_hash`),
+    /// and consumed by the SUBSEQUENT build — which is why
+    /// `reset_per_build_state` classifies it MUST-SURVIVE rather than
+    /// resetting it. Task γ (#4730) reads it to replace the two wholesale
+    /// `clear_realization_cache()` flushes with keyed eviction.
+    ///
+    /// Always present and module-private with no cfg gate — the same shape
+    /// as `last_dispatch_count` — so the `engine_edit.rs` write sites need
+    /// no cfg-gating. Read by callers through the
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]` accessor
+    /// `Engine::last_changed_realizations()` in `engine_admin.rs`.
+    last_changed_realizations: std::collections::HashSet<reify_core::RealizationNodeId>,
     /// Count of param-override rejections due to `TypeKindMismatch` during the
     /// most recent `eval()` or `eval_cached()` call. Reset to 0 at the start
     /// of each call. Incremented inside `emit_param_override_rejection_warning`
