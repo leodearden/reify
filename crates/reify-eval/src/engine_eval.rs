@@ -308,6 +308,14 @@ pub(crate) fn compute_value_input_for_ref(
 /// (task #4726) candidate gate (`realization_inputs.is_empty()`), permanently
 /// stranding the node's degraded (`lambda=Undef`) first-dispatch result.
 ///
+/// Call site 3 is pinned by
+/// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` in
+/// `reify-eval/tests/harness_engine/redispatch_template_order_regression.rs`,
+/// on the MIXED-arg shape (one hydrated geometry arg, one still symbolic) —
+/// the shape where nothing else in that pass keeps a content-free
+/// `realization_ref` out of `realization_inputs`. Reverting this downgrade at
+/// that call site reddens exactly that test.
+///
 /// Task #5951 measured exactly that stranding through call site 3. The
 /// redispatch runs once per template (`engine_build.rs`, inside `build()`'s
 /// `for (t_idx, template)` loop) and scans ALL compute nodes on every call, so

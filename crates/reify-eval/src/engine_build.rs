@@ -3049,6 +3049,87 @@ fn resolve_instance_color(
     crate::appearance::resolve_color(&color_field, diagnostics)
 }
 
+/// Build-scoped bookkeeping for [`Engine::redispatch_geometry_consuming_compute_nodes`].
+///
+/// That pass runs ONCE PER TEMPLATE and scans ALL compute nodes on every call.
+/// Task #5951's content guard deliberately leaves a node a redispatch
+/// *candidate* when its rebuilt handles carry no realized content, so a later
+/// per-template call can still do the real work. The price of keeping the
+/// candidate live is that the whole pass is re-attempted for that node on every
+/// SUBSEQUENT per-template call in the same build — which, unmitigated, is
+/// O(templates declared after the consumer) repetitions of two things that must
+/// only happen once:
+///
+///   1. Part A's `kernel.tessellate()`. Free on a mock kernel; a *failing*
+///      tessellation of a pathological body on the real OCCT/gmsh path is not.
+///   2. The projection diagnostics `build_compute_realization_inputs` returns.
+///      For a `ReprKind::Mesh`/`VolumeMesh` realization
+///      `project_realization_read_handle` routes through `degrade_projection`,
+///      which emits a `Severity::Warning` — so a single failed projection would
+///      surface as N+1 duplicate warnings to the user.
+///
+/// This state makes both idempotent within a build, and additionally records
+/// which nodes the content guard skipped so the build can emit ONE diagnostic
+/// per stranded node at the end (see
+/// [`Engine::emit_contentless_redispatch_warnings`]) instead of leaving the
+/// degradation silent — the root complaint of #5951.
+///
+/// Deliberately NOT an `Engine` field: it must not survive the build. A later
+/// tick — a repaired kernel, a re-realized body — has to retry from scratch.
+/// One instance is created immediately before each per-template loop
+/// (`build_with_geometry_output` and `build_snapshot`) and threaded through
+/// every call that loop makes.
+///
+/// COVERAGE, stated honestly. `failed_pretessellations` and
+/// `contentless_skips` are each pinned by a counterfactual test in
+/// `reify-eval/tests/harness_engine/redispatch_template_order_regression.rs`
+/// (`a_failed_pre_tessellation_is_not_retried_once_per_trailing_template`,
+/// `a_permanently_stranded_node_is_reported_once_at_end_of_build`), measured on
+/// a BRep body: 1 / 2 / 4 tessellation attempts for 0 / 1 / 3 trailing
+/// templates without the cache, 1 / 1 / 1 with it. `emitted_projection_diags`
+/// is NOT pinned — reaching `degrade_projection`'s Warning needs a
+/// `ReprKind::Mesh`/`VolumeMesh` realization that fails to project, which no
+/// fixture in that file builds. Treat it as reasoned-but-unmeasured until such
+/// a fixture exists.
+#[derive(Default)]
+struct RedispatchPassState {
+    /// `(realization, content_hash)` pairs whose Part A pre-tessellation
+    /// already failed in this build. Never retried.
+    failed_pretessellations: HashSet<(RealizationNodeId, reify_core::ContentHash)>,
+    /// `(compute node, diagnostic message)` pairs already extended into the
+    /// build's diagnostics, so a retried candidate does not duplicate them.
+    /// Keyed per-node so two distinct nodes with the same message both report.
+    emitted_projection_diags: HashSet<(reify_core::ComputeNodeId, String)>,
+    /// Compute nodes the content guard skipped, with the `@optimized` target
+    /// each dispatches to. Deduplicated by node id — a node skipped by three
+    /// trailing templates is recorded once.
+    contentless_skips: HashMap<reify_core::ComputeNodeId, String>,
+}
+
+impl RedispatchPassState {
+    /// Extend `diagnostics` with `proj_diags`, dropping any this build has
+    /// already surfaced for `c_id`.
+    ///
+    /// Retrying a candidate must not re-report the same projection failure:
+    /// the retry is an implementation detail of the content guard, not a new
+    /// event the user should see again.
+    fn extend_projection_diags(
+        &mut self,
+        c_id: &reify_core::ComputeNodeId,
+        proj_diags: Vec<Diagnostic>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        for d in proj_diags {
+            if self
+                .emitted_projection_diags
+                .insert((c_id.clone(), d.message.clone()))
+            {
+                diagnostics.push(d);
+            }
+        }
+    }
+}
+
 impl Engine {
     /// Snapshot the realized-repr map from `eval_state` for the fail-closed
     /// region capability gate (task #4812, P0β).
@@ -3453,6 +3534,12 @@ impl Engine {
             // template loop — and threaded per-iteration, exactly like the two
             // locals above.
             let module_binds_selector_flag = module_binds_selector(module);
+            // Task #5951 (amendment): build-scoped state for the
+            // post-hydration geometry redispatch pass below. Created ONCE here,
+            // above the template loop, because the pass runs once per template
+            // and deliberately keeps a non-projectable node a candidate across
+            // all of them — see `RedispatchPassState`.
+            let mut redispatch_pass_state = RedispatchPassState::default();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3678,6 +3765,7 @@ impl Engine {
                     &mut values,
                     version_id,
                     &mut diagnostics,
+                    &mut redispatch_pass_state,
                 );
                 // Task #3787 ε: cascade re-dispatch for field-consuming nodes
                 // (e.g. solve_elastic_static) that depend on the now-hydrated
@@ -3751,6 +3839,11 @@ impl Engine {
                 // borrow it.
                 snapshot_named_steps(template, named_steps, &mut module_named_steps);
             }
+            // Task #5951 (amendment): one Warning per node the redispatch's
+            // content guard skipped and that no later template's pass rescued.
+            // Emitted here — after the loop — so a node redispatched for real
+            // during its own template is not reported.
+            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // Only emit the summary diagnostic when ops were actually declared
@@ -4272,6 +4365,12 @@ impl Engine {
             // template loop — and threaded per-iteration, exactly like the two
             // locals above.
             let module_binds_selector_flag = module_binds_selector(module);
+            // Task #5951 (amendment): build-scoped state for the
+            // post-hydration geometry redispatch pass below. Created ONCE here,
+            // above the template loop, because the pass runs once per template
+            // and deliberately keeps a non-projectable node a candidate across
+            // all of them — see `RedispatchPassState`.
+            let mut redispatch_pass_state = RedispatchPassState::default();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4650,6 +4749,7 @@ impl Engine {
                     &mut values,
                     version_id,
                     &mut diagnostics,
+                    &mut redispatch_pass_state,
                 );
                 // Task #3787 ε: cascade re-dispatch for field-consuming nodes
                 // (e.g. solve_elastic_static) that depend on the now-hydrated
@@ -4731,6 +4831,11 @@ impl Engine {
                 // borrow it.
                 snapshot_named_steps(template, named_steps, &mut module_named_steps);
             }
+            // Task #5951 (amendment): one Warning per node the redispatch's
+            // content guard skipped and that no later template's pass rescued.
+            // Emitted here — after the loop — so a node redispatched for real
+            // during its own template is not reported.
+            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // No geometry handles available — nothing to export.
@@ -9746,7 +9851,20 @@ impl Engine {
     /// `Value::GeometryHandle { kernel_handle: Some(_), .. }` are re-dispatched.
     /// Non-geometry `@optimized` nodes (FEA scalar-dims, dynamics) are untouched.
     ///
-    /// The `kernel_handle: Some(_)` requirement is load-bearing (task #5951).
+    /// The `kernel_handle: Some(_)` requirement states the intent of task
+    /// #5951's fix (A) at the gate. MEASURED, it is a REDUNDANT narrowing:
+    /// widening it back to `GeometryHandle { .. }` leaves every test in
+    /// `tests/harness_engine/redispatch_template_order_regression.rs` green,
+    /// because each door it closes is independently closed downstream — an
+    /// all-symbolic node is emptied by the `realization_probe_args` downgrade
+    /// and caught by the `realization_inputs.is_empty()` bail, and a
+    /// kernel-backed-but-contentless node is caught by the content guard. Keep
+    /// it as the cheap early-out that names the invariant; do NOT rely on it as
+    /// the only thing standing between a symbolic handle and the latch. The
+    /// half of fix (A) that IS independently load-bearing is the downgrade —
+    /// see the `realization_probe_args` call below, pinned by
+    /// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs`.
+    ///
     /// This pass runs ONCE PER TEMPLATE — it is called from inside `build()`'s
     /// `for (t_idx, template)` loop and scans ALL compute nodes on every call,
     /// not just the current template's. So when a template is declared AHEAD of
@@ -9761,12 +9879,22 @@ impl Engine {
     /// and emits no diagnostic. Skipping the candidate instead leaves
     /// `realization_inputs` EMPTY, so the later post-hydration pass for the
     /// consumer's own template still fires.
+    ///
+    /// `pass_state` is the BUILD-scoped [`RedispatchPassState`] — created once
+    /// before the per-template loop and threaded through every call it makes.
+    /// Keeping a node a candidate means this pass repeats for it on every
+    /// trailing template, so the state makes the expensive/user-visible halves
+    /// of that repetition idempotent (a failed pre-tessellation, a projection
+    /// diagnostic) and records the skip for
+    /// [`Self::emit_contentless_redispatch_warnings`] to report once at the end
+    /// of the build.
     fn redispatch_geometry_consuming_compute_nodes(
         &mut self,
         module: &reify_compiler::CompiledModule,
         values: &mut ValueMap,
         version_id: VersionId,
         diagnostics: &mut Vec<Diagnostic>,
+        pass_state: &mut RedispatchPassState,
     ) {
         if self.eval_state.is_none() {
             return;
@@ -9864,15 +9992,19 @@ impl Engine {
             // Gate: at least one arg must now be a KERNEL-BACKED GeometryHandle
             // (body was hydrated by `post_process_geometry_handle_cells` above).
             //
-            // Task #5951: `kernel_handle: Some(_)` is required, not incidental.
-            // A `kernel_handle: None` handle is the SYMBOLIC placeholder minted
-            // by `mint_symbolic_geometry_handles_into_values` for a body that
-            // has not realized yet — which is exactly what this per-template
-            // pass sees for a consumer declared AFTER the template currently
-            // being built. Treating it as hydrated wrote a content-free
-            // `realization_inputs` and latched the Phase-1 candidate gate,
-            // stranding the node forever. `continue`ing leaves that gate
-            // untripped so a later pass can do the real work.
+            // Task #5951: a `kernel_handle: None` handle is the SYMBOLIC
+            // placeholder minted by `mint_symbolic_geometry_handles_into_values`
+            // for a body that has not realized yet — which is exactly what this
+            // per-template pass sees for a consumer declared AFTER the template
+            // currently being built. Treating it as hydrated wrote a
+            // content-free `realization_inputs` and latched the Phase-1
+            // candidate gate, stranding the node forever. `continue`ing leaves
+            // that gate untripped so a later pass can do the real work.
+            //
+            // This narrowing is DEFENCE IN DEPTH, not the load-bearing half of
+            // the fix — see the fn doc for the measurement. It is kept because
+            // it names the invariant at the point of decision and skips the
+            // rebuild work outright.
             if !arg_values.iter().any(|v| {
                 matches!(
                     v,
@@ -9917,6 +10049,21 @@ impl Engine {
                 {
                     continue;
                 }
+                // Task #5951 (amendment): negative cache. The content guard
+                // below keeps a non-projectable node a redispatch candidate,
+                // so this pre-tessellation would otherwise be re-attempted on
+                // every per-template call that follows — O(templates declared
+                // after the consumer) failing `kernel.tessellate()` calls per
+                // build tick. `tessellate` is a pure function of
+                // `(realization, content_hash)`, so a failure here cannot
+                // become a success later in the SAME build; skip it. The state
+                // is build-scoped, so a later tick still retries for real.
+                if pass_state
+                    .failed_pretessellations
+                    .contains(&(realization_ref.clone(), content_hash))
+                {
+                    continue;
+                }
                 // Pattern from `project_realization_read_handle`'s Mesh arm:
                 // compute the owned RealizedContent BEFORE the &mut store
                 // insert to release the immutable kernel borrow first.
@@ -9935,9 +10082,15 @@ impl Engine {
                 if let Some(content) = projected {
                     self.realization_projection_store
                         .insert(realization_ref.clone(), content_hash, content);
+                } else {
+                    // If tessellation failed, leave store empty — dispatch
+                    // degrades honestly (lambda=Undef via the existing
+                    // degraded_field() path) — and record the failure so no
+                    // later per-template call in this build pays for it again.
+                    pass_state
+                        .failed_pretessellations
+                        .insert((realization_ref.clone(), content_hash));
                 }
-                // If tessellation failed, leave store empty — dispatch degrades
-                // honestly (lambda=Undef via existing degraded_field() path).
             }
 
             // Rebuild realization_inputs from the hydrated arg_values.
@@ -9948,17 +10101,33 @@ impl Engine {
             // #4954 symbolic-handle downgrade, exactly as the two `@optimized`
             // dispatch sites in `engine_eval.rs` do — making this the third
             // consistent call site instead of the one that bypassed the guard.
-            // The gate above already skips a candidate with no kernel-backed
-            // arg, so this is belt-and-braces: it keeps a symbolic handle out
-            // of `realization_inputs` even in a MIXED-arg node (one hydrated
-            // body plus one still-symbolic sibling), and keeps the invariant
-            // true if the gate is ever widened. The RAW `arg_values` are left
-            // untouched for `run_compute_dispatch`/`persistent_cache_key`, so
-            // the trampoline still sees the real arg shape.
+            //
+            // This is the LOAD-BEARING half of fix (A), and the gate above does
+            // NOT subsume it. A MIXED-arg node — one hydrated body plus one
+            // still-symbolic sibling — opens the gate on the hydrated arg, and
+            // its realized content also keeps the content guard below from
+            // firing, so the write happens. On RAW `arg_values` the symbolic
+            // sibling's `realization_ref` would ride along into
+            // `realization_inputs`: a freshness edge and a `compute_cache_key`
+            // term for a realization that produced nothing. Pinned by
+            // `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` in
+            // `tests/harness_engine/redispatch_template_order_regression.rs`,
+            // which is the ONLY case in that file that reddens when this
+            // downgrade alone is reverted.
+            //
+            // The RAW `arg_values` are left untouched for
+            // `run_compute_dispatch`/`persistent_cache_key`, so the trampoline
+            // still sees the real arg shape.
             let probe_args = crate::engine_eval::realization_probe_args(&arg_values);
             let (realization_inputs, realization_read_handles, proj_diags) =
                 self.build_compute_realization_inputs(&probe_args, &graph_snapshot);
-            diagnostics.extend(proj_diags);
+            // Task #5951 (amendment): dedupe per (node, message) rather than a
+            // bare `extend`. The content guard below keeps a non-projectable
+            // node a candidate, so this rebuild — and any `degrade_projection`
+            // Warning it produces for a Mesh/VolumeMesh realization — repeats
+            // on every trailing template's call. The retry is an internal
+            // consequence of the guard, not a new event for the user.
+            pass_state.extend_projection_diags(&cand.c_id, proj_diags, diagnostics);
 
             if realization_inputs.is_empty() {
                 // Defensive: should not be reached on the green path.
@@ -9992,10 +10161,36 @@ impl Engine {
             // `proj_diags` are extended above and deliberately left alone: this
             // guard suppresses a WRITE, never a diagnostic the projection
             // already chose to emit.
+            //
+            // WHAT THIS ALSO GIVES UP, deliberately (amendment): `continue`
+            // skips the `run_compute_dispatch` below as well as the write, so
+            // the node keeps the result it computed at first dispatch from
+            // `Value::Undef` args. An `@optimized` fn that reads its geometry
+            // through the raw `Value::GeometryHandle` — kernel queries,
+            // `realization_ref` identity, cache-key participation — rather than
+            // through `RealizationReadHandle::content()` therefore does NOT get
+            // handed the hydrated arg it would have received before this guard
+            // existed. That is a degraded→degraded transition, and decoupling
+            // the two effects (skip the write, still re-dispatch on hydrated
+            // args) was considered and REJECTED: this call site passes a
+            // hardcoded `reify_core::ContentHash(0)` persistent-cache key (see
+            // the `run_compute_dispatch` call below), so every redispatch in
+            // this pass shares one key. A content-free dispatch stored under
+            // that key would be served to a later content-BEARING dispatch,
+            // turning a per-build strand into one persisted across builds —
+            // strictly worse than the information loss it would repair. Fixing
+            // the shared key is the prerequisite for revisiting this.
+            //
+            // The strand is not left silent, though: the node is recorded here
+            // and `emit_contentless_redispatch_warnings` reports it once at the
+            // end of the build if no later pass rescued it.
             if realization_read_handles
                 .iter()
                 .all(|h| h.content().is_none())
             {
+                pass_state
+                    .contentless_skips
+                    .insert(cand.c_id.clone(), cand.target.clone());
                 continue;
             }
 
@@ -10044,6 +10239,68 @@ impl Engine {
                     // step-1 non-empty assertion still passes.
                 }
             }
+        }
+    }
+
+    /// Report the `@optimized` compute nodes that
+    /// [`Self::redispatch_geometry_consuming_compute_nodes`]'s content guard
+    /// skipped and that NO later pass rescued (task #5951 amendment).
+    ///
+    /// Called ONCE, immediately after the per-template loop in
+    /// `build_with_geometry_output` and `build_snapshot` — not from inside the
+    /// pass, which runs per template. A node skipped while an earlier template
+    /// was building may well be redispatched for real during its own
+    /// template's call; only a node whose `realization_inputs` are STILL empty
+    /// at the end of the build is genuinely stranded, so only that node is
+    /// reported. One `Severity::Warning` per node, never per template call.
+    ///
+    /// Why this exists: the guard's stated intent is that the strand becomes
+    /// *retried* rather than permanent. For a body that can never project
+    /// content — a mesh the kernel cannot tessellate, `resolve_realization_kernel`
+    /// returning `None`, a failed Sdf/Voxel densify — no later pass ever
+    /// succeeds, and the end state is the pre-fix one: a node stranded on its
+    /// degraded first-dispatch result. Before this, that state was reported
+    /// NOWHERE — the `ReprKind::BRep` arm of `project_realization_read_handle`
+    /// is identity-only by design (PRD §4 D1) and `degrade_projection`'s own
+    /// Warning is never reached on that arm. Silence is the root complaint of
+    /// #5951, so the recovered-in-principle state must at least be visible.
+    ///
+    /// Emission order is sorted by `(entity, index)`: `compute_nodes` is an
+    /// `im::HashMap`, whose iteration order is not stable across processes.
+    fn emit_contentless_redispatch_warnings(
+        &self,
+        pass_state: &RedispatchPassState,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if pass_state.contentless_skips.is_empty() {
+            return;
+        }
+        let Some(state) = self.eval_state.as_ref() else {
+            return;
+        };
+        let mut stranded: Vec<(&reify_core::ComputeNodeId, &String)> = pass_state
+            .contentless_skips
+            .iter()
+            .filter(|(c_id, _)| {
+                state
+                    .snapshot
+                    .graph
+                    .compute_nodes
+                    .get(*c_id)
+                    .is_some_and(|n| n.realization_inputs.is_empty())
+            })
+            .collect();
+        stranded
+            .sort_by(|(a, _), (b, _)| a.entity.cmp(&b.entity).then_with(|| a.index.cmp(&b.index)));
+        for (c_id, target) in stranded {
+            diagnostics.push(Diagnostic::warning(format!(
+                "@optimized node `{target}` on `{}` consumed a geometry body whose \
+                 realization projected no content; its result is degraded (computed \
+                 without the realized body). Task #5951: the post-hydration \
+                 redispatch left the node a candidate rather than latching it on \
+                 content-free inputs, but no later pass could deliver content either.",
+                c_id.entity,
+            )));
         }
     }
 
