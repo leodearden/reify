@@ -358,6 +358,64 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         surface.vertices.len() / 3,
         mesh.vertices.len() / 3
     );
+
+    // (5) Winding SIGN — the half of "outward" that `validate` structurally
+    // cannot see. Its Closed/ConsistentWinding obligation asks only that
+    // every directed edge on the position-welded quotient have its reverse
+    // exactly once: that is orientABILITY, and a globally INVERTED closed
+    // surface satisfies it just as happily as an outward one. Nothing
+    // downstream catches the difference either — gmsh meshes the inverted
+    // surface without complaint — so `orient_outward` could silently flip
+    // and every other assertion in this file would stay green.
+    //
+    // The divergence theorem pins the sign in O(tris) with no new
+    // dependency: summing the signed volume of the tetrahedron each triangle
+    // spans with the origin, `dot(v0, cross(v1, v2)) / 6`, totals +V for an
+    // outward-wound closed surface and -V for an inward-wound one.
+    let vertex = |i: u32| -> [f64; 3] {
+        let base = i as usize * 3;
+        [
+            surface.vertices[base] as f64,
+            surface.vertices[base + 1] as f64,
+            surface.vertices[base + 2] as f64,
+        ]
+    };
+    let mut signed_volume = 0.0_f64;
+    for tri in surface.indices.chunks_exact(3) {
+        let (a, b, c) = (vertex(tri[0]), vertex(tri[1]), vertex(tri[2]));
+        let cross = [
+            b[1] * c[2] - b[2] * c[1],
+            b[2] * c[0] - b[0] * c[2],
+            b[0] * c[1] - b[1] * c[0],
+        ];
+        signed_volume += (a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]) / 6.0;
+    }
+    assert!(
+        signed_volume > 0.0,
+        "boundary_surface emitted an INWARD-wound surface (signed volume \
+         {signed_volume}); `Mesh::validate` cannot see this, so this assertion \
+         is the only thing standing between a sign flip in `orient_outward` \
+         and a silently inverted gmsh input"
+    );
+
+    // ...and loosely, the right magnitude. The bracket's analytic volume is
+    //
+    //     (2*L*T - T^2 - (r^2 - pi*r^2/4)) * T
+    //   = (2*1.0*0.2 - 0.2^2 - (0.05^2 - pi*0.05^2/4)) * 0.2
+    //   = 0.071893
+    //
+    // for a smooth fillet; the fixture facets that concave arc and so
+    // undershoots a little (0.069617 measured at n=4). A +/-15% band absorbs
+    // faceting at any resolution while still catching a structural defect the
+    // sign check alone would miss — a duplicated or dropped face set moves the
+    // total by a factor, not by a few percent.
+    const ANALYTIC_VOLUME: f64 = 0.071_893;
+    assert!(
+        (0.85 * ANALYTIC_VOLUME..=1.15 * ANALYTIC_VOLUME).contains(&signed_volume),
+        "boundary_surface enclosed {signed_volume}, outside +/-15% of the \
+         bracket's analytic volume {ANALYTIC_VOLUME} — the surface is closed \
+         and outward-wound but does not bound the solid it came from"
+    );
 }
 
 // ── Morph arm ────────────────────────────────────────────────────────────────

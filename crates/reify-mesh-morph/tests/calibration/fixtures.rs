@@ -650,8 +650,11 @@ pub fn boundary_surface(mesh: &VolumeMesh) -> Mesh {
         ([1, 2, 3], 0),
     ];
 
-    // sorted key -> (occurrence count, outward-wound triple)
-    let mut faces: HashMap<[u32; 3], (usize, [u32; 3])> = HashMap::new();
+    // sorted key -> (occurrence count, first-sighted raw triple, the vertex
+    // that triple is opposite to in the tet that first sighted it). Storing
+    // the opposing vertex rather than an already-oriented triple is what lets
+    // orientation be deferred to the survivors below.
+    let mut faces: HashMap<[u32; 3], (usize, [u32; 3], u32)> = HashMap::new();
 
     for tet in tets.chunks_exact(4) {
         for (local, opposite) in TET_FACES {
@@ -659,21 +662,22 @@ pub fn boundary_surface(mesh: &VolumeMesh) -> Mesh {
             let mut key = tri;
             key.sort_unstable();
 
-            let entry = faces.entry(key).or_insert((0, tri));
-            entry.0 += 1;
-            // Only a face kept at the end needs a correct winding, and only
-            // the first sighting's winding is retained — recomputing on the
-            // second sighting would be wasted work on an interior face.
-            if entry.0 == 1 {
-                entry.1 = orient_outward(mesh, tri, tet[opposite]);
-            }
+            faces.entry(key).or_insert((0, tri, tet[opposite])).0 += 1;
         }
     }
 
-    // Boundary = the faces no second tet claimed.
+    // Boundary = the faces no second tet claimed. Winding is computed HERE,
+    // inside the survivor filter, rather than at insertion: orienting on
+    // first sighting would run once per DISTINCT face, and the overwhelming
+    // majority of distinct faces are interior and about to be discarded. At
+    // the harness's n=18 scale that is ~9K orientations instead of ~220K
+    // (~96% of the work was feeding triangles that never get emitted). The
+    // raw triple plus its opposing vertex are all `orient_outward` needs, so
+    // deferring costs one extra `u32` per map entry and nothing else.
     let mut boundary: Vec<[u32; 3]> = faces
         .into_values()
-        .filter_map(|(count, tri)| (count == 1).then_some(tri))
+        .filter(|&(count, _, _)| count == 1)
+        .map(|(_, tri, opposite)| orient_outward(mesh, tri, opposite))
         .collect();
     // HashMap iteration order is nondeterministic; sort so the emitted
     // triangle order (and hence anything downstream keyed on it) is stable
