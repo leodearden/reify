@@ -1155,6 +1155,138 @@ mod tests {
         );
     }
 
+    // --- task 6450: gated-length builtins advertise their dimension requirement ---
+    //
+    // The authoritative per-builtin position table lives outside this crate's
+    // reach — reify-compiler::builtin_signatures and reify-eval::arg_acceptance
+    // are both `pub(crate)` to their own crate (see the module doc of the
+    // latter, crates/reify-eval/src/arg_acceptance.rs:11-71, for the full
+    // table) — so instead of hand-copying it, each row below is pinned
+    // BEHAVIOURALLY against the real gate: the compiler is the oracle, not a
+    // restatement of it (G7).
+
+    /// Evaluate a single `.ri` expression through the same parse → compile →
+    /// check pipeline `AnalysisContext` runs for the LSP (analysis.rs:82-99),
+    /// and return every diagnostic message from BOTH layers Contract C spans.
+    /// `AnalysisContext` keeps `compiled` (COMPILE-time diagnostics — where
+    /// box/cylinder/sphere/... are gated, per reify-compiler::builtin_signatures)
+    /// and `check_result` (EVAL-time diagnostics — the only place polygon's
+    /// variadic route and rounded_box/rounded_rect's lowered gate fire) as
+    /// separate fields, mirroring reify-lsp/src/diagnostics.rs's own
+    /// two-source merge for published diagnostics; a caller wanting the full
+    /// picture a user would see must combine them, same as here.
+    fn eval_expr_diagnostics(expr: &str) -> Vec<String> {
+        let source = format!("structure S {{\n    let v = {expr}\n}}");
+        let ctx = AnalysisContext::new(&source, &test_uri());
+        ctx.compiled
+            .diagnostics
+            .iter()
+            .chain(ctx.check_result.diagnostics.iter())
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    /// One row per empirically-gated `01-geometry` builtin (task 6450):
+    /// `(builtin_name, dimensioned_call, bare_call)`. `half_space`
+    /// deliberately leaves `nx`/`ny`/`nz` bare on BOTH sides — only its
+    /// `px`/`py`/`pz` point is LENGTH-gated (arg_acceptance.rs:109-119: the
+    /// outward normal is a dimensionless unit vector, not a residual).
+    const GATED_LENGTH_BUILTIN_ROWS: &[(&str, &str, &str)] = &[
+        ("box", "box(20mm, 10mm, 30mm)", "box(20, 10, 30)"),
+        ("cylinder", "cylinder(5mm, 20mm)", "cylinder(5, 20)"),
+        ("sphere", "sphere(10mm)", "sphere(10)"),
+        (
+            "box_centered",
+            "box_centered(20mm, 10mm, 30mm)",
+            "box_centered(20, 10, 30)",
+        ),
+        (
+            "cylinder_centered",
+            "cylinder_centered(5mm, 20mm)",
+            "cylinder_centered(5, 20)",
+        ),
+        ("cone", "cone(10mm, 5mm, 20mm)", "cone(10, 5, 20)"),
+        (
+            "rounded_box",
+            "rounded_box(20mm, 20mm, 10mm, 2mm)",
+            "rounded_box(20, 20, 10, 2)",
+        ),
+        ("torus", "torus(20mm, 5mm)", "torus(20, 5)"),
+        (
+            "half_space",
+            "half_space(0mm, 0mm, 0mm, 0, 0, 1)",
+            "half_space(0, 0, 0, 0, 0, 1)",
+        ),
+        (
+            "wedge",
+            "wedge(20mm, 20mm, 10mm, 5mm)",
+            "wedge(20, 20, 10, 5)",
+        ),
+        ("rectangle", "rectangle(20mm, 10mm)", "rectangle(20, 10)"),
+        ("circle", "circle(10mm)", "circle(10)"),
+        (
+            "rounded_rect",
+            "rounded_rect(20mm, 20mm, 2mm)",
+            "rounded_rect(20, 20, 2)",
+        ),
+        (
+            "polygon",
+            "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)",
+            "polygon(0, 0, 10, 0, 5, 10)",
+        ),
+        ("ellipse", "ellipse(10mm, 5mm)", "ellipse(10, 5)"),
+    ];
+
+    /// RED (task 6450 step-1): each gated geometry builtin's completion `doc`
+    /// must carry the units requirement AND its dimensioned example — pinned
+    /// BEHAVIOURALLY so the doc can never claim a gate that does not exist and
+    /// every advertised example is one that actually evaluates clean.
+    ///
+    /// Per row: (a) the BARE form is rejected with `LENGTH_MIGRATION_HINT` —
+    /// matching the hint TEXT, not the builtin name, since rounded_box/
+    /// rounded_rect diagnose under their lowered `box`/`cylinder` name; (b)
+    /// the DIMENSIONED form evaluates with no such diagnostic; (c) the
+    /// entry's `doc` contains both the hint and the dimensioned example. (a)
+    /// and (b) describe the already-working gate and pass today; (c) fails
+    /// for all 15 rows until step-2.
+    #[test]
+    fn gated_length_builtins_advertise_their_dimension_requirement() {
+        use reify_core::units::LENGTH_MIGRATION_HINT;
+
+        for &(name, dimensioned, bare) in GATED_LENGTH_BUILTIN_ROWS {
+            let bare_diags = eval_expr_diagnostics(bare);
+            assert!(
+                bare_diags.iter().any(|m| m.contains(LENGTH_MIGRATION_HINT)),
+                "{name}: bare form `{bare}` should be rejected with the \
+                 LENGTH_MIGRATION_HINT, got diagnostics: {bare_diags:?}"
+            );
+
+            let dimensioned_diags = eval_expr_diagnostics(dimensioned);
+            assert!(
+                !dimensioned_diags
+                    .iter()
+                    .any(|m| m.contains(LENGTH_MIGRATION_HINT)),
+                "{name}: dimensioned form `{dimensioned}` should evaluate \
+                 clean, got diagnostics: {dimensioned_diags:?}"
+            );
+
+            let entry = BUILTIN_FUNCTIONS
+                .iter()
+                .find(|b| b.name == name)
+                .unwrap_or_else(|| panic!("{name}: missing from BUILTIN_FUNCTIONS"));
+            assert!(
+                entry.doc.contains(LENGTH_MIGRATION_HINT),
+                "{name}: doc should contain the LENGTH_MIGRATION_HINT, got: {}",
+                entry.doc
+            );
+            assert!(
+                entry.doc.contains(dimensioned),
+                "{name}: doc should show the dimensioned example `{dimensioned}`, got: {}",
+                entry.doc
+            );
+        }
+    }
+
     #[test]
     fn re_im_not_in_builtin_completions() {
         // re, im, real, imag are method-only accessors, not standalone builtins.
