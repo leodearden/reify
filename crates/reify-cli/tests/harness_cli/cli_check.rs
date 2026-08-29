@@ -709,6 +709,48 @@ fn check_exits_nonzero_on_eval_phase_circular_let_binding() {
     );
 }
 
+/// Task 5403 (γ) — DUAL-REGIME forward lock on the DIMENSIONAL cyclic let.
+///
+/// NOT this task's RED proof, and it must not be mistaken for one. Read both
+/// regimes before editing:
+///
+/// - TODAY (MEASURED on this base): exit 1 comes from the COMPILE-phase gate
+///   at `main.rs:779`, not from γ's gate at all. The #6584 forward-reference
+///   bug manufactures `error: dimension mismatch in addition: Real vs
+///   Scalar[m]` for `let a = b + 5mm`, and `cmd_check` returns before it ever
+///   evaluates. So this assertion was ALREADY green before γ landed.
+/// - AFTER #6584 lands: that spurious compile error disappears, the file
+///   compiles, and the eval-phase `circular let-binding dependency in template
+///   P: [a, b]` Error is what keeps the exit non-zero — through THIS task's
+///   gate.
+///
+/// The lock's value is that the exit code is non-zero under BOTH regimes, so
+/// #6584 cannot silently turn this file into another silent-undef exit 0 on
+/// its way past the type bug.
+///
+/// Only the exit code is asserted, deliberately: the MESSAGE legitimately
+/// differs between the two regimes, and pinning either one would make this
+/// test fail for a reason that is not a defect. The regime-free proof of γ's
+/// gate is `check_exits_nonzero_on_eval_phase_circular_let_binding` above, on
+/// the dimensionless fixture.
+///
+/// Do NOT "fix" the fixture to make one regime win — `cyclic_let_dimensional.ri`
+/// is byte-identical to the copy on the unmerged `task/6584` branch precisely
+/// so the two add/adds merge cleanly.
+#[test]
+fn check_exits_nonzero_on_dimensional_circular_let_binding() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("cyclic_let_dimensional.ri"));
+
+    assert!(
+        !status.success(),
+        "a dimensional circular let must exit non-zero under BOTH regimes — via \
+         the compile-phase gate while the #6584 forward-reference bug stands, \
+         and via #5403's Severity::Error gate once it is fixed.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
 /// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2.
 ///
 /// `cmd_check`'s kernel-backed arm calls `build()` for its handle-population
