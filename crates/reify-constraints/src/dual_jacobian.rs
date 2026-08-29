@@ -31,7 +31,10 @@
 //! is taken at *the same point the solver is standing on*, rather than at a
 //! reconstruction of it that could drift.
 
-use reify_expr::{BranchRecord, NonDifferentiable, Seeds, jacobian_row};
+use reify_expr::{
+    BranchRecord, DualEnv, NonDifferentiable, Seeds, Tangent, eval_dual_with_env,
+    jacobian_row_with_env,
+};
 use reify_core::ValueCellId;
 use reify_ir::{AutoParam, CompiledExpr, CompiledFunction, ValueMap};
 
@@ -125,13 +128,16 @@ pub fn residual_jacobian(
     let columns: Vec<ValueCellId> = auto_params.iter().map(|p| p.id.clone()).collect();
     let seeds = Seeds::new(&columns);
 
+    // The derivative sibling of the value fold `build_trial_values` just ran.
+    let env = fold_dependent_duals(&values, auto_params, dependent_cells, functions, dispatch, &seeds);
+
     let mut rows = Vec::with_capacity(residual_exprs.len());
     let mut residuals = Vec::with_capacity(residual_exprs.len());
     let mut branch_records = Vec::with_capacity(residual_exprs.len());
 
     for (i, expr) in residual_exprs.iter().enumerate() {
         let mut record = BranchRecord::new();
-        match jacobian_row(expr, &ctx, &seeds, &mut record) {
+        match jacobian_row_with_env(expr, &ctx, &seeds, &env, &mut record) {
             Ok((value, row)) => {
                 residuals.push(value);
                 rows.push(row);
@@ -142,4 +148,71 @@ pub fn residual_jacobian(
     }
 
     Ok(Jacobian { rows, residuals, branch_records })
+}
+
+/// The derivative sibling of [`crate::solver::fold_dependent_cells`].
+///
+/// `build_trial_values` has already folded the dependent cells' VALUES into
+/// `values`; this recomputes the same cells' TANGENTS into a [`DualEnv`]
+/// overlay, so a residual that reads a derived cell resolves to that cell's
+/// real derivative instead of `Tangent::Zero`.
+///
+/// The value fold's doc comment warns "do NOT copy this body into a caller",
+/// and this is not a copy: the values are consumed as `build_trial_values` left
+/// them, and only the tangent half is computed here.  Everything the two folds
+/// share — membership, stored order, the auto-collision backstop — is stated
+/// once in each and MEANS the same thing, because both consume the same
+/// `dependent_cells` slice.
+///
+/// `dependent_cells` is consumed IN STORED ORDER against a RUNNING overlay, so
+/// an earlier dependent cell's tangent is visible to a later one.  That order
+/// is a topologically-sorted guarantee produced once by `build_dependent_cells`
+/// (reify-eval) and CONSUMED here — never re-derived, so the two can never
+/// disagree.
+///
+/// # INVARIANTS
+///
+/// - An empty `dependent_cells` returns an empty overlay, and an empty overlay
+///   is indistinguishable from no overlay at all — so every non-clustered solve
+///   takes exactly the path it took before.
+/// - The fold must NEVER bind an auto param's own cell.  An auto's tangent is
+///   its seed column `e_j`, and `Seeds` resolves it before the overlay is even
+///   consulted; binding it here would be dead at best and, if the resolution
+///   order ever changed, would silently replace a basis vector with a computed
+///   one.  Membership already excludes autos by construction, so this is a
+///   backstop against upstream DRIFT — enforced rather than assumed, because a
+///   clobbered auto column is silent: the solver would report a solved value
+///   for a direction it never actually probed.
+fn fold_dependent_duals(
+    values: &ValueMap,
+    auto_params: &[AutoParam],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+    seeds: &Seeds,
+) -> DualEnv {
+    let mut env = DualEnv::new();
+    if dependent_cells.is_empty() {
+        return env;
+    }
+    let ctx = ctx_with(values, functions, dispatch);
+    for (id, expr) in dependent_cells {
+        if auto_params.iter().any(|p| &p.id == id) {
+            debug_assert!(
+                false,
+                "fold_dependent_duals: dependent cell {id:?} collides with an auto param —                  reify-eval's `build_dependent_cells` excludes autos by construction, so this                  means upstream membership drifted. Skipping the entry to keep the auto's seed                  column."
+            );
+            continue;
+        }
+        // The VALUE is already in `values` (folded by `build_trial_values`), so
+        // only the tangent is taken here; the primal this produces is
+        // necessarily the same one, because both come from the same evaluator
+        // over the same map.
+        let mut discard = BranchRecord::new();
+        let dual = eval_dual_with_env(expr, &ctx, seeds, &env, &mut discard);
+        if !matches!(dual.tangent, Tangent::Zero) {
+            env.bind(id.clone(), dual.tangent);
+        }
+    }
+    env
 }

@@ -187,7 +187,7 @@ impl DualEnv {
 
     /// Bind `cell` to `tangent`.  A [`Tangent::Zero`] is deliberately NOT
     /// stored: unbound already means zero.
-    fn bind(&mut self, cell: ValueCellId, tangent: Tangent) {
+    pub fn bind(&mut self, cell: ValueCellId, tangent: Tangent) {
         if tangent.is_zero() {
             return;
         }
@@ -195,8 +195,14 @@ impl DualEnv {
         self.carries.borrow_mut().clear();
     }
 
-    fn get(&self, cell: &ValueCellId) -> Option<&Tangent> {
+    /// The tangent bound to `cell`, or `None` when it carries no tangent.
+    pub fn get(&self, cell: &ValueCellId) -> Option<&Tangent> {
         self.bindings.get(cell)
+    }
+
+    /// True when no cell carries a tangent.
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
     }
 
     /// True when `expr` references at least one bound cell.
@@ -255,9 +261,25 @@ pub fn eval_dual(
     seeds: &Seeds,
     record: &mut BranchRecord,
 ) -> DualValue {
+    eval_dual_with_env(expr, ctx, seeds, &DualEnv::new(), record)
+}
+
+/// [`eval_dual`] with an outer tangent overlay already populated.
+///
+/// The solver uses this to hand in the tangents of DERIVED cells — cells that
+/// are functions of the auto params but are not themselves seed columns.
+/// Without it a residual that reads a derived cell rather than the auto itself
+/// would differentiate to exactly zero.
+pub fn eval_dual_with_env(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+) -> DualValue {
     seeds.take_refusal();
     let mut path: Vec<u16> = Vec::new();
-    eval_dual_at(expr, ctx, seeds, &DualEnv::new(), record, &mut path)
+    eval_dual_at(expr, ctx, seeds, env, record, &mut path)
 }
 
 /// Recursive worker.  `path` is the structural child-index path from the
@@ -1429,7 +1451,18 @@ pub fn jacobian_row(
     seeds: &Seeds,
     record: &mut BranchRecord,
 ) -> Result<(f64, Vec<f64>), NonDifferentiable> {
-    let dual = eval_dual(expr, ctx, seeds, record);
+    jacobian_row_with_env(expr, ctx, seeds, &DualEnv::new(), record)
+}
+
+/// [`jacobian_row`] with an outer tangent overlay — see [`eval_dual_with_env`].
+pub fn jacobian_row_with_env(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+) -> Result<(f64, Vec<f64>), NonDifferentiable> {
+    let dual = eval_dual_with_env(expr, ctx, seeds, env, record);
 
     // The primal is checked FIRST, so the message names the residual's own
     // problem rather than a downstream consequence of it.
