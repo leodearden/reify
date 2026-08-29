@@ -504,16 +504,33 @@ fn range_valid_compiles_without_ice() {
     );
 }
 
-/// Zero-arg stdlib function call emits a type-inference warning.
+/// Zero-arg call to an unresolvable name is diagnosed, not silently defaulted.
 ///
-/// expr.rs:586 calls `unwrap_or_else` and emits
-/// `Diagnostic::warning("cannot infer return type of zero-arg function…")`
-/// when `compiled_args` is empty.  This test verifies that warning is
-/// present so the silent-default is caught at compile time.
+/// The terminal first-arg fallback in `expr.rs` types a zero-arg call as
+/// `Type::dimensionless_scalar()` — a silent default, which is what this suite
+/// exists to catch. The typing is unchanged; only *which* warning announces it
+/// has moved.
 ///
-/// `__test_zero_arg_fn` is an intentionally-synthetic name chosen so that
-/// future stdlib additions (e.g. promoting `pi` to a math constant) cannot
-/// accidentally turn this into a user-fn-lookup or constant-folding test.
+/// **Updated by task #5371.** The fallback used to emit one bare, uncoded
+/// warning here — `"cannot infer return type of zero-arg function
+/// '__test_zero_arg_fn', defaulting to Real"` — for EVERY zero-arg call it
+/// reached, known name or not. #5371 split that: a callee outside the
+/// closed-world `is_known_builtin` union now gets the coded
+/// `DiagnosticCode::UnresolvedFunction`, and the legacy warning is suppressed
+/// for it. The two are complements, not a hierarchy — "I do not know this
+/// name" and "I know this name but cannot infer its return type without
+/// arguments" cannot both hold of one call — so exactly one fires.
+///
+/// `__test_zero_arg_fn` is deliberately synthetic (chosen so that future
+/// stdlib additions cannot turn this into a user-fn-lookup or constant-folding
+/// test), which puts it squarely in the first case: it exists nowhere, so the
+/// diagnostic it earns is `UnresolvedFunction`. That is a strictly stronger
+/// statement than the one it replaced, and it carries a code, so this
+/// assertion no longer has to match on prose.
+///
+/// The surviving legacy-warning path — a KNOWN zero-arg builtin still awaiting
+/// its registry row, e.g. `world()` — is pinned by
+/// `unresolved_function_tests::zero_arg_known_but_unregistered_callee_keeps_only_the_legacy_warning`.
 #[test]
 fn stdlib_fn_no_args_emits_type_inference_warning() {
     let source = r#"
@@ -530,14 +547,25 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
     );
 
     let warnings = warnings_only(&module);
-    let has_type_warning = warnings.iter().any(|d| {
-        d.message.contains("zero-arg function")
-            && d.message.contains("defaulting to Real")
-            && d.message.contains("__test_zero_arg_fn")
+    let has_unresolved = warnings.iter().any(|d| {
+        d.code == Some(reify_core::DiagnosticCode::UnresolvedFunction)
+            && (d.message.contains("__test_zero_arg_fn")
+                || d.labels
+                    .iter()
+                    .any(|l| l.message.contains("__test_zero_arg_fn")))
     });
     assert!(
-        has_type_warning,
-        "expected warning about type inference for zero-arg stdlib call, got: {:?}",
+        has_unresolved,
+        "expected an UnresolvedFunction warning naming the callee, got: {:?}",
+        warnings
+    );
+
+    // Exactly one — the whole point of the #5371 split is that the user sees
+    // one line per defect, not the old warning stacked under the new one.
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one warning for one unresolvable zero-arg call, got: {:?}",
         warnings
     );
 }
