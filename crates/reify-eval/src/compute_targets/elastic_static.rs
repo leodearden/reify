@@ -12854,7 +12854,10 @@ mod tests {
         assert_eq!(rot.bounds_max, curl.bounds_max, "{path}: bounds_max");
         assert_eq!(rot.spacing, curl.spacing, "{path}: spacing");
         assert_eq!(rot.axis_grids, curl.axis_grids, "{path}: axis_grids");
-        assert_eq!(rot.interpolation, curl.interpolation, "{path}: interpolation");
+        assert_eq!(
+            rot.interpolation, curl.interpolation,
+            "{path}: interpolation"
+        );
     }
 
     /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
