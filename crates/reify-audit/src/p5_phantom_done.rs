@@ -563,12 +563,27 @@ fn hit_references_task(subject: &str, task_id: &str) -> bool {
 ///
 /// The single entry point for every `log_grep`-based rescue, so the sites
 /// cannot drift on what counts as a task-referencing commit.
+///
+/// Fail-safe: an empty vec on a git error, which in the SWEEP simply means no
+/// rescue is available. The pre-done gate must call
+/// [`try_task_referencing_commits`] instead — there, an empty candidate list is
+/// the first half of a blocking refusal.
 fn task_referencing_commits(ctx: &AuditContext, task_id: &str) -> Vec<GitCommit> {
-    ctx.git
-        .log_grep(MAIN_BASE, task_id)
+    try_task_referencing_commits(ctx, task_id).unwrap_or_default()
+}
+
+/// [`task_referencing_commits`] preserving the git error, for callers that
+/// must not read "git failed" as "no commit references this task".
+fn try_task_referencing_commits(
+    ctx: &AuditContext,
+    task_id: &str,
+) -> Result<Vec<GitCommit>, String> {
+    Ok(ctx
+        .git
+        .try_log_grep(MAIN_BASE, task_id)?
         .into_iter()
         .filter(|c| hit_references_task(&c.subject, task_id))
-        .collect()
+        .collect())
 }
 
 /// Per-invocation memo for `git merge-base --is-ancestor <commit> <MAIN_BASE>`.
@@ -661,11 +676,31 @@ fn changed_paths_for_claim(
 /// Every git leg in this crate fail-safes to `false` / empty on error. In the
 /// sweep that converges on "no finding"; HERE it converges on a High that
 /// BLOCKS a state transition, so an infrastructure hiccup would be
-/// indistinguishable from a genuine phantom-done. Two guards invert that:
-/// [`main_base_resolves`] probes the repo once before any refusal, and a
-/// sibling scan truncated at [`PRE_DONE_SIBLING_SCAN_CAP`] is treated as
-/// incomplete. Either way the finding is still emitted, but as an advisory
-/// `Low` that cannot block the flip.
+/// indistinguishable from a genuine phantom-done. Four guards invert that:
+/// [`main_base_resolves`] probes the repo once before any refusal; a sibling
+/// scan truncated at [`PRE_DONE_SIBLING_SCAN_CAP`] is treated as incomplete;
+/// and the two legs the refusal actually RESTS on are consulted through their
+/// fallible variants ([`crate::GitOps::try_path_tracked_on`] and
+/// [`try_task_referencing_commits`]) so a per-call git failure is recorded as
+/// an unanswered question rather than silently read as evidence. Every one of
+/// them still EMITS the finding, but as an advisory `Low` that cannot block
+/// the flip.
+///
+/// The whole-repo [`main_base_resolves`] probe alone was not sufficient: it
+/// cannot distinguish a per-call failure from a genuine observation, so with
+/// `main` still resolving, one transient `ls-tree` error plus an empty
+/// `log_grep` produced a blocking High against a legitimate done-flip.
+///
+/// # Known residual
+///
+/// The per-sibling delta seams reached through [`changed_paths_for_claim`]
+/// (`changed_paths_in_commit` / `diff_changed_paths` / `is_ancestor`) still
+/// fail-safe to empty/false, so a git failure there can leave an entry in
+/// `still_absent` that a healthy read would have cleared. That is the same
+/// failure direction and is deliberately left open here: those seams are on
+/// the rescue leg rather than on the two legs the refusal rests on, and
+/// widening them means four more fallible trait methods threaded through the
+/// sweep's two call sites as well.
 ///
 /// `gitignored` is the task's precomputed gitignored subset (see
 /// [`check_task`]), so this leg costs no `git check-ignore` forks of its own.
@@ -692,11 +727,32 @@ fn check_pre_done_landing(
     // directory on main. Costs |declared| × `git ls-tree` and no `git log` at
     // all — and, on this path, nothing else: the probe and the sibling scan
     // below run only once something is genuinely absent.
-    let absent: Vec<String> = declared
-        .iter()
-        .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
-        .cloned()
-        .collect();
+    //
+    // `try_path_tracked_on`, not `path_tracked_on`: the infallible seam
+    // fail-safes an ls-tree ERROR to `false`, which here reads as "the
+    // declared deliverable is absent from main" — evidence this leg never
+    // actually gathered. An errored entry is still carried into the refusal
+    // set (the rescue leg below may yet account for it, and if it clears
+    // everything the finding disappears entirely), but it arms `degraded` so
+    // any SURVIVING refusal is emitted as a non-blocking advisory Low.
+    let mut degraded: Option<String> = None;
+    let mut absent: Vec<String> = Vec::new();
+    for p in &declared {
+        match ctx.git.try_path_tracked_on(MAIN_BASE, p) {
+            Ok(true) => {}
+            Ok(false) => absent.push(p.clone()),
+            Err(_) => {
+                absent.push(p.clone());
+                // First failure only: the reason names one concrete entry an
+                // operator can re-check by hand, and `RealGitOps` has already
+                // printed a per-failure `reify-audit:` breadcrumb carrying
+                // git's own stderr for the rest.
+                degraded.get_or_insert_with(|| {
+                    format!("git degraded: ls-tree errored for declared entry {p}")
+                });
+            }
+        }
+    }
     if absent.is_empty() {
         return None;
     }
@@ -726,7 +782,20 @@ fn check_pre_done_landing(
     // If that flag is ever dropped, this leg silently degrades to
     // deletion-only and the rename case regresses without a compile error.
     let mut still_absent = absent.clone();
-    let siblings = task_referencing_commits(ctx, &meta.task_id);
+    // `try_…`, for the same reason the presence leg above uses the fallible
+    // seam: an empty candidate list from a FAILED `git log --grep` is not
+    // evidence that no commit references this task, and reading it as such is
+    // the second half of a wrongful refusal.
+    let siblings = match try_task_referencing_commits(ctx, &meta.task_id) {
+        Ok(s) => s,
+        Err(_) => {
+            degraded.get_or_insert_with(|| {
+                "git degraded: log --grep errored, so no rescue candidate was inspected"
+                    .to_string()
+            });
+            Vec::new()
+        }
+    };
     let mut contributing: Vec<&GitCommit> = Vec::new();
     let mut ancestry = AncestryCache::default();
     let mut truncated = false;
@@ -762,14 +831,12 @@ fn check_pre_done_landing(
         return None;
     }
 
-    Some(pre_done_refusal(
-        meta,
-        &still_absent,
-        &contributing,
-        truncated.then_some(
-            "incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP before exhausting candidates",
-        ),
-    ))
+    // A recorded git failure outranks truncation as the reported reason: it is
+    // the more actionable of the two, and both downgrade identically.
+    let advisory = degraded.as_deref().or(truncated.then_some(
+        "incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP before exhausting candidates",
+    ));
+    Some(pre_done_refusal(meta, &still_absent, &contributing, advisory))
 }
 
 /// True iff the changed path `changed` accounts for the declared entry

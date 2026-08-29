@@ -1733,6 +1733,173 @@ mod tests {
         );
     }
 
+    /// A PER-CALL `git ls-tree` failure must not manufacture a refusal.
+    ///
+    /// The whole-repo `MAIN_BASE` probe is not sufficient on its own: it
+    /// cannot distinguish a per-call git failure from a genuine observation.
+    /// `path_tracked_on` fail-safes to `false` on ANY `ls-tree` error
+    /// (unreadable pack, fd exhaustion under orchestrator load, index
+    /// contention), so with `main` still resolving, one transient failure plus
+    /// an empty `log_grep` yielded a BLOCKING High against a legitimate
+    /// done-flip — the exact fail-safe inversion the guards exist to close.
+    ///
+    /// The control task in the same fixture is byte-identical except that git
+    /// ANSWERS "not tracked" instead of failing, and must still be refused at
+    /// High — so this test cannot pass by simply muting the gate.
+    #[test]
+    fn pre_done_gate_ls_tree_failure_downgrades_to_advisory_low() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        // The repo is HEALTHY: `main` resolves, so the MAIN_BASE probe passes
+        // and cannot be what downgrades the finding.
+        git.set_is_ancestor("main", "main", true);
+
+        // (a) git FAILED for the declared entry — the question is unanswered.
+        git.set_path_tracked_on_error(
+            "main",
+            "crates/reify-x/src/flaky.rs",
+            "git exited Some(128): fatal: unable to read tree",
+        );
+        git.set_log_grep("main", "6345LSERR", vec![]);
+
+        // (b) control: git ANSWERED "not tracked" for an identical-shaped task.
+        git.set_path_tracked_on("main", "crates/reify-x/src/absent.rs", false);
+        git.set_log_grep("main", "6345LSOK", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345LSERR".to_string(),
+            pre_done_meta("6345LSERR", "review", &["crates/reify-x/src/flaky.rs"]),
+        );
+        task_metadata.insert(
+            "6345LSOK".to_string(),
+            pre_done_meta("6345LSOK", "review", &["crates/reify-x/src/absent.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345LSERR");
+        assert_eq!(
+            findings.len(),
+            1,
+            "a degraded ls-tree must stay VISIBLE, not silent; got {:?}",
+            findings
+        );
+        assert_eq!(
+            findings[0].severity,
+            Severity::Low,
+            "a refusal resting on an ls-tree that FAILED must not block a done-flip \
+             — `false` from a failed `git ls-tree` is not evidence of absence; \
+             got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].summary.contains("[advisory")
+                && findings[0].summary.contains("ls-tree"),
+            "the failing seam must be named in the summary so an operator can \
+             re-check it by hand; got {:?}",
+            findings[0].summary
+        );
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345LSOK");
+        assert_eq!(findings.len(), 1, "expected one refusal; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "git ANSWERING \"not tracked\" is evidence and must still refuse — \
+             otherwise the fix above has merely muted the gate; got {:?}",
+            findings[0]
+        );
+    }
+
+    /// A `git log --grep` failure must not manufacture a refusal either.
+    ///
+    /// `log_grep` fail-safes to an empty vec, which empties the rescue
+    /// candidate list — so a genuinely-absent declared entry that a landing
+    /// commit WOULD have accounted for is refused because the search never
+    /// ran. The control task differs only in that git answers "no matching
+    /// commits" rather than failing, and must still be refused at High.
+    #[test]
+    fn pre_done_gate_log_grep_failure_downgrades_to_advisory_low() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("main", "main", true);
+
+        // Both tasks: git ANSWERS "not tracked on main" — genuine absence.
+        git.set_path_tracked_on("main", "crates/reify-x/src/gone.rs", false);
+
+        // (a) the rescue search itself failed.
+        git.set_log_grep_error(
+            "main",
+            "6345LGERR",
+            "git exited Some(128): fatal: bad revision 'main'",
+        );
+        // (b) control: the rescue search ran and matched nothing.
+        git.set_log_grep("main", "6345LGOK", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345LGERR".to_string(),
+            pre_done_meta("6345LGERR", "review", &["crates/reify-x/src/gone.rs"]),
+        );
+        task_metadata.insert(
+            "6345LGOK".to_string(),
+            pre_done_meta("6345LGOK", "review", &["crates/reify-x/src/gone.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345LGERR");
+        assert_eq!(findings.len(), 1, "expected one finding; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::Low,
+            "an empty rescue candidate list produced by a FAILED `git log --grep` \
+             is not evidence that no commit references the task; got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].summary.contains("[advisory")
+                && findings[0].summary.contains("log --grep"),
+            "the failing seam must be named in the summary; got {:?}",
+            findings[0].summary
+        );
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345LGOK");
+        assert_eq!(findings.len(), 1, "expected one refusal; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "a rescue search that RAN and matched nothing is evidence and must \
+             still refuse; got {:?}",
+            findings[0]
+        );
+    }
+
     /// A truncated sibling scan must not refuse: the corroborating commit may
     /// simply have been the one past the cap.
     ///
