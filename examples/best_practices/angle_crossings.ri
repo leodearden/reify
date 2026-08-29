@@ -1,0 +1,152 @@
+module angle_crossings
+
+// angle_crossings.ri — IDIOM: an angle reading of an ARC-MEASURE ratio is an
+// explicit crossing — multiply by `1rad` to ENTER Angle, divide by `1rad` to
+// LEAVE it.
+//
+//     let theta : Angle  = (s / r) * 1rad      // ENTER: ratio -> Angle
+//     let ratio          = theta / 1rad        // LEAVE: Angle -> ratio
+//     let arc   : Length = r * theta / 1rad    // s = r*theta/eta
+//
+// WHICH RATIO — read this before reaching for `* 1rad`. The crossing above is
+// for an ARC-MEASURE ratio (`s / r`, a length over a length that IS an angle
+// in radians). A TRIGONOMETRIC ratio already has a named producer and needs no
+// crossing at all: `atan`, `atan2`, `asin`, `acos` and the geometry `angle` /
+// `angle_between_surfaces` queries all return Angle directly. `* 1rad` is one
+// row of the crossing catalogue in `docs/legibility/design-invariants.md`, not
+// the whole of it. The two readings are BOTH legal and give DIFFERENT angles —
+// `theta` and `theta_trig` below are built from the same 2.5 ratio and differ,
+// which is why picking the wrong one is a silent modelling bug, not a type
+// error. Putting the crossing on a producer's result IS caught:
+//
+//     let bad : Angle = atan(s / r) * 1rad
+//         -> error: declared `Scalar[rad]` but its initializer evaluates to
+//            `Scalar[rad^2]`
+//
+// ANTI-PATTERN this replaces:
+//     let theta : Angle  = s / r               // don't
+//     let arc   : Length = r * theta           // don't
+//     let x              = 2.5 * 1 rad         // don't (spaced literal)
+//
+// Neither of the first two is a style preference — both are hard errors, and
+// the third does not parse. Measured with a built `reify check`.
+//
+// CANONICAL COPY: this block. The verbatim compiler wording lives here, and the
+// gate that keeps it verbatim is
+// `crates/reify-compiler/tests/harness_doc_chunks/angle_crossings_diagnostics_smoke.rs`,
+// which SCRAPES the four transcriptions below out of this comment and asserts
+// each one equals what the compiler and parser actually emit for a minimal
+// fixture. Reword a diagnostic and that test goes red rather than this block
+// rotting silently.
+//
+// `crates/reify-mcp/src/tools/chunks/units.md` paraphrases the SHAPE of these
+// errors rather than re-quoting them, except for the one parse error it quotes
+// verbatim — which the same test pins against this block. If a diagnostic is
+// reworded, re-measure here first and let the chunk follow; that precedence is
+// enforced, not aspirational.
+//
+//     let   theta : Angle = s / r
+//         -> error: let binding 'theta' declared `Scalar[rad]` but its
+//            initializer evaluates to `Real`; declared type and initializer
+//            type must agree
+//     param theta : Angle = s / r
+//         -> error: parameter 'theta' declared `Scalar[rad]` but its
+//            initializer evaluates to `Real`; declared type and initializer
+//            dimension must agree
+//     let   arc   : Length = r * theta
+//         -> error: let binding 'arc' declared `Scalar[m]` but its initializer
+//            evaluates to `Scalar[m·rad]`; declared type and initializer type
+//            must agree
+//     let   x = 2.5 * 1 rad
+//         -> Parse error: syntax error: rad
+//
+// Drop the annotation on the arc-length case and the error becomes silence
+// instead: `let arc = r * theta` evaluates clean to `0.005 m·rad` — a value
+// that is not a Length and will not compose with one. The `/ 1rad` is what
+// discharges it; the residual itself is recorded in
+// `docs/legibility/design-invariants.md` under "Crossing catalogue and
+// identities" (the `s = rθ/η` identity and the arc-length discharge note),
+// which is the durable owner of this case. Teaching it is the whole remedy —
+// no enforcement is possible or chartered.
+//
+// ALWAYS THE NO-SPACE LITERAL FORM — `1rad`, never `1 rad`.
+//
+// Verified contracts:
+//
+//   ENTERING and LEAVING are the same one constant, eta = 1 rad, applied in
+//   the two directions. `(s / r)` is dimensionless; `* 1rad` is the named
+//   crossing that asserts the quotient is an arc measure. Nothing else in the
+//   language will manufacture `rad` for you from a ratio — see
+//   `docs/legibility/design-invariants.md`, INV-AD-1 `angle-crossings-explicit`
+//   and INV-AD-2 `quotient-pure-derivative-algebra`. The named-crossing
+//   catalogue is in that file under "Crossing catalogue and identities"; this
+//   exemplar is the hand-rolled `.ri` row of it.
+//
+//   `omega` is a DIFFERENT crossing class. `2*pi * f * 1rad` carries 2*pi rad/cycle,
+//   not eta — see "The 2π rad/cycle distinction (D4)" in the same file. There
+//   is no `cycle` unit to write; the typed layer is what forces the
+//   distinction, because Frequency and AngularVelocity are different types and
+//   one will not silently stand in for the other.
+//
+//   WHY TORQUE IS N·m/rad and not N·m: same crossing. Work is tau * theta, and
+//   theta carries rad, so tau must carry rad^-1 for the product to close on
+//   Energy. INV-AD-1 in `docs/legibility/design-invariants.md` is the general
+//   form of that argument and its durable owner. This is the WHY only — how to
+//   SPELL a torque literal is not taught here.
+//
+// HONEST ABOUT ENFORCEMENT — this is enforced at an ANNOTATED binding over an
+// EXPRESSION, not universally. A bare LITERAL still widens silently:
+//     param theta : Angle = 2.5      -> evaluates to `2.5`, dimension erased
+//     sin(<dimensionless 2.5>)       -> 0.5984721441039565, accepted
+// So the annotations below are load-bearing: each one is the assertion. See
+// "Enforcement honesty (D7)" in `docs/legibility/design-invariants.md` for what
+// is and is not mandatory today.
+
+structure def AngleCrossings {
+    param s : Length    = 5mm
+    param r : Length    = 2mm
+    param f : Frequency = 50Hz
+    param phi : Angle   = 30deg
+
+    // THE IDIOM: `* 1rad` to enter, `/ 1rad` to leave. Each annotation is an
+    // assertion — remove the crossing and the binding stops compiling.
+    let theta : Angle           = (s / r) * 1rad     // 2.5 rad
+    let ratio                   = theta / 1rad       // 2.5
+    let arc   : Length          = r * theta / 1rad   // 0.005 m
+    let omega : AngularVelocity = 2*pi * f * 1rad    // 314.1592653589793 rad·s^-1
+
+    // NOT a crossing — a named producer. Same 2.5 ratio as `theta`, a
+    // different angle: the arc-measure reading and the trigonometric reading
+    // are not interchangeable, and no `* 1rad` belongs here.
+    let theta_trig : Angle      = atan(s / r)        // 1.1902899496825317 rad
+
+    // FORWARD DIRECTION — the case an author reaching for `s = r*theta`
+    // actually has: an angle known independently, not one recovered from a
+    // ratio. `arc` above round-trips — `r * (s/r)` is `s` by construction, so
+    // it pins the crossing algebra but not the arithmetic. `arc2` does not.
+    let arc2  : Length          = r * phi / 1rad     // 0.0010471975511965976 m
+
+    // Bands, not sign guards. A regression that preserved dimensions but moved
+    // magnitudes would still satisfy `arc > 0mm`; these fail `reify check`
+    // instead, so each identity above is pinned by a predicate and not only by
+    // a comment. HONEST SCOPE: `reify check` is the enforcer, and no CI gate
+    // runs it over this corpus — `examples_smoke.rs` compiles only, and the
+    // two `reify-eval` corpus sweeps assert zero stale-Undef and zero
+    // snapshot/cache divergence, never constraint status. What these bands
+    // pin is the per-file `reify check` SKILL.md already mandates before
+    // shipping a design. A corpus-wide constraint gate is in flight as #6215;
+    // if it lands, the no-CI-gate half of this paragraph is stale — re-measure
+    // before repeating it.
+    constraint r > 0mm
+    constraint s > r
+    constraint f > 0Hz
+    constraint ratio > 2.4              // enter then leave round-trips to s/r
+    constraint ratio < 2.6
+    constraint arc > 4.9mm              // s = r*theta/eta
+    constraint arc < 5.1mm
+    constraint arc2 > 1.04mm            // forward: r*phi/eta, phi = pi/6
+    constraint arc2 < 1.05mm
+    constraint omega > 314.0rad_per_s   // 2*pi*f — the 2*pi rad/cycle class
+    constraint omega < 314.3rad_per_s
+    constraint theta_trig < theta       // trig reading != arc-measure reading
+}

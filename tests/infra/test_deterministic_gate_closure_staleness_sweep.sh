@@ -75,7 +75,20 @@ _TMPDIRS+=("$ERR_FILE")
 
 # _sq <args...> — the sqlite3 CLI with LD_LIBRARY_PATH cleared.
 #
-# EVERY sqlite3 invocation in this file must go through this wrapper. verify.sh's
+# EVERY sqlite3 invocation in this file must go through this wrapper.
+#
+# STILL NEEDED, but no longer the primary mechanism (task 5730). verify.sh now
+# scrubs the loader path structurally: apply_env() captures the pre-OCCT ambient
+# into REIFY_AMBIENT_LD_LIBRARY_PATH and every non-cargo plan line is emitted via
+# add_tool(), which restores it — so under the gate this suite no longer inherits
+# the conda prefix at all. This wrapper is retained as DEFENCE IN DEPTH for the
+# one case that fix cannot reach: a bare `bash tests/infra/…` run from a shell
+# that already carries a hostile ambient loader path. Do not "clean it up" — but
+# equally, do not copy this per-call-site pattern into new code. A new verify.sh
+# tool plan line belongs on add_tool(); see docs/notes/verify-pipeline-knobs.md
+# ("Loader path") and tests/infra/test_verify_ld_library_path_scope.sh.
+#
+# The original hazard, for context: verify.sh's
 # apply_env() exports LD_LIBRARY_PATH=/opt/reify-deps/lib globally (for OCCT), and
 # that directory also ships a conda libsqlite3 NEWER (3.53.1) than the one
 # /usr/bin/sqlite3 was linked against (3.45.1). Under the full verify environment

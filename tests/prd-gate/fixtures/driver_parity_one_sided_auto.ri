@@ -1,0 +1,19 @@
+module driver_parity_one_sided_auto
+// PRD evidence: docs/prds/v0_6/solver-driver-parity.md §4.6 case 2, §5 B4.
+// An `auto` pinned ONLY from below. The Chebyshev-centre objective is monotone in
+// such a parameter, so its argmax is the edge of default_bounds_for's hardcoded
+// domain rather than a designed value.
+//
+// Baseline measured on main 2128c3692c (2026-08-26):
+//   reify eval -> OneSided.rod.length = 10 m   (1250x the intended scale, exit 0)
+// Target after this PRD: every driver emits the coded one-sided diagnostic and
+// `reify check` exits nonzero. No driver reports 10 m.
+// See driver_parity_two_sided_auto.ri for the discriminating negative case.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = cylinder(3mm, length)
+}
+pub structure OneSided {
+    sub rod = Rod(length: auto)
+    constraint self.rod.length >= 8mm
+}

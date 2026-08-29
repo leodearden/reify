@@ -10,7 +10,7 @@
 
 ## 1. Problem — the serial merge lane spends ~90 min per attempt re-doing cold work
 
-A merge-gate verify (`DF_VERIFY_ROLE=merge` → `hooks/pre-merge-commit` → `scripts/verify.sh all --profile both --scope all`) runs in a **freshly created, empty-`target/` git worktree** and is **serial** (`_MERGE_AHEAD_BOUND=1`, dark-factory `merge_queue.py:103`). So merge-gate wall-time directly bounds landing throughput, and every attempt re-pays cold build cost.
+A merge-gate verify (`DF_VERIFY_ROLE=merge` → `hooks/pre-merge-commit` → `scripts/verify.sh all --profile both --scope all`) runs in a **freshly created, empty-`target/` git worktree** and is **serial** (`_MERGE_AHEAD_BOUND = 1`, dark-factory `merge_queue.py`). So merge-gate wall-time directly bounds landing throughput, and every attempt re-pays cold build cost.
 
 **Measured merge-verify durations** — 16 consecutive real attempts, from `journalctl --user -u orchestrator-reify` `merge_queue` `verify start`/`verify end` pairs (2026-06-08 → 06-09):
 

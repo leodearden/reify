@@ -1,0 +1,16 @@
+module ssc_refuted_pair
+// PRD EVIDENCE — docs/prds/v0_6/solution-set-completeness.md (leaf epsilon; BT5).
+// Provably unsatisfiable: L == 10mm AND L == 20mm.
+// TODAY: 5000 Nelder-Mead iterations, then
+// "constraints could not be satisfied (max absolute residual: 5.00e-3)" —
+// a SEARCH FAILURE, not a proof (invariant C3).
+// AFTER: a typed refutation naming the narrowing constraint, at zero iterations.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = translate(cylinder(3mm, length), 0mm, 0mm, 0mm - length)
+}
+pub structure SscRefutedPair {
+    sub rod = Rod(length: auto)
+    constraint self.rod.length == 10mm
+    constraint self.rod.length == 20mm
+}

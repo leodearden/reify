@@ -1,0 +1,14 @@
+//@ anchors: sc-1a2b3c, sc-4d5e6f
+//@ tier: fast
+//@ mode: reject
+//@ phase: check
+//@ code: E_ARG_TYPE_MISMATCH
+//@ regime: closed-form
+//@ driver: check
+
+structure def DirectiveProbe {
+    param w : Length = 10mm
+    let solid = box(w, w, w)   //~ ERROR E_ARG_TYPE_MISMATCH
+    //~ WARN W_SOMETHING
+    let other = sphere(w)
+}

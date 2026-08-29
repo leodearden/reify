@@ -91,6 +91,19 @@ pub struct EvalContext<'a> {
     /// Wired by `Engine::cell_eval_ctx` via `.with_containment(self)` (task 4222 δ,
     /// PRD §5.3 option (b)).  Ad-hoc test contexts use `EvalContext::simple` (None).
     pub containment: Option<&'a dyn ContainmentQuery>,
+    /// Optional compute-dispatch hook for `@optimized` function calls reached during
+    /// evaluation (task #4880).
+    ///
+    /// When `Some`, `eval_user_function_call` probes `d.dispatch(target, args)` for any
+    /// call whose resolved `CompiledFunction::optimized_target` is `Some(target)`, using
+    /// it in place of ordinary body-eval when it returns `Some(value)`. When `None` (the
+    /// default), or when the probe returns `None`, evaluation falls through to body-eval
+    /// unchanged — preserving legacy behaviour for every caller that does not attach a
+    /// dispatcher (the compiler, LSP, standalone eval, and all ad-hoc test contexts).
+    ///
+    /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` at the handful of
+    /// call sites that invoke the constraint solver.
+    pub compute_dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -105,6 +118,7 @@ impl<'a> EvalContext<'a> {
             diagnostics: None,
             undef_causes: None,
             containment: None,
+            compute_dispatch: None,
         }
     }
 
@@ -119,6 +133,7 @@ impl<'a> EvalContext<'a> {
             diagnostics: None,
             undef_causes: None,
             containment: None,
+            compute_dispatch: None,
         }
     }
 
@@ -134,6 +149,7 @@ impl<'a> EvalContext<'a> {
             diagnostics: None,
             undef_causes: None,
             containment: None,
+            compute_dispatch: None,
         }
     }
 
@@ -190,6 +206,15 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach a compute-dispatch hook for `@optimized` function calls (task #4880).
+    ///
+    /// See the `compute_dispatch` field doc for the interception contract. Without a
+    /// hook attached (the default), `@optimized` calls fall through to ordinary body-eval.
+    pub fn with_compute_dispatch(mut self, d: &'a dyn reify_ir::ComputeDispatch) -> Self {
+        self.compute_dispatch = Some(d);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -204,6 +229,7 @@ impl<'a> EvalContext<'a> {
             diagnostics: self.diagnostics,
             undef_causes: self.undef_causes,
             containment: self.containment,
+            compute_dispatch: self.compute_dispatch,
         }
     }
 }
@@ -313,7 +339,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // Extracted into `eval_fn_field` (`#[inline(never)]`) to keep this
                 // recursive frame small in debug builds — the two `Type` locals
                 // (`domain_type`, `codomain_type`) would otherwise sit on every
-                // `eval_expr` frame and risk overflowing the 2 MiB test-thread
+                // `eval_expr` frame and risk overflowing the 3 MiB test-thread
                 // stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
                 // evaluation (same rationale as `eval_structure_instance_ctor`,
                 // `eval_quantifier`, etc.; pinned by
@@ -536,7 +562,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // this recursive frame small in debug builds — the
                 // per-iteration `String` and `Option<(String, f64)>` locals
                 // would otherwise sit on every `eval_expr` frame and risk
-                // overflowing the 2 MiB test-thread stack at
+                // overflowing the 3 MiB test-thread stack at
                 // `MAX_RECURSION_DEPTH` (cf. the existing
                 // `eval_user_fn_recursion_depth_exceeded` test and the
                 // matching extraction of `eval_quantifier`). See
@@ -582,7 +608,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
-                    // frame — keeping the 2 MiB test-thread stack under
+                    // frame — keeping the 3 MiB test-thread stack under
                     // `MAX_RECURSION_DEPTH` (pinned by
                     // `eval_user_fn_recursion_depth_exceeded`), the same stack-
                     // shrinking rationale as `emit_flexure_diagnostics`.
@@ -643,7 +669,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 // Body extracted into `eval_variant_bind_arm` (`#[inline(never)]`)
                                 // to keep this recursive frame small — the `ValueMap` child
                                 // clone and loop locals would otherwise sit on every
-                                // `eval_expr` frame and overflow the 2 MiB test-thread stack
+                                // `eval_expr` frame and overflow the 3 MiB test-thread stack
                                 // at MAX_RECURSION_DEPTH (pinned by
                                 // `eval_user_fn_recursion_depth_exceeded`).
                                 CompiledPattern::VariantBind { binders, .. } => {
@@ -983,7 +1009,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // Body extracted into `eval_ad_hoc_selector` to keep this recursive
         // frame small in debug builds — the [f64; 3] coord buffer and Value
         // locals would otherwise sit on every `eval_expr` frame and risk
-        // overflowing the 2 MiB test-thread stack at MAX_RECURSION_DEPTH
+        // overflowing the 3 MiB test-thread stack at MAX_RECURSION_DEPTH
         // levels of recursive user-fn evaluation (cf. `eval_quantifier`).
         CompiledExprKind::AdHocSelector {
             selector_kind,
@@ -1222,7 +1248,7 @@ fn eval_index_access(object: &CompiledExpr, index: &CompiledExpr, ctx: &EvalCont
 ///
 /// Extracted from `eval_expr` to keep that recursive function's stack frame
 /// small (the coord buffer and Value locals below would otherwise sit on every
-/// `eval_expr` frame and risk overflowing the 2 MiB test-thread stack at
+/// `eval_expr` frame and risk overflowing the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation — see the
 /// `eval_user_fn_recursion_depth_exceeded` test and the matching extraction of
 /// `eval_quantifier`).
@@ -1504,6 +1530,185 @@ fn type_carries_dim_param(t: &Type) -> bool {
     }
 }
 
+/// Strict constructor-head compatibility check between a declared param type
+/// and an argument type.
+///
+/// Local mirror of `reify_compiler::type_compat::heads_unifiable`, kept
+/// VERBATIM with it. reify-compiler is only a `[dev-dependencies]` entry of
+/// reify-expr, so the compiler helper cannot be imported from library code
+/// here — the two MUST be kept in sync. If they drift, compile-time and
+/// eval-time overload selection disagree on which of two same-named generic
+/// overloads a call resolves to, which is the esc-4231-120/126 / esc-4093-152
+/// divergence class (there: a call resolving at compile time but evaluating to
+/// `Value::Undef`; here: the eval side silently binding a DIFFERENT overload
+/// than the compiler typechecked).
+///
+/// Unlike a permissive unifier, a constructor-head MISMATCH here is `false`,
+/// not a conservative "binds nothing" pass. That is what lets this function
+/// discriminate `Option<T>` from `Applied { name: "Result", .. }` — two generic
+/// params that both wildcard-match any subject — and so serve as the middle
+/// tie-break tier of [`find_matching_compiled_function`].
+///
+/// Two arms carry more weight than their size suggests:
+/// - a bare `TypeParam` (and a `ScalarParam` against a concrete `Scalar`) is a
+///   wildcard slot: the slot itself carries no constructor head to disagree on;
+/// - `Applied { name }` vs `Enum(name)` is a head MATCH, because variant
+///   construction (`Ok { .. }` / `Err { .. }`) type-erases its result to
+///   `Type::Enum(name)`, so a declared `Result<T, E>` param must still
+///   recognise an erased `Result` subject.
+///
+/// Unlike the three `type_carries_*` mirrors above, this one keeps the
+/// canonical copy's `_` catch-all rather than an exhaustive match: byte-
+/// comparability with the canonical copy is worth more than compiler-forced
+/// review of new `Type` variants, and a new variant falling to `param == arg`
+/// can only narrow, never widen.
+///
+/// # Why this mirror is `pub` when its three `type_carries_*` siblings are not
+///
+/// The pair is pinned by a BEHAVIOURAL differential —
+/// `sync_drift_check_heads_unifiable_matches_eval_mirror` in
+/// `crates/reify-compiler/src/type_compat.rs` — which runs both
+/// implementations over a per-arm corpus and asserts each row's pinned verdict.
+/// The canonical copy is private to a private module (`mod type_compat`), so
+/// that test can only live compiler-side, which makes THIS copy the one that
+/// has to be reachable across the crate boundary.
+///
+/// The drift guard is the second-best fix; the best is deleting this mirror by
+/// hoisting it and the three `type_carries_*` helpers into `reify-core` — a
+/// real, non-dev dependency of both crates — which is outside this task's file
+/// locks. Filed as task #5689.
+///
+/// `#[doc(hidden)]` marks the export for what it is — test-only reachability,
+/// not reify-expr API. It keeps the symbol linkable from that separate-crate
+/// differential while removing it from rendered rustdoc and IDE autocomplete,
+/// so the widening is not ADVERTISED as public surface for the interval before
+/// #5689 reverts it. Same convention, same reason as
+/// `reify_audit::p5_phantom_done::PRODUCTION_QUERY`.
+#[doc(hidden)]
+pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
+    match (param, arg) {
+        // Type-param / dim-param leaves: wildcard slots, always compatible.
+        (Type::TypeParam(_), _) => true,
+        (Type::ScalarParam(_), Type::Scalar { .. }) => true,
+
+        // Single-inner-Type constructors: same head → recurse on the child.
+        (Type::List(d), Type::List(a))
+        | (Type::Set(d), Type::Set(a))
+        | (Type::Keyed(d), Type::Keyed(a))
+        | (Type::Option(d), Type::Option(a))
+        | (Type::Complex(d), Type::Complex(a))
+        | (Type::Range(d), Type::Range(a)) => heads_unifiable(d, a),
+
+        // Two-inner-Type constructors.
+        (Type::Map(dk, dv), Type::Map(ak, av)) => {
+            heads_unifiable(dk, ak) && heads_unifiable(dv, av)
+        }
+        (
+            Type::Field {
+                domain: dd,
+                codomain: dc,
+            },
+            Type::Field {
+                domain: ad,
+                codomain: ac,
+            },
+        ) => heads_unifiable(dd, ad) && heads_unifiable(dc, ac),
+
+        // Function: equal arity → recurse on each param + the return type.
+        (
+            Type::Function {
+                params: dp,
+                return_type: dr,
+            },
+            Type::Function {
+                params: ap,
+                return_type: ar,
+            },
+        ) if dp.len() == ap.len() => {
+            dp.iter().zip(ap.iter()).all(|(d, a)| heads_unifiable(d, a)) && heads_unifiable(dr, ar)
+        }
+
+        // Quantity-bearing aggregates: same shape → recurse on the quantity slot.
+        (
+            Type::Point {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Point {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Vector {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Vector {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Tensor {
+                rank: drk,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Tensor {
+                rank: ark,
+                n: an,
+                quantity: aq,
+            },
+        ) if drk == ark && dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Matrix {
+                m: dm,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Matrix {
+                m: am,
+                n: an,
+                quantity: aq,
+            },
+        ) if dm == am && dn == an => heads_unifiable(dq, aq),
+
+        // Union: equal length → recurse arm-by-arm.
+        (Type::Union(da), Type::Union(aa)) if da.len() == aa.len() => {
+            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
+        }
+
+        // Applied: same name + same arity → recurse element-wise on args.
+        (Type::Applied { name: dn, args: da }, Type::Applied { name: an, args: aa })
+            if dn == an && da.len() == aa.len() =>
+        {
+            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
+        }
+
+        // Erased-subject rule: a declared `Applied{name}` param head-matches
+        // an erased `Enum(name)` arg (same name) — see the doc comment above.
+        (Type::Applied { name: dn, .. }, Type::Enum(en)) if dn == en => true,
+
+        // Projection: same member → recurse on the bases.
+        (
+            Type::Projection {
+                base: db,
+                member: dm,
+            },
+            Type::Projection {
+                base: ab,
+                member: am,
+            },
+        ) if dm == am => heads_unifiable(db, ab),
+
+        // Catch-all: leaves and mismatched/differently-shaped constructors
+        // must agree by plain equality — unlike `unify`'s permissive
+        // `Ok(())` fallthrough, a head mismatch here is `false`.
+        _ => param == arg,
+    }
+}
+
 /// Find the compiled function matching `name`, arity, and per-parameter
 /// [`Type`] compatibility against the compiled arguments' result types.
 ///
@@ -1527,6 +1732,77 @@ fn type_carries_dim_param(t: &Type) -> bool {
 ///   equality, generic wildcard matches are discarded first, so a concrete
 ///   overload still beats a generic one (mirrors resolve_function_overload).
 ///
+/// # Three tie-break tiers
+///
+/// Mirroring compile-side `resolve_function_overload`'s
+/// `exact_matches` → `head_matches` → `matches` ladder — tiers 1 and 2 arm for
+/// arm, tier 3 only approximately (see "# Known divergence" below) — each tier
+/// is a FILTER over the next-broader one and an empty tier falls through to it:
+///
+/// 1. **exact** — every param equal to its arg's `result_type`.
+/// 2. **head-narrowed** — among the wildcard-eligible candidates of tier 3,
+///    those whose params are also constructor-head-compatible with their args
+///    ([`heads_unifiable`]).
+/// 3. **wildcard** — type-param / dim-param / trait-object params act as
+///    wildcards, per the bullets above.
+///
+/// Tier 2 exists to disambiguate two same-named GENERIC overloads whose params
+/// both wildcard-match the same subject and which tier 3 therefore cannot tell
+/// apart — the stdlib `unwrap_or` / `or_else` / `fallback` pairs declared over
+/// both `Option<T>` and `Result<T, E>`. Without it, selection among those
+/// degenerates to first-match-wins on table order and eval silently binds a
+/// different overload than the compiler typechecked.
+///
+/// **Contract: tier 2 only ever NARROWS.** It is applied as a filter over
+/// tier 3's candidate set, never as a standalone pass, so it can never select a
+/// candidate tier 3 rejects. When no candidate survives it, resolution falls
+/// through to tier 3 unchanged — so a subject whose head matches nothing still
+/// resolves exactly as it did before tier 3 gained a predecessor.
+///
+/// A useful corollary: for a NON-generic candidate the tier-2 predicate is a
+/// superset of the tier-3 one, so `wildcard AND head == wildcard` — tier 2 can
+/// never DROP a non-generic candidate. An overload set whose candidates are ALL
+/// non-generic therefore resolves bit-for-bit as it did before tier 2 existed
+/// (INV-6); `solve_elastic_static`, `solve_load_cases`, `displacement_at` and
+/// the esc-4093-152 trait-object path are all such sets.
+///
+/// That corollary is per-CANDIDATE, not per-set, and the distinction matters in
+/// a MIXED set: tier 2 may drop a head-mismatched GENERIC candidate and thereby
+/// promote a non-generic one that table order had kept behind it. That is the
+/// intended answer, not a side effect — it is what compile-side
+/// `resolve_function_overload` resolves to, its own `head_matches` tier
+/// narrowing the same set the same way. Pinned by
+/// `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`.
+///
+/// # Known divergence: tier 3 APPROXIMATES compile-side `matches`
+///
+/// Tier 3 is not the mirror tiers 1 and 2 are. Compile-side `matches` carries a
+/// disjunct `wildcard` below has never had — `type_carries_type_param(arg_ty)`
+/// (D4 / task-4232 γ: a type-param-carrying ARG is itself a resolution
+/// wildcard, so a generic fn body can pass a `T`-typed value to a
+/// concrete-param function). The gap predates the head tier; tier 2 neither
+/// introduced nor widened it.
+///
+/// MEASURED consequence: non-generic `g(x: Scalar<dimensionless>)` called with
+/// a bare `TypeParam("U")` arg RESOLVES compile-side (pinned by
+/// `overload_bare_type_param_arg_still_resolves` in
+/// `crates/reify-compiler/src/type_compat.rs`) and returns `None` here — a
+/// compile/eval disagreement of exactly the class this ladder exists to close.
+/// Tier 2's own bare-`TypeParam`-arg disjunct cannot rescue it: `head` is
+/// screened through `wildcard`, so a candidate tier 3 rejects never reaches
+/// tier 2. That disjunct stays live only for candidates tier 3 admits on other
+/// grounds — e.g. a generic candidate whose param head does not unify with a
+/// bare-`TypeParam` arg, which tier 3 admits via `type_carries_type_param` on
+/// the PARAM side.
+///
+/// Deliberately not closed here: adding the disjunct WIDENS eval-side
+/// resolution, a behaviour change needing its own RED tests and outside this
+/// task's plan. Pinned meanwhile by
+/// `bare_type_param_arg_does_not_resolve_a_non_generic_concrete_candidate` in
+/// tests/find_matching_compiled_function_tests.rs, so the gap is characterized
+/// rather than merely described, and recorded on #5689 — the ladder hoist must
+/// decide this asymmetry deliberately rather than erase it.
+///
 /// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
 /// operator-overloading nuance), update only this function; both call sites
 /// will inherit the fix automatically.
@@ -1538,19 +1814,7 @@ pub fn find_matching_compiled_function<'a>(
     let arity_match = |f: &&CompiledFunction| f.name == name && f.params.len() == args.len();
     let exact = |((_, param_ty), arg): (&(String, Type), &CompiledExpr)| *param_ty == arg.result_type;
 
-    // First-match-wins among candidates whose params ALL match by exact equality.
-    // (Includes generic candidates only when their args happen to be exact —
-    // e.g. a TypeParam param vs a concrete arg is NOT exact, so generics fall
-    // through to the wildcard pass below.)
-    if let Some(f) = fns
-        .iter()
-        .filter(arity_match)
-        .find(|f| f.params.iter().zip(args.iter()).all(exact))
-    {
-        return Some(f);
-    }
-
-    // No exact overload — allow wildcard params to match:
+    // Tier 3's predicate. Allows wildcard params to match:
     //   * a *generic* candidate's type-param-carrying params (gated on
     //     `!type_params.is_empty()` so this pass can never relax a non-generic
     //     fn via type-params), and
@@ -1563,14 +1827,88 @@ pub fn find_matching_compiled_function<'a>(
     //     `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
     //     resolves at compile time but the eval-side resolver returns None →
     //     the `@optimized` ComputeNode dispatch never fires (esc-4093-152).
-    fns.iter().filter(arity_match).find(|f| {
+    //
+    // NOT a full mirror of compile-side `matches`, which also treats a
+    // type-param-carrying ARG as a wildcard (D4). See "# Known divergence" in
+    // the doc comment above before assuming this list is complete; #5689.
+    let wildcard = |f: &&CompiledFunction| {
         let is_generic = !f.type_params.is_empty();
-        f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
-            (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
-                || type_carries_trait_object(param_ty)
-                || *param_ty == arg.result_type
-        })
-    })
+        f.params
+            .iter()
+            .zip(args.iter())
+            .all(|((_, param_ty), arg)| {
+                (is_generic
+                    && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
+                    || type_carries_trait_object(param_ty)
+                    || *param_ty == arg.result_type
+            })
+    };
+
+    // Middle tier: among the wildcard-eligible candidates, prefer those whose
+    // params are also constructor-head-compatible with their args. This is what
+    // tells two same-named GENERIC overloads apart when both wildcard-match the
+    // same subject — the stdlib `unwrap_or`/`or_else`/`fallback` pairs declared
+    // over both `Option<T>` and `Result<T, E>`, where the wildcard pass alone
+    // degenerates to first-match-wins on table order.
+    //
+    // `type_carries_dim_param` stays a FULL wildcard here rather than being
+    // subjected to the head check: dimension-param resolution is orthogonal to
+    // enum-head disambiguation, the same carve-out the compile-side head tier
+    // makes. The `Type::TypeParam` arg disjunct likewise mirrors compile-side —
+    // an arg that is itself a bare type param has no head to check against.
+    let head = |f: &&CompiledFunction| {
+        let is_generic = !f.type_params.is_empty();
+        f.params
+            .iter()
+            .zip(args.iter())
+            .all(|((_, param_ty), arg)| {
+                type_carries_trait_object(param_ty)
+                    || (is_generic
+                        && (heads_unifiable(param_ty, &arg.result_type)
+                            || type_carries_dim_param(param_ty)))
+                    || matches!(arg.result_type, Type::TypeParam(_))
+                    || *param_ty == arg.result_type
+            })
+    };
+
+    // Screening `head` through `wildcard` is LOAD-BEARING: `head` must only ever
+    // be asked about candidates that ALREADY passed `wildcard`, never run
+    // standalone. `heads_unifiable` is NOT a subset of `wildcard` (e.g. param
+    // `Applied{"Result",[Int,String]}` vs arg `Enum("Result")` head-matches but
+    // carries no type param and is not equal), so a standalone head pass could
+    // SELECT candidates the wildcard pass rejects — widening resolution rather
+    // than narrowing it. Pinned by
+    // `head_match_alone_never_selects_a_wildcard_ineligible_candidate` in
+    // tests/find_matching_compiled_function_tests.rs.
+    //
+    // The three tiers below are a hand-copy of compile-side
+    // `resolve_function_overload`'s `exact_matches` / `head_matches` / `matches`
+    // filters, and the drift guard on `heads_unifiable` covers the helper only,
+    // not the ladder. Hoisting both into reify-core is task #5689.
+    //
+    // ONE scan for all three tiers, not one per tier: each is an independent
+    // per-candidate predicate applied in a fixed priority order, so recording
+    // the first hit of each and returning them in that order is equivalent to
+    // three chained passes — and `fns` on the eval hot path is the merged
+    // prelude table (hundreds of entries), each extra pass re-running
+    // `arity_match` over all of it. Tier 1 still short-circuits; tiers 2 and 3
+    // cannot, since a LATER candidate may still match exactly.
+    let mut first_head = None;
+    let mut first_wildcard = None;
+    for f in fns.iter().filter(arity_match) {
+        // Tier 1 wins wherever it appears in table order.
+        if f.params.iter().zip(args.iter()).all(exact) {
+            return Some(f);
+        }
+        if first_head.is_none() && wildcard(&f) {
+            if head(&f) {
+                first_head = Some(f);
+            } else if first_wildcard.is_none() {
+                first_wildcard = Some(f);
+            }
+        }
+    }
+    first_head.or(first_wildcard)
 }
 
 /// Evaluate a compiled function's body with pre-evaluated `Value` arguments.
@@ -1625,15 +1963,40 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
         None => return Value::Undef, // no matching function
     };
 
+    // `@optimized` compute-dispatch hook (task #4880). See `try_compute_dispatch` doc
+    // for why this is a separate `#[inline(never)]` call rather than inline `if let`s.
+    if let Some(v) = try_compute_dispatch(func, &evaluated_args, ctx) {
+        return v;
+    }
+
     // Delegate scope-building and body evaluation to the shared helper.
     eval_compiled_function_with_values(func, &evaluated_args, ctx)
+}
+
+/// Probe the compute-dispatch hook for an `@optimized` function call (task #4880):
+/// when `func.optimized_target` names a registered ComputeNode AND `ctx` carries a
+/// dispatcher, return its result in place of body-eval. Returns `None` — meaning
+/// "fall through to body-eval unchanged" — when there is no `optimized_target`, no
+/// dispatcher is attached, or the dispatcher defers on this target.
+///
+/// Extracted to its own `#[inline(never)]` function, rather than inlined `if let`
+/// chains in `eval_user_function_call`, so its locals do not enlarge that function's
+/// own stack frame. `eval_user_function_call` sits on the hot recursive user-function
+/// call chain, whose per-frame size is budgeted against the 3 MiB test-thread stack at
+/// `MAX_RECURSION_DEPTH` (256) levels — same rationale as `eval_variant_bind_arm` /
+/// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
+/// `eval_user_fn_recursion_depth_exceeded`.
+#[inline(never)]
+fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalContext) -> Option<Value> {
+    let target = func.optimized_target.as_ref()?;
+    ctx.compute_dispatch?.dispatch(target, args)
 }
 
 /// Evaluate a `VariantBind` match arm body in a child scope with payload fields inserted.
 ///
 /// Extracted from `eval_expr`'s `Match` arm and marked `#[inline(never)]` to keep that
 /// recursive function's stack frame small — the `ValueMap` child clone and loop-local `val`
-/// would otherwise sit on every `eval_expr` frame and overflow the 2 MiB test-thread stack
+/// would otherwise sit on every `eval_expr` frame and overflow the 3 MiB test-thread stack
 /// at `MAX_RECURSION_DEPTH` (256) levels of user-fn recursion (same rationale as
 /// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
@@ -1676,7 +2039,7 @@ fn eval_variant_bind_arm(
 /// Extracted from `eval_expr` to keep that recursive function's stack frame
 /// small (the cell-iteration mode below needs to clone a `CompiledExpr` and a
 /// `ValueMap` per iteration; in debug builds those locals would otherwise sit
-/// on every `eval_expr` frame and blow the 2 MiB test-thread stack at
+/// on every `eval_expr` frame and blow the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation — see the
 /// `eval_user_fn_recursion_depth_exceeded` test).
 ///
@@ -1897,6 +2260,7 @@ fn eval_pred_for_value_elem<'a>(
                 diagnostics: ctx.diagnostics,
                 undef_causes: ctx.undef_causes,
                 containment: ctx.containment,
+                compute_dispatch: ctx.compute_dispatch,
             },
         )
     } else {
@@ -1952,7 +2316,7 @@ fn interp_render(value: &Value) -> String {
 /// `emit_flexure_diagnostics` / `eval_worst_case_dispatch`: each `let Some(diag)`
 /// binds an owned `Diagnostic`, and in unoptimized builds those by-value locals
 /// would otherwise sit on every recursive `eval_expr` frame (regardless of which
-/// match arm runs) and blow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH`
+/// match arm runs) and blow the 3 MiB test-thread stack at `MAX_RECURSION_DEPTH`
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
@@ -2001,7 +2365,7 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
 /// `#[inline(never)]` — to keep that recursive function's stack frame small:
 /// the `for diag in …` loop binds an owned `Diagnostic` per iteration, and in
 /// unoptimized builds that by-value local would sit on every `eval_expr` frame
-/// (regardless of which match arm runs) and blow the 2 MiB test-thread stack at
+/// (regardless of which match arm runs) and blow the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation. Same rationale
 /// and pinning test (`eval_user_fn_recursion_depth_exceeded`) as the
 /// `eval_worst_case_dispatch` / `eval_quantifier` extractions.
@@ -2105,7 +2469,7 @@ fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &E
 ///
 /// Extracted from `eval_expr` to keep that recursive function's stack frame
 /// small (the per-iteration `String` and running-best `Option<(String, f64)>`
-/// locals would otherwise sit on every `eval_expr` frame and blow the 2 MiB
+/// locals would otherwise sit on every `eval_expr` frame and blow the 3 MiB
 /// test-thread stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
 /// evaluation — see the `eval_user_fn_recursion_depth_exceeded` test).
 /// Mirrors the same extraction of `eval_quantifier`.
@@ -2132,7 +2496,7 @@ fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &E
 /// `result_for`.
 ///
 /// Pinned per guard by per-case E2E smoke tests in
-/// `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`:
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs`:
 /// - `wrong_arity` — `args.len() != 2` returns `Value::Undef` immediately
 ///   (internal guard; pinned by `eval_worst_case_dispatch_wrong_arity_returns_undef`
 ///   in mod tests). At the E2E level, `arity_one` / `arity_three` fall through
@@ -2513,7 +2877,7 @@ fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
 /// (`reify_stdlib::eval_builtin` has no ctx).  Marked `#[inline(never)]` for the
 /// same stack-frame-shrinking reason as `eval_worst_case_dispatch`: the
 /// per-index `Value` locals would otherwise sit on every recursive `eval_expr`
-/// frame and risk overflowing the 2 MiB test-thread stack at
+/// frame and risk overflowing the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH`.
 ///
 /// Shapes (the strict undef-arg short-circuit in `eval_expr` already returns
@@ -2570,7 +2934,7 @@ fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
 /// Marked `#[inline(never)]` to keep `eval_expr`'s stack frame small in
 /// debug builds — the `domain_type` and `codomain_type` locals (each a
 /// `Type`) would otherwise sit on every recursive `eval_expr` frame and
-/// overflow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256)
+/// overflow the 3 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256)
 /// levels of user-fn recursion (same rationale as
 /// `eval_structure_instance_ctor`; pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
@@ -2608,7 +2972,7 @@ fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
 /// Marked `#[inline(never)]` for the same stack-frame-shrinking rationale as
 /// `eval_fn_field` (task 4220 β): the two `Type` locals on this frame would
 /// otherwise sit on every recursive `eval_expr` frame and risk overflowing
-/// the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256) levels of
+/// the 3 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256) levels of
 /// user-fn recursion.
 #[inline(never)]
 fn eval_restrict(inner_field: &Value, region: &Value, result_type: &Type) -> Value {
@@ -7240,25 +7604,59 @@ mod tests {
 
     #[test]
     fn eval_user_fn_recursion_depth_exceeded() {
-        // infinite(1) should return Undef (hit depth limit), not stack-overflow
-        let infinite_fn = make_infinite_fn();
-        let call_expr = CompiledExpr {
-            content_hash: ContentHash::of(b"call_infinite"),
-            result_type: Type::Int,
-            kind: CompiledExprKind::UserFunctionCall {
-                function_name: "infinite".to_string(),
-                args: vec![lit(Value::Int(1), Type::Int)],
-            },
-        };
-        let values = ValueMap::new();
-        let functions = [infinite_fn];
-        let ctx = EvalContext::new(&values, &functions);
-        let result = eval_expr(&call_expr, &ctx);
-        assert!(
-            result.is_undef(),
-            "expected Undef for infinite recursion, got {:?}",
-            result
-        );
+        // infinite(1) should return Undef (hit depth limit), not stack-overflow.
+        //
+        // THE STACK SIZE IS PINNED, NOT "GENEROUS". This test is the pin for the
+        // per-`eval_expr`-frame stack budget that the 15 doc comments in this file
+        // quoting a "MiB test-thread stack" cite as the reason for their
+        // `#[inline(never)]` / hoisted-locals discipline (`eval_variant_bind_arm`,
+        // `eval_structure_instance_ctor`, `eval_fn_field`, `try_compute_dispatch`, …).
+        // It can only serve as that pin while the stack it runs on is small enough that
+        // a frame-size regression actually overflows it — so the size is an explicit,
+        // MEASURED ratchet, and raising it to buy headroom silently retires every one of
+        // those comments.
+        //
+        // MEASURED on this tree at MAX_RECURSION_DEPTH (256), debug profile (release
+        // needs strictly less), by bisecting this constant:
+        //   * before task #4880:  overflows at 1792 KiB, passes at 2048 KiB
+        //   * after  task #4880:  overflows at 2048 KiB, passes at 2304 KiB
+        // i.e. adding `EvalContext::compute_dispatch` cost ~256 KiB across the chain
+        // (< 1 KiB per level) and pushed the requirement just past the 2 MiB that Rust's
+        // test harness gives a SPAWNED test thread — which is why this wrapper exists at
+        // all, and why the figure quoted in those doc comments is now 3 MiB rather than
+        // the platform default it used to name.
+        //
+        // 3 MiB = ~33% over the measured 2.25 MiB requirement: enough that ordinary
+        // codegen drift does not redden the gate, tight enough that a further ~750 KiB
+        // (~3 KiB/level) regression does. If a toolchain bump reddens this, RE-MEASURE by
+        // bisecting the constant and move the figure here and in those comments
+        // deliberately — do not just raise it.
+        let handle = std::thread::Builder::new()
+            .stack_size(3 * 1024 * 1024)
+            .spawn(|| {
+                let infinite_fn = make_infinite_fn();
+                let call_expr = CompiledExpr {
+                    content_hash: ContentHash::of(b"call_infinite"),
+                    result_type: Type::Int,
+                    kind: CompiledExprKind::UserFunctionCall {
+                        function_name: "infinite".to_string(),
+                        args: vec![lit(Value::Int(1), Type::Int)],
+                    },
+                };
+                let values = ValueMap::new();
+                let functions = [infinite_fn];
+                let ctx = EvalContext::new(&values, &functions);
+                let result = eval_expr(&call_expr, &ctx);
+                assert!(
+                    result.is_undef(),
+                    "expected Undef for infinite recursion, got {:?}",
+                    result
+                );
+            })
+            .expect("failed to spawn eval_user_fn_recursion_depth_exceeded thread");
+        handle
+            .join()
+            .expect("eval_user_fn_recursion_depth_exceeded thread panicked");
     }
 
     #[test]
@@ -9221,9 +9619,9 @@ mod tests {
         // the matches!(result, Value::Undef) gate — an unconditional emit or
         // mis-gated success path would be caught here).
         let expr = iso_it_tolerance_call_expr(vec![
+            mm_val(30.0), // 30mm nominal_min
+            mm_val(50.0), // 50mm nominal_max
             Value::Int(6),
-            mm_val(30.0),
-            mm_val(50.0),
         ]);
 
         let values = ValueMap::new();
@@ -9236,15 +9634,15 @@ mod tests {
                 assert_eq!(
                     *dimension,
                     DimensionVector::LENGTH,
-                    "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar"
+                    "iso_it_tolerance(30mm,50mm,6) should be a LENGTH scalar"
                 );
                 assert!(
                     *si_value > 0.0,
-                    "iso_it_tolerance(6,30mm,50mm) should be positive, got {si_value}"
+                    "iso_it_tolerance(30mm,50mm,6) should be positive, got {si_value}"
                 );
             }
             other => panic!(
-                "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar, got {:?}",
+                "iso_it_tolerance(30mm,50mm,6) should be a LENGTH scalar, got {:?}",
                 other
             ),
         }
@@ -9263,9 +9661,9 @@ mod tests {
         // receives exactly one Severity::Error whose message contains
         // "E_TolerancingOutOfEnvelope". GREEN: wiring is live.
         let expr = iso_it_tolerance_call_expr(vec![
-            Value::Int(25),
-            mm_val(30.0),  // 30mm nominal_min
-            mm_val(50.0),  // 50mm nominal_max
+            mm_val(30.0),   // 30mm nominal_min
+            mm_val(50.0),   // 50mm nominal_max
+            Value::Int(25), // grade 25 — outside IT5–IT18
         ]);
 
         let values = ValueMap::new();
@@ -9302,9 +9700,9 @@ mod tests {
         // the wiring layer, independently of the grade-out-of-range path exercised
         // by iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink.
         let expr = iso_it_tolerance_call_expr(vec![
-            Value::Int(6),
-            mm_val(600.0), // 600mm nominal_min — grade valid, size oversize
+            mm_val(600.0), // 600mm nominal_min — size oversize
             mm_val(700.0), // 700mm nominal_max > 500mm → out-of-size-envelope
+            Value::Int(6), // grade 6 is valid; only the size is out of envelope
         ]);
 
         let values = ValueMap::new();
@@ -9333,6 +9731,64 @@ mod tests {
         assert!(
             diags[0].message.contains("E_TolerancingOutOfEnvelope"),
             "message must contain E_TolerancingOutOfEnvelope prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn iso_it_tolerance_legacy_grade_first_emits_migration_error_into_sink() {
+        // The superseded grade-first spelling `(grade, nominal_min, nominal_max)`:
+        // arg-0 is an Int where the subject-first decode wants a LENGTH scalar, so
+        // iso_it_tolerance returns Value::Undef.
+        //
+        // Sink DELIVERY is the entire justification for the
+        // E_TolerancingLegacyArgOrder arm, and it is the half the unit-level
+        // classifier test (reify-stdlib tolerancing::tests) cannot see: that test
+        // proves `diagnose` returns Some(Diagnostic), not that anything downstream
+        // still calls `diagnose` for this shape. Without delivery the arm buys
+        // nothing over the pre-arm behaviour it exists to replace — the builtin
+        // returns Undef, nothing reaches the sink, and `reify eval` prints a bare
+        // `cell = undef` at exit 0 with nothing on stderr saying why.
+        //
+        // It is reachable today via the same route as its three siblings above
+        // (Undef result → the matches!(result, Value::Undef) gate in
+        // emit_undef_builtin_diagnostics → tolerancing_diagnose); this test is what
+        // would catch a future reorder or re-gating of that call.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(7), // grade in arg-0 — the pre-flip order
+            mm_val(30.0),  // 30mm nominal_min, displaced to arg-1
+            mm_val(50.0),  // 50mm nominal_max, displaced to arg-2
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "the grade-first spelling must not decode under the subject-first order"
+        );
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingLegacyArgOrder diagnostic must reach the sink, \
+             got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "the legacy grade-first spelling must emit Severity::Error (which is what \
+             moves a stale call site from exit 0 to exit 1 in cmd_eval)"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingLegacyArgOrder"),
+            "message must contain E_TolerancingLegacyArgOrder prefix (NOT \
+             E_TolerancingOutOfEnvelope — the legacy shape is mis-ordered, not \
+             out-of-envelope): {}",
             diags[0].message
         );
     }
@@ -9772,6 +10228,102 @@ mod tests {
             result,
             Value::Bool(false),
             "forall m in [str, Undef]: determined(m) must be Bool(false); got {:?}",
+            result,
+        );
+    }
+
+    // ── ComputeDispatch hook tests (step-3 RED / step-4 GREEN, task #4880) ──────
+
+    /// An `@optimized`-annotated function whose body is a bare `Undef` literal.
+    ///
+    /// Stands in for `solve_elastic_static`, whose real body constructs an
+    /// `ElasticResult` ctor that eval does not recognise and therefore reduces to
+    /// `Undef` (task #4880 analysis). What matters for this test is only that
+    /// body-eval — with no dispatch hook attached — reduces to `Undef`, the
+    /// documented back-compat fallback for a dispatched-but-unhooked `@optimized` call.
+    fn make_optimized_stub_fn() -> CompiledFunction {
+        let params = vec![("load".to_string(), Type::dimensionless_scalar())];
+        CompiledFunction {
+            name: "stress".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::dimensionless_scalar(),
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: lit(Value::Undef, Type::dimensionless_scalar()),
+            },
+            content_hash: ContentHash::of(b"stress_optimized_stub"),
+            annotations: vec![],
+            optimized_target: Some("test::stress".to_string()),
+            type_params: vec![],
+        }
+    }
+
+    fn make_stress_call_expr(tag: &[u8]) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: ContentHash::of(tag),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "stress".to_string(),
+                args: vec![lit(Value::Real(5.0), Type::dimensionless_scalar())],
+            },
+        }
+    }
+
+    /// A `ComputeDispatch` that resolves exactly one target (`"test::stress"`) to a
+    /// fixed non-`Undef` `Scalar`, and defers (returns `None`) for everything else.
+    struct StubDispatch;
+
+    impl reify_ir::ComputeDispatch for StubDispatch {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
+            (target == "test::stress").then(|| Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })
+        }
+    }
+
+    /// Without a `compute_dispatch` hook attached, calling an `@optimized` function
+    /// falls through to ordinary body-eval unchanged — back-compat for every
+    /// existing (non-Engine-backed) `EvalContext` caller.
+    #[test]
+    fn optimized_call_without_dispatch_hook_falls_through_to_body_eval() {
+        let stress_fn = make_optimized_stub_fn();
+        let call_expr = make_stress_call_expr(b"call_stress_no_hook");
+        let values = ValueMap::new();
+        let functions = [stress_fn];
+        let ctx = EvalContext::new(&values, &functions);
+
+        let result = eval_expr(&call_expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "no dispatch hook attached -> body-eval of the Undef stub body -> Undef; got {:?}",
+            result,
+        );
+    }
+
+    /// With a `compute_dispatch` hook attached and resolving the call's
+    /// `optimized_target`, the hook's result is returned BEFORE body-eval runs.
+    #[test]
+    fn optimized_call_with_dispatch_hook_intercepts_before_body_eval() {
+        let stress_fn = make_optimized_stub_fn();
+        let call_expr = make_stress_call_expr(b"call_stress_with_hook");
+        let values = ValueMap::new();
+        let functions = [stress_fn];
+        let dispatch = StubDispatch;
+        let ctx = EvalContext::new(&values, &functions).with_compute_dispatch(&dispatch);
+
+        let result = eval_expr(&call_expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            "dispatch hook attached and resolves the target -> hook result wins over body-eval; got {:?}",
             result,
         );
     }

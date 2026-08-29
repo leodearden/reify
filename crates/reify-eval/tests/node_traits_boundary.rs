@@ -1,8 +1,14 @@
-//! Boundary tests for [`NodeTraitsMap<NodeId>`] — PRD §5 B1 / §9 T4 (precedence chain).
+//! Boundary tests for [`NodeTraitsMap<NodeId>`] — PRD §5 B1/B3/B4/B6 · §9 T2/T4/T6/T7.
 //!
-//! This file is the PRD §9 reserved location for the full T1–T7 boundary test grid.
-//! Task β seeds it with the NodeTraitsMap<NodeId> cases that can be tested without
-//! any additional scheduler wiring. Later tasks (γ/δ/ζ/η/θ) will append T1–T7 here.
+//! This file is the PRD §9 reserved location for the T1–T7 boundary test grid.
+//! T2, T4 (lite), T6 (task #3581, B4), and T7 (task #3584) landed below. T1 is
+//! covered instead by the per-kind unit tests in `reify-ir/src/node_traits.rs`
+//! (T1's PRD-assigned crate); T3 was specified against a `concurrent_eval`-style
+//! fixture on the `reify_runtime::concurrent` scheduler stack deleted under
+//! #5065, so it is obsolete as written rather than merely pending. T5 landed
+//! under task #3579 and was dropped under #5065 along with the `concurrent.rs`
+//! scheduler stack it pinned; the WARM_STARTABLE coextension invariant itself
+//! remains covered by `reify-runtime/src/warm_startable_assert.rs`.
 //!
 //! All tests use real `reify_eval::cache::NodeId` values so that the
 //! `impl HasNodeKind for NodeId` bridge in `reify-eval/src/cache.rs` is exercised
@@ -92,9 +98,10 @@ fn node_traits_map_with_node_id_instance_wins_over_kind() {
 //   - Value → AlwaysCancelWhenStale                      (IMMEDIATE, no COMMITTABLE; Q-3 resolution)
 //
 // PRD §5 B3: "absent COMMITTABLE → always cancellable; present → CommitIfSlow".
-// The AlwaysCancelWhenStale for Value is safe because task η/3581 (B4) will
-// short-circuit Value cancellation at the scheduler before resolve_with_traits
-// is wired into scheduler dispatch.
+// The AlwaysCancelWhenStale for Value is intentional, and the mismatch stays
+// cosmetic: the IMMEDIATE→never-cancelled guard was task η (#3581, B4), and the
+// scheduler that would have consumed it was deleted with `concurrent.rs` in
+// c1b8dba3f7 (task ο, #5065), so no dispatch path observes the mismatch today.
 
 #[test]
 fn t2_default_overrides_matches_arch_kind_defaults() {

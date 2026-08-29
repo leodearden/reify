@@ -49,9 +49,11 @@ tasks:
   title: scripts/jcodemunch-index-reify.sh — bare watch --once index primitive
   capabilities:
   - name: paths-from-never-used
-    binding: capability→producer — --paths-from is a real flag (server.py:6426, :7436-7441)
-      that short-circuits discovery and DELETEs every previously-indexed file absent
-      from the list; PRD §4.4 bans it against the production identity
+    binding: capability→producer — --paths-from is a real flag (server.py:6426, :7436-7441
+      — jcodemunch source read at decompose time 2026-08-07; dated evidence, not a live
+      breadcrumb, so grep the flag name rather than the line) that short-circuits discovery
+      and DELETEs every previously-indexed file absent from the list; PRD §4.4 bans it
+      against the production identity
     verdict: PASS
     delivered_check:
       kind: grep
@@ -60,8 +62,9 @@ tasks:
       - scripts/jcodemunch-index-reify.sh
       expect: absent
   - name: no-ai-summaries-used
-    binding: capability→producer — real argparse flag (server.py:6331/:6934); none
-      of the five detector tools read summaries or embeddings, their dependency is
+    binding: capability→producer — real argparse flag (server.py:6331/:6934 — jcodemunch
+      source read at decompose time 2026-08-07; dated evidence, not a live breadcrumb);
+      none of the five detector tools read summaries or embeddings, their dependency is
       index.imports
     verdict: PASS
     delivered_check:
@@ -80,15 +83,22 @@ tasks:
       reason: guard is behavioural (script exits non-zero at N==0); the mechanical
         twin is the --no-ai-summaries/--paths-from pair above
   - name: upstream-summary-token
-    binding: 'G6 branch-1/4 RESOLUTION — watcher.py:305 emits `changed={n} new={n}
-      deleted={n} ({d}s)` in BOTH 1.108.27 and 1.108.74: the literal token is `changed=0`,
-      NOT `changed: 0`. The PRD''s colon form is beta''s OWN stdout (beta owns its
-      summary line); no test may bind to the colon form as if the tool emitted it'
+    binding: 'G6 branch-1/4 RESOLUTION, CORRECTED BY TASK 6270 against the pinned 1.108.54
+      wheel — `watch --once` runs sync_folders(), which prints to stderr only: `<folder>:
+      No changes detected (<duration>s)` on a no-op, or `<folder>: <N> symbols (<duration>s)`
+      when changed. Upstream emits NEITHER `changed: 0` NOR `changed=0` on this path. The
+      watcher.py:305 `changed={n} new={n} deleted={n} ({d}s)` line (read at 1.108.27 and
+      1.108.74, 2026-08-07) belongs to the CONTINUOUS watch loop''s re-index callback and is
+      unreachable from --once, so the decompose-time claim that `changed=0` is the literal
+      one-shot token was wrong in kind, not merely in form. beta''s signal token is beta''s
+      OWN stdout and beta owns its format; no test may bind to EITHER the colon or the equals
+      form as if the tool emitted it on --once. Twin: manifest .md S9 / beta upstream-summary-token'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: beta must re-verify the upstream token against the PINNED 1.108.54 —
-        the decompose-time probe read 1.108.27 and 1.108.74 source, not 1.108.54
+      reason: the 1.108.54 re-verification this binding once deferred to beta has been done
+        (task 6270); beta prints its own summary line and must not assume the continuous-loop
+        token appears on --once
   - name: max-folder-files-truncation-guarded
     binding: 'G7 INV-SF-3 RESOLUTION (declared-intent-consumed-or-diagnosed) — max_folder_files:
       10000 truncates with a WARNING, not an error; silently dropping files is declared
@@ -130,7 +140,14 @@ tasks:
     binding: capability→producer — storage/git_root.py:55-57 `_local_repo_name` =
       f"{name}-{sha1(str(path))[:8]}", IDENTICAL in 1.108.27 and 1.108.74; verified
       by prediction-then-measurement (predicted local/3484-e93a7bf3 == observed meta.repo).
-      /home/leo/src/reify -> local/reify-4ae45bbd
+      /home/leo/src/reify -> local/reify-4ae45bbd.
+      CORRECTION 2026-08-20 (esc-6107-7, ruled 2026-08-17) — DERIVABLE, not DEFAULT.
+      jcodemunch 1.108.54 ships git_root_identity=True (config.py:384, seeded into
+      _GLOBAL_CONFIG by load_config at config.py:660), so this checkout resolves to
+      leodearden/reify by default. local/reify-4ae45bbd is reached ONLY because every reify
+      invocation site forces JCODEMUNCH_GIT_ROOT_IDENTITY=0 — beta does, and delta and zeta
+      carry the same obligation in their task records. This verdict holds conditional on that
+      lever, not on the sha1 rule alone
     verdict: PASS
     delivered_check:
       kind: manual
@@ -140,7 +157,8 @@ tasks:
     binding: 'capability→producer — BOTH §4.3 conjuncts obtainable with no MCP session:
       read-only sqlite on a live index yields meta.git_head and `select count(*) from
       symbols` = 54233. The MCP route is also real (get_repo_outline.py:155-162 takes
-      the current_sha != index.git_head branch). Both OQ1 answers substantiated'
+      the current_sha != index.git_head branch — jcodemunch source read at decompose time
+      2026-08-07; dated evidence, not a live breadcrumb). Both OQ1 answers substantiated'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -479,7 +497,16 @@ tasks:
     binding: capability→producer — docs/architecture-audit/jcodemunch-serve-activation.md
       asserts resolved identifier `leodearden-reify` and shared DB file `~/.code-index/leodearden-reify.db`,
       neither of which exists (no leodearden/* git-identity index exists at all; per-path
-      identity is local/reify-4ae45bbd)
+      identity is local/reify-4ae45bbd).
+      CORRECTION 2026-08-20 (esc-6107-7, ruled 2026-08-17) — BOTH identifiers DO exist and
+      this binding is defective. ~/.code-index/leodearden-reify.db is a live empty husk that
+      regenerates as an upstream side effect, and leodearden/reify is jcodemunch's DEFAULT
+      identity for this checkout (git_root_identity=True at config.py:384), which reify
+      overrides to local/reify-4ae45bbd via JCODEMUNCH_GIT_ROOT_IDENTITY=0. The expect-absent
+      grep below would therefore require deleting a TRUE statement. mu must RE-DERIVE this
+      check so the doc states that leodearden/reify is the default identity reify overrides,
+      rather than asserting the identifier does not exist. Left mechanically unchanged here so
+      the decision stays visible rather than drifting inside an amendment
     verdict: PASS
     delivered_check:
       kind: grep

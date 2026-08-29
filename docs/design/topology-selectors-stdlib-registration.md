@@ -89,7 +89,7 @@ Open question: `extract_*` returns `Vec<GeometryHandleId>`. The existing `Value:
 
 Already covered under Bucket 1. Two notes:
 
-- `center_of_mass` already has a same-named `eval_builtin` entry at `crates/reify-stdlib/src/snapshot.rs:432` for the kinematic-Snapshot form (`center_of_mass(snapshot, densities_map)`). The PRD-§3.9 form takes a *Geometry* + scalar density. Disambiguation is automatic at runtime: `try_eval_topology_selector` only fires when the function is in `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` AND `args[0]` resolves to a `named_steps` `GeometryHandleId`; for the snapshot form `args[0]` is a `Value::Map`, no `GeometryHandleId` resolves, the dispatch returns `None`, and `eval_builtin`'s `center_of_mass` arm in snapshot.rs handles it. **No code conflict, but a unit test pinning both call shapes is mandatory** — drop it in `crates/reify-eval/tests/topology_selector_smoke_tests.rs` once compile-with-stdlib coverage opens up.
+- `center_of_mass` already has a same-named `eval_builtin` entry at `crates/reify-stdlib/src/snapshot.rs:432` for the kinematic-Snapshot form (`center_of_mass(snapshot, densities_map)`). The PRD-§3.9 form takes a *Geometry* + scalar density. Disambiguation is automatic at runtime: `try_eval_topology_selector` only fires when the function is in `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` AND `args[0]` resolves to a `named_steps` `GeometryHandleId`; for the snapshot form `args[0]` is a `Value::Map`, no `GeometryHandleId` resolves, the dispatch returns `None`, and `eval_builtin`'s `center_of_mass` arm in snapshot.rs handles it. **No code conflict, but a unit test pinning both call shapes is mandatory** — drop it in `crates/reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs` once compile-with-stdlib coverage opens up.
 - `moment_of_inertia` requires the just-landed Tensor surface syntax (#2696) for its return type to be expressible. The kernel already returns the right-shape `Value::List(rows)` at `crates/reify-types/src/geometry.rs:717` (`GeometryQuery::InertiaTensor`).
 
 ### Bucket 4 — topology-graph queries: `adjacent_faces`, `shared_edges`
@@ -114,7 +114,7 @@ For `shared_edges(face_a, face_b)` the additional requirement is that both faces
 
 1. **`crates/reify-compiler/src/units.rs`** — append `"edges"` to `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, add a result-type arm in `topology_selector_result_type`.
 2. **`crates/reify-eval/src/geometry_ops.rs`** — add a `TopologySelectorHelper::Edges` enum variant, an arity arm, and a dispatch arm calling `kernel.extract_edges`.
-3. **`crates/reify-eval/tests/topology_selector_smoke_tests.rs`** — extend the parse-only fixture coverage to a `compile_with_stdlib`-clean assertion for a fixture that calls `edges(b)`.
+3. **`crates/reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs`** — extend the parse-only fixture coverage to a `compile_with_stdlib`-clean assertion for a fixture that calls `edges(b)`.
 4. **`docs/prds/topology-selectors.md`** — add the explicit "task 8: Stdlib language-level wiring" entry (this is the PRD-amendment carry-over from the original #2699 description).
 
 ### Exact change — `units.rs`

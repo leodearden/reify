@@ -58,6 +58,19 @@ export const SET_FEA_CHANNEL_ERRORS = {
     `channel change did not reach the FeaModeStore (store.state.channel is "${actual}" after dispatch, expected "${expected}")`,
 } as const;
 
+// Diagnostics for the generic data-testid resolver (#5891), centralized for the
+// same reason as SET_FEA_CHANNEL_ERRORS above: bridge.ts and debugBridge.test.tsx
+// reference one constant, so wording cannot drift out of sync with the tests.
+// `notFound` reproduces the pre-#5891 message byte for byte — it was duplicated
+// inline in click_element/focus_element/scroll/element_screenshot, and callers
+// (including the visual-regression harness) match on it.
+export const RESOLVE_BY_TESTID_ERRORS = {
+  notFound: (testId: string) => `element with data-testid="${testId}" not found`,
+  notFoundForViewport: (testId: string, id: string) =>
+    `element with data-testid="${testId}" not found for viewport '${id}'`,
+  viewportIdNotString: 'viewportId must be a string',
+} as const;
+
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
 /** Returns true iff v is a 3-element array of finite numbers. */
@@ -160,12 +173,15 @@ const FEA_CHANNEL_SELECT = '[data-testid="fea-mode-channel-select"]';
  * toolbar is equally valid to drive, so guessing between N of them would
  * silently misapply a channel switch. Ambiguity is an error, not a heuristic.
  *
- * SCOPE (#5891): this ladder covers the channel `<select>` only. The toolbar's
- * other controls still resolve through the generic first-match testid lookup
- * used by click_element/wait_for_selector/dom_query, which with N panes mounted
- * drives pane 0 silently — the loud failure below has no counterpart there yet.
- * Generalizing those resolvers to an optional viewportId scope is #5891; the
- * `data-viewport-id` FeaModeToolbar stamps on its root is the substrate for it.
+ * SCOPE: this ladder covers the channel `<select>` only. Every other control is
+ * scoped by `resolveByTestId` below (#5891), which reads the same
+ * `data-viewport-id`. The two ladders agree on everything except what a
+ * multi-match means: here it is an ERROR (`selectAmbiguous`), there it
+ * is first-match plus a reported `viewportId`/`matchCount`. That is not drift —
+ * this helper owns exactly one testid, so ambiguity is always a genuine
+ * multi-pane request, whereas the generic resolver serves hundreds of testids
+ * that legitimately repeat and would break every existing caller if it hard-
+ * failed. See `resolveByTestId`'s header for the full reasoning.
  */
 function pickFeaChannelSelect(
   params: Record<string, unknown>,
@@ -193,6 +209,135 @@ function pickFeaChannelSelect(
   if (matches.length === 0) return { error: SET_FEA_CHANNEL_ERRORS.selectNotFound };
   if (matches.length > 1) return { error: SET_FEA_CHANNEL_ERRORS.selectAmbiguous(matches.length) };
   return { select: matches[0] as HTMLSelectElement };
+}
+
+/**
+ * Escape a value for interpolation into an `[attr="…"]` selector.
+ *
+ * CSS.escape is absent in some environments (notably jsdom), so fall back to a
+ * minimal escape of the two characters that can terminate or corrupt a quoted
+ * attribute value. Without this, a value carrying a quote or backslash makes
+ * querySelector THROW a DOMException, which the dispatcher surfaces as an
+ * opaque CSS-parser message instead of the intended not-found diagnostic.
+ */
+function escapeAttrValue(v: string): string {
+  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(v)
+    : v.replace(/["\\]/g, '\\$&');
+}
+
+export interface ResolvedByTestId {
+  el: Element;
+  /** The pane the resolved element actually sits in, or null if it sits in none. */
+  viewportId: string | null;
+  /**
+   * How many elements the request matched.
+   *
+   * >1 is NOT unique to unscoped requests: a scoped request matches more than
+   * once whenever the same testid repeats INSIDE the named pane. Both cases mean
+   * the same thing — a pane was guessed — so `paneDiagnostics` reports on
+   * `matchCount` alone and never on whether the request carried a `viewportId`.
+   */
+  matchCount: number;
+}
+
+/**
+ * Resolve a single element by `data-testid`, optionally scoped to one pane (#5891).
+ *
+ * Deliberately mirrors `pickFeaChannelSelect`'s ladder above — same param name,
+ * same non-string rejection FIRST, same scoped-then-document-wide ordering, same
+ * distinct not-found-for-viewport error — so the two read as one convention:
+ *  1. params.viewportId present → reject non-string, then a descendant-OR-SELF
+ *     scoped query. The self arm is load-bearing: FeaModeToolbar stamps
+ *     `data-testid` and `data-viewport-id` on the SAME root element, so a
+ *     descendant-only selector would resolve the nine sibling controls but not
+ *     the root by its own testid. No match is `notFoundForViewport` (distinct
+ *     from a bare `notFound`, which means no such testid exists ANYWHERE).
+ *  2. No id → today's document-wide lookup; zero is `notFound`.
+ *
+ * THE ONE DIVERGENCE from `pickFeaChannelSelect`: a request matching more than
+ * one element stays FIRST-MATCH rather than erroring the way `selectAmbiguous`
+ * does. That helper owns exactly one testid, so ambiguity there is always a
+ * genuine multi-pane request; this resolver serves the whole app across hundreds
+ * of testids, many of which legitimately repeat, so a hard error would break
+ * every currently-green caller. Correctness is bought instead by making the
+ * guess VISIBLE — see `paneDiagnostics` — not by breaking back-compat.
+ * `matchCount` is what callers gate that reporting on.
+ *
+ * That applies to SCOPED requests too, not just unscoped ones: naming a pane
+ * narrows the candidate set but does not guarantee it to one, because the same
+ * testid can repeat inside a single pane. Such a request is first-match and
+ * reports `matchCount` exactly as an unscoped one does.
+ *
+ * `querySelectorAll` returns a de-duplicated, document-ordered result, so an
+ * element matching both arms of the scoped selector list is counted once — the
+ * root, which carries `data-testid` and `data-viewport-id` on the SAME node, is
+ * the common case — and `matchCount` stays truthful.
+ */
+function resolveByTestId(
+  testId: string,
+  viewportId: unknown,
+): ResolvedByTestId | { error: string } {
+  const idSel = `[data-testid="${escapeAttrValue(testId)}"]`;
+
+  let matches: NodeListOf<Element>;
+  if (viewportId !== undefined) {
+    if (typeof viewportId !== 'string') {
+      return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
+    }
+    const vpSel = `[data-viewport-id="${escapeAttrValue(viewportId)}"]`;
+    matches = document.querySelectorAll(`${idSel}${vpSel}, ${vpSel} ${idSel}`);
+    if (matches.length === 0) {
+      return { error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport(testId, viewportId) };
+    }
+  } else {
+    matches = document.querySelectorAll(idSel);
+    if (matches.length === 0) {
+      return { error: RESOLVE_BY_TESTID_ERRORS.notFound(testId) };
+    }
+  }
+
+  const el = matches[0];
+  return {
+    el,
+    // Read off the element actually resolved, not off the request: on an
+    // unscoped call there IS no request parameter to report, and the pane the
+    // caller cares about is whichever one the driven element lives in. Same
+    // reasoning set_fea_channel uses when it keys its store lookup off the
+    // select's OWN data-viewport-id.
+    viewportId: el.closest('[data-viewport-id]')?.getAttribute('data-viewport-id') ?? null,
+    matchCount: matches.length,
+  };
+}
+
+/**
+ * The fields a handler spreads into its success payload to report a guess (#5891).
+ *
+ * Returns `{}` — leaving the payload byte-identical to pre-#5891 — unless the
+ * request matched more than one element, i.e. exactly the condition under which
+ * a pane was guessed. Emitting unconditionally would append keys to responses
+ * that existing tests and harness steps compare with `toEqual`, turning a
+ * back-compat fix into broad breakage; emitting never would leave the
+ * wrong-target failure as silent as it was before this task.
+ *
+ * The gate is `matchCount` ALONE — deliberately not `!scoped && matchCount > 1`.
+ * A scoped request that matches twice inside the named pane guessed just as
+ * blindly as an unscoped one that matched two panes; suppressing the report
+ * there would reintroduce, one level down, the exact silence this task exists to
+ * remove. Reporting it breaks no caller: `viewportId` is read off the RESOLVED
+ * element (so it stays meaningful under scoping), and every pre-#5891 caller is
+ * by definition unscoped, so no existing `toEqual` sees a new key it did not
+ * already see.
+ *
+ * Kept as ONE function rather than repeating `matchCount > 1` in each handler,
+ * so the tools that route through `resolveByTestId` cannot drift apart on when
+ * they report.
+ */
+function paneDiagnostics(
+  r: ResolvedByTestId,
+): { viewportId?: string | null; matchCount?: number } {
+  if (r.matchCount <= 1) return {};
+  return { viewportId: r.viewportId, matchCount: r.matchCount };
 }
 
 // Shared element descriptor used by query_selector and query_selector_all.
@@ -272,24 +417,48 @@ async function pollUntil(
 
 /**
  * Build a selector predicate for wait_for_selector / the selector arm of wait_for.
- * Resolves el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`).
+ * Resolves el through `resolveByTestId(testId, viewportId)`, so an optional
+ * `viewportId` scopes the wait to one pane (#5891).
  * 'visible': el exists AND isElementVisible AND (text===undefined OR textContent.trim()===text)
  * 'gone':    el===null OR !isElementVisible(el)
+ *
+ * Returns `{error}` INSTEAD of a predicate when `viewportId` is present but not a
+ * string. That check is hoisted out of the closure deliberately: a malformed
+ * param is a property of the REQUEST, not a DOM state that could become true on
+ * a later tick, so re-deciding it every 16 ms would burn the caller's whole
+ * timeout budget only to report the same rejection. Both call sites return it
+ * immediately. Every other resolver error — `notFound`, `notFoundForViewport` —
+ * IS a transient DOM state and is folded into `el === null`, which is exactly
+ * what 'gone' waits for and what 'visible' polls past.
+ *
+ * ASYMMETRY WORTH KNOWING (documented on both tools' schemas, pinned by
+ * waitFor.test.ts case (g)): because `notFoundForViewport` folds into
+ * `el === null`, a `viewportId` naming a pane that does not exist AT ALL — not
+ * yet mounted, or simply a typo — satisfies 'gone' vacuously and resolves at
+ * waited_ms 0, indistinguishably from a real teardown. That is deliberate, not
+ * an oversight: a pane torn down WITH its contents is a legitimate way for an
+ * element to be gone from it, and demanding the pane still exist would make
+ * "wait for this pane to disappear" un-expressible and turn a correct green into
+ * a timeout. The cost is that a typo'd id reads as instant success, so callers
+ * proving a teardown should confirm the pane exists first. Under 'visible' the
+ * same typo fails loudly (timeout), which is why only this arm needs the note.
  */
 function buildSelectorPredicate(opts: {
   testId: string;
   state: 'visible' | 'gone';
   text?: string;
-}): () => boolean {
-  const { testId, state, text } = opts;
-  // CSS.escape is not available in all environments (e.g. jsdom); fall back to
-  // a minimal escape that handles the most common testId characters safely.
-  const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(testId)
-    : testId.replace(/["\\]/g, '\\$&');
-  const sel = `[data-testid="${escaped}"]`;
+  viewportId?: unknown;
+}): (() => boolean) | { error: string } {
+  const { testId, state, text, viewportId } = opts;
+  if (viewportId !== undefined && typeof viewportId !== 'string') {
+    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
+  }
   return () => {
-    const el = document.querySelector(sel);
+    // Re-resolve on EVERY tick rather than hoisting the lookup: this predicate
+    // exists to observe an element appearing or disappearing mid-poll, so a
+    // resolution captured once at t=0 would freeze the answer.
+    const r = resolveByTestId(testId, viewportId);
+    const el = 'error' in r ? null : r.el;
     if (state === 'gone') {
       return el === null || !isElementVisible(el);
     }
@@ -575,10 +744,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       // The editorStore snapshot (file?.content) is stale-by-design on every
       // keystroke — Editor.tsx's docChanged handler deliberately never calls
-      // updateFileContent (the "anti-loop invariant", Editor.tsx:493-497) so
-      // that typing does not re-fire the store→view sync and compile-diagnostics
-      // effects on each keystroke.  The live buffer lives on ctx.editorView,
-      // the same handle that type_in_editor reads (bridge.ts:509).
+      // updateFileContent (the "anti-loop invariant" — Editor.tsx's
+      // `EditorView.updateListener` docChanged arm) so that typing does not
+      // re-fire the store→view sync and compile-diagnostics effects on each
+      // keystroke.  The live buffer lives on ctx.editorView,
+      // the same handle the `type_in_editor` handler in `buildHandlers` reads.
       // Guard: substitute live content only when an active file is open AND
       // the EditorView is present; otherwise fall back to the store snapshot.
       // When there is no active file we must NOT use editorView (it holds ''
@@ -621,17 +791,33 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const testId = params.testId as string;
       if (!testId) return { error: 'testId is required' };
 
-      const el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`);
-      if (!el) return { exists: false };
+      // #5891: dom_query is an existence PROBE, not a driver, so it collapses BOTH
+      // absence errors — `notFound` (no such testid anywhere) and
+      // `notFoundForViewport` (not in the named pane) — back to `{exists:false}`.
+      // Harnesses poll this while waiting for a pane to appear; turning a
+      // not-yet-there pane into an error would make every such poll a failure
+      // instead of a `false`. A non-string `viewportId` is a CALLER bug rather
+      // than an observation, so that one alone stays a loud error. The split is
+      // made by comparing against the exported constant rather than a duplicated
+      // literal, so a wording change moves both sides at once (the task-4906
+      // convention) — and it re-derives nothing about WHEN the resolver rejects,
+      // which would fork the ladder.
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) {
+        if (r.error === RESOLVE_BY_TESTID_ERRORS.viewportIdNotString) return r;
+        return { exists: false };
+      }
 
-      const rect = (el as HTMLElement).getBoundingClientRect();
+      const el = r.el as HTMLElement;
+      const rect = el.getBoundingClientRect();
       const style = window.getComputedStyle(el);
       return {
         exists: true,
         visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
-        text: (el as HTMLElement).innerText?.slice(0, 500) ?? '',
+        text: el.innerText?.slice(0, 500) ?? '',
         tagName: el.tagName.toLowerCase(),
         bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        ...paneDiagnostics(r),
       };
     },
 
@@ -822,11 +1008,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const testId = params.testId as string;
       if (!testId) return { error: 'testId is required' };
 
-      const el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`);
-      if (!el) return { error: `element with data-testid="${testId}" not found` };
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) return r;
 
-      (el as HTMLElement).click();
-      return { ok: true };
+      (r.el as HTMLElement).click();
+      return { ok: true, ...paneDiagnostics(r) };
     },
 
     // Select the active FEA scalar channel (e.g. 'errorIndicator') in the FEA-mode
@@ -990,14 +1176,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     focus_element: (params) => {
       const testId = params.testId as string;
       if (!testId) return { error: 'testId is required' };
-      // CSS.escape fallback for jsdom — mirrors buildSelectorPredicate (:175-177).
-      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-        ? CSS.escape(testId)
-        : testId.replace(/["\\]/g, '\\$&');
-      const el = document.querySelector(`[data-testid="${escaped}"]`);
-      if (!el) return { error: `element with data-testid="${testId}" not found` };
-      (el as HTMLElement).focus();
-      return { ok: true };
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) return r;
+      (r.el as HTMLElement).focus();
+      return { ok: true, ...paneDiagnostics(r) };
     },
 
     // Focus the CodeMirror editor so subsequent keyboard() calls reach it.
@@ -1025,20 +1207,31 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         if (isFiniteNumber(params.left)) sd.scrollLeft = params.left;
         return { ok: true, scrollTop: sd.scrollTop, scrollLeft: sd.scrollLeft };
       }
-      // DOM mode: scroll an element resolved by data-testid.
+      // DOM mode: scroll an element resolved by data-testid, optionally scoped to
+      // one pane (#5891). The editor arm above returns before ever reading
+      // `viewportId` — it resolves no testid, so scoping is meaningless there and
+      // must not become a spurious rejection for a caller threading the param
+      // through generically.
       const testId = params.testId as string;
       if (!testId) return { error: 'testId or target:"editor" is required' };
-      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-        ? CSS.escape(testId)
-        : testId.replace(/["\\]/g, '\\$&');
-      const el = document.querySelector(`[data-testid="${escaped}"]`) as HTMLElement | null;
-      if (!el) return { error: `element with data-testid="${testId}" not found` };
+      // Guard order is unchanged from pre-#5891: testId presence, then element
+      // resolution, then the finite-number checks. The viewport ladder lives
+      // INSIDE resolution, so it takes the slot the old not-found check held and
+      // no previously-reported error moves relative to any other.
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) return r;
+      const el = r.el as HTMLElement;
       // Reject non-finite offsets (NaN, ±Infinity) — consistent with isFiniteNumber/validXY guards.
       if (params.top !== undefined && !isFiniteNumber(params.top)) return { error: 'top must be a finite number' };
       if (params.left !== undefined && !isFiniteNumber(params.left)) return { error: 'left must be a finite number' };
       if (isFiniteNumber(params.top)) el.scrollTop = params.top;
       if (isFiniteNumber(params.left)) el.scrollLeft = params.left;
-      return { ok: true, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft };
+      return {
+        ok: true,
+        scrollTop: el.scrollTop,
+        scrollLeft: el.scrollLeft,
+        ...paneDiagnostics(r),
+      };
     },
 
     select_entity: (params) => {
@@ -1199,7 +1392,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         }
         const state = (pred.state ?? 'visible') as 'visible' | 'gone';
         const text = typeof pred.text === 'string' ? pred.text : undefined;
-        return pollUntil(buildSelectorPredicate({ testId, state, text }), timeoutMs);
+        const predicate = buildSelectorPredicate({
+          testId, state, text, viewportId: pred.viewportId,
+        });
+        if (typeof predicate !== 'function') return predicate;
+        return pollUntil(predicate, timeoutMs);
       }
 
       if (kind === 'store') {
@@ -1268,10 +1465,14 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         }
         timeoutMs = params.timeout_ms;
       }
-      return pollUntil(
-        buildSelectorPredicate({ testId, state: stateParam as 'visible' | 'gone', text }),
-        timeoutMs,
-      );
+      const predicate = buildSelectorPredicate({
+        testId,
+        state: stateParam as 'visible' | 'gone',
+        text,
+        viewportId: params.viewportId,
+      });
+      if (typeof predicate !== 'function') return predicate;
+      return pollUntil(predicate, timeoutMs);
     },
 
     list_console_errors: (params) => {
@@ -1661,15 +1862,13 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         return { error: 'testId is required' };
       }
 
-      // CSS.escape may not be available in all environments (e.g. jsdom).
-      const escaped =
-        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-          ? CSS.escape(testId)
-          : testId.replace(/["\\]/g, '\\$&');
-      const el = document.querySelector(`[data-testid="${escaped}"]`);
-      if (!el) {
-        return { error: `element with data-testid="${testId}" not found` };
-      }
+      // #5891: resolution is the ONLY thing that moves here. The guard order —
+      // testId presence/type, then resolution, then the zero-area check, then
+      // capture — is unchanged, so 'element has zero area' and 'screenshot too
+      // large' stay reachable on exactly the conditions they were before.
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) return r;
+      const el = r.el;
 
       const rect = el.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
@@ -1716,7 +1915,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         return { error: 'screenshot too large', size: cropped.length, limit: MAX_SCREENSHOT_CHARS };
       }
 
-      return { data: cropped };
+      return { data: cropped, ...paneDiagnostics(r) };
     },
   };
 }

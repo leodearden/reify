@@ -121,9 +121,11 @@ fn user_let_pi_shadows_builtin() {
 #[test]
 fn user_param_pi_shadows_builtin() {
     // Use 1.5 rather than 1.0 as a purely defensive measure: the compiler correctly handles
-    // Real-annotated params regardless (type_resolution maps the annotation), but 1.5 is
-    // unambiguously a float literal at the parser level and avoids any future edge-case
-    // where whole-number float literals might be emitted as Int.
+    // Real-annotated params regardless (type_resolution maps the annotation), and any
+    // float-form literal (source token containing `.`/`e`/`E`) is typed Real unconditionally
+    // by classify_number_literal, whole-number value or not. 1.5 keeps the literal
+    // unambiguously non-integer-valued too, so the assertion below stays robust even if a
+    // future value-based special case were ever introduced.
     let src = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
     let compiled = compile_source(src);
     let errors = errors_only(&compiled);

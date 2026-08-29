@@ -38,10 +38,10 @@ export const meta = {
     name: "prd-decompose-verify",
     description: "γ: per-leaf premise verification — Enumerator → Prover‖Adversary → Synthesize",
     phases: [
-        { title: "Enumerate", detail: "Extract premises from each leaf signal" },
-        { title: "Prove",     detail: "Author probes and run via prd-capability-check.py" },
-        { title: "Adversary", detail: "Independent lens: hunt unlisted premises/falsifications" },
-        { title: "Synthesize", detail: "Deterministic synthesis: block on FAIL/UNPROVABLE/HARNESS_ERROR" },
+        { title: "Enumerate", detail: "Extract premises from each leaf signal", model: "sonnet" },
+        { title: "Prove",     detail: "Author probes and run via prd-capability-check.py", model: "sonnet" },
+        { title: "Adversary", detail: "Independent lens: hunt unlisted premises/falsifications", model: "opus" },
+        { title: "Synthesize", detail: "Deterministic synthesis: block on FAIL/UNPROVABLE/HARNESS_ERROR", model: "haiku" },
     ],
 };
 
@@ -158,6 +158,15 @@ const _wfResult = await (async function runWorkflow() {
 
     log(`γ verification: ${leaves.length} leaf(ves)`); // eslint-disable-line no-undef
 
+    // Every role pins its own model. Left unpinned, an agent() call inherits the
+    // main-loop model and session effort, so a /prd decompose driven from a Fable
+    // window ran all four roles on Fable — 8 leaves × 4 roles = 41.7M tokens on
+    // 2026-08-26, of which the Adversary alone was 24.4M. Enumerate/Prove are
+    // bounded (read one leaf; shell the α runner), Synthesize just shells the
+    // deterministic harness. The Adversary is the one role held at the top tier:
+    // it is the adversarial-verify stage, and a downgraded adversary is how a
+    // verification gate goes quietly vacuous while still reporting PASS.
+
     // ── per-leaf pipeline: Enumerate → (Prove ‖ Adversary) → Synthesize ──────
 
     const leaf_verdicts = await pipeline( // eslint-disable-line no-undef
@@ -196,7 +205,7 @@ Instructions:
 6. Return ONLY premises you are confident about. An empty list is valid.
 
 Return a JSON object {premises: [...]} matching the schema.`,
-                { label: `enumerate:${idx}`, phase: "Enumerate", schema: PREMISES_SCHEMA }
+                { label: `enumerate:${idx}`, phase: "Enumerate", schema: PREMISES_SCHEMA, model: "sonnet" }
             );
 
             return { leaf, leafLabel, enumerated, idx };
@@ -239,7 +248,7 @@ Steps (use your own shell/file tools):
 If any step fails, return a single HARNESS_ERROR result record:
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
    command: [], exit_code: -1, stdout: "", stderr: "<error detail>"}`,
-                    { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA }
+                    { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA, model: "sonnet", effort: "medium" }
                 ),
 
                 // Adversary: independent lens
@@ -266,7 +275,7 @@ Instructions:
    adversary list.
 
 Return JSON: {prover: [], adversary: [result_records...]}`,
-                    { label: `adversary:${idx}`, phase: "Adversary", schema: RESULTS_SCHEMA }
+                    { label: `adversary:${idx}`, phase: "Adversary", schema: RESULTS_SCHEMA, model: "opus", effort: "xhigh" }
                 ),
             ]);
 
@@ -300,7 +309,7 @@ Steps (use your own shell/file tools):
 
 If the command fails or stdout is not valid JSON, return:
   {blocks: true, blocking: ["${leafLabel}"], report: "<error from synthesize>"}`,
-                { label: `synthesize:${idx}`, phase: "Synthesize", schema: VERDICT_SCHEMA }
+                { label: `synthesize:${idx}`, phase: "Synthesize", schema: VERDICT_SCHEMA, model: "haiku", effort: "medium" }
             );
 
             const verdict = synthesized || {

@@ -17,7 +17,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{make_simple_engine, members_of, parse_and_compile_with_stdlib};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
@@ -723,20 +723,6 @@ fn io_export_flatness_tolerance() {
 }
 
 // ── task #5582 step-3: io_export_flatness_resolves_stdlib_geometry_feature ───
-
-/// Sorted `member` list of every cell `result` produced for `entity` — used to
-/// make a missing-cell panic read as "mirror reintroduced" rather than
-/// "cell renamed".
-fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> {
-    let mut members: Vec<String> = result
-        .values
-        .iter()
-        .filter(|(id, _)| id.entity == entity)
-        .map(|(id, _)| id.member.clone())
-        .collect();
-    members.sort();
-    members
-}
 
 /// io_export.ri's `ExportPart.flat` must resolve against the STDLIB `Flatness`,
 /// not a local eval-time mirror — and the mirror here is actively DRIFTED, not

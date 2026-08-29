@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData, FeaDiagnosticInfo } from '../../types';
+import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData, FeaDiagnosticInfo, ScalarChannelTag } from '../../types';
 import { createFeaModeStore } from '../../stores';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
@@ -75,6 +75,12 @@ const mockMeshSetDeformation = vi.fn();
 const mockMeshGetDeformedOverlays = vi.fn(() => new Map());
 const mockMeshSetDisplayAppearance = vi.fn();
 
+// adjustClipping and fitHelpers are named spies (not inline vi.fn()s) so the two
+// calls can be COMPARED: #6588's contract is that helper sizing and camera clipping
+// agree on one bounds measurement, which is only assertable if both are observable.
+const mockAdjustClipping = vi.fn();
+const mockFitHelpers = vi.fn();
+
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
 const mockAxisLabels = { type: 'Group', visible: true };
@@ -103,7 +109,8 @@ vi.mock('../../viewport/scene', () => ({
       domElement: document.createElement('canvas'),
     },
     resize: mockResize,
-    adjustClipping: vi.fn(),
+    adjustClipping: mockAdjustClipping,
+    fitHelpers: mockFitHelpers,
     grid: mockGrid,
     axes: mockAxes,
     axisLabels: mockAxisLabels,
@@ -225,6 +232,8 @@ beforeEach(() => {
   mockMeshSetDeformation.mockClear();
   mockMeshGetDeformedOverlays.mockClear();
   mockBakeColours.mockClear();
+  mockAdjustClipping.mockClear();
+  mockFitHelpers.mockClear();
 });
 
 // Module-scope FEA mesh factory — shared by 'Viewport FEA auto-range' and
@@ -1276,6 +1285,82 @@ describe('Viewport FEA Lock Current + readout wiring', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Viewport tagged scalar channels (task #6185)
+// End-to-end B8: a tagged channel's unit reaches the legend, and a SIGNED
+// channel's negative values survive range computation all the way into the
+// FEA store rather than being clamped away.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport — tagged scalar channels (task #6185)', () => {
+  function makeTaggedMesh(
+    channel: string,
+    values: number[],
+    tag?: ScalarChannelTag,
+  ): MeshData {
+    return {
+      entity_path: 'bracket',
+      vertices: new Float32Array(0),
+      indices: new Uint32Array(0),
+      normals: null,
+      scalar_channels: { [channel]: new Float32Array(values) },
+      ...(tag === undefined ? {} : { scalar_channel_tags: { [channel]: tag } }),
+    };
+  }
+
+  it('(a) a Pa-tagged channel renders its unit in the max readout', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-a" feaModeStore={store as any} />);
+
+    setMeshes({
+      bracket: makeTaggedMesh('vonMises', [2, 8], { unit: 'Pa', signed: false }),
+    });
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/Pa/);
+    expect(readout.textContent).toMatch(/vonMises/);
+  });
+
+  it('(b) a signed channel keeps its NEGATIVE min through to the store, and shows rad', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    store.setChannel('testRotation');
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-b" feaModeStore={store as any} />);
+
+    setMeshes({
+      bracket: makeTaggedMesh('testRotation', [-0.5, 0, 0.25], { unit: 'rad', signed: true }),
+    });
+
+    // The B8 pin: negatives survive range computation to the renderer.
+    expect(store.state.range.min).toBe(-0.5);
+    expect(store.state.range.max).toBe(0.25);
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/rad/);
+  });
+
+  it('(c) untagged meshes render no unit and keep the non-negative range', () => {
+    // Regression pin for pre-tag payloads.
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-c" feaModeStore={store as any} />);
+
+    setMeshes({ bracket: makeTaggedMesh('vonMises', [-1, 2, 8]) });
+
+    // -1 is the OOB sentinel for an untagged channel and must not reach the range.
+    expect(store.state.range).toEqual({ mode: 'auto', min: 2, max: 8 });
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toBe('max vonMises: 8');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Viewport FEA auto-enable determinism (step-3 — RED)
 // Verifies that the auto-enable effect picks a channel deterministically
 // regardless of the insertion order of scalar_channels keys.
@@ -1535,5 +1620,73 @@ describe('Viewport feaDiagnosticOverlay integration (#2966)', () => {
     unmount();
 
     expect(mockDiagnosticOverlayDispose).toHaveBeenCalled();
+  });
+});
+
+
+// ── fitHelpers wiring (#6588) ────────────────────────────────────────────────
+// The viewport helpers carry absolute sizes tuned for a ~10 m CAD scene. scene.ts
+// can resize them, but only if Viewport actually hands it the scene bounds - and
+// it must be the SAME bounds the camera clips against, or the helpers and the
+// framing disagree about how big the model is.
+
+describe('Viewport fitHelpers wiring (#6588)', () => {
+  const meshesA: Record<string, MeshData> = {
+    'bracket/plate': {
+      entity_path: 'bracket/plate',
+      vertices: new Float32Array([0, 0, 0]),
+      indices: new Uint32Array([0]),
+      normals: null,
+    },
+  };
+  const meshesB: Record<string, MeshData> = {
+    'bracket/plate': {
+      entity_path: 'bracket/plate',
+      vertices: new Float32Array([1, 1, 1]),
+      indices: new Uint32Array([0]),
+      normals: null,
+    },
+  };
+
+  it('feeds scene bounds to fitHelpers on the mesh-sync tick', () => {
+    render(() => <Viewport meshes={meshesA} viewportId="test-vp" />);
+    expect(mockFitHelpers).toHaveBeenCalled();
+  });
+
+  it('hands fitHelpers the SAME Box3 instance the camera clips against', () => {
+    render(() => <Viewport meshes={meshesA} viewportId="test-vp" />);
+
+    expect(mockAdjustClipping).toHaveBeenCalled();
+    expect(mockFitHelpers).toHaveBeenCalled();
+    // Object identity, not deep equality: one measurement, shared. This is what
+    // guarantees the helpers are sized against the same extent the camera frames -
+    // including the ghost meshes the mesh-sync effect folds into the bounds.
+    expect(mockFitHelpers.mock.calls[0][0]).toBe(mockAdjustClipping.mock.calls[0][0]);
+  });
+
+  it('re-fits the helpers when the mesh set changes', () => {
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>(meshesA);
+    render(() => <Viewport meshes={meshes()} viewportId="test-vp" />);
+
+    const before = mockFitHelpers.mock.calls.length;
+    setMeshes(meshesB);
+
+    // A model that grows or shrinks between evaluations must re-size the helpers,
+    // not keep the extent measured on first open.
+    expect(mockFitHelpers.mock.calls.length).toBeGreaterThan(before);
+
+    // And the LATEST helper sizing must have used the LATEST measurement, i.e. the
+    // one the camera is currently clipping against.
+    //
+    // Deliberately NOT an exact call-count equality between the two spies:
+    // adjustClipping is genuinely camera-dependent (it derives near/far from
+    // camera.position.distanceTo(center)), so a future, correct orbit- or
+    // resize-driven call site for it would break a count check while the fitHelpers
+    // wiring this test exists to guard was never touched. Object identity is the
+    // contract; the preceding test already pins it for the first call.
+    const lastFit = mockFitHelpers.mock.calls[mockFitHelpers.mock.calls.length - 1][0];
+    const lastClip =
+      mockAdjustClipping.mock.calls[mockAdjustClipping.mock.calls.length - 1][0];
+    expect(lastFit).toBe(lastClip);
   });
 });

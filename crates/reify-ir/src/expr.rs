@@ -383,7 +383,7 @@ pub struct CompiledFunction {
     /// `docs/initial-design/name-resolution-and-scoping-design-decisions.md` §2.3
     /// for the full language-design rationale. Locked in by the regression test
     /// `fn_param_default_sibling_param_ref_errors` in
-    /// `crates/reify-compiler/tests/fn_param_default_consumption_tests.rs`.
+    /// `crates/reify-compiler/tests/harness_traits/fn_param_default_consumption_tests.rs`.
     pub param_defaults: Vec<Option<CompiledExpr>>,
     pub return_type: Type,
     pub body: CompiledFnBody,

@@ -23,6 +23,47 @@ thread_local! {
     /// Type resolution is single-threaded per module and the set lives only for the
     /// lifetime of an `EnumNameScope` guard.
     static RESOLUTION_ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+
+    /// Ambient set of MODULE-LOCAL enum names that SHADOW a same-named PRELUDE
+    /// `structure def` in param positions (task #5429; PRD
+    /// `docs/prds/v0_6/uniform-member-access.md` §4 M5 / D8).
+    ///
+    /// Motivating defect: `std.tolerancing` (default prelude) declares
+    /// `structure def Fit` (`stdlib/tolerancing.ri:268`), so a user module that
+    /// declares its own `enum Fit` and a `param fit : Fit` had that param lowered
+    /// to `Type::StructureRef("Fit")` — the structure-name arm of
+    /// [`resolve_type_with_aliases`] wins over both enum fallbacks — and the ctor
+    /// conformance walker then rejected an `Enum(Fit)` argument against a
+    /// "structure type Fit" param.
+    ///
+    /// How this differs from [`RESOLUTION_ENUM_NAMES`] — the two sets are
+    /// deliberately separate, not one hoisted set:
+    /// - **Membership.** This set is MODULE-LOCAL only (`ctx.enum_defs`), whereas
+    ///   `RESOLUTION_ENUM_NAMES` is installed from `ctx.resolution_enums` =
+    ///   prelude ++ local. A PRELUDE enum must never shadow a LOCAL structure —
+    ///   otherwise a user's own `structure def ThreadSystem` would be silently
+    ///   retyped to the stdlib `enum ThreadSystem`
+    ///   (`stdlib/ports_mechanical.ri:35`).
+    /// - **Precedence.** This set is consulted BEFORE the structure-name arm wins
+    ///   (as an override of its result); `RESOLUTION_ENUM_NAMES` is a LAST-RESORT
+    ///   fallback consulted only after that arm has already failed.
+    ///
+    /// Same thread-local rationale as `RESOLUTION_ENUM_NAMES` above (threading an
+    /// argument through ~100 call sites for a narrow rule is churn with no
+    /// behavioural change at the sites that would pass it empty), and the same
+    /// scoping discipline: installed via [`LocalEnumShadowScope`] ONLY around the
+    /// compile-phase sequence of a single module
+    /// (`lib.rs::compile_with_prelude_context_checked_with_config`), empty
+    /// everywhere else — so every other type position is unaffected.
+    ///
+    /// The scope is MODULE-WIDE rather than per-phase on purpose: every phase that
+    /// lowers a declared type name must agree on what a shadowed name means.
+    /// Scoping it to `phase_entities` alone left `phase_traits`/`phase_functions`
+    /// (which run earlier) resolving the same name to `Type::StructureRef` while
+    /// entity params resolved to `Type::Enum`, so trait conformance and overload
+    /// resolution rejected the mismatched pair — a warning-to-error regression on
+    /// previously-valid modules (esc-5429-1).
+    static RESOLUTION_SHADOWING_ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// RAII guard that installs an ambient enum-name set into [`RESOLUTION_ENUM_NAMES`]
@@ -47,6 +88,39 @@ impl Drop for EnumNameScope {
     fn drop(&mut self) {
         let prev = std::mem::take(&mut self.prev);
         RESOLUTION_ENUM_NAMES.with(|s| *s.borrow_mut() = prev);
+    }
+}
+
+/// RAII guard that installs an ambient shadowing-enum-name set into
+/// [`RESOLUTION_SHADOWING_ENUM_NAMES`] for its lifetime, restoring the prior set
+/// on drop so nested scopes compose (task #5429). Modelled on [`EnumNameScope`];
+/// see that type and `RESOLUTION_SHADOWING_ENUM_NAMES` for why the two sets are
+/// separate.
+///
+/// Construct one around a region of type resolution where a MODULE-LOCAL `enum N`
+/// should outrank a same-named PRELUDE `structure def N` — today exactly one site,
+/// `lib.rs::compile_with_prelude_context_checked_with_config`, which wraps the
+/// whole phase sequence so every phase agrees on the name. Build the set with
+/// `compile_builder::enums_phase::build_local_enum_shadow_set` (the single source
+/// of truth for its two membership rules) rather than inlining the filter.
+///
+/// Contract pinned by `tests::shadow_scope_restores_prior_set_on_drop`.
+pub(crate) struct LocalEnumShadowScope {
+    prev: HashSet<String>,
+}
+
+impl LocalEnumShadowScope {
+    pub(crate) fn new(enum_names: HashSet<String>) -> Self {
+        let prev = RESOLUTION_SHADOWING_ENUM_NAMES
+            .with(|s| std::mem::replace(&mut *s.borrow_mut(), enum_names));
+        LocalEnumShadowScope { prev }
+    }
+}
+
+impl Drop for LocalEnumShadowScope {
+    fn drop(&mut self) {
+        let prev = std::mem::take(&mut self.prev);
+        RESOLUTION_SHADOWING_ENUM_NAMES.with(|s| *s.borrow_mut() = prev);
     }
 }
 
@@ -636,6 +710,17 @@ pub(crate) fn resolve_type_with_params(
 /// Regression oracle for the builtin-before-alias half of this ordering:
 /// `tests::builtin_dimension_shadows_same_named_alias_with_different_dimension`
 /// (task #5892).
+///
+/// Caller-side override (task #5429): this function itself is unconditional, but
+/// [`resolve_type_expr_with_aliases_kinded`] may REPLACE a `Type::StructureRef`
+/// result with `Type::Enum` for a bare name held by an active
+/// [`LocalEnumShadowScope`] — a module-local `enum N` shadowing a same-named
+/// prelude `structure def N`. Only the structure arm is overridable; the
+/// builtin / type-param / alias arms return before it and the trait arm is not
+/// eligible, so the documented chain above is otherwise unchanged. Do NOT move
+/// that check into this body: it cannot see `type_args` here, and collapsing the
+/// applied `N<Args>` form to `Type::Enum` breaks the generic-enum `Applied` path
+/// (`tests::applied_form_is_not_shadowed`).
 pub(crate) fn resolve_type_with_aliases(
     name: &str,
     type_param_names: &HashSet<String>,
@@ -1772,7 +1857,7 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     // (built independently in `names_phase::build_resolution_names`) can both
     // contain the same name. Verified by the integration test
     // `name_shared_by_structure_and_trait_prefers_structure_applied_path` in
-    // crates/reify-compiler/tests/trait_type_arg_rejection_tests.rs. Placed
+    // crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs. Placed
     // BEFORE simple-name resolution so the rejection fires regardless of any
     // same-name shadow later in the fallthrough.
     //
@@ -1822,6 +1907,35 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         structure_names,
         trait_names,
     ) {
+        // Shadowing-enum override (task #5429; PRD
+        // docs/prds/v0_6/uniform-member-access.md §4 M5 / D8): a MODULE-LOCAL
+        // `enum N` outranks a same-named PRELUDE `structure def N`, so
+        // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than
+        // being conflated with std.tolerancing's `structure def Fit`.
+        //
+        // Each conjunct earns its place:
+        // • `type_args.is_empty()` — bare names only, the same gate the sibling
+        //   enum fallback below uses. An applied `N<Args>` must keep flowing down
+        //   so the generic-enum Applied path (`entity.rs::resolve_enum_type_with_args`,
+        //   which only runs when this simple-name resolution yields None) still
+        //   sees it. Regression oracle: `tests::applied_form_is_not_shadowed` —
+        //   without this conjunct, `Result<Length, String>` collapses to
+        //   Enum("Result") and four tests in generic_enum_pattern_binder_tests.rs
+        //   fail.
+        // • `matches!(ty, Type::StructureRef(_))` — only the structure arm is
+        //   overridable. Builtins, type params and aliases return EARLIER inside
+        //   `resolve_type_with_aliases`, so their precedence is preserved for free
+        //   (a local `enum Length` cannot shadow the builtin LENGTH dimension);
+        //   trait objects are deliberately left alone (local-enum-vs-prelude-TRAIT
+        //   collisions are out of #5429's scope).
+        // • set membership — the set is empty outside a `LocalEnumShadowScope`,
+        //   so every caller that installs no scope is unaffected.
+        if type_args.is_empty()
+            && matches!(ty, Type::StructureRef(_))
+            && RESOLUTION_SHADOWING_ENUM_NAMES.with(|s| s.borrow().contains(name))
+        {
+            return Some(Type::Enum(name.to_string()));
+        }
         return Some(ty);
     }
 
@@ -6087,5 +6201,309 @@ mod tests {
                  a parameterized builtin"
             );
         }
+    }
+
+    // ── task #5429: module-local enum shadows a PRELUDE structure name ──────────
+    //
+    // PRD docs/prds/v0_6/uniform-member-access.md §4 M5 / D8. A module that
+    // declares `enum Fit` and a `param fit : Fit` must lower that param to
+    // `Type::Enum("Fit")`, NOT `Type::StructureRef("Fit")` — even though the
+    // default prelude's `std.tolerancing` contributes a `structure def Fit`
+    // (stdlib/tolerancing.ri:268) to `structure_names`.
+    //
+    // These tests pin the BARE-NAME PRECEDENCE rule of the override in
+    // `resolve_type_expr_with_aliases_kinded`:
+    //   builtin → type-param → alias → [shadowing local enum] → structure → trait,
+    // and that it is inert for the applied `N<Args>` form and for every
+    // non-`StructureRef` result. They are RED until `LocalEnumShadowScope` exists
+    // (the type does not compile today — that is the RED signal).
+
+    /// Build a `HashSet<String>` from string literals — used for the shadow set,
+    /// `structure_names`, `trait_names`, and `type_param_names` fixtures below.
+    fn name_set(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    /// Build a `Named` TypeExpr WITH type args (the applied `N<Args>` form).
+    /// `named_type_expr` above only builds the bare form.
+    fn applied_type_expr(name: &str, args: &[&str]) -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: name.to_string(),
+                type_args: args.iter().map(|a| named_type_expr(a)).collect(),
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        }
+    }
+
+    /// Resolve `type_expr` through the kinded resolver with the given ambient
+    /// name sets, discarding diagnostics (none of these cases asserts on them).
+    fn resolve_kinded(
+        type_expr: &reify_ast::TypeExpr,
+        type_param_names: &HashSet<String>,
+        alias_registry: &TypeAliasRegistry,
+        structure_names: &HashSet<String>,
+        trait_names: &HashSet<String>,
+    ) -> Option<Type> {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        resolve_type_expr_with_aliases_kinded(
+            type_expr,
+            type_param_names,
+            &HashSet::new(),
+            alias_registry,
+            &mut diagnostics,
+            structure_names,
+            trait_names,
+        )
+    }
+
+    /// Case 1 — the defect itself. With a live `LocalEnumShadowScope` holding
+    /// `"Fit"`, a bare `Fit` resolves to `Type::Enum("Fit")` even though `"Fit"`
+    /// is in `structure_names` (standing in for the prelude
+    /// `std.tolerancing.Fit` structure def).
+    #[test]
+    fn local_enum_shadows_prelude_structure_name() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names = name_set(&["Fit"]);
+        let _shadow = LocalEnumShadowScope::new(name_set(&["Fit"]));
+
+        let result = resolve_kinded(
+            &named_type_expr("Fit"),
+            &HashSet::new(),
+            &reg,
+            &structure_names,
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::Enum("Fit".to_string())),
+            "a module-local `enum Fit` must shadow the prelude `structure def Fit` \
+             in a param position; got {result:?}"
+        );
+    }
+
+    /// Case 2 — inertness. With NO guard installed the shadow set is empty, so the
+    /// identical input keeps today's `StructureRef` resolution. This is what makes
+    /// the change a no-op at the ~100 resolver call sites that install no scope.
+    #[test]
+    fn no_shadow_scope_leaves_structure_resolution_unchanged() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names = name_set(&["Fit"]);
+
+        let result = resolve_kinded(
+            &named_type_expr("Fit"),
+            &HashSet::new(),
+            &reg,
+            &structure_names,
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::StructureRef("Fit".to_string())),
+            "with no LocalEnumShadowScope installed the shadow set is empty and \
+             structure-name resolution must be untouched; got {result:?}"
+        );
+    }
+
+    /// Case 3 — the applied-form regression oracle for the `type_args.is_empty()`
+    /// conjunct. A prototype that put this override INSIDE
+    /// `resolve_type_with_aliases` (which cannot see `type_args`) broke four tests
+    /// in `tests/generic_enum_pattern_binder_tests.rs`: `Result<Length, String>`
+    /// collapsed to `Enum("Result")` instead of reaching the generic-enum
+    /// `Applied` path (`entity.rs::resolve_enum_type_with_args`), which only runs
+    /// when the simple-name resolution returns `None`.
+    ///
+    /// Both applied shapes are pinned: `"Result"` absent from `structure_names`
+    /// (the real generic-enum shape — must stay unresolved here so `entity.rs`
+    /// can build the `Applied` enum type) and present (the structure-with-args
+    /// arm, which must still yield `Type::Applied`).
+    #[test]
+    fn applied_form_is_not_shadowed() {
+        let reg = TypeAliasRegistry::new();
+        let _shadow = LocalEnumShadowScope::new(name_set(&["Result"]));
+        let applied = applied_type_expr("Result", &["Length"]);
+
+        // (a) generic-enum shape: not a structure name.
+        let result = resolve_kinded(
+            &applied,
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            !matches!(result, Some(Type::Enum(_))),
+            "an applied `Result<Length>` must NOT short-circuit to Type::Enum — the \
+             generic-enum Applied path depends on this staying unresolved here; got {result:?}"
+        );
+
+        // (b) structure-with-args shape: the existing Applied arm still wins.
+        let structure_result = resolve_kinded(
+            &applied,
+            &HashSet::new(),
+            &reg,
+            &name_set(&["Result"]),
+            &HashSet::new(),
+        );
+        assert!(
+            matches!(structure_result, Some(Type::Applied { ref name, .. }) if name == "Result"),
+            "an applied form whose name is a structure name must keep resolving via \
+             the structure-with-args arm to Type::Applied; got {structure_result:?}"
+        );
+    }
+
+    /// Case 4 — builtin precedence. The override only fires on a `StructureRef`
+    /// result, and builtins return before the structure arm inside
+    /// `resolve_type_with_aliases`, so `enum Length { … }` cannot shadow the
+    /// builtin LENGTH dimension.
+    #[test]
+    fn builtin_wins_over_shadowing_enum() {
+        let reg = TypeAliasRegistry::new();
+        let _shadow = LocalEnumShadowScope::new(name_set(&["Length"]));
+
+        let result = resolve_kinded(
+            &named_type_expr("Length"),
+            &HashSet::new(),
+            &reg,
+            &name_set(&["Length"]),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
+            "the builtin `Length` dimension must outrank a same-named shadowing \
+             local enum; got {result:?}"
+        );
+    }
+
+    /// Case 5 — type-param precedence (same mechanism as case 4: type params
+    /// resolve before the structure arm).
+    #[test]
+    fn type_param_wins_over_shadowing_enum() {
+        let reg = TypeAliasRegistry::new();
+        let _shadow = LocalEnumShadowScope::new(name_set(&["T"]));
+
+        let result = resolve_kinded(
+            &named_type_expr("T"),
+            &name_set(&["T"]),
+            &reg,
+            &name_set(&["T"]),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::TypeParam("T".to_string())),
+            "an in-scope type parameter must outrank a same-named shadowing local \
+             enum; got {result:?}"
+        );
+    }
+
+    /// Case 6 — alias precedence. A registered non-parameterized alias resolves
+    /// before the structure arm, so it also outranks the shadow set.
+    #[test]
+    fn alias_wins_over_shadowing_enum() {
+        let reg = one_entry_alias_registry("Foo", DimensionVector::MASS, false);
+        let _shadow = LocalEnumShadowScope::new(name_set(&["Foo"]));
+
+        let result = resolve_kinded(
+            &named_type_expr("Foo"),
+            &HashSet::new(),
+            &reg,
+            &name_set(&["Foo"]),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::Scalar {
+                dimension: DimensionVector::MASS
+            }),
+            "a registered non-parameterized alias must outrank a same-named \
+             shadowing local enum; got {result:?}"
+        );
+    }
+
+    /// Case 7 — the override is `StructureRef`-only by design. A name that is a
+    /// TRAIT (and not a structure) keeps resolving to `Type::TraitObject` even
+    /// while the shadow set holds it; local-enum-vs-prelude-TRAIT collisions are
+    /// explicitly out of scope for #5429.
+    #[test]
+    fn trait_object_is_not_shadowed() {
+        let reg = TypeAliasRegistry::new();
+        let _shadow = LocalEnumShadowScope::new(name_set(&["Spec"]));
+
+        let result = resolve_kinded(
+            &named_type_expr("Spec"),
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &name_set(&["Spec"]),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::TraitObject("Spec".to_string())),
+            "the shadow override is StructureRef-only: a trait name must keep \
+             resolving to Type::TraitObject; got {result:?}"
+        );
+    }
+
+    /// Case 8 — the RAII contract, mirroring `EnumNameScope`: a nested scope
+    /// REPLACES the ambient set for its lifetime and restores the outer set on
+    /// drop, and the set is empty again once every guard has dropped.
+    #[test]
+    fn shadow_scope_restores_prior_set_on_drop() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names = name_set(&["Outer", "Inner"]);
+        let resolve = |name: &str| {
+            resolve_kinded(
+                &named_type_expr(name),
+                &HashSet::new(),
+                &reg,
+                &structure_names,
+                &HashSet::new(),
+            )
+        };
+
+        let outer = LocalEnumShadowScope::new(name_set(&["Outer"]));
+        assert_eq!(
+            resolve("Outer"),
+            Some(Type::Enum("Outer".to_string())),
+            "the outer scope's set must be live"
+        );
+
+        {
+            let _inner = LocalEnumShadowScope::new(name_set(&["Inner"]));
+            assert_eq!(
+                resolve("Inner"),
+                Some(Type::Enum("Inner".to_string())),
+                "the inner scope's set must be live while it is held"
+            );
+            assert_eq!(
+                resolve("Outer"),
+                Some(Type::StructureRef("Outer".to_string())),
+                "the inner scope REPLACES the ambient set — the outer name must not \
+                 still shadow while the inner guard is held"
+            );
+        }
+
+        assert_eq!(
+            resolve("Outer"),
+            Some(Type::Enum("Outer".to_string())),
+            "dropping the inner scope must restore the outer scope's set"
+        );
+
+        drop(outer);
+        assert_eq!(
+            resolve("Outer"),
+            Some(Type::StructureRef("Outer".to_string())),
+            "dropping every scope must leave the ambient shadow set empty"
+        );
     }
 }

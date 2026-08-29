@@ -3,6 +3,7 @@ import type { UnitLadderMap, UnitOption, ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
 import { SelectionBreadcrumb } from './SelectionBreadcrumb';
 import {
+  acceptsBareNumber,
   buildQuantityRe,
   convertToUnit,
   formatDisplayNumber,
@@ -71,6 +72,24 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
 // allowed between number and unit, matching the .ri grammar (token.immediate);
 // the backend parse_value_string is more lenient (accepts "5 mm") but the
 // frontend intentionally enforces the stricter rule.
+//
+// The bare-number half is not unconditional (task #5757): a cell whose
+// dimension a curated ladder COVERS requires a unit, gated by
+// `acceptsBareNumber` in the same module. Coverage, not dimensionedness, is the
+// key — where no unit can be typed, refusing the bare number would leave the
+// row with no accepted input at all. Unlike the whitespace rule above, this one
+// is NOT the frontend being deliberately stricter — it mirrors the backend
+// exactly, reading the same ladder map the engine's `LADDER_COVERAGE` is built
+// from. So gating here only decides whether the user finds out inline, with the
+// typed text kept for correction, or asynchronously via a toast that discards
+// it.
+//
+// The rule and the edit buffer have to be designed together: `editSeed` below
+// seeds a COVERED cell with a unit-BEARING literal, so an unmodified commit
+// stays a no-op and a digits-only edit keeps its unit. Seeding the bare
+// magnitude would have pre-filled every such row with text this very grammar
+// refuses. An UNCOVERED cell seeds the bare magnitude, which the same rule then
+// accepts — so both kinds of row commit untouched.
 
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
@@ -127,13 +146,20 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    * ladder map changes; the returned resolver caches per dimension, so a panel
    * of N cells over K dimensions builds at most K+1 regexes.
    *
-   * ACCEPTED DEGRADATION: this gate still admits more than the commit path can
-   * parse, because the ladders are the curated DISPLAY table while the commit
-   * path has its own hard-coded suffix table. Per-cell scoping shrinks that
-   * gap; it does not close it. The full account — cause, user-visible shape,
-   * why it is accepted, and who owns the fix — is on `quantityUnitAlphabet` in
-   * `../stores/unitLadder`, and it is pinned end-to-end by the `App.test.tsx`
-   * block "ladder-derived units the backend cannot parse".
+   * The gap this used to carry is CLOSED (task #5757): the commit path no
+   * longer has its own hard-coded suffix table, it scans an index composed from
+   * the same `unit_ladders()` the alphabet here is derived from, so everything
+   * this gate admits now parses. The backend registers the raw superscript
+   * spellings too, making it a strict superset of this alphabet. The full
+   * account — what "advertised" now means, and the one asymmetry that remains
+   * — is on `quantityUnitAlphabet` in `../stores/unitLadder`, and it is pinned
+   * end-to-end by the `App.test.tsx` block "the reconciled unit/bare-number
+   * contract".
+   *
+   * Per-cell scoping therefore no longer exists to shrink a gap. It earns its
+   * keep on its own terms: it is what rejects a Density literal in a Volume
+   * cell INLINE, instead of committing it for reify-eval to refuse with a
+   * `DimensionMismatch` on the worst-feedback path.
    */
   const quantityReFor = createMemo(() => {
     const ladders = props.unitLadders;
@@ -354,6 +380,82 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     return props.selectedEntity !== null && entityMatchesGroup(props.selectedEntity, name);
   }
 
+  /**
+   * The unit label to append when seeding a DIMENSIONED cell's edit buffer
+   * (task #5757 amend), in the ASCII normal form the typed-input gate admits.
+   *
+   * The ladder's default rung, NOT `val.unit`. The two usually agree, but where
+   * they differ `val.unit` is the wrong one: it comes from
+   * `DimensionVector::to_display_units`, whose fallback arm composes base-SI
+   * labels — a Density cell arrives here carrying `kg·m^-3`, which neither this
+   * panel's gate nor the engine's `parse_value_string` can read, while the
+   * ladder rung for the same cell is `kg/m³` and both can. `val.unit` is kept
+   * only as a last resort for a dimension with no curated ladder, where an
+   * informative-but-unparseable label still beats no label at all — the seed is
+   * validity-checked below either way.
+   *
+   * The magnitude it pairs with is `displayValue`, i.e. the canonical/default
+   * unit — never the picked one. `reify_core::display_units` pins the default
+   * rung as numerically identical to what `to_display_units` returns, which is
+   * the same invariant `displayForPicker` already relies on.
+   */
+  function editSeedUnitLabel(val: ValueData): string | undefined {
+    const ladder = ladderForDimension(props.unitLadders ?? {}, val.dimension ?? '');
+    const candidate = ladder?.find((u) => u.is_default)?.label ?? ladder?.[0]?.label ?? val.unit;
+    // Same IPC-payload caution as `quantityUnitAlphabet`: these labels cross a
+    // Tauri boundary, so their string-ness is a claim about serde, not a
+    // runtime guarantee, and `normalizeUnitLabel` would throw on a non-string.
+    return typeof candidate === 'string' && candidate !== ''
+      ? normalizeUnitLabel(candidate)
+      : undefined;
+  }
+
+  /**
+   * The text to put in the input when editing starts.
+   *
+   * NEVER SEED AN INPUT WITH TEXT THIS COMPONENT WOULD REFUSE. Since task #5757
+   * a bare magnitude is not a valid literal for a dimensioned cell, and
+   * `displayValue` is exactly a bare magnitude — so seeding it verbatim made
+   * focus+Enter on an unmodified row set `data-invalid` and submit nothing, and
+   * made the ordinary "edit just the number" flow (`80mm` → `90`) fail unless
+   * the user retyped the unit every time. Appending the cell's own unit makes an
+   * unmodified commit a true no-op again and keeps the unit through a
+   * digits-only edit.
+   *
+   * An UNCOVERED cell (Torque, Money) takes the first branch and seeds the bare
+   * magnitude — which the coverage-conditional rule then ACCEPTS, so its
+   * untouched commit is a no-op too. `editSeedUnitLabel`'s `?? val.unit`
+   * fallback is therefore not reached for those cells, which is what stops a
+   * `USD`/`kg·m^-3` badge pre-filling the input with a spelling neither end can
+   * parse.
+   *
+   * ON THE LADDERS-NOT-FETCHED PATH the two branches split by dimension rather
+   * than collapsing onto the first. `acceptsBareNumber` keeps gating the
+   * `BASE_UNIT_DIMENSIONS` floor there, because the ENGINE's coverage table is
+   * built in-process and never goes missing (task #5757 amendment) — so a
+   * Length or Angle row reaches the second branch with no ladder to read a
+   * default rung from, and `editSeedUnitLabel`'s `?? val.unit` fallback IS what
+   * supplies the unit. That is the one place the fallback is load-bearing:
+   * without it the seed would be a bare magnitude the panel itself refuses.
+   * Its output is still `isValidValue`-checked below, so a badge the floor
+   * alphabet cannot parse degrades to the bare magnitude rather than
+   * pre-filling refused text.
+   *
+   * The composed seed is still checked against `isValidValue` rather than
+   * assumed good: a malformed ladder payload can be present-but-rungless, which
+   * counts as covered here while offering no usable label. Such a cell falls
+   * back to the bare magnitude — refused on commit, but the user sees the
+   * number they were looking at rather than a unit spelling the panel rejects.
+   */
+  function editSeed(val: ValueData): string {
+    const magnitude = displayValue(val);
+    if (acceptsBareNumber(val.dimension, props.unitLadders)) return magnitude;
+    const unit = editSeedUnitLabel(val);
+    if (!unit) return magnitude;
+    const seeded = `${magnitude}${unit}`;
+    return isValidValue(seeded, val.cell_id) ? seeded : magnitude;
+  }
+
   function handleFocus(cellId: string, e: FocusEvent) {
     setEditingCellId(cellId);
     // Seed the edit buffer from the canonical backend value, not whatever is
@@ -362,9 +464,10 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     // `onSetParameter` expects on submit. Editing always operates in
     // canonical units so an unmodified commit is a true no-op instead of
     // silently rewriting the value by the picked unit's conversion factor
-    // (task #5199 amend).
+    // (task #5199 amend) — with the canonical UNIT carried along too, so that
+    // no-op survives the #5757 bare-number gate (see `editSeed`).
     const val = props.values[cellId];
-    setEditValue(val ? displayValue(val) : (e.target as HTMLInputElement).value);
+    setEditValue(val ? editSeed(val) : (e.target as HTMLInputElement).value);
   }
 
   function handleInput(cellId: string, e: InputEvent) {
@@ -379,12 +482,25 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    */
   function isValidValue(value: string, cellId: string): boolean {
     if (value === '') return false;
-    // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity)
-    if (NUMBER_RE.test(value) && Number.isFinite(Number(value))) return true;
+    const dimension = props.values[cellId]?.dimension;
+    // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity).
+    // `acceptsBareNumber` gates the whole branch (task #5757): a cell whose dimension a
+    // curated ladder covers needs a unit, because the engine used to resolve `20` in a
+    // Volume cell silently as 20 CUBIC METRES. It reads the same `dimension` AND the same
+    // ladder map the quantity branch below consults for `quantityReFor`, so the gate and
+    // the per-cell alphabet are two consumers of one coverage notion — a cell is told to
+    // supply a unit only when the alphabet beside it can express one.
+    if (
+      acceptsBareNumber(dimension, props.unitLadders) &&
+      NUMBER_RE.test(value) &&
+      Number.isFinite(Number(value))
+    ) {
+      return true;
+    }
     // Group 1 is the whole signed numeric literal, so the overflow check reads
     // it directly — no second regex re-declaring the unit alternation to strip
     // the suffix, and so nothing left to keep in sync.
-    const m = quantityReFor()(props.values[cellId]?.dimension).exec(value);
+    const m = quantityReFor()(dimension).exec(value);
     if (m) return Number.isFinite(Number(m[1]));
     return false;
   }

@@ -1,0 +1,218 @@
+prd: docs/prds/v0_6/instantiation-value-flow.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6586
+  title: 'instantiation-value-flow α (adopts #6586): dependency-ordered template-scope
+    elaboration + undef-ctor-arg coded diagnostic'
+  capabilities:
+  - name: phase-1.5-walk-substrate
+    binding: 'capability→producer — the dependency-ordered instance-scope walk to
+      port exists and is wired on the #5360 production path (elaborate_child_instance_nested,
+      crates/reify-eval/src/unfold.rs). Grep-verified 2026-08-26.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the port is behavioral (ordering); pinned by α's own B6/B7 tests, and
+        the diagnostic code name is an open question until implementation.
+  - name: undef-cause-substrate
+    binding: capability→producer — pub enum UndefCause (crates/reify-ir/src/value.rs)
+      + undef_tracer.rs exist on main.
+    verdict: PASS
+  - name: undef-ctor-arg-rejection
+    binding: G6 branch 4 (rejection) — silent-accept OBSERVED today by D3 probe (reify
+      check exits 0, no diagnostic, child unrealized, on the α-baseline fixture);
+      the rejection mechanism is absent and α is its named producer.
+    verdict: PASS
+- label: β
+  task_id: 6592
+  title: 'instantiation-value-flow β (adopts #6592): one effective valuation drives
+    placements + descendant ctor args + geometry, all depths, all three arms'
+  capabilities:
+  - name: instance-value-cells-correct
+    binding: capability→producer — instance-scope cells already correct for the whole
+      plain-sub subtree; producer task 5360 (done), crates/reify-eval/src/unfold.rs
+      phase-1.5.
+    verdict: PASS
+  - name: one-level-override-machinery
+    binding: capability→producer — realize_sub_override_handles (crates/reify-eval/src/engine_build.rs)
+      wired from the surfacing walk; the documented v0.1 scope cut ("one level of
+      override depth only") is the boundary β retires.
+    verdict: PASS
+  - name: pose-eval-site
+    binding: 'signal premise — the single pose evaluation site to overlay: eval_sub_pose
+      (crates/reify-eval/src/geometry_ops.rs), called from walk_placed_realizations.
+      Grep-verified.'
+    verdict: PASS
+  - name: probe-fixture-parses
+    binding: 'grammar-fixture — tests/prd-gate/fixtures/instantiation_value_flow_probe.ri;
+      D3 run wf_e306782c-e1a: parses (0 ERROR nodes), reify check exits 0.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: β's delivery is geometric (STEP/mock-op assertions in its own tests);
+        no stable grep expresses it.
+- label: γ
+  task_id: 6608
+  title: 'instantiation-value-flow γ: UndefCause variant + Error-severity DiagnosticCodes,
+    layered on #5403 check exit gate (ruled 2026-08-26)'
+  capabilities:
+  - name: diagnostic-code-registry
+    binding: capability→producer — DiagnosticCode registry (crates/reify-core/src/diagnostics.rs),
+      typed-code test precedent.
+    verdict: PASS
+  - name: severity-exit-house-pattern
+    binding: 'capability→producer — task 4458 (done): cmd_eval/cmd_build Severity::Error
+      exit gates; the check gate itself is delivered upstream by #5403 (γ depends
+      on it, ruled 2026-08-26); γ layers its codes on it.'
+    verdict: PASS
+  - name: check-fails-on-unrealized-rejection
+    binding: G6 branch 4 — silent-accept OBSERVED today by D3 probe (reify check exits
+      0 + "All constraints satisfied." on the probe fixture whose geometry plane is
+      default-shaped); γ is the named producer of the rejection.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: diagnostic code names are open question 1; a grep on a not-yet-fixed
+        name would be a false check.
+- label: δ
+  task_id: 6609
+  title: 'instantiation-value-flow δ: instance-scoped constraint checking against
+    effective valuations'
+  capabilities:
+  - name: rescoping-precedent
+    binding: capability→producer — map_value_refs (crates/reify-ir/src/expr.rs), used
+      for entity rescoping in post_process_cross_sub_value_cells (crates/reify-eval/src/engine_build.rs).
+    verdict: PASS
+  - name: runtime-constraint-node-precedent
+    binding: 'capability→producer — forall_templates per-element emission ledger (crates/reify-eval/src/graph.rs)
+      + engine_edit collection-count drain/resize discipline: runtime-materialized
+      constraint nodes are a landed pattern.'
+    verdict: PASS
+  - name: dispatch-reusable
+    binding: capability→producer — dispatch_constraints (crates/reify-eval/src/engine_constraints.rs)
+      is the shared dispatcher.
+    verdict: PASS
+  - name: override-violation-rejection
+    binding: 'G6 branch 4 — silent-accept OBSERVED today by D3 probe (Bar(length:
+      -5mm) vs constraint length > 0mm: check exits 0, no violation); δ is the named
+      producer.'
+    verdict: PASS
+- label: ε
+  task_id: 6610
+  title: 'instantiation-value-flow ε: geometry-plane test completion + scope-cut story
+    correction'
+  capabilities:
+  - name: pinned-boundary-test-exists
+    binding: capability→producer — cross_sub_nested_sub_in_override_path_produces_compile_error
+      (crates/reify-eval/tests/cross_sub_geometry_e2e.rs) exists and self-documents
+      the re-baseline obligation.
+    verdict: PASS
+  - name: values-plane-suite-exists
+    binding: capability→producer — nested_constructor_arg_threads_through_two_levels
+      (crates/reify-eval/tests/harness_engine/nested_sub_derived_let_e2e.rs), kernel-less
+      values-plane; ε adds the geometry-plane siblings.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: one level of override depth only
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+      expect: absent
+- label: ζ
+  task_id: 6611
+  title: 'instantiation-value-flow ζ: integration gate — fixtures registered, CLI
+    STEP-grep tests, Shape-A oracle harness'
+  capabilities:
+  - name: step-grep-channel
+    binding: 'capability→producer — crates/reify-cli/tests/harness_cli/cli_sub_placement_assembly.rs:
+      the canonical reify-build-then-grep-STEP observation channel.'
+    verdict: PASS
+  - name: mesh-stats-channel
+    binding: capability→producer — GUI debug MCP mesh_stats (gui/src-tauri/src/debug_server.rs),
+      parity-locked by debugParity.test.ts.
+    verdict: PASS
+  - name: fixture-registration-mechanism
+    binding: capability→producer — _RUST_COUPLED_RI_FIXTURES (scripts/verify.sh) +
+      PG-DRIFT (tests/infra/test_verify_scope.sh) re-derivation.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: instantiation_value_flow_probe.ri
+      paths:
+      - scripts/verify.sh
+      expect: present
+  - name: oracle-harness-premise
+    binding: 'signal premise — the Shape-A oracle (instance ≡ hand-specialized twin)
+      is the mechanism the dogfood duplicates prove works end-to-end (FairleadPairMirrored,
+      dogfood branch 804236401a; #6592 record).'
+    verdict: PASS
+- label: θ
+  task_id: 6612
+  title: 'instantiation-value-flow θ: docs-truth bundle (chunk, exemplar, cheatsheet
+    index, discoverability)'
+  capabilities:
+  - name: chunks-surface
+    binding: capability→producer — crates/reify-mcp/src/tools/chunks/*.md; overlay
+      docs-truth gate names the four deliverables.
+    verdict: PASS
+  - name: exemplar-gate
+    binding: 'capability→producer — examples/best_practices/ auto-compile-gated by
+      examples_smoke.rs. DAG note: the exemplar is writable only AFTER β lands (θ
+      depends on β — direction correct).'
+    verdict: PASS
+- label: ι
+  task_id: 6613
+  title: 'instantiation-value-flow ι: record DependencyTrace on instance param commits
+    (warm ctor-arg propagation)'
+  capabilities:
+  - name: gap-evidence
+    binding: signal premise — instance param cells commit with DependencyTrace::default()
+      (crates/reify-eval/src/unfold.rs phase-1 commit site); the warm reverse-index
+      cone (crates/reify-eval/src/engine_edit.rs) has no edge from a parent cell into
+      a ctor-arg instance cell. Named gap; ι is the producer.
+    verdict: PASS
+- label: κ
+  task_id: 6657
+  title: 'instantiation-value-flow κ: solved-value-auto consumption in the per-instance
+    overlay (Undef = coded-diagnostic skip; solved = re-realize at the solved value)'
+  capabilities:
+  - name: scoped-auto-cell-substrate
+    binding: capability→producer — auto ctor args are filtered out of compiled_args
+      (extract_auto_free filter arm) and minted as parent-scoped Auto cells (bare-args
+      + spec-body arms, crates/reify-compiler/src/entity.rs). Trace-verified 2026-08-26
+      (IVF-sequencing study; memo in #6631 details).
+    verdict: PASS
+  - name: solver-scoped-write-back
+    binding: capability→producer — the dimensional solver writes solved autos back
+      under the scoped instance keys (Solved-arm write-back, crates/reify-eval/src/engine_eval.rs).
+      Trace-verified 2026-08-26.
+    verdict: PASS
+  - name: own-scope-post-solve-rail
+    binding: signal premise — own-scope let/param autos already realize post-solve
+      under eval (solved template let-cone re-run, crates/reify-eval/src/engine_eval.rs);
+      probe-verified 2026-08-26 (auto_let.ri realizes at the solved 10mm).
+    verdict: PASS
+  - name: silent-default-baseline
+    binding: 'G6 rejection baseline — a solved ctor-arg auto realizes the child DEFAULT
+      today (auto_ctl.ri: eval solves 0.01 m, build STEP z-extent -5, exit 0). Probe-verified
+      2026-08-26 on main 181d1ec24c; κ + the #6631 posture flip retire it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: "κ's delivery is geometric + diagnostic (STEP assertion / coded diagnostic
+        in its own harness tests); no stable grep expresses it."
+- label: η
+  task_id: 6614
+  title: 'instantiation-value-flow η: PRD close — ID backfill + terminal stamp + AS-AUTHORED
+    freeze'
+  capabilities:
+  - name: terminal-stamp
+    binding: process capability — overlay decompose-close obligations; no substrate.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Status.*SHIPPED
+      paths:
+      - docs/prds/v0_6/instantiation-value-flow.md
+      expect: present

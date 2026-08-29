@@ -9,7 +9,7 @@
 //! `GeometryHandle`, `kernel_handle: None`, for any `Type::Geometry` cell
 //! with a name-matching realization, `engine_build.rs:8436`). Unlike the
 //! `build()`-path GHR-δ S12 precedent
-//! (`crates/reify-eval/tests/geometry_handle_freshness.rs`
+//! (`crates/reify-eval/tests/harness_geometry/geometry_handle_freshness.rs`
 //! `removed_realization_donates_invalidation_to_surviving_geometry_cell`,
 //! param-backed) — where an invalidated cache entry stays ABSENT until a
 //! later on-demand rebuild — the kernel-free eval path eagerly re-derives

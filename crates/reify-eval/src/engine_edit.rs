@@ -49,8 +49,9 @@ use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::warm_pool::WarmStatePool;
 use crate::{
-    CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup, build_meta_map,
-    eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
+    CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
+    OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
+    merge_functions,
 };
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
@@ -1450,6 +1451,20 @@ impl Engine {
         let mut resolved_params = HashMap::new();
         let mut diagnostics = Vec::new();
 
+        // task #4880: an OWNED compute-dispatch snapshot so `@optimized` ComputeNodes
+        // (e.g. `solve_elastic_static`) reached from inside the solver's per-candidate
+        // cost loop dispatch through the real Engine trampoline instead of hardcoding to
+        // `Value::Undef`. Without it this WARM edit path diverges from the COLD
+        // `Engine::eval` path (engine_eval.rs), which does wire it: an FEA-in-the-loop
+        // model would resolve on load and then silently revert to Infeasible/Undef on
+        // the first GUI slider move, with no diagnostic. `from_registry(&self.compute_registry)`
+        // — NOT `from_engine(self)`: these are `&mut self` methods, and `edit_source`
+        // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
+        // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
+        // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
+        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
+
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
@@ -1528,7 +1543,7 @@ impl Engine {
                     functions: Arc::clone(&functions),
                 };
 
-                match solver.solve(&problem) {
+                match solver.solve_with_dispatch(&problem, Some(&dispatcher)) {
                     SolveResult::Solved {
                         values: solver_values,
                         unique,
@@ -1547,6 +1562,12 @@ impl Engine {
                             // matches the pre-migration cache entry — a
                             // solver-resolved auto has no static expr
                             // dependency trace.
+                            //
+                            // Paired with edit_source's SolveResult::Solved
+                            // resolution back-prop arm below (~:3692) — this
+                            // pair silently diverged once already (edit_source
+                            // went unmigrated from #5056 until #6373); change
+                            // them together.
                             commit_cell_result(
                                 CommitLegs {
                                     values: &mut values,
@@ -3598,6 +3619,20 @@ impl Engine {
         let mut resolved_params: HashMap<ValueCellId, Value> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
+        // task #4880: an OWNED compute-dispatch snapshot so `@optimized` ComputeNodes
+        // (e.g. `solve_elastic_static`) reached from inside the solver's per-candidate
+        // cost loop dispatch through the real Engine trampoline instead of hardcoding to
+        // `Value::Undef`. Without it this WARM edit path diverges from the COLD
+        // `Engine::eval` path (engine_eval.rs), which does wire it: an FEA-in-the-loop
+        // model would resolve on load and then silently revert to Infeasible/Undef on
+        // the first GUI slider move, with no diagnostic. `from_registry(&self.compute_registry)`
+        // — NOT `from_engine(self)`: these are `&mut self` methods, and `edit_source`
+        // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
+        // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
+        // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
+        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
+
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
@@ -3676,35 +3711,40 @@ impl Engine {
                     functions: Arc::clone(&functions),
                 };
 
-                match solver.solve(&problem) {
+                match solver.solve_with_dispatch(&problem, Some(&dispatcher)) {
                     SolveResult::Solved {
                         values: solver_values,
                         unique,
                     } => {
                         for (id, val) in &solver_values {
-                            values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
                             all_resolved_ids.insert(id.clone());
-
-                            // Update snapshot values
-                            new_snapshot
-                                .values
-                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             // Update param_overrides so subsequent edits
                             // use the resolved value
                             self.param_overrides.insert(id.clone(), val.clone());
 
-                            // Update cache
-                            let node_id = NodeId::Value(id.clone());
-                            let trace = DependencyTrace::default();
-                            let cached_result =
-                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                            self.cache.record_evaluation(
-                                node_id,
-                                cached_result,
+                            // Commit via the cell-commit primitive (task δ
+                            // #5056; kept in sync with edit_param's arm by
+                            // task #6373): atomically writes values/snapshot/
+                            // cache/journal (INV-EVAL-1). DependencyTrace::
+                            // default() matches the pre-migration cache
+                            // entry — a solver-resolved auto has no static
+                            // expr dependency trace.
+                            commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut new_snapshot.values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                id.clone(),
+                                val.clone(),
+                                DeterminacyRule::UnconditionalDetermined,
+                                TraceSource::EditReeval,
+                                DependencyTrace::default(),
                                 VersionId(version_id),
-                                trace,
+                                CacheLeg::Record,
                             );
                         }
                         if !unique {
@@ -6491,6 +6531,189 @@ mod tests {
             }
             other => panic!("expected CachedResult::Value, got {other:?}"),
         }
+    }
+
+    /// Task #6373: pins that `edit_source`'s `SolveResult::Solved` resolution
+    /// back-prop arm (the per-cell write-back inside the per-entity-group
+    /// solver loop) is wired through the `commit_cell_result` primitive
+    /// (`cell_commit.rs`) rather than the hand-rolled
+    /// values-insert/snapshot-insert/record_evaluation copy that writes no
+    /// journal leg at all. This is the `edit_source` half of the
+    /// edit_param/edit_source resolution-arm sync pair (INV-EVAL-1): its
+    /// mirror is `edit_param_dependent_reeval_routes_through_commit_primitive`
+    /// above, and the edit_param side of this exact migration has its own
+    /// suite at `crates/reify-eval/tests/harness_engine/edit_param_cell_commit_migration.rs`.
+    ///
+    /// FIXTURE: two `.ri` sources differing only in the constraint's target —
+    /// SRC_A seeds the solver at x = 20mm via cold `eval()`, SRC_B retargets
+    /// the constraint to `x == 10mm` via `edit_source`. This is the same
+    /// seed-20mm → target-10mm direction `edit_param_back_props_moved_auto`
+    /// above already pins as reaching `SolveResult::Solved` post-#4700 —
+    /// forcing a real Nelder-Mead search, not the initially-feasible
+    /// early-exit — so `MOVED_AUTO_TOL = 1e-6` is used for every value
+    /// assertion here, exactly as that test uses it (see its doc comment for
+    /// why `1e-9` would be wrong for a search-path fixture).
+    ///
+    /// RED on base: `x` is declared `auto`, so its `value_cells` node carries
+    /// no `default_expr`; both edit_source's main eval walk and its wave2
+    /// loop are guarded by `if let Some(ref expr) = node.default_expr`, so
+    /// neither touches `x` — the Solved arm's hand-rolled write-back is the
+    /// only site that resolves `x`, and it calls no `self.journal.record(..)`
+    /// today. Assertion (1) below (the `resolved_params` guard) already
+    /// passes on base; assertion (2) (the journal pair) is the RED signal.
+    #[test]
+    fn edit_source_resolution_back_prop_routes_through_commit_primitive() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::DeterminacyState;
+        use reify_test_support::compile_source;
+
+        use crate::cache::{CachedResult, NodeId};
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const MOVED_AUTO_TOL: f64 = 1e-6;
+
+        const SRC_A: &str = r#"structure WarmAutoSrcCommit {
+    param x : Length = auto
+    constraint x == 20mm
+    let y = x + 5mm
+}"#;
+        const SRC_B: &str = r#"structure WarmAutoSrcCommit {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled_a = compile_source(SRC_A);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        // Cold eval — populates eval_state; solver resolves x = 20mm = 0.02 m.
+        engine.eval(&compiled_a);
+
+        let x_id = ValueCellId::new("WarmAutoSrcCommit", "x");
+        let x_node = NodeId::Value(x_id.clone());
+        let events_before = engine.journal().events_for_node(&x_node).len();
+
+        let compiled_b = compile_source(SRC_B);
+        let result = engine
+            .edit_source(&compiled_b)
+            .expect("edit_source must succeed");
+
+        // (1) GUARD: the Solved arm actually fired. A failure here means the
+        // fixture is wrong, not the production code under test.
+        let x_resolved = result.resolved_params.get(&x_id).expect(
+            "x must be in resolved_params after SolveResult::Solved back-prop; \
+             if absent, the fixture never reached the Solved arm",
+        );
+        assert_scalar_si_approx_eq(
+            x_resolved,
+            0.01,
+            MOVED_AUTO_TOL,
+            "edit_source moved-auto: x must be resolved to 0.01 m (10mm), not the seeded 20mm",
+        );
+
+        // (2) RED SIGNAL — journal: the primitive's own Started/Completed
+        // pair, with the EditReeval provenance slug recorded on Started.
+        // Checks the LAST two events (rather than assuming an exact total)
+        // since cold eval() may itself record journal events for x before
+        // edit_source runs.
+        let events_after = engine.journal().events_for_node(&x_node);
+        assert!(
+            events_after.len() >= events_before + 2,
+            "edit_source must append at least a Started+Completed pair for x, \
+             had {events_before} events before, {} after",
+            events_after.len()
+        );
+        let started = events_after[events_after.len() - 2];
+        let completed = events_after[events_after.len() - 1];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug,
+                TraceSource::EditReeval.as_str(),
+                "Started payload must carry the edit-reeval provenance slug"
+            ),
+            other => panic!(
+                "expected Started payload Custom(\"{}\"), got {other:?}",
+                TraceSource::EditReeval.as_str()
+            ),
+        }
+        assert!(
+            matches!(completed.kind, EventKind::Completed { .. }),
+            "expected the last event to be Completed, got {:?}",
+            completed.kind
+        );
+
+        // (3) Three-leg agreement: result.values, snapshot, and cache all
+        // carry (0.01 m, Determined) for x.
+        let x_result_val = result
+            .values
+            .get(&x_id)
+            .expect("x must be in result.values after edit_source back-prop");
+        assert_scalar_si_approx_eq(
+            x_result_val,
+            0.01,
+            MOVED_AUTO_TOL,
+            "result.values[x] must be 0.01 m (10mm) after back-prop",
+        );
+
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_source");
+        let (snap_x, snap_det) = snapshot
+            .values
+            .get(&x_id)
+            .expect("x must be in snapshot.values after edit_source");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[x] must be Determined"
+        );
+        assert_scalar_si_approx_eq(
+            snap_x,
+            0.01,
+            MOVED_AUTO_TOL,
+            "snapshot.values[x] must be 0.01 m (10mm) after back-prop",
+        );
+
+        let cache_entry = engine
+            .cache_store()
+            .get(&x_node)
+            .expect("x must have a cache entry after edit_source");
+        match &cache_entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(
+                    *d,
+                    DeterminacyState::Determined,
+                    "cache[x] determinacy must be Determined"
+                );
+                assert_scalar_si_approx_eq(
+                    v,
+                    0.01,
+                    MOVED_AUTO_TOL,
+                    "cache[x] must be 0.01 m (10mm)",
+                );
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+
+        // (4) Downstream reseed unaffected: y = x + 5mm = 15mm.
+        let y_id = ValueCellId::new("WarmAutoSrcCommit", "y");
+        let y_val = result
+            .values
+            .get(&y_id)
+            .expect("y must be in result.values after edit_source reseed");
+        assert_scalar_si_approx_eq(
+            y_val,
+            0.015,
+            MOVED_AUTO_TOL,
+            "edit_source reseed: y must be 0.015 m (15mm = x + 5mm)",
+        );
     }
 
     /// Assert that `id`'s journal, snapshot, and cache all show the effects of

@@ -1,0 +1,27 @@
+// γ-verification ADVERSARY baseline fixture — instantiation-value-flow.md §5 B7
+// (leaf γ "loud-failure convergence"), today-baseline counterpart the prover's
+// premise set left unbound: a genuinely-undef ctor arg (declaration-order
+// sibling-sub read, the pre-α/#6586 contrived undef source) is SILENTLY
+// accepted by `reify check` today.
+// Verified 2026-08-26 @ 041554eae5 (fresh debug binary):
+//   `reify check`: exit 0, stdout "All constraints satisfied.", stderr EMPTY —
+//     check never reaches the realization path; total silent accept.
+//   `reify eval`:  exit 1, stderr carries the CODE-LESS
+//     "error: per-instance re-realization compile error for Top.a: argument
+//      'height' for cylinder is unresolved (Undef)" — the exact code-less
+//     Diagnostic::error (engine_build.rs realize_sub_override_handles) that γ
+//     replaces with coded Error-severity DiagnosticCodes + UndefCause.
+// The check/eval exit divergence on THIS fixture is the severity-exit
+// convergence gap γ closes: post-γ, `reify check` here must exit nonzero with
+// a coded Error naming the sub and the argument.
+module adv_ivf_undef_ctor_arg_check_silent
+
+pub structure Leaf {
+    param k : Length = 10mm
+    let body = translate(cylinder(2mm, k), 0mm, 0mm, 0mm - k / 2)
+}
+
+pub structure Top {
+    sub a = Leaf(k: self.b.k) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+    sub b = Leaf(k: 20mm)     at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+}

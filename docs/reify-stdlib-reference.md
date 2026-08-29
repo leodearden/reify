@@ -329,31 +329,72 @@ dimensionless rotation and `Length` translation. The same `Map` shape is
 returned by `joint_jacobian` (§13.1) so that solver code can compose twists
 and Jacobian columns uniformly.
 
-**Linear-component dimension convention.** `transform_log` preserves the
-input `Transform`'s translation dimension on `linear` verbatim, and
-`transform_exp` accepts `linear` with the same polymorphic policy:
+**Linear-component dimension convention.** `transform_log` requires the input
+`Transform`'s translation to be `Vector3<Length>` and emits `linear` as
+`Vector3<Length>`; `transform_exp` requires `linear` to be `Vector3<Length>`:
 
-| `linear` dimension | accepted? | notes                                   |
-|--------------------|-----------|-----------------------------------------|
-| `Length`           | ✓         | canonical — matches the `Twist` type    |
-| `Dimensionless`    | ✓         | unit-less twists / numerical work       |
-| `Angle`, `Mass`, … | ✗         | rejected as `Undef`                     |
+| `linear` dimension       | accepted? | notes                                                                            |
+|--------------------------|-----------|----------------------------------------------------------------------------------|
+| `Length`                 | ✓         | canonical — matches the `Twist` type                                             |
+| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Error` naming the offending dimension      |
+| `Angle`, `Mass`, …       | ✗         | same rejection + `Error`                                                          |
 
-The pair `transform_log` ↔ `transform_exp` round-trips exactly under both
-policies, so a `Transform` whose translation is `Dimensionless` will round-trip
-through a `Dimensionless` linear, and likewise for `Length`. `joint_jacobian`
-always emits `Dimensionless` on both `angular` and `linear` because joint
-parameters are unit-less in the joint's local frame.
+Rejection is uniform: every non-`Length` dimension takes the same branch.
+
+There is now ONE policy — `Length` — and both ends of the seam gate identically,
+so `transform_log` ↔ `transform_exp` round-trips exactly on `Length` and both
+ends reject in lockstep otherwise. Identity and pure-rotation transforms are
+unaffected: `transform3_identity` builds `Length` zeros.
+
+> **RULING #6126** (Leo, 2026-08-07): a twist's `linear` half is
+> `Vector3<Length>`, and mirrored, a `Transform`'s translation crossing this seam
+> carries `Length` and only `Length`. Grounds: decision D11 of
+> `docs/prds/v0_6/units-length-gate-completion.md` — after the `Real` →
+> `Scalar{Dimensionless}` unification, "also admits `Dimensionless`" means "also
+> admits bare numbers". This closes the last `Length | Dimensionless` disjunction
+> **on this seam**, which is the whole of the ruling's scope.
+>
+> **Severity amendment** (Leo, 2026-08-19, via esc-6080-6): the rejection is a
+> `Severity::Error`, so `reify eval` exits 1. A wrong dimension is a
+> design-correctness fault rather than a degradation to tolerate, and the sibling
+> angular half of the same builtin family (#6080) reports its equivalent fault at
+> the same severity — so one fault class does not report two ways across one
+> seam. The diagnostic stays code-less; minting
+> `DiagnosticCode::ArgDimensionMismatch` is owned by
+> `docs/prds/v0_6/dimension-checked-readers.md` §6.
+
+**Scope: this seam only.** The gate above is *not* evidence that the transform
+family is uniformly `Length`-only. `transform3`'s signature above declares
+`translation: Vector3<Length>`, but the evaluator applies no dimension check to
+it — only a 3-component `Vector` shape check — and `transform_compose` /
+`transform_inverse` propagate whatever dimension they are handed. So
+`transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still constructs, composes,
+and inverts without complaint; the rejection surfaces only downstream at
+`transform_log`. That asymmetry is deliberate and owned elsewhere — task #6089
+rules `Transform` translation `Length` and stamps the constructor arms, and
+#5747 (R12/R8) narrows the affine and pose-decode readers.
+
+By CONTRAST, `joint_jacobian` (§13.1) shares the `Map { angular, linear }` shape
+but its columns are ∂pose/∂q, **not** twists — a revolute column's linear part is
+m/rad — so they are not governed by this ruling and keep emitting
+`Dimensionless` on both halves because joint parameters are unit-less in the
+joint's local frame (#6102 gives them their own structure).
 
 ### 3.2 `std.geometry.primitive`
 
 **Note on the signatures below:** these describe the target `std.geometry` stdlib
 API — the structured/typed argument forms designers should expect. The
 compiler's current lowering for a few of these constructors (`polygon`,
-`line_segment`, `arc`, `interp`, `bezier`) accepts only flat positional
+`line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat positional
 coordinate arguments rather than the structured types shown; each is annotated
 below with a `// current compiler form:` comment giving the form that compiles
 today.
+
+The flat form is only a SHAPE divergence, not a units one: every argument the
+structured signature types as a `Length` must still be written dimensioned in
+the flat form (`0mm`, not `0`), and a bare number is rejected rather than read
+as SI metres. Arguments the structured signature types as `Real` or `Int` —
+weights, knots, degrees, counts, and direction components — stay dimensionless.
 
 **3D solids:**
 
@@ -398,7 +439,9 @@ convention changes:
 
 `cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
 `wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
-`translate(primitive(...), 0, 0, -h/2)` workaround.
+`translate(primitive(...), 0mm, 0mm, -h/2)` workaround — note the dimensioned zeros: `translate`'s
+components are length-semantic, so a bare `0` is rejected rather than read as 0 SI metres. (`-h/2`
+needs no change; dividing a length by a bare number preserves the length.)
 
 `rounded_box`/`rounded_rect` additionally require `corner_r > 0` and
 `2*corner_r < min(width, depth)`; a statically-known violation (constant literal
@@ -416,6 +459,8 @@ fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
 // current compiler form: polygon(x1, y1, x2, y2, ...) — variadic flat
 // coordinate pairs, at least 6 args (3 points), even count; see geometry.rs:1570
+// EVERY coordinate is a Length, at every arity, per the section note above:
+// polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm) — a bare number is rejected.
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
 fn rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface
 ```
@@ -440,6 +485,13 @@ fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
 // current compiler form: same list -> flat-args divergence as `interp` above
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
+// current compiler form: nurbs(degree, n_points, coords…, weights…, knots…) —
+// one flat positional stream, with degree FIRST (not last as above) and an
+// explicit n_points that the structured form derives from the list. Only
+// `coords…` is length-semantic and must be dimensioned; degree, n_points,
+// weights and knots are the `Int`/`Real` above and stay dimensionless. Knot
+// count is n_points + degree + 1. e.g.
+// nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
 
 // Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
 // fn nurbs_surface(/* NURBS surface parameters */) -> Surface
@@ -1219,7 +1271,7 @@ structure def ISOToleranceGrade {
     param grade : Int
     param nominal_min : Length
     param nominal_max : Length
-    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)  // ISO 286-1 IT5–IT18, nominal ≤500mm
+    let tolerance_value = iso_it_tolerance(nominal_min, nominal_max, grade)  // ISO 286-1 IT5–IT18, nominal ≤500mm
 }
 ```
 
@@ -1883,11 +1935,11 @@ fn min_clearance(s: Snapshot, a: BodyId, b: BodyId) -> Length
 
 `min_clearance` computes the minimum separation distance between `a` and `b` using OCCT's `BRepExtrema_DistShapeShape`. Returns `0mm` when the bodies intersect.
 
-**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
+**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
 
 ### 13.6 Worked examples
 
-The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
+The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
 
 **Toolchanger dock-approach clearance check.** A toolhead riding on a gantry that itself rides on a Y-rail sweeps its dock-approach path; the interference query asserts no collision with the parked tool anywhere along the path except at the final dock pose.
 

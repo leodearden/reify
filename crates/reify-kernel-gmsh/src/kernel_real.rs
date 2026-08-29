@@ -73,6 +73,32 @@ struct VolumeMeshStore {
     meshes: HashMap<GeometryHandleId, VolumeMesh>,
 }
 
+/// Dihedral-angle threshold (radians) above which `classify_surfaces` treats a
+/// mesh edge as a sharp feature separating two B-rep surfaces.
+///
+/// **Must stay strictly below π/2.** gmsh's sharp-edge test is
+/// strictly-greater-than and a box's dihedral angle is exactly π/2, so a π/2
+/// threshold registers none of a box's own edges — see the comment at the
+/// `classify_surfaces` call site in [`GmshKernel::mesh_to_volume`] for the full
+/// measured failure mode (#6200).
+///
+/// FRAC_PI_4 (45°) is the value the sibling attributed producer in
+/// `mesh_boundary.rs` has shipped against real OCCT geometry all along, rather
+/// than a fourth distinct magic angle; that producer now consumes this constant
+/// too, so the crate holds exactly one definition.
+///
+/// Exported so `tests/classify_feature_angle.rs` can census the B-rep
+/// decomposition against the PRODUCTION value instead of a copied literal that
+/// could silently drift away from it.
+pub const CLASSIFY_FEATURE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
+
+/// Bend-angle threshold (radians) above which curve–curve junctions are emitted
+/// as B-rep vertex entities during `classify_surfaces`.
+///
+/// Sharper than gmsh's π default so 90°-junction corners are recognised.
+/// Exported alongside [`CLASSIFY_FEATURE_ANGLE`] for the same reason.
+pub const CLASSIFY_CURVE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
+
 impl GmshKernel {
     /// Construct a new `GmshKernel` with an empty volume-mesh store. The gmsh
     /// library is initialised lazily on the first `mesh_to_volume` call (via
@@ -226,12 +252,43 @@ impl GmshKernel {
         let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
         ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-        // Reclassify the discrete surface and build geometry so 3D meshing
-        // has a parametric region to fill. Dihedral threshold π/2 (90°)
-        // splits cube faces into separate B-rep surface entities. curve_angle
-        // π/4 (45°) is the bend-angle threshold above which curve-curve
-        // junctions are emitted as B-rep vertex entities — sharper than the
-        // π default and recognizes 90°-junction corners during classification.
+        // Reclassify the discrete surface and build geometry so 3D meshing has
+        // a parametric region to fill.
+        //
+        // The feature angle MUST stay strictly below π/2 (#6200). gmsh's
+        // sharp-edge test is strictly-greater-than, and a box's dihedral angle
+        // is EXACTLY π/2, so a π/2 threshold registers none of the box's own
+        // edges as sharp. This site used to pass FRAC_PI_2 with a comment
+        // claiming it "splits cube faces into separate B-rep surface entities";
+        // that claim was false, and nothing tested it. Measured with the gmsh
+        // logger armed (the `General.Terminal = 0` above otherwise hides all of
+        // this), on a welded 8-vertex unit cube at FRAC_PI_2:
+        //
+        //     Classifying surfaces (angle: 90)...
+        //      - Level 0 partition with 12 triangles split in 2 parts because
+        //        poincare characteristic 2 is not 0
+        //     Found 2 model surfaces
+        //     Found 1 model curves
+        //
+        // i.e. the only split that happened was TOPOLOGICAL (a parametrizability
+        // necessity), not a feature split. `create_geometry` then reparametrizes
+        // 2 non-planar patches instead of 6 planar faces, so the region
+        // `geo_add_volume` hands HXT is not the full box: HXT built 206 tets
+        // while the model retained only 91. Fill fraction 0.74–0.86 with ZERO
+        // interior nodes, scale-invariantly, and refinement does not rescue it
+        // (4x resolution only reaches 0.926). Downstream, #6154 measured the
+        // same pathology as 0.8429 on the realized fixture.
+        //
+        // Two sibling call sites in this crate already diagnosed this exact bug
+        // and worked around it — `mesh_boundary.rs` (FRAC_PI_4, the attributed
+        // producer) and `refine_volume.rs` (PI/12) — each noting that a cube's
+        // corners do not become dim-0 entities under a π/2 threshold. What
+        // `mesh_boundary.rs` got wrong was inferring that volume meshing "only
+        // needs a closed watertight surface" and could therefore tolerate 90°;
+        // that inference is what left this site as the crate's last 90°
+        // hold-out. It cannot: HXT fills the B-rep region, not the shell.
+        // See `tests/classify_feature_angle.rs` (B-rep census, importing the
+        // constants below) and `tests/volume_fill_fraction.rs` (fill fraction).
         //
         // Note: this affects only the B-rep classification. `create_geometry`
         // and `mesh_generate(3)` below re-mesh from the resulting parametric
@@ -240,7 +297,7 @@ impl GmshKernel {
         // diagnostic test in `tests/gmsh_classify_diagnostics.rs`. See task
         // 3591 for the broader NodeAttachment-producer redesign that
         // implication motivates.
-        ffi::classify_surfaces(std::f64::consts::FRAC_PI_2, 1, 1, std::f64::consts::FRAC_PI_4, 0)?;
+        ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)?;
         ffi::create_geometry(&[])?;
 
         // After classify+createGeometry, gmsh creates new geometric surface
@@ -516,10 +573,24 @@ impl GeometryKernel for GmshKernel {
     ///
     /// # Why `repair_cfg = None`
     ///
-    /// The attribution producer rejects vertex-merging repair (it would
-    /// invalidate per-node attribution). The caller (the engine realization
-    /// edge, step-18) is therefore responsible for supplying a watertight
-    /// surface and degrades to the plain producer on any error here.
+    /// `None` does not disable welding: since task ξ (#5116), `repair_cfg`
+    /// only *selects* the weld configuration (`None` means
+    /// `RepairConfig::default()`) rather than gating whether welding can
+    /// happen at all, as it did pre-ξ. With `None` the weld is on demand,
+    /// not unconditional — a cheap watertightness preflight on the raw
+    /// surface decides whether the O(n²) merge scan is worth paying for:
+    /// an already-watertight surface is used as-is, an unwelded one is
+    /// welded with the default config. This is safe for attribution
+    /// because attribution is derived from gmsh entity membership after
+    /// re-meshing, never from input-vertex identity, and the entity
+    /// anchors here are face-centroid positions that a weld never moves
+    /// (survivors keep their exact coordinates) — see the repair/welding
+    /// discussion on [`crate::mesh_surface_to_volume_with_attribution`]
+    /// for the full argument. A surface with a genuine open boundary
+    /// still fails the post-weld watertightness check and returns
+    /// `Err`, which the engine realization edge (task 4092 step-18,
+    /// `reify-eval`'s `engine_build.rs`) degrades to the plain
+    /// [`Self::mesh_surface_to_volume`] path (boundary `None`).
     #[cfg(feature = "mesh-morph")]
     fn mesh_surface_to_volume_attributed(
         &self,

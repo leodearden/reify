@@ -222,10 +222,10 @@ unsafe extern "C" {
     /// `Mesh.MeshSizeFromPoints=1`, sizes set on 0D entities (dim=0) drive
     /// interpolated mesh sizing across the entire domain.
     // At time of writing, consumed by same-file Rust wrapper
-    // `mesh_set_size_at_entity` (~line 786) → `refine_volume.rs:262`
+    // `mesh_set_size_at_entity`, called from the per-vertex size-hint loop
     // inside `reify_kernel_gmsh::refine_volume_with_size_field`. The
     // G-tool flags same-file callers as orphans; the call chain is live.
-    // G-allow: same-file consumer `mesh_set_size_at_entity` → refine_volume.rs:262 (G-tool same-file-caller heuristic limitation).
+    // G-allow: same-file consumer `mesh_set_size_at_entity` -> the per-vertex size-hint loop in refine_volume_with_size_field (refine_volume.rs) (G-tool same-file-caller heuristic limitation).
     pub fn gmshModelMeshSetSize(
         dimTags: *const c_int,
         dimTags_n: usize,

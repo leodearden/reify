@@ -30,14 +30,20 @@
 //! fails on every runner. The kernel build + assertion is gated on
 //! `reify_kernel_occt::OCCT_AVAILABLE` — skips cleanly on runners without OCCT.
 //!
-//! Modelled on `crates/reify-eval/tests/kernel_queries_contains.rs` (Bool
-//! assertion pattern) and `crates/reify-eval/tests/kernel_queries_distance_smoke.rs`
+//! Modelled on `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_contains.rs` (Bool
+//! assertion pattern) and `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_distance_smoke.rs`
 //! (unconditional compile check + OCCT-gated value assertions).
+//!
+//! The read/compile/skip-without-OCCT scaffolding this test runs on lives in
+//! the neutral sibling `fixture_scaffolding` module, not here: it is also used
+//! by `best_practices_clearance_oracle` (task #5982), and a shared helper owned
+//! by whichever pin test happened to define it first would make narrowing or
+//! deleting THIS test silently break an unrelated one.
 
-use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
-use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_ir::Value;
+
+use super::fixture_scaffolding::compile_and_build_with_occt;
 
 const INTERSECTS_SMOKE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -55,33 +61,12 @@ const INTERSECTS_SMOKE_PATH: &str = concat!(
 /// Skips cleanly (via early return) when OCCT is not available.
 #[test]
 fn intersects_smoke_evals_expected_booleans() {
-    // Read the fixture unconditionally so a missing file is caught even on
-    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(INTERSECTS_SMOKE_PATH)
-        .expect("examples/kernel_queries/intersects_smoke.ri should exist (task 3612 pre-1)");
-
-    // Validate fixture compilation unconditionally — a grammar/compile regression
-    // (e.g. `intersects` signature change) should fail on every runner.
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/intersects_smoke.ri should compile with no \
-         error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    // Skip the OCCT-dependent kernel build/bool assertions if OCCT is not built.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
+    let Some(result) = compile_and_build_with_occt(
+        INTERSECTS_SMOKE_PATH,
+        "examples/kernel_queries/intersects_smoke.ri",
+    ) else {
         return;
-    }
-
-    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    let result = engine.build(&compiled, ExportFormat::Step);
+    };
 
     // Helper: assert a Bool cell on IntersectsSmoke equals the expected value.
     let assert_bool = |cell_name: &str, expected: bool| {

@@ -210,7 +210,7 @@ fn stackup_result_trait_declares_required_members() {
 /// (e.g. rss_sigma = -1mm → Satisfaction::Violated) is evaluated at eval time
 /// via `reify_constraints::SimpleConstraintChecker`, not at compile time — this
 /// matches the project convention pinned by
-/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// ("The source is syntactically valid — only the constraint is violated at
 /// runtime"). Eval-time violation testing is out of scope for this crate.
 #[test]
@@ -279,7 +279,7 @@ structure def MyResult : StackupResult {
     // present — if this fires, the constraint compiled out of the IR.
     //
     // Eval-time violation testing (rss_sigma = -1mm → Satisfaction::Violated)
-    // is handled in crates/reify-eval/tests/stress_error_messages.rs per
+    // is handled in crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs per
     // project convention; compile-time constraint evaluation is Indeterminate
     // by design (auto_type_param_phase.rs MockConstraintChecker).
     assert!(

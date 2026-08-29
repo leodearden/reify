@@ -21,7 +21,7 @@
 #                       knob flips to 1 (H3). See docs/prds/run-all-host-
 #                       infra-partition.md §3 for the full rationale.
 #
-# Conservative-first, refine-later (PRD §3): the 4 host-exclusive entries
+# Conservative-first, refine-later (PRD §3): the host-exclusive entries
 # below start whole-file host-exclusive as a conservative default; H5-H7
 # refine them (moving hermetic portions into pool) by editing ONLY this
 # manifest — the drift-guard (tests/infra/test_run_all_classification.sh)
@@ -70,7 +70,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (130, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (155, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -78,6 +78,7 @@ test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
 test_cargo_incremental_lane_decision.sh pool
 test_check_event_inventory.sh pool
+test_compute_trampoline_registration_wired.sh pool
 test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
@@ -91,6 +92,7 @@ test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
+test_govtest_slice_reaper.sh pool
 test_gui_dist_gitignored.sh pool
 test_gui_test_script.sh pool
 test_gui_typecheck_test_side.sh pool
@@ -98,7 +100,9 @@ test_harness_baseline_registration_gate.sh pool
 test_harness_kloc_cap.sh pool
 test_heavy_filter_atoms.sh pool
 test_hooks_call_verify.sh pool
+test_host_global_unit_pinning.sh pool
 test_infra_classification_manifest_gate.sh pool
+test_jcodemunch_index_reify.sh pool
 test_jobserver_acceptance.sh pool
 test_jobserver_balancer.sh pool
 test_jobserver_canary.sh pool
@@ -122,8 +126,10 @@ test_nan_safe_ordering_guard_wired.sh pool
 test_nextest_absent_lib.sh pool
 test_nextest_slow_priority.sh pool
 test_no_dead_taskmaster_artifacts.sh pool
+test_no_new_wallclock_rust_deadlines.sh pool
 test_no_new_wallclock_upper_bounds.sh pool
 test_npm_ci_hardening.sh pool
+test_occt_deps_preflight.sh pool
 test_occt_flock_gate_bounds.sh pool
 test_occt_flock_gate.sh pool
 test_occt_gated_scope.sh pool
@@ -138,6 +144,7 @@ test_prd_decompose_verify.sh pool
 test_prd_gate_compiler_type_hygiene.sh pool
 test_prd_gate_corpus.sh pool
 test_prd_gate_objective_inheritance.sh pool
+test_prd_gate_substrate_guard.sh pool
 test_proc_reaper.sh pool
 test_project_checks_typecheck.sh pool
 test_provision_warm_lane_fs.sh pool
@@ -150,6 +157,7 @@ test_reify_audit_freshness.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool
+test_reify_audit_ptodo_ratchet_vacuity.sh pool
 test_reify_bin_freshness.sh pool
 test_reify_overlap_deploy_smoke.sh pool
 test_reify_overlap_detector.sh pool
@@ -174,21 +182,26 @@ test_setup_dev_no_ldconfig.sh pool
 test_setup_worktree_debug_port.sh pool
 test_sidecar_typecheck_test_path.sh pool
 test_slot_event_log.sh pool
+test_slot_timeout_marker.sh pool
 test_sn_gate.sh pool
+test_spec_anchor_lint.sh pool
 test_stash_guard.sh pool
 test_sync_comments_grep.sh pool
 test_target_per_lane_independence.sh pool
+test_test_binary_concurrency_sampler.sh pool
 test_test_helpers.sh pool
 test_test_pycache_gitignored.sh pool
 test_test_run_semaphore.sh pool
 test_thin_warm_lane.sh pool
 test_typecheck_compiles_tests.sh pool
+test_verify_admission_knob_parity.sh pool
 test_verify_compile_gate.sh pool
 test_verify_env_ambient_isolation.sh pool
 test_verify_failfast_order.sh pool
 test_verify_gate_exclude_heavy.sh pool
 test_verify_gui_feature_check.sh pool
 test_verify_gui_retry_specs.sh pool
+test_verify_ld_library_path_scope.sh pool
 test_verify_nextest_probe.sh pool
 test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool
@@ -212,3 +225,4 @@ test_warm_lane_pool_config.sh pool
 test_warm_lane_preflight.sh pool
 test_warm_lane_ref_visibility.sh pool
 test_warm_lane_sizing_lifecycle.sh pool
+test_with_jcodemunch_serve.sh pool

@@ -488,6 +488,17 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
     out.push_str(kw);
     out.push(' ');
     escape_into(out, name);
+    // Type parameters (task #6342) go through `escape_into` so `<`/`>` become
+    // `&lt;`/`&gt;` — emitted raw a browser would parse `<Q: Dimension>` as an
+    // unknown tag and swallow it.  Mirrors `fmt_markdown::render_item`, which
+    // instead relies on the heading's backtick code span.
+    //
+    // Deliberately heading-only: the `<section id="…">` above and both TOC
+    // href builders (`render_toc`, `render_toc_for_pages`) stay keyed on the
+    // bare `name`, which is item identity rather than display.
+    if let Some(generics) = crate::util::join_type_params(item.type_params()) {
+        escape_into(out, &generics);
+    }
     out.push_str("</h2>\n");
 
     // Annotation-driven prefix sections, emitted BETWEEN the heading and the
@@ -544,7 +555,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
             render_constraints(out, constraints);
             render_meta(out, meta);
         }
-        ItemKind::Trait { members } => {
+        ItemKind::Trait { members, .. } => {
             render_trait_members(out, members);
         }
         ItemKind::Function { signature } => {
@@ -568,7 +579,7 @@ fn render_item(out: &mut String, item: &ItemDoc, xrefs: Option<&CrossRefIndex<'_
         ItemKind::Unit { base_unit, scale } => {
             render_unit_body(out, base_unit, scale);
         }
-        ItemKind::TypeAlias { type_repr } => {
+        ItemKind::TypeAlias { type_repr, .. } => {
             render_type_alias_body(out, type_repr);
         }
         ItemKind::ConstraintDef { expr_repr } => {

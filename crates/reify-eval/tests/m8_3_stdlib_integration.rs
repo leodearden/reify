@@ -15,7 +15,7 @@ use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{CompiledExprKind, ExportFormat, Value};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{make_simple_engine, members_of, parse_and_compile_with_stdlib};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
@@ -513,20 +513,6 @@ fn m8_tolerancing_smoke() {
 }
 
 // ── task #5582 step-1: stdlib Position/Flatness reach eval (RED) ─────────────
-
-/// Sorted `member` list of every cell `result` produced for `entity` — used to
-/// make a missing-cell panic read as "mirror reintroduced" rather than
-/// "cell renamed".
-fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> {
-    let mut members: Vec<String> = result
-        .values
-        .iter()
-        .filter(|(id, _)| id.entity == entity)
-        .map(|(id, _)| id.member.clone())
-        .collect();
-    members.sort();
-    members
-}
 
 /// m8_tolerancing.ri's `Flange` subs must resolve against the STDLIB
 /// `Position` / `Flatness` / `SurfaceFinish` / `DimensionalTolerance`

@@ -615,6 +615,149 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ARG_TYPE_MISMATCH`
     /// (see `docs/prds/type-hygiene.md` ζ §"Compile-time arg-type guard").
     ArgTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
+    /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
+    /// struct-ctor-conformance ε).
+    /// Emitted when a structure-constructor call supplies a NAMED argument whose
+    /// name matches no DECLARED parameter of the target structure — the site that
+    /// previously appended the argument leniently as `__arg{i}` with no
+    /// diagnostic at all.
+    ///
+    /// The suppressing predicate is the structure's `Param` PLUS `Auto { .. }`
+    /// value cells, at any visibility — the same externally-settable member-set
+    /// predicate used by `crates/reify-compiler/src/connect.rs` and
+    /// `crates/reify-compiler/src/traits.rs`. `param x : T = auto` / `auto(free)`
+    /// lowers to `ValueCellKind::Auto { free }`, so a named argument for an
+    /// `auto`-declared param is NOT an unknown field: it names a parameter the
+    /// author visibly wrote. (Counting only `Param` cells made this code assert
+    /// the opposite of the source on every auto-param structure.)
+    ///
+    /// That set is deliberately WIDER than the declared-parameter set, and is not
+    /// a claim about what a param is. `let m : T = auto` inside a structure lowers
+    /// to the SAME `Auto` cell as an auto param, and today's IR carries no
+    /// discriminator — so this code counts every `Auto` cell as possibly-declared
+    /// and stays SILENT on a named argument that targets one. Over-inclusion here
+    /// can only cost a diagnostic; it can never make this code state a falsehood,
+    /// which is the one failure mode it must not have. A named argument targeting
+    /// an auto LET is therefore leniently accepted, not diagnosed — the residual
+    /// `Auto`-slot binding gap is owned by #6705; the IR change that would make
+    /// the origin knowable is tracked by its own follow-up task. Contrast
+    /// [`Self::CtorArity`], which must print a NUMBER and so uses the narrower
+    /// visibility-keyed view.
+    ///
+    /// The lenient `__arg{i}` push is deliberately NOT gated by that predicate —
+    /// it keys off the positionally-bindable slot set, as it always did — so the
+    /// emitted IR is byte-for-byte the same whether or not this diagnostic fires.
+    ///
+    /// Canonical message form:
+    /// `"E_CTOR_UNKNOWN_FIELD: unknown named argument '{field}' in call to
+    /// '{Ctor}'; '{Ctor}' has no parameter with that name"`
+    ///
+    /// The `E_CTOR_UNKNOWN_FIELD: ` prefix is part of the message because
+    /// `reify check` renders `{severity}: {message}` and never prints the
+    /// `DiagnosticCode`; the prefix is what makes the mnemonic observable at the
+    /// CLI (in-file emit-site precedent: `E_FALLBACK_TYPE: ` / `E_PRIV_MEMBER_ACCESS`).
+    /// The label sits at the offending argument's own span (PRD §6 C3), reading
+    /// `"unknown named argument"`.
+    ///
+    /// Multiplicity: exactly ONE diagnostic per unknown named argument (an
+    /// unknown field name is a per-argument author error and each typo needs its
+    /// own span to be actionable), satisfying PRD §6 C2(ii) "at most one
+    /// diagnostic per (arg, fact)". A duplicate of a *known* parameter is NOT an
+    /// unknown field and keeps its own pre-existing duplicate-named-arg Error.
+    ///
+    /// Severity: emitted at the task-5302 `CTOR_FIELD_CONFORMANCE_SEVERITY` knob
+    /// (`crates/reify-compiler/src/conformance/mod.rs`) — **Warning at ε, Error
+    /// at δ**. The emit site never hard-codes a severity, so δ stays a literal
+    /// one-const flip. PRD §6 C2(i) type anti-cascade deliberately does NOT gate
+    /// this code: an unknown field name is a structural fact decidable without
+    /// reference to any argument's type, so a poisoned argument must not suppress
+    /// it (the typo often *caused* the downstream type error).
+    ///
+    /// Distinct from [`Self::ArgTypeMismatch`] (and not folded into it): that code
+    /// reports an expected-vs-found TYPE for an argument that legitimately binds
+    /// to a parameter, whereas here the named parameter does not exist at all —
+    /// there is no expected type to report, and the fix is a rename rather than a
+    /// value change. Minting a dedicated code (following the `SelectorKindMismatch`
+    /// minting precedent) lets the β corpus survey and the δ flip count
+    /// structural author errors separately from type errors.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CTOR_UNKNOWN_FIELD`
+    /// (see `docs/prds/struct-ctor-field-type-conformance.md` §7 row 11).
+    CtorUnknownField,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
+    /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
+    /// struct-ctor-conformance ε).
+    /// Emitted when a structure-constructor call supplies more arguments than the
+    /// target structure DECLARES parameters, and at least one positional argument
+    /// found no slot — the site that previously appended each surplus argument
+    /// leniently as `__arg{call_idx}` with no diagnostic at all.
+    ///
+    /// Canonical message form:
+    /// `"E_CTOR_ARITY: {Ctor}() expects at most {ndeclared} {argument|arguments},
+    /// got {nargs}"`
+    ///
+    /// `{ndeclared}` is the DECLARED parameter count — every `Param` cell, plus
+    /// each `Auto { .. }` cell whose `visibility` is `Public` — and the
+    /// singular/plural noun keys off that same count. It is deliberately not the
+    /// count of positionally-bindable slots: reporting the slot count made this
+    /// message state a ceiling the source contradicts (`expects at most 1
+    /// argument` on a structure declaring two, one of them `auto`).
+    ///
+    /// The visibility conjunct is what keeps an auto LET out of the ceiling.
+    /// `let m : T = auto` lowers to the SAME `ValueCellKind::Auto { free }` cell
+    /// as `param m : T = auto`, so counting every `Auto` cell inflated the ceiling
+    /// into a second false-message class — `expects at most 2 arguments` on a
+    /// structure declaring ONE param beside an auto let — and silenced the
+    /// param-less case outright. A param defaults to `Public`, a let to `Private`,
+    /// so visibility separates them for every shape in the corpus. It is a
+    /// heuristic, not a proof: `priv param x : T = auto` is read as a let and
+    /// understates the ceiling by one. No predicate over today's IR can be right
+    /// for both — the cells are byte-identical — and `priv`'s own meaning favours
+    /// this reading, since a private member is not part of the constructor's
+    /// externally-settable surface. Carrying the origin explicitly in the IR (a
+    /// `from_param` discriminant on the `Auto` variant, or a declared-param name
+    /// list on `TopologyTemplate`) is what removes the ambiguity, and is tracked by
+    /// its own follow-up task. Unlike [`Self::CtorUnknownField`], this code cannot
+    /// simply widen its view: it prints the count, so an over-wide view is itself
+    /// a false statement.
+    ///
+    /// Residual scope: a call whose argument count is WITHIN the declared count
+    /// but which still overflows the positionally-bindable slots — because `auto`
+    /// params are not positionally bindable today — is deliberately NOT diagnosed
+    /// here. That is a binding defect, not an arity one (the surplus argument
+    /// lands in a garbage `__arg{i}` member), and this code cannot state a true
+    /// fact about it. It is owned by #6705.
+    ///
+    /// The `{argument|arguments}` noun and the `"expects … , got …"` shape are
+    /// reused verbatim from `crates/reify-compiler/src/arg_check.rs` so ctor
+    /// arity reads identically to builtin arity; the accompanying label text is
+    /// that module's centralised `"wrong number of arguments"`. The
+    /// `E_CTOR_ARITY: ` prefix is part of the message for the same CLI-visibility
+    /// reason described on [`Self::CtorUnknownField`].
+    ///
+    /// Multiplicity: exactly ONE diagnostic per CALL SITE, anchored at the FIRST
+    /// over-arity positional argument. Arity is a call-level fact — `W("a","b","c")`
+    /// against a 1-param structure is one mistake, not three — matching every
+    /// existing arity diagnostic in the repo (`arg_check.rs` emits one per call,
+    /// never one per surplus argument).
+    ///
+    /// Severity: emitted at the task-5302 `CTOR_FIELD_CONFORMANCE_SEVERITY` knob
+    /// (`crates/reify-compiler/src/conformance/mod.rs`) — **Warning at ε, Error
+    /// at δ**, never a hard-coded severity, so δ stays a literal one-const flip.
+    /// PRD §6 C2(i) type anti-cascade does NOT gate this code either: an argument
+    /// count is decidable with no reference to any argument's type.
+    ///
+    /// Distinct from [`Self::ArgTypeMismatch`]: a surplus positional argument has no
+    /// parameter slot, hence no expected type to compare against — the fact
+    /// reported is the call's shape, not a value's type. Distinct also from the
+    /// `arg_check.rs` builtin arity errors, which are hard-coded `Severity::Error`
+    /// for *builtin* calls; this code covers structure constructors and must move
+    /// with the ctor-conformance knob.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CTOR_ARITY`
+    /// (see `docs/prds/struct-ctor-field-type-conformance.md` §7 row 12).
+    CtorArity,
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
@@ -3801,6 +3944,151 @@ pub enum DiagnosticCode {
     /// round-trips automatically (follows the `TraitRefinementChainTooDeep`
     /// too-deep precedent).
     ExpressionNestingTooDeep,
+    /// Origin: `crates/reify-eval/src/geometry_ops.rs` — the eval-layer
+    /// `arg_acceptance`-backed chokepoints, i.e. `eval_named_arg_length`
+    /// (every LENGTH-semantic geometry arg: primitive/profile dimensions,
+    /// pattern spacing, mirror-plane and circular-pattern axis origins), plus
+    /// the two quiet-degrade readers `resolve_spec_arg` and
+    /// `resolve_density_arg`.
+    ///
+    /// Canonical message form:
+    /// `"{builtin}: {arg_name} argument expects {expected}, got {got}; {hint}"`
+    ///
+    /// The wording is owned SOLELY by
+    /// `crates/reify-eval/src/arg_acceptance::ArgRejection::message` — producers
+    /// attach this code, they never re-phrase the text. That single-owner rule is
+    /// what lets the ANGLE (PRD 3) and reader (PRD 5) follow-ups inherit
+    /// byte-identical diagnostics, and it is why the migration hint (e.g.
+    /// ``"pass a dimensioned length such as `5mm`"``) lives on the `ArgSpec`
+    /// rather than at any call site.
+    ///
+    /// Emitted when a builtin argument that carries a PHYSICAL DIMENSION by
+    /// contract is given a bare/dimensionless number or a value of the wrong
+    /// dimension. The hazard is the silent 1000x one: `Value::as_f64` reads a
+    /// bare `12` as SI **metres**, so `box(12, ...)` is a 12-metre box, not a
+    /// 12mm one.
+    ///
+    /// SEVERITY-NEUTRAL: this code pins the *reason*, not the *severity*. It
+    /// rides `Severity::Error` at the op-failing chokepoint (`eval_named_arg_length`,
+    /// whose `Err` makes `compile_geometry_op` drop the op), and deliberately
+    /// keeps `Severity::Warning` at the two legacy quiet-degrade readers
+    /// (`resolve_spec_arg` / `resolve_density_arg`), which return `None` and let
+    /// the build continue. Promoting those two is a real exit-code change for
+    /// `edges_at_height` / `geo_equiv` / `faces_by_normal` / the density ladder
+    /// and is tracked as its own follow-up — do not "fix" the asymmetry by
+    /// reading this doc as a severity contract.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIMENSIONED_ARG_REJECTED`
+    /// (see `docs/prds/v0_6/units-length-gate-completion.md`).
+    ///
+    /// Minting rationale (PRD Open Question 1, DECIDED HERE by task 5743):
+    /// - Distinct from [`DimensionMismatch`], whose documented origin is
+    ///   reify-compiler's binary-op / range-bounds sites and whose canonical form
+    ///   `"dimension mismatch in {op}: {left} vs {right}"` is an OPERATOR-level
+    ///   invariant (Add/Sub-specific), not a builtin parameter contract.
+    /// - Distinct from [`ArgTypeMismatch`], which was the closer candidate and
+    ///   was considered seriously — its own doc says its `{type_name}`
+    ///   deliberately mirrors this runtime `ArgRejection::message` wording. It is
+    ///   rejected because its documented Origin is the COMPILE layer
+    ///   (`builtin_signatures` / conformance), and PRD decision D2 keeps compile
+    ///   and eval as two first-class, independently observable layers: PRD leaf
+    ///   eta will emit `ArgTypeMismatch` at the compile layer for these very same
+    ///   argument positions, so sharing one code would make "which layer rejected
+    ///   this?" unanswerable from the code alone.
+    /// - ONE shared runtime code, not one per dimension: PRDs 3 (ANGLE) and 5
+    ///   (readers) are chartered to reuse THIS variant and must NOT mint
+    ///   per-dimension siblings.
+    ///
+    /// Cost of minting is near zero: `DiagnosticCode` is `#[non_exhaustive]`,
+    /// has no `impl` block anywhere in the workspace (no `as_str`/`Display`/
+    /// `FromStr`/exhaustive match-on-self), no exhaustiveness test, no docs
+    /// registry, no `reify-audit` check and no mirrored GUI enum — so this is a
+    /// one-variant addition that serde round-trips automatically (same
+    /// non-breaking argument as `ExpressionNestingTooDeep` above).
+    DimensionedArgRejected,
+    /// Origin:
+    /// `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
+    /// — the single shared refusal builder, emitted from BOTH export surfaces:
+    /// `reify build -o <file>` (`cmd_build`'s `-o` arm, `crates/reify-cli/src/main.rs`)
+    /// and the occurrence-driven `Engine::build_outputs_with_result`
+    /// (`crates/reify-eval/src/engine_build.rs`).
+    ///
+    /// Emitted as a `Severity::Error` when the module declares a
+    /// `RepresentationWithin` bound that the export path cannot demonstrate it
+    /// honours. The artifact is then **REFUSED** — no bytes are written and no
+    /// pre-existing file at the destination is truncated — rather than written
+    /// and reported successful, which is the failure described in PRD
+    /// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1
+    /// (task **η** / C-SURFACE (2)). `Error` severity is load-bearing, not
+    /// cosmetic: it is what `cmd_build`'s existing
+    /// `diagnostics.iter().any(|d| d.severity == Severity::Error)` gate keys
+    /// on, so the refusal exits non-zero with no new CLI exit logic
+    /// (PRD INV-SF-2: "η rides `cmd_build`'s existing gate rather than adding a
+    /// per-code bolt-on").
+    ///
+    /// The refusal is a STATIC module-shape decision taken before any deviation
+    /// is measured, so it fires for any declared bound, achievable or not.
+    /// Narrowing it to genuinely unachievable bounds is follow-on task **θ**,
+    /// which is hard-blocked on task 6085 giving the export path a real
+    /// tessellation-tolerance measurement (PRD §5 dependency table, §9 task θ).
+    ///
+    /// Canonical message form:
+    /// `"E_REPR_BOUND_UNENFORCED_ON_EXPORT: <subject>: <bound> …"` — built by
+    /// `unenforced_representation_bound_diagnostic` from
+    /// `compute_representation_bounds`' subject → tightest-bound table, so every
+    /// bounded subject is named in deterministic `BTreeMap` order.
+    ///
+    /// PRD-prose mnemonic: `E_REPR_BOUND_UNENFORCED_ON_EXPORT` (severity
+    /// convention: `E_*` → Error). Its message-embedded twin is
+    /// `reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT`, which exists because the
+    /// CLI integration tests observe only captured stderr TEXT and have no
+    /// access to this typed code.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, has no
+    /// exhaustive match-on-self anywhere in the workspace (the only `match self`
+    /// arms in this file are on `Severity`), and derives feature-gated serde
+    /// `Serialize`/`Deserialize` with `rename_all = "PascalCase"` — so adding one
+    /// variant is non-breaking for downstream consumers and round-trips
+    /// automatically (same non-breaking argument as `ExpressionNestingTooDeep`
+    /// and `DimensionedArgRejected` above).
+    RepresentationBoundUnenforcedOnExport,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::Engine::eval_cached`
+    /// (task **5240**) — the guarded-groups fall-through at the head of that
+    /// function.
+    ///
+    /// Emitted as a `Severity::Warning` when `eval_cached` is handed a module
+    /// whose templates carry a non-empty `guarded_groups` (a `where`-block).
+    /// The incremental path cannot evaluate guarded cells, so it delegates
+    /// wholesale to the cold `eval()` — which handles them correctly — and
+    /// tags the delegation with this code.
+    ///
+    /// **This is an INTERNAL engine note, not a user fault.** Unlike every
+    /// other eval-time diagnostic (circular let-binding, param-override
+    /// mismatch, sub-component lookup failure, solver Infeasible/NoProgress),
+    /// nothing about the user's source is wrong when it fires: the values
+    /// returned are the correct cold-eval ones. It exists so a caller can tell
+    /// "the incremental cache was bypassed for this call" from "the cache
+    /// served everything" — the two are otherwise indistinguishable, because
+    /// the bypass branch's `CacheStats` hit/miss/early-cutoff counters are all
+    /// zero either way.
+    ///
+    /// Because it is not user-facing, `reify-lsp`'s eval-diagnostic merge
+    /// (`crates/reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state`)
+    /// is the one consumer that deliberately DROPS it: every valid `.ri` file
+    /// using `where` — including the shipped stdlib
+    /// `crates/reify-compiler/stdlib/determinacy_purposes.ri` and
+    /// `examples/m5_guarded_enum.ri` — would otherwise show a spurious editor
+    /// warning that flickers in and out as the user types, depending on
+    /// whether that keystroke took the warm path. That filter matches on this
+    /// code, never on the message prose, so a copy-edit to the wording cannot
+    /// silently re-open the leak.
+    ///
+    /// Minting rationale: same as `RepresentationBoundUnenforcedOnExport`
+    /// above — `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self anywhere in the workspace, so adding one variant is
+    /// non-breaking and round-trips through the feature-gated serde derives
+    /// automatically.
+    EvalCachedGuardedGroupsFallback,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4291,6 +4579,47 @@ mod tests {
     fn diagnostic_code_dimension_mismatch_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::DimensionMismatch).unwrap();
         assert_eq!(s, "\"DimensionMismatch\"");
+    }
+
+    // --- DimensionedArgRejected tests (units-length β, task 5743 step-1) ---
+    //
+    // This is the shared RUNTIME code for "a builtin argument that must carry a
+    // physical dimension was given a bare / wrongly-dimensioned value", emitted
+    // from `crates/reify-eval/src/geometry_ops.rs`'s `arg_acceptance`-backed
+    // chokepoints.
+    //
+    // As with `DimensionMismatch` above, Copy/Clone/PartialEq/Eq/Hash/Debug are
+    // already covered by the variant-agnostic `diagnostic_code_derives` test, so
+    // only the serde wire-format test is kept here — it is the one genuinely
+    // variant-specific, genuinely falsifiable claim (the exact PascalCase string
+    // the GUI reads).
+    //
+    // A reviewer amendment removed two tests that could not fail for any edit
+    // that still compiles: a `Copy`/`PartialEq` round-trip on this variant, and
+    // pairwise `assert_ne!`s against `DimensionMismatch` / `ArgTypeMismatch`
+    // (discriminant inequality between distinct unit variants is guaranteed by
+    // the `PartialEq` derive). The RULING those `assert_ne!`s were standing in
+    // for is PRD Open Question 1, decided in task 5743 — the runtime
+    // dimensioned-arg rejection gets its OWN code rather than reusing either
+    // candidate, because `DimensionMismatch` is Add/Sub-operator-specific and
+    // `ArgTypeMismatch` is the COMPILE-layer twin for the very same positions
+    // (PRD leaf η), and sharing one code across both layers would make "which
+    // layer rejected this?" unanswerable from the code alone (PRD decision D2).
+    // That ruling lives in the variant's own doc comment and in
+    // `docs/prds/v0_6/units-length-gate-completion.md`; it is a naming decision,
+    // not a runtime behaviour a test can pin.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
+    /// serializes as `"DimensionedArgRejected"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). This is the wire form the GUI reads as an
+    /// opaque string (`gui/src/types.ts`), so it is a compatibility surface.
+    ///
+    /// RED until step-2 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn dimensioned_arg_rejected_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DimensionedArgRejected).unwrap();
+        assert_eq!(s, "\"DimensionedArgRejected\"");
     }
 
     // --- GeometryUnbounded tests (geometry-traits task 2312) ---
@@ -5768,6 +6097,85 @@ mod tests {
         assert_eq!(s, "\"OpContractViolation\"");
     }
 
+    // --- CtorUnknownField / CtorArity tests (task 5303 — struct-ctor-conformance ε;
+    //     E_CTOR_UNKNOWN_FIELD / E_CTOR_ARITY) ---
+    // Pairs with the two structural emit sites in the `StructureInstanceCtor`
+    // by-name binder in `crates/reify-compiler/src/expr.rs` (the sites that
+    // previously appended an unknown named arg / an over-arity positional arg
+    // leniently as `__arg{i}` with no diagnostic at all).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+    //
+    // NOTE on severity: the `with_code` round-trip tests below build via
+    // `Diagnostic::error(..)` purely to mirror the `OpContractViolation`
+    // precedent's shape — they pin that `with_code` preserves the code and does
+    // not perturb the severity it was handed. They deliberately do NOT pin the
+    // severity these codes are EMITTED at: that is read from
+    // `CTOR_FIELD_CONFORMANCE_SEVERITY` (`crates/reify-compiler/src/conformance/mod.rs`,
+    // Warning at ε, Error at δ) and is pinned by the ε probes in
+    // `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, so
+    // δ's one-const flip does not have to touch this file.
+
+    /// `DiagnosticCode::CtorUnknownField` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
+    /// severity it was constructed with. Catches a future enum reorganisation
+    /// that DROPS the variant; a RENAME is caught by the sibling
+    /// `diagnostic_code_ctor_unknown_field_serde_pascal_case`, which pins the
+    /// externally-visible LSP wire identifier.
+    #[test]
+    fn diagnostic_code_ctor_unknown_field_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorUnknownField);
+        assert_eq!(d.code, Some(DiagnosticCode::CtorUnknownField));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CtorUnknownField` serializes
+    /// as `"CtorUnknownField"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// This pins the LSP wire identifier: `crates/reify-lsp/src/convert.rs`
+    /// routes `DiagnosticCode` to its LSP form through serde precisely so new
+    /// variants need no registration there, which makes this string the
+    /// externally-visible contract for the code.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ctor_unknown_field_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CtorUnknownField).unwrap();
+        assert_eq!(s, "\"CtorUnknownField\"");
+    }
+
+    /// `DiagnosticCode::CtorArity` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
+    /// severity it was constructed with.
+    #[test]
+    fn diagnostic_code_ctor_arity_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorArity);
+        assert_eq!(d.code, Some(DiagnosticCode::CtorArity));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CtorArity` serializes as
+    /// `"CtorArity"` (PascalCase, from `rename_all = "PascalCase"`). Same LSP
+    /// wire-identifier rationale as
+    /// [`diagnostic_code_ctor_unknown_field_serde_pascal_case`].
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ctor_arity_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CtorArity).unwrap();
+        assert_eq!(s, "\"CtorArity\"");
+    }
+
+    // NOTE: no "these three codes are distinct" test lives here. With the derived
+    // `PartialEq` on this fieldless enum, `assert_ne!` between named variants is a
+    // compile-time tautology — it cannot fail for any change that still compiles,
+    // so it carries no regression signal. The property it appeared to guard (the
+    // three facts one bad ctor call can carry stay SEPARATELY COUNTABLE) is
+    // guarded executably by `all_three_ctor_faults_on_one_call_emit_exactly_one_
+    // diagnostic_each` in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
+    // and the externally-visible identifiers are pinned by the serde tests above.
+
     // --- ReservedTypeName tests (task 4591 — W_RESERVED_TYPE_NAME) ---
     // Pairs with the lint pass in
     // `crates/reify-compiler/src/compile_builder/reserved_name_lint.rs`.
@@ -6421,6 +6829,42 @@ mod tests {
     fn diagnostic_code_enum_type_arg_conflict_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::EnumTypeArgConflict).unwrap();
         assert_eq!(s, "\"EnumTypeArgConflict\"");
+    }
+
+    // --- RepresentationBoundUnenforcedOnExport tests (task eta #6170 —
+    //     E_REPR_BOUND_UNENFORCED_ON_EXPORT) ---
+    // Pairs with the export refusal built by
+    // `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
+    // and emitted from both `reify build -o <file>` and
+    // `Engine::build_outputs_with_result`.
+    //
+    // Only the serde WIRE FORMAT is pinned here, because it is the only property
+    // of this variant that lives in this crate: `rename_all = "PascalCase"` makes
+    // the emitted string a compatibility surface for downstream consumers, and
+    // nothing else in reify-core observes the variant.
+    //
+    // Deliberately NOT tested here: a `Diagnostic::error(..).with_code(..)`
+    // round-trip. It would exercise the generic constructor and builder — whose
+    // behaviour is variant-agnostic and already covered by
+    // `diagnostic_code_derives` and the sibling code tests above — while
+    // asserting nothing specific to this variant. The contract that actually
+    // matters (the REFUSAL carries this code at `Severity::Error`, which is what
+    // `cmd_build`'s existing `any(|d| d.severity == Severity::Error)` exit gate
+    // keys on) is pinned where the refusal is BUILT and USED:
+    // `tolerance_combine::tests::unenforced_representation_bound_diagnostic_returns_error_for_direct_bound`,
+    // the `engine_build` Mode-B tests, and the CLI integration tests in
+    // `cli_representation_within.rs`.
+
+    /// Under `feature = "serde"`,
+    /// `DiagnosticCode::RepresentationBoundUnenforcedOnExport` serializes as
+    /// `"RepresentationBoundUnenforcedOnExport"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_representation_bound_unenforced_on_export_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::RepresentationBoundUnenforcedOnExport).unwrap();
+        assert_eq!(s, "\"RepresentationBoundUnenforcedOnExport\"");
     }
 }
 

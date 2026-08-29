@@ -71,7 +71,8 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 | `solve_load_cases` real per-case results | `producer:R1-upstream` | ⏳ via R1 |
 | `envelope_von_mises` / `envelope_max_principal` | `grep:reify-stdlib/src/fea.rs:47-48` wired | ✅ |
 | **field-population**: per-case Sampled fields | `producer:α-upstream` | ⏳ via α |
-| grammar `minimize … where …`, `face(body,…)` | `grammar-fixture:fea-result-model-2.ri` (0 ERROR) | ✅ |
+| grammar `face(body,…)` | `grep:crates/reify-compiler/src/units.rs:262,379` (topology selector) | ✅ |
+| ~~grammar `minimize … where …`~~ | ~~`grammar-fixture:fea-result-model-2.ri` (0 ERROR)~~ — **PARSE-ONLY evidence; REVOKED 2026-08-25** | ⛔ the guard is silently discarded by the compiler (zero constraints, zero diagnostics). Use a bare `minimize` + separate `constraint` member. See PRD §6 decision #5's correction; owner task **6575** |
 | **bracket-geometry** solve + face-selector BC semantics | `producer:P1/P2/3429` (structural-analysis-fea) — **arbitrary geometry** | ⛔ → ship the **prismatic multi-case** variant now; bracket-geometry variant **gated** (split or hold) |
 
 ## θ — 3026 GUI case-picker dropdown  *(leaf)*
@@ -141,7 +142,8 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 
 | Capability | Evidence | Status |
 |---|---|---|
-| grammar `minimize mass(body) where max(von_mises(fea.stress)) < yield`, `face(body,…)` | `grammar-fixture:fea-result-model-2.ri` (0 ERROR); `minimize_declaration` `grep:tree-sitter-reify/grammar.js:548` | ✅ |
+| grammar `face(body,…)` | `grep:crates/reify-compiler/src/units.rs:262,379` (topology selector) | ✅ |
+| ~~grammar `minimize mass(body) where max(von_mises(fea.stress)) < yield`~~ | ~~`grammar-fixture:fea-result-model-2.ri` (0 ERROR); `grep:tree-sitter-reify/grammar.js:548`~~ — **PARSE-ONLY evidence; REVOKED 2026-08-25.** A grammar `grep` and a 0-ERROR parse prove the form is *accepted*, never that it is *implemented* | ⛔ all three clauses broken: `where` silently discarded (**6575**), `max(von_mises(Field))` dimension-mismatches (**6577**), `mass(body)` is not a callable. See PRD §6 decision #5's correction |
 | `max(von_mises(stress))` predicate | `producer:β-upstream` + `producer:α-upstream` | ⏳ via α/β |
 | **arbitrary-geometry solve on realized bracket + face-selector BC** | `producer:P1=4091 / P2=4092 / A=4093 / 3429` (structural-analysis-fea) — **filed + wired upstream 2026-05-30** (`2930 → {A,P1,P2}`; `P2→P1`; `A→2881/2882`) | ✅ resolved (DAG-direction holds; gated until the chain lands) |
 | `param thickness : Length = auto` | `grep` valid at param-default (overlay note); `grammar-fixture:fea-result-model-2.ri` | ✅ |

@@ -133,8 +133,28 @@
 //!   codomain:vec3<Length>}` backed by a `SampledField{kind:Regular3D}`.
 //!   `data.len() == grid_count × 3`; layout is row-major x-outer/z-inner, with
 //!   the 3 displacement components (dx, dy, dz) stored contiguously per grid point.
-//!   Every grid point lies inside the solid (prismatic box), so all samples are finite
-//!   (no NaN sentinels for the cantilever geometry).
+//!   Out-of-solid grid points carry `f64::NAN` for all 3 components — the SAME
+//!   PRD §3 sentinel the `stress` bullet below documents. The two fields'
+//!   sentinel contracts are identical; neither is exempt.
+//!
+//!   A PRISMATIC body does **not** exempt `displacement` from that sentinel.
+//!   All-finite requires the solve MESH to tile the AABB the grid spans — a
+//!   property of that mesh, not a consequence of the geometry being a box: §7a
+//!   spans the grid over `aabb(&fea.coords)`, i.e. the realized tet mesh's own
+//!   AABB, so a mesh that under-fills its AABB emits sentinels even for a box.
+//!   The realized path DID under-fill when #6154 measured it — about a third of
+//!   a prismatic box's grid points carried the sentinel, and the sentinel was
+//!   behaving correctly throughout. That under-coverage was a defect in the gmsh
+//!   tetrahedralization upstream of this crate, and it was fixed under #6200
+//!   (landed); the realized box measures complete fill today. The conditional
+//!   above is unchanged by either event, because it is a property of the MESH:
+//!   any future mesh regression re-arms the sentinel, which is exactly what
+//!   `solve_elastic_static_body_e2e::assert_box_grid_miss_measurement` guards
+//!   live, on both this field and `stress`. The measurement,
+//!   its provenance, and the resolution are recorded once in PRD
+//!   `docs/prds/v0_4/fea-result-model.md` §11 Q2 (task #6154). Those figures are
+//!   deliberately NOT restated here — no test pins them, so a second copy would
+//!   go stale silently.
 //!
 //! - **`stress`** — `Value::Field{source:Sampled, domain:point3<Length>,
 //!   codomain:tensor(2,3,Pressure)}` backed by a `SampledField{kind:Regular3D}`.

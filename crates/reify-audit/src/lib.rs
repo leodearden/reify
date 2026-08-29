@@ -46,8 +46,10 @@ pub mod puntested;
 pub mod player;
 pub mod ptodo;
 pub mod pdssentinel;
+pub mod pdoccover;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
+pub mod jcodemunch_index;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -176,6 +178,33 @@ pub enum Pattern {
     ///
     /// Reference: `docs/prds/dimensionless-scalar-sentinel-stampout.md` §8/§10.
     PDsSentinel,
+    /// PDOCCOVER — bidirectional registry↔chunk name drift between the
+    /// compiler's builtin-name registries and the MCP language-reference
+    /// chunks (`crates/reify-mcp/src/tools/chunks/*.md`). ONE detector, two
+    /// directions, five finding categories carried as a stable summary prefix
+    /// (PTODO's `kind`-as-prefix convention above), all at
+    /// [`Severity::High`]:
+    ///
+    /// - **Omission lane** — a `*_NAMES` registry entry in
+    ///   `crates/reify-compiler/src/units.rs` that is not documented in any
+    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not listed in
+    ///   `crates/reify-audit/pdoccover-baseline.txt` → `undocumented-name:`.
+    ///   Ratchet-honesty siblings: `stale-baseline-entry:` (a baselined name
+    ///   that IS documented) and `stale-allow-entry:` (an allow-marked name
+    ///   that IS documented).
+    /// - **Fabrication lane** — a call-shaped name documented in a chunk that
+    ///   exists nowhere in the compiler/stdlib sources → `fabricated-name:`.
+    /// - Both lanes share `allow-missing-reason:` — a `pdoccover:allow` token
+    ///   with a blank reason body confers NO exemption and is itself a finding.
+    ///
+    /// **Opt-in only** (`is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER): the
+    /// census is non-empty until #5480 seeds the baseline, and the CLI exit
+    /// code is the High-severity count, so joining the no-`--pattern` default
+    /// sweep would drown every other detector. Structural: reads the working
+    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch.
+    ///
+    /// Reference: `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §(b) / leaf γ.
+    PDocCover,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -623,6 +652,36 @@ impl RealGitOps {
             ));
         }
         String::from_utf8(out.stdout).map_err(|_| "git output not valid UTF-8".to_string())
+    }
+
+    /// `git rev-parse HEAD` — the working tree's current commit sha.
+    ///
+    /// Routed through `run` (hence `spawn_with_retry`) rather than spawning
+    /// `git` directly, so a transient OS-level spawn failure — the EAGAIN /
+    /// ENOMEM class that was the root cause of the #4800 flake, and that this
+    /// project's CPU-load management makes a live possibility — is retried
+    /// instead of surfacing to the caller as a hard failure. The caller (the
+    /// jcodemunch §4.3 freshness gate) turns an `Err` here into a refusal of
+    /// the whole run, so an unretried fork failure would abort an audit with a
+    /// message blaming index freshness — a misleading diagnosis for a
+    /// transient the retry absorbs.
+    ///
+    /// `run` also inherits `git_env::command`'s sanitization, which is
+    /// load-bearing here: an inherited `GIT_DIR` / `GIT_WORK_TREE` makes
+    /// `git -C <root>` report a DIFFERENT repository, and a HEAD read from the
+    /// wrong repo would make the freshness comparison silently meaningless.
+    ///
+    /// Errors on a failed rev-parse (not a repo, unborn HEAD) and on an empty
+    /// sha, which no healthy invocation produces.
+    pub fn head_sha(&self) -> Result<String, String> {
+        let sha = self.run(&["rev-parse", "HEAD"])?.trim().to_string();
+        if sha.is_empty() {
+            return Err(format!(
+                "`git rev-parse HEAD` produced no sha in {}",
+                self.project_root.display()
+            ));
+        }
+        Ok(sha)
     }
 
     /// Run a git command, emitting a `reify-audit:` breadcrumb on failure and

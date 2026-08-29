@@ -488,35 +488,104 @@ pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length {
 // `trait BoundaryCondition { }` (both declared above in this file).
 trait Shaper { }
 
+// ── ActuatorLimit marker trait (task 6096) ────────────────────────────────────
+
+// ActuatorLimit — marker trait rooting the per-joint-kind actuator-limit
+// family (task 6096).
+//
+// Two structures refine it, one per joint kind, sharing every param NAME and
+// differing ONLY in the declared dimension of `max_force`:
+//
+//   - JointLimit         : Scalar<Force>   — prismatic / translational
+//   - RevoluteJointLimit : Scalar<Torque>  — revolute / rotational
+//
+// The trait exists so that duality is pinned in the TYPE SYSTEM rather than in
+// prose. The shaper half of the same duality gets this for free from the
+// pre-existing `trait Shaper { }` above (TOTSShaper / RevoluteTOTSShaper);
+// without this marker the limit half would be the asymmetric one.
+//
+// CONSUMERS — be honest about the asymmetry with `trait Shaper`: Shaper is
+// LOAD-BEARING (it is the declared param type of `pub fn input_shape(profile:
+// Profile, shaper: Shaper)` below), whereas NO signature, param or alias is
+// declared `ActuatorLimit` today, and the shaper halves deliberately declare
+// the CONCRETE element type (`List<JointLimit>` / `List<RevoluteJointLimit>`)
+// — they must, since the element type is exactly what follows the joint kind.
+// So this marker is currently a declaration of family membership, not a
+// dispatch surface, and it is pinned only by the two `trait_bounds ==
+// ["ActuatorLimit"]` assertions in trajectory_stdlib_compile.rs.
+//
+// The named candidate first consumer is task #6240 — the wrong-kind PAIRING
+// diagnostic descoped from #6096 (dep-gated on strictness leaf #5627). Its
+// brief is to answer "is this limit the wrong KIND for this joint?", and a
+// family root is where that question is answerable without hard-coding the
+// member list at the asking site. If #6240 lands without needing it, delete
+// this trait and let the per-half param-shape tests carry the duality — an
+// empty marker with no consumer is not worth keeping on its own.
+//
+// That disposition is not left to whoever next reads this comment: #6096
+// filed it as a follow-up, and it now lives INSIDE #6240's own scope as an
+// explicit "DISPOSITION CHECK" bullet carrying the exact deletion recipe
+// (this decl, both `: ActuatorLimit` refinements, and step (a) of
+// `assert_actuator_limit_param_shape` in trajectory_stdlib_compile.rs). So
+// there is no separate dep-gated task to chase — the SAME implementer who
+// answers the pairing question answers this one, in the same pass, with the
+// evidence in front of them. Deleting the trait early, before #6240 has
+// answered, is the one thing that would waste that gating.
+//
+// Kept empty by design, same marker-trait discipline as `trait Shaper { }`,
+// `trait Profile { }` and `trait BoundaryCondition { }`.
+trait ActuatorLimit { }
+
 // ── JointLimit (PRD §5.2) ─────────────────────────────────────────────────────
 
 // JointLimit — per-joint actuator constraint consumed by TOTSShaper (PRD §5.2).
+//
+// This is the PRISMATIC / translational half of the per-joint-kind
+// actuator-limit duality (task 6096); `RevoluteJointLimit` below is the
+// rotational half. Both refine `trait ActuatorLimit` and are identical apart
+// from the dimension of `max_force` (Force here, Torque there) — the same
+// shape as the `spring_rate` precedent in kinematic.ri
+// (`Prismatic.spring_rate : Option<TranslationalStiffness>` vs
+// `Revolute.spring_rate : Option<RotationalStiffness>`).
+//
+// Supplying a Force-dimensioned limit to a revolute joint (or vice versa) is
+// a wrong-kind PAIRING; DIAGNOSING that at the ctor call site is task #6240's
+// (dep-gated on #5627) and is deliberately not enforced here. What IS enforced
+// today is the field-READ dimension: `limit.max_force` carries the declared
+// dimension, so arithmetic against the wrong family is rejected.
 //
 // Fields:
 //   - joint     : Real   — TODO(joint-type): placeholder for the future // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion PRD's Joint type. Same
 //                          encoding as `PiecewisePolynomialProfile.mechanism :
-//                          Real` (its TODO(mechanism-type) note) — both reference // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          Real` (its TODO(mechanism-type) note) and as // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          `RevoluteJointLimit.joint` below (task 6096) —
+//                          THREE sites, all referencing
 //                          kinematic-completion-PRD-owned types that have not
-//                          yet landed. When kinematic-completion lands, both
-//                          retarget via the same refactor sweep.
-//   - max_force : Scalar<Force>  — RESOLVED(force-scalar): tightened from Real
-//                                  by task 4580. Constraint RHS updated to
-//                                  dimensioned-zero `0 * 1N` (esc-3115 rule:
-//                                  bare `0` is dimensionless; Scalar<Force>
-//                                  LHS requires a dimensioned RHS literal).
+//                          yet landed. When kinematic-completion lands, all
+//                          three retarget via the same refactor sweep. The
+//                          sweep set is discovered by grepping the placeholder
+//                          markers, so every member carries its own marker —
+//                          adding a fourth placeholder without one silently
+//                          drops it from the sweep.
+//   - max_force : Scalar<Force>  — the TRANSLATIONAL actuator limit
+//                                  (m·kg·s⁻²). Tightened from Real by task
+//                                  4580; the per-joint-kind counterpart is
+//                                  `RevoluteJointLimit.max_force :
+//                                  Scalar<Torque>` (task 6096).
 //
 // No defaults: both fields are caller-supplied. There is no canonical "default
 // max force" (the limit is entirely application-specific).
 //
-// Constraint `max_force > 0 * 1N` is added in step-34, tightened in task 4580.
+// Constraint `max_force > 0` is added in step-34, tightened in task 4580.
 // Explicitly NOT constrained:
 // `joint : Real` — placeholder for an entity-handle type; no meaningful scalar
 // predicate on a handle.
 //
-// Refines no trait (JointLimit is a plain data container, not a Shaper
-// variant or a BoundaryCondition).
-structure def JointLimit {
+// Refines exactly `trait ActuatorLimit` (task 6096) — the family marker, not a
+// Shaper variant and not a BoundaryCondition. It previously refined NO trait;
+// that contract changed deliberately when 6096 introduced the duality.
+structure def JointLimit : ActuatorLimit {
     param joint : Real
     param max_force : Scalar<Force>
 
@@ -530,6 +599,56 @@ structure def JointLimit {
     //
     // Bare `0` coerced to Scalar<Force> at compile time by task-4485/β
     // polymorphic-zero rewrite (esc-3115-112 resolved).
+    //
+    // NOTE — explicitly NOT constrained:
+    //   `joint : Real` — placeholder for an entity-handle type; no
+    //   meaningful scalar predicate on a handle.
+    constraint max_force > 0
+}
+
+// ── RevoluteJointLimit (task 6096) ────────────────────────────────────────────
+
+// RevoluteJointLimit — the REVOLUTE / rotational half of the per-joint-kind
+// actuator-limit duality (task 6096). Mirrors `JointLimit` above exactly —
+// same param names, same canonical order, same positivity constraint — and
+// differs ONLY in the declared dimension of `max_force`:
+//
+//   - JointLimit.max_force         : Scalar<Force>   (m·kg·s⁻²)
+//   - RevoluteJointLimit.max_force : Scalar<Torque>  (m²·kg·s⁻²·rad⁻¹)
+//
+// Reify's Torque carries an explicit Angle⁻¹ slot (N·m/rad), which is what
+// keeps it a DISTINCT vector from Energy — do not hand-compose it as
+// Force·Length anywhere.
+//
+// The field NAME stays `max_force` rather than `max_torque`: the `spring_rate`
+// precedent this task extends (kinematic.ri Prismatic/Revolute) keeps ONE name
+// across joint kinds and varies only the dimension, and the dimension-blind
+// `field_f64(data, "max_force", ..)` marshalling readers in reify-stdlib stay
+// uniform across both kinds as a result.
+//
+// No defaults: both fields are caller-supplied (same rationale as JointLimit).
+//
+// Fields:
+//   - joint     : Real   — TODO(joint-type): the SAME entity-handle // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          placeholder as `JointLimit.joint` above (and as
+//                          `PiecewisePolynomialProfile.mechanism`). It carries
+//                          its OWN marker deliberately: the
+//                          kinematic-completion retarget sweep is discovered by
+//                          grepping these markers, so a third placeholder
+//                          without one would be invisible to the sweep that is
+//                          supposed to retire it.
+//   - max_force : Scalar<Torque> — the ROTATIONAL actuator limit
+//                                  (m²·kg·s⁻²·rad⁻¹); the per-joint-kind
+//                                  counterpart of `JointLimit.max_force :
+//                                  Scalar<Force>`.
+structure def RevoluteJointLimit : ActuatorLimit {
+    param joint : Real
+    param max_force : Scalar<Torque>
+
+    // Same physical rationale as JointLimit's: a zero max torque means the
+    // joint can exert nothing, and a negative one is non-physical. Bare `0`
+    // is coerced to Scalar<Torque> at compile time by the task-4485/β
+    // polymorphic-zero rewrite, exactly as the prismatic half's is.
     //
     // NOTE — explicitly NOT constrained:
     //   `joint : Real` — placeholder for an entity-handle type; no
@@ -636,6 +755,78 @@ structure def TOTSShaper : Shaper {
     //   SQP-loop trampoline (same discipline as ModalResult.modes).
     //   `actuator_limits : List<JointLimit>` — same collection-invariant
     //   rationale (producer/consumer-enforced at the SQP loop).
+}
+
+// ── RevoluteTOTSShaper (task 6096) ────────────────────────────────────────────
+
+// RevoluteTOTSShaper — the REVOLUTE / rotational half of the TOTS-shaper
+// duality (task 6096). Mirrors `TOTSShaper` above exactly: same 7 params in
+// the same canonical order, the same `Shaper` refinement, the same 6 ctor
+// constraints. It differs ONLY in the three per-joint-kind types:
+//
+//   - actuator_limits    : List<RevoluteJointLimit>  (vs List<JointLimit>)
+//   - velocity_limit     : Scalar<AngularVelocity>   (rad·s⁻¹, vs m·s⁻¹)
+//   - acceleration_limit : Rate<AngularVelocity>     (rad·s⁻², vs m·s⁻²)
+//
+// WHY `Rate<AngularVelocity>` AND NOT A NAMED `AngularAcceleration`:
+// there is no `ANGULAR_ACCELERATION` DimensionVector const and no
+// "AngularAcceleration" NAMED_DIMENSIONS row in reify-core today (zero hits
+// repo-wide). That name is chartered to a DIFFERENT PRD leaf —
+// `docs/prds/v0_6/angle-dimension-completion.md` leaf δ ("ANGULAR_ACCELERATION
+// + closure exemplar") — so adding it here would be cross-PRD scope theft of
+// an owned leaf. It is also unnecessary: the prelude alias
+// `pub type Rate<Q: Dimension> = Q / Time` (units.ri:116) composes the
+// IDENTICAL rad·s⁻² vector today. The cost is a spelling asymmetry
+// (`Scalar<AngularVelocity>` beside `Rate<AngularVelocity>`); retype this
+// field to the named dimension when δ lands.
+//
+// The `velocity_limit > 0` / `acceleration_limit > 0` constraints use bare
+// `0`, coerced per-field to Scalar<AngularVelocity> / Scalar<rad·s⁻²> at
+// compile time by the task-4485/β polymorphic-zero rewrite — exactly as
+// TOTSShaper's do. The constraint SOURCE TEXT is therefore byte-identical
+// across the two halves; the per-kind difference lives entirely in the param
+// declarations, which is what makes the coerced literal's dimension worth
+// pinning in the tests.
+//
+// TOTSShaper above stays byte-identical as the LINEAR / prismatic half, so no
+// existing caller of it moves.
+structure def RevoluteTOTSShaper : Shaper {
+    param modes : List<Mode>
+    param actuator_limits : List<RevoluteJointLimit>
+    param velocity_limit : Scalar<AngularVelocity>
+    param acceleration_limit : Rate<AngularVelocity>
+    param vibration_tolerance : Real
+
+    // Solver-loop knobs, identical to the linear half's — these are entirely
+    // independent of the joint kind, so the two halves must not diverge here.
+    param max_iters : Int = 100
+
+    // 0.000001 = 1e-6, spelled as a decimal literal because Reify's
+    // number-literal grammar has no scientific notation (same convention as
+    // TOTSShaper.tol above and ModalOptions.tol in modal_analysis.ri).
+    param tol : Real = 0.000001
+
+    // Same 6 constraints as the linear half, same rationale:
+    // a zero or negative angular velocity/acceleration limit is non-physical,
+    // vibration_tolerance ∈ (0, 1] is the residual-vibration fraction, and
+    // max_iters / tol must be strictly positive for the solver to run and
+    // converge. All fire at construction via SIR-α's
+    // `check_constraints_against_templates` machinery.
+    constraint velocity_limit > 0
+    constraint acceleration_limit > 0
+
+    constraint vibration_tolerance > 0
+    constraint vibration_tolerance <= 1
+
+    constraint max_iters > 0
+
+    constraint tol > 0
+
+    // NOTE — explicitly NOT constrained:
+    //   `modes : List<Mode>` — collection invariants deferred to the κ-task
+    //   SQP-loop trampoline (same discipline as ModalResult.modes).
+    //   `actuator_limits : List<RevoluteJointLimit>` — same collection-
+    //   invariant rationale (producer/consumer-enforced at the SQP loop).
 }
 
 // ── Impulse shapers (PRD §5.1) ────────────────────────────────────────────────

@@ -44,13 +44,22 @@ use reify_solver_elastic::{
     TensegrityLoadSolve, tensegrity_load_analysis,
 };
 
-use super::tensegrity_crack::{check_index, crack_index_pairs, crack_nodes};
+use super::tensegrity_crack::{
+    check_index, crack_dimensioned_scalar, crack_index_pairs, crack_nodes, crack_scalar_list,
+};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Diagnostic mnemonic for this trampoline, threaded into the shared
 /// `tensegrity_crack` helpers so their located errors carry the same prefix as
 /// the inline guards in [`run`].
 const CODE: &str = "E_TensegrityLoadInfeasible";
+
+/// Caller-owned argument-order advice for this trampoline, threaded into the
+/// shared `tensegrity_crack` unit crackers as their `hint` and appended in
+/// parentheses to every wrong-unit diagnostic. It names *this* trampoline's own
+/// arguments, which is why the shared helper cannot infer it.
+const UNIT_HINT: &str =
+    "youngs_modulus is a Pressure, area is an Area, and prestress / loads are Forces";
 
 /// Trampoline for `solver::tensegrity_load`. See the module doc for the
 /// input/output contract.
@@ -95,8 +104,17 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
         "youngs_modulus",
         DimensionVector::PRESSURE,
         "Pressure",
+        CODE,
+        UNIT_HINT,
     )?;
-    let area = crack_dimensioned_scalar(&value_inputs[3], "area", DimensionVector::AREA, "Area")?;
+    let area = crack_dimensioned_scalar(
+        &value_inputs[3],
+        "area",
+        DimensionVector::AREA,
+        "Area",
+        CODE,
+        UNIT_HINT,
+    )?;
     let loads = crack_loads(&value_inputs[4])?;
     let supports = crack_supports(&value_inputs[5], nodes.len())?;
 
@@ -189,60 +207,11 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
 
 /// Crack a `List<Force>` into f64 newtons. Each entry must be FORCE-dimensioned
 /// (a bare `Real` is still accepted for ergonomics); a *dimensioned* `Scalar`
-/// carrying the wrong unit is rejected — see [`crack_dimensioned_scalar`].
+/// carrying the wrong unit is rejected, located as `"{what}[{i}]"` — see
+/// [`crack_scalar_list`](super::tensegrity_crack::crack_scalar_list) and
+/// [`crack_dimensioned_scalar`](super::tensegrity_crack::crack_dimensioned_scalar).
 fn crack_forces(v: &Value, what: &str) -> Result<Vec<f64>, String> {
-    let list = match v {
-        Value::List(items) => items,
-        other => {
-            return Err(format!(
-                "E_TensegrityLoadInfeasible: {what} must be a list of forces, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, item) in list.iter().enumerate() {
-        out.push(crack_dimensioned_scalar(
-            item,
-            &format!("{what}[{i}]"),
-            DimensionVector::FORCE,
-            "Force",
-        )?);
-    }
-    Ok(out)
-}
-
-/// Crack a single dimensioned `Scalar` into an f64, requiring its unit to equal
-/// `expected`. A bare `Real` is still accepted — the dimensionless ergonomic
-/// escape hatch [`scalar_f64`](super::tensegrity_crack::scalar_f64) already
-/// allowed (so `[1.0, …]`-style literals keep
-/// working) — but a *dimensioned* `Scalar` whose unit disagrees (e.g. an Area
-/// passed where a Pressure is expected: the classic `youngs_modulus` ↔ `area`
-/// argument swap, or a Length where a Force is expected) is rejected with a
-/// located error rather than silently solving a physically wrong problem. This
-/// tightens the v1 form-find relaxation for the positionally-adjacent section
-/// scalars without losing the bare-`Real` ergonomics. `label` is the human unit
-/// name shown in the diagnostic.
-fn crack_dimensioned_scalar(
-    v: &Value,
-    what: &str,
-    expected: DimensionVector,
-    label: &str,
-) -> Result<f64, String> {
-    match v {
-        Value::Real(r) => Ok(*r),
-        Value::Scalar {
-            si_value,
-            dimension,
-        } if *dimension == expected => Ok(*si_value),
-        Value::Scalar { .. } => Err(format!(
-            "E_TensegrityLoadInfeasible: {what} has the wrong unit — expected a {label}; \
-             check the call argument order (youngs_modulus is a Pressure, area is an Area, \
-             and prestress / loads are Forces)"
-        )),
-        other => Err(format!(
-            "E_TensegrityLoadInfeasible: {what} must be a scalar, got {other:?}"
-        )),
-    }
+    crack_scalar_list(v, what, DimensionVector::FORCE, "Force", CODE, UNIT_HINT)
 }
 
 /// Crack `loads` (a `List<Vector3<Force>>`) into per-node `[f64; 3]` force
@@ -270,18 +239,24 @@ fn crack_loads(v: &Value) -> Result<Vec<[f64; 3]>, String> {
                         &format!("loads[{i}].x"),
                         DimensionVector::FORCE,
                         "Force",
+                        CODE,
+                        UNIT_HINT,
                     )?,
                     crack_dimensioned_scalar(
                         &c[1],
                         &format!("loads[{i}].y"),
                         DimensionVector::FORCE,
                         "Force",
+                        CODE,
+                        UNIT_HINT,
                     )?,
                     crack_dimensioned_scalar(
                         &c[2],
                         &format!("loads[{i}].z"),
                         DimensionVector::FORCE,
                         "Force",
+                        CODE,
+                        UNIT_HINT,
                     )?,
                 ]);
             }

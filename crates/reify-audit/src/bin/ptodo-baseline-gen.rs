@@ -29,6 +29,30 @@
 //! Output: one `path :: kind :: text` fingerprint per line, sorted ascending,
 //! deduplicated, with a single trailing newline (empty output → an empty
 //! baseline, the §6.4 zero-residual end state). Diagnostics go to stderr.
+//!
+//! ## Stderr MACHINE CONTRACT (§6.6 scan evidence)
+//!
+//! Every run emits exactly one machine-readable line to STDERR:
+//!
+//! ```text
+//! @@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>
+//! ```
+//!
+//! The counters come straight from `ptodo::check_with_stats` (counted inside
+//! the single sweep, so they cannot drift from what was actually walked). The
+//! line is emitted UNCONDITIONALLY on the normal exit path — including when
+//! stdout is empty — and never on stdout, which is the baseline stream: a leak
+//! there would corrupt `ptodo-baseline.txt` on the next regen.
+//!
+//! Its consumer is the vacuity floor in `tests/infra/test_reify_audit_ptodo.sh`,
+//! which passes iff the line is present with `files_scanned >= 1`. That floor
+//! keys on evidence the detector RAN rather than on what it FOUND; the rationale
+//! is in `docs/prds/reify-audit-ptodo-detector.md` §6.6 and is not restated here.
+//! A binary predating this contract emits no such line, so a stale/reverted
+//! generator fails the floor on evidence rather than on a freshness heuristic.
+//!
+//! The human-readable `N fingerprint(s) emitted` line is kept alongside it as
+//! the operator-facing diagnostic; nothing keys on that one.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -110,7 +134,7 @@ fn main() {
         producer_branch: None,
     };
 
-    let findings = reify_audit::ptodo::check(&ctx);
+    let (findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
 
     // Keep only source-marker findings: swept source path (same boundary as
     // `baseline_is_well_formed`) AND not a G-allow advisory finding.
@@ -140,5 +164,11 @@ fn main() {
     // Single write; `out` already carries exactly one trailing newline per line
     // (and is empty when there are no findings → an empty baseline file).
     print!("{out}");
+    // MACHINE CONTRACT (§6.6) — emitted on STDERR every run, before the human
+    // diagnostic. Grammar and consumer are documented in the module doc above.
+    eprintln!(
+        "@@PTODO_SCAN@@ files_scanned={} markers_examined={}",
+        stats.files_scanned, stats.markers_examined
+    );
     eprintln!("ptodo-baseline-gen: {} fingerprint(s) emitted", fingerprints.len());
 }

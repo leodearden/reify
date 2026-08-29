@@ -32,7 +32,7 @@
 
 #![cfg(has_occt)]
 
-use crate::common;
+use crate::common::{self, Xyz};
 use reify_kernel_occt::OcctKernel;
 use reify_ir::{BRepKind, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
@@ -178,26 +178,6 @@ fn assert_closed_solid(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
         "{what} must be registered as a Solid — the repr the declared \
          signature promises and downstream sub-shape classification trusts"
     );
-}
-
-/// Parse a JSON-encoded centroid string `{"x":…,"y":…,"z":…}` into (x, y, z).
-fn parse_centroid(s: &str) -> (f64, f64, f64) {
-    let inner = s.trim_start_matches('{').trim_end_matches('}');
-    let mut x = f64::NAN;
-    let mut y = f64::NAN;
-    let mut z = f64::NAN;
-    for pair in inner.split(',') {
-        let mut parts = pair.splitn(2, ':');
-        let key = parts.next().unwrap().trim().trim_matches('"');
-        let val: f64 = parts.next().unwrap().trim().parse().unwrap();
-        match key {
-            "x" => x = val,
-            "y" => y = val,
-            "z" => z = val,
-            _ => {}
-        }
-    }
-    (x, y, z)
 }
 
 #[test]
@@ -641,13 +621,11 @@ fn sweep_guided_orientation_differs_from_plain_sweep() {
             path: path_plain,
         })
         .expect("plain Sweep should succeed");
-    let plain_centroid = kernel
-        .query(&GeometryQuery::Centroid(plain.id))
-        .expect("plain Sweep centroid should query");
-    let (plain_x, plain_y, plain_z) = match plain_centroid {
-        Value::String(s) => parse_centroid(&s),
-        other => panic!("expected centroid String, got {:?}", other),
-    };
+    let Xyz {
+        x: plain_x,
+        y: plain_y,
+        z: plain_z,
+    } = common::xyz_of(kernel.query(&GeometryQuery::Centroid(plain.id)), "Centroid");
 
     // Fresh profile/path for the guided sweep — MakePipeShell consumes
     // its inputs and we've already fed these to plain Sweep.
@@ -661,13 +639,11 @@ fn sweep_guided_orientation_differs_from_plain_sweep() {
             guide: guide_g,
         })
         .expect("SweepGuided should succeed");
-    let guided_centroid = kernel
-        .query(&GeometryQuery::Centroid(guided.id))
-        .expect("SweepGuided centroid should query");
-    let (g_x, g_y, g_z) = match guided_centroid {
-        Value::String(s) => parse_centroid(&s),
-        other => panic!("expected centroid String, got {:?}", other),
-    };
+    let Xyz {
+        x: g_x,
+        y: g_y,
+        z: g_z,
+    } = common::xyz_of(kernel.query(&GeometryQuery::Centroid(guided.id)), "Centroid");
 
     // Centroids should differ — the guide wire biases orientation, which
     // in turn shifts the centroid away from the plain Sweep result.

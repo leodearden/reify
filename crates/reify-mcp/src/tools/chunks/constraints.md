@@ -39,16 +39,26 @@ Bare expressions in a constraint body are assertions (predicate lines).
 ```
 minimize subject.mass
 maximize subject.stiffness
-minimize subject.cost where subject.cost != undef
 ```
 
 Optimization directives can appear in purpose declarations or inline. `minimize`/`maximize` keywords.
 
+**Objectives take no `where` guard.** Neither `minimize X where C` nor
+`where C { minimize X }` is supported. The suffix form parses but the compiler
+DISCARDS the guard silently — the objective then runs unopposed and drives your
+`auto` params to their bounds while the build reports success. Express the
+predicate as a separate `constraint` member instead:
+
+```
+constraint peak_stress < material.yield_stress
+minimize mass
+```
+
 ## Quantifiers
 
 ```
-forall x in collection: predicate(x)    // Universal
-exists x in collection: predicate(x)    // Existential
+forall x in collection: predicate(x)    // Universal; predicate is a metavariable — pdoccover:allow — grammar metavariable
+exists x in collection: predicate(x)    // Existential; predicate is a metavariable — pdoccover:allow — grammar metavariable
 ```
 
 Vacuous truth: `forall x in []: P(x)` evaluates to `true`.

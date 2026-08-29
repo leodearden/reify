@@ -58,8 +58,48 @@ use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with
 /// the `set_build_scheduler` test seam. The SINGLE engine-construction site every
 /// build helper routes through, so a future change to the standard engine wiring is
 /// made in ONE place rather than five.
+///
+/// ## Why `register_compute_fns` is NOT optional here (task 5578)
+///
+/// An `@optimized` stdlib fn whose target has no registered compute trampoline
+/// does NOT error out. `engine_eval.rs`'s dispatch takes a documented
+/// else-branch: it pushes a CODELESS Error diagnostic ("@optimized target …: no
+/// registered compute trampoline (falling back to body-inlining)") and then
+/// body-inlines the fn. For the solver fns that body is a never-run sentinel — a
+/// bare struct ctor whose params are ALL required with no defaults (e.g.
+/// `form_find_free`'s `{ FormFindResult() }`, `crates/reify-compiler/stdlib/tensegrity.ri`).
+/// The result is a NON-Undef struct whose every field is Undef, so every
+/// downstream field read silently becomes Undef while its one declared read
+/// reads as RESOLVED — invisible to any "did it diverge?" differential (both
+/// sides degrade identically) and reported by the stale-Undef checker as a
+/// scheduling bug in code that is not at fault.
+///
+/// That is exactly what happened here: this fn omitted the registration, and
+/// `golden:tensegrity_t_prism`'s `TPrism.{solved,forces}` sat in
+/// `flat_sort_kahn_core_delegation.rs`'s `PREEXISTING_STALE_UNDEF` baseline
+/// misattributed to `invariants.rs`/`engine_build.rs`. Task 4458 is the same
+/// defect one layer up — `cmd_build` skipped `configured_eval_engine`, so
+/// `max_von_mises` went Undef, FEA constraints went Indeterminate, and the CLI
+/// exited `Error + exit 0`; its guard
+/// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`) asserts the ABSENCE
+/// of that same diagnostic string. Production agrees: the CLI's
+/// `configured_eval_engine` registers compute fns on BOTH its eval and build
+/// paths, as does `no_stale_undef_invariant_gate.rs`'s per-file engine wiring.
+///
+/// Registering HERE (rather than in `build_case` / `build_case_keep_engine`)
+/// keeps every build helper on identical wiring — patching only one variant
+/// would make `flat_sort_reorder_leaves_no_stale_undef` and
+/// `flat_sort_reorder_preserves_corpus_results` silently disagree about what was
+/// built. `register_compute_fns` panics on double registration, but this fn
+/// mints a brand-new [`Engine`] per call, so that contract is never at risk.
+///
+/// `register_shell_extract_compute_fns` is deliberately NOT called: it is a
+/// separate `pub fn`, no corpus case uses `shell-extract::extract`, and an
+/// unneeded registration only widens blast radius. Add it only if a corpus build
+/// actually surfaces that target's trampoline-missing diagnostic.
 fn fresh_engine(scheduler: BuildScheduler, kernel: Box<dyn GeometryKernel>) -> Engine {
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     engine.set_build_scheduler(scheduler);
     engine
 }
@@ -213,18 +253,29 @@ pub fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
         .satisfaction
 }
 
-/// Assert the geometry-derived value `cell` resolved to a DEFINITE (present,
-/// non-[`Value::Undef`]) value in `result` — the LOUD-failure guard for a seeded
-/// kernel's hardcoded [`GeometryHandleId`].
+/// Assert `cell` resolved to a DEFINITE (present, non-[`Value::Undef`]) value in
+/// `result` — the LOUD-failure guard against a producer that degraded SILENTLY.
 ///
-/// The seeded kernels (`seeded_physical_kernel`, `seeded_build_volume_kernel`) key
-/// their replies on concrete handle ids on the premise that handle assignment is
-/// deterministic AND identical across both schedulers. If a future handle-numbering
-/// change made a seeded reply MISS, the geometry query would silently fall back to
-/// undecided and the equivalence comparison would degrade into "two identical
-/// FAILURE modes" — a false pass. Pinning the downstream `cell` DEFINITE turns that
-/// silent rot into a hard failure. `label` (e.g. the scheduler) is surfaced in the
-/// panic. Renders via `Display` (not `Debug`) so it leans on nothing beyond what
+/// The invariant is cause-agnostic on purpose: whenever an upstream producer can
+/// fail by going quiet rather than loudly, an equivalence comparison degrades
+/// into "two identical FAILURE modes" — a false pass — and pinning the downstream
+/// `cell` DEFINITE is what turns that silent rot into a hard failure. Two
+/// producers in this harness fail exactly that way, and the panic names both:
+///
+/// - GEOMETRY-derived cells. The seeded kernels (`seeded_physical_kernel`,
+///   `seeded_build_volume_kernel`) key their replies on concrete
+///   [`GeometryHandleId`]s, on the premise that handle assignment is
+///   deterministic AND identical across both schedulers. A handle-numbering
+///   change makes a seeded reply MISS and the query falls back to undecided.
+/// - COMPUTE-derived cells. An `@optimized` dispatch whose trampoline was never
+///   registered body-inlines a never-run, all-required-params sentinel, so every
+///   downstream field read folds to `Undef` (task 5578 — see `fresh_engine`).
+///
+/// `label` is the CALLER's slot for which of those it suspects (e.g.
+/// `"seeded_physical_kernel under LegacyMultiPass"`, `"optimized form_find_free
+/// output under UnifiedDag"`); it is surfaced first in the panic, so a failure
+/// points at the right producer instead of hard-wiring one story for both.
+/// Renders via `Display` (not `Debug`) so it leans on nothing beyond what
 /// `project_value` already requires of [`Value`].
 pub fn assert_cell_definite(result: &BuildResult, cell: &ValueCellId, label: &str) {
     let rendered = match result.values.get(cell) {
@@ -233,10 +284,16 @@ pub fn assert_cell_definite(result: &BuildResult, cell: &ValueCellId, label: &st
         None => "<absent>".to_string(),
     };
     panic!(
-        "{label}: geometry-derived cell `{cell}` MUST resolve to a DEFINITE value \
-         (the seeded kernel's hardcoded GeometryHandleId must reach the realized solid); \
-         got `{rendered}`. A handle-numbering change likely made the seeded reply MISS — \
-         the equivalence gate would otherwise silently compare two identical failures.",
+        "{label}: cell `{cell}` MUST resolve to a DEFINITE value; got `{rendered}`. \
+         An indefinite value here is silent rot: the equivalence gate would \
+         otherwise compare two identical FAILURE modes and pass. The `{label}` \
+         prefix carries the caller's cause hypothesis; the two producers in this \
+         harness that fail this way are (a) a seeded kernel whose hardcoded \
+         GeometryHandleId no longer reaches the realized solid after a \
+         handle-numbering change (geometry-derived cells) and (b) an @optimized \
+         compute dispatch that fell back to body-inlining its never-run sentinel \
+         because the trampoline was never registered (compute-derived cells; \
+         task 5578 — see `fresh_engine`).",
     );
 }
 

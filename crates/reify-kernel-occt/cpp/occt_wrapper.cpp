@@ -141,6 +141,7 @@
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <STEPControl_Controller.hxx>
+#include <StepData_StepModel.hxx>
 #include <Interface_Static.hxx>
 #include <Standard_Failure.hxx>
 
@@ -166,7 +167,6 @@
 #include <fstream>
 #include <cstdio>
 #include <cmath>
-#include <atomic>
 #include <mutex>
 #include <stdexcept>
 
@@ -574,22 +574,42 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 
 // --- Boolean-op-pass counter (task 5213) ---
 
-// Process-global count of completed OCCT boolean passes, incremented once per
+// PER-THREAD count of completed OCCT boolean passes, incremented once per
 // successful Build() in boolean_fuse/boolean_cut/boolean_common and once in the
-// single-pass fuse_shape_list.  Deterministic (an exact integer, not a
-// tolerance) and non-flaky: it lets tests assert that a K-instance pattern
-// performs exactly ONE boolean pass rather than K−1.  Also a first
-// instrumentation seed for future long-boolean progress reporting (Lever 4).
-// memory_order_relaxed is sufficient: tests reset/read under a mutex, so there
-// is no cross-thread ordering dependency to establish.
-static std::atomic<uint64_t> g_boolean_pass_count{0};
+// single-pass fuse_shape_list.  Each thread observes only the boolean passes it
+// performed itself, and reset_boolean_pass_count() zeroes the CALLING thread's
+// count only.  Deterministic (an exact integer, not a tolerance) and non-flaky:
+// it lets tests assert that a K-instance pattern performs exactly ONE boolean
+// pass rather than K−1.  It is a TEST-OBSERVABILITY hook, NOT a progress-
+// reporting one: production callers drive OCCT through OcctKernelHandle's
+// dedicated worker thread, so a reporter on any other thread reads a permanent
+// 0.  A cross-thread progress signal would need its own process-global
+// aggregate, deliberately not added here because nothing consumes one today.
+//
+// Per-thread rather than process-global because task #5277 folded all
+// reify-kernel-occt integration tests into ONE `harness_occt` binary: a
+// process-global counter is contaminated by any concurrently-scheduled test
+// that performs a boolean, so a reset→operate→read window could no longer be
+// trusted.  Per-thread storage restores the isolation that per-binary processes
+// used to provide, and does so in every execution mode (plain `cargo test`,
+// `--test-threads=1`, and nextest's process-per-test) rather than only under
+// the last.  It is sound because all four increment sites run synchronously on
+// the calling thread immediately after the corresponding Build() returns, so no
+// pass is ever attributed to a thread other than the one that performed it.
+//
+// `static` (internal linkage) matches the file's convention for file-scope
+// state (cf. g_step_export_mutex): nothing outside this TU names the variable —
+// only the two accessors below — so exporting the TLS symbol would needlessly
+// widen the ABI surface and force the general-dynamic TLS access model
+// (a __tls_get_addr call) at every increment site instead of local-exec.
+static thread_local uint64_t t_boolean_pass_count = 0;
 
 void reset_boolean_pass_count() {
-    g_boolean_pass_count.store(0, std::memory_order_relaxed);
+    t_boolean_pass_count = 0;
 }
 
 uint64_t boolean_pass_count() {
-    return g_boolean_pass_count.load(std::memory_order_relaxed);
+    return t_boolean_pass_count;
 }
 
 // --- Compound assembly ---
@@ -671,7 +691,7 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
         throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
     }
     // One completed boolean pass, regardless of instance count (task 5213).
-    g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+    t_boolean_pass_count += 1;
     TopoDS_Shape result = fuse.Shape();
     // The general BOP path (SetArguments/SetTools) always wraps its output in a
     // TopoDS_COMPOUND.  Normalize that wrapper to the tightest type that
@@ -743,7 +763,7 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = fuse.Shape();
         return result;
@@ -757,7 +777,7 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         if (!cut.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Cut failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = cut.Shape();
         return result;
@@ -771,7 +791,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         if (!common.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Common failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = common.Shape();
         return result;
@@ -6249,6 +6269,49 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
         // Construct the writer AFTER the schema is set, so its model captures
         // the requested `write.step.schema`.
         STEPControl_Writer writer;
+
+        // LENGTH UNIT REGIME. Reify model space is SI METRES; exported STEP is
+        // MILLIMETRES (the CAD-interop default, and the unit OCCT already
+        // declares as SI_UNIT(.MILLI.,.METRE.) in the written file). Setting
+        // these two values is what makes the declaration and the payload
+        // AGREE: without them OCCT's scale factor is 1.0 and reify's metre
+        // coordinates are emitted verbatim under a millimetre declaration, so
+        // a 30 mm part reads back as 30 µm — a 1000x shrink.
+        //
+        // Both APIs express a unit as its SIZE IN MILLIMETRES, so the local
+        // (in-memory) unit is 1000.0 — "reify's coordinates are metres" — and
+        // the write unit is 1.0 — "emit millimetres". OCCT derives the scale
+        // factor from the ratio local/write and applies the x1000 itself; the
+        // declared SI_UNIT line is unchanged, only the payload moves.
+        //
+        // ORDERING IS LOAD-BEARING, for the same reason the `write.step.schema`
+        // ordering above is: the units cannot be set BEFORE the writer is
+        // constructed (the model does not exist yet — Model() is what creates
+        // and owns it) nor AFTER Transfer (which has already computed and
+        // applied the scale factor). Construct writer -> set units -> Transfer
+        // is the only correct order.
+        //
+        // BOTH values are set EXPLICITLY on every call, for the same reason the
+        // schema is re-set per call above: SetWriteLengthUnit is otherwise
+        // uninitialised and falls back to the process-global `write.step.unit`
+        // Interface_Static, which another caller could have moved.
+        //
+        // The PER-MODEL API is chosen deliberately over the equivalent
+        // process-global `xstep.cascade.unit` / `write.step.unit` statics: a
+        // per-model setting cannot leak into a concurrent export or into a
+        // future STEP reader, whereas this function already needs
+        // g_step_export_mutex and a per-call schema re-set precisely because
+        // OCCT's globals do leak.
+        Handle(StepData_StepModel) step_model = writer.Model();
+        if (step_model.IsNull()) {
+            // Fail loudly rather than exporting geometry mislabelled by 1000x.
+            throw std::runtime_error(
+                "STEPControl_Writer::Model() returned null; cannot set the STEP "
+                "length unit regime");
+        }
+        step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
+        step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
+
         writer.Transfer(shape.shape, STEPControl_AsIs);
 
         // Write to a temporary file, then read back

@@ -76,6 +76,41 @@ export function normalizeUnitLabel(label: string): string {
 export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad'];
 
 /**
+ * The DIMENSIONS {@link BASE_UNIT_LABELS} can express — its other half, and the
+ * floor {@link acceptsBareNumber} gates on (task #5757 amendment).
+ *
+ * `mm`/`cm`/`m` are Length, `deg`/`rad` are Angle; that is the whole content of
+ * this constant, and it must be re-derived by hand if the label floor above ever
+ * changes. It cannot be computed from the labels, because mapping a label to a
+ * dimension is exactly what needs the ladder data the ladder-less path does not
+ * have.
+ *
+ * WHY A FLOOR IS NEEDED HERE AT ALL. The two ends of this seam degrade
+ * differently when `get_unit_ladders` has not resolved (or has failed — see
+ * `App.tsx`'s one-shot fetch, which logs, toasts, and leaves the map `{}`). This
+ * side loses the ladder map entirely; the ENGINE does not, because its
+ * `LADDER_COVERAGE` is built from the Rust-authored curated table in-process and
+ * is always populated. So a rule that reads only the fetched map disagrees with
+ * the engine on that path — and for the dimensions this floor names, in the
+ * harmful direction: the panel would accept `80` in a Length cell, the engine
+ * would refuse it, and the typed text would be discarded behind exactly the
+ * async toast {@link acceptsBareNumber} exists to avoid.
+ *
+ * It is a floor in the same sense as the labels: `Length`/`Angle` are the
+ * dimensions the panel can still describe with no ladder data, so gating them is
+ * gating precisely what it can still tell the user how to fix. The backend's
+ * coverage is a strict superset of it, pinned by
+ * `every_dimension_the_frontend_floor_gates_is_gated_here_too` in
+ * `gui/src-tauri/src/tests/engine_tests.rs`.
+ *
+ * Naming DIMENSIONS is not the #5788 D6 hazard that naming curated unit labels
+ * would be: these are two canonical dimension names, not a mirror of the curated
+ * rung table, and they follow the hand-written floor above rather than the
+ * ladders.
+ */
+export const BASE_UNIT_DIMENSIONS: readonly string[] = ['Length', 'Angle'];
+
+/**
  * The unit alphabet the typed-quantity gate accepts, derived from the LIVE
  * ladders unioned with {@link BASE_UNIT_LABELS} (task #6028).
  *
@@ -100,36 +135,49 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
  * parseable (task #5788 probe evidence). So `mm^3` becomes accepted while
  * `mm³` stays rejected, in both the pre- and post-#5788 eras.
  *
- * WHAT "ADVERTISED" DOES NOT MEAN — the accepted degradation. The ladders are
- * the curated DISPLAY table (`reify_core::display_units::unit_ladders`), a
- * strictly LARGER set than what the commit path can input-parse. That path —
- * `handleSetParameter` (App.tsx) -> `bridge.setParameter` ->
- * `EngineSession::set_parameter` -> `parse_value_string` (both in
- * gui/src-tauri/src/engine.rs) — matches only `UNIT_TABLE`, a hard-coded
- * five-entry suffix table built from neither the .ri unit registry nor
- * `unit_ladders`. Its five entries are exactly {@link BASE_UNIT_LABELS}; the
- * rule, therefore, is that EVERY curated ladder label outside that floor is
- * admitted by this gate and then refused on commit, with the message
- * `Cannot parse value '<input>'` — not the .ri compiler's unknown-unit
- * diagnostic, which belongs to a different subsystem this path never reaches
- * (it short-circuits before `edit_check`).
+ * WHAT "ADVERTISED" NOW MEANS — the gap this used to document is CLOSED
+ * (task #5757). Until then the commit path — `handleSetParameter` (App.tsx) ->
+ * `bridge.setParameter` -> `EngineSession::set_parameter` ->
+ * `parse_value_string` (both in gui/src-tauri/src/engine.rs) — matched a
+ * hard-coded five-entry suffix table whose entries were exactly
+ * {@link BASE_UNIT_LABELS}, so every curated label outside that floor was
+ * admitted here and then refused on commit with `Cannot parse value '<input>'`,
+ * discarding the typed text behind an async toast.
  *
- * The user-visible cost is that the typed text is discarded and an async error
- * toast replaces the inline `data-invalid` that used to preserve it for
- * correction. It is bounded twice over: callers scope the alphabet to the
- * cell's own dimension, so only that dimension's labels can reach the gate;
- * and the whole contract is pinned end-to-end by the `App.test.tsx` block
- * named above, which is the ready-made failing assertion for the fix to flip.
+ * `parse_value_string` now scans an index composed from THIS SAME
+ * `unit_ladders()` table unioned with `reify_core::BUILTIN_UNITS`, so the two
+ * ends are two readers of one table rather than two tables kept in lockstep.
+ * The consequence that matters HERE: that index registers every rung under both
+ * its raw superscript spelling and its {@link normalizeUnitLabel} form, while
+ * this gate admits only the ASCII one — so it is a strict SUPERSET of what this
+ * alphabet can produce and no label admitted here can be refused on commit,
+ * compound labels (`mm^3`, `kg/m^3`, `g/cm^3`) included. HOW that index is
+ * composed and what it deliberately excludes is argued once, on
+ * `COMPOSED_UNIT_INDEX` in gui/src-tauri/src/engine.rs; restating it here would
+ * be a second hand-maintained copy of one argument, which is the prose form of
+ * the drift defect this function exists to avoid in data.
  *
- * Accepted because narrowing the gate to what the backend can PARSE needs a
- * surface the frontend cannot see. Task #5757 widens `UNIT_TABLE` but is
- * necessary-not-sufficient — it reconciles against
- * `reify_core::units::unit_symbol_to_si`, which holds only BARE symbols, so
- * compound labels stay rejected: the .ri grammar composes them as EXPRESSIONS
- * while `parse_value_string` is a flat suffix matcher that cannot compose.
- * That compound half is filed as an agent-followup ticket spawned from #6028
- * naming #5757 as its sibling. Task #5788 fixes none of it: it touches the
- * compiler's stdlib registry, not `gui/src-tauri`.
+ * THE ONE ASYMMETRY THAT REMAINS runs the other way and is deliberate: the
+ * backend also accepts spellings this gate refuses — raw superscripts, the SI
+ * bases no ladder carries (`s`, `K`, `A`, `mol`, `cd`), and a label belonging
+ * to a dimension other than the cell's. The last of those is not silently
+ * taken: it resolves to its own dimension and is then refused by reify-eval
+ * with a `DimensionMismatch` naming both. Callers still scope this alphabet to
+ * the cell's own dimension, so the panel rejects a cross-dimension literal
+ * inline and the backend path is only reached by callers that bypass this gate
+ * (`MechanismPanel`, via `handleSetParameter`).
+ *
+ * Separately, {@link acceptsBareNumber} decides whether a cell may be given a
+ * bare number at all — the same coverage question this alphabet asks, asked of
+ * one cell; its own doc carries that rule. The `App.test.tsx` block that used
+ * to pin the degradation above now pins the reconciled contract in both
+ * directions.
+ *
+ * Still deferred, and NOT this: compound unit EXPRESSIONS in .ri source at the
+ * `bind(joint, <quantity>)` site (`UnitExpr::Mul`/`Div`/`Pow`), which are task
+ * γ (#3803); and the compiler's per-module `UnitRegistry` spellings (`km`,
+ * `ft`, `psi`, `degC`, …), which this gate rejects outright and which are
+ * therefore unreachable from the property editor.
  */
 export function quantityUnitAlphabet(ladders: UnitLadderMap | undefined): string[] {
   const alphabet = new Set<string>(BASE_UNIT_LABELS);
@@ -182,6 +230,121 @@ const QUANTITY_NUMBER = '-?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?';
  * converts to `Infinity`.
  */
 export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
+
+/**
+ * Whether a cell with this dimension accepts a BARE number as typed input
+ * (task #5757).
+ *
+ * THE RULE: a cell needs a unit exactly when one CAN be typed for it. `20` in a
+ * `Volume` cell is ambiguous — 20 what? — and the engine used to resolve that
+ * ambiguity by silently reading it as 20 CUBIC METRES, the same 1000× hazard
+ * the .ri geometry-argument gate rejects with "pass a dimensioned length such
+ * as `5mm`". This is the panel's inline mirror of that rule.
+ *
+ * EXPRESSIBILITY IS THE KEY, NOT DIMENSIONEDNESS. That ambiguity presupposes a
+ * unit COULD have been typed: `20` is ambiguous in a Volume cell precisely
+ * because `20mm^3` and `20L` were both on offer. For a dimension off the
+ * {@link BASE_UNIT_DIMENSIONS} floor that no curated ladder covers, the picker
+ * offers nothing and {@link quantityUnitAlphabet} admits nothing, so refusing the
+ * bare number disambiguates nothing — it removes the cell's LAST accepted input
+ * and bricks the row.
+ *
+ * The concrete case this was breaking is `Money`, whose cells accepted neither
+ * `6` nor `6USD` and so could not be edited at all. WHY `USD` is out of reach
+ * is the engine's to say: `COMPOSED_UNIT_INDEX` in gui/src-tauri/src/engine.rs
+ * states which tables it composes and which it excludes, and this doc points
+ * there rather than keeping a second copy of that argument in sync.
+ *
+ * Not a weakening, and the guarantee that replaces the old one is stronger for
+ * being checkable: GATED ⟺ the dimension is on the {@link BASE_UNIT_DIMENSIONS}
+ * floor OR a rung exists in this cell's own ladder ⟺ {@link quantityUnitAlphabet}
+ * can express it. Those two disjuncts are exactly the two the alphabet unions, so
+ * the gate and the alphabet beside it stay ONE rule read twice: a cell is told to
+ * supply a unit precisely when the alphabet can accept one for it.
+ *
+ * The ladder half reuses {@link ladderForDimension} rather than indexing the map,
+ * so "what counts as covered" has ONE definition, shared with `pickerLadder`,
+ * `editSeedUnitLabel` and `quantityReFor`. It still enumerates no unit STRINGS —
+ * map membership plus two canonical dimension names — so the standing #5788 D6
+ * prohibition documented on {@link quantityUnitAlphabet} is untouched.
+ *
+ * THE BACKEND IS THE AUTHORITATIVE GATE: `parse_value_string_for_cell` in
+ * `gui/src-tauri/src/engine.rs` refuses a `Value::Int`/`Value::Real` only for a
+ * dimension its `LADDER_COVERAGE` table records, and does so for every caller
+ * of `set_parameter` — including `MechanismPanel`, which reaches
+ * `handleSetParameter` without passing through `PropertyEditor`'s gate. This
+ * predicate exists to make the refusal INLINE, keeping the typed text on screen
+ * for correction instead of discarding it behind an async error toast.
+ *
+ * THE TWO ENDS KEY ON DIFFERENT FACTS, and the residual gap runs ONE way and IS
+ * reachable from this panel. The backend reads the cell's DECLARED type; this
+ * reads `ValueData.dimension`, which `format_determined_cell` derives from the
+ * cell's CURRENT VALUE via `display_scalar` — the empty string for `Undef`,
+ * `Option(None)`, or any non-Scalar. For a Scalar-valued cell the two coincide.
+ *
+ * The live case is a `none`-valued `Option<Length>`: `display_scalar` returns
+ * `None`, the dimension serialises as `''`, this gate admits the bare number,
+ * and the backend — which unwraps `Type::Option` before gating — refuses it
+ * behind exactly the async toast this predicate exists to avoid. The user still
+ * gets the actionable "expects Length, got the bare number '120'" rather than a
+ * generic type error, so the outcome is correct and only the INLINE-ness is
+ * lost. An `Option(Some(80mm))` cell surfaces `'Length'` and is gated inline as
+ * usual, so the divergence is confined to the `none` state.
+ *
+ * Closing it properly means surfacing the DECLARED dimension on `ValueData` as a
+ * field of its own, so both ends read one fact; until then it is recorded here
+ * rather than claimed away.
+ *
+ * IT FAILS OPEN ONLY BELOW THE FLOOR. With `ladders` undefined or empty — the
+ * `get_unit_ladders` fetch not resolved, or failed — nothing beyond
+ * {@link BASE_UNIT_DIMENSIONS} is expressible, so nothing beyond it is gated.
+ * That is the safe direction for the dimensions this side genuinely cannot
+ * describe: the backend stays authoritative, and over-rejecting there would
+ * discard input the engine would have accepted.
+ *
+ * It is the WRONG direction for the floor, which is why the floor is not part of
+ * it. The engine's `LADDER_COVERAGE` is built in-process from the Rust-authored
+ * curated table and is ALWAYS populated, so it keeps gating Length and Angle
+ * whatever happens to the fetch. Failing open on them made the two ends disagree
+ * exactly on that path — the panel accepting `80` in a Length cell, `editSeed`
+ * seeding the bare magnitude, and the engine then refusing with "expects Length,
+ * got the bare number '80'" behind the async toast this predicate exists to
+ * avoid. Keeping the floor gated instead means `editSeed` still seeds `80mm`
+ * (via `editSeedUnitLabel`'s `?? val.unit` fallback, since there is no ladder to
+ * read a default rung from) and the inline gate still matches the engine.
+ *
+ * The floor is applied unconditionally rather than only when the map is missing,
+ * which is the same shape {@link quantityUnitAlphabet} already has: it unions
+ * {@link BASE_UNIT_LABELS} in on EVERY path, not just the ladder-less one. A
+ * populated map covers Length and Angle anyway, so the two forms differ only for
+ * a present-but-partial payload — where matching the alphabet's own floor is
+ * what keeps the gate and the alphabet beside it reading one rule.
+ *
+ * IT DOES NOT COST THE ORDINARY EDIT A UNIT KEYSTROKE. `PropertyEditor`'s
+ * `editSeed` seeds a COVERED cell's input with a unit-bearing literal —
+ * magnitude + the cell's default ladder rung, or its unit badge on the
+ * ladder-less floor path — so committing an untouched row is still a no-op and
+ * changing only the digits still submits a united literal.
+ * A predicate like this one is only safe to add alongside a seed like that. An
+ * UNCOVERED cell seeds the bare magnitude, which is now consistent rather than
+ * a degradation: that seed is a literal both ends accept.
+ *
+ * THE ASYMMETRY THAT REMAINS runs the documented safe direction only — the
+ * backend accepts spellings this gate refuses (raw superscripts, the SI bases
+ * no ladder carries: `s`, `K`, `A`, `mol`, `cd`, and cross-dimension labels).
+ * A COMPOSED dimension is no longer part of it: the backend serialises one as
+ * the empty string, indistinguishable here from dimensionless, and since the
+ * coverage-conditional rule the backend does not gate it either — so the two
+ * ends now AGREE on it.
+ */
+export function acceptsBareNumber(
+  dimension: string | undefined,
+  ladders: UnitLadderMap | undefined,
+): boolean {
+  if (!dimension) return true;
+  if (BASE_UNIT_DIMENSIONS.includes(dimension)) return false;
+  return ladderForDimension(ladders ?? {}, dimension) === undefined;
+}
 
 /**
  * Build the typed-quantity regex for a unit alphabet (task #6028) — the ONE
