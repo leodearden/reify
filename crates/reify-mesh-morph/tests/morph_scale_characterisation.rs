@@ -169,6 +169,28 @@
 //! run is therefore also independent corroboration that the coarse end of the
 //! ladder is noise rather than signal.
 //!
+//! ### Re-measured after the review amendments
+//!
+//! Re-run at commit f9a56bb3ad (dev profile, same host) after the amendment
+//! pass that moved `boundary_surface`'s orientation step from every distinct
+//! tet face to the emitted survivors only.
+//!
+//! Every STRUCTURAL number reproduced EXACTLY: both surface extractions
+//! (n=8 gives 1884 tris / 944 verts, n=18 gives 9284 / 4644), all seven gmsh
+//! achieved tet counts (2786, 5009, 9079, 15633, 30922, 63121, 109078), and
+//! both morph legs (9936 tets / 6507 dof, 108756 / 61617). That is the check
+//! that matters for the refactor: an identical achieved gmsh ladder off the
+//! same extracted surface is end-to-end evidence the extractor's output did
+//! not change, which is what lets the tables above stand unedited.
+//!
+//! The wall-clocks did move. The 100K morph leg re-measured 105.60 s against
+//! the 123.13 s recorded in the dev block above, and gmsh's finest rung
+//! 2.39 s against 4.64 s — same sign, same order of magnitude (gmsh/morph
+//! 0.02x here vs 0.04x there), on a host quiesced for neither run. Treat
+//! that ~15-50% spread as concrete support for this file's own standing
+//! caveat rather than as a correction to it: quote the SIGN and the order of
+//! magnitude, re-measure the MULTIPLIER.
+//!
 //! ## What these numbers do and do not characterise
 //!
 //! The morph arm is forced serial: `src/elasticity.rs` hardcodes
