@@ -172,6 +172,72 @@ pub(crate) fn sampled_curl_field(sf: SampledField) -> Value {
     }
 }
 
+/// Wrap a [`SampledField`] as a rotation `Value::Field`.
+///
+/// domain: `Point3<Length>`, codomain: `Vector3<Angle>` (stride 3) — matches
+/// `solver_elastic.ri` `rotation : Field<Point3<Length>, Vector3<Angle>>`.
+/// The payload is the infinitesimal rotation vector ω = ∇×u / 2, the axial
+/// vector of the antisymmetric part of ∇u.
+///
+/// ## This is the designated crossing (ruling #6164)
+///
+/// Structurally this is a byte-for-byte clone of [`sampled_curl_field`] with
+/// exactly ONE difference: `vec3(angle())` instead of
+/// `vec3(dimensionless_scalar())` in the codomain slot. That single difference
+/// is the entire ruling. The derivative algebra stays quotient-pure — ∇×u is
+/// Length/Length and therefore genuinely dimensionless, so [`sampled_curl_field`]
+/// deliberately keeps its dimensionless codomain and `result.curl` stays
+/// type-identical to `curl(result.displacement)`. The radian is introduced only
+/// here, by a named channel that ASSERTS an arc measure.
+///
+/// ## Why declaring the codomain is sufficient
+///
+/// The ANGLE tag on the DECLARED codomain is what makes the runtime emit
+/// angle-dimensioned components, with no runtime change anywhere:
+/// `sample_at_point` (`reify-expr/src/sampled.rs:137-143`) takes the stride>1
+/// branch and extracts `component_type` from `Type::Vector { quantity }`, then
+/// `wrap_result` (`:294-303`) emits `Value::Scalar { dimension }` for any
+/// non-dimensionless codomain. Nothing else has to know about rotation.
+pub(crate) fn sampled_rotation_field(sf: SampledField) -> Value {
+    Value::Field {
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::vec3(reify_core::Type::angle()),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// Derive the `rotation` [`SampledField`] from the `curl` one: ω = ∇×u / 2.
+///
+/// Clones `curl_sf`, halves every `data` entry, and renames to `"rotation"`.
+/// Every grid-metadata field (`kind`, `bounds_min`, `bounds_max`, `spacing`,
+/// `axis_grids`, `interpolation`) is carried through verbatim, so the rotation
+/// channel shares the curl channel's Regular3D grid exactly — no extra BVH
+/// resample pass, and bit-identical node coordinates.
+///
+/// Halving is bit-exact: IEEE-754 division by 2.0 only decrements the exponent,
+/// so it is exact for every normal operand (subnormal underflow is unreachable
+/// at physical strain magnitudes). Callers may therefore pin `rotation == curl/2`
+/// at 0 ULP.
+///
+/// ## Why rotation is DERIVED at wrap time and never stored
+///
+/// `crates/reify-compute-contract/src/elastic_result.rs` carries a FROZEN binary
+/// wire header with `curl_len: u64` at a fixed byte offset, guarded by a
+/// byte-exact golden test (`:2068-2148`, which pins `curl_len` as literal hex).
+/// Adding a `rotation_len` slab would break that header, invalidate every
+/// persisted cache entry, and force a format version bump — all to carry data
+/// that is a pure ×½ of a slab already on the wire. Deriving instead means
+/// existing cache entries gain a correct `.rotation` for free.
+pub(crate) fn rotation_sf_from_curl(curl_sf: &SampledField) -> SampledField {
+    let mut sf = curl_sf.clone();
+    sf.name = "rotation".to_string();
+    for c in sf.data.iter_mut() {
+        *c /= 2.0;
+    }
+    sf
+}
+
 /// Wrap a [`SampledField`] as an error-indicator `Value::Field`.
 ///
 /// domain: `Point3<Length>`, codomain: `Pressure` (Pa, dimensioned scalar,
