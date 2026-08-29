@@ -1237,21 +1237,37 @@ mod tests {
         ("ellipse", "ellipse(10mm, 5mm)", "ellipse(10, 5)"),
     ];
 
-    /// RED (task 6450 step-1): each gated geometry builtin's completion `doc`
-    /// must carry the units requirement AND its dimensioned example — pinned
-    /// BEHAVIOURALLY so the doc can never claim a gate that does not exist and
-    /// every advertised example is one that actually evaluates clean.
+    /// RED (task 6450 step-1): each gated geometry builtin's SERVED completion
+    /// documentation must carry the units requirement AND its dimensioned
+    /// example — pinned BEHAVIOURALLY so the doc can never claim a gate that
+    /// does not exist and every advertised example is one that actually
+    /// evaluates clean.
+    ///
+    /// Assertion (c) reads the completion item's rendered `documentation`
+    /// (via `compute_completions`), not the raw `BuiltinFunctionInfo.doc`
+    /// field directly: `concat!` cannot splice a named `const` (only string
+    /// literals — confirmed against `LENGTH_MIGRATION_HINT`), so `doc` stays
+    /// its short `&'static str` and `BUILTIN_FUNCTIONS` stays a plain const
+    /// slice; the units clause is composed from the shared const only when
+    /// `push_builtins` renders the final `CompletionItem` (step-2). This
+    /// mirrors the existing `polygon_completion_advertises_compiling_flat_form`
+    /// and `builtin_completions_have_documentation` precedent of asserting on
+    /// served completion output rather than the source struct.
     ///
     /// Per row: (a) the BARE form is rejected with `LENGTH_MIGRATION_HINT` —
     /// matching the hint TEXT, not the builtin name, since rounded_box/
     /// rounded_rect diagnose under their lowered `box`/`cylinder` name; (b)
     /// the DIMENSIONED form evaluates with no such diagnostic; (c) the
-    /// entry's `doc` contains both the hint and the dimensioned example. (a)
-    /// and (b) describe the already-working gate and pass today; (c) fails
-    /// for all 15 rows until step-2.
+    /// builtin's served `documentation` contains both the hint and the
+    /// dimensioned example. (a) and (b) describe the already-working gate and
+    /// pass today; (c) fails for all 15 rows until step-2.
     #[test]
     fn gated_length_builtins_advertise_their_dimension_requirement() {
         use reify_core::units::LENGTH_MIGRATION_HINT;
+        use tower_lsp::lsp_types::Documentation;
+
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
 
         for &(name, dimensioned, bare) in GATED_LENGTH_BUILTIN_ROWS {
             let bare_diags = eval_expr_diagnostics(bare);
@@ -1270,19 +1286,21 @@ mod tests {
                  clean, got diagnostics: {dimensioned_diags:?}"
             );
 
-            let entry = BUILTIN_FUNCTIONS
+            let item = items
                 .iter()
-                .find(|b| b.name == name)
-                .unwrap_or_else(|| panic!("{name}: missing from BUILTIN_FUNCTIONS"));
+                .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label == name)
+                .unwrap_or_else(|| panic!("{name}: missing FUNCTION completion"));
+            let doc_text = match &item.documentation {
+                Some(Documentation::MarkupContent(mc)) => mc.value.as_str(),
+                other => panic!("{name}: expected MarkupContent documentation, got: {other:?}"),
+            };
             assert!(
-                entry.doc.contains(LENGTH_MIGRATION_HINT),
-                "{name}: doc should contain the LENGTH_MIGRATION_HINT, got: {}",
-                entry.doc
+                doc_text.contains(LENGTH_MIGRATION_HINT),
+                "{name}: served documentation should contain the LENGTH_MIGRATION_HINT, got: {doc_text}"
             );
             assert!(
-                entry.doc.contains(dimensioned),
-                "{name}: doc should show the dimensioned example `{dimensioned}`, got: {}",
-                entry.doc
+                doc_text.contains(dimensioned),
+                "{name}: served documentation should show the dimensioned example `{dimensioned}`, got: {doc_text}"
             );
         }
     }
