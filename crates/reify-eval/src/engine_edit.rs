@@ -4325,19 +4325,25 @@ impl Engine {
                             &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                 .with_runtime_diagnostics(&runtime_sink),
                         );
-                        values.insert(vcid.clone(), val.clone());
-                        new_snapshot
-                            .values
-                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
-                        // Update cache for re-evaluated node
-                        let trace = extract_dependency_trace(expr);
-                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                        self.cache.record_evaluation(
-                            node_id.clone(),
-                            cached_result,
+                        // Commit via the cell-commit primitive (task #6423):
+                        // atomically writes values/snapshot/cache/journal
+                        // (INV-EVAL-1). Mirrors edit_param's own wave2 commit
+                        // above (task δ #5056).
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut new_snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            vcid.clone(),
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::EditReeval,
+                            extract_dependency_trace(expr),
                             VersionId(version_id),
-                            trace,
+                            CacheLeg::Record,
                         );
                     }
                 }
