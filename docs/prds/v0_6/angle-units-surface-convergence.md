@@ -259,9 +259,11 @@ instruction.** `docs/notes/angle-literal-migration-ledger.md` is the re-measurem
 sites tabulated above, published by task **5777** (leaf α). It is stamped **2026-08-26 at
 `181d1ec24c`** — a `main` merge commit, and therefore permanently reachable — with all four of its
 measured sections sharing that one stamp. It routes its buckets to this PRD's migration consumers:
-**γ (5779)** `revolve`, **δ (5780)** `draft`, **ε (5781)** `circular_pattern`, each migrating its
-own subset per contract C6. The counts in the table above are the **authoring-time snapshot** and
-have since moved; for sizing γ/δ/ε the ledger, not this table, is the live source of truth. Its
+**γ (5779)** the rotation/sweep angle builtins (`revolve` / `rotate` / `rotate_around` / `arc` —
+all four, per the ledger's own §2.1 split), **δ (5780)** `draft`, **ε (5781)** `circular_pattern`,
+each migrating its own subset per contract C6. The counts in the table above are the
+**authoring-time snapshot** and have since moved; for sizing γ/δ/ε the ledger, not this table, is
+the live source of truth. Its
 numbers are deliberately **not** mirrored here — the ledger carries only measured data this PRD
 does not, and this PRD keeps the normative contract table, so a pointer beats a second copy to
 keep in sync.
