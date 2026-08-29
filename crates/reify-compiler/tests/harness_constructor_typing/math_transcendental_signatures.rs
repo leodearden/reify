@@ -29,9 +29,27 @@
 //! assertion in this suite (and the cascade dimension), which tests the
 //! compile-time dimension contract directly.
 //!
-//! exp/log rows feed a dimensionless Real — eval Undefs on a dimensioned arg
-//! (`unary_f64` rejects dimensions), so their rows are contract pins; their
-//! behavioral RED is at the `is_math_typed_fn` recognition level.
+//! exp/log rows feed a dimensionless Real, so their rows are contract pins;
+//! their behavioral RED is at the `is_math_typed_fn` recognition level.
+//!
+//! CORRECTION (task 6249). This header previously claimed eval "Undefs on a
+//! dimensioned arg (`unary_f64` rejects dimensions)". That was wrong, and was
+//! wrong before task 6249 touched this file. `unary_f64`
+//! (`crates/reify-stdlib/src/helpers.rs:31`) extracts via `Value::as_f64`,
+//! whose `Value::Scalar { si_value, .. } => Some(*si_value)` arm
+//! (`crates/reify-ir/src/value.rs:1639`) accepts ANY dimension — so `log(2mm)`
+//! silently evaluates `ln(0.002)` rather than Undefing. MEASURED 2026-08-29:
+//! `reify eval` on `let a = log(2.0mm)` prints `-6.214608098422191`, which is
+//! exactly `ln(0.002)`. That silent wrongness is what
+//! `docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b) cites, and
+//! task **#6943** owns the fix; the scope-fence test below pins that this file
+//! does not pre-empt it.
+//!
+//! CONTRAST — forward trig genuinely does reject dimensions at eval:
+//! `trig_input` (`crates/reify-stdlib/src/helpers.rs:102`) returns `None` for a
+//! non-ANGLE `Value::Scalar`, which `unary_f64` turns into `Value::Undef`. Task
+//! 6249 makes that a COMPILE-time `ArgTypeMismatch` instead of a silent Undef;
+//! see the "Forward-trig argument-dimension rejection" section below.
 //!
 //! # Arg-independent arms
 //!

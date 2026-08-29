@@ -526,15 +526,43 @@ unrelated reasons — nothing in this family changes that:
   (`fn_param_default_compatible`), so even
   `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`
   (`crates/reify-compiler/src/functions.rs:187-215`).
-- **`sin(2.5)` isn't a widening — trig arguments are unchecked**:
-  no argument-dimension check exists for the transcendental family.
-  `MATH_TRANSCENDENTAL_NAMES` is a name list only
-  (`crates/reify-compiler/src/math_signatures.rs:95-97`); its
-  "accept ANGLE-or-Real" comment is intent only, not enforced.
-  `math_fn_result_type` fixes just the RESULT type
-  (`crates/reify-compiler/src/math_signatures.rs:374`) and never
-  inspects the argument, so every argument passes: `sin(2.5)`,
-  `sin(ratio * 2.0)`, and `sin(5.0mm)` (LENGTH) all compile clean.
+- **`sin(2.5)` isn't a widening — forward-trig arguments are
+  dimension-checked, and dimensionless passes that check**: since
+  task 6249, `sin`/`cos`/`tan` reject a dimensioned non-ANGLE
+  argument at compile time with a coded `ArgTypeMismatch`
+  (`check_transcendental_arg_dimensions`,
+  `crates/reify-compiler/src/math_signatures.rs:195`, wired into
+  `resolve_function_overload`'s `NoUserFunctions` arm at
+  `crates/reify-compiler/src/expr.rs:3462`). `sin(5.0mm)` (LENGTH)
+  therefore no longer compiles clean. But `sin(2.5)` and
+  `sin(ratio * 2.0)` still do, and for the same reason as each
+  other: the check accepts `Angle`, dimensionless, and `Int` alike
+  — mirroring the eval contract in
+  `reify_stdlib::helpers::trig_input`
+  (`crates/reify-stdlib/src/helpers.rs:102`), which reads a bare
+  dimensionless value as radians. So the bullet's point survives:
+  the literal/expression distinction is still not what decides
+  `sin(2.5)`, and nothing here is a dimensionless→dimensioned
+  widening. The check is DIMENSION-only — a `Bool` or `Geometry`
+  argument still passes — and it lives inside the
+  `NoUserFunctions` arm, so a user-defined `fn sin(...)` shadows
+  both the builtin and its check.
+
+  The rest of the transcendental family remains unchecked, each
+  with a named owner: `exp`/`log` under task #6943
+  (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision
+  6(b)), and the inverse-trig names `asin`/`acos`/`atan`/`atan2`
+  under task #5809 (`docs/prds/v0_6/dimension-checked-readers.md`
+  leaf κ). `MATH_TRANSCENDENTAL_NAMES`
+  (`crates/reify-compiler/src/math_signatures.rs:109`) is still a
+  bare name list for those six, and its "accept ANGLE-or-Real"
+  comment is still intent only; `math_fn_result_type`
+  (`crates/reify-compiler/src/math_signatures.rs:532`) still fixes
+  only the RESULT type and never inspects an argument. Both
+  non-enforcements are pinned by scope-fence tests in
+  `crates/reify-compiler/tests/math_transcendental_signatures.rs`
+  that name their owning task and are to be FLIPPED, not deleted,
+  when that task lands.
 
 Mandatoriness is owned elsewhere: the
 real-dimensionless-unification decision D5 (current ruling:
