@@ -491,6 +491,24 @@ fn row_u64(row: &Value, key: &str) -> Option<u64> {
     v.as_u64().or_else(|| v.as_str()?.parse().ok())
 }
 
+/// Read an `f64` field from a MUNCH row, tolerating both a JSON number and a
+/// JSON string — the float counterpart of [`row_u64`], for exactly the reason
+/// documented there. `confidence` is typed `float` in both captured fixtures,
+/// so under a type-less spec it arrives as a `Value::String` and a bare
+/// `.as_f64()` would silently drop every `dead_symbols_from_wire` /
+/// `untested_symbols_from_wire` row.
+///
+/// Together the two helpers cover every numeric column the MUNCH adapters
+/// treat as MANDATORY. The one remaining bare `as_u64()` —
+/// `layer_violations_from_wire`'s `rule_index` — is OPTIONAL
+/// (`.unwrap_or_default()`), so a string-encoded value there degrades the
+/// synthesized `rule[..]` label rather than dropping the violation; it is
+/// deliberately left alone.
+fn row_f64(row: &Value, key: &str) -> Option<f64> {
+    let v = row.get(key)?;
+    v.as_f64().or_else(|| v.as_str()?.parse().ok())
+}
+
 /// Parse signals from a Python-list string like `"['a', 'b', 'c']"`.
 ///
 /// Strips surrounding `[`/`]`, splits on `,`, trims whitespace and surrounding
@@ -541,7 +559,7 @@ fn dead_symbols_from_wire(decoded: &Value) -> Vec<DeadSymbol> {
             let kind = row.get("kind")?.as_str()?.to_string();
             let file = row.get("file")?.as_str()?.to_string();
             let line = row_u64(row, "line")? as usize;
-            let confidence = row.get("confidence")?.as_f64()?;
+            let confidence = row_f64(row, "confidence")?;
             let signals_raw = row
                 .get("signals")
                 .and_then(|s| s.as_str())
@@ -574,7 +592,7 @@ fn untested_symbols_from_wire(decoded: &Value) -> Vec<UntestedSymbol> {
             let symbol_id = row.get("symbol_id")?.as_str()?.to_string();
             let name = row.get("name")?.as_str()?.to_string();
             let file = row.get("file")?.as_str()?.to_string();
-            let confidence = row.get("confidence")?.as_f64()?;
+            let confidence = row_f64(row, "confidence")?;
             let reason = row.get("reason").and_then(|r| r.as_str()).unwrap_or("");
             let reached = reason != "unreached";
             Some(UntestedSymbol {
