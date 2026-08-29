@@ -5212,6 +5212,217 @@ mod check_error_exit_allowlist_ratchet {
     }
 }
 
+/// Unit behaviour for INV-SF-2's two pure exit-gate helpers, built from
+/// synthetic [`reify_core::Diagnostic`] values — no OCCT, no CLI exec, so
+/// these run in stub mode exactly as `dfm_error_escalation_tests` did.
+#[cfg(test)]
+mod check_error_gate_tests {
+    use super::{check_gating_error, has_error_diagnostic};
+    use reify_core::{Diagnostic, DiagnosticCode};
+
+    /// The message the seeded allowlist's first entry excuses, verbatim from
+    /// the MEASURED corpus sweep.
+    const TRAMPOLINE: &str =
+        "@optimized target \"solver::elastic_static\": no registered compute trampoline \
+         (falling back to body-inlining)";
+
+    /// The sibling emission that SHARES the `@optimized target ` prefix and
+    /// must keep gating — the reason the matcher is `MessageContains`, not the
+    /// PRD's sketched `MessagePrefix`.
+    const TRAMPOLINE_CANCELLED: &str =
+        "@optimized target \"solver::elastic_static\": compute trampoline was cancelled";
+
+    // -------------------------------------------------------------------
+    // has_error_diagnostic — the shared, allowlist-BLIND severity predicate
+    // -------------------------------------------------------------------
+
+    /// `has_error_diagnostic` is the ONE definition of "this set carries an
+    /// Error", shared with `cmd_eval` and `cmd_build`.  It must know nothing
+    /// about `CHECK_ERROR_EXIT_ALLOWLIST`: the allowlist is a `check`-only
+    /// migration ratchet, and eval/build have gated on `Severity::Error` since
+    /// #4458 — including on the trampoline Error, which `build_is_success`'
+    /// own doc names as its motivating example.
+    #[test]
+    fn has_error_diagnostic_is_pure_severity_and_allowlist_blind() {
+        assert!(!has_error_diagnostic(&[]), "empty set carries no Error");
+        assert!(
+            !has_error_diagnostic(&[Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit")]),
+            "a Warning is not an Error"
+        );
+        assert!(
+            has_error_diagnostic(&[Diagnostic::error("failed to compile geometry operation")]),
+            "any Severity::Error makes this true"
+        );
+        assert!(
+            has_error_diagnostic(&[Diagnostic::error(TRAMPOLINE)]),
+            "the trampoline Error is allowlisted for `check` ONLY; the shared \
+             predicate must still report it, or `reify build` / `reify eval` \
+             would silently stop gating on it"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // check_gating_error — severity AND no allowlist match
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn nothing_gates_on_an_empty_set() {
+        assert!(check_gating_error(&[]).is_none());
+    }
+
+    /// C1 (graceful degradation): a Warning never invents a failure, whatever
+    /// it says.  `W_DFM_*` is the family that most looks like it should.
+    #[test]
+    fn warnings_never_gate() {
+        assert!(
+            check_gating_error(&[
+                Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+                Diagnostic::warning("W_DFM_DRAFT: 0.5° below the 1° minimum"),
+            ])
+            .is_none(),
+            "Warning-severity DFM findings are non-fatal by design"
+        );
+    }
+
+    /// EXECUTABLE PROOF of PRD §3 Leg B item 3 — "behavior stays byte-identical
+    /// for those classes" — replacing the coverage the deleted
+    /// `dfm_error_escalation_tests` provided.
+    ///
+    /// Both bolt-ons this task removes escalated a strict SUBSET of what the
+    /// general `Severity::Error` gate catches:
+    ///
+    /// - `GdtIllegalModifier` has exactly one emission site
+    ///   (`engine_constraints::illegal_modifier_error`) and it is
+    ///   unconditionally `Diagnostic::error`, so every diagnostic the deleted
+    ///   code-scoped escalation could see is Error-severity;
+    /// - `dfm_has_error_diagnostic` matched `severity == Error && message
+    ///   contains "E_DFM_"`, which is the general predicate AND a message
+    ///   filter.
+    ///
+    /// Deleting them therefore cannot lose a gate, only widen one.
+    #[test]
+    fn the_deleted_bolt_ons_are_subsumed() {
+        let gdt = Diagnostic::error(
+            "`flatness` is an RFS-only characteristic; the `M` material-condition \
+             modifier is illegal on it",
+        )
+        .with_code(DiagnosticCode::GdtIllegalModifier);
+        assert!(
+            check_gating_error(std::slice::from_ref(&gdt)).is_some(),
+            "GdtIllegalModifier still exits non-zero, now via the general gate"
+        );
+
+        for msg in [
+            "E_DFM_OVERHANG: face dips past the overhang limit",
+            "E_DFM_UNDERCUT: re-entrant wall — part cannot release",
+            "E_DFM_DRAFT: 0.2° below the 1° minimum",
+        ] {
+            assert!(
+                check_gating_error(&[Diagnostic::error(msg)]).is_some(),
+                "DFM Error {msg:?} still exits non-zero, now via the general gate"
+            );
+        }
+    }
+
+    /// The one class the general gate WIDENS to, deliberately.
+    ///
+    /// `E_DFM_BUILD_VOLUME` is appended by the post-geometry harvest and
+    /// reaches the MERGED set, but the deleted bolt-on read check()'s own list
+    /// and was additionally gated on `has_dfm_rule`.  #5748's pre-γ pin warned
+    /// that pointing the old predicate at the merged set would widen the gate
+    /// "off the back of a collection change"; γ makes exactly that widening,
+    /// on purpose and with this test.
+    #[test]
+    fn build_volume_harvest_error_now_gates() {
+        assert!(
+            check_gating_error(&[Diagnostic::error(
+                "E_DFM_BUILD_VOLUME: realized volume is zero"
+            )])
+            .is_some(),
+            "the harvest Error reaches the user through the merged set, so it \
+             must move the exit code too"
+        );
+    }
+
+    /// Each seeded allowlist entry, exercised against a message taken verbatim
+    /// from the MEASURED corpus sweep that seeded it.
+    #[test]
+    fn seeded_allowlist_entries_excuse_their_families() {
+        assert!(
+            check_gating_error(&[Diagnostic::error(TRAMPOLINE)]).is_none(),
+            "entry 1 (#5311): check attaches no compute trampoline BY DESIGN"
+        );
+        assert!(
+            check_gating_error(&[Diagnostic::error(
+                "failed to compile geometry operation: argument 'depth' for box \
+                 is unresolved (Undef)"
+            )])
+            .is_none(),
+            "entry 2 (#5404): an `auto` param awaits a solver check does not run"
+        );
+        assert!(
+            check_gating_error(&[Diagnostic::error(
+                "all geometry operations failed; no geometry output produced"
+            )])
+            .is_none(),
+            "entry 3 (#5404): check writes no geometry, so this is not a fact \
+             about the design"
+        );
+        assert!(
+            check_gating_error(&[Diagnostic::error(
+                "constraint BoltFlange#constraint[1] violated: clearance 0.4mm \
+                 below minimum 0.5mm"
+            )
+            .with_code(DiagnosticCode::ConstraintViolated)])
+            .is_none(),
+            "entry 4 (#5404): a stale build-side ConstraintViolated can survive \
+             the merge while check's authoritative verdict is Satisfied; gating \
+             on it would contradict check's own stdout"
+        );
+    }
+
+    /// The matcher must not be over-broad.  This is the whole reason
+    /// `CheckErrorAllowlistMatcher::MessageContains` exists instead of the
+    /// PRD's sketched `MessagePrefix`: `TRAMPOLINE_CANCELLED` shares the
+    /// `@optimized target "solver::elastic_static": ` prefix with the excused
+    /// message and is a genuine failure that must keep gating.
+    #[test]
+    fn allowlist_does_not_swallow_the_prefix_sibling() {
+        assert!(
+            check_gating_error(&[Diagnostic::error(TRAMPOLINE_CANCELLED)]).is_some(),
+            "a cancelled trampoline is a real failure; only the MISSING-trampoline \
+             message is excused"
+        );
+    }
+
+    /// The load-bearing composition: an allowlisted Error must neither invent a
+    /// gate nor mask a co-resident one.
+    #[test]
+    fn an_excused_error_neither_gates_nor_masks() {
+        assert!(
+            check_gating_error(&[
+                Diagnostic::error(TRAMPOLINE),
+                Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+            ])
+            .is_none(),
+            "exactly the mix in `cli_build_fea.rs::\
+             check_fea_violated_constraint_is_not_gated`, which must stay exit 0"
+        );
+
+        let gating = check_gating_error(&[
+            Diagnostic::error(TRAMPOLINE),
+            Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit"),
+        ])
+        .expect("a co-resident non-allowlisted Error must still gate");
+        assert!(
+            gating.message.contains("E_DFM_OVERHANG"),
+            "the gate must return the diagnostic that actually gates, not the \
+             excused one it scanned past; got {:?}",
+            gating.message
+        );
+    }
+}
+
 #[cfg(test)]
 mod dfm_error_escalation_tests {
     use super::dfm_has_error_diagnostic;
