@@ -64,10 +64,17 @@
 #                      DF_VERIFY_ROLE=merge bash verify.sh all --scope all \
 #                          --profile both --include-infra --print-plan
 #                    This is what covers a plan line assembled through a
-#                    VARIABLE (`_cmd="./scripts/x.sh"; add_tool "$_cmd"` — the
-#                    _gui_cmd / _sidecar_cmd / _ts_cmd shape), which begins with
-#                    the assignment rather than with `add_tool` and is therefore
-#                    invisible to 4a. Inspect it alone with --list-plan-derived.
+#                    VARIABLE (`_cmd="./scripts/x.sh"; add_tool "$_cmd"`), which
+#                    begins with the assignment rather than with `add_tool` and
+#                    is therefore invisible to 4a. Inspect it alone with
+#                    --list-plan-derived. NOTE it derives NOTHING beyond 4a
+#                    today — the two sets are byte-identical, because verify.sh
+#                    has no live plan line naming a *.sh path from behind a
+#                    variable; 4b is future-proofing, and the only exercised
+#                    instance is the synthetic zzz-print-plan-variable.sh case
+#                    in Pair E of tests/infra/test_verify_pipeline_guard.sh.
+#                    See clause 4b's own comment for why the _gui_cmd triple is
+#                    NOT an example of coverage.
 #             MONOTONICITY is the safety argument for the whole design: 4b can
 #             only ever ADD to the set. If --print-plan fails, times out, or
 #             emits nothing, the classifier degrades to 4a's source-text floor —
@@ -213,7 +220,8 @@ fi
 #    derivations share the $_verify_sh resolved just above, so the
 #    REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH override applies to both with no
 #    second env knob.
-#    NOT scripts/-only: tests/sync_comments_test.sh (verify.sh:2627) is an
+#    NOT scripts/-only: tests/sync_comments_test.sh (grep `sync_comments_test.sh`
+#    in scripts/verify.sh) is an
 #    emitted gate of the identical ambush class living outside scripts/, and a
 #    prefix-restricted clause missed it (measured exit 1). Deriving any
 #    directory-qualified *.sh keeps the clause honest about the whole class.
@@ -237,7 +245,8 @@ if [ -f "$_verify_sh" ]; then
     #    comment mention — the same hardening clause 3's source-statement grep
     #    carries. The exclusion comes from the leading-'add' anchor ALONE, which
     #    is why no quote character is required here: `add './scripts/x.sh'` is
-    #    a live idiom (cf. verify.sh:2610) and demanding a '"' silently dropped
+    #    a live idiom (grep -E "^\s*add(_tool)? '" scripts/verify.sh) and
+    #    demanding a '"' silently dropped
     #    it while costing no precision (pinned both ways in Pair E (c)).
     #
     #    (ii) the '(^|[^A-Za-z0-9_./-])' LEFT and '([^A-Za-z0-9_.-]|$)' RIGHT
@@ -266,11 +275,26 @@ fi
 #    produced by --print-plan.
 #
 #    WHAT THIS BUYS OVER 4a: a plan line assembled through a VARIABLE
-#    (`_cmd="./scripts/x.sh"; add_tool "$_cmd"` — the shape verify.sh uses for
-#    _gui_cmd / _sidecar_cmd / _ts_cmd, assembled at scripts/verify.sh:2568-2574
-#    and emitted at :2651-2653) is invisible to a source-text grep, because the
-#    statement begins with the assignment rather than with `add_tool`. The
-#    resolved plan names the path outright.
+#    (`_cmd="./scripts/x.sh"; add_tool "$_cmd"`) is invisible to a source-text
+#    grep, because the statement begins with the assignment rather than with
+#    `add_tool`. The resolved plan names the path outright.
+#
+#    HOW MUCH IT BUYS TODAY: NOTHING — and that is the honest reading, not a
+#    defect. Measured on this tree, `--list-plan-derived` is BYTE-IDENTICAL to
+#    clause 4a's source-text set (12 paths). verify.sh has no live plan line
+#    that names a *.sh path from behind a variable. (The `_gui_cmd` /
+#    `_sidecar_cmd` / `_ts_cmd` triple — grep `_gui_cmd=` in scripts/verify.sh
+#    — IS variable-assembled, but its value is a pure npm shell snippet
+#    containing no *.sh path at all, so neither half can derive anything from
+#    it; and its `add_tool "$_gui_cmd"` emission sits in the plain-path branch
+#    guarded by `[ "$DO_LINT" -eq 0 ] || [ "$RUN_RUST" -eq 0 ]`, which the
+#    canonical widest invocation below never takes. It is a RESIDUAL-bucket
+#    example on both counts — do not cite it as a covered one.) The clause is
+#    therefore FUTURE-PROOFING: it closes the idiom before someone reaches for
+#    it. The only place the closure is actually exercised is the synthetic
+#    `scripts/zzz-print-plan-variable.sh` case in Pair E of
+#    tests/infra/test_verify_pipeline_guard.sh, which injects that shape into a
+#    REACHED branch of build_plan.
 #
 #    UNIONED ONTO CLAUSE 4a, NEVER REPLACING IT — and that is a safety property,
 #    not a style choice. The union makes the classifier MONOTONE: 4b can only
@@ -291,12 +315,40 @@ fi
 #    isolation is not a nicety: under the union a broken 4b is invisible in
 #    --list, and being able to see it alone is what makes the non-vacuity
 #    assertion in Pair E (c-bis) possible at all.
+#    EVALUATED LAZILY (task 6426 review), via derive_plan_paths below rather
+#    than at top level. This clause is the guard's ONLY fork, and the guard runs
+#    on EVERY dark-factory merge-worker classification: eager evaluation charged
+#    the ~0.4s --print-plan cost to every caller, including the `*)` usage-error
+#    branch that never reads the set and every `requires-full-gate` that already
+#    matched via clauses 1-4a/5 (measured: `requires-full-gate docs/note.md`
+#    went 0.02s -> 0.47s). Deferring it costs nothing in correctness — the union
+#    is order-independent, and the ONLY outcome 4b can change is flipping a
+#    would-be exit 1 into exit 0, so consulting it after the static clauses miss
+#    is exactly as load-bearing as consulting it first. Monotonicity, fail-soft
+#    and the --list-plan-derived diagnostic are all preserved verbatim.
+#    ONE DIAGNOSTIC-ONLY CONSEQUENCE, deliberate: on a diff containing BOTH a
+#    plan-derived-only path and a statically-matched one, requires-full-gate now
+#    prints the statically-matched path rather than whichever came first in the
+#    input. The exit code — the thing that decides routing — is unchanged, and
+#    the two sets are byte-identical today so the case is not reachable yet.
 _PLAN_DERIVED_SET=""
-if [ -f "$_verify_sh" ]; then
+_SORTED_PLAN_DERIVED_SET=""
+_PLAN_DERIVED_DONE=0
+
+# Memoized: forks --print-plan at most ONCE per guard process, so a caller that
+# consults the set twice (or a future clause that does) pays for one fork.
+derive_plan_paths() {
+    if [ "$_PLAN_DERIVED_DONE" -eq 1 ]; then
+        return 0
+    fi
+    _PLAN_DERIVED_DONE=1
+    if [ ! -f "$_verify_sh" ]; then
+        return 0
+    fi
+    local _gate
     while IFS= read -r _gate; do
         [ -z "$_gate" ] && continue
         _PLAN_DERIVED_SET="${_PLAN_DERIVED_SET}"$'\n'"${_gate}"
-        _SET="${_SET}"$'\n'"${_gate}"
     #    Three things about the pipeline below are load-bearing. (Same tail-of-
     #    loop-body placement as clause 4a, and for the same reason: bash admits
     #    no comment between `done` and its `< <(...)` redirect.)
@@ -342,7 +394,8 @@ if [ -f "$_verify_sh" ]; then
     #      - `REIFY_NEXTEST_PROBE_RETRY_SLEEP=0`: verify.sh's nextest probe runs
     #        UNCONDITIONALLY in print mode and is explicitly NOT covered by the
     #        "hermetic oracle" guarantee (its own scope note at
-    #        scripts/verify.sh:1702-1714 names this knob and says automation
+    #        scripts/verify.sh — search "Scope note re: --print-plan
+    #        hermeticity" — names this knob and says automation
     #        invoking --print-plan repeatedly should set it). Worst case without
     #        it: 4 cargo forks plus 2x the retry sleep before a hard fail.
     #      - `DF_VERIFY_ROLE=merge` is part of the canonical widest shape (a),
@@ -364,7 +417,14 @@ if [ -f "$_verify_sh" ]; then
              | grep -oE '(^|[^A-Za-z0-9_./-])(\./)?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh([^A-Za-z0-9_.-]|$)' \
              | sed -E 's|^[^A-Za-z0-9_./-]?(\./)?([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh)[^A-Za-z0-9_.-]?$|\2|' \
              || true)
-fi
+    # Clause 4b's contribution alone, for the --list-plan-derived diagnostic.
+    # `sed` rather than `grep -v '^$'` to drop the accumulator's leading blank:
+    # sed always exits 0, whereas grep exits 1 on an all-empty set and
+    # `set -o pipefail` would turn the documented fail-soft outcome (empty
+    # derivation) into a hard abort.
+    _SORTED_PLAN_DERIVED_SET="$(printf '%s\n' "$_PLAN_DERIVED_SET" | sed '/^$/d' | sort -u)"
+    return 0
+}
 
 # 5. Doc-sync manifest: non-comment/non-blank lines from doc-sync-paths.txt —
 #    operational docs cross-referenced by tests/infra doc-sync checks (see
@@ -381,14 +441,12 @@ if [ -f "$_doc_sync_paths" ]; then
     done < "$_doc_sync_paths"
 fi
 
-# Sort and deduplicate the set (a lib in both the manifest and sourced is fine).
+# Sort and deduplicate the STATIC set — clauses 1, 2, 3, 4a and 5 (a lib in both
+# the manifest and sourced is fine). Clause 4b is deliberately NOT folded in
+# here: it is derived lazily by derive_plan_paths and unioned in at the two
+# dispatch sites that actually need it (--list, and requires-full-gate's
+# last-resort pass), so no caller pays its fork unless the answer depends on it.
 _SORTED_SET="$(printf '%s\n' "$_SET" | sort -u)"
-
-# Clause 4b's contribution alone, for the --list-plan-derived diagnostic. `sed`
-# rather than `grep -v '^$'` to drop the accumulator's leading blank: sed always
-# exits 0, whereas grep exits 1 on an all-empty set and `set -o pipefail` would
-# turn the documented fail-soft outcome (empty derivation) into a hard abort.
-_SORTED_PLAN_DERIVED_SET="$(printf '%s\n' "$_PLAN_DERIVED_SET" | sed '/^$/d' | sort -u)"
 
 # ---------------------------------------------------------------------------
 # Subcommand dispatch
@@ -398,12 +456,22 @@ _subcmd="${1:-}"
 
 case "$_subcmd" in
     --list)
-        printf '%s\n' "$_SORTED_SET"
+        # The full set = the static clauses plus clause 4b, which is derived
+        # here on demand (see derive_plan_paths). `sed '/^$/d'` drops the blank
+        # line the second `%s` contributes when the plan-derived half is empty
+        # — the documented fail-soft outcome, which must print a clean list
+        # rather than a stray blank.
+        derive_plan_paths
+        printf '%s\n%s\n' "$_SORTED_SET" "$_SORTED_PLAN_DERIVED_SET" \
+            | sed '/^$/d' | sort -u
         exit 0
         ;;
     --list-plan-derived)
         # Diagnostic: clause 4b's contribution in ISOLATION — a strict subset of
-        # --list. Reuses the set built above; does NOT re-run --print-plan.
+        # --list. This is the one caller that always needs the fork, since the
+        # set it prints IS clause 4b's output; derive_plan_paths memoizes, so
+        # it still runs --print-plan exactly once.
+        derive_plan_paths
         # An EMPTY set is a legitimate exit-0 outcome, not an error: it is what
         # the documented fail-soft route produces when the plan derivation
         # fails, and the union means the classifier is still correct. Guarded by
@@ -451,6 +519,25 @@ case "$_subcmd" in
         if [ -n "$_infra_match" ]; then
             echo "$_infra_match"
             exit 0
+        fi
+        # LAST RESORT — clause 4b, the guard's only fork, consulted only now.
+        # Every clause above has missed, so this is the sole remaining way the
+        # verdict can still become exit 0; reaching this point is exactly the
+        # condition under which the ~0.4s --print-plan is worth paying. A
+        # would-be exit 1 is the ONLY answer 4b can change (monotonicity: it can
+        # only ADD paths), so deferring it here cannot alter any verdict — it
+        # only stops the common "load-bearing file changed" classification from
+        # forking at all. An empty set (the fail-soft route) falls straight
+        # through to exit 1, which is what the pre-6426 guard would have said.
+        derive_plan_paths
+        if [ -n "$_SORTED_PLAN_DERIVED_SET" ]; then
+            _plan_match=$(printf '%s\n' "$_normalized" \
+                          | grep -xF -m1 -f <(printf '%s\n' "$_SORTED_PLAN_DERIVED_SET") 2>/dev/null \
+                          || true)
+            if [ -n "$_plan_match" ]; then
+                echo "$_plan_match"
+                exit 0
+            fi
         fi
         exit 1
         ;;
