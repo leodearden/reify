@@ -6723,6 +6723,212 @@ mod tests {
         );
     }
 
+    /// Task #6875 step-3 (RED → GREEN in step-4): the mechanism-modal producer
+    /// honors `ModalOptions.damping` per mode AND echoes the descriptor itself
+    /// back on `ModalResult.damping`, exactly as the FEA path does.
+    ///
+    /// The echo is a distinct behaviour from the per-mode ζ landed in step-2:
+    /// step-2 only touched `Mode.damping_ratio`, so this test is still RED on
+    /// its `damping` assertions until step-4 replaces the hardcoded
+    /// `("damping", Value::Undef)` in the step-(6) result_fields map.
+    ///
+    /// Case A pins that ζ is genuinely *per mode* (a two-body mechanism whose
+    /// modes have different ω must get different ζ), so a single hoisted
+    /// constant cannot pass. Cases B and C pin the two silent-undamped
+    /// classifications, including the absent-descriptor path that keeps
+    /// `printer_z_compliant_mount.ri` bit-identical.
+    #[test]
+    fn mechanism_modal_echoes_damping_descriptor_and_per_mode_zeta() {
+        use std::f64::consts::PI;
+
+        /// Drive the trampoline and unwrap to the `ModalResult` fields, asserting
+        /// a Completed outcome with no Error diagnostics.
+        fn run(mech: Value, options: Value) -> (Box<StructureInstanceData>, Vec<Diagnostic>) {
+            let value_inputs = vec![mech, options];
+            let outcome = solve_mechanism_modal_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected Completed outcome");
+            };
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "must not produce Error diagnostics; got {diagnostics:?}",
+            );
+            match result {
+                Value::StructureInstance(d) => {
+                    assert_eq!(d.type_name, "ModalResult");
+                    (d, diagnostics)
+                }
+                other => panic!("expected ModalResult StructureInstance, got {other:?}"),
+            }
+        }
+
+        /// Read the `modes` list off a ModalResult.
+        fn modes_of(data: &StructureInstanceData) -> &Vec<Value> {
+            match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("modes must be a List; got {other:?}"),
+            }
+        }
+
+        /// Read `(frequency_hz, damping_ratio)` off a `Mode`, asserting the
+        /// frequency is a dimensioned `Scalar<Frequency>` and ζ is a `Real`.
+        fn mode_f_and_zeta(mode: &Value, i: usize) -> (f64, f64) {
+            let m = match mode {
+                Value::StructureInstance(d) => d,
+                other => panic!("modes[{i}] must be a Mode StructureInstance; got {other:?}"),
+            };
+            assert_eq!(m.type_name, "Mode");
+            let f = match m.fields.get("frequency") {
+                Some(Value::Scalar {
+                    si_value,
+                    dimension,
+                }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                other => panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}"),
+            };
+            let zeta = match m.fields.get("damping_ratio") {
+                Some(Value::Real(z)) => *z,
+                other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+            };
+            (f, zeta)
+        }
+
+        // ── Case A: damped, two bodies (direct n_dof = 2 solve, no anchor pad) ─
+        // k0/m0 = 500 and k1/m1 = 500_000 — two decades apart in ω, so a
+        // per-mode ζ is unmistakably distinguishable from a hoisted constant.
+        // (α, β) reuse the FEA-path fixture's shape: a nonzero α so the
+        // stiffness-proportional and mass-proportional terms both contribute.
+        {
+            let alpha = 0.5_f64;
+            let beta = 1e-4_f64;
+            let mech = two_body_mechanism(
+                mass_props_solid(2.0),
+                flexure_joint(1_000.0),
+                mass_props_solid(0.1),
+                flexure_joint(50_000.0),
+            );
+            let options =
+                modal_options(vec![("damping".to_string(), rayleigh_damping(alpha, beta))]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(
+                modes.len() >= 2,
+                "Case A: 2-DOF solve must return ≥ 2 modes"
+            );
+
+            let mut zetas: Vec<f64> = Vec::new();
+            for (i, mode) in modes.iter().enumerate() {
+                let (f, zeta) = mode_f_and_zeta(mode, i);
+                assert!(
+                    f.is_finite() && f > 0.0,
+                    "Case A: mode {i} frequency {f} must be finite > 0"
+                );
+                // The identity, recomputed from the SAME f64 the producer wrote
+                // into Mode.frequency — both sides evaluate the same expression
+                // on the same bits, so only fp associativity can separate them.
+                // 1e-12 is the band the landed FEA-path assertion
+                // (`trampoline_shapes_modal_result_with_rayleigh_damping`) uses;
+                // no new threshold is introduced here.
+                let omega = 2.0 * PI * f;
+                let expected = rayleigh_damping_ratio(alpha, beta, omega);
+                assert!(
+                    expected > 0.0,
+                    "Case A: fixture (α, β) must give nonzero ζ (≠ NoDamping)"
+                );
+                assert!(
+                    (zeta - expected).abs() < 1e-12,
+                    "Case A: mode {i} damping_ratio {zeta} != Rayleigh {expected} \
+                     (α={alpha}, β={beta}, ω={omega})",
+                );
+                zetas.push(zeta);
+            }
+
+            // Per-mode, not a hoisted constant: the two modes have different ω
+            // and therefore must have different ζ.
+            assert!(
+                (zetas[0] - zetas[1]).abs() > 0.0,
+                "Case A: modes at different ω must have different ζ; a single \
+                 hoisted constant would give {zetas:?}",
+            );
+
+            // ── THE STEP-3 RED ────────────────────────────────────────────────
+            // ModalResult.damping must echo the caller's descriptor verbatim,
+            // as `run_modal_analysis` does via `field_or`. RED while the
+            // mechanism producer hardcodes Value::Undef.
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&rayleigh_damping(alpha, beta)),
+                "Case A: ModalResult.damping must echo the caller's \
+                 RayleighDamping descriptor, not Value::Undef; got {:?}",
+                data.fields.get("damping"),
+            );
+        }
+
+        // ── Case B: explicit `NoDamping` — undamped, but still echoed ─────────
+        {
+            let no_damping = struct_instance("NoDamping", vec![]);
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let options = modal_options(vec![("damping".to_string(), no_damping.clone())]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(!modes.is_empty(), "Case B: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let (_f, zeta) = mode_f_and_zeta(mode, i);
+                assert_eq!(
+                    zeta, 0.0,
+                    "Case B: NoDamping must give exactly ζ = 0 for mode {i}"
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&no_damping),
+                "Case B: ModalResult.damping must echo the NoDamping instance, \
+                 not Value::Undef; got {:?}",
+                data.fields.get("damping"),
+            );
+        }
+
+        // ── Case C: absent descriptor — the `ModalOptions()` default ──────────
+        // This is what `examples/flexures/printer_z_compliant_mount.ri` passes,
+        // and it must stay bit-identical to the pre-#6875 output: ζ = 0 and a
+        // `Value::Undef` damping echo (the `field_or` fallback).
+        {
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let options = struct_instance("ModalOptions", vec![]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(!modes.is_empty(), "Case C: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let (_f, zeta) = mode_f_and_zeta(mode, i);
+                assert_eq!(
+                    zeta, 0.0,
+                    "Case C: an absent damping descriptor must give exactly \
+                     ζ = 0 for mode {i}"
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&Value::Undef),
+                "Case C: an absent damping descriptor must echo Value::Undef \
+                 (the field_or fallback) — this is the bit-identical-output \
+                 guarantee for printer_z_compliant_mount.ri"
+            );
+        }
+    }
+
     /// step-1 (RED → GREEN in step-2): `frequency_ascending_order` returns the
     /// permutation that sorts frequencies ascending — the same reorder the
     /// :454-457 debug_assert exists to enforce after `eigensolve_modal` applies
