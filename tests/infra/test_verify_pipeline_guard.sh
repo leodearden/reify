@@ -122,7 +122,12 @@ assert_exit() {
 # + preflight) into a shared helper beside tests/infra/copy_list_preflight_lib.sh
 # and have all three callers use it. That requires editing
 # test_verify_throughput.sh and test_verify_scope.sh, which are outside task
-# 6426's lock scope, so it is filed as follow-up work rather than done here.
+# 6426's lock scope, so it is filed as follow-up task 7002 rather than done
+# here. Note the three fixtures are NOT interchangeable today — throughput's
+# make_branch_fixture also `git init`s the tree and returns the DIRECTORY,
+# while this one returns the verify.sh PATH and copies a 14th file — so the
+# shared helper has to reconcile those contracts, which is why it is a task
+# rather than a mechanical lift.
 #
 # verify.sh `source`s only seven of these DIRECTLY; the remainder are transitive
 # under an already-copied lib, which is why the list must not be trimmed to the

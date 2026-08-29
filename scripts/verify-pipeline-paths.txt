@@ -43,12 +43,13 @@
 # scripts/verify-pipeline-guard.sh's emitted-gate clause, exactly as the
 # sourced libs are by its source-line clause. The clause is NOT scripts/-only:
 # it derives any directory-qualified *.sh, which is what covers
-# tests/sync_comments_test.sh (verify.sh:2627). A NEW lint/gate script wired
-# into the plan therefore needs NO row here: do not add one. This is the
-# self-healing property the per-script alternative lacks — task 6243's
-# hand-registration approach covered 2 of the 10 emitted gates, its follow-up
-# ticket named 6 more, and two others (scripts/test_pm_standardization.sh,
-# tests/sync_comments_test.sh) were in neither list.
+# tests/sync_comments_test.sh (grep `sync_comments_test.sh` in
+# scripts/verify.sh). A NEW lint/gate script wired into the plan therefore
+# needs NO row here: do not add one. This is the self-healing property the
+# per-script alternative lacks — task 6243's hand-registration approach
+# covered 2 of the 10 emitted gates, its follow-up ticket named 6 more, and
+# two others (scripts/test_pm_standardization.sh, tests/sync_comments_test.sh)
+# were in neither list.
 #
 #   ONE QUALIFICATION on "do not add one" — MUCH NARROWER SINCE TASK 6426, so
 #   do not add a row on the strength of the old advice. Auto-derivation is now
@@ -139,17 +140,18 @@ scripts/lib_clock_stop.sh
 #   guard's source-line clause misses it, and when this row was added no other
 #   clause covered it either.  It is now DOUBLY redundant — the task-5256
 #   in-code tests/infra/*.sh glob covers it, and as of task 6320 so does the
-#   emitted-gate clause (verify.sh:2844 invokes it from an add_tool() plan
-#   line).  The row is kept as belt-and-braces on the same terms as the two
-#   task-6243 rows below, and for the incident rationale it records: a
-#   run_all.sh-only diff (e.g. H2's concurrent hermetic pool, task 4924)
-#   could otherwise take the merge-worker config fast-path and skip actually
-#   running the concurrent suite; a resulting dropped `FAILED <names>` marker
-#   reclassifies a real infra-suite failure as tree_sitter_generate_error (see
-#   run_all.sh's own header comment) — a thrash-escalating L1 escalation (the
-#   #4618/#4624→#4288 class; see CLAUDE.md).  Registering it here (mirrors the
-#   transitive lib_slot_acquire.sh entry above) routes run_all.sh edits to the
-#   full --scope all gate.
+#   emitted-gate clause (grep `run_all.sh` in scripts/verify.sh — an
+#   add_tool() plan line invokes it).  The row is kept as belt-and-braces on
+#   the same terms as the two task-6243 rows below, and for the incident
+#   rationale it records: a run_all.sh-only diff (e.g. H2's concurrent
+#   hermetic pool, task 4924) could otherwise take the merge-worker config
+#   fast-path and skip actually running the concurrent suite; a resulting
+#   dropped `FAILED <names>` marker reclassifies a real infra-suite failure as
+#   tree_sitter_generate_error (see run_all.sh's own header comment) — a
+#   thrash-escalating L1 escalation (the #4618/#4624→#4288 class; see
+#   CLAUDE.md).  Registering it here (mirrors the transitive
+#   lib_slot_acquire.sh entry above) routes run_all.sh edits to the full
+#   --scope all gate.
 tests/infra/run_all.sh
 #
 # tests/infra/run-all-ambient-vars.manifest: the checked-in ledger of every
