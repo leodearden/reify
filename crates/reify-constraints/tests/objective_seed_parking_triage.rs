@@ -506,3 +506,120 @@ fn p6_wall_inside_constraint_region_makes_real_progress() {
         "P6 must NOT park at its 25mm seed — that is the contrast against P1-P4."
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P8 — SENSE-INVARIANCE. The sharpest single discriminator in the set.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Mirror of `default_bounds_for(Length)` at
+/// `crates/reify-constraints/src/solver.rs:1585-1594` — "1 micron to 10 meters". This is
+/// what `effective_bounds` degrades to in production, because `AutoParam.bounds` is
+/// always `None` (`solver.rs:993-997`) and the constraint-derived clamp box is gated on
+/// `floor_applied` (`:1809-1825`).
+const DEFAULT_LENGTH_BOUNDS_M: (f64, f64) = (1e-6, 10.0);
+
+/// **P8 — on a two-sided problem, the objective's SENSE has no effect on the answer.**
+///
+/// Solve the SAME two-sided problem (`8mm <= x <= 40mm`, production shape, no seed)
+/// twice — once `Minimize`, once `Maximize` — and assert the two answers are EQUAL
+/// **bit-exactly** (`to_bits()`, the idiom at `registry_tests.rs:386`) and both equal
+/// the 24mm derived-box midpoint seed.
+///
+/// PREDICTION: both **24mm** = `(8mm + 40mm)/2`, `extract_initial_point` arm 3 with both
+/// sides derived (`solver.rs:402-419`). A correct solver returns 8mm for one and 40mm
+/// for the other — a 32mm spread.
+///
+/// This is the discriminator no other explanation survives. Minimize and maximize
+/// producing the *identical* answer rules out, all at once:
+///
+/// * a soft-penalty explanation (a soft penalty still pulls the two senses apart),
+/// * a partial-progress explanation (partial progress in opposite directions is not
+///   bit-identical), and
+/// * a seed-coincidence explanation (a coincidence cannot survive negating the
+///   objective).
+///
+/// It is also what settles the severity question: an objective whose sense has **no
+/// effect on the answer** is a correctness defect, not a tolerance or solution-quality
+/// one.
+///
+/// # The one-sided controls, and a corrected prediction
+///
+/// The controls below complete the sense × shape grid. **They contradicted this task's
+/// planned prediction** (that a one-sided shape returns its nudged seed under *either*
+/// sense), and are pinned here as MEASURED, with the divergence filed as `esc-6756-1`
+/// rather than retuned. All values measured at HEAD `9c1bed42a7`:
+///
+/// | | `x >= 8mm` | `x <= 40mm` | `8mm <= x <= 40mm` |
+/// |---|---|---|---|
+/// | `Minimize` | **8.800000 mm** — seed (P1) | **0.001000 mm** = 1e-6 m — default corner (**P8**) | **24.000000 mm** — seed (**P8**) |
+/// | `Maximize` | **10000.000000 mm** = 10 m — default corner (**P8**) | **36.000000 mm** — seed (P3) | **24.000000 mm** — seed (P2) |
+///
+/// The two corner values are exactly `default_bounds_for(Length)` = `(1e-6, 10.0)`
+/// (`solver.rs:1585-1594`), so they are still *derived*, just from a different constant
+/// than planned.
+///
+/// This SHARPENS the candidate-(a) verdict rather than contradicting it. The seed is
+/// returned exactly when the objective points **toward** a derived bound — that is when
+/// the penalty term is active, so the optimum lands 5e-7 outside the bound (`:25`,
+/// `:1539-1548`), is rejected against `FEASIBILITY_THRESHOLD` (`:20`, `:1997`), and the
+/// fallback fires (`:1997-2031`). When the objective points **away**, the optimum is
+/// feasible, nothing is rejected, no fallback fires, and the optimiser simply runs to the
+/// default-box corner. Both reported numbers (8.8mm, 24mm) are the points-toward case.
+///
+/// The 10 m corner independently reproduces
+/// `docs/prds/v0_6/solution-set-completeness.md` §10 **item 3** (owned by `#6655` /
+/// P1-ε `#6692`); the `minimize` mirror image — the 1e-6 m LOWER corner — is not named in
+/// item 3's wording. Recorded for that item's owner; **not** in scope here.
+///
+/// Item 4's own wording is unaffected: it describes `maximize` against `<= 40mm`, and a
+/// genuinely one-sided `<= 40mm` does return **36mm** under `maximize` (P3). The reported
+/// 24mm still requires BOTH bounds.
+#[test]
+fn p8_objective_sense_has_no_effect_on_the_answer() {
+    let minimized = probe_si(vec![ge_8mm(), le_40mm()], ObjectiveSense::Minimize, None);
+    let maximized = probe_si(vec![ge_8mm(), le_40mm()], ObjectiveSense::Maximize, None);
+
+    assert_eq!(
+        minimized.to_bits(),
+        maximized.to_bits(),
+        "P8: `minimize x` and `maximize x` over the SAME `8mm <= x <= 40mm` problem \
+         returned different values ({minimized} m vs {maximized} m). At HEAD 9c1bed42a7 \
+         they were bit-identical — if the sense now matters, the defect is being fixed \
+         (owners #5711 / #6678): re-measure this probe set and the write-up rather than \
+         reverting."
+    );
+
+    let midpoint = (0.008 + 0.040) / 2.0;
+    assert!(
+        (minimized - midpoint).abs() <= TOL_M,
+        "P8: both senses should return the 24mm derived-box midpoint SEED ({midpoint} m); \
+         got {minimized} m ({} mm). A correct solver returns 8mm for minimize and 40mm \
+         for maximize — a 32mm spread.",
+        minimized * 1000.0
+    );
+
+    // ── One-sided controls: the objective points AWAY from the single derived bound, so
+    // no penalty term is active, nothing is rejected, and the optimiser runs to the
+    // `default_bounds_for(Length)` corner instead of parking at the seed.
+    let (default_lo, default_hi) = DEFAULT_LENGTH_BOUNDS_M;
+
+    let max_one_sided_lower = probe_si(vec![ge_8mm()], ObjectiveSense::Maximize, None);
+    assert!(
+        (max_one_sided_lower - default_hi).abs() <= TOL_M,
+        "P8 control: `maximize x` s.t. `x >= 8mm` is unbounded above by the constraints, \
+         so it runs to the default_bounds_for(Length) UPPER corner {default_hi} m \
+         (solver.rs:1585-1594) — NOT to P1's 8.8mm seed. Got {max_one_sided_lower} m \
+         ({} mm). This reproduces PRD §10 item 3 (owned by #6655 / #6692).",
+        max_one_sided_lower * 1000.0
+    );
+
+    let min_one_sided_upper = probe_si(vec![le_40mm()], ObjectiveSense::Minimize, None);
+    assert!(
+        (min_one_sided_upper - default_lo).abs() <= TOL_M,
+        "P8 control: `minimize x` s.t. `x <= 40mm` is unbounded below by the constraints, \
+         so it runs to the default_bounds_for(Length) LOWER corner {default_lo} m \
+         (solver.rs:1585-1594) — the mirror image of the 10 m corner, which PRD §10 \
+         item 3 does not name. Got {min_one_sided_upper} m ({} mm).",
+        min_one_sided_upper * 1000.0
+    );
+}
