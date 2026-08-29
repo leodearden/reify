@@ -34,6 +34,43 @@
 //! deserialization of session 1's fixed bytes, and the optimizer arithmetic
 //! above them is deterministic.
 //!
+//! # STATUS: this test does not pass today, and that is a FINDING (esc-2980-8)
+//!
+//! The module is deliberately NOT registered in `harness_fea_solver_e2e.rs`, so
+//! nothing compiles or runs it. Registering it and running in release profile
+//! fails the anti-vacuity leg below:
+//!
+//! ```text
+//! session 1 must have visited at least 2 solver candidates ... got 0 lookups
+//! (0 hits + 0 misses)
+//! test result: FAILED. 0 passed; 1 failed; finished in 79.65s
+//! ```
+//!
+//! Session 1 ran the full real search for 79.65 s and consulted the persistent
+//! cache ZERO times. The auto-resolve constraint-solver cost loop reaches
+//! `solver::elastic_static` through `OptimizedComputeDispatcher`
+//! (`crates/reify-eval/src/engine_compute.rs`) — an OWNED SNAPSHOT whose entire
+//! state is `fns: HashMap<&'static str, ComputeFn>`. It holds no `&Engine`, so
+//! it has no `persistent_cache_dir` and no counters, and its
+//! `impl ComputeDispatch` block contains zero occurrences of "persistent". The
+//! persistent-cache hook lives only in the OTHER dispatch path
+//! (engine_compute.rs:301-334). So the cache is bypassed entirely on the
+//! auto-resolve path — the path whose reproducibility this test exists to
+//! anchor.
+//!
+//! Measured end-to-end with the release binary:
+//! `reify eval --cache-dir <tmp> examples/fea_bracket_minimize_mass.ri` exits 0
+//! in 145 s and writes ZERO files under the cache root, while the same binary
+//! and flag on non-auto-resolve inputs (`fea_cantilever_deterministic.ri`,
+//! `examples/fea_cantilever_smoke.ri`) writes one `.bin` each.
+//!
+//! The assertions below are deliberately left at full strength rather than
+//! weakened to match current behaviour: weakening them would retire PRD case 6
+//! and enshrine the gap. Wiring the cache into the auto-resolve path is
+//! production work in `crates/reify-eval/src/`, outside task #2980's test-only
+//! scope. When it lands, register this module and the test should pass as
+//! written.
+//!
 //! # Runtime
 //!
 //! Dominated by session 1's cold search — the same real loop that
