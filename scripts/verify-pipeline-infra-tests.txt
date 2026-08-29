@@ -367,3 +367,25 @@ docs/reify-language-spec.tombstones  tests/infra/test_spec_anchor_lint.sh
 docs/notes/spec-anchor-contract.md   tests/infra/test_spec_anchor_lint.sh
 scripts/spec-anchor-lint.sh          tests/infra/test_spec_anchor_lint.sh
 tests/infra/test_spec_anchor_lint.sh tests/infra/test_spec_anchor_lint.sh
+
+# Task 6427: tests/infra/govtest_slice_reaper_lib.sh (the private per-run
+# systemd-slice lifecycle lib, task 6386) had NO row here, so a task-scope
+# --scope branch edit to the lib alone selected zero infra tests and its
+# guards never ran on the branch -- coverage was recovered only incidentally
+# at merge, because 6386's own diff also touches test_cpu_governed_exec_hostexcl.sh
+# (itself full-gate load-bearing), not because of anything in this map. A
+# future task touching only the lib would land with its guards unrun. The
+# row below routes it to its own dedicated hermetic guard.
+#
+# Deliberately NOT also routed to test_cpu_load_governance.sh, its other
+# consumer: that test is host-exclusive (run-all-classification.manifest:60)
+# and burns real CPU BY DEFAULT, whereas this map's selective-infra emitter
+# (scripts/verify.sh:2908-2912) execs selected tests inline with no
+# serialization, no Lane-X flock and only a 10m timeout, concurrently with
+# every other lane on the shared host -- none of run_all.sh's host-exclusive
+# safeguards apply here. The lib's wiring into that consumer is already
+# proven hermetically and sub-second by Block F of
+# tests/infra/test_govtest_slice_reaper.sh (~line 714, driving it under
+# REIFY_GOVTEST_TEST_MODE=1 + REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1), which the
+# row below already selects.
+tests/infra/govtest_slice_reaper_lib.sh    tests/infra/test_govtest_slice_reaper.sh
