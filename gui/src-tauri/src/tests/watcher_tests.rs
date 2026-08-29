@@ -816,6 +816,107 @@ fn wait_for_returns_false_after_timeout_when_never_satisfied() {
     );
 }
 
+// Synthetic-sink, inotify-free meta-tests pinning the contract of
+// `wait_for_control_drain` (added by #6462; the helper itself is defined
+// beside the other `wait_*` helpers above). No FileWatcher, no tempdir, no
+// inotify -- these keep passing even on hosts where every watcher test in
+// this file skips. `write_control` here plays the role the debouncer's
+// worker thread plays in production: each of these tests drives it
+// directly rather than through a real watch, so the barrier's two-delivery
+// contract is pinned deterministically.
+
+#[test]
+fn wait_for_control_drain_does_not_return_until_a_same_batch_straggler_has_landed() {
+    // THE DISCRIMINATING TEST. write_control simulates a worker draining
+    // two debouncer batches: call 1 pushes ONLY control.ri (a batch whose
+    // control was pushed first and whose straggler has not been pushed yet
+    // -- exactly the window a one-delivery barrier would snapshot in);
+    // call 2 pushes straggler.ri THEN control.ri (batch 1's callbacks all
+    // returned before batch 2's push, because one worker thread runs a
+    // batch to completion before draining the next). A barrier that
+    // returns as soon as it observes the FIRST control delivery would
+    // return before straggler.ri ever lands, leaving a negative assertion
+    // gated on it vacuous -- a one-delivery implementation fails this test.
+    let sink: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let write_sink = sink.clone();
+    let call = Rc::new(Cell::new(0u32));
+    let call_counter = call.clone();
+
+    let drained = wait_for_control_drain(
+        &sink,
+        "control.ri",
+        move || {
+            let n = call_counter.get() + 1;
+            call_counter.set(n);
+            let mut guard = write_sink.lock().unwrap();
+            if n == 1 {
+                guard.push(PathBuf::from("control.ri"));
+            } else {
+                guard.push(PathBuf::from("straggler.ri"));
+                guard.push(PathBuf::from("control.ri"));
+            }
+        },
+        Duration::from_secs(10),
+    );
+
+    assert!(drained, "two control deliveries should satisfy the barrier");
+    let paths = sink.lock().unwrap();
+    assert!(
+        paths.iter().any(|p| p.ends_with("straggler.ri")),
+        "the barrier returned before the same-batch straggler landed -- a \
+         negative assertion gated on this barrier would be vacuous, got: {:?}",
+        *paths
+    );
+}
+
+#[test]
+fn wait_for_control_drain_returns_false_when_the_control_is_never_delivered() {
+    // write_control is a no-op: the FIRST wait (count >= 1) never
+    // succeeds, so the barrier must time out and return false after that
+    // one wait -- it must not block on a second window once the first has
+    // already failed.
+    let sink: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+
+    let drained = wait_for_control_drain(&sink, "control.ri", || {}, Duration::from_millis(150));
+
+    assert!(
+        !drained,
+        "control is never delivered, barrier should time out"
+    );
+}
+
+#[test]
+fn wait_for_control_drain_returns_false_when_only_the_first_delivery_ever_lands() {
+    // write_control pushes control.ri on the FIRST call only; a second
+    // call (if the implementation makes one) is a no-op. Pins that the
+    // SECOND wait is load-bearing: a one-delivery implementation that
+    // returns as soon as the first wait succeeds would return true here --
+    // exactly the vacuity risk this helper exists to close.
+    let sink: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let write_sink = sink.clone();
+    let call = Rc::new(Cell::new(0u32));
+    let call_counter = call.clone();
+
+    let drained = wait_for_control_drain(
+        &sink,
+        "control.ri",
+        move || {
+            let n = call_counter.get() + 1;
+            call_counter.set(n);
+            if n == 1 {
+                write_sink.lock().unwrap().push(PathBuf::from("control.ri"));
+            }
+        },
+        Duration::from_millis(150),
+    );
+
+    assert!(
+        !drained,
+        "only one control delivery ever lands, barrier should time out \
+         waiting for the second"
+    );
+}
+
 // `wait_until_with_retry_returns_true_without_waiting_when_already_satisfied`
 // (a real-clock "found + elapsed < 200ms" test) was removed here: its
 // upper-bound-on-elapsed claim was starvation-invertible like the count
