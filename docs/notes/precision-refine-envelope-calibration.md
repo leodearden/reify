@@ -179,25 +179,27 @@ Not measurable, recorded honestly:
 `INDETERMINATE` in 0.22 s originally recorded here was **not** a capability gap: it was
 an artifact of a flat, bare-`[x,y,z]`-literal control-point/weight encoding rejected at
 eval decode — precisely diagnosed, not silently. `control_points`/`weights` are NESTED
-(u-major × v) grids (`NurbsSurface` in `crates/reify-ir/src/geometry.rs`), and every
-pole must be a `point3(…)`. The flat form's 9 bare triples are read as 9 ROWS: row 0
-(`[0mm,0mm,0mm]`) itself passes the row-is-a-List check, so its three elements are each
-then decoded as a POLE by the pole decoder `accept_length_point3`
-(`crates/reify-eval/src/geometry_ops.rs:967`), called per pole from the control-point
-grid loop in `compile_geometry_op`'s `SurfaceKind::Nurbs` arm (`geometry_ops.rs:1914`).
-Pole 0 of row 0 is the bare scalar `0mm` — a `Value::Scalar`, not a
+(u-major × v) grids (the `GeometryOp::NurbsSurface` variant in
+`crates/reify-ir/src/geometry.rs`), and every pole must be a `point3(…)`. The flat
+form's 9 bare triples are read as 9 ROWS: row 0 (`[0mm,0mm,0mm]`) itself passes the
+row-is-a-List check, so its three elements are each then decoded as a POLE by the pole
+decoder `accept_length_point3` (`crates/reify-eval/src/geometry_ops.rs`), called per
+pole from the control-point grid loop in `compile_geometry_op`'s `SurfaceKind::Nurbs`
+arm (same file). Pole 0 of row 0 is the bare scalar `0mm` — a `Value::Scalar`, not a
 `Value::Point`/`Value::Vector` — so it fails the SHAPE check first; the LENGTH-dimension
 requirement (task 5745) is a real, separate gate that fires only once the shape check
 passes, and is not why this form is rejected (its components are already `mm`).
-(`point3_components`, now at `geometry_ops.rs:1413`, survives only as the un-gated
-decoder for the three DIRECTION positions.) The compiler gates only arity
-(`check_arg_count_exact`, 6 — `crates/reify-compiler/src/geometry.rs:2640`), so the
-wrong-shape call compiles clean, but eval-time decode then rejects it with a precise
-per-pole diagnostic: `error: failed to compile geometry operation: nurbs_surface:
-control_points[0][0] must be a Point3<Length>, got Scalar { .. }`, surfaced by the
-`Err(String)` → `Diagnostic::error` conversion at `engine_build.rs:8682-8684`, followed
-by "all geometry operations failed; no geometry output produced" (`engine_build.rs:3760`/
-`4741` — two sites share the text, so cite the message, not a line). What made the
+(`point3_components`, in the same file, survives only as the un-gated decoder for the
+three DIRECTION positions.) The compiler gates only arity (`check_arg_count_exact`
+checks for exactly 6, in the `"nurbs_surface"` arm of `compile_geometry_call_inner`,
+`crates/reify-compiler/src/geometry.rs`), so the wrong-shape call compiles clean, but
+eval-time decode then rejects it with a precise per-pole diagnostic: `error: failed to
+compile geometry operation: nurbs_surface: control_points[0][0] must be a
+Point3<Length>, got Scalar { .. }`, surfaced by the `Err(String)` → `Diagnostic::error`
+conversion in the `Err(err)` arm of `execute_realization_ops`
+(`crates/reify-eval/src/engine_build.rs`), followed by the message "all geometry
+operations failed; no geometry output produced" (emitted from two identical-text call
+sites in the same file, so the message text is the citation, not a line). What made the
 2026-08-10 observation read as a capability gap is the EXIT CODE, which stays 0 because
 the constraint resolves INDETERMINATE (subject undefined) rather than erroring — not a
 missing diagnostic.
@@ -210,12 +212,17 @@ PnrgSplineCheck` suffix):
 
     error: RepresentationWithin: sampled facet deviation 1.713e-2 m exceeds bound 1.000e-6 m
 
+The corrected call is now committed as its own runnable fixture,
+`tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` — reproduces the same
+transcript, reconfirmed at HEAD=`77b28ffb0e64` — rather than living only as a comment,
+so a future measurer does not have to reconstruct it from prose.
+
 `Operation::SurfaceNurbs` remains genuinely absent from `occt_capability_descriptor()`
-(`crates/reify-kernel-occt/src/register.rs:101-163`) — that fact still holds. What was
-wrong was the inference that the absence prevents realization: it resolves instead via
-the `DEFAULT_KERNEL_NAME` fallback, which is exactly how the corrected call above
-realizes. No d-ladder row exists yet for this class — one measurement is not a ladder —
-tracked as follow-up ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`.
+(`crates/reify-kernel-occt/src/register.rs`) — that fact still holds. What was wrong was
+the inference that the absence prevents realization: it resolves instead via the
+`DEFAULT_KERNEL_NAME` fallback, which is exactly how the corrected call above realizes.
+No d-ladder row exists yet for this class — one measurement is not a ladder — tracked as
+follow-up task #6545 (ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`).
 
 ### 1.6 Loft is unreachable from the source language
 
