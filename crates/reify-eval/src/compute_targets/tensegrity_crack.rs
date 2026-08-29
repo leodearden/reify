@@ -545,4 +545,96 @@ mod tests {
             "must carry a located index: {err}"
         );
     }
+
+    // ---- crack_dimensionless_scalar (task #6120) ----------------------------
+    //
+    // The DIMENSIONLESS half of the pair: `form_find.rs`'s `force_densities`,
+    // `seed_ratios` and `surface_stresses` are Leg B "Deliberately bare"
+    // positions (`docs/prds/v0_6/dimension-checked-readers.md`), so the contract
+    // is two-sided — stay accepting of every bare numeric spelling, but reject a
+    // *dimensioned* Scalar rather than stripping its unit.
+
+    // The real caller (code, hint) pair, transcribed verbatim from the
+    // trampoline that owns them — `form_find.rs`'s `CODE` and
+    // `DIMENSIONLESS_HINT`. Same rationale as `TL_*` / `ML_*` above: pinning the
+    // production wording is what makes the full-string assertions evidence.
+    const FF_CODE: &str = "E_FormFindInfeasible";
+    const FF_HINT: &str = "force densities, seed ratios and surface stresses are \
+         nullity-invariant RELATIVE ratios, not physical quantities — only their relative \
+         magnitudes and signs matter, so drop the unit (write `1.0`, not `1N/1m`)";
+
+    /// A bare `Real` is the canonical spelling of a ratio — `[1.0, -1.0, …]`
+    /// literals are what every tensegrity example in the corpus passes.
+    #[test]
+    fn crack_dimensionless_scalar_accepts_bare_real() {
+        assert_eq!(
+            crack_dimensionless_scalar(&Value::Real(2.5), "force_densities[0]", FF_CODE, FF_HINT),
+            Ok(2.5)
+        );
+    }
+
+    /// A `Scalar` that carries an explicitly DIMENSIONLESS unit is still a valid
+    /// ratio spelling and must read. This is the gate's upper bound: over-
+    /// tightening it to "bare Real only" would reject a legitimate input.
+    #[test]
+    fn crack_dimensionless_scalar_accepts_dimensionless_scalar() {
+        assert_eq!(
+            crack_dimensionless_scalar(
+                &Value::Scalar {
+                    si_value: 2.5,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                "force_densities[0]",
+                FF_CODE,
+                FF_HINT,
+            ),
+            Ok(2.5)
+        );
+    }
+
+    /// The load-bearing assertion: a *dimensioned* `Scalar` is rejected rather
+    /// than silently stripped to its SI magnitude and reinterpreted as the bare
+    /// ratio. Asserted by full string equality so all three caller-visible parts
+    /// are pinned at the single definition site — the caller-owned `{code}`
+    /// prefix, the caller-owned trailing `{hint}`, and the `DimensionVector`
+    /// `Display` rendering of the offending unit, which is what tells the author
+    /// WHICH unit they attached.
+    #[test]
+    fn crack_dimensionless_scalar_rejects_dimensioned_scalar_with_caller_owned_code_and_hint() {
+        let got = crack_dimensionless_scalar(
+            &Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::FORCE_DENSITY,
+            },
+            "force_densities[3]",
+            FF_CODE,
+            FF_HINT,
+        );
+        assert_eq!(
+            got,
+            Err("E_FormFindInfeasible: force_densities[3] has the wrong unit — expected a \
+                 dimensionless ratio (a bare Real or a dimensionless Scalar), got a Scalar in \
+                 kg·m^-2·s^-2; force densities, seed ratios and surface stresses are \
+                 nullity-invariant RELATIVE ratios, not physical quantities — only their \
+                 relative magnitudes and signs matter, so drop the unit (write `1.0`, not \
+                 `1N/1m`)"
+                .to_string())
+        );
+    }
+
+    /// An INTEGER ratio literal must read too. `Int → Real` widening in this
+    /// codebase is a TYPE-level rule only (`type_compat.rs`; `coerce.rs` states
+    /// overload selection "does NOT apply Int→Real … widening"), so there is no
+    /// value-level coercion and `form_find(net, [1, 1, 1, 1], anchors)` reaches
+    /// this reader as `Value::Int` verbatim. Same reasoning
+    /// `elastic_static.rs::dimensionless_component` records for the
+    /// `MaterialFrame` dimensionless axis, and the same acceptance set the PRD
+    /// states for `dimensionless_spec`: `Real | Int | Scalar{DIMENSIONLESS}`.
+    #[test]
+    fn crack_dimensionless_scalar_accepts_int() {
+        assert_eq!(
+            crack_dimensionless_scalar(&Value::Int(3), "force_densities[0]", FF_CODE, FF_HINT),
+            Ok(3.0)
+        );
+    }
 }
