@@ -109,11 +109,12 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///
 /// ## Type::Geometry and Rule 4
 ///
-/// A `Type::Geometry` cell's value is always *produced by realization* — a
-/// handle to a computed B-rep — never edited directly by `Engine::edit_param`.
-/// Its value therefore necessarily changes whenever **any** upstream cell
-/// changes: a dimensional leaf tick recomputes it just as surely as a
-/// topology-changing one does. Classifying it `Structural` via Rule
+/// A `Type::Geometry` cell's value is *produced by realization* — a handle to a
+/// computed B-rep. No production caller edits such a cell directly;
+/// `Engine::edit_param` is driven at the numeric leaves. Its value therefore
+/// necessarily changes whenever **any** upstream cell changes: a dimensional
+/// leaf tick recomputes it just as surely as a topology-changing one does.
+/// Classifying it `Structural` via Rule
 /// 4's conservative `_` default meant [`stage_a_eligible`]'s union-walk hit the
 /// derived geometry cell on *every* real edit and rejected, so the engine's
 /// morph arm was 100% dormant in production — measured as
@@ -134,14 +135,28 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// geometry-call default (`param body: Geometry = box(...)`) is registered
 /// `Type::Geometry` + `ValueCellKind::Param` by the same file's param path, and
 /// is therefore Dimensional here too. That is deliberate, not an oversight:
-/// entity.rs itself treats such a param "symmetrically to geometry lets", its
-/// value within a fixed graph can still only diverge via upstream recompute
-/// (`Engine::edit_param` edits the numeric leaves, not the realization handle),
-/// and narrowing the arm to `kind == Let` would re-introduce the every-tick veto
-/// for any design that authors its body as a param. Stage B is the net either
-/// way — see (iii) below. Do not read this arm as "derived cells are
-/// Dimensional"; read it as "a `Type::Geometry` value is realization output,
-/// which carries no independent structural signal".
+/// entity.rs itself treats such a param "symmetrically to geometry lets", in
+/// practice its value within a fixed graph diverges only via upstream recompute
+/// (`Engine::edit_param` is driven at the numeric leaves, not at the realization
+/// handle — but see "convention, not invariant" below), and narrowing the arm to
+/// `kind == Let` would re-introduce the every-tick veto for any design that
+/// authors its body as a param. Stage B is the net either way — see (iii) below.
+/// Do not read this arm as "derived cells are Dimensional"; read it as "a
+/// `Type::Geometry` value is realization output, which carries no independent
+/// structural signal".
+///
+/// ### Convention, not invariant: nothing forbids editing a Geometry cell
+///
+/// "No production caller edits a Geometry-typed cell directly" is an observed
+/// convention, NOT something the type system or the engine enforces. Verified:
+/// `Engine::edit_param` (`engine_edit.rs`) validates an override only for
+/// type-kind/dimension compatibility via `validate_param_override`, so an API
+/// caller *can* assign a different `Value::GeometryHandle` to a `Type::Geometry`
+/// param cell. After this relaxation Stage A admits such a whole-body swap as
+/// "dimensional", leaving Stage B and the morph quality gate as the only nets.
+/// The residual risk is low — a genuinely different B-rep will almost always
+/// fail the naming bijection — but it is a real gap, so reason from the
+/// enforceable claim (Stage B is the net), not from the convention.
 ///
 /// Nothing is lost by the relaxation:
 ///
@@ -155,11 +170,20 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///       exactly one type; it does not make the cells *behind* the geometry
 ///       invisible.
 /// (iii) Stage B's persistent-naming bijection check remains the safety net for
-///       a dimensional tick that crosses a topology threshold. MEASURED
-///       confirmation that (iii) holds: the `cut_z` structural fixture in
-///       `reify-eval/tests/morph_arm_e2e.rs` still rejects after this change —
-///       just at Stage B (`ineligible_naming_error: 1`) rather than at Stage A
-///       (`ineligible_structural_change: 0`).
+///       a dimensional tick that crosses a topology threshold. What is MEASURED
+///       about the `cut_z` structural fixture in
+///       `reify-eval/tests/morph_arm_e2e.rs` is the Stage A half: after this
+///       change it no longer vetoes (`ineligible_structural_change: 0`) and the
+///       reject moves downstream to Stage B. Read no more than that into it —
+///       the bucket it lands in is `ineligible_naming_error: 1`, i.e. Stage B
+///       could not EVALUATE the bijection on that fixture's boolean-cut B-rep
+///       (`NamingLayerErrorReason` is only `Imported`/`Partial`), so it is not a
+///       demonstration that the topology-threshold net fires. That
+///       demonstration is the in-crate fixture test
+///       `reify_mesh_morph::eligibility::tests::`
+///       `morph_eligible_stage_a_admits_geometry_diff_stage_b_rejects_count_mismatch`,
+///       where Stage A admits a differing Geometry cell and Stage B rejects with
+///       a real `BijectionFailure::CountMismatch`.
 ///
 /// Placement is load-bearing: the `Type::Geometry` arm lives inside Rule 4,
 /// *after* the Rule 1/2/3/3b early-returns, so a structure-controlling or
@@ -169,6 +193,35 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// `classify_cell_geometry_as_collection_count_returns_structural` and
 /// `stage_a_eligible_structure_controlling_geometry_diff_returns_false` exist to
 /// catch exactly that.
+///
+/// ### KNOWN GAP — the dormancy class is NOT closed: `List<Geometry>`
+///
+/// This relaxation covers the BARE `Type::Geometry` variant only. Handle-LIST
+/// cells — `Type::List(Box::new(Type::Geometry))` — still fall into Rule 4's
+/// `_ => Structural` default, so for any design that uses one, Stage A still
+/// vetoes 100% of ticks exactly as it did for bare Geometry before task 6635.
+/// That is the common "fillet the selected edges" shape, so the gap is not
+/// hypothetical.
+///
+/// Verified reach (2026-08-29): `adjacent_faces`, `shared_edges`,
+/// `siblings_of_face`, `ancestor_faces_of_edge` and `split` are typed
+/// `List<Geometry>` in `reify-compiler/src/units.rs`, and so is any `Selector`
+/// cell wrapped in `ResolveSelector` (`single(...)`, index access). Their values
+/// are `Value::List`s of `Value::GeometryHandle` built by
+/// `topology_selectors::make_sub_handle`, whose `upstream_values_hash` is
+/// composed from the PARENT's hash; since `Value::GeometryHandle`'s `PartialEq`
+/// keys on `(realization_ref, upstream_values_hash)`, those cells differ on
+/// every tick. Bare `Type::Selector` cells are NOT affected — `SelectorValue`
+/// equality is content-hash based and excludes `kernel_handle`.
+///
+/// Deliberately left for a follow-up rather than folded in here, because it is
+/// not a pure restatement of the bare-Geometry argument: a `List<Geometry>`
+/// carries one signal a bare handle does not — its LENGTH — and whether a
+/// length change should stay Structural (finer rule) or defer to Stage B like
+/// everything else (widen `classify_by_type` to
+/// `Type::List(inner) if **inner == Type::Geometry`) is a design decision that
+/// wants its own measured RED→GREEN, not a drive-by amendment. Do not read this
+/// note's absence of a fix as evidence the question was overlooked.
 pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
     // Rule 1: missing cell → Structural.
     let Some(node) = graph.value_cells.get(cell_id) else {
@@ -230,7 +283,9 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
 /// Widening the whitelist is therefore a one-site edit.
 ///
 /// `Type::Geometry` is on the whitelist as of task 6635; the `_ => Structural`
-/// conservative default is unchanged. Rationale and measured evidence: the
+/// conservative default is unchanged — note in particular that
+/// `Type::List(Type::Geometry)` is still caught by it, which is a KNOWN,
+/// still-open dormancy gap. Rationale, measured evidence and that gap: the
 /// `## Type::Geometry and Rule 4` note on [`classify_cell`].
 ///
 /// This is deliberately NOT a public entry point: callers must go through
@@ -770,22 +825,26 @@ mod tests {
         // Stage-A eligible.
         let width_id = ValueCellId::new("MorphBox", "width");
         let body_id = ValueCellId::new("MorphBox", "body");
-        let mut g1 = EvaluationGraph::default();
-        for (id, ty) in [
-            (width_id.clone(), Type::length()),
-            (body_id.clone(), Type::Geometry),
-        ] {
-            g1.value_cells.insert(
-                id.clone(),
-                ValueCellNode {
-                    id: id.clone(),
-                    kind: ValueCellKind::Param,
-                    cell_type: ty,
-                    default_expr: None,
-                    content_hash: ContentHash::of_str(&format!("{}", id)),
-                },
-            );
-        }
+        // The dimensional leaf, via the file's shared builder.
+        let mut g1 = graph_with_cell(&width_id, Type::length());
+        // …plus the derived geometry cell it feeds. `ValueCellKind::Let` is the
+        // kind `reify-compiler`'s `entity.rs` geometry-*let* path registers, so
+        // the fixture matches the production shape this test's narrative claims
+        // (`graph_with_cell` hardcodes `Param`, which is why the body cell is
+        // inserted explicitly rather than through it). Rule 4 is deliberately
+        // kind-blind — see `classify_cell`'s "The arm keys on the TYPE, not on
+        // derivedness" — and pinning the production kind here is what makes that
+        // claim exercised rather than merely asserted in prose.
+        g1.value_cells.insert(
+            body_id.clone(),
+            ValueCellNode {
+                id: body_id.clone(),
+                kind: ValueCellKind::Let,
+                cell_type: Type::Geometry,
+                default_expr: None,
+                content_hash: ContentHash::of_str(&format!("{}", body_id)),
+            },
+        );
         // Clone so the shape hashes match and the shape gate passes.
         let g2 = g1.clone();
 

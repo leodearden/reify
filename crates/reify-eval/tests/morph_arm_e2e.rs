@@ -459,19 +459,45 @@ structure StructuralMorphBox {
          change; a non-zero Stage-A bucket means the derived Type::Geometry cell \
          is vetoing again; snapshot: {snap:?}"
     );
-    // …and the reject must land in the STAGE-B family specifically. Summing all
-    // three ineligible buckets would re-open the blind spot the assertion above
-    // closes: a regression that moved the reject back toward Stage A, or into a
-    // different stage entirely, would still show green. MEASURED post-6635:
-    // `ineligible_naming_error: 1`. Both Stage-B buckets are accepted because
-    // which one fires depends on how far the naming layer gets on the
-    // through-hole B-rep (count mismatch vs. attribution diagnostic) — that is
-    // Stage B's internal business, not this test's premise.
-    let stage_b_ineligible = snap.ineligible_bijection_failure + snap.ineligible_naming_error;
-    assert!(
-        stage_b_ineligible >= 1,
-        "a structural (topology-changing) tick must be rejected by STAGE B — the \
-         bijection/naming check is what sees the face/edge/vertex count change; \
+    // …and the reject must land in the exact Stage-B bucket that was MEASURED,
+    // not in an OR over the Stage-B family. An `a + b >= 1` assertion would stay
+    // green in the degenerate world where Stage B errors on EVERY tick — the
+    // morph arm dormant again, one stage later, which is precisely the failure
+    // mode task 6635 set out to remove. Pinning each bucket exactly means drift
+    // in either direction fails here and has to be looked at.
+    //
+    // HONEST READING of the measured state: `ineligible_naming_error: 1` says
+    // Stage B could not EVALUATE the bijection at all — it is NOT a detection of
+    // this fixture's through-hole topology change. `NamingLayerErrorReason` is
+    // only `Imported` (no attributes on either side) or `Partial` (some handles
+    // attributed, some not); see `reify-eval/src/morph_stage_b.rs`. So today's
+    // reject is an ATTRIBUTION GAP: the persistent-naming layer does not
+    // attribute the boolean-cut B-rep this fixture produces. What this test
+    // therefore proves is the Stage A half (the assertion above) plus "the
+    // reject moved downstream", no more.
+    //
+    // When that attribution gap closes (morph-arm family, live task #6637), this
+    // pair must TIGHTEN to `ineligible_bijection_failure == 1` /
+    // `ineligible_naming_error == 0` — Stage B rejecting because it measured the
+    // face/edge/vertex `BijectionFailure::CountMismatch`. Until then, the
+    // Stage-A-admits/Stage-B-rejects-on-a-real-count-mismatch composition is
+    // demonstrated in-crate by
+    // `reify-mesh-morph/src/eligibility.rs`'s
+    // `morph_eligible_stage_a_admits_geometry_diff_stage_b_rejects_count_mismatch`.
+    assert_eq!(
+        snap.ineligible_naming_error, 1,
+        "a structural (topology-changing) tick must be rejected by STAGE B, and \
+         the MEASURED bucket for this fixture is the naming-layer one (Stage B \
+         cannot attribute the boolean-cut B-rep, so it cannot evaluate the \
+         bijection). If this now reads 0 with ineligible_bijection_failure == 1, \
+         the attribution gap closed — tighten this pair rather than widening it; \
+         snapshot: {snap:?}"
+    );
+    assert_eq!(
+        snap.ineligible_bijection_failure, 0,
+        "pinned to the MEASURED state: Stage B never reaches the bijection \
+         comparison on this fixture today, so a non-zero count here is a change \
+         in Stage B's behaviour that must be reviewed, not absorbed; \
          snapshot: {snap:?}"
     );
     assert_eq!(
