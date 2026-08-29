@@ -283,13 +283,45 @@ fn combined_explicit_analytic_q_from_perturbed_guess_converges() {
         );
     }
 
-    // Force signs.
-    for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
-        match kind {
-            MemberKind::Strut => assert!(n_i < 0.0, "strut {idx} N={n_i} must be compressive"),
-            MemberKind::Cable => assert!(n_i > 0.0, "cable {idx} N={n_i} must be tensile"),
-        }
-    }
+    // Shape check: the closed form is derived from the premise that both
+    // membrane triangles are equilateral at the solved equilibrium (every
+    // cotangent in the derivation is cot(60°) = 1/√3) — assert that directly
+    // against the recovered geometry. (A force-sign loop over
+    // `result.member_forces` would be tautological here: the kernel computes
+    // member_forces[i] = q[i] * len_i with len_i >= 0, and q's signs are
+    // already validated against the kind contract before the solve can run,
+    // so it cannot fail for any Explicit input that reaches this point — it
+    // re-checks an input precondition, not a solver output.)
+    let edge_len = |a: usize, b: usize| {
+        let (pa, pb) = (result.nodes[a], result.nodes[b]);
+        ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt()
+    };
+    // Tolerance is 1e-6, not the kernel's 1e-9 EQUIL_TOL: EQUIL_TOL bounds the
+    // combined-D residual ‖D(x)·x‖∞/(1+scale), a different (and not linearly
+    // comparable) quantity from an edge-length difference recovered via
+    // eigendecomposition + `recover_coordinates`'s normalisation. MEASURED
+    // actual gap at O(0.45) edge-length scale: ~1e-9-1.7e-9 absolute — 1e-6
+    // clears that with ~600x margin while staying ~1000x tighter than the
+    // smallest guess perturbation (~1e-3), so a real regression still trips it.
+    const EQUILATERAL_TOL: f64 = 1e-6;
+    let (top01, top12, top20) = (edge_len(0, 1), edge_len(1, 2), edge_len(2, 0));
+    assert!(
+        (top01 - top12).abs() < EQUILATERAL_TOL && (top12 - top20).abs() < EQUILATERAL_TOL,
+        "top membrane triangle must be equilateral: |01|={top01:.6e} |12|={top12:.6e} |20|={top20:.6e}",
+    );
+    assert!(
+        top01 > 1e-6,
+        "top membrane triangle must be non-degenerate, got edge length {top01:.3e}",
+    );
+    let (bot34, bot45, bot53) = (edge_len(3, 4), edge_len(4, 5), edge_len(5, 3));
+    assert!(
+        (bot34 - bot45).abs() < EQUILATERAL_TOL && (bot45 - bot53).abs() < EQUILATERAL_TOL,
+        "bottom membrane triangle must be equilateral: |34|={bot34:.6e} |45|={bot45:.6e} |53|={bot53:.6e}",
+    );
+    assert!(
+        bot34 > 1e-6,
+        "bottom membrane triangle must be non-degenerate, got edge length {bot34:.3e}",
+    );
 
     // Primary honest signal: independent reassembly + all-node residual.
     let d = reassemble_d_combined(6, &members, &result.force_densities, &surfaces, &sigmas, &result.nodes);
