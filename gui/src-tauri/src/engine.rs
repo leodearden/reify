@@ -2263,17 +2263,15 @@ impl EngineSession {
     ///    pretty-printer exists, and inventing one here would silently reformat
     ///    the user's document on every parameter tweak).
     /// 4. **Confirm** the on-disk file still holds the text this session
-    ///    compiled, and refuse rather than clobber it if not — see "the file is
-    ///    not assumed to be ours alone" below.
-    /// 5. **Recompile** in process through [`Self::update_source`].
-    /// 6. **Write** the spliced text to disk, via temp file + rename.
-    ///
-    /// The recompile precedes the write, and that ordering is load-bearing: the
-    /// recompile is the step that can legitimately REJECT the edit (a
-    /// type/dimension-mismatched value, PRD §7 B7). Writing first would leave
-    /// the on-disk `.ri` holding text the engine rejected — and the FS-watcher
-    /// would then reload exactly that text back into the GUI. Ordering
-    /// recompile→write makes that state unreachable.
+    ///    compiled, and REFUSE rather than clobber it if not. INV-GUI-3 makes
+    ///    the `.ri` canonical for the engine; it does not make this process the
+    ///    file's only writer. The rationale, the two ordinary causes and the
+    ///    two qualifications are stated once, at the check itself.
+    /// 5. **Recompile** in process through [`Self::update_source`]. The
+    ///    recompile precedes the write, and that ordering is load-bearing —
+    ///    stated once, at the call site.
+    /// 6. **Write** the spliced text to disk. Replace-atomic and its residual
+    ///    are [`write_file_atomically`]'s contract, stated once there.
     ///
     /// # Atomicity ledger
     ///
@@ -2290,8 +2288,8 @@ impl EngineSession {
     /// Per failure phase:
     ///
     /// - **Resolve** (unknown cell, malformed id, an entity that is not the
-    ///   entry file's, no default, non-literal default) returns before ANY of
-    ///   the four is touched.
+    ///   entry file's, no default, non-literal default, a unit the emitter
+    ///   cannot put back) returns before ANY of the four is touched.
     /// - **Serialize** (no `.ri` literal re-parses to this value — a non-finite
     ///   real, say) likewise: nothing has been mutated at that point.
     /// - **No file to write** — a `load_from_source` session has no canonical
@@ -2302,52 +2300,16 @@ impl EngineSession {
     ///   its refusal costs no rollback.
     /// - **Recompile** rejection restores `compile_failure` and
     ///   `last_reload_error` from a snapshot taken immediately before the call,
-    ///   so the rejected text leaves no diagnostics behind. See the comment at
-    ///   that call site for why the restore lives HERE and must not be pushed
-    ///   down into [`Self::update_source`], where the same behaviour is
-    ///   load-bearing for the editor path.
+    ///   so the rejected text leaves no diagnostics behind.
     /// - **Disk-write** failure rolls the engine back by recompiling the
     ///   pre-edit text through [`Self::update_source`], so the engine is never
-    ///   left ahead of what is on disk.
+    ///   left ahead of what is on disk, and restores the SAME snapshot
+    ///   afterwards — the rollback recompile succeeds, and a successful
+    ///   `commit_state` would otherwise clear a staleness banner this call
+    ///   never earned the right to clear.
     ///
-    /// # The file is not assumed to be ours alone
-    ///
-    /// The write replaces the WHOLE file with the in-memory buffer rather than
-    /// splicing the bytes that are on disk, so any divergence between the two
-    /// would be resolved by destroying the disk side wholesale — not merely at
-    /// the spliced span. Two ways that divergence arises, neither hypothetical:
-    /// an external editor (or another tool) saved the `.ri` and the FS-watcher
-    /// has not re-fired [`Self::update_source`] yet; or the GUI editor's
-    /// dirty-buffer path, which pushes every keystroke through `update_source`
-    /// WITHOUT writing disk, is holding text the user never asked to save.
-    ///
-    /// Both are REFUSED rather than clobbered. The file is re-read immediately
-    /// before the write and the call fails if its bytes differ from the
-    /// pre-edit buffer, so a parameter tweak can neither discard someone else's
-    /// edit nor force-save a document behind the user's back. Two qualifications
-    /// stated rather than glossed: a file that cannot be READ at all is not a
-    /// divergence this check can rule on (it falls through to the write, which
-    /// fails and rolls the engine back), and the check narrows rather than
-    /// closes the race — a writer that lands between the check and the rename
-    /// still loses, which only file locking the GUI does not take could prevent.
-    ///
-    /// # Replace-atomic on disk
-    ///
-    /// The write goes to a sibling temp file which is then `rename`d over the
-    /// target, so the canonical `.ri` is replaced ATOMICALLY: a concurrent
-    /// reader — the watcher, another tool, the user's editor — sees the whole
-    /// old file or the whole new one, never a truncated prefix. A plain
-    /// `fs::write` truncates in place, so a write that failed part-way (ENOSPC,
-    /// EIO, a killed process) would leave a corrupt design on disk that the
-    /// watcher would then reload.
-    ///
-    /// **Residual**, named rather than glossed: the rename is atomic but the
-    /// containing DIRECTORY is not fsynced, so a power loss immediately after a
-    /// successful return can still leave the pre-edit file in place. The
-    /// contents are synced before the rename, so the failure mode is "the edit
-    /// did not happen", never "the file is half-written". This method is atomic
-    /// with respect to the four surfaces above and replace-atomic on disk, NOT
-    /// crash-durable.
+    /// Both restores live at their own call sites, with the reason each one
+    /// belongs there rather than inside [`Self::update_source`].
     ///
     /// # Exactly one emit (D7)
     ///
@@ -2372,6 +2334,10 @@ impl EngineSession {
     /// a structured rejection to surface instead — see
     /// [`Self::resolve_rewritable_default_span`] for the discriminated taxonomy
     /// δ maps into its tool results.
+    ///
+    /// A literal in a unit the emitter cannot put back (`200mil`) is refused on
+    /// the same grounds and discriminated apart from this one — see
+    /// [`unit_is_emittable_as_written`], which owns that rule.
     pub fn apply_param_to_source(
         &mut self,
         cell_id_str: &str,
