@@ -810,16 +810,22 @@ fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>
 fn stale_decl_line_diagnostic(out_of_range: &[(String, usize, usize)]) -> Option<String> {
     let (file, wire_line, file_line_count) = out_of_range.first()?;
     let n = out_of_range.len();
-    // Range-neutral phrasing ("outside the 1..=N range") deliberately avoids
-    // asserting `{wire_line} > {file_line_count}`: `wire_line` can be `0`
-    // (the "no line reported" sentinel — see `decl_line_out_of_range`), and
-    // `0 > file_line_count` is false, so a `>`-shaped message would read as
-    // self-contradictory for that entry (e.g. "line 0 > 13165 lines").
+    // Two deliberate phrasing constraints, both about not stating something
+    // false:
+    //
+    // 1. The line count is scoped to the FIRST entry, the only one the
+    //    message names. `out_of_range` entries can span files of different
+    //    lengths, so a single `1..={file_line_count}` range attributed to
+    //    all `n` symbols would be wrong for every entry but the first.
+    // 2. No `>`-shaped claim. `wire_line` can be `0` (the "no line
+    //    reported" sentinel — see `decl_line_out_of_range`), and
+    //    `0 > file_line_count` is false, so "line 0 > 13165 lines" would
+    //    read as self-contradictory for exactly that entry.
     Some(format!(
         "reify-audit: jcodemunch suppression enrichment: {n} symbol(s) have a declaration line \
-         outside the file's 1..={file_line_count} range (first: {file} line {wire_line}) — the \
-         jcodemunch index may be stale; re-index the repo. Suppression flags are unavailable \
-         for these symbols."
+         outside their file's current line range (first: {file} line {wire_line}, which has \
+         {file_line_count} lines) — the jcodemunch index may be stale; re-index the repo. \
+         Suppression flags are unavailable for these symbols."
     ))
 }
 
@@ -852,6 +858,67 @@ fn collect_stale_decl_lines(
             decl_line_out_of_range(sym.line, n).then(|| (sym.file.clone(), sym.line, n))
         })
         .collect()
+}
+
+/// Enrich `symbols`' suppression flags IN PLACE by reading each declaring
+/// source file under `project_root`, and RETURN the once-per-invocation
+/// stale-index diagnostic instead of printing it — the same "return the
+/// diagnostic, let the caller `eprintln!` it" idiom as
+/// [`read_source_lines_for_enrichment`] and [`stale_decl_line_diagnostic`].
+///
+/// Returning it is what makes the stale-index reporting observable from a
+/// test at all. While this was an `if let Some(msg) = …` buried in
+/// `RealJCodemunchOps::get_changed_symbols`'s enrichment block, no test
+/// could tell whether it fired — an in-process test cannot read its own
+/// process's stderr — so deleting the report would have left the whole
+/// suite green while silently reinstating exactly the invisible
+/// degradation step-8 exists to remove. See
+/// `get_changed_symbols_does_not_panic_when_the_wire_line_is_past_eof`,
+/// which asserts the returned diagnostic over the exact symbols the
+/// production route decoded.
+///
+/// Per-path READ failures are still printed here rather than returned:
+/// there is one per unreadable path (not one per invocation), and the
+/// caller has no de-duplication this function's own cache does not already
+/// provide.
+#[must_use = "the stale-index diagnostic must be surfaced, not dropped"]
+fn enrich_suppression_flags(symbols: &mut [ChangedSymbol], project_root: &Path) -> Option<String> {
+    // Cache by path: many symbols share the same file (e.g. decl.rs has
+    // 1110+ rows), so reading each file once avoids O(symbols) disk reads.
+    let mut file_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    for sym in symbols.iter_mut() {
+        let path = project_root.join(&sym.file);
+        let lines = match file_cache.entry(path) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(v) => {
+                let (lines, diagnostic) = read_source_lines_for_enrichment(v.key());
+                if let Some(msg) = diagnostic {
+                    eprintln!("{msg}");
+                }
+                v.insert(lines)
+            }
+        };
+        if !lines.is_empty() {
+            let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
+                extract_suppression(lines, sym.line);
+            sym.has_allow_dead_code = has_allow_dead_code;
+            sym.has_cfg_test = has_cfg_test;
+            sym.g_allow_marker = g_allow_marker;
+        }
+    }
+    // A second pass over the now-fully-populated `file_cache` rather than
+    // an inline push in the loop above: `collect_stale_decl_lines` is its
+    // own independently-tested function (see its doc, and
+    // `decl_line_out_of_range`'s), so the wiring here reduces to "call it
+    // and hand the result to `stale_decl_line_diagnostic`" — deleting
+    // either line fails to compile on an unresolved `out_of_range`.
+    let out_of_range = collect_stale_decl_lines(symbols, |file| {
+        file_cache
+            .get(&project_root.join(file))
+            .filter(|lines| !lines.is_empty())
+            .map(Vec::len)
+    });
+    stale_decl_line_diagnostic(&out_of_range)
 }
 
 /// True when a 1-based declaration line is out of range for a file of
@@ -1309,46 +1376,15 @@ impl JCodemunchOps for RealJCodemunchOps {
             }
         };
         let mut symbols = changed_symbols_from_wire(&decoded);
-        // Enrich suppression flags by reading the declaring source file.
-        // Cache by path: many symbols share the same file (e.g. decl.rs has
-        // 1110+ rows), so reading each file once avoids O(symbols) disk reads.
-        let mut file_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
-        for sym in &mut symbols {
-            let path = self.project_root.join(&sym.file);
-            let lines = match file_cache.entry(path.clone()) {
-                Entry::Occupied(e) => e.into_mut(),
-                Entry::Vacant(v) => {
-                    let (lines, diagnostic) = read_source_lines_for_enrichment(v.key());
-                    if let Some(msg) = diagnostic {
-                        eprintln!("{msg}");
-                    }
-                    v.insert(lines)
-                }
-            };
-            if !lines.is_empty() {
-                let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
-                    extract_suppression(lines, sym.line);
-                sym.has_allow_dead_code = has_allow_dead_code;
-                sym.has_cfg_test = has_cfg_test;
-                sym.g_allow_marker = g_allow_marker;
-            }
-        }
-        // A second pass over the now-fully-populated `file_cache` rather
-        // than an inline push in the loop above: `collect_stale_decl_lines`
-        // is its own independently-tested function (see
-        // `decl_line_out_of_range` / `collect_stale_decl_lines`'s doc), so
-        // the wiring here reduces to "call it and hand the result to
-        // `stale_decl_line_diagnostic`" — deleting either line breaks
-        // compilation (an unresolved `out_of_range`) rather than silently
-        // reintroducing the silent-degradation failure mode this task
-        // exists to remove.
-        let out_of_range = collect_stale_decl_lines(&symbols, |file| {
-            file_cache
-                .get(&self.project_root.join(file))
-                .filter(|lines| !lines.is_empty())
-                .map(Vec::len)
-        });
-        if let Some(msg) = stale_decl_line_diagnostic(&out_of_range) {
+        // Enrichment (reading each declaring file, extracting suppression
+        // flags) lives in `enrich_suppression_flags` so its stale-index
+        // report is a RETURN VALUE a test can assert on rather than a bare
+        // `eprintln!` no in-process test can observe. What keeps this call
+        // from decaying back into a silent drop of that report is the
+        // seam's `#[must_use]` under the verify pipeline's
+        // `cargo clippy --all-targets -- -D warnings` gate — not a test:
+        // no unit test can read this process's own stderr.
+        if let Some(msg) = enrich_suppression_flags(&mut symbols, &self.project_root) {
             eprintln!("{msg}");
         }
         symbols
@@ -2323,6 +2359,21 @@ mod tests {
     // above (including its `reify-audit: jcodemunch` message prefix).
     // ------------------------------------------------------------------
 
+    /// True when `msg` names `n` as a STANDALONE number — a maximal digit
+    /// run equal to `n`'s decimal form, never a substring of a longer
+    /// number (so `1` is not satisfied by the `18321` already in the
+    /// message).
+    ///
+    /// Deliberately weaker than a phrase pin like `contains("1 symbol")`:
+    /// the operator-visible property is "the diagnostic reports how many
+    /// symbols are affected", which survives any cosmetic reword that
+    /// keeps the number ("1 affected symbol", "symbols: 1").
+    fn mentions_count(msg: &str, n: usize) -> bool {
+        let needle = n.to_string();
+        msg.split(|c: char| !c.is_ascii_digit())
+            .any(|tok| tok == needle)
+    }
+
     #[test]
     fn stale_decl_line_diagnostic_summarises_out_of_range_symbols() {
         assert!(
@@ -2341,7 +2392,7 @@ mod tests {
             "diagnostic must carry the reify-audit: jcodemunch prefix; got: {msg}"
         );
         assert!(
-            msg.contains("1 symbol"),
+            mentions_count(&msg, 1),
             "diagnostic must name the affected count 1; got: {msg}"
         );
         assert!(
@@ -2369,7 +2420,7 @@ mod tests {
         let msg3 =
             stale_decl_line_diagnostic(&three).expect("three entries must produce a diagnostic");
         assert!(
-            msg3.contains("3 symbol"),
+            mentions_count(&msg3, 3),
             "diagnostic must name the affected count 3; got: {msg3}"
         );
         assert!(
@@ -2383,6 +2434,16 @@ mod tests {
         assert!(
             !msg3.contains("crates/third/src/mod.rs"),
             "diagnostic must not name the third entry's path; got: {msg3}"
+        );
+        assert!(
+            mentions_count(&msg3, 13165),
+            "diagnostic must report the FIRST entry's line count; got: {msg3}"
+        );
+        assert!(
+            !mentions_count(&msg3, 100) && !mentions_count(&msg3, 10),
+            "the reported line count belongs to the named entry alone — entries \
+             can span files of different lengths, so the other entries' counts \
+             must not appear; got: {msg3}"
         );
         assert_eq!(
             msg3.lines().count(),
@@ -2408,8 +2469,10 @@ mod tests {
             "diagnostic must carry the reify-audit: jcodemunch prefix; got: {msg}"
         );
         assert!(
-            !msg.contains("line 0 >"),
-            "diagnostic must not claim `0 > file_line_count` — that is false; got: {msg}"
+            !msg.contains('>'),
+            "diagnostic must make no ordering claim at all about the wire line: \
+             `0 > file_line_count` is false, so any `>`-shaped phrasing is \
+             self-contradictory for the 0 sentinel; got: {msg}"
         );
         assert!(
             msg.contains("crates/some/src/lib.rs"),
@@ -3094,7 +3157,7 @@ mod tests {
                 .expect("handshake against the recording stub must succeed");
 
             // Must return, not panic.
-            let symbols = ops.get_changed_symbols("s^1", "s");
+            let mut symbols = ops.get_changed_symbols("s^1", "s");
 
             assert_eq!(symbols.len(), 1, "expected exactly the one declared symbol");
             let sym = &symbols[0];
@@ -3105,6 +3168,25 @@ mod tests {
                 "declaration line could not be located past EOF — suppression \
                  flags must be the neutral (false, false, None), not fabricated \
                  from an unrelated block of the file; got {sym:?}",
+            );
+
+            // …and the degradation must not be SILENT. `get_changed_symbols`
+            // prints the stale-index diagnostic to this process's own stderr,
+            // which an in-process test cannot read — so assert on the seam it
+            // prints, re-run over the exact symbols the production route just
+            // decoded (enrichment is idempotent: it re-reads the same file and
+            // re-derives the same neutral flags).
+            let diagnostic = enrich_suppression_flags(&mut symbols, tmp.path()).expect(
+                "a past-EOF declaration line must produce a stale-index diagnostic, \
+                 not a silent neutral triple",
+            );
+            assert!(
+                diagnostic.contains("a.rs"),
+                "diagnostic must name the declaring file; got: {diagnostic}"
+            );
+            assert!(
+                diagnostic.contains("99"),
+                "diagnostic must name the out-of-range wire line 99; got: {diagnostic}"
             );
         }
 
