@@ -29,9 +29,11 @@
 // Under stub (no OCCT): exit 0, no W_DFM_OVERHANG, no VIOLATED (C1 degradation).
 //
 // ── #precision and the RepresentationWithin margin ───────────────────────────
-// SINGLE SOURCE OF TRUTH for the numbers below.  Every other site — the Sphere
-// docstring further down, and both consumers under tests/harness_cli/ — points
-// here instead of restating them, so a retune has exactly one place to edit.
+// SINGLE SOURCE OF TRUTH for the numbers below, the staircase shape, and its
+// mechanism.  Every other site — the Sphere docstring further down,
+// `representation_within_assertion.rs`, and both consumers under
+// tests/harness_cli/ — points here instead of restating them, so a retune or
+// a re-measured tooth ratio has exactly one place to edit.
 //
 // Measured under OCCT at #precision(0.3mm): the sampled facet-chord deviation on
 // the 1m-radius sphere is 6.202e-4 m against the 1mm (1.000e-3 m) assertion bound
@@ -54,9 +56,7 @@
 // RETUNING #precision — MEASURE, DO NOT INTERPOLATE.  #precision is threaded
 // bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and
 // the achieved deviation is a STAIRCASE in #precision, not a sawtooth and not
-// linear (CORRECTED 2026-08-10, gate 6060/esc-6060-1, 388-point sweep — this
-// note is the SINGLE SOURCE OF TRUTH for the staircase and its mechanism;
-// `representation_within_assertion.rs` points here rather than restating it).
+// linear (CORRECTED 2026-08-10, gate 6060/esc-6060-1, 388-point sweep).
 // Between teeth, the achieved deviation follows an upper envelope at ~2.075x
 // the requested deflection; PERIODIC downward teeth at ~0.758x interrupt it —
 // real and recurring, not isolated, and not rare: near 0.65mm the period is
@@ -65,23 +65,29 @@
 //
 // Mechanism: NOT per-edge integer segment counts. A same-sweep control on
 // `cylinder(1000mm, 2000mm)`, whose curved face IS edge-segment-quantised,
-// comes back perfectly smooth (ratio 0.493-0.500, zero teeth), which falsifies
-// that explanation. The real mechanism is a two-ladder phase collision on the
+// comes back perfectly smooth (ratio 0.493-0.500, zero teeth) — this
+// falsification is the LOAD-BEARING claim here and stands on its own.
+//
+// The LEADING HYPOTHESIS for the actual mechanism — consistent with the
+// cylinder control, but NOT YET PREDICTIVE of the measured periods (~0.006mm
+// at 0.3mm, ~0.022mm at 0.65mm) — is a two-ladder phase collision on the
 // SPHERE FACE, measured against OCCT 7.8 — the system OCCT reify's kernel
 // links directly (CLAUDE.md native-deps note). OCCT is unpinned and
-// unvendored in-tree, so treat the file:line citations below as pointers into
-// 7.8 sources to re-verify, not a guarantee against a future OCCT bump:
-// interior surface nodes are truncation-quantised at the literal constant
-// 0.7*ArcAngularStep (BRepMesh_SphereRangeSplitter's angular-step factor,
-// BRepMesh_SphereRangeSplitter.cxx:25-27) while the seam meridian edge is
-// tessellated at HALF the deflection, i.e. the literal constant 0.5
-// (BRepMesh_CurveTessellator's seam-edge handling,
-// BRepMesh_CurveTessellator.cxx:74). Since chord deflection scales as theta^2
-// (deflection ~ r*theta^2/8), halving the deflection yields an effective
-// angular step of sqrt(0.5)=0.70711*ArcAngularStep, not 0.5x — the resulting
+// unvendored in-tree, and this host carries headers only (no .cxx sources to
+// check line numbers against), so the constants below are cited by name, not
+// file:line, and the derivation is a hypothesis to re-verify, not a checked
+// fact: interior surface nodes are truncation-quantised at the literal
+// constant 0.7*ArcAngularStep (BRepMesh_SphereRangeSplitter's angular-step
+// factor) while the seam meridian edge is tessellated at HALF the
+// deflection, i.e. the literal constant 0.5 (BRepMesh_CurveTessellator's
+// seam-edge handling). Since chord deflection scales as theta^2 (deflection
+// ~ r*theta^2/8), halving the deflection yields an effective angular step of
+// sqrt(0.5)=0.70711*ArcAngularStep, not 0.5x — the resulting 1%
 // 0.70000-vs-0.70711 gap between the splitter's literal factor and the
-// tessellator's derived effective factor drifts the two node ladders in and
-// out of phase as #precision varies, producing the teeth.
+// tessellator's derived effective factor is CONSISTENT WITH two node ladders
+// drifting in and out of phase as #precision varies, but has not been shown
+// to predict the periods above: treat it as a hypothesis, not a settled
+// derivation.
 //
 // NEAR THE BOUND this dominates: the 388-point sweep's largest measured
 // swing between two points 0.01mm (~1.5%) apart in the request is 2.78x —
@@ -97,8 +103,8 @@
 // upper envelope, not a guarantee — the teeth recur across the whole range,
 // and extrapolating the envelope is exactly what makes a tooth look like a
 // one-off. This fixture's own value (6.202e-4 m against the 1mm bound,
-// stated above) is this note's own single source of truth; the 8-point
-// neighbourhood grid around it lives in
+// stated above) is authoritative here; the 8-point neighbourhood grid
+// around it lives in
 // `representation_within_assertion.rs`'s `OCCT_SOURCE_FINE` doc comment —
 // see there rather than restating the grid here. 0.3mm's safety margin
 // rests on the envelope, not the grid: teeth deviate DOWNWARD only
@@ -106,10 +112,19 @@
 // and 0.3mm sits on that envelope at 6.202e-4 m, 1.61x inside the 1e-3 m
 // bound.
 //
-// To re-derive any candidate: hold #precision at the candidate on a bare
+// To re-derive any ONE candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
 // deviation (e.g. 0.01mm) to force a violation, and read the achieved value off
-// the resulting `sampled facet deviation <X> m` message.
+// the resulting `sampled facet deviation <X> m` message. That recipe
+// reproduces a single point — it does NOT re-establish the envelope, period,
+// duty-cycle or downward-only property above; those rest on the 388-point
+// sweep (d/R ≈ 3e-4-6.5e-4, i.e. roughly 0.3mm-0.65mm on this 1m-radius
+// sphere, plus the `cylinder(1000mm, 2000mm)` control above) that is the
+// adjudication of record for gate 6060/esc-6060-1, recorded in
+// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 — its raw
+// sweep CSV and briefing are cited there. Consult it — and do not re-open
+// that direction — before re-deriving the envelope/period claims from
+// scratch.
 
 import std.process
 
