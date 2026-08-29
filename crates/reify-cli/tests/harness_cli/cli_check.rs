@@ -653,6 +653,61 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
     );
 }
 
+/// Task 5403 (γ) / PRD `eradicate-silent-undef.md` Leg B, INV-SF-2 — the
+/// concrete regression this gate exists for, folded in from observation
+/// esc-6584-2.
+///
+/// MEASURED pre-change baseline for `fixtures/cyclic_let_scalar.ri`:
+///     stderr: "warning: W_MODULE_DECL_MISSING: …"
+///             "error: circular let-binding dependency in template P: [a, b]"
+///     stdout: "All constraints satisfied."
+///     exit 0
+///
+/// An `error:` line and "All constraints satisfied." in the same run, exiting
+/// 0 — silent undef, exactly what INV-SF-2 forbids.
+///
+/// Three assertions, each load-bearing for a different reason:
+///
+/// 1. `!status.success()` is the RED half — this is the one assertion in the
+///    task that genuinely failed before the gate existed.
+/// 2. the `circular let-binding` stderr assertion guards against the test
+///    passing for the WRONG reason. Without it, a future change that stopped
+///    the fixture reaching the eval phase at all (see the dimensional variant,
+///    which fails at COMPILE time under the #6584 bug) would leave this test
+///    green while proving nothing about the gate.
+/// 3. the stdout assertion pins that the gate escalates the exit code AFTER
+///    `finish_check` and does NOT rewrite the summary. That stdout/exit pair
+///    looks contradictory in isolation and is deliberate: it is exactly how
+///    the two ad-hoc escalations this task deletes (GdtIllegalModifier and
+///    `has_dfm_rule && dfm_has_error_diagnostic`) already behaved, so `check`'s
+///    stdout stays byte-identical across the change.
+///
+/// Deliberately NOT OCCT-gated: the fixture declares no geometry, so it takes
+/// the lightweight `Engine::new(None) + check()` arm and asserts identically
+/// in a stub-mode build.
+#[test]
+fn check_exits_nonzero_on_eval_phase_circular_let_binding() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("cyclic_let_scalar.ri"));
+
+    assert!(
+        !status.success(),
+        "an eval-phase Severity::Error must move the exit code (INV-SF-2); \
+         measured baseline before #5403 was exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("circular let-binding dependency in template P: [a, b]"),
+        "the cycle Error must still be REPORTED — if it is missing, this test is \
+         green for the wrong reason and proves nothing about the gate.\n\
+         stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout stays byte-identical: the gate runs AFTER `finish_check` and \
+         escalates only the exit code.\nstdout: {stdout}"
+    );
+}
+
 /// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2.
 ///
 /// `cmd_check`'s kernel-backed arm calls `build()` for its handle-population
@@ -677,20 +732,29 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
 /// D2's ACCUMULATING dedup. `build()` emits that error twice for a single call
 /// site, so a merge that deduped only against `check()`'s original list (which
 /// is empty here) would print it twice on `check`'s stderr.
+///
+/// Task 5403 (γ) — POST-GATE. Leaf β collected these diagnostics into the
+/// reported set but deliberately left the exit code alone; γ makes any
+/// `Severity::Error` in that MERGED set exit non-zero unless
+/// `CHECK_ERROR_EXIT_ALLOWLIST` excuses it. Nothing excuses
+/// `mirror_bare_origin.ri`'s `mirror: ox argument expects Length` /
+/// `failed to compile geometry operation: …` errors — they are genuine design
+/// errors, and `reify eval` on the same file has always exited 1 — so the
+/// status assertion below is now `!status.success()`. The collection
+/// assertions are untouched: γ moves the exit code, never the output.
 #[test]
 fn check_surfaces_geometry_compile_error_from_discarded_build() {
     let (status, stdout, stderr) =
         common::run_subcommand("check", &common::fixture_path("mirror_bare_origin.ri"));
 
-    // Mode-independent: this leaf fixes diagnostic COLLECTION, not the exit
-    // gate — that is the PRD's β/γ split.  Task 5403 (γ) lands the general
-    // `Severity::Error` exit gate and is the leaf that flips this assertion to
-    // `!status.success()`; γ's implementer finds it by grepping #5403 in the
-    // test tree.
+    // Mode-independent, and deliberately ABOVE the OCCT early-return so it
+    // also runs in stub mode: the gate is a pure function of the merged
+    // diagnostic list and needs no kernel.
     assert!(
-        status.success(),
-        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
-         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "γ (#5403) gates `check` on any non-allowlisted Severity::Error in the \
+         merged set, and this fixture's geometry-compile errors are not \
+         allowlisted.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
