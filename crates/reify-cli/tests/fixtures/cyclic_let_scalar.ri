@@ -1,0 +1,11 @@
+// Fixture for the INV-SF-2 check exit gate (#5403).
+// Dimensionless on purpose: a DIMENSIONAL cyclic let currently trips the
+// #6584 forward-reference bug and fails at COMPILE time (exit 1 for the
+// wrong reason). This file compiles cleanly and the cycle is detected in
+// the EVAL phase, so `reify check` reaches finish_check and — before the
+// gate — printed `error: circular let-binding dependency ...` alongside
+// "All constraints satisfied." and exited 0 (observation esc-6584-2).
+structure P {
+    let a = b + 1
+    let b = a + 1
+}
