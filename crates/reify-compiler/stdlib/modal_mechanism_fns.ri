@@ -76,6 +76,14 @@
 // flexural mode.  A `W_MechanismModalRigidBodyMode` diagnostic is emitted for
 // each such mode.  Ensure every load-bearing body is attached via a flexure
 // joint with a non-zero `spring_rate` to obtain a meaningful first frequency.
+//
+// Unsupported-damping note: only `RayleighDamping` and `NoDamping` are honored
+// on this path.  A `DampingDescriptor` refinement this lumped model does not
+// implement emits a `W_MechanismModalUnsupportedDamping` diagnostic naming the
+// offending descriptor type, rather than silently reporting it as undamped.
+// The solve still completes (the frequencies are unaffected), every
+// `.damping_ratio` is 0, and `ModalResult.damping` echoes the descriptor you
+// supplied — so the dropped damping intent is visible rather than swallowed.
 @optimized("modal::mechanism_modal")
 pub fn mechanism_modal_analysis(
     mechanism : Mechanism,

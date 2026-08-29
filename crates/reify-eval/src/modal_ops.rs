@@ -1701,13 +1701,40 @@ fn run_mechanism_modal(
     }
 
     // ── (4c) read the caller's ModalOptions ──────────────────────────────────
-    // Hoisted above the Mode construction below because step (5) now needs the
+    // Hoisted above the Mode construction below because step (5) needs the
     // `damping` descriptor per mode; step (5b) reuses the same binding for
-    // `n_modes`.  `extract_damping` is the same private helper the FEA path
-    // uses at `run_modal_analysis` — the type-name discrimination is NOT
-    // duplicated here.
+    // `n_modes` and step (6) for the descriptor echo.
+    //
+    // This path classifies rather than calling `extract_damping`: that helper
+    // flattens an unimplemented descriptor to (0, 0), which is indistinguishable
+    // from a genuinely undamped model.  Reporting the `Unsupported` arm is what
+    // keeps the ζ = 0 degrade honest (INV-SF-3, task #6875).  The match is
+    // deliberately exhaustive with no `_` catch-all, so adding a fourth
+    // `DampingKind` variant fails to compile HERE rather than defaulting to
+    // silence.
+    //
+    // Placement: after assembly succeeded and before the modes are shaped.  A
+    // degenerate mechanism (closed chain, unresolvable mass) early-returns above
+    // with its own `E_MechanismModal*` Error and has no modes to damp, so the
+    // Error is the louder and correct signal there.
     let options = value_inputs.get(1).unwrap_or(&Value::Undef);
-    let (alpha, beta) = extract_damping(options);
+    let (alpha, beta) = match classify_damping(options) {
+        DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
+        DampingKind::Unsupported(type_name) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "W_MechanismModalUnsupportedDamping: ModalOptions.damping is a \
+                 `{type_name}` descriptor, which the lumped generalized-coordinate \
+                 mechanism-modal model does not implement. Only `RayleighDamping` \
+                 (ζ_i = (α + β·ω_i²)/(2·ω_i)) and `NoDamping` are honored here; every \
+                 Mode.damping_ratio is reported as 0 for this solve. ModalResult.damping \
+                 still echoes the `{type_name}` descriptor you supplied — the declared \
+                 damping intent is NOT applied. Use `RayleighDamping`, or use the FEA \
+                 `modal_analysis` path if it supports `{type_name}`.",
+            )));
+            (0.0, 0.0)
+        }
+        DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
+    };
 
     // ── (5) shape Mode records (lumped model has no 3D shape) ────────────────
     // The stdlib accessors first_frequency/mode_frequency read only
@@ -2688,30 +2715,84 @@ fn extract_reference_direction(val: &Value) -> [f64; 3] {
     }
 }
 
+/// How the `damping` field of a `ModalOptions` value classifies against the
+/// `DampingDescriptor` refinements this trampoline implements.
+///
+/// This is the single extension point: a new descriptor (e.g. the
+/// damped-modal-bonded-heterogeneous PRD's `MaterialDamping`) adds ONE arm
+/// here and both the FEA ([`run_modal_analysis`]) and mechanism
+/// ([`run_mechanism_modal`]) producers inherit it — neither may re-implement
+/// the type-name match.
+#[derive(Debug, Clone, PartialEq)]
+enum DampingKind {
+    /// No `damping` field, or a non-`StructureInstance` options value.
+    /// Undamped, and silent: the caller declared no damping intent.
+    Absent,
+    /// An explicit `NoDamping` marker. Undamped, and silent: the caller
+    /// declared an undamped model and got one. Kept distinct from [`Self::Absent`]
+    /// because the two are different author intents even though both give ζ = 0.
+    NoDamping,
+    /// `RayleighDamping { alpha, beta }` — ζ_i = (α + β·ω_i²)/(2·ω_i).
+    Rayleigh { alpha: f64, beta: f64 },
+    /// A `DampingDescriptor` refinement this trampoline does not implement,
+    /// carrying its runtime `type_name` so the producer can name it in a
+    /// diagnostic instead of silently substituting zero (INV-SF-3).
+    Unsupported(String),
+}
+
+/// Classify the `damping` field of a `ModalOptions` StructureInstance.
+///
+/// The discriminator is the runtime `type_name`, matching the SIR-α nominal
+/// type-tag the structure-defs document. A missing `damping` field, a
+/// `Value::Undef` payload, a non-structure payload, and a non-structure `val`
+/// all classify as [`DampingKind::Absent`].
+fn classify_damping(val: &Value) -> DampingKind {
+    let Value::StructureInstance(data) = val else {
+        return DampingKind::Absent;
+    };
+    let Some(Value::StructureInstance(damping)) = data.fields.get("damping") else {
+        return DampingKind::Absent;
+    };
+    match damping.type_name.as_str() {
+        "RayleighDamping" => {
+            let alpha = damping
+                .fields
+                .get("alpha")
+                .map(read_scalar_si)
+                .unwrap_or(0.0);
+            let beta = damping
+                .fields
+                .get("beta")
+                .map(read_scalar_si)
+                .unwrap_or(0.0);
+            DampingKind::Rayleigh { alpha, beta }
+        }
+        "NoDamping" => DampingKind::NoDamping,
+        other => DampingKind::Unsupported(other.to_string()),
+    }
+}
+
 /// Extract the Rayleigh damping coefficients `(α, β)` from a `ModalOptions`
 /// StructureInstance's `damping` field. A `RayleighDamping { alpha, beta }`
 /// StructureInstance yields its coefficients; `NoDamping` (or any other shape)
-/// yields `(0, 0)` — the undamped case (ζ_i = 0 for every mode). The
-/// discriminator is the runtime `type_name`, matching the SIR-α nominal type-tag
-/// the structure-defs document.
+/// yields `(0, 0)` — the undamped case (ζ_i = 0 for every mode).
+///
+/// [`classify_damping`] is the discriminating seam; this fn is the lossy
+/// convenience view over it. It deliberately flattens
+/// [`DampingKind::Unsupported`] to `(0, 0)`, which means a caller using it
+/// **cannot distinguish a genuinely undamped model from a descriptor this
+/// trampoline does not implement**. A caller that must not silently drop an
+/// unrecognised descriptor calls [`classify_damping`] directly and reports the
+/// `Unsupported` arm — see [`run_mechanism_modal`]'s
+/// `W_MechanismModalUnsupportedDamping` warning (task #6875).
 fn extract_damping(val: &Value) -> (f64, f64) {
-    if let Value::StructureInstance(data) = val
-        && let Some(Value::StructureInstance(damping)) = data.fields.get("damping")
-        && damping.type_name == "RayleighDamping"
-    {
-        let alpha = damping
-            .fields
-            .get("alpha")
-            .map(read_scalar_si)
-            .unwrap_or(0.0);
-        let beta = damping
-            .fields
-            .get("beta")
-            .map(read_scalar_si)
-            .unwrap_or(0.0);
-        return (alpha, beta);
+    match classify_damping(val) {
+        DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
+        // Deliberate catch-all, unlike `run_mechanism_modal`'s exhaustive match:
+        // a future descriptor SHOULD flatten to the undamped pair here without a
+        // compile error, because this fn's whole contract is the lossy view.
+        _ => (0.0, 0.0),
     }
-    (0.0, 0.0)
 }
 
 /// Extract the requested finite-element order from a `ModalOptions`
