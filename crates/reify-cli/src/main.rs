@@ -2852,6 +2852,144 @@ fn check_fails(outcome: &ConstraintOutcome, strict: bool) -> bool {
     }
 }
 
+/// How one [`CHECK_ERROR_EXIT_ALLOWLIST`] entry selects the diagnostics it
+/// excuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckErrorAllowlistMatcher {
+    /// Preferred: match the machine-readable [`DiagnosticCode`].
+    Code(DiagnosticCode),
+    /// LEGACY code-less emissions ONLY.
+    ///
+    /// PRD §7 sketches this as `MessagePrefix`; the seed markers are
+    /// mid-string, and a true prefix match would be over-broad —
+    /// `@optimized target {t:?}: no registered compute trampoline` shares its
+    /// prefix with the co-resident `@optimized target {t:?}: compute
+    /// trampoline was cancelled` Error (`engine_admin.rs`, `engine_eval.rs`),
+    /// which must keep gating.  Substring is the honest spelling of the same
+    /// intent, and `check_error_gate_tests` pins the distinction.
+    MessageContains(&'static str),
+}
+
+/// What retiring one [`CHECK_ERROR_EXIT_ALLOWLIST`] entry will take.  Recorded
+/// so the burn-down owner does not have to re-derive it from the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckErrorAllowlistDisposition {
+    /// The emission's `Severity::Error` is simply wrong for this path; the
+    /// producer should emit `Severity::Warning` instead.  A Warning never
+    /// gates, so the entry can then be deleted with no other change.
+    Demote,
+    /// The emission needs a machine-readable [`DiagnosticCode`] before it can
+    /// be reasoned about (or excused) precisely.
+    ///
+    /// Part of the documented taxonomy but not exercised by the seeded table:
+    /// all three code-less seed entries are `Demote`, because their severity —
+    /// not their lack of a code — is what is wrong on `check`'s path.  Kept so
+    /// the burn-down owner has the vocabulary without having to invent it, and
+    /// carrying a bare `#[allow(dead_code)]` (no trailing `//` rationale, so it
+    /// anchors no PTODO marker — there is no deferred work here to cite).
+    #[allow(dead_code)]
+    Recode,
+    /// The emission is a real Error, but `check` reaching it at all is the
+    /// bug; the fix is on the code path, not on the diagnostic.
+    FixPath,
+}
+
+/// One row of the `reify check` Error-exit burn-down allowlist.
+struct CheckErrorExitAllowance {
+    matcher: CheckErrorAllowlistMatcher,
+    disposition: CheckErrorAllowlistDisposition,
+    /// PTODO-canonical cite (`#NNNN`) of the LIVE task that retires this entry.
+    cite: &'static str,
+}
+
+/// The BOUNDED burn-down set for INV-SF-2's `reify check` exit gate.
+///
+/// [`check_gating_error`] makes any `Severity::Error` diagnostic on any
+/// channel exit non-zero — *unless* an entry here excuses it.  Every entry is
+/// a legacy emission that predates the gate and whose Error severity is wrong
+/// (or wrongly reachable) on `check`'s deliberately kernel-less, solver-less
+/// path; none of them is a policy decision about what `check` should tolerate.
+///
+/// The table is pinned whole by `check_error_exit_allowlist_ratchet` and is
+/// burned to ZERO by #5404, converging on INV-SF-2's end state where no
+/// per-code list mediates the exit code at all.  **Do not add entries** — see
+/// that module's doc for the standing obligation.
+///
+/// Seeded from a MEASURED sweep of `reify check` over all `examples/*.ri` and
+/// `crates/reify-cli/tests/fixtures/*.ri` (2026-08-29): of the files that
+/// exited 0 while printing an `error:` line, only these families are expected
+/// on a healthy path.  The genuine design errors in that same sweep —
+/// `mirror: o{x,y,z} argument expects Length`, `unresolvable GeomRef::*`,
+/// `transform_{log,exp}: ... dimensionless`, `E_StackupEmptyChain` — are
+/// deliberately NOT excused and now exit 1, matching `reify eval`, which
+/// already exits 1 on every one of them.
+const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
+    // TODO(#5311): demote this engine-owned diagnostic to `Severity::Warning`
+    // on the trampoline-free path, then delete this entry.
+    //
+    // `cmd_check` attaches NO compute trampoline BY DESIGN (see its doc
+    // contract above: registering one would run a potentially slow FEA solve
+    // inside the lightweight static-check path).  A missing trampoline is
+    // therefore the healthy, expected state under `check`, not an error about
+    // the design — the PRD names this as the seed entry.  Locked end to end by
+    // `cli_build_fea.rs::check_fea_violated_constraint_is_not_gated`, whose
+    // exit-0 contract is held by THIS entry.
+    CheckErrorExitAllowance {
+        matcher: CheckErrorAllowlistMatcher::MessageContains("no registered compute trampoline"),
+        disposition: CheckErrorAllowlistDisposition::Demote,
+        cite: "#5311",
+    },
+    // TODO(#5404): demote or re-scope this so `check` does not report an
+    // unresolved `auto` param as an Error, then delete this entry.
+    //
+    // A geometry op argument is left `Undef` because an `auto` param awaits a
+    // solver `check` deliberately does not run (`examples/
+    // fea_bracket_minimize_mass.ri`, `param thickness : Length = auto(free)`).
+    // `reify eval` on that same file exits 0 (MEASURED — it takes >60s because
+    // it actually solves), so gating here would make `check` newly DISAGREE
+    // with `eval` about a healthy design.  Same posture artifact as the
+    // trampoline entry above.
+    CheckErrorExitAllowance {
+        matcher: CheckErrorAllowlistMatcher::MessageContains("is unresolved (Undef)"),
+        disposition: CheckErrorAllowlistDisposition::Demote,
+        cite: "#5404",
+    },
+    // TODO(#5404): demote alongside the entry above — this is its rollup.
+    //
+    // "all geometry operations failed; no geometry output produced" is the
+    // summary line for the entry above; `check` writes no geometry, so "no
+    // geometry output produced" is not a fact about the design.
+    //
+    // This does NOT rescue `examples/sweep_degenerate.ri`, which carries the
+    // same rollup: its `unresolvable GeomRef::Step(0)` / `GeomRef::Sub('s1')`
+    // errors are matched by nothing here, so it still exits 1 — as `reify
+    // eval` already does.
+    CheckErrorExitAllowance {
+        matcher: CheckErrorAllowlistMatcher::MessageContains("all geometry operations failed"),
+        disposition: CheckErrorAllowlistDisposition::Demote,
+        cite: "#5404",
+    },
+    // TODO(#5404): retire once #6048 widens
+    // `drop_falsified_indeterminate_diagnostics` past `ConstraintIndeterminate`.
+    //
+    // MERGE HAZARD, not a corpus finding: build's copy can emit a stale
+    // `ConstraintViolated` Error that survives the merge while `check`'s
+    // AUTHORITATIVE verdict for the same constraint is `Satisfied` — pinned by
+    // `d2_pass_ordering_tests::mirror_case_build_side_violation_currently_
+    // survives`.  `drop_falsified_indeterminate_diagnostics` scopes only to
+    // `ConstraintIndeterminate`, so nothing withdraws it today.  Gating on it
+    // would produce a FALSE exit 1 contradicting `check`'s own stdout.
+    //
+    // No real signal is lost: a genuine violation still exits non-zero through
+    // `ConstraintOutcome::SomeViolated` in `finish_check`, which reads the
+    // authoritative `constraint_results`, never the diagnostic list.
+    CheckErrorExitAllowance {
+        matcher: CheckErrorAllowlistMatcher::Code(DiagnosticCode::ConstraintViolated),
+        disposition: CheckErrorAllowlistDisposition::FixPath,
+        cite: "#5404",
+    },
+];
+
 /// Outcome of constraint checking.
 #[derive(Debug, PartialEq)]
 enum ConstraintOutcome {
