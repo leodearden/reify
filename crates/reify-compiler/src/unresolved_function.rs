@@ -270,6 +270,154 @@ mod tests {
         }
     }
 
+
+    /// A hand-maintained name slice is only as good as its tie to the resolver
+    /// it claims to describe. Step-2 gated each of the four resolver-only
+    /// families ON its slice (a name cannot be in the `match` without being in
+    /// the slice); this test pins the CONVERSE direction — every slice entry is
+    /// really claimed by its resolver for a well-shaped call — so a stale entry
+    /// cannot linger after the resolver arm is removed.
+    ///
+    /// The premise-guard idiom is copied from
+    /// `units::tests::datum_constructor_names_are_disjoint_from_other_families`,
+    /// which asserts `datum_constructor_result_type(name, &[]).is_some()`
+    /// before its absence asserts for the same reason.
+    #[test]
+    fn resolver_only_family_slices_match_their_resolvers() {
+        use reify_core::Type;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::{CompiledExpr, Value};
+
+        fn arg(ty: Type) -> CompiledExpr {
+            CompiledExpr::literal(Value::Undef, ty)
+        }
+
+        // ---- Construction-datum constructors -----------------------------
+        //
+        // Arity 2 satisfies `offset`'s arity gate (units.rs); the other ten
+        // members are arity-blind, so one arg vector serves all eleven.
+        let datum_args = vec![arg(Type::Plane), arg(Type::length())];
+        for name in DATUM_CONSTRUCTOR_NAMES {
+            assert!(
+                crate::units::datum_constructor_result_type(name, &datum_args).is_some(),
+                "DATUM_CONSTRUCTOR_NAMES entry {name:?} is not claimed by \
+                 datum_constructor_result_type at arity 2"
+            );
+        }
+        assert_eq!(
+            crate::units::datum_constructor_result_type("not_a_datum_ctor", &datum_args),
+            None,
+            "converse: a non-member must not be claimed"
+        );
+        // `offset` really is the arity-gated member — pin the gate so the
+        // arity-2 fixture above is not silently testing an arity-blind name.
+        assert_eq!(
+            crate::units::datum_constructor_result_type("offset", &[]),
+            None,
+            "offset is a construction datum at arity 2 ONLY (arity 3 is a relation)"
+        );
+
+        // ---- AffineMap algebra -------------------------------------------
+        //
+        // Two members are first-arg-gated, so each name needs its OWN
+        // well-shaped first arg: `affine_apply` wants a Point, the rest want an
+        // AffineMap. A single shared fixture would silently under-test them.
+        for name in AFFINE_ALGEBRA_NAMES {
+            let first_arg = if *name == "affine_apply" {
+                Type::point3(Type::length())
+            } else {
+                Type::AffineMap(3)
+            };
+            assert!(
+                crate::units::affine_map_algebra_result_type(name, Some(&first_arg)).is_some(),
+                "AFFINE_ALGEBRA_NAMES entry {name:?} is not claimed by \
+                 affine_map_algebra_result_type for a well-shaped first arg"
+            );
+        }
+        assert_eq!(
+            crate::units::affine_map_algebra_result_type(
+                "not_an_affine_op",
+                Some(&Type::AffineMap(3))
+            ),
+            None,
+            "converse: a non-member must not be claimed"
+        );
+
+        // ---- List helpers -------------------------------------------------
+        //
+        // Each helper has a different well-shaped arg vector; `generate` is the
+        // entry the older test-only fixtures omitted, so it is exactly the drift
+        // this loop catches.
+        let list_of_int = Type::List(Box::new(Type::Int));
+        let lambda_to_list = Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::List(Box::new(Type::Bool))),
+        };
+        let lambda_to_int = Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        for name in LIST_HELPER_NAMES {
+            let args = match *name {
+                "single" => vec![arg(list_of_int.clone())],
+                "flat_map" => vec![arg(list_of_int.clone()), arg(lambda_to_list.clone())],
+                "generate" => vec![arg(Type::Int), arg(lambda_to_int.clone())],
+                other => panic!(
+                    "LIST_HELPER_NAMES gained {other:?} with no well-shaped arg \
+                     fixture here — add one so the entry is really covered"
+                ),
+            };
+            assert!(
+                crate::list_helpers::infer_list_helper_return_type(name, &args).is_some(),
+                "LIST_HELPER_NAMES entry {name:?} is not claimed by \
+                 infer_list_helper_return_type for a well-shaped call"
+            );
+        }
+        assert_eq!(
+            crate::list_helpers::infer_list_helper_return_type("take", &[arg(list_of_int.clone())]),
+            None,
+            "converse: a non-member must not be claimed"
+        );
+
+        // ---- Selector composition -----------------------------------------
+        //
+        // Operand-shaped, not name-shaped: two Selector-typed operands satisfy
+        // both the variadic union/intersect and the strictly-binary difference.
+        let selector_args = vec![
+            arg(Type::Selector(SelectorKind::Face)),
+            arg(Type::Selector(SelectorKind::Face)),
+        ];
+        for name in SELECTOR_COMPOSITION_NAMES {
+            let mut diags = Vec::new();
+            let resolved = crate::units::selector_composition_result_type(
+                name,
+                &selector_args,
+                reify_core::SourceSpan::new(0, 0),
+                &mut diags,
+            );
+            assert!(
+                resolved.is_some(),
+                "SELECTOR_COMPOSITION_NAMES entry {name:?} is not claimed by \
+                 selector_composition_result_type for two Selector operands"
+            );
+            assert!(
+                diags.is_empty(),
+                "well-shaped {name:?} composition should emit no diagnostics, got {diags:?}"
+            );
+        }
+        let mut diags = Vec::new();
+        assert_eq!(
+            crate::units::selector_composition_result_type(
+                "not_a_selector_op",
+                &selector_args,
+                reify_core::SourceSpan::new(0, 0),
+                &mut diags,
+            ),
+            None,
+            "converse: a non-member must not be claimed"
+        );
+    }
+
     /// The closed world must actually be closed: a name in no family at all is
     /// rejected. Without this the oracle could trivially satisfy the test above
     /// by returning `true` unconditionally.
