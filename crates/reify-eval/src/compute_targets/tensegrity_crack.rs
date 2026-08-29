@@ -14,16 +14,36 @@
 //! crackers in here alongside them: [`crack_dimensioned_scalar`] was a verbatim
 //! pair across `tensegrity_load.rs` and `membrane_load.rs`.
 //!
+//! # The four scalar/list crackers
+//!
+//! Two PAIRS, one per acceptance set, each a scalar cracker plus its list
+//! lifting:
+//!
+//! - [`crack_dimensioned_scalar`] / [`crack_scalar_list`] — the position wants
+//!   one PARTICULAR unit (a Force, a Pressure); a `Scalar` in any other is
+//!   rejected.
+//! - [`crack_dimensionless_scalar`] / [`crack_dimensionless_list`] — the
+//!   position is a bare RATIO; a `Scalar` in *any* unit is rejected.
+//!
+//! They stay four functions rather than one parameterised over an
+//! `Option<DimensionVector>` because "no dimension at all" is not one more
+//! choice on the same axis: it changes which `Value` variants read (`Int` is a
+//! ratio spelling but not a Force spelling) and which advice the diagnostic
+//! carries. What they DO share is one diagnostic vocabulary — the same "has the
+//! wrong unit" phrasing and the same located `"{what}[{i}]"` entry naming — so
+//! the tensegrity trampolines speak with one voice.
+//!
 //! Every fallible helper takes a `code: &str` diagnostic mnemonic (e.g.
 //! `"E_FormFindInfeasible"` or `"E_TensegrityLoadInfeasible"`) which is prefixed
 //! onto each message as `"{code}: …"`, so the located wording stays caller-owned.
-//! [`crack_dimensioned_scalar`] extends that convention with a second
-//! caller-owned string, `hint: &str` — the parenthetical argument-order advice.
-//! It is threaded in rather than inferred here because each trampoline's hint
-//! names that trampoline's OWN arguments (`membrane_load` has a
-//! `membrane_thickness`; `tensegrity_load` does not), so choosing it inside this
-//! module would mean enumerating its callers — exactly the coupling this file
-//! exists to remove.
+//! All four scalar/list crackers extend that convention with a second
+//! caller-owned string, `hint: &str` — the trailing clause saying what the caller
+//! wanted instead ([`crack_dimensioned_scalar`]'s is argument-order advice;
+//! [`crack_dimensionless_scalar`]'s explains why the position is bare). It is
+//! threaded in rather than inferred here because each trampoline's hint names
+//! that trampoline's OWN arguments (`membrane_load` has a `membrane_thickness`;
+//! `tensegrity_load` does not), so choosing it inside this module would mean
+//! enumerating its callers — exactly the coupling this file exists to remove.
 
 use reify_core::DimensionVector;
 use reify_ir::Value;
@@ -80,6 +100,34 @@ pub(crate) fn crack_dimensioned_scalar(
 /// Crack a value at a DIMENSIONLESS position, rejecting a dimensioned `Scalar`
 /// instead of silently stripping its unit.
 ///
+/// # Why these positions are bare
+///
+/// Some trampoline inputs are genuinely RATIOS rather than physical quantities.
+/// `form_find`'s force densities, seed ratios and surface stresses are
+/// nullity-invariant — as the `form_find_free` stdlib doc puts it, "overall
+/// scaling of q is nullity-invariant, so only relative ratios matter" — so their
+/// absolute magnitude carries no information and there is no unit that would
+/// make them more precise.
+///
+/// # The two-sided contract
+///
+/// The dimension-checked-readers PRD
+/// (`docs/prds/v0_6/dimension-checked-readers.md`) puts exactly these positions
+/// in its Leg B "Deliberately bare" bucket, whose contract has TWO sides:
+///
+/// 1. Stay ACCEPTING — every numeric ratio spelling reads (see below), so the
+///    bare `[1.0, -1.0, …]` literals the whole tensegrity corpus passes keep
+///    working, and a future over-tightening to "bare `Real` only" is a
+///    regression, not a hardening.
+/// 2. Still REJECT a dimensioned `Scalar` — "silence about a position is not
+///    permission". Reading `1 N/m` as the ratio `1.0` silently reinterprets what
+///    the author wrote: they asked for a physical force density and got their
+///    SI magnitude repurposed as a dimensionless number, with no diagnostic and
+///    a plausible-looking solve at the end of it. That is a located error here
+///    instead.
+///
+/// # Accepted spellings
+///
 /// Accepts all THREE numeric spellings of a bare ratio — `Real`, `Int`, and a
 /// `Scalar` carrying `DIMENSIONLESS` — and nothing else. `Int` is not redundant
 /// with `Real`: `Int → Real` widening in this codebase is a TYPE-level rule only
@@ -97,6 +145,14 @@ pub(crate) fn crack_dimensioned_scalar(
 /// convention (see the module doc), so the tensegrity trampolines present one
 /// diagnostic vocabulary. There is no `expected: DimensionVector` parameter
 /// because "no dimension at all" is not a choice the caller gets to make.
+///
+/// Forward pointer: task alpha (#5791) relocates `arg_acceptance` into
+/// `reify-ir` and adds a `dimensionless_spec()` whose acceptance set is exactly
+/// the `Real | Int | Scalar{DIMENSIONLESS}` above. Today's `accept_arg` rejects
+/// a bare `Value::Real` outright, so it cannot yet express side 1 of the
+/// contract; once alpha lands that additive redesign, this helper and
+/// [`crack_dimensionless_list`] should become thin adapters over it rather than
+/// a second definition site.
 pub(crate) fn crack_dimensionless_scalar(
     v: &Value,
     what: &str,
@@ -659,13 +715,15 @@ mod tests {
         );
         assert_eq!(
             got,
-            Err("E_FormFindInfeasible: force_densities[3] has the wrong unit — expected a \
+            Err(
+                "E_FormFindInfeasible: force_densities[3] has the wrong unit — expected a \
                  dimensionless ratio (a bare Real or a dimensionless Scalar), got a Scalar in \
                  kg·m^-2·s^-2; force densities, seed ratios and surface stresses are \
                  nullity-invariant RELATIVE ratios, not physical quantities — only their \
                  relative magnitudes and signs matter, so drop the unit (write `1.0`, not \
                  `1N/1m`)"
-                .to_string())
+                    .to_string()
+            )
         );
     }
 
@@ -746,13 +804,9 @@ mod tests {
                 dimension: DimensionVector::FORCE_DENSITY,
             },
         ]);
-        let err = crack_dimensionless_list(
-            &third_entry_dimensioned,
-            "seed_ratios",
-            FF_CODE,
-            FF_HINT,
-        )
-        .unwrap_err();
+        let err =
+            crack_dimensionless_list(&third_entry_dimensioned, "seed_ratios", FF_CODE, FF_HINT)
+                .unwrap_err();
         assert_eq!(
             err,
             "E_FormFindInfeasible: seed_ratios[2] has the wrong unit — expected a dimensionless \

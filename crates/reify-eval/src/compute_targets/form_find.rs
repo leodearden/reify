@@ -14,11 +14,15 @@
 //! ```
 //!
 //! The `List<Real>` positions — `force_densities` and `surface_stresses` here,
-//! plus `seed_ratios` on the free-standing path — are DIMENSIONLESS-GATED: they
-//! are nullity-invariant relative ratios, so a bare `Real` (or a dimensionless
-//! `Scalar`) is accepted while a *dimensioned* `Scalar` is rejected with a
-//! located wrong-unit diagnostic rather than having its unit silently stripped.
-//! The gate lives in `tensegrity_crack::crack_dimensionless_scalar`.
+//! plus `seed_ratios` on the free-standing path — are DIMENSIONLESS-GATED. They
+//! are nullity-invariant RELATIVE ratios, so every bare numeric spelling reads
+//! (`Real`, `Int`, and a `Scalar` carrying DIMENSIONLESS) while a *dimensioned*
+//! `Scalar` is rejected with a located `"{what}[{i}] has the wrong unit …"`
+//! diagnostic rather than having its unit silently stripped and its SI magnitude
+//! reinterpreted as the ratio. That is Leg B's two-sided "Deliberately bare"
+//! contract (`docs/prds/v0_6/dimension-checked-readers.md`); the gate itself
+//! lives in `tensegrity_crack::crack_dimensionless_list`, which every one of
+//! these positions reaches through this module's `crack_reals`.
 //!
 //! It cracks the Tensegrity into node coordinates + member connectivity (struts
 //! then cables, so `force_densities` indexing is unambiguous — the same ordering
@@ -78,8 +82,8 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 const CODE: &str = "E_FormFindInfeasible";
 
 /// Trailing clause on every wrong-unit diagnostic from a dimensionless position
-/// (`force_densities` / `seed_ratios` / `surface_stresses`), threaded into
-/// [`crack_dimensionless_scalar`] as its caller-owned `hint`.
+/// (`force_densities` / `seed_ratios` / `surface_stresses`), threaded through
+/// [`crack_dimensionless_list`] as this trampoline's caller-owned `hint`.
 ///
 /// Grounded in the landed `form_find_free` stdlib doc ("Overall scaling of q is
 /// nullity-invariant, so only relative ratios matter"): these positions are read
@@ -245,15 +249,18 @@ fn crack_anchors(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     Ok(out)
 }
 
-/// Crack a `List<Real>` at a DIMENSIONLESS position, accepting a bare `Real` or
-/// a dimensionless `Scalar` and REJECTING a dimensioned one.
+/// Crack a `List<Real>` at a DIMENSIONLESS position: every bare numeric spelling
+/// reads, a *dimensioned* `Scalar` is REJECTED.
 ///
-/// Serves all three of this trampoline's dimensionless positions —
-/// `force_densities` (anchored + free), `seed_ratios`, and `surface_stresses`.
-/// Each entry goes through [`crack_dimensionless_scalar`], so a dimensioned
-/// `Scalar` yields a located `"{what}[{i}] has the wrong unit …"` error rather
-/// than being silently stripped to its SI magnitude and reinterpreted as the
-/// bare ratio. See that helper for the Leg B "Deliberately bare" rationale.
+/// The named, self-documenting reader for all four of this trampoline's
+/// dimensionless positions — anchored `force_densities` / `surface_stresses` and
+/// free `seed_ratios` / `surface_stresses` — over the shared
+/// [`crack_dimensionless_list`], to which it supplies this trampoline's [`CODE`]
+/// and [`DIMENSIONLESS_HINT`]. A dimensioned entry therefore yields a located
+/// `"{what}[{i}] has the wrong unit …"` error naming WHICH entry carries the
+/// unit, rather than being silently stripped to its SI magnitude and
+/// reinterpreted as the bare ratio. See `crack_dimensionless_scalar` for the Leg
+/// B "Deliberately bare" rationale and the accepted spellings.
 fn crack_reals(v: &Value, what: &str) -> Result<Vec<f64>, String> {
     crack_dimensionless_list(v, what, CODE, DIMENSIONLESS_HINT)
 }
