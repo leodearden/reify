@@ -36,12 +36,89 @@
 
 use std::path::PathBuf;
 
+// Read by `git_at_workspace_root`'s contract tests below. Both come from the
+// workspace's SINGLE definition of the sanitizer
+// (`crates/reify-test-support/src/git_env.rs`) rather than a local twin, so
+// this module cannot drift from the set it is supposed to remove.
+use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars};
+
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
 ///
 /// Same rooting idiom as `examples_smoke.rs`'s `EXAMPLES_DIR`, pointed one
 /// level higher: β's whole point is that the sweep is NOT examples-scoped.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
+// ─── step 21/22: one sanitized git constructor for every call site ───────────
+
+#[test]
+fn git_at_workspace_root_removes_every_repo_redirect_var() {
+    // Iterates the SHARED constant rather than naming the vars locally, so a
+    // future GROWTH of the sanitized set is covered here with no edit to this
+    // file. Same shape as `reify_audit::git_env`'s own wiring test
+    // (`command_removes_every_repo_redirect_var`), which likewise reads the
+    // `(key, None)` removal encoding through the definition site's
+    // `removed_vars` rather than a hand-copied local twin.
+    //
+    // What this deliberately does NOT re-prove: that the removals actually
+    // defeat a real ambient redirect var, and that an unsanitized `-C` loses to
+    // one. That is spawned against real git at the definition site, in
+    // `reify_test_support::git_env`'s
+    // `sanitize_makes_dash_c_authoritative_against_real_git`. Re-spawning git
+    // here would buy no new signal and would add a git-availability skip path.
+    let cmd = git_at_workspace_root(&["rev-parse", "HEAD"]);
+    let removed = removed_vars(&cmd);
+    for var in REPO_REDIRECT_VARS {
+        assert!(
+            removed.iter().any(|r| r == var),
+            "git_at_workspace_root must REMOVE `{var}` (env_remove -> `(key, None)`), \
+             not merely overwrite it; removals seen: {removed:?}"
+        );
+    }
+}
+
+#[test]
+fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
+    // The other half of the guarantee, and the half sanitization alone cannot
+    // give: a refactor could keep every `env_remove` in place while dropping
+    // the `-C`. Every git call in this module runs from the crate directory,
+    // never the repo root, so the `-C` is what makes the command name THIS
+    // repository at all — and an exact, ordered argv comparison is what pins
+    // that the caller's args follow the prefix rather than replace it.
+    let cmd = git_at_workspace_root(&["rev-parse", "HEAD"]);
+
+    assert_eq!(cmd.get_program(), std::ffi::OsStr::new("git"));
+
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        ["-C", WORKSPACE_ROOT, "rev-parse", "HEAD"],
+        "expected exactly `-C <workspace root>` followed by the caller's args, in that order"
+    );
+}
+
+#[test]
+fn git_at_workspace_root_composes_with_the_corpus_enumeration_args() {
+    // The `&[&str]` signature has to serve all three of this module's git call
+    // sites; `tracked_ri_corpus`'s pathspec form is the widest of them, and the
+    // one where a mis-joined argv would silently change the corpus rather than
+    // error. Asserting it here proves the `--` separator and the unexpanded
+    // glob survive as distinct argv entries.
+    let cmd = git_at_workspace_root(&["ls-files", "-z", "--", "*.ri"]);
+
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        ["-C", WORKSPACE_ROOT, "ls-files", "-z", "--", "*.ri"]
+    );
+}
+
 
 // ─── step 1/2: corpus enumeration ────────────────────────────────────────────
 
