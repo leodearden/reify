@@ -1430,33 +1430,52 @@ fn watcher_with_target_file_only_fires_for_that_file() {
          outright and this run could not exercise the target_file filter"
     );
 
-    // Modify the other .ri file (should be ignored due to target_file filter)
+    // Modify the other .ri file (should be ignored due to target_file
+    // filter). This write must stay strictly BEFORE the project.ri control
+    // writes below: the batch argument in the comment further down depends
+    // on other.ri having been recorded first, so its debounce deadline is
+    // no later than the first control write's.
     std::fs::write(&other_file, "structure Other { param x = 10mm }").unwrap();
-    std::thread::sleep(Duration::from_millis(500));
 
-    // Modify the target file (should trigger)
-    std::fs::write(&project_file, "structure Project { param y = 20mm }").unwrap();
-    // Wait for the event to propagate (with debounce). Bind the result so a
+    // #6462: a fixed 500ms sleep stood here, separating the other.ri write
+    // above from the project.ri write below by 5x the debounce window.
+    // Replaced with a positive-progress barrier -- project.ri (the target
+    // file) doubles as its own control, since it's the only path the
+    // target_file filter passes for Changed events. Bind the result so a
     // genuine regression fails via the assert below with a clear message,
     // rather than the boolean being silently discarded.
-    let found = wait_for(&changed_paths, Duration::from_secs(10), |paths| {
-        paths.iter().any(|p| p.ends_with("project.ri"))
-    });
+    let mut project_attempt = 0u32;
+    let found = wait_for_control_drain(
+        &changed_paths,
+        "project.ri",
+        || {
+            project_attempt += 1;
+            std::fs::write(
+                &project_file,
+                format!("structure Project {{ param y = {project_attempt}mm }}"),
+            )
+            .unwrap();
+        },
+        Duration::from_secs(10),
+    );
 
     // The negative check below is an immediate snapshot, not a poll:
     // asserting an event's absence can only ever false-PASS under a
     // condition-poll (there's no positive condition to wait for), so
     // polling here would just add latency on every green run for no
-    // correctness benefit. It is race-free by construction, not by
-    // timeout: other.ri was modified 500ms before project.ri (above) — 5x
-    // the production debounce window (`DEBOUNCE_DURATION`, 100ms, in watcher.rs) — and the
-    // watcher's debounce only suppresses duplicate same-path events; it
-    // does not delay or reorder emission across distinct paths. So a
-    // broken target_file filter's other.ri push would already be sitting
-    // in `changed_paths` well before project.ri's push makes `found` true
-    // above. That's a wall-clock ordering argument sized to catch "the
-    // filter is simply broken" (what this test exists to catch), not a
-    // formal guarantee against an adversarially delayed event.
+    // correctness benefit. It is race-free by CONSTRUCTION now, not by
+    // wall-clock separation: the debouncer is keyed by path, so the two
+    // project.ri deliveries `found` waits for above are necessarily two
+    // distinct debouncer batches, and the single worker thread completes
+    // batch N's callbacks before draining batch N+1 (see
+    // `wait_for_control_drain`'s doc comment). other.ri was recorded
+    // before the FIRST project.ri write, so a broken target_file filter's
+    // other.ri entry has a debounce deadline no later than that first
+    // write's, and is therefore pushed in a batch no later than the first
+    // project.ri delivery's -- which has necessarily already run by the
+    // time the SECOND delivery (what `found` actually observes) lands. No
+    // wall-clock separation is assumed anywhere, which is why the 500ms
+    // sleep could go.
     let paths = changed_paths.lock().unwrap();
     assert!(
         found,
