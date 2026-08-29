@@ -99,14 +99,22 @@ const CORPUS_ROOTS: &[&str] = &["examples", "crates/reify-compiler/stdlib"];
 /// fix, not an entry to add.
 ///
 /// **Empty, deliberately.** #5371's warn-mode baseline artifact already exists
-/// as `tests/prd-gate/fixtures/unknown_fn_silent_accept_baseline.ri` (written
-/// for #6014, citing the 5371 observation by name), and it lives under a root
-/// this sweep does not walk — so it needs no exemption here. Its behaviour is
-/// pinned instead by `unresolved_function_tests::the_original_line_observation_
-/// now_warns`, which compiles the same `line(point3(…), point3(…))` source
-/// inline: an inline assertion couples the test to the BEHAVIOUR rather than to
-/// a path, and referencing the fixture from Rust would drag it into
-/// `verify.sh`'s `_RUST_COUPLED_RI_FIXTURES` for no gain.
+/// as the prd-gate fixture `unknown_fn_silent_accept_baseline.ri` (written for
+/// #6014, citing the 5371 observation by name), and it lives under a root this
+/// sweep does not walk — so it needs no exemption here. Its behaviour is pinned
+/// instead by `unresolved_function_tests::the_original_line_observation_now_
+/// warns`, which compiles the same `line(point3(…), point3(…))` source inline:
+/// an inline assertion couples the test to the BEHAVIOUR rather than to a path.
+///
+/// The BASENAME above is deliberate — this comment must not spell the fixture's
+/// full `tests/prd-gate/…` path. `tests/infra/test_verify_scope.sh`'s PG-DRIFT
+/// half (a) derives its coupled set with a `git grep -o` over ALL tracked `*.rs`
+/// and is explicitly COMMENT-INCLUSIVE, so a doc-comment mention is a reference:
+/// spelling the path here obliges `verify.sh`'s `_RUST_COUPLED_RI_FIXTURES` to
+/// list the fixture, or the guard reds. Measured: with the path spelled out, the
+/// derived set grows to 13 while the list holds 12, and the fixture classifies
+/// `RUN_RUST=0`. Naming it costs a verify-scope coupling this binary gets no
+/// gain from — it never opens the file.
 const DELIBERATE_NEGATIVES: &[(&str, &str)] = &[];
 
 /// One unresolved call found in the corpus.

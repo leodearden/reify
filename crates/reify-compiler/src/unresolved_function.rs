@@ -176,10 +176,30 @@ pub const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// matchers, then subtract everything [`is_known_builtin`] already accepts.
 /// 263 candidate spellings were screened; 119 were unclaimed; 37 of those were
 /// **false positives** and are deliberately absent (see "Screened out" below),
-/// leaving the 82 names here.
+/// leaving **82** names from this route.
 ///
-/// Every entry has a verified owning registry task — the manifest is a ledger
-/// of live deferrals, not a graveyard. Groups below are by owning task.
+/// **A second route contributed the remaining 2, for 84 total.** The corpus
+/// sweep (`tests/unresolved_function_corpus_sweep.rs`) found
+/// `__flexure_compliance_get` and `RepresentationWithin` — both genuinely
+/// eval-reachable, neither reachable by the walk above: the first is an
+/// undeclared accessor intrinsic dispatched by a bare `if name == …` outside the
+/// `eval_*` matcher shape, and the second is matched engine-side in
+/// `reify-eval`, which this walk never visits. Keeping the two derivations
+/// distinct is deliberate: it records that walking the dispatch tables is
+/// *necessary but not sufficient*, so #6014 does not re-derive the manifest from
+/// the tables alone and silently lose these two. Dispositions:
+/// `docs/notes/unresolved-function-warn-sweep-2026-08-29.md`.
+///
+/// Groups below are by owning registry task, and every entry has a verified one
+/// — the manifest is a ledger of live deferrals, not a graveyard.
+///
+/// **One exception, stated rather than papered over:** `RepresentationWithin`
+/// (last group) has no owning τ task. It was surfaced by #5371's corpus sweep,
+/// it is a landed language feature, and no registry task enumerates it because
+/// every τ task enumerates value-returning builtins while this one appears only
+/// in constraint position. Assigning it an owner is filed as follow-up ticket
+/// `tkt_0RT1CF3Q06BNRBRGCS970CVB75`; #6014 needs it resolved before it can
+/// delete the fallback.
 ///
 /// # Screened out — names that look eval-dispatchable but never reach a call site
 ///
@@ -287,6 +307,14 @@ pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "prb_parallelogram_flexure",
     "prb_prismatic_blade",
     "prb_two_axis_pivot",
+    // The accessor INTRINSIC behind `pub fn flexure_compliance(joint: Length)`
+    // (stdlib/flexures.ri:238). Dispatched by name at
+    // `reify-stdlib/src/flexures/diagnostics.rs:59`, so it is genuinely
+    // eval-reachable — it is simply undeclared, which is why the double
+    // underscore is there. Surfaced by this task's corpus sweep, not by τ4's
+    // own enumeration, so it is called out rather than folded silently into
+    // the `prb_*` run above.
+    "__flexure_compliance_get",
     "contributor",
     "contributor_asym",
     "stackup_worst_case",
@@ -325,6 +353,30 @@ pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "profile_duration",
     "profile_duration_at",
     "piecewise_polynomial",
+    // --- representation-tolerance constraint verb — NO VERIFIED REGISTRY OWNER
+    // The one entry in this manifest with no owning τ task, stated plainly
+    // rather than filed under the nearest plausible one. Assigning an owner is
+    // follow-up ticket `tkt_0RT1CF3Q06BNRBRGCS970CVB75`.
+    //
+    // `RepresentationWithin(subject, bound)` is a fully landed language feature
+    // (#4198 measured the metric, #4199 promoted it from a budget extractor to
+    // a three-valued assertion, #6167/#6170 built the bound pre-pass and the
+    // export refusal — all done), specified by
+    // `docs/prds/v0_6/precision-nominal-representation-guarantee.md`. It is
+    // recognised engine-side by name at
+    // `reify-eval/src/tolerance_combine::match_representation_within_shape` and
+    // reaches no compiler classification family, so its 11 corpus call sites
+    // all rode the terminal fallback silently. It is NOT a typo and NOT dead.
+    //
+    // It is also the only manifest entry that appears exclusively in CONSTRAINT
+    // position — it yields no value cell anyone reads — which is why the
+    // fallback's mistyping of it has never been observable, and why none of the
+    // τ tasks enumerating value-returning builtins picked it up.
+    //
+    // Deliberately NOT snake_case: the surface spelling is PascalCase, unlike
+    // every other name here. Do not "normalise" it — the engine matches this
+    // exact string.
+    "RepresentationWithin",
 ];
 
 /// Is `name` a builtin function name the compiler knows about *at all*?
