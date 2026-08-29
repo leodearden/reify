@@ -24,19 +24,58 @@ impl crate::Engine {
     /// The subject is already realized; γ runs the same recipe β's executor runs
     /// (`execute_realization_ops` Voxelize stage) directly.
     ///
-    /// Degradation paths → `None`:
+    /// Resolution policy: [`reify_ir::VoxelResolution::HonestFloor`] — the
+    /// bounding-box-derived default the recipe has always used. A caller that
+    /// knows its thinnest feature should use [`Self::realize_solid_sdf_at`]
+    /// with [`reify_ir::VoxelResolution::MinFeature`] instead (task 6560);
+    /// at the honest floor a 1 mm feature in a 100 mm part is entirely
+    /// sub-voxel.
+    ///
+    /// Degradation paths → `None`: see [`Self::realize_solid_sdf_at`], of which
+    /// this is the `HonestFloor` special case. There is exactly one body, so
+    /// the two entry points cannot drift.
+    pub(crate) fn realize_solid_sdf(
+        &mut self,
+        subject: reify_ir::value::GeometryHandleRef,
+    ) -> Option<reify_ir::SampledField> {
+        self.realize_solid_sdf_at(subject, reify_ir::VoxelResolution::HonestFloor)
+    }
+
+    /// Turn an already-realized BRep solid into a CPU-resident queryable SDF at
+    /// a caller-requested [`reify_ir::VoxelResolution`] (task 6560 — the
+    /// v0.4-shells `BRep→Voxel` resolution seam).
+    ///
+    /// This is the sole implementation; [`Self::realize_solid_sdf`] is its
+    /// [`reify_ir::VoxelResolution::HonestFloor`] special case.
+    ///
+    /// PRD §4 D1 — post-build direct recipe: γ does NOT re-enter the dispatcher
+    /// BFS / realization loop and does NOT modify `demanded_reprs_for_template`.
+    /// The subject is already realized; γ runs the same recipe β's executor runs
+    /// (`execute_realization_ops` Voxelize stage) directly. The resolution is
+    /// threaded through THIS direct recipe rather than through that executor
+    /// stage because the executor keys its intermediate cache with `NO_OPTIONS`;
+    /// making it options-carrying is the ESC-3433-117 aliasing hazard and needs
+    /// its own cache-key work.
+    ///
+    /// Degradation paths → `None` (PRD §4 D5 — the caller ζ maps `None` →
+    /// self-describing `Undef` + diagnostic + `Indeterminate`, never a
+    /// fabricated number):
     ///  1. `subject.realization_ref` absent from `realization_handles` AND
     ///     `subject.kernel_handle == GeometryHandleId::INVALID` (resolution fails).
     ///  2. No `default_kernel_name` configured (no source kernel to tessellate).
     ///  3. No kernel registered under `openvdb_kernel_name()` — absent in stub
     ///     builds where the `cfg(any(has_openvdb, feature="stub_register"))` gate
     ///     on `inventory::submit!` is not satisfied.  This is the D5 mechanism.
-    ///  4. `tessellate`, `ingest_mesh`, or `densify_grid_to_sampled` returns
-    ///     `Err` (chain failure).
-    #[allow(dead_code)] // consumed by δ=4424, ε=4425, ζ=4426 (future tasks)
-    pub(crate) fn realize_solid_sdf(
+    ///  4. `tessellate`, `ingest_mesh_at_resolution`, or
+    ///     `densify_grid_to_sampled` returns `Err` (chain failure).
+    ///  5. `resolution` is invalid (non-finite / non-positive) or implies a grid
+    ///     beyond the kernel's dense-grid budget — the kernel rejects it and the
+    ///     `Err` degrades here exactly like any other chain failure.
+    #[allow(dead_code)] // `_at` is consumed by reify-shell-extract T1 (structural-analysis-shells.md:98-100)
+    pub(crate) fn realize_solid_sdf_at(
         &mut self,
         subject: reify_ir::value::GeometryHandleRef,
+        resolution: reify_ir::VoxelResolution,
     ) -> Option<reify_ir::SampledField> {
         // ── 1. Resolve the BRep handle ──────────────────────────────────────
         // Prefer the realization_handles table (set by post_process_geometry_handle_cells
@@ -71,7 +110,8 @@ impl crate::Engine {
             target: "reify_eval::realize_solid_sdf",
             demanded = ?reify_ir::ReprKind::Voxel,
             ?brep_id,
-            "realize_solid_sdf: demanding Voxel realization of subject solid"
+            ?resolution,
+            "realize_solid_sdf_at: demanding Voxel realization of subject solid"
         );
 
         // Tessellate BRep→Mesh
@@ -81,11 +121,11 @@ impl crate::Engine {
             .tessellate(brep_id, 0.0001)
             .ok()?;
 
-        // Ingest Mesh→Voxel
+        // Ingest Mesh→Voxel at the requested resolution
         let voxel = self
             .geometry_kernels
             .get_mut(openvdb_name)?
-            .ingest_mesh(&mesh)
+            .ingest_mesh_at_resolution(&mesh, resolution)
             .ok()?;
 
         // Densify Voxel→SampledField
