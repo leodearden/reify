@@ -2561,6 +2561,11 @@ impl EngineSession {
     /// 5. **Non-literal default** — the gate this whole method exists for. See
     ///    [`Self::apply_param_to_source`] for why a `BinOp`/`Auto`/call/ident
     ///    default is REFUSED rather than spliced over.
+    /// 6. **Unwritable unit** — the default IS an admitted literal, but its unit
+    ///    is not one the emitter can put back (`200mil`, `2km`, a compound
+    ///    expression). Discriminated apart from 5 because the default is not a
+    ///    formula and saying so would send δ's caller looking for one. See
+    ///    [`unit_is_emittable_as_written`], which owns the rule and the reason.
     ///
     /// Every arm returns before any of the four state surfaces is touched.
     fn resolve_rewritable_default_span(
@@ -2611,8 +2616,27 @@ impl EngineSession {
             })?;
 
         match &default.kind {
+            // A quantity literal is admitted only when its unit is one the
+            // emitter can WRITE BACK — see `unit_is_emittable_as_written`.
+            reify_ast::ExprKind::QuantityLiteral { unit, .. } => {
+                if unit_is_emittable_as_written(unit) {
+                    Ok(default.span)
+                } else {
+                    Err(format!(
+                        "cannot write '{cell_id_str}' back to source: its default is written \
+                         in {}, which the write-back cannot re-emit — rewriting it would \
+                         silently replace the unit you authored with a built-in one \
+                         ({}), so the existing literal is preserved instead",
+                        describe_unit_expr(unit),
+                        reify_core::units::BUILTIN_UNITS
+                            .iter()
+                            .map(|(s, ..)| *s)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                }
+            }
             reify_ast::ExprKind::NumberLiteral { .. }
-            | reify_ast::ExprKind::QuantityLiteral { .. }
             | reify_ast::ExprKind::StringLiteral(_)
             | reify_ast::ExprKind::BoolLiteral(_) => Ok(default.span),
             other => Err(format!(
@@ -7640,6 +7664,64 @@ pub(crate) fn unit_hint_from_default_literal(default_slice: &str) -> Option<&str
     match trimmed[..alpha_start].trim_end().chars().next_back() {
         Some(c) if c.is_ascii_digit() || c == '.' => Some(&trimmed[alpha_start..]),
         _ => None,
+    }
+}
+
+/// Reports whether a quantity literal's `unit` is one
+/// [`EngineSession::apply_param_to_source`] can write back WITHOUT changing the
+/// unit vocabulary the user authored — i.e. a bare symbol that
+/// [`reify_core::units::unit_symbol_to_si`] resolves.
+///
+/// The write-back's serializer, [`reify_ir::value_to_ri_literal_with_unit`],
+/// validates its `preferred_unit` hint against the BUILT-IN table only: bare
+/// `mm`/`m`/`in`/`deg`/… and nothing else. User-declared units (`unit mil :
+/// Length = 0.0000254`, or `km` and `ft` out of `std.units`) live exclusively
+/// in the compiler's per-module `UnitRegistry`, which that layer deliberately
+/// has no view of. A hint it cannot resolve is silently DROPPED and the value
+/// goes out on the canonical ladder instead — so without this gate, tweaking
+/// `param thickness: Length = 200mil` would rewrite it as `5.08mm`. The number
+/// is right; the vocabulary the user chose for their own document is gone, and
+/// nothing told them.
+///
+/// That is the same class of silent destruction the non-literal gate exists to
+/// prevent (see [`EngineSession::apply_param_to_source`]), so it gets the same
+/// answer: REFUSE, with a discriminated message δ can surface, rather than
+/// canonicalize behind the user's back. Compound unit expressions (`kN*m`,
+/// `kg/m^3`) are refused for the same reason plus a second one — the emitter's
+/// ladder covers no compound dimension at all, so they could only ever be
+/// rejected one phase later with a much vaguer message.
+///
+/// This is a LIMITATION of the emitter, not a policy: the day
+/// `value_to_ri_literal_with_unit` can resolve a hint through the compiled
+/// module's `UnitRegistry`, this gate should widen to match rather than stay.
+fn unit_is_emittable_as_written(unit: &reify_ast::UnitExpr) -> bool {
+    match unit {
+        reify_ast::UnitExpr::Unit(symbol) => {
+            reify_core::units::unit_symbol_to_si(symbol).is_some()
+        }
+        reify_ast::UnitExpr::Mul(..)
+        | reify_ast::UnitExpr::Div(..)
+        | reify_ast::UnitExpr::Pow(..) => false,
+    }
+}
+
+/// Describe `unit` for the rejection [`EngineSession::resolve_rewritable_default_span`]
+/// returns when [`unit_is_emittable_as_written`] refuses it.
+///
+/// Names the offending SYMBOL for a bare unit, because that is the word the
+/// user will search their `.ri` for; a compound expression is described by
+/// shape rather than reconstructed, since the reader has the span in front of
+/// them and a half-faithful re-rendering would be worse than none.
+fn describe_unit_expr(unit: &reify_ast::UnitExpr) -> String {
+    match unit {
+        reify_ast::UnitExpr::Unit(symbol) => {
+            format!("the unit '{symbol}', which is not a built-in unit symbol")
+        }
+        reify_ast::UnitExpr::Mul(..)
+        | reify_ast::UnitExpr::Div(..)
+        | reify_ast::UnitExpr::Pow(..) => {
+            "a compound unit expression, which has no bare-literal form".to_string()
+        }
     }
 }
 

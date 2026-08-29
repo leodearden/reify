@@ -20190,28 +20190,43 @@ fn apply_param_to_source_honours_the_replaced_literals_unit() {
 /// shape the RESOLVE phase must discriminate between — a rewritable quantity
 /// literal (`width`), a BinOp default (`computed`), a bare-identifier default
 /// (`aliased`), a call default (`scaled`), a solver-determined `auto` default
-/// (`solved`), a param with NO default (`no_default`), and the two remaining
-/// admitted literal kinds, Bool (`flag`) and String (`label`), which must stay
-/// rewritable.
+/// (`solved`), a param with NO default (`no_default`), a quantity literal in a
+/// MODULE-DECLARED unit (`thickness`, in `mil`) which the emitter cannot write
+/// back without silently canonicalizing it, and the three remaining admitted
+/// literal kinds — Bool (`flag`), String (`label`) and the two NumberLiteral
+/// shapes, `Int` (`count`) and dimensionless `Real` (`ratio`) — which must all
+/// stay rewritable.
 ///
-/// The four REFUSED kinds are the four the `apply_param_to_source` rustdoc
-/// names (`BinOp`, `Ident`, a call, `Auto`), so the doc's enumeration and the
-/// test table cover the same set rather than drifting apart.
+/// `count`/`ratio` are the only params in the whole cluster with a bare
+/// `NumberLiteral` default, and they are what drives the `Value::Int` /
+/// `Value::Real` arms of `value_to_ri_literal_with_unit` through the write-back
+/// end to end: those are the arms where the unit hint is `None` and the
+/// emitter's own `force_decimal_point` choice decides the text that lands in
+/// the user's file (`80` vs `80.0`).
+///
+/// The four REFUSED expression kinds are the four the `apply_param_to_source`
+/// rustdoc names (`BinOp`, `Ident`, a call, `Auto`), so the doc's enumeration
+/// and the test table cover the same set rather than drifting apart.
 ///
 /// Deliberately SEPARATE from `writeback_source()`: that fixture's
 /// byte-for-byte test (`apply_param_to_source_rewrites_only_the_default_span`)
 /// derives its expectation from its own text, so adding params there would
 /// silently widen an unrelated assertion.
 fn writeback_rejection_source() -> &'static str {
-    r#"structure def Part {
+    r#"unit mil : Length = 0.0000254
+
+structure def Part {
     param width: Length = 80mm
     param computed: Length = width * 2
     param aliased: Length = width
     param scaled: Length = abs(width)
     param solved: Length = auto
     param no_default: Length
+    param thickness: Length = 200mil
     param flag: Bool = true
     param label: String = "unset"
+    param count: Int = 4
+    param ratio: Real = 0.5
 
     let body = box(width, width, computed)
 }"#
@@ -20308,6 +20323,19 @@ fn apply_param_to_source_discriminates_its_resolve_phase_rejections() {
         (
             "Part.scaled",
             &["Part.scaled", "not a literal", "FunctionCall", "preserved"],
+        ),
+        // A literal of an ADMITTED kind whose UNIT the emitter cannot re-emit.
+        // `200mil` resolves only through the compiled module's `UnitRegistry`,
+        // which `value_to_ri_literal_with_unit` deliberately has no view of, so
+        // the hint would be dropped and the ladder would write `5.08mm` —
+        // numerically right, and the user's own unit vocabulary silently gone
+        // from their canonical document. Discriminated apart from the
+        // non-literal refusals on purpose: the default here IS a literal, so a
+        // "not a literal" message would send δ's caller looking for a formula
+        // that is not there.
+        (
+            "Part.thickness",
+            &["Part.thickness", "'mil'", "not a built-in", "preserved"],
         ),
     ];
 
@@ -20998,6 +21026,65 @@ fn apply_param_to_source_still_rewrites_a_string_literal_default() {
         writeback_rejection_source().replace(r#""unset""#, r#""done""#),
         "only the String default span should change"
     );
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_bare_number_literal_default() {
+    // The FOURTH admitted `ExprKind`, and the only one the cluster did not
+    // drive end to end: `Bool`, `String` and `QuantityLiteral` were covered,
+    // `NumberLiteral` was not, because until now no fixture param had a bare
+    // number default.
+    //
+    // It is also the only shape that reaches `value_to_ri_literal_with_unit`
+    // with a `None` hint (there is no trailing unit for
+    // `unit_hint_from_default_literal` to read), so it is the ONLY path on
+    // which the emitter's `force_decimal_point` choice decides the text that
+    // lands in the user's file. That is what makes `7` vs `7.0` and `0.25` vs
+    // `.25` an assertable contract here rather than an emitter detail: the
+    // written form has to re-parse as the same param, and a `Real` default
+    // silently becoming an integer-looking literal is exactly the kind of drift
+    // a byte-for-byte assertion catches.
+    //
+    // Both `Value` variants are driven from one test because they share the
+    // whole path and differ only in that emitter arm.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.count", &reify_ir::Value::Int(7))
+        .expect("an Int NumberLiteral default must stay rewritable");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_rejection_source().replace("param count: Int = 4", "param count: Int = 7"),
+        "only the Int default span should change"
+    );
+
+    session
+        .apply_param_to_source("Part.ratio", &reify_ir::Value::Real(0.25))
+        .expect("a dimensionless Real NumberLiteral default must stay rewritable");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_rejection_source()
+            .replace("param count: Int = 4", "param count: Int = 7")
+            .replace("param ratio: Real = 0.5", "param ratio: Real = 0.25"),
+        "only the Real default span should change, and the Int edit must survive it"
+    );
+
+    // Both edits must be visible to the ENGINE too, not just on disk — the
+    // three-way consistency the happy-path test pins for the quantity case.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after two number write-backs");
+    for (cell_id, expected) in [("Part.count", "7"), ("Part.ratio", "0.25")] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.cell_id == cell_id)
+            .unwrap_or_else(|| panic!("{cell_id} should be present in the GuiState"));
+        assert_eq!(
+            cell.value, expected,
+            "{cell_id} should evaluate to the written-back value"
+        );
+    }
 }
 
 #[test]
