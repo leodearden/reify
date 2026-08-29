@@ -273,23 +273,28 @@ fn all_examples_parse_and_compile_with_stdlib() {
 /// free, added no `CTOR_CONFORMANCE_MIGRATION_DEBT` entry, and δ inherits it.
 #[test]
 fn no_example_emits_ctor_field_conformance_diagnostics() {
-    let walk = ctor_conformance_corpus_walk();
-
-    // Fail fast on the discovery floor BEFORE the expensive compile+check
-    // loop below. Otherwise a misconfigured discover_ri_files()/SKIP_SET
-    // would still burn time compiling whatever few files it found before
-    // reporting the regression — matches the eval-side gate in
-    // auto_type_param_determinism_tests.rs::v0_1_example_corpus_compile_and_check_time_is_bounded.
+    // Fail fast on the discovery floor BEFORE the corpus walk. This pre-check
+    // is a directory walk only, whereas ctor_conformance_corpus_walk() compiles
+    // every exercised file inside its OnceLock — so reading walk.exercised here
+    // instead would pay for the whole corpus before reporting a misconfigured
+    // discover_ri_files()/SKIP_SET. Deliberately symmetric with the eval-side
+    // gate in
+    // auto_type_param_determinism_tests.rs::v0_1_example_corpus_compile_and_check_time_is_bounded,
+    // which is fail-fast for the same reason.
+    let paths = discover_ri_files();
+    let exercised = exercised_paths(&paths).len();
     assert!(
-        walk.exercised >= MIN_EXERCISED_RI_FILES,
+        exercised >= MIN_EXERCISED_RI_FILES,
         "ctor-conformance corpus gate exercised only {} .ri files, below the \
          MIN_EXERCISED_RI_FILES floor of {} (SKIP_SET has {} entries) — did \
          the examples/ directory move or get renamed, did discover_ri_files() \
          stop recursing, or did SKIP_SET grow unexpectedly?",
-        walk.exercised,
+        exercised,
         MIN_EXERCISED_RI_FILES,
         SKIP_SET.len()
     );
+
+    let walk = ctor_conformance_corpus_walk();
 
     let unwaived: Vec<&CtorConformanceViolation> = walk
         .violations
@@ -720,22 +725,17 @@ struct CtorConformanceWalk {
 /// data, so memoizing keeps the second guard free rather than doubling the
 /// gate's wall-clock.
 fn ctor_conformance_corpus_walk() -> &'static CtorConformanceWalk {
-    use std::collections::HashSet;
     use std::sync::OnceLock;
 
     static WALK: OnceLock<CtorConformanceWalk> = OnceLock::new();
     WALK.get_or_init(|| {
-        let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
         let mut violations: Vec<CtorConformanceViolation> = Vec::new();
-        let mut exercised = 0usize;
+        let paths = discover_ri_files();
+        let exercised_list = exercised_paths(&paths);
+        let exercised = exercised_list.len();
 
-        for path in &discover_ri_files() {
-            let rel_key = relative_to_examples_dir(path);
-            if skip.contains(rel_key.as_str()) {
-                continue;
-            }
-            exercised += 1;
-            ctor_conformance_one(path, &rel_key, &mut violations);
+        for (path, rel_key) in &exercised_list {
+            ctor_conformance_one(path, rel_key, &mut violations);
         }
 
         CtorConformanceWalk {
