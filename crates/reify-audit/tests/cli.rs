@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::Duration;
 
@@ -2540,11 +2540,34 @@ mod cli {
 // the header but does not police it — see
 // [`write_response_with_session`] for why enforcement is off the table.
 
-/// Read a complete HTTP/1.1 request from `stream` and return its body as a
-/// JSON Value. Assumes Content-Length is present (which `ureq` always sets
-/// for `send_json`). Returns `None` on EOF / parse failure.
-fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
+/// A single HTTP request the mock's accept loop observed, captured so
+/// tests can assert on it (e.g. session-id-on-every-POST). Header names
+/// are stored ASCII-lowercased at capture time (`ureq` sends them
+/// lowercase anyway, but [`ObservedRequest::header`] does a
+/// case-insensitive lookup regardless so an assertion never depends on
+/// that).
+struct ObservedRequest {
+    method: String,
+    headers: Vec<(String, String)>,
+}
+
+impl ObservedRequest {
+    /// Case-insensitive header lookup by name.
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// Read a complete HTTP/1.1 request from `stream`, returning every request
+/// header (name lowercased) alongside the body as a JSON Value. Assumes
+/// Content-Length is present (which `ureq` always sets for `send_json`).
+/// Returns `None` on EOF / parse failure.
+fn read_request(stream: &mut TcpStream) -> Option<(Vec<(String, String)>, serde_json::Value)> {
     let mut reader = BufReader::new(stream.try_clone().ok()?);
+    let mut headers: Vec<(String, String)> = Vec::new();
     let mut content_length = 0usize;
     loop {
         let mut line = String::new();
@@ -2554,16 +2577,35 @@ fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
         if line == "\r\n" || line == "\n" {
             break;
         }
-        if let Some(rest) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            content_length = rest.trim().parse().ok()?;
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if let Some((name, value)) = trimmed.split_once(':') {
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.trim().to_string();
+            if name == "content-length" {
+                content_length = value.parse().ok()?;
+            }
+            headers.push((name, value));
         }
     }
-    if content_length == 0 {
-        return Some(serde_json::Value::Null);
-    }
-    let mut buf = vec![0u8; content_length];
-    reader.read_exact(&mut buf).ok()?;
-    serde_json::from_slice(&buf).ok()
+    let body = if content_length == 0 {
+        serde_json::Value::Null
+    } else {
+        let mut buf = vec![0u8; content_length];
+        reader.read_exact(&mut buf).ok()?;
+        serde_json::from_slice(&buf).ok()?
+    };
+    Some((headers, body))
+}
+
+/// As [`read_request`], but discarding the header half. Kept for parity
+/// with the crate's other additive-delegation pairs
+/// (`write_response`/`write_response_framed`,
+/// `spawn_mock_mcp_on`/`spawn_mock_mcp_on_framed`) even though the accept
+/// loop itself now calls `read_request` directly to also capture headers
+/// for [`MockServer::observed`].
+#[allow(dead_code)]
+fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
+    read_request(stream).map(|(_, body)| body)
 }
 
 /// The session id this mock assigns on `initialize`.
@@ -2673,6 +2715,9 @@ struct MockServer {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+    /// Every request the accept loop has observed so far, under both
+    /// framings. See [`MockServer::observed_handle`].
+    observed: Arc<Mutex<Vec<ObservedRequest>>>,
 }
 
 /// Spawn a one-shot mock MCP server on an OS-assigned ephemeral port.
@@ -2743,6 +2788,8 @@ where
     let url = format!("http://127.0.0.1:{}/mcp/", addr.port());
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop);
+    let observed: Arc<Mutex<Vec<ObservedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let observed_clone = Arc::clone(&observed);
     let responder = Arc::new(task_responder);
 
     // Non-blocking accept with a short poll so the accept loop wakes
@@ -2772,10 +2819,10 @@ where
                 }
             };
             // Restore blocking semantics on the accepted stream so the
-            // BufReader inside read_request_body() doesn't busy-loop.
+            // BufReader inside read_request() doesn't busy-loop.
             let _ = stream.set_nonblocking(false);
-            let body = match read_request_body(&mut stream) {
-                Some(b) => b,
+            let (headers, body) = match read_request(&mut stream) {
+                Some(pair) => pair,
                 None => continue,
             };
             let method = body
@@ -2784,6 +2831,18 @@ where
                 .unwrap_or("")
                 .to_string();
             let req_id = body.get("id").cloned();
+
+            // Record the request BEFORE dispatching to the responder, and
+            // release the lock immediately — the responder (a test
+            // closure) never runs while this lock is held, so a panic
+            // inside it cannot poison `observed`.
+            {
+                let mut log = observed_clone.lock().unwrap_or_else(|e| e.into_inner());
+                log.push(ObservedRequest {
+                    method: method.clone(),
+                    headers,
+                });
+            }
 
             match method.as_str() {
                 "initialize" => {
@@ -2848,12 +2907,21 @@ where
         addr,
         stop,
         handle: Some(handle),
+        observed,
     }
 }
 
 impl MockServer {
     fn url(&self) -> &str {
         &self.url
+    }
+
+    /// A handle to the observed-request log, rather than a snapshot copy.
+    /// `stop` takes `self` by value, so a caller that wants a race-free
+    /// read of the log AFTER stopping (which joins the accept thread) must
+    /// grab this handle first and read through it once `stop()` returns.
+    fn observed_handle(&self) -> Arc<Mutex<Vec<ObservedRequest>>> {
+        Arc::clone(&self.observed)
     }
 
     /// Signal the accept loop to exit and join the thread. Uses the bound
