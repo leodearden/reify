@@ -1816,8 +1816,9 @@ mod member_test_fixtures {
 
 #[cfg(test)]
 mod find_param_default_span_tests {
-    use super::{find_param_default_expr, find_param_default_span};
     use super::member_test_fixtures::*;
+    use super::{find_param_default_expr, find_param_default_span};
+    use crate::ast::ExprKind;
     use reify_core::SourceSpan;
 
     #[test]
