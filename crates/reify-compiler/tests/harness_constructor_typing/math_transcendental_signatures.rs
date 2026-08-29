@@ -415,3 +415,131 @@ fn cos_of_length_raises_arg_type_mismatch() {
 fn tan_of_mass_raises_arg_type_mismatch() {
     assert_one_trig_arg_mismatch("tan(2.0kg)", "tan");
 }
+
+// ── Acceptance boundary + scope fence (task 6249, step-5) ─────────────────────
+//
+// These pin the two ways step-4's wiring could be WRONG in the OVER-BROAD
+// direction. Each case is RED against a plausible mis-implementation.
+
+/// Assert `expr` raises ZERO `ArgTypeMismatch` Errors.
+fn assert_no_trig_arg_mismatch(expr: &str, why: &str) {
+    let msgs = trig_arg_mismatch_messages(expr);
+    assert!(
+        msgs.is_empty(),
+        "`{expr}` must raise no ArgTypeMismatch ({why}), got: {msgs:#?}"
+    );
+}
+
+// (a) ACCEPTANCE ─────────────────────────────────────────────────────────────
+
+/// `sin(0.5rad)` / `cos(0.0rad)` / `tan(0.5rad)` — a true `Angle` argument is
+/// accepted (`trig_input`'s `Value::Scalar { dimension: ANGLE }` arm).
+///
+/// RED against an implementation that accepts only dimensionless. This is the
+/// load-bearing acceptance case: this file's own `BOUNDARY_SOURCE` already
+/// depends on it, so an ANGLE-rejecting checker would red the whole suite.
+#[test]
+fn forward_trig_accepts_angle_arguments() {
+    assert_no_trig_arg_mismatch("sin(0.5rad)", "ANGLE is the canonical trig input");
+    assert_no_trig_arg_mismatch("cos(0.0rad)", "ANGLE is the canonical trig input");
+    assert_no_trig_arg_mismatch("tan(0.5rad)", "ANGLE is the canonical trig input");
+}
+
+/// `sin(2.5)` — a bare dimensionless literal is accepted as radians
+/// (`trig_input`'s `Value::Real` arm).
+///
+/// RED against an ANGLE-only implementation.
+#[test]
+fn forward_trig_accepts_dimensionless_arguments() {
+    assert_no_trig_arg_mismatch("sin(2.5)", "bare Real is treated as radians at eval");
+}
+
+/// `cos(3 * 2)` — an `Int`-typed argument is accepted (`trig_input`'s
+/// `Value::Int` arm).
+///
+/// RED against a `Type::Scalar`-only implementation. Overload resolution
+/// carries no Int→Real widening, so such a rule would statically reject what
+/// eval happily evaluates.
+#[test]
+fn forward_trig_accepts_int_arguments() {
+    assert_no_trig_arg_mismatch("cos(3 * 2)", "trig_input accepts Value::Int");
+}
+
+// (b) SCOPE FENCE ────────────────────────────────────────────────────────────
+//
+// The six non-forward-trig transcendental names must ALSO stay unchecked here.
+// RED against an implementation that gates on `MATH_TRANSCENDENTAL_NAMES`
+// wholesale instead of the three forward-trig names — the most likely
+// over-broad mistake, and the one that would break
+// `tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri` (registered in
+// `scripts/verify.sh`'s `_GUI_COUPLED_RI_FIXTURES`, which must keep exiting 0
+// until #5809's leaf κ lands).
+
+/// SCOPE FENCE — `exp`/`log` argument dimensions are OWNED BY TASK #6943
+/// (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b),
+/// Leo-ratified 2026-08-07), which delivers them as registry rows with a
+/// chartered `E_ArgDimension` code family and dimension-aware fixit hints.
+///
+/// Their failure mode is also DIFFERENT from forward trig's: `unary_f64`
+/// extracts via `Value::as_f64`, whose `Value::Scalar` arm accepts any
+/// dimension, so `log(2mm)` silently evaluates `ln(0.002)` rather than Undefing.
+///
+/// **Implementer of #6943: FLIP this assertion, do not delete it.**
+#[test]
+fn scope_fence_exp_and_log_stay_unchecked_pending_6943() {
+    assert_no_trig_arg_mismatch("exp(5.0mm)", "exp arg dimension is owned by #6943");
+    assert_no_trig_arg_mismatch("log(5.0mm)", "log arg dimension is owned by #6943");
+}
+
+/// SCOPE FENCE — inverse-trig argument dimensions are OWNED BY TASK #5809
+/// (`docs/prds/v0_6/dimension-checked-readers.md` leaf κ), which already has a
+/// committed before-image fixture.
+///
+/// `atan2` is a further trap: its correct rule is same-dimension-PAIR, not
+/// dimensionless-only (`atan2(dy, dx)` over two LENGTHs is legitimate — the
+/// ratio is dimensionless), which is why it is not expressible with this
+/// leaf's mechanism at all.
+///
+/// **Implementer of #5809: FLIP this assertion, do not delete it.**
+#[test]
+fn scope_fence_inverse_trig_stays_unchecked_pending_5809() {
+    assert_no_trig_arg_mismatch("asin(3.0mm)", "asin arg dimension is owned by #5809");
+    assert_no_trig_arg_mismatch("acos(3.0mm)", "acos arg dimension is owned by #5809");
+    assert_no_trig_arg_mismatch("atan(3.0mm)", "atan arg dimension is owned by #5809");
+    assert_no_trig_arg_mismatch(
+        "atan2(1.0mm, 1.0kg)",
+        "atan2 needs a same-dimension-PAIR rule, owned by #5809",
+    );
+}
+
+// (c) CORPUS GUARD ───────────────────────────────────────────────────────────
+
+/// The only live forward-trig call sites in the whole tracked `.ri` corpus are
+/// `examples/generate_bolt_circle.ri:35-36`. Compile both shapes here so the
+/// corpus is covered by a fast unit-level test rather than only by the slower
+/// `examples_smoke` sweep.
+///
+/// `i * 2 * pi / bolt_count` is dimensionless throughout (`pi` is a
+/// dimensionless Real; `i` and `bolt_count` are Ints), so both must stay clean.
+#[test]
+fn corpus_guard_bolt_circle_forward_trig_sites_stay_clean() {
+    let src = r#"
+structure def BoltCircleTrig {
+    let bolt_count = 4
+    let radius = 50mm
+    let i = 1
+    let x = radius * cos(i * 2 * pi / bolt_count)
+    let y = radius * sin(i * 2 * pi / bolt_count)
+}
+"#;
+    let module = compile_with_stdlib_helper(src);
+    let mismatches: Vec<_> = arg_type_mismatch_errors(&module)
+        .iter()
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "the live examples/generate_bolt_circle.ri trig call shapes must stay clean, got: \
+         {mismatches:#?}"
+    );
+}
