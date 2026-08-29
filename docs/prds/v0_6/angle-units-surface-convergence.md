@@ -252,6 +252,18 @@ needs no migration; it is a *consumer* datum for `Nm`, not a migration site.
 | Tests that **invert** (assert today's behaviour) | 3 | `reify-eval/tests/rotate_e2e.rs:216-235` `rotate_with_bare_radian_literal_lands_in_kernel` (its doc cites `geometry_ops.rs:437` — **[drift]**, now `:2251`); `reify-eval/tests/circular_pattern_angle.rs:47` `circular_pattern_bare_360_emits_deprecation_warning`; `:86` `circular_pattern_360deg_no_deprecation_warning` (this one *survives* — the explicit-unit path stays warning-free) |
 | Curated-label test expectations to update | ~14 | `reify-core/src/display_units.rs:722, 727, 1025, 1169, 1221, 1350, 1385, 1390, 1397, 1406`; `reify-ir/src/value.rs:10684, 10699, 10825`. `dimension.rs:912, 931` (`·` goldens) **stay** — S1 keeps the middle dot. |
 
+**Re-measured inventory — discharges this section's own "re-measure at decompose per G6"
+instruction.** `docs/notes/angle-literal-migration-ledger.md` is the re-measurement of the call
+sites tabulated above, published by task **5777** (leaf α). It is stamped **2026-08-26 at
+`181d1ec24c`** — a `main` merge commit, and therefore permanently reachable — with all four of its
+measured sections sharing that one stamp. It routes its buckets to this PRD's migration consumers:
+**γ (5779)** `revolve`, **δ (5780)** `draft`, **ε (5781)** `circular_pattern`, each migrating its
+own subset per contract C6. The counts in the table above are the **authoring-time snapshot** and
+have since moved; for sizing γ/δ/ε the ledger, not this table, is the live source of truth. Its
+numbers are deliberately **not** mirrored here — the ledger carries only measured data this PRD
+does not, and this PRD keeps the normative contract table, so a pointer beats a second copy to
+keep in sync.
+
 **`@display("…")` corpus uses: 0** (grep, whole repo). So normalizing S4's labels breaks no
 committed source, and the `@display` label validator (`annotations/schema.rs:334` + the
 dimension-phase rung check from task 5233) simply starts matching ASCII rungs.
