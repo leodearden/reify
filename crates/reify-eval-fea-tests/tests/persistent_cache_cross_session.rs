@@ -237,12 +237,7 @@ fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
 /// on-disk footprints instead of guessing at one — the eviction loop stops the
 /// moment `remaining <= cap`, so a guessed cap silently changes how many
 /// entries are evicted.
-fn seed_entry(
-    root: &std::path::Path,
-    hash: &str,
-    solve_time_ms: u64,
-    age_secs: u64,
-) -> u64 {
+fn seed_entry(root: &std::path::Path, hash: &str, solve_time_ms: u64, age_secs: u64) -> u64 {
     use reify_eval::persistent_cache::{entry_bin_path, entry_meta_path, write_entry};
 
     write_entry(
@@ -875,7 +870,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
 #[test]
 fn eviction_order_follows_score_and_expensive_recent_entries_survive() {
     use reify_eval::persistent_cache::{
-        entry_bin_path, entry_meta_path, eviction_score, evict_over_cap,
+        entry_bin_path, entry_meta_path, evict_over_cap, eviction_score,
     };
 
     let tmp = tempfile::TempDir::new().expect("tmp dir creation must succeed");
