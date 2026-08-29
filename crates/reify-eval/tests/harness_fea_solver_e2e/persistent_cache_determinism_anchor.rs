@@ -79,9 +79,12 @@
 //! case 6 is descoped from #2980, which lands PRD cases 1-5 green, and the gap
 //! is filed as its own task via ticket `tkt_0RT0HG842NB49XPZMC6GYT9NBB`
 //! (`spawned_from` 2980, `escalation_id` esc-2980-8) carrying the measurements
-//! above.
+//! above. That ticket has since been curated into **task #7005** (pending),
+//! whose `files` list already names this module, the harness root, the filter
+//! lib and both drift guards — so #7005, not the ticket id, is the durable
+//! handle to follow from here.
 //!
-//! Three things must land TOGETHER in that task, and none of them belong to
+//! Three things must land TOGETHER in #7005, and none of them belong to
 //! #2980:
 //!
 //! 1. the production wiring (or a PRD amendment striking case 6);
