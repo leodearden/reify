@@ -161,8 +161,11 @@ assert "docs/yaml-only: zero command leaves (preamble only)" \
 # 16 command leaves) — which is why both 2026-07-25 PRD sessions split their
 # fixtures out into implementation tasks instead.
 #
-# PG-1/PG-1b are the user-observable signal (RED until step-2). PG-2..PG-5 are
-# CONTROLS: green before AND after, they pin the carve-out as narrow and
+# PG-1's staged case is now ONE cheap PTODO leaf, not a zero-command plan —
+# the PT-* family below (task 6817) owns that user-observable signal (PT-1).
+# PG-1b's branch case stays zero: task 5125's merge-tier-only PTODO stands
+# for --scope branch, which PT-CTRL-BRANCH (beside PG-1b) pins. PG-2..PG-5
+# are CONTROLS: green before AND after, they pin the carve-out as narrow and
 # never-subtracting, so any later widening has to be a deliberate, reviewed
 # act rather than a silent side effect. PG-1b lives with the branch-scope
 # family below (plan_for_branch is not defined until then).

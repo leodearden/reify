@@ -1220,7 +1220,14 @@ decide_scope() {
                 #     no later gate — a red-main class outage). That
                 #     no-directory-glob premise is not left to this comment:
                 #     PG-DRIFT fails if any *.rs names the directory itself
-                #     rather than a `<name>.ri` leaf.
+                #     rather than a `<name>.ri` leaf. That residual gate gap is not
+                #     hypothetical: an UNCOUPLED prd-gate fixture carrying a
+                #     phantom-tracking marker landed exactly this way on `main`
+                #     108d1d9226, reddening post-merge verification for every task
+                #     until 9ebebcec22 reworded it (task 6817).
+                #     select_cheap_ptodo_gate (below) now runs the PTODO ratchet on
+                #     this exact --scope staged hook path, closing that gap for
+                #     both the coupled- and uncoupled-fixture shapes.
                 #   • RENAMES reach this arm by BOTH names: --name-only shows
                 #     only a rename's destination, so the source side is
                 #     recovered up-front (see the rename-source block above) —
@@ -1229,11 +1236,14 @@ decide_scope() {
                 #     basename.
                 #   • The other consumers are the scripts/prd-capability-check.py
                 #     / prd-decompose-verify.mjs probes, which are not cargo poles.
-                #   • RESIDUAL: this affects only --scope staged/branch.
-                #     DF_VERIFY_ROLE=merge still forces --scope all (contract C2),
-                #     so the merge gate remains the wholesale authority — the same
-                #     accepted latency-not-coverage trade-off documented at the
-                #     task 5125 block below.
+                #   • RESIDUAL: --scope staged is now covered by
+                #     select_cheap_ptodo_gate (below), which runs the PTODO
+                #     ratchet on this exact hook path (task 6817). --scope branch
+                #     (per-task lanes) stays uncovered here: DF_VERIFY_ROLE=merge
+                #     still forces --scope all (contract C2), so the merge gate's
+                #     run_all.sh pool remains the wholesale authority there — the
+                #     same accepted latency-not-coverage trade-off documented at
+                #     the task 5125 block below.
                 #   • GOTCHA: a bash `case` glob's `*` matches `/`, so a future
                 #     nested path under fixtures/ also lands in this arm; the
                 #     ${f##*/} basename test still applies and the direction of
