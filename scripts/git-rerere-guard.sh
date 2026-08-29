@@ -297,6 +297,30 @@ cmd_check() {
     return 0
 }
 
+# _inherited_value KEY — the value a lane with NO --local and NO per-worktree
+# override actually inherits: the user's --global gitconfig if it sets KEY, else
+# --system.  Prints `true`, `false`, or NOTHING when neither scope sets it — the
+# three answers _check_shared_default's unset branch has to tell apart.
+#
+# LAST-WINS within a scope, resolved the way git itself resolves a multi-valued
+# key, for the same reason the sweep does it: --get-all lists every value a
+# scope holds while git honours only the final one.  --includes EXPLICITLY,
+# because naming a scope turns include-following off.  Both reads are guarded
+# with `|| true`: under `set -euo pipefail` an unreadable ~/.gitconfig, or
+# --system under GIT_CONFIG_NOSYSTEM, must degrade to "this scope says nothing"
+# rather than abort a read-only probe.
+_inherited_value() {
+    local key="$1" scope out
+    for scope in --global --system; do
+        out="$(git -C "$TARGET" config "$scope" --includes --bool --get-all "$key" 2>/dev/null || true)"
+        if [ -n "$out" ]; then
+            printf '%s\n' "${out##*$LF}"
+            return 0
+        fi
+    done
+    return 0
+}
+
 # _check_shared_default KEY — report an armed SHARED (--local) value that
 # $TARGET's own config.worktree masks.  Returns 1 if the fleet-wide default is
 # armed, 0 otherwise.  Called ONLY from the effective-read's not-armed branch, so
@@ -314,12 +338,54 @@ cmd_check() {
 # reads as UNSET here while git's own resolution honours it (measured, git
 # 2.43.0: `--local --get` exit 1, `--local --includes --get` -> true).
 _check_shared_default() {
-    local key="$1" shared
+    local key="$1" shared inherited
 
     if ! git -C "$TARGET" config --local --includes --get "$key" >/dev/null 2>&1; then
-        # Unset in the shared config.  Only rerere.enabled has a non-false
-        # default: -1 = "enabled iff rr-cache/ exists".  rerere.autoupdate
-        # defaults to false, so an unset shared autoupdate is genuinely safe.
+        # UNSET in the shared config is NOT the same as "git falls back to its
+        # built-in default".  Precedence is system < global < local < worktree,
+        # so what a lane with no local pin ACTUALLY inherits is the user's
+        # ~/.gitconfig or /etc/gitconfig value when either sets the key, and the
+        # -1 fallback is never reached.  Reading only --local here got that
+        # backwards in both directions (measured, git 2.43.0).
+        inherited="$(_inherited_value "$key")"
+
+        if [ "$inherited" = "true" ]; then
+            # Reported EVEN THOUGH the effective read at $TARGET came back not
+            # armed: only $TARGET's own config.worktree masks it, and every
+            # other lane of the store inherits the true.  `arm` fixes it — a
+            # --local write beats global and system.
+            echo "ARMED: $key=true is inherited from the user's global/system gitconfig." >&2
+            echo "  The SHARED config leaves it unset, so every lane of $COMMON_DIR without" >&2
+            echo "  its own override reads true; $TARGET reads disarmed only because its own" >&2
+            echo "  config.worktree masks it.  Run 'arm' — a --local pin beats global." >&2
+            return 1
+        fi
+
+        if [ "$inherited" = "false" ]; then
+            # GENUINELY SAFE — git never reaches the -1 fallback, so no lane of
+            # this store is armed and an exit 1 here would be a false positive
+            # with a diagnostic naming a scope that has nothing to do with it
+            # (the old text asserted it was $TARGET's OWN config).  But the
+            # store is UNPINNED: the disarm lives in a file outside it, so it
+            # does not travel with the repo and one `git config --global
+            # --unset` re-arms the whole fleet.  NOTE + exit 0, the same
+            # safe-but-recommend shape cmd_check uses for "unset and no
+            # rr-cache yet".  Only for rerere.enabled: an inherited
+            # autoupdate=false is byte-for-byte git's own default, so saying
+            # anything about it would be pure noise.
+            if [ "$key" = "rerere.enabled" ]; then
+                echo "NOTE: the SHARED config leaves rerere.enabled unset; this store is disarmed" >&2
+                echo "  only by an inherited global/system gitconfig.  Safe right now, but that" >&2
+                echo "  file is outside the store, so the disarm does not travel with it and a" >&2
+                echo "  single 'git config --global --unset' re-arms every lane.  Run 'arm' to pin" >&2
+                echo "  rerere.enabled=false locally." >&2
+            fi
+            return 0
+        fi
+
+        # Unset at EVERY scope.  Only rerere.enabled has a non-false default:
+        # -1 = "enabled iff rr-cache/ exists".  rerere.autoupdate defaults to
+        # false, so an unset shared autoupdate is genuinely safe.
         if [ "$key" = "rerere.enabled" ] && [ -d "$RR_CACHE" ]; then
             echo "ARMED: the SHARED config leaves rerere.enabled UNSET and $RR_CACHE exists." >&2
             echo "  $TARGET reads disarmed only because its own config overrides the shared" >&2

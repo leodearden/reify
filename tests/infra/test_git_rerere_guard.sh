@@ -1462,6 +1462,115 @@ fi
 
 unset GK_REPO GK_A GK_B GK_A_GITDIR GKS_REPO GKS_A GKS_B GKS_A_GITDIR
 
+# ── (g-l) AN INHERITED GLOBAL/SYSTEM VALUE IS WHAT AN UNPINNED LANE ACTUALLY GETS
+# `_check_shared_default` compared only the --local scope against the effective
+# value, so it treated "unset in .git/config" as "git falls back to its built-in
+# default".  It does not: precedence is system < global < local < worktree, so an
+# explicit value in ~/.gitconfig or /etc/gitconfig is what a lane with no local
+# pin really inherits, and the -1 fallback is never reached.
+#
+# The consequence was a FALSE POSITIVE with a diagnostic naming the wrong file: a
+# store disarmed by a global `rerere.enabled = false` was reported ARMED,
+# "because **its own config** overrides the shared default" — when nothing in
+# $TARGET's own config was involved and no lane of the store was armed at all.
+# Entirely untested until now, because the suite exports GIT_CONFIG_GLOBAL=
+# /dev/null for hermeticity: these are the only fixtures that point it at a REAL
+# file, and they do so per-invocation so the rest of the suite stays hermetic.
+echo ""
+echo "--- (g-l) the shared default resolves through global/system, not just --local ---"
+
+GL_REPO="$(make_repo)"
+GL_COMMON="$(common_dir "$GL_REPO")"
+GL_GLOBAL="$GL_REPO.gitconfig"
+
+# The -1-default shape: keys unset in the shared config, rr-cache/ on disk.
+mkdir -p "$GL_COMMON/rr-cache"
+printf '[rerere]\n\tenabled = false\n\tautoupdate = false\n' > "$GL_GLOBAL"
+
+# Fixture preconditions MEASURED, not assumed.
+assert "(g-l) fixture: rerere.enabled is unset in the SHARED config" \
+    bash -c "! git -C '$GL_REPO' config --local --get rerere.enabled >/dev/null 2>&1"
+
+assert "(g-l) fixture: rr-cache/ is on disk, so git's -1 default would arm the store" \
+    test -d "$GL_COMMON/rr-cache"
+
+assert "(g-l) fixture: with the global in play the EFFECTIVE value really is false" \
+    bash -c "[ \"\$(GIT_CONFIG_GLOBAL='$GL_GLOBAL' git -C '$GL_REPO' config --bool --get rerere.enabled)\" = false ]"
+
+# POSITIVE CONTROL FIRST, with the suite's hermetic /dev/null global: this store
+# genuinely IS armed by the -1 default, so a clean verdict below can only come
+# from the inherited value, never from the detector going blind.
+assert "(g-l) positive control: with NO global, the -1 default arms it -> check exits 1" \
+    bash -c "! bash '$GUARD' check '$GL_REPO' >/dev/null 2>&1"
+
+assert "(g-l) ...via the -1-default diagnostic, not the inherited one" \
+    bash -c "bash '$GUARD' check '$GL_REPO' 2>&1 >/dev/null | grep -qF 'UNSET and $GL_COMMON/rr-cache exists'"
+
+# The hazard itself.
+assert "(g-l) an inherited global false disarms the store -> check exits 0, not 1" \
+    bash -c "GIT_CONFIG_GLOBAL='$GL_GLOBAL' bash '$GUARD' check '$GL_REPO'"
+
+assert "(g-l) ...and says nothing is ARMED, because nothing is" \
+    bash -c "! GIT_CONFIG_GLOBAL='$GL_GLOBAL' bash '$GUARD' check '$GL_REPO' 2>&1 >/dev/null | grep -q 'ARMED'"
+
+assert "(g-l) ...and does NOT blame \$TARGET's own config, which is not involved" \
+    bash -c "! GIT_CONFIG_GLOBAL='$GL_GLOBAL' bash '$GUARD' check '$GL_REPO' 2>&1 >/dev/null | grep -qF 'its own config'"
+
+# Safe but UNPINNED is still worth saying: the disarm lives outside the store, so
+# it does not travel with the repo and one --global --unset re-arms every lane.
+assert "(g-l) ...but NOTEs that the store is unpinned and recommends arm" \
+    bash -c "GIT_CONFIG_GLOBAL='$GL_GLOBAL' bash '$GUARD' check '$GL_REPO' 2>&1 >/dev/null | grep -qF 'only by an inherited global/system gitconfig'"
+
+# An inherited autoupdate=false is byte-for-byte git's own default, so saying
+# anything about it would be pure noise on every developer's setup.
+assert "(g-l) ...and stays quiet about rerere.autoupdate, whose default is already false" \
+    bash -c "! GIT_CONFIG_GLOBAL='$GL_GLOBAL' bash '$GUARD' check '$GL_REPO' 2>&1 >/dev/null | grep -q 'leaves rerere.autoupdate unset'"
+
+# LAST-WINS across a multi-valued global, resolved the way git resolves it.
+printf '[rerere]\n\tenabled = true\n\tenabled = false\n\tautoupdate = false\n' > "$GL_GLOBAL"
+
+assert "(g-l) a multi-valued global resolves LAST-WINS, so true-then-false is safe" \
+    bash -c "GIT_CONFIG_GLOBAL='$GL_GLOBAL' bash '$GUARD' check '$GL_REPO'"
+
+printf '[rerere]\n\tenabled = false\n\tautoupdate = false\n' > "$GL_GLOBAL"
+
+# arm SELF-HEALS it: a --local write is exactly the pin the NOTE asks for.
+assert "(g-l) arm pins it locally and exits 0" \
+    bash -c "GIT_CONFIG_GLOBAL='$GL_GLOBAL' bash '$GUARD' arm '$GL_REPO'"
+
+assert "(g-l) ...leaving the shared config explicitly false" \
+    bash -c "[ \"\$(git -C '$GL_REPO' config --local --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-l) ...after which the NOTE is gone, since the store is pinned" \
+    bash -c "! GIT_CONFIG_GLOBAL='$GL_GLOBAL' bash '$GUARD' check '$GL_REPO' 2>&1 >/dev/null | grep -qF 'only by an inherited global/system gitconfig'"
+
+# ── (g-l-b) THE MIRROR CASE: an inherited TRUE, masked by the target's own
+# config.worktree.  The effective read at $TARGET comes back false, so cmd_check
+# hands off to _check_shared_default — which, reading --local only, saw "unset"
+# and returned clean while every OTHER lane of the store inherited the true.
+GLT_REPO="$(make_repo)"
+GLT_GLOBAL="$GLT_REPO.gitconfig"
+git -C "$GLT_REPO" config extensions.worktreeConfig true
+git -C "$GLT_REPO" config --worktree rerere.enabled false
+printf '[rerere]\n\tenabled = true\n' > "$GLT_GLOBAL"
+
+assert "(g-l-b) fixture: rerere.enabled is unset in the SHARED config" \
+    bash -c "! git -C '$GLT_REPO' config --local --get rerere.enabled >/dev/null 2>&1"
+
+assert "(g-l-b) fixture: the target's own config.worktree masks the global -> effective false" \
+    bash -c "[ \"\$(GIT_CONFIG_GLOBAL='$GLT_GLOBAL' git -C '$GLT_REPO' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-l-b) an inherited true that only the target masks IS armed -> check exits 1" \
+    bash -c "! GIT_CONFIG_GLOBAL='$GLT_GLOBAL' bash '$GUARD' check '$GLT_REPO' >/dev/null 2>&1"
+
+assert "(g-l-b) ...naming the scope actually responsible" \
+    bash -c "GIT_CONFIG_GLOBAL='$GLT_GLOBAL' bash '$GUARD' check '$GLT_REPO' 2>&1 >/dev/null | grep -qF 'inherited from the user'\\''s global/system gitconfig'"
+
+assert "(g-l-b) arm SELF-HEALS it — a --local pin beats global" \
+    bash -c "GIT_CONFIG_GLOBAL='$GLT_GLOBAL' bash '$GUARD' arm '$GLT_REPO'"
+
+unset GL_REPO GL_COMMON GL_GLOBAL GLT_REPO GLT_GLOBAL
+
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
 #     rr-cache.  The whole point is that every lane inherits one shared
