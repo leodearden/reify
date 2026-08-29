@@ -168,6 +168,66 @@ fn free_residual_scaled(d: &[Vec<f64>], nodes: &[[f64; 3]]) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Shape-check helper — pins the closed-form derivation's own equilateral-
+// triangle premise against the recovered geometry, for both membrane
+// triangles at once. One copy in this file (used by the σ/guess table below).
+// ---------------------------------------------------------------------------
+
+/// Euclidean length of the edge between recovered node indices `a` and `b`.
+fn edge_len(nodes: &[[f64; 3]], a: usize, b: usize) -> f64 {
+    let (pa, pb) = (nodes[a], nodes[b]);
+    ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt()
+}
+
+/// Tolerance is 1e-6, not the kernel's 1e-9 `EQUIL_TOL`: `EQUIL_TOL` bounds
+/// the combined-D residual ‖D(x)·x‖∞/(1+scale), a different (and not linearly
+/// comparable) quantity from an edge-length difference recovered via
+/// eigendecomposition + `recover_coordinates`'s normalisation. MEASURED
+/// (σ=0.2) actual gap at O(0.45) edge-length scale: ~1e-9-1.7e-9 absolute —
+/// 1e-6 clears that with ~600x margin while staying ~1000x tighter than the
+/// smallest guess perturbation (~1e-3), so a real regression still trips it.
+/// Applied uniformly across every σ cell in the table below rather than
+/// re-measured per σ, since `EQUIL_TOL` (the residual bound each cell is
+/// independently gated on) does not vary with σ either.
+const EQUILATERAL_TOL: f64 = 1e-6;
+
+/// Assert both membrane triangles ({0,1,2} top, {3,4,5} bottom) are
+/// equilateral and non-degenerate in the recovered geometry `nodes` — the
+/// closed-form `analytic_combined_q` derivation's own premise (every
+/// cotangent in the surface stencil is cot(60°) = 1/√3 only if both
+/// triangles are equilateral), checked against the solver's actual output
+/// rather than assumed. `cell` labels the assertion messages with the
+/// (σ, guess) pair under test.
+fn assert_prism_membranes_equilateral(nodes: &[[f64; 3]], cell: &str) {
+    let (top01, top12, top20) = (
+        edge_len(nodes, 0, 1),
+        edge_len(nodes, 1, 2),
+        edge_len(nodes, 2, 0),
+    );
+    assert!(
+        (top01 - top12).abs() < EQUILATERAL_TOL && (top12 - top20).abs() < EQUILATERAL_TOL,
+        "[{cell}] top membrane triangle must be equilateral: |01|={top01:.6e} |12|={top12:.6e} |20|={top20:.6e}",
+    );
+    assert!(
+        top01 > 1e-6,
+        "[{cell}] top membrane triangle must be non-degenerate, got edge length {top01:.3e}",
+    );
+    let (bot34, bot45, bot53) = (
+        edge_len(nodes, 3, 4),
+        edge_len(nodes, 4, 5),
+        edge_len(nodes, 5, 3),
+    );
+    assert!(
+        (bot34 - bot45).abs() < EQUILATERAL_TOL && (bot45 - bot53).abs() < EQUILATERAL_TOL,
+        "[{cell}] bottom membrane triangle must be equilateral: |34|={bot34:.6e} |45|={bot45:.6e} |53|={bot53:.6e}",
+    );
+    assert!(
+        bot34 > 1e-6,
+        "[{cell}] bottom membrane triangle must be non-degenerate, got edge length {bot34:.3e}",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Crate-root export check
 // ---------------------------------------------------------------------------
 
@@ -248,97 +308,19 @@ fn combined_prism_membrane_golden() {
 // ---------------------------------------------------------------------------
 // Explicit + surfaces coverage (task 6537) — the coverage gap the analysis
 // confirmed: all prior tests in this file drive ForceDensitySpec::GroupRatios
-// only. These two close that gap.
+// only. The tests below close that gap: a negative guard pinning why the
+// task's reported line-only q is infeasible once σ>0, and a regression-locked
+// table (further below) covering the positive (feasible-q) path across σ and
+// starting-guess magnitude.
 // ---------------------------------------------------------------------------
-
-/// Headline RED: `Explicit` combined free-standing form-finding, from a
-/// perturbed (non-symmetric) starting guess, must converge to the closed-form
-/// combined self-stress. Today's kernel drives geometry only through the
-/// eigen-gap descent, which pushes D toward nullity 4 but never moves the
-/// coordinate vector x INTO null(D) — so this returns `SearchDidNotConverge`
-/// pre-fix. MEASURED pre-fix: `Err(SearchDidNotConverge)`.
-#[test]
-fn combined_explicit_analytic_q_from_perturbed_guess_converges() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_prism_guess();
-    let surfaces = prism_surfaces();
-    let sigma = 0.2_f64;
-    let sigmas = vec![sigma; 2];
-    let q = analytic_combined_q(sigma);
-
-    let spec = ForceDensitySpec::Explicit(q);
-
-    let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
-        .expect("combined explicit q from perturbed guess must form-find");
-
-    assert!(result.converged, "combined solve must converge");
-    assert_eq!(result.nullity, 4, "combined D must have nullity 4");
-
-    // surface_stresses echo.
-    assert_eq!(result.surface_stresses.len(), 2);
-    for (t, &s) in result.surface_stresses.iter().enumerate() {
-        assert!(
-            (s - sigma).abs() < 1e-12,
-            "surface_stresses[{t}] = {s}, expected {sigma}",
-        );
-    }
-
-    // Shape check: the closed form is derived from the premise that both
-    // membrane triangles are equilateral at the solved equilibrium (every
-    // cotangent in the derivation is cot(60°) = 1/√3) — assert that directly
-    // against the recovered geometry. (A force-sign loop over
-    // `result.member_forces` would be tautological here: the kernel computes
-    // member_forces[i] = q[i] * len_i with len_i >= 0, and q's signs are
-    // already validated against the kind contract before the solve can run,
-    // so it cannot fail for any Explicit input that reaches this point — it
-    // re-checks an input precondition, not a solver output.)
-    let edge_len = |a: usize, b: usize| {
-        let (pa, pb) = (result.nodes[a], result.nodes[b]);
-        ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt()
-    };
-    // Tolerance is 1e-6, not the kernel's 1e-9 EQUIL_TOL: EQUIL_TOL bounds the
-    // combined-D residual ‖D(x)·x‖∞/(1+scale), a different (and not linearly
-    // comparable) quantity from an edge-length difference recovered via
-    // eigendecomposition + `recover_coordinates`'s normalisation. MEASURED
-    // actual gap at O(0.45) edge-length scale: ~1e-9-1.7e-9 absolute — 1e-6
-    // clears that with ~600x margin while staying ~1000x tighter than the
-    // smallest guess perturbation (~1e-3), so a real regression still trips it.
-    const EQUILATERAL_TOL: f64 = 1e-6;
-    let (top01, top12, top20) = (edge_len(0, 1), edge_len(1, 2), edge_len(2, 0));
-    assert!(
-        (top01 - top12).abs() < EQUILATERAL_TOL && (top12 - top20).abs() < EQUILATERAL_TOL,
-        "top membrane triangle must be equilateral: |01|={top01:.6e} |12|={top12:.6e} |20|={top20:.6e}",
-    );
-    assert!(
-        top01 > 1e-6,
-        "top membrane triangle must be non-degenerate, got edge length {top01:.3e}",
-    );
-    let (bot34, bot45, bot53) = (edge_len(3, 4), edge_len(4, 5), edge_len(5, 3));
-    assert!(
-        (bot34 - bot45).abs() < EQUILATERAL_TOL && (bot45 - bot53).abs() < EQUILATERAL_TOL,
-        "bottom membrane triangle must be equilateral: |34|={bot34:.6e} |45|={bot45:.6e} |53|={bot53:.6e}",
-    );
-    assert!(
-        bot34 > 1e-6,
-        "bottom membrane triangle must be non-degenerate, got edge length {bot34:.3e}",
-    );
-
-    // Primary honest signal: independent reassembly + all-node residual.
-    let d = reassemble_d_combined(6, &members, &result.force_densities, &surfaces, &sigmas, &result.nodes);
-    let resid = free_residual_scaled(&d, &result.nodes);
-    assert!(
-        resid < EQUIL_TOL,
-        "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < {EQUIL_TOL:.0e}",
-    );
-}
 
 /// Negative guard: pins WHY the task's reported "analytic q = (-√3, 1, +√3)
 /// stalls" is correct behaviour, not the defect. With σ = 0.2 present, the
 /// membrane already contributes w = σ/(2√3) to every horizontal edge, so the
 /// line-only self-stress leaves D_combined with the wrong nullity — it is not
 /// a combined self-stress. Must fail from BOTH starting guesses, so the fix
-/// landed for the headline test above does not manufacture a false positive
-/// here.
+/// covered by the positive-path regression table below does not manufacture
+/// a false positive here.
 #[test]
 fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
     let (members, kinds) = triplex_topology();
@@ -371,14 +353,18 @@ fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
 
 /// Regression lock (task 6537): the Explicit combined form-find fix must hold
 /// across a range of surface stresses σ and starting-guess perturbation
-/// magnitudes, not just the single (σ=0.2, perturbed×1) cell exercised by
-/// `combined_explicit_analytic_q_from_perturbed_guess_converges` above.
+/// magnitudes. This is the sole positive-path (feasible-q) coverage for
+/// `Explicit` + surfaces in this file — it subsumes what was originally a
+/// separate single-cell (σ=0.2, perturbed×1) headline test: every cell here
+/// additionally asserts the `surface_stresses` echo and that both recovered
+/// membrane triangles are equilateral and non-degenerate (the closed-form
+/// derivation's own premise), not just convergence + residual.
 #[test]
 fn combined_explicit_analytic_q_converges_across_sigma_and_perturbation() {
     let (members, kinds) = triplex_topology();
     let surfaces = prism_surfaces();
 
-    for &sigma in &[0.05_f64, 0.2, 0.5, 2.0] {
+    for &sigma in &[0.05_f64, 0.2, 0.5, 1.0, 2.0] {
         let sigmas = vec![sigma; 2];
         let q = analytic_combined_q(sigma);
         let spec = ForceDensitySpec::Explicit(q);
@@ -399,6 +385,30 @@ fn combined_explicit_analytic_q_converges_across_sigma_and_perturbation() {
             assert!(result.converged, "[{cell}] combined solve must converge");
             assert_eq!(result.nullity, 4, "[{cell}] combined D must have nullity 4");
 
+            // surface_stresses echo.
+            assert_eq!(
+                result.surface_stresses.len(),
+                2,
+                "[{cell}] surface_stresses length",
+            );
+            for (t, &s) in result.surface_stresses.iter().enumerate() {
+                assert!(
+                    (s - sigma).abs() < 1e-12,
+                    "[{cell}] surface_stresses[{t}] = {s}, expected {sigma}",
+                );
+            }
+
+            // Shape check (see `assert_prism_membranes_equilateral`). (A
+            // force-sign loop over `result.member_forces` would be
+            // tautological here: the kernel computes
+            // member_forces[i] = q[i] * len_i with len_i >= 0, and q's signs
+            // are already validated against the kind contract before the
+            // solve can run, so it cannot fail for any Explicit input that
+            // reaches this point — it re-checks an input precondition, not a
+            // solver output.)
+            assert_prism_membranes_equilateral(&result.nodes, &cell);
+
+            // Primary honest signal: independent reassembly + all-node residual.
             let d = reassemble_d_combined(
                 6,
                 &members,

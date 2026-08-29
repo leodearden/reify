@@ -204,8 +204,12 @@ pub fn form_find_free(
 /// - [`FreeFormError::DegenerateTriangle`] — a zero-area surface triangle.
 /// - [`FreeFormError::SearchDidNotConverge`] — the GroupRatios search or the
 ///   Explicit combined fixed point exhausted its budget without reaching
-///   nullity 4.
-/// - [`FreeFormError::NullityMismatch`] — Explicit spec with wrong nullity.
+///   nullity 4. A wrong-nullity `Explicit` spec (with `σ > 0`) surfaces here
+///   too, not as `NullityMismatch`: the combined kernel forces nullity 4
+///   internally and gates on the equilibrium residual instead — see the
+///   negative guard
+///   `combined_explicit_line_only_q_is_not_a_combined_self_stress` in
+///   `tests/tensegrity_delta_combined_form_find.rs`.
 /// - [`FreeFormError::SingularRecovery`] — null-space basis is not 3-D.
 pub fn form_find_free_surfaces(
     nodes_guess: &[[f64; 3]],
@@ -345,8 +349,13 @@ pub fn form_find_free_surfaces(
         };
 
         // (2) Combined equilibrium residual ‖D_combined(q, x)·x‖∞/(1+scale) at the
-        // current geometry — the honest free-standing fixed-point signal.
-        let mut d_at_current = assemble_force_density_matrix(n, members, &q);
+        // current geometry — the honest free-standing fixed-point signal. `q` is fixed
+        // for the rest of this iteration (only the surface term below varies with
+        // geometry), so hoist the line-only CᵀQC matrix once and clone it at each
+        // additive use site this iteration instead of rebuilding it from scratch every
+        // time — the (2b) trial-residual check further down reuses this same `d_line`.
+        let d_line = assemble_force_density_matrix(n, members, &q);
+        let mut d_at_current = d_line.clone();
         for i in 0..n {
             for j in 0..n {
                 d_at_current[(i, j)] += surface_mat[(i, j)];
@@ -370,11 +379,11 @@ pub fn form_find_free_surfaces(
         // `combined_geometry_descent_step` below minimises the eigen-gap objective, which
         // drives D_combined toward NULLITY 4; it does NOT drive the coordinate vector x INTO
         // null(D_combined). Those are different conditions, and the residual we test above is
-        // the latter. The GroupRatios branch gets the missing half implicitly (it re-searches q
-        // at this geometry each iteration, via `form_find_group_ratios_combined`'s own call to
-        // `form_find_explicit_combined_relaxed`); with q FIXED here the only remaining lever is
-        // x, so project it onto the 4 smallest-|λ| eigenvectors of D_combined at the current
-        // geometry — the free-standing analogue of the anchored kernel's per-iteration
+        // the latter. The GroupRatios branch has a second lever Explicit lacks — it re-searches
+        // q on the combined D at this geometry each iteration; its own projected geometry is
+        // discarded at (1), only the densities are kept. With q FIXED here the only remaining
+        // lever is x, so project it onto the 4 smallest-|λ| eigenvectors of D_combined at the
+        // current geometry — the free-standing analogue of the anchored kernel's per-iteration
         // `solve_reduced` move.
         //
         // Applied as a TRIAL move, not unconditionally: an intermediate projection iterate is
@@ -383,10 +392,21 @@ pub fn form_find_free_surfaces(
         // improve the residual. Accept the projected geometry only if it (a) recovers
         // coordinates AND re-assembles a surface matrix at the result without error, and (b)
         // does not increase the combined equilibrium residual; otherwise keep `before_relax` and
-        // fall through to the descent step in (3), so a genuinely infeasible `q` still exits
-        // through the ordinary `SearchDidNotConverge` contract instead of surfacing a
-        // caller-blaming `SingularRecovery` / `DegenerateTriangle` that actually originated from
-        // this internal relaxation step.
+        // fall through to the descent step in (3).
+        //
+        // (a) is load-bearing by construction: the `if let ... && let ...` chain below means a
+        // `SingularRecovery` / `DegenerateTriangle` raised by this internal relaxation step is
+        // absorbed as a no-op rather than propagated to the caller via `?` — swapping the chain
+        // for `?` would let an intermediate-iterate error surface in place of the contractual
+        // `SearchDidNotConverge`.
+        // (b) (the `trial_resid <= resid` check just below) is defensive rather than measured
+        // load-bearing on this fixture: forcing it to accept unconditionally (`if true`) and
+        // probing 10 infeasible σ/q/guess combinations plus the full crate suite (759 lib + 5
+        // integration tests) left every result unchanged — every rejected trial in those cases
+        // still resolved to `SearchDidNotConverge` once the rejection was skipped, so no test
+        // today would catch this check being deleted. Kept because accepting a
+        // residual-regressing trial changes the iterate (3)'s descent runs from, which could
+        // destabilise a case not covered by this fixture even though none tried here do.
         if matches!(spec, ForceDensitySpec::Explicit(_))
             && let Ok(trial_nodes) =
                 form_find_explicit_combined_relaxed(&current, members, kinds, &q, &surface_mat)
@@ -394,7 +414,7 @@ pub fn form_find_free_surfaces(
             && let Ok(trial_surface_mat) =
                 assemble_surface_matrix(n, surfaces, surface_stresses, &trial_nodes)
         {
-            let mut d_trial = assemble_force_density_matrix(n, members, &q);
+            let mut d_trial = d_line.clone();
             for i in 0..n {
                 for j in 0..n {
                     d_trial[(i, j)] += trial_surface_mat[(i, j)];
@@ -442,10 +462,16 @@ pub fn form_find_free_surfaces(
         // the geometry this iteration STARTED with (`before_relax`) — AND the residual
         // is not shrinking appreciably, increment a stuck counter and break early to
         // avoid spending O(MAX_ITERS · n · EVD(n)) doing expensive but fruitless work.
-        // Comparing against `before_relax` rather than the post-(2b) `current` matters:
-        // an ACCEPTED (2b) move followed by a stalled (3) must NOT count as stuck (the
-        // geometry did move this iteration, via (2b)) — only a rejected/no-op (2b)
-        // followed by a stalled (3) may.
+        // Comparing against `before_relax` rather than the post-(2b) `current` matters
+        // logically: an ACCEPTED (2b) move followed by a stalled (3) must NOT count as
+        // stuck (the geometry did move this iteration, via (2b)) — only a rejected/no-op
+        // (2b) followed by a stalled (3) may. This is defensive rather than
+        // measured-load-bearing on this fixture: reverting this comparison to the
+        // pre-amendment `next == current` and re-running the full crate suite (759 lib +
+        // 5 integration tests) left every result unchanged, so no test here currently
+        // depends on the distinction. Kept because an under-counted stall guard would risk
+        // exiting a genuinely-progressing search early on some case not covered by this
+        // fixture, trading a real (if untested) correctness risk for one line of clarity.
         if next == before_relax && resid >= prev_resid * (1.0 - GEO_STALL_RESID_THRESHOLD) {
             stuck_iters += 1;
             if stuck_iters >= GEO_STALL_ITERS {
@@ -2415,15 +2441,16 @@ mod tests {
     /// Unit-level companion to the integration file's `Explicit` combined
     /// coverage (task 6537): `Explicit` combined free-standing form-finding,
     /// from the perturbed guess, must converge to the closed-form combined
-    /// self-stress. Uses σ=1.0 — a value the integration file's σ/guess
-    /// regression table
-    /// (`combined_explicit_analytic_q_converges_across_sigma_and_perturbation`,
-    /// σ ∈ {0.05, 0.2, 0.5, 2.0}) does not exercise — verified through the
-    /// module's own faer-free helpers (`reassemble_d_free` /
-    /// `free_equilibrium_residual_scaled`), so this test buys a distinct σ
-    /// cell through an independently-coded assembly path, rather than
-    /// reproducing the integration file's σ=0.2 case with a second copy of
-    /// the same assertions.
+    /// self-stress. Verified through the module's own faer-free helpers
+    /// (`reassemble_d_free` / `free_equilibrium_residual_scaled`) — an
+    /// independently-coded assembly path distinct from the integration
+    /// file's `reassemble_d_combined` / `free_residual_scaled`, so a scatter
+    /// bug shared between the kernel and one verification path still
+    /// surfaces here even though the integration file's regression table
+    /// (`combined_explicit_analytic_q_converges_across_sigma_and_perturbation`)
+    /// now also covers σ=1.0. Shape (equilateral-triangle) and
+    /// `surface_stresses`-echo assertions live only in that table, to avoid
+    /// a third near-verbatim copy of the same assertion block.
     #[test]
     fn surfaces_free_explicit_combined_q_converges_from_perturbed_guess() {
         let (members, kinds) = triplex_topology();
@@ -2439,48 +2466,6 @@ mod tests {
 
         assert!(result.converged, "combined solve must converge");
         assert_eq!(result.nullity, 4, "combined D must have nullity 4");
-
-        // Shape check: the closed form is derived from the premise that both
-        // membrane triangles are equilateral at the solved equilibrium (every
-        // cotangent in the derivation is cot(60°) = 1/√3) — assert that
-        // directly against the recovered geometry. (A force-sign loop over
-        // `result.member_forces` would be tautological here:
-        // `combined_result_at` computes member_forces[i] = q[i] * len_i with
-        // len_i ≥ 0, and q's signs are already validated against the kind
-        // contract before the solve can run, so it cannot fail for any
-        // Explicit input that reaches this point — it re-checks an input
-        // precondition, not a solver output.)
-        let edge_len = |a: usize, b: usize| {
-            let (pa, pb) = (result.nodes[a], result.nodes[b]);
-            ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt()
-        };
-        // Tolerance is 1e-6, not the kernel's 1e-9 EQUIL_TOL: EQUIL_TOL bounds
-        // the combined-D residual ‖D(x)·x‖∞/(1+scale), a different (and not
-        // linearly comparable) quantity from an edge-length difference
-        // recovered via eigendecomposition + `recover_coordinates`'s
-        // normalisation. MEASURED (integration file, σ=0.2) actual gap at
-        // O(0.45) edge-length scale: ~1e-9-1.7e-9 absolute — 1e-6 clears that
-        // with ~600x margin while staying ~1000x tighter than the smallest
-        // guess perturbation (~1e-3), so a real regression still trips it.
-        const EQUILATERAL_TOL: f64 = 1e-6;
-        let (top01, top12, top20) = (edge_len(0, 1), edge_len(1, 2), edge_len(2, 0));
-        assert!(
-            (top01 - top12).abs() < EQUILATERAL_TOL && (top12 - top20).abs() < EQUILATERAL_TOL,
-            "top membrane triangle must be equilateral: |01|={top01:.6e} |12|={top12:.6e} |20|={top20:.6e}",
-        );
-        assert!(
-            top01 > 1e-6,
-            "top membrane triangle must be non-degenerate, got edge length {top01:.3e}",
-        );
-        let (bot34, bot45, bot53) = (edge_len(3, 4), edge_len(4, 5), edge_len(5, 3));
-        assert!(
-            (bot34 - bot45).abs() < EQUILATERAL_TOL && (bot45 - bot53).abs() < EQUILATERAL_TOL,
-            "bottom membrane triangle must be equilateral: |34|={bot34:.6e} |45|={bot45:.6e} |53|={bot53:.6e}",
-        );
-        assert!(
-            bot34 > 1e-6,
-            "bottom membrane triangle must be non-degenerate, got edge length {bot34:.3e}",
-        );
 
         // Primary honest signal: combined free-node equilibrium residual at
         // the SOLVED geometry, assembled INDEPENDENTLY (faer-free).
