@@ -40,10 +40,15 @@
 //! 2. snapshot map as `Determined` — uniform
 //! 3. cache entry — uniform
 //! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
-//! 5. journal — all arms except `eval_cached`'s per-template arm:
+//! 5. journal — all arms journal, except one write-back within one arm:
 //!    `eval`'s two arms journal via hand-rolled `Started`/`Completed`
-//!    pairs, `eval_cached`'s merged-cluster arm, [`Engine::edit_param`]
-//!    and [`Engine::edit_source`] via `commit_cell_result`
+//!    pairs; `eval_cached`'s merged-cluster arm, [`Engine::edit_param`]
+//!    and [`Engine::edit_source`] via `commit_cell_result`. Within
+//!    `eval_cached`'s per-template arm, the resolved-auto write-back
+//!    itself is a bare cache record with no journal event — but that
+//!    SAME arm's wave-2 downstream let-cone re-eval DOES journal, via
+//!    `commit_cell_result` like the others. Audit the whole arm, not
+//!    just the write-back, when checking journal coverage.
 //! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
 //!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
 //! 7. `objective_provenance` — `eval`'s two arms only
