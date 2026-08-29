@@ -79,6 +79,15 @@ fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
 ///       α/solve_elastic_static_e2e.rs:814-875; reused verbatim here).
 ///       Also asserts `DifferentialFieldOps.g_mag` is finite and > 0 (γ
 ///       magnitude signal, non-trivial under load) and < 1 (small-strain bound).
+///   (d2) PHASE 1 / HALF 1 of ruling #6164 — `result.curl` is a
+///       `Value::Field{source:Sampled}` with `domain == Point3<Length>`,
+///       `codomain == Vector3<Real>` (DIMENSIONLESS — decided, not defaulted),
+///       all-finite data, and `len() == 3 * n_grid_nodes`.
+///   (d3) PHASE 1 / HALF 2 of ruling #6164 — `result.rotation` is a
+///       `Value::Field{source:Sampled}` with `codomain == Vector3<Angle>` and
+///       `rotation[i] == curl[i] / 2` bit-exactly (0 ULP), plus the harness-side
+///       degree comparison against the small-strain bound implied by the
+///       already-validated `constraint g_mag < 1.0`.
 ///   (e) PHASE 2 — `DifferentialFieldOps.lap_max` ≈ 2.0 within 1e-9
 ///       (max of laplacian(f) where f(x)=x²; exact on quadratics).
 ///       `DifferentialFieldOps.grad_max` ≈ 3.0 within 1e-9
@@ -335,6 +344,165 @@ fn differential_field_ops_integration_gate() {
         g_mag < 1.0,
         "g_mag = {} must be < 1.0 (small-strain engineering bound)",
         g_mag
+    );
+
+    // ── (d2) HALF 1 of ruling #6164 — `result.curl` stays DIMENSIONLESS ──────
+    //
+    // This pin closes a verified gap: before #6164 there were ZERO curl pins in
+    // this gate.  It characterizes already-shipped behaviour and is GREEN on
+    // arrival — its value is that a future retype of `ElasticResult.curl` to an
+    // angle-typed codomain now fails LOUDLY here.  That is HALF 1's whole point:
+    // curl is dimensionless BY DECISION, not by default.  ∇×u is Length/Length,
+    // the derivative algebra stays quotient-pure, and `result.curl` must remain
+    // type-identical to `curl(result.displacement)`.
+    let curl_val = extract_field(result_val, "curl")
+        .unwrap_or_else(|| panic!("field 'curl' not found in DifferentialFieldOps.result"));
+    let (curl_domain, curl_codomain) = match &curl_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "curl source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!(
+            "DifferentialFieldOps.result.curl must be Value::Field, got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        curl_domain,
+        Type::point3(Type::length()),
+        "curl domain must be Point3<Length>"
+    );
+    assert_eq!(
+        curl_codomain,
+        Type::vec3(Type::dimensionless_scalar()),
+        "curl codomain must be Vector3<Real> — DIMENSIONLESS BY DECISION \
+         (ruling #6164 HALF 1). If this assertion is failing because someone \
+         retyped curl to Vector3<Angle>, that is a revert of #6164, not a fix: \
+         the radian belongs at the `rotation` crossing below, not in the \
+         derivative algebra."
+    );
+
+    let curl_data = extract_sampled_field_data(result_val, "curl");
+    assert_eq!(
+        curl_data.len(),
+        3 * n_grid_nodes,
+        "curl data must have 3 components per grid node ({} nodes)",
+        n_grid_nodes
+    );
+    for (k, &c) in curl_data.iter().enumerate() {
+        assert!(c.is_finite(), "curl data[{}] = {} is not finite", k, c);
+    }
+
+    // ── (d3) HALF 2 of ruling #6164 — `result.rotation` IS the crossing ──────
+    //
+    // `rotation` = ∇×u / 2 is the designated crossing where the radian enters
+    // explicitly.  Note the asymmetry against (d2) directly above: same domain,
+    // same grid, same node count, componentwise exactly half the data — and a
+    // DIFFERENT codomain quantity.  That contrast is the entire ruling.
+    let rot_val = extract_field(result_val, "rotation")
+        .unwrap_or_else(|| panic!("field 'rotation' not found in DifferentialFieldOps.result"));
+    let (rot_domain, rot_codomain) = match &rot_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "rotation source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!(
+            "DifferentialFieldOps.result.rotation must be Value::Field, got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        rot_domain,
+        Type::point3(Type::length()),
+        "rotation domain must be Point3<Length>"
+    );
+    assert_eq!(
+        rot_codomain,
+        Type::vec3(Type::angle()),
+        "rotation codomain must be Vector3<Angle> — the designated crossing \
+         (ruling #6164 HALF 2)"
+    );
+
+    let rot_data = extract_sampled_field_data(result_val, "rotation");
+    assert_eq!(
+        rot_data.len(),
+        curl_data.len(),
+        "rotation must share curl's grid exactly ({} vs {} components)",
+        rot_data.len(),
+        curl_data.len()
+    );
+
+    // BIT-EXACT ×½ identity, asserted at 0 ULP.
+    //
+    // G6 numeric-premise discipline (the example file states this convention
+    // itself at :121-129): this is not a guessed tolerance, it is an exactness
+    // claim.  IEEE-754 division by 2.0 only decrements the exponent, so it is
+    // exact for every normal operand; subnormal underflow is unreachable at
+    // physical strain magnitudes (|∇×u| here is ~1e-3, and halving reaches the
+    // subnormal range only below ~1e-308).  Do NOT soften this to a tolerance.
+    for (i, (&r, &c)) in rot_data.iter().zip(curl_data.iter()).enumerate() {
+        assert_eq!(
+            r,
+            c / 2.0,
+            "rotation[{}] = {:e} must be EXACTLY curl[{}]/2 = {:e} (0 ULP)",
+            i,
+            r,
+            i,
+            c / 2.0
+        );
+    }
+
+    // Harness-side degree comparison (WORK 3: no in-language Vector3 component
+    // access exists — `.x`, `v[0]` and `norm(v) < 5deg` were all probed dead —
+    // so the numeric comparison lives here rather than as a .ri constraint).
+    //
+    // The bound is NOT invented.  It is RIGOROUSLY IMPLIED by the example's
+    // already-validated `constraint g_mag < 1.0`, asserted directly above:
+    // g_mag = max‖∇u‖ < 1, and each rotation component is
+    //   |ω_i| = |(∇×u)_i| / 2 = |∂u_j/∂x_k − ∂u_k/∂x_j| / 2 ≤ ‖∇u‖ < 1 rad.
+    // 1 rad ≈ 57.29578°, so the assertion compares against
+    // `1.0_f64.to_degrees()` rather than a hand-picked degree constant.
+    //
+    // A TIGHTER bound would need a MEASUREMENT, and per the example's own G6
+    // rule the measured value would have to be recorded here as its basis.
+    // None is asserted, so none is claimed.
+    let max_rot_rad = rot_data.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    assert!(
+        max_rot_rad.is_finite(),
+        "max|rotation| must be finite, got {}",
+        max_rot_rad
+    );
+    assert!(
+        max_rot_rad > 0.0,
+        "max|rotation| = {:e} is effectively zero — no rotation signal under load",
+        max_rot_rad
+    );
+    let max_rot_deg = max_rot_rad.to_degrees();
+    assert!(
+        max_rot_deg < 1.0_f64.to_degrees(),
+        "max|rotation| = {}° must be below the small-strain bound of {}° \
+         (= 1 rad), which follows from the validated g_mag < 1.0 via \
+         |ω| = |∇×u|/2 ≤ ‖∇u‖",
+        max_rot_deg,
+        1.0_f64.to_degrees()
     );
 
     // ── (e) Phase 2 — exact polynomial fixture assertions ────────────────────
