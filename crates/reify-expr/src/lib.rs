@@ -18,6 +18,15 @@ pub mod sampled;
 mod sampled_fd;
 mod sanitize;
 
+// Task #6672 (solver-unification ε): the forward-mode AD surface, re-exported
+// flat so `reify-constraints` — and later η (#6675), μ (#6680) and λ (#6679) —
+// reach it without knowing the module layout.
+pub use branch_signature::{
+    BranchChoice, BranchEntry, BranchRecord, KinkKind, KinkSite, ReductionKind,
+};
+pub use dual::{Dual, DualValue, Tangent};
+pub use dual_eval::{NonDifferentiable, Seeds, eval_dual, jacobian_row};
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;

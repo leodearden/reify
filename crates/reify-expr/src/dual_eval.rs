@@ -63,6 +63,16 @@ pub struct Seeds {
     /// correct place to cache them.
     depends: RefCell<HashMap<ContentHash, bool>>,
     kinky: RefCell<HashMap<ContentHash, bool>>,
+    /// The FIRST reason a tangent could not be produced during the current
+    /// traversal, with the site that produced it.
+    ///
+    /// The traversal cannot return this alongside the tangent without either
+    /// widening [`Tangent::None`] (which would make `Tangent` unusable as a
+    /// plain comparison value) or threading an eighth parameter through every
+    /// arm, so it is collected here and drained by
+    /// [`jacobian_row`].  First-wins: the innermost, earliest refusal is the
+    /// one that actually explains the failure; later ones are its consequences.
+    refusal: RefCell<Option<NonDifferentiable>>,
 }
 
 impl Seeds {
@@ -80,7 +90,22 @@ impl Seeds {
             index,
             depends: RefCell::new(HashMap::new()),
             kinky: RefCell::new(HashMap::new()),
+            refusal: RefCell::new(None),
         }
+    }
+
+    /// Record why a tangent could not be produced.  The FIRST call in a
+    /// traversal wins; later refusals are downstream consequences of it.
+    fn note_refusal(&self, reason: NonDifferentiable) {
+        let mut slot = self.refusal.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(reason);
+        }
+    }
+
+    /// Drain the recorded refusal, leaving the sink empty for the next row.
+    fn take_refusal(&self) -> Option<NonDifferentiable> {
+        self.refusal.borrow_mut().take()
     }
 
     /// Number of columns — the width of every tangent row.
@@ -230,6 +255,7 @@ pub fn eval_dual(
     seeds: &Seeds,
     record: &mut BranchRecord,
 ) -> DualValue {
+    seeds.take_refusal();
     let mut path: Vec<u16> = Vec::new();
     eval_dual_at(expr, ctx, seeds, &DualEnv::new(), record, &mut path)
 }
@@ -268,7 +294,13 @@ fn eval_dual_at(
                 // carry a scalar tangent.  Refuse loudly rather than emit a
                 // zero row, which would claim the residual is flat in a
                 // variable it may well depend on.
-                Some(_) => DualValue::opaque(value),
+                Some(_) => {
+                    seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                        kind: "a seeded cell holding a non-scalar value",
+                        site: KinkSite::new(path.to_vec()),
+                    });
+                    DualValue::opaque(value)
+                }
                 // Resolution order is seed column → overlay → zero.  A bound
                 // parameter's tangent is already expressed in seed columns, so
                 // it is adopted as-is.
@@ -286,7 +318,9 @@ fn eval_dual_at(
                 finish_unary(value, &inner, |_| -1.0)
             }
             // `not` is Bool-valued: there is no scalar derivative to take.
-            UnOp::Not => refuse_or_constant(expr, ctx, seeds, env),
+            UnOp::Not => {
+                refuse_or_constant(expr, ctx, seeds, env, path, "unary `not` (Bool-valued)")
+            }
         },
 
         CompiledExprKind::BinOp { op, left, right } => {
@@ -314,7 +348,7 @@ fn eval_dual_at(
         }
 
         // Everything else is a kind this task does not differentiate.
-        _ => refuse_or_constant(expr, ctx, seeds, env),
+        _ => refuse_or_constant(expr, ctx, seeds, env, path, kind_name(expr)),
     }
 }
 
@@ -343,12 +377,81 @@ fn refuse_or_constant(
     ctx: &EvalContext,
     seeds: &Seeds,
     env: &DualEnv,
+    path: &[u16],
+    kind: &'static str,
 ) -> DualValue {
     let value = crate::eval_expr(expr, ctx);
     if seeds.depends_on_seed(expr) || env.carries_tangent(expr) {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind,
+            site: KinkSite::new(path.to_vec()),
+        });
         DualValue::opaque(value)
     } else {
+        // Provably seed-independent: the derivative exists and is zero.  An
+        // unsupported construct that cannot reach a seed must not poison the
+        // whole residual.
         DualValue::constant(value)
+    }
+}
+
+/// A human-readable name for an expression kind, for refusal messages.
+fn kind_name(expr: &CompiledExpr) -> &'static str {
+    match &expr.kind {
+        CompiledExprKind::Literal(_) => "Literal",
+        CompiledExprKind::ValueRef(_) => "ValueRef",
+        CompiledExprKind::CrossSubGeometryRef(_) => "CrossSubGeometryRef",
+        CompiledExprKind::BinOp { .. } => "BinOp",
+        CompiledExprKind::UnOp { .. } => "UnOp",
+        CompiledExprKind::FunctionCall { .. } => "FunctionCall",
+        CompiledExprKind::Conditional { .. } => "Conditional",
+        CompiledExprKind::Match { .. } => "Match",
+        CompiledExprKind::UserFunctionCall { .. } => "UserFunctionCall",
+        CompiledExprKind::Lambda { .. } => "Lambda",
+        CompiledExprKind::ListLiteral(_) => "ListLiteral",
+        CompiledExprKind::SetLiteral(_) => "SetLiteral",
+        CompiledExprKind::MapLiteral(_) => "MapLiteral",
+        CompiledExprKind::IndexAccess { .. } => "IndexAccess",
+        CompiledExprKind::MethodCall { .. } => "MethodCall",
+        CompiledExprKind::Quantifier { .. } => "Quantifier",
+        CompiledExprKind::OptionSome(_) => "OptionSome",
+        CompiledExprKind::OptionNone => "OptionNone",
+        CompiledExprKind::MetaAccess { .. } => "MetaAccess",
+        CompiledExprKind::DeterminacyPredicate { .. } => "DeterminacyPredicate",
+        CompiledExprKind::RangeConstructor { .. } => "RangeConstructor",
+        CompiledExprKind::AdHocSelector { .. } => "AdHocSelector",
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => "PurposeReflectiveAggregation",
+        CompiledExprKind::ReflectiveCellList(_) => "ReflectiveCellList",
+        CompiledExprKind::StructureInstanceCtor { .. } => "StructureInstanceCtor",
+        _ => "unsupported expression kind",
+    }
+}
+
+/// A human-readable name for a `Value` variant, for refusal messages.
+fn value_kind_name(value: &Value) -> &'static str {
+    match value {
+        Value::Bool(_) => "Bool",
+        Value::Int(_) => "Int",
+        Value::Real(_) => "Real",
+        Value::Scalar { .. } => "Scalar",
+        Value::String(_) => "String",
+        Value::Point(_) => "Point",
+        Value::Vector(_) => "Vector",
+        Value::Direction { .. } => "Direction",
+        Value::Frame { .. } => "Frame",
+        Value::Complex { .. } => "Complex",
+        Value::Matrix { .. } => "Matrix",
+        Value::Tensor(_) => "Tensor",
+        Value::List(_) => "List",
+        Value::Set(_) => "Set",
+        Value::Map(_) => "Map",
+        Value::Option(_) => "Option",
+        Value::Enum { .. } => "Enum",
+        Value::Lambda { .. } => "Lambda",
+        Value::Field { .. } => "Field",
+        Value::Range { .. } => "Range",
+        Value::Undef => "Undef",
+        _ => "non-scalar value",
     }
 }
 
@@ -516,6 +619,9 @@ fn eval_dual_binop(
 
     // The Undef cliff: no derivative is attached to a refusal.
     if value.is_undef() {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(value);
     }
     if ld.tangent.is_none() || rd.tangent.is_none() {
@@ -707,6 +813,9 @@ fn eval_dual_builtin(
     // Strict `Undef` propagation, matching `eval_expr`'s short-circuit — which
     // sits BEFORE the field-shadow lookup below, so this ordering is load-bearing.
     if primal_args.iter().any(|v| v.is_undef()) {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(Value::Undef);
     }
 
@@ -724,7 +833,7 @@ fn eval_dual_builtin(
     // Field reductions are intercepted by `eval_expr` BEFORE `eval_builtin`,
     // so they must be intercepted here too or the primal invariant breaks.
     if let Some(kind) = field_reduction_kind(name, args.len(), &primal_args[0]) {
-        return eval_field_reduction(kind, &primal_args[0], &duals[0], record, path);
+        return eval_field_reduction(kind, &primal_args[0], &duals[0], seeds, record, path);
     }
 
     let smooth = is_differentiable_builtin(name, args.len());
@@ -737,6 +846,10 @@ fn eval_dual_builtin(
         return if duals.iter().all(|d| d.tangent.is_zero()) {
             DualValue::constant(value)
         } else {
+            seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                kind: "a builtin with no derivative rule",
+                site: KinkSite::new(path.to_vec()),
+            });
             DualValue::opaque(value)
         };
     }
@@ -747,6 +860,9 @@ fn eval_dual_builtin(
     }
 
     if value.is_undef() {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(value);
     }
     if duals.iter().any(|d| d.tangent.is_none()) {
@@ -764,6 +880,10 @@ fn eval_dual_builtin(
     // A non-finite local derivative — `sqrt(0)`, `log(0)`, `asin(±1)` — is a
     // refusal, never a NaN or Inf smuggled into a Jacobian.
     if partials.iter().any(|p| !p.is_finite()) {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: "a builtin evaluated where its derivative does not exist",
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(value);
     }
     combine(value, &duals, &partials, seeds.width())
@@ -825,6 +945,7 @@ fn eval_field_reduction(
     kind: ReductionKind,
     field: &Value,
     field_dual: &DualValue,
+    seeds: &Seeds,
     record: &mut BranchRecord,
     path: &[u16],
 ) -> DualValue {
@@ -856,6 +977,10 @@ fn eval_field_reduction(
     if field_dual.tangent.is_zero() {
         DualValue::constant(value)
     } else {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: "a field reduction over a seed-dependent field",
+            site: KinkSite::new(path.to_vec()),
+        });
         DualValue::opaque(value)
     }
 }
@@ -909,7 +1034,13 @@ fn eval_kink_builtin(
             note(record, path, KinkKind::Abs, choice);
             match dfdx {
                 Some(k) => combine(value, duals, &[k], width),
-                None => DualValue::opaque(value),
+                None => {
+                    seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                        kind: "`abs` evaluated exactly at its kink (x = 0)",
+                        site: KinkSite::new(path.to_vec()),
+                    });
+                    DualValue::opaque(value)
+                }
             }
         }
         ("clamp", 3) => {
@@ -1067,12 +1198,19 @@ fn eval_dual_user_fn(
 
     // Strict `Undef` propagation.
     if duals.iter().any(|d| d.value.is_undef()) {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(Value::Undef);
     }
     // The SAME recursion guard the evaluator uses.  Reaching it means the
     // primal is `Undef`, so there is nothing to differentiate — and stopping
     // here is what keeps the dual traversal off the stack cliff.
     if ctx.recursion_depth >= crate::MAX_RECURSION_DEPTH {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: "user-function recursion deeper than MAX_RECURSION_DEPTH",
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(Value::Undef);
     }
     // Overload selection by name, arity and param types, exactly as the
@@ -1080,6 +1218,9 @@ fn eval_dual_user_fn(
     // function and therefore a different derivative.
     let Some(func) = crate::find_matching_compiled_function(ctx.functions, function_name, args)
     else {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(Value::Undef);
     };
 
@@ -1091,6 +1232,10 @@ fn eval_dual_user_fn(
         return if duals.iter().all(|d| d.tangent.is_zero()) {
             DualValue::constant(value)
         } else {
+            seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                kind: "an `@optimized` compute-dispatched function",
+                site: KinkSite::new(path.to_vec()),
+            });
             DualValue::opaque(value)
         };
     }
@@ -1166,9 +1311,16 @@ fn eval_dual_lambda_apply(
     path: &mut Vec<u16>,
 ) -> DualValue {
     let Value::Lambda { params, body, captures } = lambda else {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(Value::Undef);
     };
     if ctx.recursion_depth >= crate::MAX_RECURSION_DEPTH {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: "lambda application deeper than MAX_RECURSION_DEPTH",
+            site: KinkSite::new(path.to_vec()),
+        });
         return DualValue::opaque(Value::Undef);
     }
     // A multi-param lambda is applied by UNPACKING a Point/Vector argument into
@@ -1180,6 +1332,10 @@ fn eval_dual_lambda_apply(
         return if arg.tangent.is_zero() {
             DualValue::constant(value)
         } else {
+            seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                kind: "a multi-parameter lambda applied by Point/Vector unpacking",
+                site: KinkSite::new(path.to_vec()),
+            });
             DualValue::opaque(value)
         };
     }
@@ -1199,4 +1355,104 @@ fn eval_dual_lambda_apply(
     path.pop();
     path.pop();
     result
+}
+
+// ---------------------------------------------------------------------------
+// The Jacobian-row boundary
+// ---------------------------------------------------------------------------
+
+/// Why a residual has no usable gradient row.
+///
+/// Every variant names the construct responsible, because η (#6675) turns this
+/// into a tier-2 refusal the user reads WITHOUT the surrounding code.
+///
+/// This type exists so that "the derivative is zero" and "we could not compute
+/// the derivative" can never be confused.  Returning a zero row for the second
+/// case is a *claim* — that the residual does not move when the variable moves
+/// — and it is false in the most damaging possible way: the solver believes it
+/// is already stationary in that direction and stops pushing.  PRD §7.7
+/// ("non-numeric operands stop contributing phantom gradients") and INV-SF-7
+/// ("a well-typed wrong value is the worst shape") are the same rule seen from
+/// two sides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NonDifferentiable {
+    /// The residual evaluated to `Undef` — the value semantics refused to
+    /// produce a number, so there is no function to differentiate.
+    UndefPrimal { site: KinkSite },
+    /// A seed-dependent subtree reached a construct with no derivative rule.
+    UnsupportedKind { kind: &'static str, site: KinkSite },
+    /// The residual is not a scalar, so it has no gradient ROW at all.
+    NonScalarResult { got: &'static str },
+    /// A tangent component came out NaN or ±Inf.  The primal may look perfectly
+    /// ordinary, which is exactly why this is checked rather than assumed.
+    NonFiniteTangent { column: usize },
+}
+
+impl std::fmt::Display for NonDifferentiable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NonDifferentiable::UndefPrimal { site } => write!(
+                f,
+                "residual evaluates to undef at expression path {:?}, so it has no derivative",
+                site.path()
+            ),
+            NonDifferentiable::UnsupportedKind { kind, site } => write!(
+                f,
+                "no derivative rule for {kind} at expression path {:?}; \
+                 the residual depends on a solved variable through it",
+                site.path()
+            ),
+            NonDifferentiable::NonScalarResult { got } => write!(
+                f,
+                "residual must be a scalar to have a gradient row, but it evaluated to {got}"
+            ),
+            NonDifferentiable::NonFiniteTangent { column } => write!(
+                f,
+                "derivative with respect to variable {column} is not finite \
+                 (NaN or infinite), so it cannot enter a linear solve"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NonDifferentiable {}
+
+/// One row of a Jacobian: the residual's SI value and `∂r/∂x_j` for every seed
+/// column, or a typed refusal explaining why there is none.
+///
+/// This is the boundary η (#6675) and μ (#6680) call.  Column `j` corresponds
+/// to `seeds.columns()[j]`; the row is always exactly `seeds.width()` wide, so
+/// a caller never has to reason about a short row.
+pub fn jacobian_row(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+) -> Result<(f64, Vec<f64>), NonDifferentiable> {
+    let dual = eval_dual(expr, ctx, seeds, record);
+
+    // The primal is checked FIRST, so the message names the residual's own
+    // problem rather than a downstream consequence of it.
+    if dual.value.is_undef() {
+        return Err(seeds
+            .take_refusal()
+            .unwrap_or(NonDifferentiable::UndefPrimal { site: KinkSite::root() }));
+    }
+    let Some(primal) = dual.value.as_f64() else {
+        return Err(NonDifferentiable::NonScalarResult { got: value_kind_name(&dual.value) });
+    };
+
+    let width = seeds.width();
+    let Some(row) = dual.tangent.materialize(width) else {
+        // `Tangent::None` reached the root.  The traversal recorded WHY, and
+        // that reason is strictly more useful than the fact itself.
+        return Err(seeds.take_refusal().unwrap_or(NonDifferentiable::UnsupportedKind {
+            kind: "an expression with no derivative rule",
+            site: KinkSite::root(),
+        }));
+    };
+    if let Some(column) = row.iter().position(|t| !t.is_finite()) {
+        return Err(NonDifferentiable::NonFiniteTangent { column });
+    }
+    Ok((primal, row))
 }
