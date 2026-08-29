@@ -905,7 +905,13 @@ pub(crate) fn compile_entity(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
-    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: the prelude-derived lookup tables. `prelude.ctor` is
+    // Structure-filtered and drives constructor lowering; `prelude.sub_target`
+    // is unfiltered and is read ONLY via `find_template_with_prelude`, which
+    // also applies the `prelude.local_entity_names` shadowing guard. They
+    // travel bundled so the two same-typed maps cannot be transposed here; see
+    // `types::PreludeRegistries` for the full contract.
+    prelude: &PreludeRegistries<'_, '_>,
 ) -> TopologyTemplate {
     let entity_name = structure.name;
     // task 3540 (SIR-α): make `structure def` templates reachable at the
@@ -915,7 +921,8 @@ pub(crate) fn compile_entity(
     // (later entries shadow earlier — local definitions shadow prelude,
     // matching Reify scoping). Declared BEFORE `scope` so it outlives the
     // scope's borrow (drop order is reverse-declaration).
-    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude_template_registry
+    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .ctor
         .iter()
         .map(|(k, v)| (k.clone(), *v))
         .chain(
@@ -1614,9 +1621,16 @@ pub(crate) fn compile_entity(
                             // (task 2373) is now handled inside compile_match_arm_decl_group,
                             // atomically with register_match_arm_group — moved from here in task 2872
                             // to close the orphan-entry bug on any early-return rejection path.
-                            if let Some(child_tmpl) =
-                                find_template(compiled_templates, &sub.structure_name)
-                            {
+                            // task 5867: module-first, prelude-fallback — same
+                            // rule as the plain-`Sub` pre-pass below. A bare
+                            // `find_template` here is module-only, so an arm sub
+                            // targeting a prelude template (`A => sub s :
+                            // DisplayStyle`) left every map below unpopulated.
+                            if let Some(child_tmpl) = find_template_with_prelude(
+                                compiled_templates,
+                                prelude,
+                                &sub.structure_name,
+                            ) {
                                 scope.sub_structure_traits.insert(
                                     sub.structure_name.clone(),
                                     child_tmpl.trait_bounds.clone(),
@@ -1750,10 +1764,19 @@ pub(crate) fn compile_entity(
                     .sub_component_types
                     .insert(sub.name.clone(), effective_structure_name.clone());
                 // Single lookup: handle deprecation, sub_structure_traits, and
-                // sub_member_types in one pass over compiled_templates.
-                if let Some(child_tmpl) =
-                    find_template(compiled_templates, &effective_structure_name)
-                {
+                // sub_member_types in one pass over the sub-target templates.
+                //
+                // task 5867: module-first, prelude-fallback. A bare
+                // `find_template` here is module-only, so for a prelude-typed
+                // sub (`sub tol = DimensionalTolerance(…)`) none of the maps
+                // below were populated while `sub_component_types` above always
+                // was — the "forward-declared" shape that makes a relaying
+                // `let` lower to a `RealizationDecl` instead of a value cell.
+                if let Some(child_tmpl) = find_template_with_prelude(
+                    compiled_templates,
+                    prelude,
+                    &effective_structure_name,
+                ) {
                     // Deprecation check: warn if the referenced structure is @deprecated.
                     if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
                         emit_deprecation_warning(
@@ -1805,17 +1828,24 @@ pub(crate) fn compile_entity(
                                 Vec::with_capacity(group.arms.len());
                             for arm in &group.arms {
                                 if let Type::StructureRef(arm_struct) = &arm.arm_type {
+                                    // task 5867: module-first, prelude-fallback,
+                                    // so an arm type defined in the prelude does
+                                    // not yield an empty member map here.
                                     let arm_members: BTreeMap<String, Type> =
-                                        find_template(compiled_templates, arm_struct)
-                                            .map(|t| {
-                                                t.value_cells
-                                                    .iter()
-                                                    .map(|vc| {
-                                                        (vc.id.member.clone(), vc.cell_type.clone())
-                                                    })
-                                                    .collect()
-                                            })
-                                            .unwrap_or_default();
+                                        find_template_with_prelude(
+                                            compiled_templates,
+                                            prelude,
+                                            arm_struct,
+                                        )
+                                        .map(|t| {
+                                            t.value_cells
+                                                .iter()
+                                                .map(|vc| {
+                                                    (vc.id.member.clone(), vc.cell_type.clone())
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
                                     per_arm.push((arm_struct.clone(), arm_members));
                                 } else {
                                     // Non-StructureRef arm types are not produced in v0.1;
@@ -3700,6 +3730,7 @@ pub(crate) fn compile_entity(
                     &type_param_names,
                     &clusters_with_outside_collision,
                     compiled_templates,
+                    prelude,
                 );
             }
         }
@@ -4480,6 +4511,9 @@ fn compile_match_arm_decl_group(
     type_param_names: &HashSet<String>,
     clusters_with_outside_collision: &HashSet<String>,
     compiled_templates: &[TopologyTemplate],
+    // task 5867: the prelude-derived lookup tables; paired with
+    // `compiled_templates` in every `find_template_with_prelude` call.
+    prelude: &PreludeRegistries<'_, '_>,
 ) {
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
@@ -4862,14 +4896,18 @@ fn compile_match_arm_decl_group(
             });
 
             // Collect per-arm member types for match_arm_group_arm_member_types.
-            // Always push an entry (empty BTreeMap when find_template fails) so the
+            // Always push an entry (empty BTreeMap on a lookup miss) so the
             // per-arm Vec length always equals the cluster's Sub-arm count — preserving
             // the invariant that review suggestion 1 established in the pre-pass.
             // (task 2872: moved here from the pre-pass so insertion is atomic with
             // register_match_arm_group; see the if !group_arms.is_empty() block below.)
-            let arm_member_types = find_template(compiled_templates, &sub.structure_name)
-                .map(member_type_map_from_template)
-                .unwrap_or_default();
+            //
+            // task 5867 widened the LOOKUP to module-first/prelude-fallback; the
+            // always-push discipline above is unchanged.
+            let arm_member_types =
+                find_template_with_prelude(compiled_templates, prelude, &sub.structure_name)
+                    .map(member_type_map_from_template)
+                    .unwrap_or_default();
             per_arm_member_maps.push((sub.structure_name.clone(), arm_member_types));
         }
 
