@@ -12752,4 +12752,293 @@ mod tests {
             "expected SizeHintsLengthMismatch, got: {err:?}",
         );
     }
+    // ── ruling #6164: the `rotation` derivative channel ───────────────────────
+    //
+    // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the
+    // radian enters the elastic-result algebra. It is DERIVED from the `curl`
+    // SampledField at wrap time in every production path and STORED IN NONE —
+    // see `rotation_sf_from_curl`'s doc comment for the wire-format reason.
+    //
+    // These three tests pin all three production paths, plus the negative
+    // no-wire-change guarantee.
+
+    /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
+    /// asserting the source kind on the way through.
+    fn rot6164_sampled(v: &Value, what: &str) -> SampledField {
+        match v {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "{what} must be a Sampled field"
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf.clone(),
+                    other => panic!("{what} lambda must be Value::SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("{what} must be Value::Field, got {other:?}"),
+        }
+    }
+
+    /// Shared helper: assert `rot` is `curl` halved bit-exactly (0 ULP) on the
+    /// bit-identical grid. Only `data` and `name` may differ.
+    ///
+    /// 0 ULP is a numeric-premise claim, not laziness: IEEE-754 division by 2.0
+    /// only decrements the exponent, so it is exact for every normal operand
+    /// (subnormal underflow is unreachable at physical strain magnitudes).
+    fn rot6164_assert_is_half_of(rot: &SampledField, curl: &SampledField, path: &str) {
+        assert_eq!(
+            rot.data.len(),
+            curl.data.len(),
+            "{path}: rotation must have the same node/stride count as curl"
+        );
+        let expected: Vec<f64> = curl.data.iter().map(|c| c / 2.0).collect();
+        assert_eq!(
+            rot.data, expected,
+            "{path}: rotation data must be curl data halved element-wise, bit-exactly (0 ULP)"
+        );
+        // Grid metadata carried through verbatim — this is also what proves the
+        // channel was DERIVED from curl rather than independently resampled
+        // (an independent resample would need a 6th `resample_multi_nodal_to_grid`
+        // entry and a `nodal_rotation_flat` slab, neither of which exists).
+        assert_eq!(rot.kind, curl.kind, "{path}: grid kind");
+        assert_eq!(rot.bounds_min, curl.bounds_min, "{path}: bounds_min");
+        assert_eq!(rot.bounds_max, curl.bounds_max, "{path}: bounds_max");
+        assert_eq!(rot.spacing, curl.spacing, "{path}: spacing");
+        assert_eq!(rot.axis_grids, curl.axis_grids, "{path}: axis_grids");
+        assert_eq!(rot.interpolation, curl.interpolation, "{path}: interpolation");
+    }
+
+    /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
+    /// must emit a `"rotation"` key whose SampledField is the `"curl"` field
+    /// halved element-wise, bit-exactly, on the bit-identical grid.
+    ///
+    /// `shell_force=Off` forces the tet route deterministically (same idiom as
+    /// `trampoline_consumes_realized_volume_mesh`).
+    ///
+    /// This test ALSO carries the "no 6th resample entry" guarantee: unit tests
+    /// build in debug, so the `debug_assert_eq!(sampled.len(), 5)` in the tet
+    /// path is live here. Bumping `resample_multi_nodal_to_grid` to a 6th entry
+    /// to resample rotation independently would trip that assert and red this
+    /// test — which is exactly the intent (rotation costs no extra BVH pass).
+    ///
+    /// RED: nothing writes a `"rotation"` key yet.
+    #[test]
+    fn rotation_channel_tet_path_is_curl_halved() {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        let curl_v = fields
+            .get("curl")
+            .expect("tet ElasticResult must carry a curl field");
+        let rot_v = fields
+            .get("rotation")
+            .expect("tet ElasticResult must carry a rotation field (ruling #6164)");
+
+        let curl_sf = rot6164_sampled(curl_v, "curl");
+        let rot_sf = rot6164_sampled(rot_v, "rotation");
+        assert!(
+            !curl_sf.data.is_empty(),
+            "fixture sanity: the tet curl channel must be populated"
+        );
+        rot6164_assert_is_half_of(&rot_sf, &curl_sf, "tet");
+
+        // The declared codomain is the whole point: Vector3<Angle>, not
+        // vec3(dimensionless_scalar()) like curl.
+        match rot_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::angle()),
+                "rotation codomain must be Vector3<Angle> (ruling #6164)"
+            ),
+            other => panic!("rotation must be Value::Field, got {other:?}"),
+        }
+        match curl_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                "curl codomain must STAY Vector3<Real> — ruling #6164 HALF 1 \
+                 decides curl is dimensionless; retyping it would put a radian \
+                 into the operator algebra"
+            ),
+            other => panic!("curl must be Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (b) SHELL path — derivative channels are out of scope for the shell
+    /// solver (PRD §7), so `rotation` joins divergence/gradient/curl in the
+    /// honest-absence `Value::Undef` convention.
+    ///
+    /// RED: the shell fields map has no `"rotation"` key at all, so the
+    /// `.expect` fires.
+    #[test]
+    fn rotation_channel_shell_path_is_undef() {
+        // Same 50mm × 10mm × 1mm steel-flexure fixture as
+        // `shell_route_trampoline_populates_shell_channels`.
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        // Fixture sanity: confirm this really is the shell route.
+        assert!(
+            matches!(fields.get("curl"), Some(Value::Undef)),
+            "fixture sanity: the shell route must emit curl=Undef"
+        );
+        assert!(
+            matches!(
+                fields.get("shell_channels"),
+                Some(Value::StructureInstance(_))
+            ),
+            "fixture sanity: the shell route must emit a real ShellStress"
+        );
+
+        assert!(
+            matches!(
+                fields
+                    .get("rotation")
+                    .expect("shell ElasticResult must carry a rotation key (ruling #6164)"),
+                Value::Undef
+            ),
+            "shell rotation must be Value::Undef — honest-absence, matching the \
+             divergence/gradient/curl convention (PRD §7)"
+        );
+    }
+
+    /// (c) CACHE-RECONSTRUCTION path — THE LOAD-BEARING ONE.
+    ///
+    /// `value_from_elastic_result` rebuilds an `ElasticResult` `Value` from the
+    /// persisted compute-contract record. That record carries a `curl` slab and
+    /// NO rotation slab — and it never will, because the binary wire header is
+    /// frozen (`curl_len` at a fixed byte offset, byte-exact golden test).
+    ///
+    /// This test proves that deriving rotation at wrap time means EXISTING
+    /// persisted cache entries gain a correct `.rotation` for free: an `er` with
+    /// only a curl slab must reconstruct to a rotation field bit-identical to
+    /// what the live tet path produces from the same data.
+    ///
+    /// RED: the cache fields map has no `"rotation"` key yet.
+    #[test]
+    fn rotation_channel_cache_reconstruction_derives_from_curl_slab() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        // Regular3D grid, 1 division per axis -> 2 nodes per axis -> 8 nodes.
+        let n_nodes = 8usize;
+        // Deliberately non-power-of-two curl values so a halving bug cannot
+        // hide behind a coincidentally exact result.
+        let curl: Vec<f64> = (0..n_nodes * 3).map(|i| 3.0 + i as f64 * 5.0).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: (0..n_nodes * 9).map(|i| i as f64 * 0.5).collect(),
+            curl: curl.clone(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let curl_sf = rot6164_sampled(
+            d.fields.get("curl").expect("reconstructed curl field"),
+            "curl",
+        );
+        let rot_sf = rot6164_sampled(
+            d.fields
+                .get("rotation")
+                .expect("reconstructed ElasticResult must carry a rotation field (ruling #6164)"),
+            "rotation",
+        );
+        assert_eq!(
+            curl_sf.data, curl,
+            "fixture sanity: the curl slab must round-trip unchanged"
+        );
+        rot6164_assert_is_half_of(&rot_sf, &curl_sf, "cache");
+
+        // Cross-path identity: the cache route must produce exactly what the
+        // live tet route's wrap step produces from the same curl SampledField.
+        let live = super::super::rotation_sf_from_curl(&curl_sf);
+        assert_eq!(
+            rot_sf.data, live.data,
+            "cache-reconstructed rotation must be bit-identical to the live tet \
+             path's derive from the same curl data"
+        );
+        assert_eq!(rot_sf.name, live.name);
+    }
+
+    /// (d) NEGATIVE wire-format guarantee — the compute-contract record gained
+    /// no rotation slab.
+    ///
+    /// Rotation is a pure ×½ of a slab already on the wire, so persisting it
+    /// would buy nothing and cost everything:
+    /// `crates/reify-compute-contract/src/elastic_result.rs` pins a FROZEN
+    /// binary header with `curl_len: u64` at a fixed byte offset, guarded by a
+    /// byte-exact golden test that asserts literal hex. A `rotation_len` field
+    /// would shift that offset, invalidate every persisted cache entry, and
+    /// force a format version bump.
+    ///
+    /// A source-text guard is used deliberately: the guarantee is about what
+    /// must NOT exist, which no type-level assertion can express. The companion
+    /// positive assertion — that the golden test still passes — is the
+    /// compute-contract crate's own suite, which this change does not touch.
+    #[test]
+    fn rotation_channel_adds_no_compute_contract_wire_field() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../reify-compute-contract/src/elastic_result.rs");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+        // Sanity: we are reading the right file (the frozen header's curl slab).
+        assert!(
+            src.contains("curl_len"),
+            "guard sanity: {} must contain the frozen header's curl_len",
+            path.display()
+        );
+        assert!(
+            !src.contains("rotation_len"),
+            "the compute-contract wire format must NOT gain a rotation_len field \
+             — rotation is DERIVED from the curl slab at wrap time (ruling #6164). \
+             Adding it breaks the frozen byte offsets and invalidates every \
+             persisted cache entry."
+        );
+        assert!(
+            !src.contains("pub rotation"),
+            "the compute-contract ElasticResult must NOT gain a `rotation` slab \
+             — see rotation_sf_from_curl's doc comment for why."
+        );
+    }
 }
