@@ -234,3 +234,149 @@ fn known_builtins_never_emit_an_unresolved_function_warning() {
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// the zero-arg interaction: two warnings, mutually exclusive
+// ---------------------------------------------------------------------------
+
+/// Every Warning-severity diagnostic in `module`, in source order. Used by the
+/// zero-arg tests, which assert on the TOTAL warning count rather than on a
+/// single code — the whole point there is that no second warning sneaks in.
+fn warnings(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect()
+}
+
+/// Does `module` carry the legacy pre-#5371 zero-arg warning?
+///
+/// Matched on TEXT, unavoidably: that warning predates the coded-diagnostic
+/// convention and carries `code: None` (verified — it is emitted bare in
+/// `expr.rs`'s fallback), so there is no code to match on. #6014 deletes it
+/// outright, at which point this helper goes with it.
+fn has_legacy_zero_arg_warning(module: &reify_compiler::CompiledModule) -> bool {
+    module
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("cannot infer return type of zero-arg function"))
+}
+
+/// An UNKNOWN zero-arg callee is diagnosed ONCE, as `UnresolvedFunction` — the
+/// legacy zero-arg warning must not also fire.
+///
+/// Both warnings live in the same fallback and, before this step, both fired:
+/// the user saw "unresolved function: f" immediately followed by "cannot infer
+/// return type of zero-arg function 'f', defaulting to Real" — two lines for
+/// one defect, the second of which is noise once the first has said the name
+/// does not exist. Measured on the pre-step tree: exactly 2 diagnostics.
+///
+/// The two are complements, not a hierarchy: "I do not know this name" and "I
+/// know this name but cannot infer its return type without arguments" cannot
+/// both be true of the same call.
+#[test]
+fn zero_arg_unknown_callee_is_not_double_diagnosed() {
+    let module = compile_source_with_stdlib(
+        r#"
+        structure ZeroArgUnknown {
+            let x = definitely_not_a_builtin()
+        }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        1,
+        "an unknown zero-arg callee is still an unresolved function"
+    );
+    assert!(
+        !has_legacy_zero_arg_warning(&module),
+        "the legacy zero-arg warning must NOT also fire — the name is unknown, \
+         so 'cannot infer its return type' is noise on top of 'no such \
+         function'; got {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        warnings(&module).len(),
+        1,
+        "exactly one warning total; got {:?}",
+        warnings(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// …and the typing of that zero-arg call is UNCHANGED: still
+/// `Type::dimensionless_scalar()` (the "defaulting to Real" behaviour), even
+/// though the warning that used to announce it is now suppressed.
+///
+/// Suppressing a warning must not quietly change what the compiler infers.
+#[test]
+fn zero_arg_unknown_callee_result_type_is_unchanged() {
+    let module = compile_source_with_stdlib(
+        r#"
+        structure ZeroArgUnknownType {
+            let x = definitely_not_a_builtin()
+        }
+    "#,
+    );
+    assert_eq!(
+        get_let_expr_in(&module, "ZeroArgUnknownType", "x").result_type,
+        Type::dimensionless_scalar(),
+        "the fallback still defaults a zero-arg call to Real in #5371"
+    );
+}
+
+/// The converse: a KNOWN zero-arg name that is merely unregistered keeps the
+/// legacy warning and gains NO `UnresolvedFunction`.
+///
+/// `world()` (`reify-stdlib/src/mechanism.rs:42`) is the case that exists: it
+/// is a genuine zero-arg builtin — its eval arm rejects any argument — and it
+/// sits in `EVAL_DEFERRED_BUILTIN_NAMES` awaiting #6007 (registry τ5). So the
+/// compiler really cannot infer its return type, and really does know the
+/// name. Exactly one warning, and it is the legacy one.
+///
+/// Without this direction, "emit UnresolvedFunction instead of the zero-arg
+/// warning" could be implemented by deleting the zero-arg warning outright,
+/// silently dropping a true diagnostic for every registered zero-arg builtin.
+#[test]
+fn zero_arg_known_but_unregistered_callee_keeps_only_the_legacy_warning() {
+    let module = compile_source_with_stdlib(
+        r#"
+        structure ZeroArgKnown {
+            let w = world()
+        }
+    "#,
+    );
+
+    assert!(
+        unresolved_function_diags(&module).is_empty(),
+        "`world` is in EVAL_DEFERRED_BUILTIN_NAMES, so it is inside the closed \
+         world and must not be reported unresolved"
+    );
+    assert!(
+        has_legacy_zero_arg_warning(&module),
+        "the legacy zero-arg warning is still TRUE for a known-but-unregistered \
+         zero-arg builtin and must be preserved; got {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        warnings(&module).len(),
+        1,
+        "exactly one warning total; got {:?}",
+        warnings(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
