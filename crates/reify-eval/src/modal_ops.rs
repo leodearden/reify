@@ -1494,7 +1494,17 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// Builds a lumped generalized-coordinate eigenproblem from the assembled
 /// `(K, M)` (via [`assemble_mechanism_km`]), solves it with
 /// [`solve_eigen_dense`], and shapes the result as a `ModalResult`
-/// `Value::StructureInstance` with frequency-only `Mode` records.
+/// `Value::StructureInstance`.
+///
+/// **Per-mode damping (task #6875)**: each `Mode` carries the Rayleigh ratio
+/// ζ_i = (α + β·ω_i²)/(2·ω_i) computed from the `ModalOptions.damping`
+/// descriptor the caller supplied, via the same [`extract_damping`] →
+/// [`rayleigh_damping_ratio`] seam the FEA path ([`run_modal_analysis`]) uses.
+/// `NoDamping`, an absent `damping` field, and a rigid-joint ω = 0 mode all
+/// give ζ_i = 0.  `Mode.shape` stays an empty list and
+/// `Mode.participation_mass` stays 0: the lumped generalized-coordinate model
+/// has one scalar DOF per body and therefore no 3D mode shape to report (which
+/// is also why `ModalOptions.reference_direction` is unused here).
 ///
 /// DOF model: one generalized DOF per spanning-tree body.  Diagonal M[i,i] =
 /// body scalar mass; diagonal K[i,i] = body inbound joint spring_rate (0 for
@@ -1690,12 +1700,30 @@ fn run_mechanism_modal(
         }
     }
 
-    // ── (5) shape Mode records (frequency-only; lumped model has no 3D shape) ─
+    // ── (4c) read the caller's ModalOptions ──────────────────────────────────
+    // Hoisted above the Mode construction below because step (5) now needs the
+    // `damping` descriptor per mode; step (5b) reuses the same binding for
+    // `n_modes`.  `extract_damping` is the same private helper the FEA path
+    // uses at `run_modal_analysis` — the type-name discrimination is NOT
+    // duplicated here.
+    let options = value_inputs.get(1).unwrap_or(&Value::Undef);
+    let (alpha, beta) = extract_damping(options);
+
+    // ── (5) shape Mode records (lumped model has no 3D shape) ────────────────
     // The stdlib accessors first_frequency/mode_frequency read only
-    // Mode.frequency, so frequency-only modes fully satisfy the contract.
+    // Mode.frequency, so frequency-only modes fully satisfy the contract;
+    // `damping_ratio` additionally carries the Rayleigh ratio read from
+    // `ModalOptions.damping` (task #6875).
+    //
+    // ω = 0 needs no extra guard here: `rayleigh_damping_ratio` floors at
+    // MIN_OMEGA_FOR_DAMPING = 1e-9 and returns 0.0, so a rigid-joint body
+    // (K[i,i] = 0 ⇒ f = 0 Hz, the W_MechanismModalRigidBodyMode case above)
+    // yields ζ = 0 rather than a 1/ω blow-up.
     let mut modes_list: Vec<Value> = frequencies
         .iter()
         .map(|&f| {
+            let omega = 2.0 * PI * f;
+            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
             let fields: PersistentMap<String, Value> = [
                 (
                     "frequency".to_string(),
@@ -1703,7 +1731,7 @@ fn run_mechanism_modal(
                 ),
                 ("shape".to_string(), Value::List(Vec::new())),
                 ("participation_mass".to_string(), Value::Real(0.0)),
-                ("damping_ratio".to_string(), Value::Real(0.0)),
+                ("damping_ratio".to_string(), Value::Real(damping_ratio)),
             ]
             .into_iter()
             .collect();
@@ -1720,7 +1748,7 @@ fn run_mechanism_modal(
     // extract_eigen_knobs falls back to n_modes=10 when options is not a
     // StructureInstance or the field is absent.  Truncate only when the
     // caller explicitly asked for fewer modes than we computed.
-    let options = value_inputs.get(1).unwrap_or(&Value::Undef);
+    // (`options` is bound at step (4c) above.)
     let (requested_n_modes, _, _, _) = extract_eigen_knobs(options);
     if requested_n_modes < modes_list.len() {
         diagnostics.push(Diagnostic::warning(format!(
