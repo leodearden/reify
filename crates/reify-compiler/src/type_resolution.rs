@@ -741,14 +741,34 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // resolves to `None` — and `resolve_type_expr_with_aliases` returns
         // `None` for an unknown bare name WITHOUT pushing a diagnostic — so the
         // DOF type became `Type::Error`, which silently disables the §7.1
-        // count/kind verdict at `compile_builder/entities_phase.rs:699-701`
-        // (that gate treats `Type::Error` as already-diagnosed, anti-cascade).
+        // count/kind verdict in `compile_builder::entities_phase`'s
+        // `compile_joint_self_check` (its `skip_verdict` gate treats a
+        // `Type::Error` DOF as already-diagnosed elsewhere, anti-cascade).
         // The declared-vs-residual self-check was therefore never run for any
         // orientation-bearing joint, and `dof_kind_of`'s `Type::Orientation`
         // arm (joint_self_check.rs) was unreachable from .ri source.
-        // Unlike "Frame3", nothing in stdlib or examples declares the name
-        // `Orientation`, so there is no collision.  Bare-name-resolves-to-3D
-        // follows the `"Frame" => Type::Frame(3)` precedent above.
+        // Bare-name-resolves-to-3D follows the `"Frame" => Type::Frame(3)`
+        // precedent above.
+        //
+        // PRECEDENCE — this arm SHADOWS any user-declared `Orientation`.
+        // `resolve_type_with_aliases` falls through builtins → type params →
+        // alias registry → structure names → trait names, so a builtin arm
+        // wins over a `structure def Orientation`, a `type Orientation = …`
+        // alias and an `enum Orientation` in .ri source.  Such a declaration
+        // keeps compiling, but every annotation naming it silently changes
+        // meaning with NO diagnostic.  That is the same collision class that
+        // keeps "Frame3" out of this match (it collides with the `structure
+        // Frame3` in ports.ri).  Accepted here on two grounds: a grep over all
+        // tracked .ri files finds nothing in stdlib or examples binding either
+        // spelling, and the `Orientation` annotation surface is load-bearing —
+        // without it the joint DOF self-check above cannot run at all.  The
+        // residual exposure is out-of-repo user models, and adding any further
+        // name to this match is a compatibility decision on the same terms,
+        // not a free win.  Pinned by
+        // `tests::builtin_orientation_shadows_same_named_alias_and_structure`,
+        // mirroring
+        // `tests::builtin_dimension_shadows_same_named_alias_with_different_dimension`
+        // (task #5892).
         //
         // BOTH spellings are accepted, where `Frame` accepts only the bare one.
         // The bare `Orientation` is required because that is what joints.ri
@@ -5440,6 +5460,167 @@ mod tests {
             Some(Type::Orientation(3)),
             "the resolver must accept the Display spelling \"Orientation3\" so the \
              Display/resolver round-trip holds"
+        );
+    }
+
+    /// (d) PRECEDENCE lock for the shadowing the (a)/(c) arm introduces.
+    ///
+    /// `resolve_type_with_aliases` resolves builtins FIRST ("builtins → type
+    /// params → alias registry → structure names → trait names", per its own
+    /// doc comment), so surfacing `Orientation` / `Orientation3` as builtins
+    /// silently shadows a user-declared `type Orientation = …` alias or
+    /// `structure def Orientation` in .ri source: the declaration keeps
+    /// compiling, but every annotation naming it changes meaning with NO
+    /// diagnostic. Nothing in this repo's stdlib or examples binds either
+    /// spelling (grep-verified, task 6384), so no in-repo model is affected —
+    /// but out-of-repo user models are, and that trade is a DECISION, not an
+    /// accident. This test makes it one on record.
+    ///
+    /// Same shape and same contract as
+    /// `builtin_dimension_shadows_same_named_alias_with_different_dimension`
+    /// (task #5892), which pins the builtin-before-alias half for
+    /// `NAMED_DIMENSIONS`. The `"Rotor"` negative controls prove the alias and
+    /// structure-name arms both still fire for a name with no builtin arm, so
+    /// a regression that broke either arm entirely could not leave this test
+    /// green for the wrong reason.
+    #[test]
+    fn builtin_orientation_shadows_same_named_alias_and_structure() {
+        for spelling in ["Orientation", "Orientation3"] {
+            let reg = one_entry_alias_registry(spelling, DimensionVector::MASS, true);
+            let structure_names: HashSet<String> = [spelling.to_string()].into_iter().collect();
+            let result = resolve_type_with_aliases(
+                spelling,
+                &HashSet::new(),
+                &reg,
+                &structure_names,
+                &HashSet::new(),
+            );
+            assert_eq!(
+                result,
+                Some(Type::Orientation(3)),
+                "the builtin {spelling:?} arm must win over BOTH a same-named \
+                 alias-registry entry (which says MASS) and a same-named \
+                 structure def, per the precedence documented on \
+                 resolve_type_with_aliases; got: {result:?}"
+            );
+        }
+
+        // Negative control 1: a name with no builtin arm still resolves from
+        // the alias registry.
+        let rotor_alias = one_entry_alias_registry("Rotor", DimensionVector::MASS, true);
+        let from_alias = resolve_type_with_aliases(
+            "Rotor",
+            &HashSet::new(),
+            &rotor_alias,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            from_alias,
+            Some(Type::Scalar {
+                dimension: DimensionVector::MASS
+            }),
+            "a non-builtin name must still resolve FROM the alias registry; \
+             got: {from_alias:?}"
+        );
+
+        // Negative control 2: a name with no builtin arm and no alias entry
+        // still resolves from the structure-name arm.
+        let rotor_structs: HashSet<String> = ["Rotor".to_string()].into_iter().collect();
+        let from_struct = resolve_type_with_aliases(
+            "Rotor",
+            &HashSet::new(),
+            &TypeAliasRegistry::new(),
+            &rotor_structs,
+            &HashSet::new(),
+        );
+        assert_eq!(
+            from_struct,
+            Some(Type::StructureRef("Rotor".to_string())),
+            "a non-builtin name must still resolve FROM the structure-name arm; \
+             got: {from_struct:?}"
+        );
+    }
+
+    /// Compile `source` through the crate's OWN stdlib entry points.
+    ///
+    /// Deliberately NOT `reify_test_support::compile_source_with_stdlib`: the
+    /// crate's `[dev-dependencies]` self-pull puts two `reify_compiler`
+    /// instances in the unit-test graph and that helper returns the *external*
+    /// instance's `CompiledModule` (see the same note on
+    /// `relation_signatures.rs`'s `compile_module`).
+    fn compile_orientation_probe(source: &str) -> crate::CompiledModule {
+        let parsed = crate::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
+        crate::compile_with_stdlib(&parsed)
+    }
+
+    /// (e) ANNOTATION-SURFACE coverage for the arm, end to end through a real
+    /// compile.
+    ///
+    /// (a)–(d) above call the resolver directly, and the integration
+    /// companions in `tests/harness_modules_ports/standard_joint_library_tests.rs`
+    /// reach it only through a joint's `with` DOF record. Neither covers the
+    /// ordinary annotation positions the arm newly enables — which are the
+    /// user-facing half of its stated rationale ("a user copying a type name
+    /// out of a compiler message must get back a resolvable name"). Without
+    /// this test a regression confined to the annotation path would go
+    /// unnoticed.
+    ///
+    /// Each row must compile with zero Error-severity diagnostics. `Undef` /
+    /// unused-binding warnings are irrelevant here and are not filtered on.
+    #[test]
+    fn orientation_annotations_compile_clean() {
+        for (label, source) in [
+            (
+                "bare param annotation",
+                "structure S {\n    param o : Orientation = orient_identity()\n}",
+            ),
+            (
+                "Display-spelling param annotation",
+                "structure S {\n    param o : Orientation3 = orient_identity()\n}",
+            ),
+            (
+                "param annotation via a type alias bound to the name",
+                "pub type Rot = Orientation\n\
+                 structure S {\n    param o : Rot = orient_identity()\n}",
+            ),
+        ] {
+            let module = compile_orientation_probe(source);
+            let errors: Vec<&Diagnostic> = module
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "{label}: `Orientation` must be usable in an ordinary annotation \
+                 position and compile with zero Error-severity diagnostics.\n\
+                 source:\n{source}\nerrors: {errors:#?}"
+            );
+        }
+
+        // NON-VACUITY control. A zero-errors oracle only proves something if an
+        // UNRESOLVABLE name in the same position is loud. It is here — the
+        // `param` arm emits `unresolved type: …` — unlike the joint `with` DOF
+        // path, where an unresolved name degrades to `Type::Error` and the
+        // verdict is skipped in total silence (which is exactly why the
+        // integration companions in `standard_joint_library_tests.rs` use a
+        // positive/mutation oracle instead of this one).
+        let control = compile_orientation_probe(
+            "structure S {\n    param o : Blorp = orient_identity()\n}",
+        );
+        let control_errors: Vec<&Diagnostic> = control
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            control_errors
+                .iter()
+                .any(|d| d.message.contains("unresolved type: Blorp")),
+            "control: an unresolvable param type MUST draw an Error-severity \
+             `unresolved type: …` diagnostic, or the zero-errors assertions above \
+             prove nothing; got: {control_errors:#?}"
         );
     }
 
