@@ -82,9 +82,9 @@
 //! at the 100K scale. On this host that is not merely unmet, it is inverted:
 //! at the best-matched pairing in the whole table (+0.3% count mismatch, the
 //! two arms within 322 tets of each other) the morph took **123.98 s** and the
-//! from-scratch remesh **1.98 s** — the morph is **~63x SLOWER**. Against a
-//! >=10x-faster target that is roughly three orders of magnitude in the wrong
-//! direction.
+//! from-scratch remesh **1.98 s** — the morph is **~63x SLOWER**. Against
+//! a >=10x-faster target that is roughly three orders of magnitude in the
+//! wrong direction.
 //!
 //! The 100K morph returned **`Ok`**, not `SolverNotConverged`. This is not a
 //! solver giving up: it is 124 s of converged solving. That distinction
