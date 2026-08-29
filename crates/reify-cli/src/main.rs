@@ -1236,21 +1236,26 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        // Escalate to FAILURE when a GdtIllegalModifier error is present —
-        // mirrors the GdtIllegalModifier escalation in the no-purpose branch
-        // of cmd_check (the block that follows `finish_check` there).
-        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
+        // INV-SF-2 (#5403): the IDENTICAL gate the no-purpose branch runs, over
+        // this branch's own already-merged, already-reported list — the build/
+        // eval front end, `check_constraints_with_values` and
+        // `run_gdt_check_passes` folded together above. Both paths therefore
+        // gate on "what the user was just shown", which is PRD §7's "applied
+        // identically on check's no-purpose and `--purpose` paths via one
+        // shared helper".
         //
-        // NOTE (task 5748): this is the ONLY ad-hoc escalation on this branch —
-        // there is no DFM-Error counterpart to sub-path (b)'s
-        // `has_dfm_rule && dfm_has_error_diagnostic(...)` gate. That asymmetry
-        // is PRE-EXISTING and deliberately NOT fixed here; leaf γ (#5403)
-        // closes it incidentally when it replaces both ad-hoc predicates with a
-        // single general `Severity::Error` gate over the merged set.
-        if diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
-        {
+        // Placement is unchanged from the GdtIllegalModifier escalation this
+        // replaces: after `finish_check`, so stdout is byte-identical and only
+        // the exit code escalates. That escalation is subsumed —
+        // `illegal_modifier_error` is unconditionally `Diagnostic::error`, so
+        // the general severity test sees every diagnostic the code-scoped one
+        // did. GdtRemoved2018 warnings stay non-fatal.
+        //
+        // #5748 recorded this branch's lack of a DFM-Error counterpart as a
+        // PRE-EXISTING asymmetry for γ to close incidentally; it is closed
+        // here, and `cli_check.rs::check_purpose_gate_matches_the_no_purpose_gate`
+        // asserts the two paths' exit codes agree so they cannot drift again.
+        if check_gating_error(&diagnostics).is_some() {
             return ExitCode::FAILURE;
         }
 
