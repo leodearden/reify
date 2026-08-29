@@ -1107,7 +1107,10 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri ge
 # fails on any pinned fixture missing here. Do not hand-edit without re-running
 # it; do not trust a copy of this list anywhere else.
 #
-# NOTE the two lists NEST: every _RUST_COUPLED_RI_FIXTURES member is also
+# NOTE the two lists MOSTLY NEST: every _RUST_COUPLED_RI_FIXTURES member that is
+# also a grammar-ledger pin is listed below as well (jacobian_column_members.ri is
+# the exception — it is read by a compiled Rust target but is not an
+# EXPECTED_CLEAN pin, so it has no gui entry to retain). Those that are pinned are
 # pinned in the ledger, and the rust arm already sets gui=1, so it short-circuits
 # them. They are retained here deliberately so that dropping a fixture from the
 # rust list can never silently drop its gui coverage too.
