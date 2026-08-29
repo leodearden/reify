@@ -153,6 +153,18 @@ pub fn transient_response(
 // stay `Real`/`Dimensionless` — see their own notes in modal_analysis.ri. Do not
 // generalise this correction to them.
 //
+// Return-type pin (#6094): crates/reify-compiler/tests/modal_mechanism_compile.rs
+// :: mod modal_analysis_fns_stdlib_compile — pins BOTH overloads' declared
+// `List<Length>` and, at a real call site, the bound cell's type. It is NESTED in
+// that binary, NOT a standalone tests/modal_analysis_fns_stdlib_compile.rs: a new
+// top-level test binary is `reason=unregistered-standalone` under the C1/C2
+// harness-layout contract (scripts/check-harness-baseline-registration.sh), so do
+// not "restore" one — the host site's header explains the choice. The emitted-Value
+// half is pinned independently in crates/reify-eval/src/modal_ops.rs
+// (`displacement_at_series_entries_are_length_dimensioned`), because nothing
+// compares a declared return type against the emitted Value — which is exactly how
+// the original `List<Real>` / `Value::Real` pair drifted into being.
+//
 // NOTE: invoked as a FREE function `displacement_at(history, location, direction)`
 // — method-call syntax is not UFCS in Reify, so `history.displacement_at(...)`
 // would not resolve.
@@ -201,6 +213,10 @@ pub fn displacement_at(
 //
 // Body discipline: same as the String overload — `[]` is the inline placeholder;
 // the trampoline is always registered and the body never runs.
+//
+// Return-type pin: covered by the same pin cited at the String overload above
+// (mod modal_analysis_fns_stdlib_compile in modal_mechanism_compile.rs, which
+// asserts exactly 2 overloads with differing `location` types).
 @optimized("modal::displacement_at")
 pub fn displacement_at(
     history   : DisplacementTimeHistory,
