@@ -932,12 +932,17 @@ fn check_purpose_surfaces_geometry_compile_error() {
         &common::fixture_path("mirror_bare_origin_purpose.ri"),
     ]);
 
-    // Unchanged by this leaf — see the sibling test: β fixes collection, γ
-    // (#5403) lands the Severity::Error exit gate that flips this.
+    // POST-γ (#5403): the identical `check_gating_error` gate now runs on this
+    // path too, over the same already-merged, already-reported `diagnostics`
+    // list. This fixture's `mirror: ox argument expects Length` /
+    // `failed to compile geometry operation: …` errors are not allowlisted, so
+    // the exit code moves. Above the OCCT early-return on purpose: the gate is
+    // a pure function of the diagnostic list and needs no kernel.
     assert!(
-        status.success(),
-        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
-         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "γ (#5403) gates the --purpose path identically to the no-purpose one; \
+         this fixture's geometry-compile errors are not allowlisted.\n\
+         stdout: {stdout}\nstderr: {stderr}"
     );
 
     // The purpose path itself must be untouched by the build()-vs-eval() swap.
@@ -1016,11 +1021,14 @@ fn check_purpose_does_not_contradict_definite_verdicts() {
         &common::fixture_path("mirror_bare_origin_purpose.ri"),
     ]);
 
-    // Unchanged by this leaf — γ (#5403) lands the Severity::Error exit gate.
+    // POST-γ (#5403): same flip as the sibling test above. Orthogonal to what
+    // this lock actually measures — the self-contradiction check below reads
+    // stdout against stderr and is indifferent to the exit code — but asserted
+    // rather than dropped, so a one-sided regression on either path is loud.
     assert!(
-        status.success(),
-        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
-         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "γ (#5403) gates the --purpose path on this fixture's non-allowlisted \
+         geometry-compile errors.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     let definite: Vec<&str> = stdout
@@ -1049,6 +1057,60 @@ fn check_purpose_does_not_contradict_definite_verdicts() {
              does.\nstdout: {stdout}\nstderr: {stderr}"
         );
     }
+}
+
+/// Task 5403 (γ) — the two `cmd_check` paths must gate IDENTICALLY.
+///
+/// This closes a PRE-EXISTING asymmetry that #5748 recorded but deliberately
+/// did not fix: before γ, the `--purpose` path carried only the
+/// `GdtIllegalModifier` escalation, with no counterpart to the no-purpose
+/// path's `has_dfm_rule && dfm_has_error_diagnostic(...)` gate. Its comment
+/// said leaf γ "closes it incidentally when it replaces both ad-hoc predicates
+/// with a single general `Severity::Error` gate over the merged set". It does
+/// — and this test is what stops the two paths drifting apart again, since
+/// nothing else compares them directly.
+///
+/// `mirror_bare_origin_purpose.ri` is the right fixture: it carries
+/// non-allowlisted geometry-compile Errors, and both paths reach them (the
+/// no-purpose path through `realize_for_check`, the `--purpose` path through
+/// D1 item 2's `module_has_geometry` build routing).
+///
+/// Asserting `status.code()` EQUALITY, not just "both non-zero", so a future
+/// one-sided change — one path exiting 1 and the other 2, say — is loud rather
+/// than silently tolerated.
+///
+/// Not OCCT-gated: the gate reads the merged diagnostic list and needs no
+/// kernel, and both paths are compared under whatever mode the build is in, so
+/// stub mode compares stub against stub.
+#[test]
+fn check_purpose_gate_matches_the_no_purpose_gate() {
+    let fixture = common::fixture_path("mirror_bare_origin_purpose.ri");
+
+    let (plain_status, plain_stdout, plain_stderr) = common::run_subcommand("check", &fixture);
+    let (purpose_status, purpose_stdout, purpose_stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=MirrorBareOriginPurpose",
+        &fixture,
+    ]);
+
+    assert!(
+        !plain_status.success(),
+        "no-purpose path must gate on the non-allowlisted geometry-compile \
+         errors.\nstdout: {plain_stdout}\nstderr: {plain_stderr}"
+    );
+    assert!(
+        !purpose_status.success(),
+        "--purpose path must gate on the SAME errors — this is the asymmetry \
+         #5748 recorded and γ closes.\nstdout: {purpose_stdout}\nstderr: {purpose_stderr}"
+    );
+    assert_eq!(
+        plain_status.code(),
+        purpose_status.code(),
+        "both paths run the identical `check_gating_error` gate over their own \
+         already-reported diagnostic list, so their exit codes must agree \
+         exactly.\nno-purpose stderr: {plain_stderr}\n--purpose stderr: {purpose_stderr}"
+    );
 }
 
 /// esc-5748-6 regression lock: `reify check` must not print EXPORT-ONLY errors.
