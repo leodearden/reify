@@ -1330,3 +1330,260 @@ fn unbounded_user_function_recursion_yields_undef_and_no_tangent_rather_than_a_s
         .expect("spawn");
     handle.join().expect("the recursion guard must fire before the stack runs out");
 }
+
+// ===========================================================================
+// Step-13: the refusal is LOUD, never a silent zero row
+// ===========================================================================
+//
+// PRD §7.7: "Non-numeric operands stop contributing phantom gradients."
+// INV-SF-7: "a well-typed wrong value is the worst shape."
+//
+// `jacobian_row` is the boundary where a tangent becomes a number η can put in
+// a matrix.  A zero row is a CLAIM — "this residual does not move when you
+// move this variable" — and when the truth is "we could not tell", that claim
+// is false in the most damaging possible way: the solver believes the residual
+// is already stationary in that direction and stops pushing on it.  So every
+// path that cannot produce a derivative returns a typed refusal naming the
+// construct responsible, which η turns into a tier-2 refusal instead of
+// stalling on a gradient it has no reason to trust.
+
+use reify_expr::dual_eval::{NonDifferentiable, jacobian_row};
+
+fn jrow(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    seed_cells: &[ValueCellId],
+) -> Result<(f64, Vec<f64>), NonDifferentiable> {
+    let ctx = EvalContext::simple(values);
+    let seeds = Seeds::new(seed_cells);
+    let mut record = BranchRecord::new();
+    jacobian_row(expr, &ctx, &seeds, &mut record)
+}
+
+/// `[literal, expr][index]` — an `IndexAccess` node, a kind this task does not
+/// differentiate.
+fn index_access(object: CompiledExpr, index: CompiledExpr) -> CompiledExpr {
+    let content_hash =
+        ContentHash::of(b"index_access").combine(object.content_hash).combine(index.content_hash);
+    CompiledExpr {
+        kind: reify_ir::CompiledExprKind::IndexAccess {
+            object: Box::new(object),
+            index: Box::new(index),
+        },
+        result_type: dl(),
+        content_hash,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (1) The happy path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jacobian_row_returns_the_si_primal_and_a_full_width_row_for_a_smooth_residual() {
+    let (values, seed_cells) = probe(&[("x", 3.0), ("y", 4.0)]);
+    // r = sqrt(x² + y²) − 5
+    let expr = binop(
+        BinOp::Sub,
+        call1(
+            "sqrt",
+            binop(
+                BinOp::Add,
+                binop(BinOp::Mul, pref("x"), pref("x")),
+                binop(BinOp::Mul, pref("y"), pref("y")),
+            ),
+        ),
+        literal(Value::Real(5.0)),
+    );
+    let (primal, row) = jrow(&expr, &values, &seed_cells).expect("smooth residual");
+
+    let ctx = EvalContext::simple(&values);
+    assert_eq!(
+        primal,
+        eval_expr(&expr, &ctx).as_f64().unwrap(),
+        "the returned primal is the residual's own SI value, not a recomputation"
+    );
+    assert_eq!(row.len(), seed_cells.len(), "one column per seed, always");
+    assert!((row[0] - 0.6).abs() < 1e-12);
+    assert!((row[1] - 0.8).abs() < 1e-12);
+}
+
+#[test]
+fn a_residual_that_truly_does_not_move_gets_an_honest_zero_row() {
+    // The distinction this whole step exists to preserve: a PROVABLE zero and
+    // an unavailable derivative must not look alike.  Here the zero is real.
+    let (values, seed_cells) = probe(&[("x", 3.0), ("y", 4.0)]);
+    let expr = literal(Value::Real(7.0));
+    let (primal, row) = jrow(&expr, &values, &seed_cells).expect("a constant is differentiable");
+    assert_eq!(primal, 7.0);
+    assert_eq!(row, vec![0.0, 0.0]);
+}
+
+// ---------------------------------------------------------------------------
+// (2) An Undef primal
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jacobian_row_refuses_an_undef_primal_instead_of_returning_a_zero_row() {
+    let mut values = ValueMap::new();
+    values.insert(cell("x"), Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH });
+    values.insert(cell("d"), Value::Real(0.0));
+    let seed_cells = vec![cell("x"), cell("d")];
+
+    // Dimension-mismatched addition: Scalar{LENGTH} + Real.
+    let mismatch = binop(BinOp::Add, pref("x"), literal(Value::Real(1.0)));
+    assert!(
+        matches!(
+            jrow(&mismatch, &values, &seed_cells),
+            Err(NonDifferentiable::UndefPrimal { .. })
+        ),
+        "a dimension mismatch must refuse, got {:?}",
+        jrow(&mismatch, &values, &seed_cells)
+    );
+
+    // Division by zero.
+    let div0 = binop(BinOp::Div, pref("x"), pref("d"));
+    assert!(matches!(
+        jrow(&div0, &values, &seed_cells),
+        Err(NonDifferentiable::UndefPrimal { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// (3) An unsupported kind — but ONLY when it is seed-dependent
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_seed_dependent_unsupported_kind_is_named_in_the_refusal() {
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    // [x, 1.0][0] — IndexAccess is not differentiated, and the list depends on
+    // the seed, so the derivative is genuinely unknown here.
+    let expr = index_access(
+        reify_test_support::builders::expr::list_expr(vec![pref("x"), literal(Value::Real(1.0))]),
+        literal(Value::Int(0)),
+    );
+    match jrow(&expr, &values, &seed_cells) {
+        Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
+            assert!(
+                !kind.is_empty(),
+                "the refusal must NAME the construct, or the user cannot act on it"
+            );
+        }
+        other => panic!("expected UnsupportedKind, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_same_unsupported_kind_is_an_honest_zero_row_when_it_is_seed_independent() {
+    // The contrast that makes the refusal meaningful: an `IndexAccess` that
+    // cannot reach a seed has a derivative, and it is zero.  Refusing here
+    // would make every residual containing any unsupported construct
+    // undifferentiable, however irrelevant that construct is.
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    let constant_index = index_access(
+        reify_test_support::builders::expr::list_expr(vec![
+            literal(Value::Real(2.0)),
+            literal(Value::Real(1.0)),
+        ]),
+        literal(Value::Int(0)),
+    );
+    // r = x + [2.0, 1.0][0]
+    let expr = binop(BinOp::Add, pref("x"), constant_index);
+    let (primal, row) = jrow(&expr, &values, &seed_cells).expect("seed-independent ⇒ zero, not refusal");
+    assert_eq!(primal, 5.0);
+    assert_eq!(row, vec![1.0]);
+}
+
+// ---------------------------------------------------------------------------
+// (4) A non-scalar root
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jacobian_row_rejects_a_non_scalar_root_naming_what_it_got() {
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+
+    // Bool root — a comparison is not a residual.
+    let boolean = binop(BinOp::Gt, pref("x"), literal(Value::Real(5.0)));
+    match jrow(&boolean, &values, &seed_cells) {
+        Err(NonDifferentiable::NonScalarResult { got }) => assert_eq!(got, "Bool"),
+        other => panic!("expected NonScalarResult, got {other:?}"),
+    }
+
+    // Point root.
+    let point = literal(Value::Point(vec![Value::Real(1.0), Value::Real(2.0)]));
+    match jrow(&point, &values, &seed_cells) {
+        Err(NonDifferentiable::NonScalarResult { got }) => assert_eq!(got, "Point"),
+        other => panic!("expected NonScalarResult, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (5) A non-finite tangent component
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jacobian_row_rejects_a_non_finite_tangent_even_when_the_primal_is_finite() {
+    // r = y / x with x = 1e-200: the primal is a perfectly ordinary 1e200, but
+    // the quotient rule's denominator x² UNDERFLOWS to exactly zero, so both
+    // columns come out ±Inf.  Handing those to a linear solve would poison the
+    // whole step, and the finite primal gives no hint anything is wrong.
+    let (values, seed_cells) = probe(&[("y", 1.0), ("x", 1e-200)]);
+    let expr = binop(BinOp::Div, pref("y"), pref("x"));
+
+    let ctx = EvalContext::simple(&values);
+    assert_eq!(
+        eval_expr(&expr, &ctx),
+        Value::Real(1e200),
+        "the primal really is finite — that is what makes this case dangerous"
+    );
+    match jrow(&expr, &values, &seed_cells) {
+        Err(NonDifferentiable::NonFiniteTangent { column }) => {
+            assert!(column < 2, "the refusal names which column blew up");
+        }
+        other => panic!("expected NonFiniteTangent, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (6) Display
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_non_differentiable_variant_display_names_the_offending_construct() {
+    use reify_expr::branch_signature::KinkSite;
+    let cases = [
+        NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![1, 2]) },
+        NonDifferentiable::UnsupportedKind {
+            kind: "IndexAccess",
+            site: KinkSite::new(vec![0]),
+        },
+        NonDifferentiable::NonScalarResult { got: "Point" },
+        NonDifferentiable::NonFiniteTangent { column: 3 },
+    ];
+    for case in &cases {
+        let text = case.to_string();
+        assert!(!text.is_empty(), "every variant must render");
+        // The message has to be actionable on its own: η copies it into a
+        // tier-2 refusal, where the user sees it without the surrounding code.
+        assert!(
+            text.len() > 20,
+            "a refusal that only says its variant name is not actionable: {text:?}"
+        );
+    }
+    assert!(
+        NonDifferentiable::UnsupportedKind { kind: "IndexAccess", site: KinkSite::root() }
+            .to_string()
+            .contains("IndexAccess"),
+        "the offending kind must appear verbatim in the message"
+    );
+    assert!(
+        NonDifferentiable::NonScalarResult { got: "Point" }.to_string().contains("Point")
+    );
+    assert!(
+        NonDifferentiable::NonFiniteTangent { column: 3 }.to_string().contains('3'),
+        "the failing column index must appear"
+    );
+    // It is an error type, so `?` works in η's assembly loop.
+    fn assert_is_error<E: std::error::Error>(_: &E) {}
+    assert_is_error(&NonDifferentiable::NonFiniteTangent { column: 0 });
+}
