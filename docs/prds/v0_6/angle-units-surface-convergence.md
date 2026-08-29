@@ -225,9 +225,10 @@ is dimensionally identical — `5N*m`, `5m^2*kg*s^-2` and their difference all e
 referenced at `:1511`), scanned in `tree-sitter-reify/src/scanner.c:244-258`
 (`if (valid_symbols[UNIT_MUL_OP] && c == '*') { … if (is_unit_start(lookahead)) …}`), with
 `is_unit_start` at `:101` matching `[A-Za-z_(]`. U+00B7 appears **nowhere** in `grammar.js` or
-`scanner.c`. The change is therefore a scanner-local widening of one character class plus a
-UTF-8-aware read — a materially smaller diff than "a grammar change" implies, but still a
-parser-seam change (→ G5 B+H).
+`scanner.c`. The change is therefore a scanner-local widening of one character class **only** —
+no UTF-8-aware decoding is required, because `lexer->lookahead` is an `int32_t` carrying an
+already-decoded codepoint (see §5 C2's CORRECTION 2026-08-29) — a materially smaller diff than
+"a grammar change" implies, but still a parser-seam change (→ G5 B+H).
 
 ### 3.9 Migration blast radius (MEASURED at authoring; re-measure at decompose per G6)
 
@@ -355,10 +356,29 @@ parse_and_resolve(format!("1{ℓ}")) succeeds
 Empty labels (dimensionless) are excluded. `g/cm^3` resolves to `999.9999999999999` — the
 tolerance is load-bearing, not slack.
 
-**Scanner contract.** `UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`), in both
+**Scanner contract.** `UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (the decoded codepoint
+`0xB7` — `lexer->lookahead == 0xB7`, **not** the UTF-8 byte pair `0xC2 0xB7`), in both
 cases only when the following character satisfies `is_unit_start` (`scanner.c:101`). Nothing else
 changes: `_unit_div_op` stays `/`, exponent stays `^`, `signed_integer` stays `/-?\d+/`. `·`
 outside a `unit_expr` remains an error (there is no general `·` operator in Reify).
+
+> **CORRECTION 2026-08-29 (task 5949, from task 5784's decompose addendum K1).** The contract
+> sentence above previously read "`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7
+> (UTF-8 `0xC2 0xB7`)"; unlike the 2026-08-19 note below it has been corrected **in place**,
+> because an implementer coding to the byte-pair wording writes a branch that provably can
+> never fire. Source: task 5784's decompose addendum **K1**, re-confirmed by the 2026-08-05
+> sweep filed as **esc-5784-4** and recommended for the PRD by **esc-5784-3**; it is also
+> binding record C1 of this PRD's capability manifest. Substrate fact:
+> `tree-sitter-reify/src/tree_sitter/parser.h:49` declares `int32_t lookahead;` — tree-sitter
+> delivers **decoded codepoints**, not raw bytes. U+00B7 therefore arrives as the single value
+> `0xB7`, the lead byte `0xC2` is never observable, and one unmodified `lexer->advance()`
+> consumes the whole 2-byte codepoint. Controlled experiment (three isolated repo copies,
+> isolated `XDG_CACHE_HOME`, recompilation proven by a deliberate `#error` variant that failed
+> to build): HYP A — `(c == '*' || c == 0xB7)` — gives
+> `tree-sitter parse --quiet tests/prd-gate/fixtures/unit_middot_mul.ri` **exit 0** with the
+> correct tree (`left: N`, `right: m`); HYP B — the PRD's byte pair, `c == 0xC2` then require
+> `0xB7` — gives **exit 1**, a branch that can never fire. The same correction voids §3.8's
+> "UTF-8-aware read" phrase, corrected there too.
 
 > **CORRECTION 2026-08-19 (Leo, via esc-5784-5).** The sentence "Nothing else changes" above is
 > **wrong**, and is left in place only so the record of what task 5784 was planned against stays
@@ -367,7 +387,10 @@ outside a `unit_expr` remains an error (there is no general `·` operator in Rei
 > updated too. The rest of the paragraph stands — `_unit_div_op`, the exponent token and
 > `signed_integer` genuinely do not change, and `·` outside a `unit_expr` genuinely stays an error.
 > The correction was measured while planning task 5784 and is folded into that task's plan; it is
-> recorded here so a future reader of C2 does not repeat the omission.
+> recorded here so a future reader of C2 does not repeat the omission. **Provenance:** the
+> measurement originated in the 2026-08-05 sweep filed as **esc-5784-4**; the **esc-5784-5**
+> cited above is that sweep's L2 rollup (`member_ids == ["esc-5784-4"]`) — the same measurement
+> under a later ID, not a second one.
 
 ### C3 — Torque dimension
 
