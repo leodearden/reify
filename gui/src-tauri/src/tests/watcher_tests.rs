@@ -318,6 +318,62 @@ fn wait_for_watch_registration_via_removal(
     wait_for_watch_registration_inner(dir, probe_seen, true, Duration::from_secs(10))
 }
 
+/// A positive-progress barrier (added by #6462): waits for TWO deliveries
+/// of a control path -- one whose callback the filter under test is
+/// expected to PASS -- in `sink`, calling `write_control` before each wait.
+/// Delivery of a control event is positive evidence that an EARLIER write
+/// the filter is expected to DROP has already been through the notify
+/// closure, replacing a fixed sleep, which only ever proved that time
+/// passed.
+///
+/// WHY TWO deliveries and not one: the debouncer is keyed by path, so one
+/// batch holds at most one entry per path -- two deliveries of the same
+/// control path are therefore necessarily two DISTINCT batches.
+/// `drain_ready` (watcher.rs:98-124) is a `HashMap::retain`, so intra-batch
+/// order is unspecified, and a one-delivery barrier could snapshot between
+/// a same-batch straggler and the control (see
+/// `wait_for_control_drain_does_not_return_until_a_same_batch_straggler_has_landed`
+/// above for the discriminating case). The single worker thread runs a
+/// batch to completion before draining the next (watcher.rs:307-332), so
+/// observing the second delivery proves every callback of the first
+/// delivery's batch has already returned. A filtered write issued BEFORE
+/// the first control write can never land in a later batch than it
+/// (recorded earlier => earlier debounce deadline), so it is visible by
+/// then either way.
+///
+/// WHY this is not subject to the retry-cadence constraint documented on
+/// `wait_until_with_retry` (:110-119): the second write is gated on the
+/// FIRST DELIVERY, which can only have happened after that entry was
+/// drained out of `pending`, so `Debouncer::record`'s insert-or-update can
+/// never perpetually reset a pending entry here. There is no cadence to
+/// tune -- which is why this is built on `wait_for` rather than on
+/// `wait_until_with_retry`.
+///
+/// PRECONDITION: the caller must already have confirmed the watch is live
+/// (`wait_for_watch_registration` / `wait_for_watch_registration_via_removal`);
+/// this helper assumes a write produces an event and cannot recover a
+/// write issued before registration.
+///
+/// `timeout` bounds EACH of the two waits, not the pair. `write_control`
+/// should vary the bytes it writes across calls (mirroring
+/// `wait_for_watch_registration_inner`'s `probe_attempt` counter, above),
+/// so successive control writes differ on disk instead of relying on a
+/// write of byte-identical content emitting its own Modify.
+fn wait_for_control_drain(
+    sink: &Arc<Mutex<Vec<PathBuf>>>,
+    control_name: &str,
+    mut write_control: impl FnMut(),
+    timeout: Duration,
+) -> bool {
+    let count = |paths: &[PathBuf]| paths.iter().filter(|p| p.ends_with(control_name)).count();
+    write_control();
+    if !wait_for(sink, timeout, |paths| count(paths) >= 1) {
+        return false;
+    }
+    write_control();
+    wait_for(sink, timeout, |paths| count(paths) >= 2)
+}
+
 /// Discriminating test for the constraint that motivates
 /// `wait_for_watch_registration_via_removal` (defined above its
 /// Changed-probe sibling): a watcher constructed with `Some(target_file)`
