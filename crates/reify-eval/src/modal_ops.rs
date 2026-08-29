@@ -3000,10 +3000,10 @@ mod tests {
     use reify_stdlib::modal::transient::uniform_time_grid;
 
     use super::{
-        ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
-        TransientCache, assemble_mechanism_km, assemble_modal_km, build_beam_mesh,
-        build_dirichlet_bcs, degenerate_displacement_history, degenerate_modal_result,
-        displacement_at_trampoline, eigensolve_modal, extract_damping,
+        DampingKind, ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh,
+        ModalTrampolineRun, TransientCache, assemble_mechanism_km, assemble_modal_km,
+        build_beam_mesh, build_dirichlet_bcs, classify_damping, degenerate_displacement_history,
+        degenerate_modal_result, displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
         mode_shape_value, nearest_node, placeholder_part, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
@@ -6936,6 +6936,236 @@ mod tests {
                 "Case C: an absent damping descriptor must echo Value::Undef \
                  (the field_or fallback) — this is the bit-identical-output \
                  guarantee for printer_z_compliant_mount.ri"
+            );
+        }
+    }
+
+    /// Task #6875 step-5 (RED → GREEN in step-6): an unrecognised
+    /// `DampingDescriptor` refinement must be reported, never silently zeroed.
+    ///
+    /// `extract_damping` discriminates on the runtime `type_name` and returns
+    /// `(0.0, 0.0)` for *anything* that is not `RayleighDamping` — correct for
+    /// `NoDamping` (genuinely undamped) but silently wrong for a descriptor the
+    /// trampoline simply does not implement. The damped-modal-bonded-
+    /// heterogeneous capability manifest (`docs/prds/v0_6/`, §β) names the next
+    /// one: `MaterialDamping`. Routing the mechanism path through
+    /// `extract_damping` alone would reproduce the INV-SF-3 silent-failure
+    /// shape one descriptor later, so the seam is split: `classify_damping`
+    /// carries an explicit `Unsupported(type_name)` classification that the
+    /// producer turns into a coded warning.
+    ///
+    /// Case B is what makes the warning a signal rather than noise: the
+    /// supported descriptors must stay completely silent.
+    #[test]
+    fn mechanism_modal_warns_on_unsupported_damping_descriptor() {
+        /// Drive the trampoline, asserting a Completed outcome, and return the
+        /// `ModalResult` fields plus the diagnostics.
+        fn run(mech: Value, options: Value) -> (Box<StructureInstanceData>, Vec<Diagnostic>) {
+            let value_inputs = vec![mech, options];
+            let outcome = solve_mechanism_modal_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected Completed outcome");
+            };
+            match result {
+                Value::StructureInstance(d) => (d, diagnostics),
+                other => panic!("expected ModalResult StructureInstance, got {other:?}"),
+            }
+        }
+
+        const CODE: &str = "W_MechanismModalUnsupportedDamping";
+
+        // ── Case A: a descriptor this trampoline does not implement ──────────
+        {
+            let unsupported = struct_instance(
+                "MaterialDamping",
+                vec![("loss_factor".to_string(), Value::Real(0.02))],
+            );
+            let options = modal_options(vec![("damping".to_string(), unsupported.clone())]);
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let (data, diagnostics) = run(mech, options);
+
+            // A merely-unsupported descriptor must not abort the solve — the
+            // frequencies are still correct, only the damping intent is dropped.
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "Case A: an unsupported descriptor must not produce an Error; \
+                 got {diagnostics:?}",
+            );
+
+            let coded: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+                .collect();
+            assert_eq!(
+                coded.len(),
+                1,
+                "Case A: expected exactly one {CODE} Warning; got {diagnostics:?}",
+            );
+
+            // The author must be able to locate the dropped intent, so the
+            // offending descriptor's runtime type name appears in the message
+            // (mirroring the body-index naming in W_MechanismModalRotationalDOF).
+            assert!(
+                coded[0].message.contains("MaterialDamping"),
+                "Case A: the warning must name the offending descriptor type so \
+                 the author can locate the dropped intent; got: {}",
+                coded[0].message,
+            );
+
+            // The degrade must stay honest downstream: ζ really is 0 (we did not
+            // apply the descriptor), and the descriptor is echoed back verbatim
+            // rather than swallowed.
+            let modes = match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("Case A: modes must be a List; got {other:?}"),
+            };
+            assert!(!modes.is_empty(), "Case A: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let m = match mode {
+                    Value::StructureInstance(d) => d,
+                    other => panic!("Case A: modes[{i}] must be a Mode; got {other:?}"),
+                };
+                assert_eq!(
+                    m.fields.get("damping_ratio"),
+                    Some(&Value::Real(0.0)),
+                    "Case A: an unsupported descriptor must report ζ = 0 for \
+                     mode {i} — the warning is what makes that honest",
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&unsupported),
+                "Case A: ModalResult.damping must echo the unsupported \
+                 descriptor verbatim — it is reported back, never swallowed"
+            );
+        }
+
+        // ── Case B: the supported set must stay SILENT ───────────────────────
+        // Without this, the warning would be noise rather than signal.
+        {
+            let supported = [
+                (
+                    "RayleighDamping",
+                    modal_options(vec![("damping".to_string(), rayleigh_damping(0.0, 1e-4))]),
+                ),
+                (
+                    "NoDamping",
+                    modal_options(vec![(
+                        "damping".to_string(),
+                        struct_instance("NoDamping", vec![]),
+                    )]),
+                ),
+                ("absent", struct_instance("ModalOptions", vec![])),
+            ];
+            for (label, options) in supported {
+                let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+                let (_data, diagnostics) = run(mech, options);
+                assert!(
+                    !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                    "Case B/{label}: a supported damping descriptor must emit no \
+                     {CODE} diagnostic; got {diagnostics:?}",
+                );
+            }
+        }
+
+        // ── Case C: the classifier seam's own contract ───────────────────────
+        // `classify_damping` is the single extension point both producers
+        // inherit; pin its four classifications directly so a future descriptor
+        // arm has one obvious place to land.
+        {
+            assert!(
+                matches!(
+                    classify_damping(&modal_options(vec![(
+                        "damping".to_string(),
+                        rayleigh_damping(0.5, 1e-6),
+                    )])),
+                    DampingKind::Rayleigh { alpha, beta } if alpha == 0.5 && beta == 1e-6
+                ),
+                "Case C: a RayleighDamping descriptor must classify as \
+                 Rayleigh carrying its (α, β)"
+            );
+            assert!(
+                matches!(
+                    classify_damping(&modal_options(vec![(
+                        "damping".to_string(),
+                        struct_instance("NoDamping", vec![]),
+                    )])),
+                    DampingKind::NoDamping
+                ),
+                "Case C: an explicit NoDamping marker must classify distinctly \
+                 from an absent field — both are silent, but they are different \
+                 author intents"
+            );
+            assert!(
+                matches!(
+                    classify_damping(&struct_instance("ModalOptions", vec![])),
+                    DampingKind::Absent
+                ),
+                "Case C: a missing damping field must classify as Absent"
+            );
+            assert!(
+                matches!(classify_damping(&Value::Undef), DampingKind::Absent),
+                "Case C: a non-StructureInstance options value must classify as \
+                 Absent, not Unsupported"
+            );
+            match classify_damping(&modal_options(vec![(
+                "damping".to_string(),
+                struct_instance(
+                    "MaterialDamping",
+                    vec![("loss_factor".to_string(), Value::Real(0.02))],
+                ),
+            )])) {
+                DampingKind::Unsupported(type_name) => assert_eq!(
+                    type_name, "MaterialDamping",
+                    "Case C: Unsupported must carry the offending runtime \
+                     type_name so the producer can name it in a diagnostic"
+                ),
+                other => panic!(
+                    "Case C: an unimplemented DampingDescriptor refinement must \
+                     classify as Unsupported, got {other:?}"
+                ),
+            }
+
+            // The FEA seam must be bit-for-bit unchanged: `extract_damping` is
+            // re-expressed on the classifier, so re-assert exactly the inputs
+            // the landed `extract_damping_discriminates_rayleigh_from_none`
+            // covers (that test is not modified).
+            assert_eq!(
+                extract_damping(&modal_options(vec![(
+                    "damping".to_string(),
+                    rayleigh_damping(0.5, 1e-6),
+                )])),
+                (0.5, 1e-6),
+                "Case C: extract_damping must still return the Rayleigh pair"
+            );
+            assert_eq!(
+                extract_damping(&modal_options(vec![(
+                    "damping".to_string(),
+                    struct_instance("NoDamping", vec![]),
+                )])),
+                (0.0, 0.0),
+                "Case C: extract_damping must still flatten NoDamping to (0, 0)"
+            );
+            assert_eq!(
+                extract_damping(&modal_options(vec![])),
+                (0.0, 0.0),
+                "Case C: extract_damping must still flatten an absent field to (0, 0)"
+            );
+            assert_eq!(
+                extract_damping(&Value::Undef),
+                (0.0, 0.0),
+                "Case C: extract_damping must still flatten a non-struct to (0, 0)"
             );
         }
     }
