@@ -733,18 +733,34 @@ mod tests {
     /// regression test are guaranteed to exercise the exact same input string.
     const INVALID_PARSE_INPUT: &str = "{";
 
+    /// Path the inbound-unit pin below stages `ANGLE_PARAM_SOURCE` under.
+    ///
+    /// Deliberately NOT a real file: nothing exists at this path, and nothing
+    /// needs to.  `update_source` falls back to `PathBuf::from` when
+    /// `canonicalize` fails, so the un-canonicalized string becomes the
+    /// files-map key and the `angle_pin_inline` stem becomes the module name.
+    /// Keeping it synthetic means the `dirty` entry that pin stages can never
+    /// alias a tracked fixture on disk.
+    const ANGLE_PIN_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/angle_pin_inline.ri"
+    );
+
     /// Minimal source carrying BOTH an `Angle` and a `Length` param, for the
     /// inbound-unit pin below.  Both dimensions are present deliberately: the
     /// `Length` half is the discriminating control, without which an
     /// implementation that attached `ANGLE` to every dimensioned cell would
     /// still be green.
     ///
-    /// Kept inline rather than as a new file on disk.  `update_source`
-    /// canonicalizes its path argument only for the files-map key and derives
-    /// the module name from the path's file stem — the CONTENT string is what
-    /// gets parsed and compiled — so an existing fixture path plus this content
-    /// is sufficient, exactly as
-    /// `update_source_invalid_content_does_not_construct_new_engine` relies on.
+    /// Kept inline rather than as a file on disk, and paired with
+    /// `ANGLE_PIN_PATH` rather than with `BRACKET_PATH`.  `update_source`'s own
+    /// semantics are what make that work: it canonicalizes its path argument
+    /// only to key the files map, derives the module name from the path's file
+    /// stem, and parses/compiles the CONTENT string — it never reads the path
+    /// off disk.  So a path that does not exist is sufficient, and is strictly
+    /// safer than borrowing a tracked fixture's: pointing at `bracket.ri` would
+    /// leave this content staged `dirty` under that key, one `save_file` call
+    /// away from overwriting the fixture every sibling test reads.
     const ANGLE_PARAM_SOURCE: &str = r#"
 structure AnglePin {
     param theta : Angle  = 30deg
@@ -1941,7 +1957,7 @@ structure AnglePin {
         // compile is clean FIRST: a fixture that stopped compiling would
         // otherwise degrade every assertion below into a silent no-op.
         let update = ctx
-            .update_source(BRACKET_PATH, ANGLE_PARAM_SOURCE)
+            .update_source(ANGLE_PIN_PATH, ANGLE_PARAM_SOURCE)
             .expect("update_source should return Ok for ANGLE_PARAM_SOURCE");
         assert!(
             update.success,
