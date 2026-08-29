@@ -71,6 +71,35 @@
 //! scope. When it lands, register this module and the test should pass as
 //! written.
 //!
+//! # Disposition: case 6 is DESCOPED from #2980 and owned elsewhere
+//!
+//! esc-2980-8 offered three rulings (grant production scope / descope and file
+//! a follow-up / amend the PRD) and was never adjudicated — #2980 was
+//! re-dispatched with no scope grant. Its own recommended fallback was applied:
+//! case 6 is descoped from #2980, which lands PRD cases 1-5 green, and the gap
+//! is filed as its own task via ticket `tkt_0RT0HG842NB49XPZMC6GYT9NBB`
+//! (`spawned_from` 2980, `escalation_id` esc-2980-8) carrying the measurements
+//! above.
+//!
+//! Three things must land TOGETHER in that task, and none of them belong to
+//! #2980:
+//!
+//! 1. the production wiring (or a PRD amendment striking case 6);
+//! 2. the `#[path]` registration of this module in `harness_fea_solver_e2e.rs`;
+//! 3. the test-scoped heavy atom
+//!    `(package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^persistent_cache_determinism_anchor::/))`
+//!    appended to `REIFY_HEAVY_NEXTEST_FILTER` in
+//!    `scripts/heavy-test-filter-lib.sh`, plus the 8 -> 9 bump in BOTH drift
+//!    guards (`tests/infra/test_heavy_filter_atoms.sh`,
+//!    `tests/infra/test_verify_offline_partition.sh`).
+//!
+//! (2) and (3) are coupled in both directions. Registering without the atom
+//! puts a ~70-110 s test in the merge gate. Adding the atom without the
+//! registration is worse than useless: the offline heavy role runs its
+//! filterset with `--run-ignored all` (`scripts/verify.sh:751`), so the atom
+//! would name a test that does not exist, and the drift guards would be
+//! asserting a count that buys nothing.
+//!
 //! # Runtime
 //!
 //! Dominated by session 1's cold search — the same real loop that
