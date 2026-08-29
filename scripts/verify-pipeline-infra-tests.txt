@@ -389,3 +389,18 @@ tests/infra/test_spec_anchor_lint.sh tests/infra/test_spec_anchor_lint.sh
 # REIFY_GOVTEST_TEST_MODE=1 + REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1), which the
 # row below already selects.
 tests/infra/govtest_slice_reaper_lib.sh    tests/infra/test_govtest_slice_reaper.sh
+
+# Task 5870: the git rerere guard (shared .git/rr-cache is a COMMON path across
+# every warm lane, so one lane's resolution can be auto-applied and auto-staged
+# into another's merge). Mirrors the scripts/warm-lane-audit.sh row above — a
+# task-scope verify runs the guard's hermetic suite whenever the SUT changes.
+scripts/git-rerere-guard.sh    tests/infra/test_git_rerere_guard.sh
+# ...and setup-dev.sh, because the suite's (wiring) block asserts ON THAT FILE:
+# that it carries an uncommented call to the guard, and that the subcommand is
+# `arm` (a bare `check` would report the drift while leaving the fleet armed).
+# Without this row a task-scope verify that edits only setup-dev.sh — dropping or
+# commenting out the invocation, which is exactly how the guard becomes dead code
+# — never selects the suite that would catch it. Multiple rows per artifact are
+# the established pattern (scripts/warm-lane-audit.sh appears twice above, and
+# scripts/setup-dev.sh already has an OCCT row).
+scripts/setup-dev.sh           tests/infra/test_git_rerere_guard.sh
