@@ -105,7 +105,9 @@
 #       cap must be SPLIT into a second `harness_<subsystem2>.rs`, never
 #       allowed to balloon unbounded — and never accommodated by raising the
 #       cap, which would loosen the C2 ratchet to fit its first offender and
-#       contradict the ratified §3 W1/§7 band.
+#       contradict the ratified §3 W1/§7 band. Parking the overflow in one of
+#       the 7 override binaries instead is likewise refused — see the clause
+#       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #6461).
 #
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
