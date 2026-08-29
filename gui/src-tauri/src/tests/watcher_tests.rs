@@ -1296,9 +1296,16 @@ fn watcher_ignores_non_ri_file_changes() {
     let dir = tempfile::tempdir().unwrap();
     let txt_file = dir.path().join("notes.txt");
     std::fs::write(&txt_file, "initial content").unwrap();
+    // Created lazily by the first control write below, same as probe.ri --
+    // the notify wiring collapses an initial Create and a later Modify to
+    // the same `FileEvent::Changed`, so there is nothing to gain from
+    // pre-creating it.
+    let control_file = dir.path().join("control.ri");
 
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
+    let control_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let control_clone = control_paths.clone();
     let probe_seen = Arc::new(AtomicBool::new(false));
     let probe_seen_clone = probe_seen.clone();
 
@@ -1310,6 +1317,18 @@ fn watcher_ignores_non_ri_file_changes() {
             // `changed_paths` and fail the test outright.
             if path.ends_with("probe.ri") {
                 probe_seen_clone.store(true, Ordering::SeqCst);
+                return;
+            }
+            // MANDATORY for the same reason as the probe.ri arm above:
+            // control.ri IS a .ri file, and this test asserts
+            // `paths.is_empty()` below. Routing it into its own sink
+            // (rather than `changed_paths`) is what lets control.ri serve
+            // as a positive-progress barrier (#6462) while keeping that
+            // assertion meaning "no event of any kind reached the
+            // callback for a filtered file" instead of weakening it to a
+            // `.txt`-specific check.
+            if path.ends_with("control.ri") {
+                control_clone.lock().unwrap().push(path);
                 return;
             }
             changed_clone.lock().unwrap().push(path);
@@ -1330,8 +1349,32 @@ fn watcher_ignores_non_ri_file_changes() {
     // Modify a .txt file (should be ignored)
     std::fs::write(&txt_file, "updated content").unwrap();
 
-    // Wait long enough that we'd see the event if it weren't filtered
-    std::thread::sleep(Duration::from_millis(500));
+    // #6462: a fixed 500ms sleep stood here, gating the absence assertion
+    // below on wall-clock separation alone. Replaced with a
+    // positive-progress barrier: two deliveries of control.ri (which the
+    // extension filter passes) prove, by construction rather than by
+    // timeout, that the .txt write above has already been through the
+    // notify closure and dropped -- see `wait_for_control_drain`'s doc
+    // comment for why two deliveries, not one, are required.
+    let mut control_attempt = 0u32;
+    let drained = wait_for_control_drain(
+        &control_paths,
+        "control.ri",
+        || {
+            control_attempt += 1;
+            std::fs::write(
+                &control_file,
+                format!("structure Control {{ param n = {control_attempt} }}"),
+            )
+            .unwrap();
+        },
+        Duration::from_secs(10),
+    );
+    assert!(
+        drained,
+        "control.ri should have been delivered twice -- without that, the \
+         absence assertion below proves nothing about the extension filter"
+    );
 
     let paths = changed_paths.lock().unwrap();
     assert!(
