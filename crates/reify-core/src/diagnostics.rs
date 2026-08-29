@@ -5724,6 +5724,57 @@ mod tests {
         assert_eq!(s, "\"UnresolvedFunction\"");
     }
 
+    // --- BuiltinArgShapeUnrecognized tests (task 5371 — W_BUILTIN_ARG_SHAPE) ---
+    // The sibling of `UnresolvedFunction` at the same terminal fallback: the
+    // callee IS a known builtin, but an arg-aware ladder arm (list-helper /
+    // affine-algebra / field-op) returned `None` because the ARGUMENT SHAPE was
+    // not the family's, and the call then rode the fallback silently.
+
+    /// `DiagnosticCode::BuiltinArgShapeUnrecognized` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    ///
+    /// Constructed as a WARNING: #5371 changes no typing, so a mis-shaped call
+    /// keeps compiling. #6002's sibling `E_BuiltinArgShape` is the code that
+    /// POISONS to `Type::Error`; this one deliberately does not.
+    #[test]
+    fn diagnostic_code_builtin_arg_shape_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::BuiltinArgShapeUnrecognized);
+        assert_eq!(d.code, Some(DiagnosticCode::BuiltinArgShapeUnrecognized));
+        assert_eq!(d.severity, crate::Severity::Warning);
+    }
+
+    /// `BuiltinArgShapeUnrecognized` is DISTINCT from the codes it neighbours.
+    ///
+    /// Against `UnresolvedFunction` the split is load-bearing and the two are
+    /// mutually exclusive at the fallback: one says the name is unknown, the
+    /// other says the name is known and the call shape is not. Against
+    /// `FnTypeArgUnresolved` — an unresolved TYPE ARGUMENT — the subject is
+    /// different again.
+    #[test]
+    fn builtin_arg_shape_is_distinct_from_its_neighbouring_codes() {
+        assert_ne!(
+            DiagnosticCode::BuiltinArgShapeUnrecognized,
+            DiagnosticCode::UnresolvedFunction
+        );
+        assert_ne!(
+            DiagnosticCode::BuiltinArgShapeUnrecognized,
+            DiagnosticCode::FnTypeArgUnresolved
+        );
+        assert_ne!(
+            DiagnosticCode::BuiltinArgShapeUnrecognized,
+            DiagnosticCode::UnresolvedName
+        );
+    }
+
+    /// Under `feature = "serde"` the code serializes PascalCase; the LSP ships
+    /// this string on the wire, so a rename breaks editor consumers.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_builtin_arg_shape_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::BuiltinArgShapeUnrecognized).unwrap();
+        assert_eq!(s, "\"BuiltinArgShapeUnrecognized\"");
+    }
+
     /// Pins per-variant severity + variant-existence at the reify-types layer
     /// for all five multi-kernel-phase-3 variants in one table. Although the
     /// dispatcher-side `<builder>_carries_<severity>_severity_and_code` tests
