@@ -2843,6 +2843,63 @@ mod http_loader {
         assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
     }
 
+    /// SSE-framed counterpart to `pre_done_via_http_loader_corroborated_exits_zero`.
+    /// Proves what the JSON sibling does not: the full three-POST MCP
+    /// handshake and the `get_task` `structuredContent` decode complete
+    /// when the server answers `Content-Type: text/event-stream` instead
+    /// of `application/json` — i.e. the `ctype.contains("text/event-stream")`
+    /// branch at `fused_memory_client.rs:172-186` is exercised end-to-end
+    /// through the real binary for the first time.
+    #[test]
+    fn pre_done_via_http_loader_sse_corroborated_exits_zero() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        // Seed the runs.db corroboration leg.
+        insert_completed_event(&runs_db, "9998");
+
+        let mock = spawn_mock_mcp_sse(|args| {
+            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9998"));
+            // Files=[] → P5's git-diff check trivially passes; the runs.db
+            // task_completed event corroborates the done-flip.
+            Some(serde_json::json!({
+                "id": "9998",
+                "title": "Mock task 9998",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "9998",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "corroborated task via SSE must exit 0; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
+    }
+
     /// Pre-done via HTTP loader: a done/merged task with files but no
     /// runs.db corroboration event should emit a P5PhantomDone High finding.
     /// Proves the loader populates `files`/`done_provenance` correctly.
