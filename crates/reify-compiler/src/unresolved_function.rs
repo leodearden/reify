@@ -62,12 +62,80 @@ use crate::units::{
     TOLERANCING_MARKER_NAMES,
 };
 
-/// Names for which the terminal first-arg fallback's typing is **verified
-/// correct**, so they are deliberately named rather than left open-world.
+/// Builtins for which the terminal first-arg fallback's typing is **verified
+/// correct** — named rather than left open-world.
 ///
-/// Populated in step-6; forward-declared empty here so `is_known_builtin` can
-/// already reference it.
-pub const FIRST_ARG_TYPED_NAMES: &[&str] = &[];
+/// # What membership asserts
+///
+/// This family is deliberately **not a ladder arm** and resolves **no type**.
+/// It is a membership set only. An entry is a positive claim, checked against
+/// the eval body: *for this name, the result's type is the first argument's
+/// type, so the fallback that types it is right.* That is a stronger claim
+/// than [`EVAL_DEFERRED_BUILTIN_NAMES`] makes, and it is falsifiable — see the
+/// evidence table below.
+///
+/// The two are not interchangeable. A name whose fallback typing is merely
+/// *unverified* belongs in the manifest; only a name whose typing is *verified
+/// right* belongs here. Collapsing the distinction is how a known-false claim
+/// gets laundered into an allowlist.
+///
+/// # Evidence table
+///
+/// | name | eval body | why first-arg-preserving |
+/// |---|---|---|
+/// | `project` | `reify-stdlib/src/geometry.rs:1059` | frame projection: `Point3<L> -> Point3<L>`, `Vector3<L> -> Vector3<L>` (translation-invariant); the arm's own doc states both signatures |
+/// | `mod` | `reify-stdlib/src/numeric.rs:89` | `(Int, Int) -> Int`; every non-Int pair is `Undef` |
+/// | `to_global` | `reify-stdlib/src/fea.rs:494` | returns `Value::Field` carrying arg0's `domain_type`/`codomain_type` verbatim — only the data buffer is new |
+/// | `effective_tolerance_zone` | `reify-stdlib/src/tolerancing.rs:174` | arg0 validated `DimensionVector::LENGTH`; result is `Scalar { dimension: LENGTH }` |
+/// | `input_shape_apply` | `reify-stdlib/src/trajectory/input_shape.rs` (`eval_input_shape`) | echoes arg0's own `StructureInstanceData`, `type_id` included |
+/// | `complex_add` | `reify-stdlib/src/complex.rs:111` | requires `ad == bd`, result dimension is `*ad` |
+/// | `complex_exp` | `reify-stdlib/src/complex.rs:253` | dimensionless-in (else `Undef`), dimensionless-out |
+/// | `complex_sqrt` | `reify-stdlib/src/complex.rs:272` | dimensionless-in (else `Undef`), dimensionless-out |
+///
+/// # Reconciling the task brief's "16 fallback-correct" figure
+///
+/// #5371 named sixteen candidates. Eight are here; the other eight were
+/// excluded for two distinct reasons, both pinned by
+/// `tests::first_arg_typed_names_exclude_the_already_claimed_and_the_dimension_transforming`:
+///
+/// * **Five are already claimed** by [`crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES`]
+///   (task #5344, landed after the brief was measured): `transform_inverse`,
+///   `transform_compose`, `orient_inverse`, `orient_compose`, `orient_slerp`.
+///   The fallback never sees them, so an entry here would be an unfalsifiable
+///   claim about dead code — and would break that family's disjointness
+///   contract.
+/// * **Three are dimension-TRANSFORMING**, so first-arg typing is a
+///   known-false claim rather than an unverified one: `complex_mul`
+///   (`complex.rs:138`, `dimension = ad.mul(bd)`), `complex_div`
+///   (`complex.rs:160`, `ad.div(bd)`) and `complex_pow` (`complex.rs:191`,
+///   accumulates `dim^n` via `DimensionVector::mul`; `n == 0` yields
+///   `DIMENSIONLESS`). Each is wrong whenever the second operand is
+///   dimensioned or `n != 1`. This corroborates #6943's ratified
+///   reclassification of the three. They are in
+///   [`EVAL_DEFERRED_BUILTIN_NAMES`] instead, which suppresses the
+///   `UnresolvedFunction` warning identically while claiming only what is
+///   true.
+///
+/// # Lifetime
+///
+/// **#6014 (registry omega) DELETES this family** together with the terminal
+/// fallback itself, once every name here holds a real signature-registry row.
+/// The allowlist is interim scaffolding for the warn-mode window, not a
+/// permanent vocabulary — do not build on it. #6014's deletion note expects
+/// sixteen names; it will find eight, and this comment is the reconciliation
+/// it should read (it already says "verify each before deletion").
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const FIRST_ARG_TYPED_NAMES: &[&str] = &[
+    "project",
+    "mod",
+    "to_global",
+    "effective_tolerance_zone",
+    "input_shape_apply",
+    "complex_add",
+    "complex_exp",
+    "complex_sqrt",
+];
 
 /// Eval-dispatchable names that are not yet family-registered, whose typing is
 /// deliberately left to the terminal fallback.
