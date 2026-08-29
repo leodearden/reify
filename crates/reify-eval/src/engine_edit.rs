@@ -2062,6 +2062,12 @@ impl Engine {
                         // Commit via the cell-commit primitive (task δ #5056):
                         // atomically writes values/snapshot/cache/journal
                         // (INV-EVAL-1).
+                        //
+                        // Paired with edit_source's wave2 dependent-re-eval
+                        // commit below (~:3818, task #6423) — this pair had
+                        // been silently diverged (edit_source's wave2 wrote
+                        // no journal leg at all until #6423 migrated it);
+                        // change them together.
                         commit_cell_result(
                             CommitLegs {
                                 values: &mut values,
@@ -4306,6 +4312,9 @@ impl Engine {
             // For edit_source we MUST use the NEW reverse_index / trace_map
             // / demand (rather than self.eval_state's stale pre-edit
             // structures) because dependency edges may have shifted.
+            // The write-back below is now primitive-routed (task #6423);
+            // see the commit_cell_result call's own comment for the
+            // edit_param sync pointer.
             if !all_resolved_ids.is_empty() {
                 let wave2_dirty = crate::dirty::compute_dirty_cone(
                     &all_resolved_ids,
@@ -4328,8 +4337,11 @@ impl Engine {
 
                         // Commit via the cell-commit primitive (task #6423):
                         // atomically writes values/snapshot/cache/journal
-                        // (INV-EVAL-1). Mirrors edit_param's own wave2 commit
-                        // above (task δ #5056).
+                        // (INV-EVAL-1). Paired with edit_param's own wave2
+                        // commit above (~:1716, task δ #5056) — both sites
+                        // now route through commit_cell_result with the
+                        // identical UnconditionalDetermined/EditReeval/Record
+                        // selection; change them together.
                         commit_cell_result(
                             CommitLegs {
                                 values: &mut values,
