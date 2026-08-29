@@ -31,9 +31,20 @@
 #![allow(dead_code)]
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_core::Severity;
 use reify_eval::{BuildResult, BuildScheduler, Engine};
 use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, Satisfaction, Value};
-use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib};
+use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib, errors_only};
+
+// Extra kernel-trait surface used ONLY by the real-OCCT `OcctOpRecorder` proxy
+// (steps 1/3/5). Kept in a separate `use` so the mock-based ε tests above are
+// unaffected.
+use std::sync::{Arc, Mutex};
+
+use reify_ir::{
+    AttributeHistory, ExportError, ExportOptions, ExportWarning, GeometryError, GeometryHandle,
+    GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError,
+};
 
 /// Compile `source`, build it on a FRESH engine under the given `scheduler`
 /// with the supplied `kernel`, and return the full [`BuildResult`]
@@ -1305,4 +1316,393 @@ fn geometry_sibling_realization_cycle_produces_error_diagnostics() {
          (both realizations fail with unresolvable Sub refs); recorded ops={:?}",
         ops.iter().map(|r| &r.op).collect::<Vec<_>>(),
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// steps 1/3/5 (RED, real-OCCT): curated-fillet RESULT consumed by a downstream
+// realization — the ACTUAL reachability trigger (esc-5208 re-spec).
+//
+// The TERMINAL 3-arg fillet `let f = fillet(b, edges_parallel_to(b, up, 1deg), r)`
+// builds GREEN and cannot be a RED fixture; the failing production shape is a
+// curated-fillet result `let` CONSUMED downstream. These scenario tests drive the
+// consumed shapes (blank-let / boolean-parent / chained) under real OCCT +
+// UnifiedDag — mirroring `fillet_curated_edges_e2e.rs`'s RecordingKernel + OCCT
+// self-skip — and assert (a) NO Severity::Error geometry-op diagnostic AND (b) the
+// curated Fillet op(s) dispatched with a resolved, non-empty edge list.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Transparent [`GeometryKernel`] proxy recording every SUCCESSFUL
+/// [`GeometryOp`] dispatched through `execute` / `execute_with_history`,
+/// forwarding all calls to the inner kernel unchanged. A trimmed sibling of the
+/// `RecordingKernel` in `fillet_curated_edges_e2e.rs` (ops only — these scenario
+/// tests assert on the recorded Fillet edge lists, not volumes).
+///
+/// Ops are recorded ONLY on success, so a failed curated fillet (selector Undef /
+/// unresolvable GeomRef) records NO Fillet op — exactly the RED signal.
+///
+/// Clone the shared `ops` [`Arc`] via [`ops_ref`](Self::ops_ref) BEFORE moving
+/// `self` into `Box<dyn GeometryKernel>`.
+struct OcctOpRecorder {
+    inner: Box<dyn GeometryKernel>,
+    ops: Arc<Mutex<Vec<GeometryOp>>>,
+}
+
+impl OcctOpRecorder {
+    fn new(inner: Box<dyn GeometryKernel>) -> Self {
+        Self {
+            inner,
+            ops: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+    fn ops_ref(&self) -> Arc<Mutex<Vec<GeometryOp>>> {
+        Arc::clone(&self.ops)
+    }
+    fn record(&mut self, op: &GeometryOp) {
+        self.ops.lock().unwrap().push(op.clone());
+    }
+}
+
+impl GeometryKernel for OcctOpRecorder {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        let result = self.inner.execute(op)?;
+        self.record(op);
+        Ok(result)
+    }
+    fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        let (handle, history) = self.inner.execute_with_history(op)?;
+        self.record(op);
+        Ok((handle, history))
+    }
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        self.inner.query(query)
+    }
+    fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+        self.inner.query_many(queries)
+    }
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        self.inner.export(handle, format, writer)
+    }
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        self.inner
+            .export_with_options(handle, format, options, writer)
+    }
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
+        self.inner.tessellate(handle, tolerance)
+    }
+    fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_edges(handle)
+    }
+    fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_faces(handle)
+    }
+    fn extract_vertices(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_vertices(handle)
+    }
+    fn densify_grid_to_sampled(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        self.inner.densify_grid_to_sampled(handle)
+    }
+    fn execute_split(&mut self, op: &GeometryOp) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        self.inner.execute_split(op)
+    }
+    fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        self.inner.make_compound(handles)
+    }
+    fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        self.inner.ingest_mesh(mesh)
+    }
+    fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
+        self.inner.attribute_hook()
+    }
+    fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {
+        self.inner.measure_mesh_deviation(handle, mesh)
+    }
+}
+
+/// Compile `source`, assert it typechecks clean, then build it on a FRESH engine
+/// under real OCCT + `UnifiedDag` wrapped in an [`OcctOpRecorder`]. Returns the
+/// `(BuildResult, recorded_ops)` pair. Callers self-skip when `!OCCT_AVAILABLE`.
+fn build_occt_recording(source: &str) -> (BuildResult, Vec<GeometryOp>) {
+    let compiled = compile_source(source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "fixture should typecheck with no errors, got: {:#?}",
+        errors_only(&compiled)
+    );
+    let recorder = OcctOpRecorder::new(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let ops_ref = recorder.ops_ref();
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(recorder)));
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let ops = ops_ref.lock().unwrap().clone();
+    (result, ops)
+}
+
+/// Assert the build produced NO `Severity::Error` geometry-op diagnostic AND
+/// exactly one curated `Fillet` op carrying a resolved, non-empty edge list.
+/// Shared by the blank-let (step-1) and boolean-parent (step-3) single-fillet
+/// consumed scenarios.
+fn assert_one_curated_fillet_no_errors(result: &BuildResult, ops: &[GeometryOp]) {
+    let errors: Vec<String> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a curated fillet whose result is consumed downstream must build with NO \
+         Severity::Error geometry-op diagnostic (RED today: seam#1 selector-Undef + \
+         seam#2 unresolvable GeomRef::Sub); errors={errors:#?}"
+    );
+    let fillets: Vec<&GeometryOp> = ops
+        .iter()
+        .filter(|op| matches!(op, GeometryOp::Fillet { .. }))
+        .collect();
+    assert_eq!(
+        fillets.len(),
+        1,
+        "UnifiedDag must dispatch exactly one curated Fillet op (the inline selector \
+         must resolve in-loop before the consuming fillet realization); recorded ops={ops:?}"
+    );
+    match fillets[0] {
+        GeometryOp::Fillet { edges, .. } => assert!(
+            !edges.is_empty(),
+            "the curated fillet must dispatch with a resolved, non-empty edge list \
+             (an empty list is the all-edges back-compat path / an unresolved selector)"
+        ),
+        _ => unreachable!("filtered to Fillet above"),
+    }
+}
+
+/// step-1 (RED): BLANK-LET-CONSUMED — a curated fillet of a blank box (INLINE
+/// `edges_parallel_to` selector on that same box, exactly as the committed fixture
+/// authors it), whose RESULT `f` is consumed by a downstream `translate`
+/// realization. `box(40mm,30mm,20mm)` is origin-centered → its 4 vertical corner
+/// edges are parallel to `+Z`, so the selector resolves to a non-empty (4-of-12)
+/// curated edge subset once reachable.
+///
+/// RED today (verified deterministically 3x via `reify eval`, exit 1):
+///   error: … [edge selector evaluated to Undef]     (seam#1: selector hydration)
+///   error: unresolvable GeomRef::Sub('f') …          (seam#2: consumed-result let)
+#[test]
+fn unified_dag_curated_fillet_result_consumed_blank_let_builds_clean() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unified_dag_curated_fillet_result_consumed_blank_let_builds_clean: \
+             OCCT not available"
+        );
+        return;
+    }
+    let source = r#"pub structure S {
+    let b = box(40mm, 30mm, 20mm)
+    let f = fillet(b, edges_parallel_to(b, vec3(0.0, 0.0, 1.0), 1deg), 3mm)
+    let g = translate(f, 0mm, 0mm, 5mm)
+}"#;
+    let (result, ops) = build_occt_recording(source);
+    assert_one_curated_fillet_no_errors(&result, &ops);
+}
+
+/// step-3: BOOLEAN-PARENT + CONSUMED — a curated fillet whose target is a
+/// BOOLEAN-composed body (`difference(outer, inner)` bound to the named let `d`),
+/// selected by an INLINE `edges_at_height` over that same boolean result, whose
+/// own result `f` is then consumed by a downstream `translate` realization.
+///
+/// Selector height: `box(40mm,30mm,20mm)` is origin-centered, so its top face
+/// loop sits at z = +H/2 = 10mm. Querying at `10mm` therefore hits REAL edges of
+/// the boolean result rather than an empty band — the zero-edge case would be
+/// masked by the orthogonal empty-selection error path instead of exercising the
+/// resolution seam this test targets.
+///
+/// GREEN ON ARRIVAL, not RED-first (see esc-5208-2). The plan predicted this
+/// shape needed its own compiler fix (register a boolean-result named let as a
+/// resolvable realization). Measurement disproved that: the compiler already
+/// lowers `d` to `GeomRef::Sub("d")` and eval already resolves it — the ONLY
+/// defect was that the INLINE selector argument is not a value cell, so nothing
+/// hydrated it (step-2). This test is a genuine discriminator of that fix, not a
+/// tautology: at the pre-fix parent commit `838f4ab8d4` it fails with
+///   error: … curated edge selection is not yet available … [edge selector evaluated to Undef]
+///   error: unresolvable GeomRef::Sub('f') — no such named sub-reference in scope
+/// It is retained as the regression pin for the boolean-parent shape, which no
+/// pre-5208 test covered (every prior in-loop scenario filleted a BLANK box).
+#[test]
+fn unified_dag_curated_fillet_on_boolean_result_consumed_builds_clean() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unified_dag_curated_fillet_on_boolean_result_consumed_builds_clean: \
+             OCCT not available"
+        );
+        return;
+    }
+    let source = r#"pub structure S {
+    let outer = box(40mm, 30mm, 20mm)
+    let inner = box(30mm, 20mm, 40mm)
+    let d = difference(outer, inner)
+    let f = fillet(d, edges_at_height(d, 10mm, 0.5mm), 2mm)
+    let g = translate(f, 0mm, 0mm, 5mm)
+}"#;
+    let (result, ops) = build_occt_recording(source);
+    assert_one_curated_fillet_no_errors(&result, &ops);
+}
+
+/// Assert the build produced NO `Severity::Error` diagnostic, and return the
+/// per-op resolved sub-shape counts for every curated (non-empty edge list)
+/// `Fillet`/`Chamfer` op in dispatch order. An op with an EMPTY list is the
+/// all-edges back-compat path, i.e. an unresolved curated selector that silently
+/// degraded — excluded here so a caller asserting "N curated stages" cannot be
+/// satisfied by N degraded ops.
+fn curated_stage_edge_counts(result: &BuildResult, ops: &[GeometryOp]) -> Vec<usize> {
+    let errors: Vec<String> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "every stage of a CHAINED curated fillet/chamfer must build with NO \
+         Severity::Error geometry-op diagnostic; errors={errors:#?}"
+    );
+    ops.iter()
+        .filter_map(|op| match op {
+            GeometryOp::Fillet { edges, .. } | GeometryOp::Chamfer { edges, .. }
+                if !edges.is_empty() =>
+            {
+                Some(edges.len())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Read `S.<member>` out of the build's value map as a finite, strictly positive
+/// scalar — the volume-query cell over the final chained-fillet body.
+fn positive_scalar(result: &BuildResult, member: &str) -> f64 {
+    let id = reify_core::ValueCellId::new("S", member);
+    let value = result.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "expected S.{member} in values; cells={:?}",
+            result
+                .values
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        )
+    });
+    let Value::Scalar { si_value, .. } = value else {
+        panic!("S.{member} should be a Scalar, got {value:?}");
+    };
+    assert!(
+        si_value.is_finite() && *si_value > 0.0,
+        "S.{member} must be a finite, strictly positive volume, got {si_value}"
+    );
+    *si_value
+}
+
+/// step-5: CHAINED curated fillets — each stage is a named `let` whose parent is
+/// the PRIOR stage's result, selected by an INLINE `edges_at_height` over that
+/// same prior stage. This is the shape the repro design uses for its four
+/// rim/ledge/floor/base loops, and the one the plan flagged as "no such named
+/// sub-reference in scope" for `rim`/`ledge`.
+///
+/// The chain starts from a BOOLEAN body so both the boolean-parent and the
+/// chained-parent axes compose in one program. Heights pick real loops of the
+/// origin-centered `box(40mm,30mm,20mm)`: `+10mm` is its top face loop, `-10mm`
+/// its bottom face loop. A `volume` query over the final body pins that the
+/// chained result is a real solid AND that a whole-handle geometry query still
+/// resolves over a curated-fillet result (the mass/volume cell the CLI surfaces).
+///
+/// GREEN ON ARRIVAL, not RED-first (esc-5208-2), for the same reason as
+/// `unified_dag_curated_fillet_on_boolean_result_consumed_builds_clean`: each
+/// intermediate stage was already lowered to a resolvable `GeomRef::Sub`, and
+/// step-2's inline-selector hydration is what makes every stage resolve.
+/// Verified to be a genuine discriminator: with only the two src files reverted
+/// to the pre-fix parent `838f4ab8d4` it fails on the FIRST stage
+/// ("[edge selector evaluated to Undef]") and then cascades through the chain.
+#[test]
+fn unified_dag_chained_curated_fillets_resolve_every_stage() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unified_dag_chained_curated_fillets_resolve_every_stage: OCCT not available"
+        );
+        return;
+    }
+    let source = r#"pub structure S {
+    let outer = box(40mm, 30mm, 20mm)
+    let inner = box(30mm, 20mm, 40mm)
+    let hollowed = difference(outer, inner)
+    let rim = fillet(hollowed, edges_at_height(hollowed, 10mm, 0.5mm), 1mm)
+    let ledge = fillet(rim, edges_at_height(rim, -10mm, 0.5mm), 1mm)
+    let v = volume(ledge)
+}"#;
+    let (result, ops) = build_occt_recording(source);
+    let counts = curated_stage_edge_counts(&result, &ops);
+    assert_eq!(
+        counts.len(),
+        2,
+        "both chained curated fillet stages must dispatch with a RESOLVED (non-empty) \
+         edge list — a stage missing here silently degraded to the all-edges path; \
+         recorded ops={ops:?}"
+    );
+    positive_scalar(&result, "v");
+}
+
+/// step-5 parity: the same chained shape driven through `chamfer`, so the
+/// inline-selector resolution is pinned for BOTH curated local-feature ops
+/// rather than only the one the repro happened to use. `modify_chamfer` reads
+/// its `edges` argument through the same pure-eval path `modify_fillet` does, so
+/// a fix that covered only `fillet` would leave this red.
+#[test]
+fn unified_dag_chained_curated_chamfers_resolve_every_stage() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping unified_dag_chained_curated_chamfers_resolve_every_stage: OCCT not available"
+        );
+        return;
+    }
+    let source = r#"pub structure S {
+    let outer = box(40mm, 30mm, 20mm)
+    let inner = box(30mm, 20mm, 40mm)
+    let hollowed = difference(outer, inner)
+    let rim = chamfer(hollowed, edges_at_height(hollowed, 10mm, 0.5mm), 1mm)
+    let ledge = chamfer(rim, edges_at_height(rim, -10mm, 0.5mm), 1mm)
+    let v = volume(ledge)
+}"#;
+    let (result, ops) = build_occt_recording(source);
+    let counts = curated_stage_edge_counts(&result, &ops);
+    assert_eq!(
+        counts.len(),
+        2,
+        "both chained curated CHAMFER stages must dispatch with a RESOLVED \
+         (non-empty) edge list; recorded ops={ops:?}"
+    );
+    positive_scalar(&result, "v");
 }

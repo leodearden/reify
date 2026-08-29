@@ -375,6 +375,19 @@ struct RealizationOpsInput<'a> {
     // `values_contain_selector(values)` probe. Hoisting it here also removes
     // the per-realization recompute of what is a module-global answer.
     module_binds_selector: bool,
+    // Task 5208: per-realization repr snapshot consulted by the inline
+    // curated-selector pre-hydration (`prehydrate_inline_curated_selector_args`)
+    // for the fail-closed region-capability gate (task #4812, P0β) inside
+    // `resolve_selector_to_list`. `None` (the default) means "no snapshot" and
+    // is fail-OPEN — an absent repr skips the gate and falls through to the
+    // generic-error path, exactly as the tessellate-path hydration call site
+    // already does (`tessellate_from_values`' `realized_reprs_tess`). The
+    // `build` surface (`build_with_geometry_output`) overrides it with the same
+    // `realized_reprs_snapshot` it already threads into
+    // `hydrate_value_cell_in_loop`, so a cell-hydrated selector and an
+    // inline-argument selector are gated identically there. `build_snapshot`
+    // runs no `HydrateCell` walk at all, so it keeps the fail-open default.
+    realized_reprs: Option<&'a HashMap<RealizationNodeId, ReprKind>>,
 }
 
 impl<'a> RealizationOpsInput<'a> {
@@ -450,6 +463,9 @@ impl<'a> RealizationOpsInput<'a> {
             // Only the two build paths (`build_snapshot`,
             // `build_with_geometry_output`) opt in with a real answer.
             module_binds_selector: true,
+            // Fail-open default (no snapshot → region-capability gate skipped
+            // for inline curated selectors); see this field's doc above.
+            realized_reprs: None,
         }
     }
 
@@ -526,6 +542,14 @@ impl<'a> RealizationOpsInput<'a> {
     /// once per build.
     fn with_module_binds_selector(mut self, v: bool) -> Self {
         self.module_binds_selector = v;
+        self
+    }
+
+    /// Override the realized-repr snapshot consulted by the inline
+    /// curated-selector pre-hydration's capability gate (default `None` — the
+    /// fail-open posture; see this field's doc on the struct).
+    fn with_realized_reprs(mut self, v: Option<&'a HashMap<RealizationNodeId, ReprKind>>) -> Self {
+        self.realized_reprs = v;
         self
     }
 }
@@ -4506,7 +4530,12 @@ impl Engine {
                         // L2 selector gate, resolved once above the template
                         // loop. Only the build paths opt in; tessellate/query
                         // keep the fail-open `true` default.
-                        .with_module_binds_selector(module_binds_selector_flag),
+                        .with_module_binds_selector(module_binds_selector_flag)
+                        // Task 5208: the SAME repr snapshot threaded into
+                        // `hydrate_value_cell_in_loop` above, so an inline
+                        // curated selector argument is region-capability-gated
+                        // identically to a named-let selector cell.
+                        .with_realized_reprs(Some(&realized_reprs_for_hydration)),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -7291,6 +7320,7 @@ impl Engine {
             long_chain_threshold,
             mesh_contract_mode,
             module_binds_selector: module_binds_selector_flag,
+            realized_reprs,
         } = input;
         if Self::probe_realization_cache(
             realization_cache,
@@ -7468,7 +7498,50 @@ impl Engine {
         // so a realization with N ops sharing a counter emits ONE summed
         // diagnostic instead of N near-identical per-op lines.
         let mut topology_drop_tally = TopologyCorrespondenceDropTally::default();
+        // Task 5208: fail-open fallback for the curated-selector capability gate
+        // when the caller supplied no repr snapshot (`with_realized_reprs`
+        // unset). An absent repr skips the gate — the same posture the
+        // tessellate-path call sites already take (see their
+        // `realized_reprs_tess: HashMap<_,_> = HashMap::new()` comment).
+        let empty_realized_reprs: HashMap<RealizationNodeId, ReprKind> = HashMap::new();
+        let realized_reprs_for_ops = realized_reprs.unwrap_or(&empty_realized_reprs);
+        // Task 5208: memo for the inline-curated-selector pre-hydration below,
+        // scoped to exactly this realization walk (see `InlineSelectorMemo`'s
+        // key-sufficiency argument — it holds only while `named_steps` /
+        // `values` / `topology_attribute_table` / `realized_reprs_for_ops` stay
+        // fixed, which is precisely this function body). The same authored op
+        // re-dispatches once per parent realization; without this each repeat
+        // pays another out-of-process kernel topology query.
+        let mut inline_selector_memo = crate::geometry_ops::InlineSelectorMemo::new();
         for (op_idx, op) in operations.iter().enumerate() {
+            // Task 5208: an INLINE curated edge/face selector argument (e.g.
+            // `fillet(b, edges_parallel_to(b, up, 1deg), 3mm)`) is not a value
+            // cell, so no `HydrateCell` step resolves it and the pure eval arm
+            // sees `Undef`. Resolve it HERE — at the realization slot where this
+            // op's parent solid is already realized — via the SAME
+            // `resolve_selector_to_list` policy `hydrate_value_cell_in_loop`
+            // applies to a named-let selector cell, and run the op with the
+            // resolved list substituted. Returns `None` (→ `op` unchanged, and
+            // no kernel work at all) for every op without an unresolved inline
+            // curated selector, so every pre-5208 path stays byte-identical.
+            //
+            // The `&mut` borrow of `kernels` is scoped to this statement: the
+            // dispatch block below re-borrows the map by name.
+            let prehydrated = kernels.get_mut(default_kernel_name).and_then(|k| {
+                crate::geometry_ops::prehydrate_inline_curated_selector_args(
+                    op,
+                    named_steps,
+                    values,
+                    functions,
+                    meta_map,
+                    k.as_mut(),
+                    topology_attribute_table,
+                    realized_reprs_for_ops,
+                    &mut inline_selector_memo,
+                    diagnostics,
+                )
+            });
+            let op = prehydrated.as_ref().unwrap_or(op);
             let geom_op = compile_geometry_op(
                 op,
                 values,
@@ -10565,8 +10638,10 @@ impl Engine {
     /// kernel-FREE `Value::Selector` DESCRIPTOR (task 4118 γ). A consuming curated
     /// `fillet(solid, edges, radius)` realization, however, reads its `edges` arg
     /// as a `Value::List<Geometry>` — the legacy `compile_geometry_op` Fillet arm
-    /// errors ("curated edge selection is not yet available …") on a bare
-    /// descriptor, the exact P2-before-P4 staging gap tasks 4360/4358 close. So
+    /// errors ("the edge selector did not resolve to a concrete edge list …") on
+    /// a bare descriptor — the P2-before-P4 gap tasks 4360/4358 opened and task
+    /// 5208 closed for the production `.ri` pipeline (that `Err` now fires only
+    /// for a selector that genuinely cannot resolve). So
     /// when this selector cell is read by ANY realization (`realization_read_cells`
     /// = the union of every realization trace's `reads`), the descriptor is
     /// resolved one step further to its concrete sub-handle `List` via

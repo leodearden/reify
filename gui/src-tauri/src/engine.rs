@@ -2871,11 +2871,42 @@ impl EngineSession {
         files
     }
 
-    /// Build compile diagnostics for `GuiState`, appending live-edit failures
-    /// and hot-reload errors when present.
+    /// Build compile diagnostics for `GuiState`, appending live-edit failures,
+    /// hot-reload errors, and build/realization-time geometry **errors** when
+    /// present.
     ///
     /// Shared by `build_gui_state` and `set_active_fea_case` so both paths
     /// produce identical diagnostic data and cannot silently drift.
+    ///
+    /// # Build-time geometry errors (tasks 5197 / 5208)
+    ///
+    /// `get_diagnostics` returns only the *static* `compiled.diagnostics` — what
+    /// the compiler knew before any geometry ran. Errors raised by the
+    /// build/realization pass (`tessellate_snapshot`) land in the separate
+    /// `tess_diag_cache` / `GuiState::tessellation_diagnostics` stream, which the
+    /// designer-facing diagnostics panel does not read. A program that compiled
+    /// cleanly but produced no geometry therefore rendered as an empty viewport
+    /// with an EMPTY diagnostics list, and the designer had nothing to act on.
+    ///
+    /// This became a live concern with task 5208: curated 3-arg
+    /// `fillet`/`chamfer` is now genuinely reachable through the production `.ri`
+    /// pipeline, so its *residual* failures — a selector that picks zero edges, a
+    /// radius the kernel cannot apply, a reference to an unrealized solid — are
+    /// ordinary authoring mistakes that must be reported like any other.
+    ///
+    /// Only the **`Error`** class crosses over. Tessellation `Warning`/`Info`
+    /// entries (kernel chatter such as the "no topology extraction fixture"
+    /// seeder warning) stay confined to `tessellation_diagnostics`, so folding
+    /// does not flood the panel on an otherwise-healthy load.
+    ///
+    /// Direction matters: the reverse flow stays blocked. Compile diagnostics are
+    /// never copied INTO `tessellation_diagnostics` — that half of the
+    /// disjointness contract is pinned by
+    /// `build_gui_state_compile_diagnostics_populated_from_warning`.
+    ///
+    /// Ordering: build-time errors are appended LAST, after the static
+    /// diagnostics and the live-edit / hot-reload synthetics, so existing
+    /// positional expectations over the leading entries are unaffected.
     fn build_compile_diagnostics(&self) -> Vec<DiagnosticInfo> {
         let mut compile_diagnostics = self.get_diagnostics();
         if let Some(f) = &self.compile_failure
@@ -2902,6 +2933,30 @@ impl EngineSession {
                 has_location: false,
             });
         }
+
+        // Fold in build/realization-time geometry ERRORS (see the doc comment
+        // above). `tess_diag_cache` is refreshed by `build_gui_state` immediately
+        // after `tessellate_snapshot` and BEFORE this helper is called, and is
+        // reset to empty on the no-tessellation branch — so it always reflects
+        // the current snapshot and cannot carry stale errors forward.
+        //
+        // The identity guard is belt-and-braces: the two sources are disjoint by
+        // construction (static compile vs. build pass), so it is a no-op today.
+        // It exists so that if a diagnostic ever becomes reachable from both, the
+        // designer sees it once rather than twice.
+        for diag in self
+            .tess_diag_cache
+            .iter()
+            .filter(|d| d.severity == "Error")
+        {
+            let already_present = compile_diagnostics
+                .iter()
+                .any(|c| c.message == diag.message && c.line == diag.line);
+            if !already_present {
+                compile_diagnostics.push(diag.clone());
+            }
+        }
+
         compile_diagnostics
     }
 

@@ -13,6 +13,40 @@
         )
     }
 
+    /// Assert an unresolved-selector diagnostic carries none of the STAGING
+    /// wording task 5208 retired.
+    ///
+    /// Until task 5208, curated 3-arg `fillet`/`chamfer` (and curated
+    /// `shell_open`/`draft` face selection) could not be resolved through the
+    /// production `.ri` pipeline, so the "selector did not resolve" `Err` was
+    /// really a not-implemented-yet notice: it told the designer the capability
+    /// was "not yet available on the current build pipeline" and to "wait for"
+    /// engine-unified-build-dag tasks 4360/4358.
+    ///
+    /// That is now false, and actively harmful — the capability IS reachable, so
+    /// waiting would never help and the real mistake (a selector that picks
+    /// nothing, or reads a solid that is not realized here) goes unmentioned.
+    ///
+    /// Shared by every unresolved-selector test so the five call forms cannot
+    /// drift back to the staging wording one at a time.
+    fn assert_no_stale_staging_wording(msg: &str) {
+        for stale in [
+            "not yet available",
+            "wait for",
+            "4360",
+            "4358",
+            "current build pipeline",
+        ] {
+            assert!(
+                !msg.contains(stale),
+                "diagnostic must not carry the retired staging wording {stale:?} — \
+                 curated selection is reachable through the production pipeline \
+                 since task 5208, so this Err means THIS selector failed, not that \
+                 the feature is pending. got: {msg:?}"
+            );
+        }
+    }
+
     /// Helper: build a CompiledExpr literal from a Scalar with LENGTH dimension.
     fn literal_length(meters: f64) -> reify_ir::CompiledExpr {
         reify_ir::CompiledExpr::literal(
@@ -6645,9 +6679,15 @@
     /// That is NOT an empty selection, so the arm must NOT emit
     /// `EmptyEdgeSelection`; instead it returns a USER-ACTIONABLE `Err` (surfaced
     /// verbatim as `failed to compile geometry operation: <msg>`), not the old
-    /// internal "did not resolve to a List" string. This pins the staging UX
-    /// until engine-unified-build-dag η/ε (tasks 4360/4358) make curated
-    /// selection reachable end-to-end. (Reviewer test_coverage note, task 3205.)
+    /// internal "did not resolve to a List" string.
+    ///
+    /// Task 5208 retired the STAGING framing this test used to pin. Curated
+    /// 3-arg fillet is now reachable end-to-end through the production `.ri`
+    /// pipeline, so this `Err` no longer means "the feature has not landed yet";
+    /// it means THIS selector genuinely failed to resolve. The message must
+    /// therefore describe the actual failure and must NOT tell the designer the
+    /// capability is "not yet available" or to "wait for" tasks 4360/4358 —
+    /// waiting would never help. (Original reviewer test_coverage note, task 3205.)
     #[test]
     fn compile_geometry_op_fillet_legacy_selector_unresolved_is_user_actionable() {
         let step_handles = vec![GeometryHandleId(10)];
@@ -6703,6 +6743,22 @@
             !msg.contains("did not resolve to a List"),
             "diagnostic must not surface the raw internal 'did not resolve to a \
              List' string, got: {msg:?}"
+        );
+        // Task 5208: the capability IS available, so the message must not tell
+        // the designer to wait for it. Asserted as a shared helper so the
+        // fillet / chamfer / chamfer_asymmetric / shell_open / draft variants
+        // cannot drift back to the staging wording one at a time.
+        assert_no_stale_staging_wording(&msg);
+        // …and it must say what actually went wrong, in the designer's terms.
+        assert!(
+            msg.contains("did not resolve to a concrete edge list"),
+            "diagnostic must describe the genuine failure — the selector did not \
+             resolve to a concrete edge list — got: {msg:?}"
+        );
+        assert!(
+            msg.contains("realized solid"),
+            "diagnostic must tell the designer what to check (that the selector \
+             reads a realized solid in scope), got: {msg:?}"
         );
         // The deferral is preserved: an unresolved selector is NOT an empty
         // selection, so it must NEVER trip the anti-zero-edges guard.
@@ -7404,6 +7460,18 @@
             msg.contains("3-arg draft(solid, angle, neutral_plane)"),
             "diagnostic must point the user at the 3-arg all-faces fallback, \
              got: {msg:?}"
+        );
+        // Task 5208: same reword as the fillet/chamfer edge-selector variants.
+        assert_no_stale_staging_wording(&msg);
+        assert!(
+            msg.contains("did not resolve to a concrete face list"),
+            "diagnostic must describe the genuine failure — the selector did not \
+             resolve to a concrete face list — got: {msg:?}"
+        );
+        assert!(
+            msg.contains("realized solid"),
+            "diagnostic must tell the designer what to check (that the selector \
+             reads a realized solid in scope), got: {msg:?}"
         );
         // A non-List is NOT an empty selection — must never trip anti-zero
         // guard.
@@ -10912,14 +10980,30 @@
             ),
         };
         // User-actionable: names the 3-arg shell_open call form and points at
-        // the numeric fallback and the η/ε tasks.
+        // the numeric fallback.
         assert!(
             msg.contains("shell_open(solid, thickness, open_faces)"),
             "diagnostic must name the 3-arg call form, got: {msg:?}"
         );
         assert!(
-            msg.contains("4360") || msg.contains("4358"),
-            "diagnostic must point at η/ε tasks (4360/4358), got: {msg:?}"
+            msg.contains("shell(solid, thickness, face_N)"),
+            "diagnostic must point the user at the numeric face-index fallback, \
+             got: {msg:?}"
+        );
+        // Task 5208: this Err no longer means "the feature is pending", so it
+        // must no longer point at the η/ε tasks — it must describe the genuine
+        // failure instead. (This assertion is the INVERSE of the one it
+        // replaced, which required msg to cite 4360/4358.)
+        assert_no_stale_staging_wording(&msg);
+        assert!(
+            msg.contains("did not resolve to a concrete face list"),
+            "diagnostic must describe the genuine failure — the selector did not \
+             resolve to a concrete face list — got: {msg:?}"
+        );
+        assert!(
+            msg.contains("realized solid"),
+            "diagnostic must tell the designer what to check (that the selector \
+             reads a realized solid in scope), got: {msg:?}"
         );
         // A non-List value is NOT an empty selection — must NOT trip the
         // anti-zero guard or mislead callers into thinking zero faces resolved.
