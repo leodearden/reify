@@ -11,7 +11,7 @@
 //!   `examples/differential_field_ops.ri`  (include_str! compile error).
 //! GREEN: after step-2 the test binary compiles and all assertions pass.
 
-use reify_core::{Severity, Type, ValueCellId};
+use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::{FieldSourceKind, Satisfaction, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -504,6 +504,63 @@ fn differential_field_ops_integration_gate() {
         max_rot_deg,
         1.0_f64.to_degrees()
     );
+
+    // ── (d4) The .ri-side crossing signal is REAL, not silently Undef ────────
+    //
+    // `examples/differential_field_ops.ri` binds
+    //   let rot_probe = rotation_probe(sample(result.rotation, point3(500mm, 50mm, 50mm)))
+    // where `fn rotation_probe(v: Vector3<Angle>) -> Angle`.  That call boundary
+    // is the whole user-observable signal: it proves `Vector3<Angle>` is accepted
+    // as a user-function PARAMETER type, the one position in the capability chain
+    // no existing stdlib or example code exercises.
+    //
+    // This assertion is load-bearing rather than decorative: an out-of-bounds
+    // sample returns `Value::Undef` (reify-expr/src/sampled.rs:89-104), and a
+    // hollow Undef would sail past the no-Error-diagnostics check at (a) above,
+    // leaving the .ri pin asserting nothing.  Pinning the ANGLE dimension here
+    // also confirms the rad tag survives the round trip out through the call
+    // boundary, not just into it.
+    let rot_probe_cell = ValueCellId::new("DifferentialFieldOps", "rot_probe");
+    let rot_probe_val = eval_result
+        .values
+        .get(&rot_probe_cell)
+        .unwrap_or_else(|| panic!("cell DifferentialFieldOps.rot_probe not found"));
+    match rot_probe_val {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::ANGLE,
+                "rot_probe = rotation_probe(sample(result.rotation, ..)) must be \
+                 ANGLE-dimensioned — the radian must survive the Vector3<Angle> \
+                 call boundary in both directions (ruling #6164)"
+            );
+            assert!(
+                si_value.is_finite() && *si_value > 0.0,
+                "rot_probe = {} must be finite and > 0 — a zero or non-finite \
+                 value means the sample point fell outside the cantilever bounds \
+                 and the .ri pin is hollow",
+                si_value
+            );
+            // Cross-check against the field data read directly above: the probe
+            // is magnitude() of ONE sampled node's rotation vector, so it cannot
+            // exceed the max |component| times sqrt(3) over the whole grid.
+            assert!(
+                *si_value <= max_rot_rad * 3.0_f64.sqrt() + 1e-12,
+                "rot_probe = {} exceeds sqrt(3)·max|rotation component| = {} — \
+                 the probe is not sampling the same field",
+                si_value,
+                max_rot_rad * 3.0_f64.sqrt()
+            );
+        }
+        Value::Undef => panic!(
+            "rot_probe is Value::Undef — the sample point is outside the \
+             cantilever bounds, which silently hollows out the .ri crossing pin"
+        ),
+        other => panic!("rot_probe must be a Scalar[ANGLE], got: {:?}", other),
+    }
 
     // ── (e) Phase 2 — exact polynomial fixture assertions ────────────────────
     //

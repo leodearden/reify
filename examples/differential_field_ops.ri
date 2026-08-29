@@ -8,7 +8,11 @@
 //   Phase 1 — FEA-native differential quantities on an ElasticResult
 //     • result.divergence  (task α: nodal-gradient → sampled divergence field)
 //     • result.gradient    (task β: nodal-gradient → stride-9 Tensor sampled field)
-//     • result.curl        (task β: nodal-gradient → stride-3 Vector3 sampled field)
+//     • result.curl        (task β: nodal-gradient → stride-3 Vector3 sampled field,
+//                           Vector3<Real> — DIMENSIONLESS BY DECISION, ruling #6164)
+//     • result.rotation    (ruling #6164: ∇×u / 2, Vector3<Angle> — the DESIGNATED
+//                           CROSSING where the radian enters explicitly; it is the
+//                           reason curl above stays dimensionless)
 //     • max(result.divergence), min(result.divergence)
 //     • max(result.gradient)   (task γ: tensor Frobenius-magnitude reduction)
 //
@@ -61,6 +65,22 @@ field def linear : Length -> Real {
     }
 }
 
+// ── Ruling #6164: the rotation crossing at a call boundary ────────────────────
+//
+// This fn exists to prove `Vector3<Angle>` is ACCEPTED as a user-function
+// parameter type — the one position in the capability chain that no existing
+// stdlib or example code exercises (structure params already carry
+// `Vector3<Force>`, e.g. tensegrity.ri:468, but no `fn` anywhere takes a
+// `Vector3<Q>`).  It is deliberately trivial and computes nothing interesting:
+// the numeric rotation↔curl comparison lives harness-side in
+// differential_field_ops_e2e.rs, because no in-language Vector3 component
+// access exists (`.x`, `v[0]` and `norm(v) < 5deg` were all probed dead).
+//
+// `magnitude` of a Vector3<Angle> is an Angle, so the crossing's radian tag
+// survives the round trip through the call boundary and back out.
+
+fn rotation_probe(v: Vector3<Angle>) -> Angle { magnitude(v) }
+
 // ── Integration structure ─────────────────────────────────────────────────────
 
 structure DifferentialFieldOps {
@@ -94,6 +114,18 @@ structure DifferentialFieldOps {
     let dmin  = min(result.divergence)
     let g_mag = max(result.gradient)   // γ tensor Frobenius-magnitude reduction
     let cr    = result.curl            // β curl channel (bound to touch the field)
+
+    // Ruling #6164: `rotation` = curl / 2, ANGLE-typed (Vector3<Angle>) — the
+    // designated crossing.  `cr` above stays Vector3<Real>: the derivative
+    // algebra is quotient-pure and the radian enters only here.
+    let rot   = result.rotation
+
+    // Sample the crossing and push it through a user fn to prove Vector3<Angle>
+    // is accepted at a call boundary.  The point is strictly INSIDE the
+    // 1000mm × 100mm × 100mm cantilever bounds ([0,1] × [0,0.1] × [0,0.1] m) —
+    // an out-of-bounds query returns Value::Undef and would silently hollow out
+    // the pin.
+    let rot_probe = rotation_probe(sample(result.rotation, point3(500mm, 50mm, 50mm)))
 
     // ── Phase 2: generic sampled-field differential operators ───────────────
     //
