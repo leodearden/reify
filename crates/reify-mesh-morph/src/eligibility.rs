@@ -231,6 +231,64 @@ mod tests {
     }
     // Note: TopologyAttributeTable uses .record(handle, attr) not .insert()
 
+    // ── Shared Stage-B count-mismatch fixture ─────────────────────────────
+    //
+    // Two tests drive Stage B to the SAME `BijectionFailure::CountMismatch`:
+    // `morph_eligible_stage_b_count_mismatch_returns_bijection_failure_reason`
+    // (Stage B in isolation) and
+    // `morph_eligible_stage_a_admits_geometry_diff_stage_b_rejects_count_mismatch`
+    // (task 6635's Stage-A-admits/Stage-B-rejects composition). Everything they
+    // share — attribute tables, face slices, expected reason — lives here, so
+    // each test body shows only what it varies and the two cannot silently
+    // diverge when the Stage-B fixture is next touched.
+
+    /// Old/new attribute tables for the count-mismatch fixture: the old B-rep
+    /// has ONE attributed face, the new one TWO.
+    fn count_mismatch_tables() -> (TopologyAttributeTable, TopologyAttributeTable) {
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(10),
+            },
+            attr(Role::Cap(CapKind::Top), 0),
+        );
+
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(20),
+            },
+            attr(Role::Cap(CapKind::Top), 0),
+        );
+        new_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(21),
+            },
+            attr(Role::Cap(CapKind::Bottom), 1),
+        );
+
+        (old_table, new_table)
+    }
+
+    /// The `(old, new)` face-handle slices that pair with
+    /// [`count_mismatch_tables`] — 1 face vs. 2, matching the tables above.
+    fn count_mismatch_faces() -> (Vec<GeometryHandleId>, Vec<GeometryHandleId>) {
+        (vec![h(10)], vec![h(20), h(21)])
+    }
+
+    /// The single expected outcome for the count-mismatch fixture: Stage B
+    /// rejecting with a face-count mismatch of 1 → 2.
+    fn count_mismatch_reason() -> Reason {
+        Reason::BijectionFailure(BijectionFailure::CountMismatch {
+            kind: SubShapeKind::Face,
+            old_count: 1,
+            new_count: 2,
+        })
+    }
+
     // ── Step-3: happy path ────────────────────────────────────────────────
 
     #[test]
@@ -387,18 +445,15 @@ mod tests {
         old_values.insert(id.clone(), Value::length(0.05));
         let new_values = old_values.clone();
 
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
+        // Stage-B fixture: 1 attributed face old, 2 new → face CountMismatch.
+        let (old_table, new_table) = count_mismatch_tables();
+        let (old_faces, new_faces) = count_mismatch_faces();
 
         let old_snap = MorphSnapshot {
             graph: &old_graph,
             values: &old_values,
             topology_attributes: &old_table,
-            faces: &[h(10)],
+            faces: &old_faces,
             edges: &[],
             vertices: &[],
         };
@@ -406,18 +461,14 @@ mod tests {
             graph: &new_graph,
             values: &new_values,
             topology_attributes: &new_table,
-            faces: &[h(20), h(21)],
+            faces: &new_faces,
             edges: &[],
             vertices: &[],
         };
 
         assert_eq!(
             morph_eligible(old_snap, new_snap),
-            Eligibility::Ineligible(Reason::BijectionFailure(BijectionFailure::CountMismatch {
-                kind: SubShapeKind::Face,
-                old_count: 1,
-                new_count: 2,
-            }))
+            Eligibility::Ineligible(count_mismatch_reason())
         );
     }
 
@@ -469,38 +520,18 @@ mod tests {
         new_values.insert(width_id.clone(), Value::length(0.055));
         new_values.insert(body_id.clone(), geometry_handle([2u8; 32]));
 
-        // Stage B fixtures: the new B-rep has one more face than the old — the
-        // topology change a real threshold-crossing tick would produce.
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: h(10),
-            },
-            attr(Role::Cap(CapKind::Top), 0),
-        );
-
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: h(20),
-            },
-            attr(Role::Cap(CapKind::Top), 0),
-        );
-        new_table.record(
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: h(21),
-            },
-            attr(Role::Cap(CapKind::Bottom), 1),
-        );
+        // Stage B fixture — the SAME one the sibling Stage-B test uses (the new
+        // B-rep has one more face than the old, the topology change a real
+        // threshold-crossing tick would produce). Sharing it is what makes the
+        // ValueMaps above the only difference between the two tests.
+        let (old_table, new_table) = count_mismatch_tables();
+        let (old_faces, new_faces) = count_mismatch_faces();
 
         let old_snap = MorphSnapshot {
             graph: &old_graph,
             values: &old_values,
             topology_attributes: &old_table,
-            faces: &[h(10)],
+            faces: &old_faces,
             edges: &[],
             vertices: &[],
         };
@@ -508,18 +539,14 @@ mod tests {
             graph: &new_graph,
             values: &new_values,
             topology_attributes: &new_table,
-            faces: &[h(20), h(21)],
+            faces: &new_faces,
             edges: &[],
             vertices: &[],
         };
 
         assert_eq!(
             morph_eligible(old_snap, new_snap),
-            Eligibility::Ineligible(Reason::BijectionFailure(BijectionFailure::CountMismatch {
-                kind: SubShapeKind::Face,
-                old_count: 1,
-                new_count: 2,
-            })),
+            Eligibility::Ineligible(count_mismatch_reason()),
             "task 6635: a differing Type::Geometry cell must NOT make Stage A \
              reject (that would give Reason::StructuralChange) — Stage B's \
              bijection check is the gate that sees the topology change"
