@@ -1,9 +1,14 @@
 //! Consolidated integration-test harness for the engine subsystem.
 //!
 //! Task #5282 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf EVAL-3):
-//! folds the former standalone `tests/<file>.rs` binaries for the `auto_`/`engine_`/
-//! `m8_`/`m9_` clusters — the Engine resolution+commit pipeline — into this single
-//! compile unit to cut the merge-gate link count. Task #5056 seeded this root ahead of
+//! folds the former standalone `tests/<file>.rs` binaries for the `engine_`/`m8_`/`m9_`
+//! clusters — the Engine commit + milestone-integration pipeline — into this single
+//! compile unit to cut the merge-gate link count. The `auto_*` cluster EVAL-3 also
+//! consolidates is a sibling unit, `harness_auto_resolution.rs`, not a module here: folding
+//! all four clusters into one root measured 20363 lines against
+//! `tests/infra/test_harness_kloc_cap.sh`'s 20000-line rule (a) cap, and §7 of the PRD
+//! resolves an over-cap harness by SPLIT, never by raising the cap (precedent #5620).
+//! See that root's header for the seam. Task #5056 seeded this root ahead of
 //! EVAL-3 with three modules so its new test would land under the C1 layout instead of
 //! grandfathering another top-level standalone binary into the baseline manifest; this
 //! is the leaf that fills it. Layout-only — no `#[test]` fn is added or removed. Each
@@ -13,12 +18,12 @@
 //! `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
 //! `harness_engine/` subdir.
 //!
-//! No path fixups were needed for the 16 files EVAL-3 moved here: every path-sensitive
+//! No path fixups were needed for the 9 files EVAL-3 moved here: every path-sensitive
 //! construct in them is either `env!("CARGO_MANIFEST_DIR")`-anchored (crate-root
 //! relative, so unaffected by an extra source subdirectory) or a runtime
 //! `std::fs::read_to_string` (process-CWD relative — the crate root under `cargo test`;
 //! `m8_stdlib_integration`'s 14 `../../examples/*.ri` reads are all of this kind).
-//! Among those 16 there are no `include_str!`/`include!` sites and no
+//! Among those 9 there are no `include_str!`/`include!` sites and no
 //! `#[global_allocator]`.
 //!
 //! The shared `common/differential.rs` harness is included HERE, at the unit root,
@@ -38,20 +43,6 @@
 #[path = "common/differential.rs"]
 mod differential;
 
-#[path = "harness_engine/auto_backtracking_e2e.rs"]
-mod auto_backtracking_e2e;
-#[path = "harness_engine/auto_binding_sites_remaining_resolution.rs"]
-mod auto_binding_sites_remaining_resolution;
-#[path = "harness_engine/auto_sub_override_resolution.rs"]
-mod auto_sub_override_resolution;
-#[path = "harness_engine/auto_type_param_completion_e2e.rs"]
-mod auto_type_param_completion_e2e;
-#[path = "harness_engine/auto_type_param_determinism_tests.rs"]
-mod auto_type_param_determinism_tests;
-#[path = "harness_engine/auto_type_param_topology_trigger_tests.rs"]
-mod auto_type_param_topology_trigger_tests;
-#[path = "harness_engine/auto_type_param_value_population_e2e.rs"]
-mod auto_type_param_value_population_e2e;
 #[path = "harness_engine/diagnostics_cache_replay_migration.rs"]
 mod diagnostics_cache_replay_migration;
 #[path = "harness_engine/edit_param_cell_commit_migration.rs"]
