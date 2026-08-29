@@ -5627,6 +5627,62 @@ mod tests {
         assert_eq!(s, "\"UnresolvedName\"");
     }
 
+    // --- UnresolvedFunction tests (task 5371 — W_UNRESOLVED_FUNCTION) ---
+    // Pairs with the terminal first-arg fallback in
+    // `crates/reify-compiler/src/expr.rs`'s `NoUserFunctions` ladder, which
+    // previously typed an entirely unknown CALLEE from its first argument and
+    // emitted nothing at all. Mirrors the `UnresolvedName` block directly
+    // above; the variant-agnostic derives are covered by
+    // `diagnostic_code_derives`.
+
+    /// `DiagnosticCode::UnresolvedFunction` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    ///
+    /// Constructed as a WARNING, not an error, because #5371 is warn-mode-first:
+    /// the mnemonic is `W_UNRESOLVED_FUNCTION` and #5997 owns the flip to
+    /// `E_UNRESOLVED_FUNCTION`.
+    #[test]
+    fn diagnostic_code_unresolved_function_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::UnresolvedFunction);
+        assert_eq!(d.code, Some(DiagnosticCode::UnresolvedFunction));
+        assert_eq!(d.severity, crate::Severity::Warning);
+    }
+
+    /// `UnresolvedFunction` is a DISTINCT variant, not an alias of the two
+    /// codes it is easiest to confuse it with.
+    ///
+    /// * `UnresolvedName` (`E_UNRESOLVED_NAME`) is an ERROR for an unbound
+    ///   IDENTIFIER in expression context (`expr.rs:670-681`).
+    /// * `FnTypeArgUnresolved` is about an unresolved TYPE ARGUMENT of a call
+    ///   that did resolve.
+    ///
+    /// `UnresolvedFunction` is neither: it is a WARNING about the CALLEE of a
+    /// `FunctionCall` matching no builtin family and no user/stdlib `fn`.
+    /// Collapsing any two of these would silently retarget every consumer that
+    /// matches on the code — which is the whole point of having codes.
+    #[test]
+    fn unresolved_function_is_distinct_from_its_neighbouring_codes() {
+        assert_ne!(
+            DiagnosticCode::UnresolvedFunction,
+            DiagnosticCode::UnresolvedName
+        );
+        assert_ne!(
+            DiagnosticCode::UnresolvedFunction,
+            DiagnosticCode::FnTypeArgUnresolved
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedFunction`
+    /// serializes as `"UnresolvedFunction"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). The LSP ships this string on the wire, so
+    /// a rename is a breaking change for editor consumers.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_unresolved_function_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::UnresolvedFunction).unwrap();
+        assert_eq!(s, "\"UnresolvedFunction\"");
+    }
+
     /// Pins per-variant severity + variant-existence at the reify-types layer
     /// for all five multi-kernel-phase-3 variants in one table. Although the
     /// dispatcher-side `<builder>_carries_<severity>_severity_and_code` tests
