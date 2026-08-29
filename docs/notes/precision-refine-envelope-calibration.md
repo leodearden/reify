@@ -178,20 +178,35 @@ Not measurable, recorded honestly:
 **`nurbs_surface(…)` is measurable and does not belong in the list above.** The
 `INDETERMINATE` in 0.22 s originally recorded here was **not** a capability gap: it was
 an artifact of a flat, bare-`[x,y,z]`-literal control-point/weight encoding rejected at
-eval decode. `control_points`/`weights` are NESTED (u-major × v) grids
-(`NurbsSurface` in `crates/reify-ir/src/geometry.rs`), and every pole must be a
-`point3(…)` — the pole decoder `accept_length_point3`
+eval decode — precisely diagnosed, not silently. `control_points`/`weights` are NESTED
+(u-major × v) grids (`NurbsSurface` in `crates/reify-ir/src/geometry.rs`), and every
+pole must be a `point3(…)`. The flat form's 9 bare triples are read as 9 ROWS: row 0
+(`[0mm,0mm,0mm]`) itself passes the row-is-a-List check, so its three elements are each
+then decoded as a POLE by the pole decoder `accept_length_point3`
 (`crates/reify-eval/src/geometry_ops.rs:967`), called per pole from the control-point
-grid loop in `compile_geometry_op`'s `SurfaceKind::Nurbs` arm (`geometry_ops.rs:1914`),
-accepts only `Value::Point`/`Value::Vector` with 3 components **and** requires each
-component to be LENGTH-dimensioned (task 5745), so a flat list of bare `[x,y,z]`
-literals decodes to `Value::List`, fails the shape check silently, leaving the subject
-undefined. (`point3_components`, now at `geometry_ops.rs:1413`, survives only as the
-un-gated decoder for the three DIRECTION positions.)
+grid loop in `compile_geometry_op`'s `SurfaceKind::Nurbs` arm (`geometry_ops.rs:1914`).
+Pole 0 of row 0 is the bare scalar `0mm` — a `Value::Scalar`, not a
+`Value::Point`/`Value::Vector` — so it fails the SHAPE check first; the LENGTH-dimension
+requirement (task 5745) is a real, separate gate that fires only once the shape check
+passes, and is not why this form is rejected (its components are already `mm`).
+(`point3_components`, now at `geometry_ops.rs:1413`, survives only as the un-gated
+decoder for the three DIRECTION positions.) The compiler gates only arity
+(`check_arg_count_exact`, 6 — `crates/reify-compiler/src/geometry.rs:2640`), so the
+wrong-shape call compiles clean, but eval-time decode then rejects it with a precise
+per-pole diagnostic: `error: failed to compile geometry operation: nurbs_surface:
+control_points[0][0] must be a Point3<Length>, got Scalar { .. }`, surfaced by the
+`Err(String)` → `Diagnostic::error` conversion at `engine_build.rs:8682-8684`, followed
+by "all geometry operations failed; no geometry output produced" (`engine_build.rs:3760`/
+`4741` — two sites share the text, so cite the message, not a line). What made the
+2026-08-10 observation read as a capability gap is the EXIT CODE, which stays 0 because
+the constraint resolves INDETERMINATE (subject undefined) rather than erroring — not a
+missing diagnostic.
 Re-measured 2026-08-24 at HEAD=`2306e029ec` with the corrected nested
 encoding (3x3 u-major control net of `point3(…)` poles, nested unit weights, the same
 clamped knots `[0,0,0,1,1,1]` in both directions and `u_degree = v_degree = 2` as
-before):
+before). EXCERPT of a longer transcript (elides the leading `warning: constraint
+expression has type PnrgSpline, expected Bool` line and truncates the trailing `for
+PnrgSplineCheck` suffix):
 
     error: RepresentationWithin: sampled facet deviation 1.713e-2 m exceeds bound 1.000e-6 m
 

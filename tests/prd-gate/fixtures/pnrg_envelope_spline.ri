@@ -20,7 +20,10 @@
 //      subject/checker layout, with the corrected nested call now commented
 //      below in place of the live subject: a 3x3 u-major control net of
 //      `point3(...)` poles, nested unit weights, the same clamped knots
-//      [0,0,0,1,1,1] in both directions and u_degree = v_degree = 2:
+//      [0,0,0,1,1,1] in both directions and u_degree = v_degree = 2.  EXCERPT
+//      of a longer transcript (elides the leading `warning: constraint
+//      expression has type PnrgSpline, expected Bool` line and truncates the
+//      trailing `for PnrgSplineCheck` suffix):
 //          VIOLATED <checker>#constraint[0]
 //          error: RepresentationWithin: sampled facet deviation 1.713e-2 m
 //          exceeds bound 1.000e-6 m
@@ -32,24 +35,39 @@
 //          INDETERMINATE PnrgSplineCheck#constraint[0]
 //      in 0.22 s against a FLAT control-point/weight encoding — 9 bare
 //      `[x,y,z]` list literals in one flat list, not a 3x3 nested grid of
-//      `point3(...)`.  Transcribing that flat form today still reproduces it
-//      verbatim: `INDETERMINATE <checker>#constraint[0]`, `undefined inputs:
-//      <checker>.subject`, exit 0, ~0.26 s.  That was never a kernel gap — it
-//      was a decode rejection.  `crates/reify-ir/src/geometry.rs:1051-1053`
-//      declares `NurbsSurface { control_points: Vec<Vec<[f64;3]>>, weights:
-//      Vec<Vec<f64>> }` — both NESTED (u-major × v) — but the pole decoder is
+//      `point3(...)`.  Transcribing that flat form today reproduces an
+//      EXCERPT of a six-line transcript, not the whole of it: `INDETERMINATE
+//      <checker>#constraint[0]`, `undefined inputs: <checker>.subject`, exit
+//      0, ~0.26 s.  That was never a kernel gap — it was a decode rejection,
+//      and a precisely-diagnosed one, not a silent one.
+//      `crates/reify-ir/src/geometry.rs:1051-1053` declares `NurbsSurface {
+//      control_points: Vec<Vec<[f64;3]>>, weights: Vec<Vec<f64>> }` — both
+//      NESTED (u-major × v).  The flat form's 9 bare triples are read as 9
+//      ROWS: row 0 (`[0mm,0mm,0mm]`) itself passes the row-is-a-List check,
+//      so its three elements are each then decoded as a POLE by
 //      `accept_length_point3` (`crates/reify-eval/src/geometry_ops.rs:967`),
 //      called per pole from the control-point grid loop in
-//      `compile_geometry_op`'s `SurfaceKind::Nurbs` arm (`geometry_ops.rs:1914`):
-//      it accepts only `Value::Point`/`Value::Vector` with 3 components AND
-//      requires each component to be LENGTH-dimensioned (task 5745), so a flat
-//      list of bare `[x,y,z]` literals decodes to `Value::List`, fails the shape
-//      check silently, and the subject is never defined.  (`point3_components`,
-//      now at `geometry_ops.rs:1413`, survives only as the un-gated decoder for
-//      the three DIRECTION positions.)  The compiler only gates arity
-//      (`check_arg_count_exact`, 6 — crates/reify-compiler/src/geometry.rs:2640),
-//      so a wrong-shape call compiles clean and fails silently downstream — no
-//      diagnostic points at the real defect.
+//      `compile_geometry_op`'s `SurfaceKind::Nurbs` arm (`geometry_ops.rs:1914`).
+//      Pole 0 of row 0 is the bare scalar `0mm` — a `Value::Scalar`, not a
+//      `Value::Point`/`Value::Vector` — so it fails the SHAPE check first;
+//      the LENGTH-dimension requirement (task 5745) is a real, separate gate
+//      that fires only once the shape check passes, and is not why THIS
+//      form is rejected (its components are already `mm`).
+//      (`point3_components`, now at `geometry_ops.rs:1413`, survives only as
+//      the un-gated decoder for the three DIRECTION positions.)  The
+//      compiler gates only arity (`check_arg_count_exact`, 6 —
+//      crates/reify-compiler/src/geometry.rs:2640), so the wrong-shape call
+//      compiles clean, but eval-time decode then rejects it with a precise
+//      per-pole diagnostic: `error: failed to compile geometry operation:
+//      nurbs_surface: control_points[0][0] must be a Point3<Length>, got
+//      Scalar { .. }`, surfaced by the `Err(String)` → `Diagnostic::error`
+//      conversion at `engine_build.rs:8682-8684`, followed by "all geometry
+//      operations failed; no geometry output produced" (`engine_build.rs:
+//      3760`/`4741` — two sites share the text, so cite the message, not a
+//      line).  What made the 2026-08-10 observation read as a capability
+//      gap is the EXIT CODE, which stays 0 because the constraint resolves
+//      INDETERMINATE (subject undefined) rather than erroring — not a
+//      missing diagnostic.
 //
 //      `Operation::SurfaceNurbs` is genuinely ABSENT from
 //      `occt_capability_descriptor()` (crates/reify-kernel-occt/src/register.rs:
