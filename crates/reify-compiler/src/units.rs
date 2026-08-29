@@ -418,6 +418,36 @@ pub fn topology_selector_result_type(name: &str) -> Option<reify_core::Type> {
     })
 }
 
+/// The complete set of **selector-composition** builtin names — the single
+/// source of truth for [`selector_composition_result_type`].
+///
+/// # Maintenance contract
+///
+/// This slice and the resolver's `matches!` gate are the same fact stated
+/// twice; the resolver reads the slice so they cannot drift, and
+/// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
+/// pins the converse (every entry here is claimed by the resolver for
+/// well-shaped operands). Adding a name here REQUIRES a parallel resolver
+/// change.
+///
+/// **Deliberate overlap with [`GEOMETRY_FUNCTION_NAMES`]**: `union` and
+/// `difference` are ALSO CSG geometry functions. The collision is resolved by
+/// operand shape, not by name — `selector_composition_result_type` returns
+/// `None` when no operand is `Type::Selector(_)`, so the CSG forms fall
+/// through to the `is_geometry_function` arm. `intersect` is
+/// selector-composition-only (the CSG spelling is `intersection`).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const SELECTOR_COMPOSITION_NAMES: &[&str] = &["union", "intersect", "difference"];
+
+/// Is `name` in the selector-composition vocabulary? Name-only classification
+/// — a `.contains` over [`SELECTOR_COMPOSITION_NAMES`]. Says nothing about
+/// whether a given CALL is a selector composition (that is operand-shaped);
+/// use [`selector_composition_result_type`] for that.
+pub(crate) fn is_selector_composition_name(name: &str) -> bool {
+    SELECTOR_COMPOSITION_NAMES.contains(&name)
+}
+
 /// Classify `union`/`intersect`/`difference` calls whose operands are
 /// `Type::Selector(kind)` — the selector-composition algebra (task 4119 δ).
 ///
@@ -452,7 +482,7 @@ pub(crate) fn selector_composition_result_type(
     call_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Type> {
-    if !matches!(name, "union" | "intersect" | "difference") {
+    if !is_selector_composition_name(name) {
         return None;
     }
 
@@ -590,6 +620,52 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
     }
 }
 
+/// The complete set of **construction-datum constructor** names — the single
+/// source of truth for [`datum_constructor_result_type`].
+///
+/// # Maintenance contract
+///
+/// This slice and the resolver's `match` are the same fact stated twice; the
+/// resolver gates on the slice so a name can never be in the `match` without
+/// being here, and
+/// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
+/// pins the converse (every entry here resolves to `Some` for a well-shaped
+/// call). Adding a name here REQUIRES a parallel resolver arm.
+///
+/// **`offset` is arity-gated**, not arity-blind like its ten siblings: only
+/// the arity-2 `offset(Plane, Length) -> Plane` form is a construction datum
+/// (the arity-3 form is a γ relation in
+/// [`crate::relation_signatures::RELATION_FN_NAMES`]). It is a member of this
+/// slice — membership is a NAME fact — but membership alone does not imply
+/// the resolver claims a given call. The test-only `DATUM_NAMES` fixture in
+/// `datum_constructor_names_are_disjoint_from_other_families` deliberately
+/// omits it for that reason; this production slice does not, because
+/// `is_known_builtin` asks a pure name question.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
+    "midplane",
+    "plane_through",
+    "axis_through",
+    "frame_at",
+    "plane_xy",
+    "plane_xz",
+    "plane_yz",
+    "axis_x",
+    "axis_y",
+    "axis_z",
+    // Arity-gated: construction datum at arity 2 only (see above).
+    "offset",
+];
+
+/// Is `name` in the construction-datum vocabulary? Name-only classification —
+/// a `.contains` over [`DATUM_CONSTRUCTOR_NAMES`]. Arity-blind, so it returns
+/// `true` for `offset` at every arity; use [`datum_constructor_result_type`]
+/// when the arity gate matters.
+pub(crate) fn is_datum_constructor_name(name: &str) -> bool {
+    DATUM_CONSTRUCTOR_NAMES.contains(&name)
+}
+
 /// Arg-aware result type for the construction-datum **constructor**
 /// free-functions recognised by the compiler (geometric-relations η, task
 /// 4387). A sibling resolver to the constructor families above
@@ -694,6 +770,12 @@ pub(crate) fn datum_constructor_result_type(
     name: &str,
     args: &[reify_ir::CompiledExpr],
 ) -> Option<reify_core::Type> {
+    // Membership is decided by the slice, never by the `match` below, so a
+    // name cannot enter the resolver's vocabulary without appearing in
+    // `DATUM_CONSTRUCTOR_NAMES` (task #5371).
+    if !is_datum_constructor_name(name) {
+        return None;
+    }
     match name {
         "midplane" | "plane_through" => Some(reify_core::Type::Plane),
         "axis_through" => Some(reify_core::Type::Axis),
@@ -765,6 +847,43 @@ pub(crate) fn tolerancing_marker_result_type(name: &str) -> Option<reify_core::T
     }
 }
 
+/// The complete set of **AffineMap algebra** free-function names — the single
+/// source of truth for [`affine_map_algebra_result_type`].
+///
+/// # Maintenance contract
+///
+/// This slice and the resolver's `match` are the same fact stated twice; the
+/// resolver gates on the slice so the two cannot drift, and
+/// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
+/// pins the converse (every entry here resolves to `Some` for a well-shaped
+/// first argument). Adding a name here REQUIRES a parallel resolver arm.
+///
+/// **Two members are shadowed in the `expr.rs` ladder** and are listed here
+/// because this slice describes the RESOLVER, not the ladder:
+/// * `affine_apply` is also in [`GEOMETRY_FUNCTION_NAMES`], whose arm sits
+///   EARLIER, so the ladder never reaches this resolver for it.
+/// * `determinant` is also in [`crate::math_signatures::MATH_OPERATION_NAMES`],
+///   whose arm sits LATER — so a non-`AffineMap` first arg returns `None`
+///   here and is then claimed by the math arm (that is the matrix-determinant
+///   behaviour this resolver deliberately preserves).
+/// Neither can therefore reach the terminal first-arg fallback.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const AFFINE_ALGEBRA_NAMES: &[&str] = &[
+    "affine_compose",
+    "affine_inverse",
+    // First-arg-gated members — see the shadowing note above.
+    "determinant",
+    "affine_apply",
+];
+
+/// Is `name` in the AffineMap-algebra vocabulary? Name-only classification —
+/// a `.contains` over [`AFFINE_ALGEBRA_NAMES`]. Arg-blind; use
+/// [`affine_map_algebra_result_type`] when the first-arg gate matters.
+pub(crate) fn is_affine_map_algebra_name(name: &str) -> bool {
+    AFFINE_ALGEBRA_NAMES.contains(&name)
+}
+
 /// Return-type inference for the AffineMap **algebra** free-functions (task γ,
 /// PRD §4.3).  Separate from [`affine_map_constructor_result_type`] because
 /// (a) `affine_inverse` returns `Option<AffineMap(3)>` and `determinant`
@@ -781,6 +900,12 @@ pub(crate) fn affine_map_algebra_result_type(
     name: &str,
     first_arg_type: Option<&reify_core::Type>,
 ) -> Option<reify_core::Type> {
+    // Membership is decided by the slice, never by the `match` below, so a
+    // name cannot enter the resolver's vocabulary without appearing in
+    // `AFFINE_ALGEBRA_NAMES` (task #5371).
+    if !is_affine_map_algebra_name(name) {
+        return None;
+    }
     match name {
         "affine_compose" => Some(reify_core::Type::AffineMap(3)),
         "affine_inverse" => Some(reify_core::Type::Option(Box::new(

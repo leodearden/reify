@@ -1,6 +1,33 @@
 use reify_core::Type;
 use reify_ir::CompiledExpr;
 
+/// The complete set of **list-helper** builtin names — the single source of
+/// truth for [`infer_list_helper_return_type`].
+///
+/// # Maintenance contract
+///
+/// This slice and the resolver's `match` are the same fact stated twice; the
+/// resolver gates on the slice so the two cannot drift, and
+/// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
+/// pins the converse (every entry here resolves to `Some` for a well-shaped
+/// call). Adding a name here REQUIRES a parallel resolver arm.
+///
+/// The list-helper family has no `*_are_disjoint_from_other_families` slice of
+/// its own historically because it was resolver-only; `generate` (task 3994)
+/// is handled by the resolver and belongs here even though the older
+/// test-only fixtures predate it.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map", "generate"];
+
+/// Is `name` a list-helper builtin? Name-only classification — a `.contains`
+/// over [`LIST_HELPER_NAMES`]. Shape-blind: a `true` answer does not imply
+/// [`infer_list_helper_return_type`] claims a given call (it returns `None`
+/// on structural mismatch, by design, to preserve anti-cascade).
+pub(crate) fn is_list_helper(name: &str) -> bool {
+    LIST_HELPER_NAMES.contains(&name)
+}
+
 /// Infer the return type of a list-helper stdlib call from the compiled
 /// argument list.
 ///
@@ -17,6 +44,12 @@ pub(crate) fn infer_list_helper_return_type(
     name: &str,
     compiled_args: &[CompiledExpr],
 ) -> Option<Type> {
+    // Membership is decided by the slice, never by the `match` below, so a
+    // name cannot enter the resolver's vocabulary without appearing in
+    // `LIST_HELPER_NAMES` (task #5371).
+    if !is_list_helper(name) {
+        return None;
+    }
     match name {
         "single" => {
             // single(List<T>) -> T  (task 2698).

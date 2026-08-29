@@ -44,14 +44,95 @@
 //!   migration is seeded by this task's warn-sweep violation list
 //!   (`docs/notes/unresolved-function-warn-sweep-2026-08-29.md`).
 
+use crate::analysis_signatures::ANALYSIS_FN_NAMES;
+use crate::expr::DETERMINACY_PREDICATE_NAMES;
+use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
+use crate::list_helpers::LIST_HELPER_NAMES;
+use crate::math_signatures::{
+    MATH_CONSTRUCTION_NAMES, MATH_OPERATION_NAMES, MATH_TRANSCENDENTAL_NAMES,
+};
+use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
+use crate::parse_signatures::PARSE_FN_NAMES;
+use crate::relation_signatures::{RELATION_FN_NAMES, is_relation_shared_verb};
+use crate::units::{
+    AFFINE_ALGEBRA_NAMES, AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES,
+    DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
+    GEOMETRY_FUNCTION_NAMES, GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES,
+    GEOMETRY_QUERY_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, SELECTOR_COMPOSITION_NAMES,
+    TOLERANCING_MARKER_NAMES,
+};
+
+/// Names for which the terminal first-arg fallback's typing is **verified
+/// correct**, so they are deliberately named rather than left open-world.
+///
+/// Populated in step-6; forward-declared empty here so `is_known_builtin` can
+/// already reference it.
+pub const FIRST_ARG_TYPED_NAMES: &[&str] = &[];
+
+/// Eval-dispatchable names that are not yet family-registered, whose typing is
+/// deliberately left to the terminal fallback.
+///
+/// Populated in step-8; forward-declared empty here so `is_known_builtin` can
+/// already reference it.
+pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[];
+
 /// Is `name` a builtin function name the compiler knows about *at all*?
 ///
-/// Closed-world union over every classification family plus the two manifests
-/// declared in this module. A pure predicate: no allocation, no diagnostics.
+/// Closed-world union over every classification family the `expr.rs`
+/// `NoUserFunctions` ladder consults, plus the two manifests declared in this
+/// module. A pure predicate: no allocation, no diagnostics.
+///
+/// # What this does NOT answer
+///
+/// Membership is a **name** fact only. A `true` answer says nothing about
+/// whether a *particular call* type-checks, has the right arity, or is claimed
+/// by the family that owns the name — several families are arg-aware and
+/// return `None` for a mis-shaped call by design (`datum_constructor_result_type`'s
+/// `offset` arity gate, `selector_composition_result_type`'s CSG fall-through,
+/// `infer_list_helper_return_type`'s structural match, `field_op_result_type`).
+/// Those cases are diagnosed separately by `DiagnosticCode::BuiltinArgShapeUnrecognized`.
 ///
 /// Case-sensitive — Reify function names are snake_case.
-pub fn is_known_builtin(_name: &str) -> bool {
-    false
+pub fn is_known_builtin(name: &str) -> bool {
+    // --- The 19 name slices the ladder consults, in ladder order. ---
+    GEOMETRY_QUERY_HELPER_NAMES.contains(&name)
+        || GEOMETRY_KINEMATIC_QUERY_NAMES.contains(&name)
+        || GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
+        || RELATION_FN_NAMES.contains(&name)
+        || GEOMETRY_QUERY_NAMES.contains(&name)
+        || TOLERANCING_MARKER_NAMES.contains(&name)
+        || GEOMETRY_FUNCTION_NAMES.contains(&name)
+        || DYNAMICS_QUERY_NAMES.contains(&name)
+        || DYNAMICS_CONSTRUCTOR_NAMES.contains(&name)
+        || AFFINE_MAP_CONSTRUCTOR_NAMES.contains(&name)
+        || MATH_CONSTRUCTION_NAMES.contains(&name)
+        || MATH_OPERATION_NAMES.contains(&name)
+        || MATH_TRANSCENDENTAL_NAMES.contains(&name)
+        || JOINT_TYPED_FN_NAMES.contains(&name)
+        || ANALYSIS_FN_NAMES.contains(&name)
+        || FEA_ENVELOPE_NAMES.contains(&name)
+        || FIELD_OP_NAMES.contains(&name)
+        || PARSE_FN_NAMES.contains(&name)
+        || ORIENTATION_TYPED_FN_NAMES.contains(&name)
+        // --- The four resolver-only families, promoted to production slices
+        // --- by this task so the union can see them (they were previously
+        // --- visible only as `match` arms inside their resolvers).
+        || DATUM_CONSTRUCTOR_NAMES.contains(&name)
+        || SELECTOR_COMPOSITION_NAMES.contains(&name)
+        || LIST_HELPER_NAMES.contains(&name)
+        || AFFINE_ALGEBRA_NAMES.contains(&name)
+        // --- Vocabularies that live outside any slice. ---
+        //
+        // The arity-gated shared verbs `angle`/`distance` are deliberately
+        // absent from RELATION_FN_NAMES (their arity-2 DERIVE forms are
+        // geometry queries), so the slices above do not reach them.
+        || is_relation_shared_verb(name)
+        // The determinacy predicates are a bare `match` in the ladder; #5371
+        // promoted them to a slice for exactly this reason.
+        || DETERMINACY_PREDICATE_NAMES.contains(&name)
+        // --- This module's two manifests. ---
+        || FIRST_ARG_TYPED_NAMES.contains(&name)
+        || EVAL_DEFERRED_BUILTIN_NAMES.contains(&name)
 }
 
 #[cfg(test)]

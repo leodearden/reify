@@ -295,6 +295,28 @@ fn receiver_structure_name(scope: &CompilationScope, sub_name: &str) -> Option<S
     None
 }
 
+/// The four **determinacy predicate** intrinsics — the single source of truth
+/// for the `determinacy_kind` dispatch in the `NoUserFunctions` ladder below.
+///
+/// # Maintenance contract
+///
+/// Unlike every other ladder family, this vocabulary has no `*_signatures.rs`
+/// module and no `*_result_type` resolver: the names are transformed into
+/// `DeterminacyPredicateKind` nodes inline. Promoting the list to a slice
+/// (task #5371) is what lets `unresolved_function::is_known_builtin` see the
+/// family at all, so that a call to `determined(x)` is not reported as an
+/// unresolved function. The dispatch `match` reads this slice, so the two
+/// cannot drift; adding a name here REQUIRES a parallel `match` arm and a new
+/// `DeterminacyPredicateKind` variant.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const DETERMINACY_PREDICATE_NAMES: &[&str] = &[
+    "determined",
+    "undetermined",
+    "constrained",
+    "partially_determined",
+];
+
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
 /// with the subject's element type (contract C-3,
 /// PRD docs/prds/v0_6/result-and-fallback.md).
@@ -3321,14 +3343,25 @@ fn compile_expr_guarded_with_expected_inner(
                     //                             narrowed from original spec to
                     //                             distinguish from Auto (which is
                     //                             covered by constrained())
-                    let determinacy_kind = match name.as_str() {
-                        "determined" => Some(DeterminacyPredicateKind::Determined),
-                        "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
-                        "constrained" => Some(DeterminacyPredicateKind::Constrained),
-                        "partially_determined" => {
-                            Some(DeterminacyPredicateKind::PartiallyDetermined)
+                    //
+                    // Membership is decided by `DETERMINACY_PREDICATE_NAMES`
+                    // (task #5371) so `unresolved_function::is_known_builtin`
+                    // can see this vocabulary — it is the one ladder family
+                    // that lives as a bare `match` here rather than as a name
+                    // slice in a `*_signatures.rs` module.
+                    let determinacy_kind = if !DETERMINACY_PREDICATE_NAMES.contains(&name.as_str())
+                    {
+                        None
+                    } else {
+                        match name.as_str() {
+                            "determined" => Some(DeterminacyPredicateKind::Determined),
+                            "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
+                            "constrained" => Some(DeterminacyPredicateKind::Constrained),
+                            "partially_determined" => {
+                                Some(DeterminacyPredicateKind::PartiallyDetermined)
+                            }
+                            _ => None,
                         }
-                        _ => None,
                     };
 
                     if let Some(kind) = determinacy_kind {
