@@ -648,4 +648,92 @@ mod tests {
             Ok(3.0)
         );
     }
+
+    // ---- crack_dimensionless_list (task #6120) ------------------------------
+    //
+    // The dimensionless twin of `crack_scalar_list`, and due for the same
+    // reason: once #6412 centralised the per-entry `"{what}[{i}]"` loop in this
+    // module, `form_find.rs::crack_reals` was left hand-rolling a second copy of
+    // it — a >=2-duplicate hit against the single-definition-site discipline
+    // that hoist just landed here.
+
+    /// Every entry is cracked in order, and the per-entry acceptance set
+    /// survives the lift: one list may legitimately mix all three numeric ratio
+    /// spellings, because `[1, 1.0, …]`-style literals lower to `Value::Int` and
+    /// `Value::Real` element-wise with no value-level widening between them.
+    #[test]
+    fn crack_dimensionless_list_accepts_mixed_numeric_entries() {
+        let mixed = Value::List(vec![
+            Value::Real(1.0),
+            Value::Int(2),
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        ]);
+        assert_eq!(
+            crack_dimensionless_list(&mixed, "force_densities", FF_CODE, FF_HINT),
+            Ok(vec![1.0, 2.0, 3.0]),
+        );
+    }
+
+    /// The list-SHAPE arm, which carries the mnemonic but NOT the ratio hint
+    /// (the unit is not the problem — the value is not a list at all). This is
+    /// the one message the lifting deliberately changes: `form_find.rs` used to
+    /// hardcode "must be a list of reals", and now reports the parameterized
+    /// "must be a list of dimensionless ratios" at the single definition site —
+    /// the same consolidation #6412 made when `tensegrity_load`'s "must be a
+    /// list of forces" became "must be a list of Force scalars".
+    #[test]
+    fn crack_dimensionless_list_rejects_non_list() {
+        assert_eq!(
+            crack_dimensionless_list(&Value::Real(1.0), "force_densities", FF_CODE, FF_HINT),
+            Err(
+                "E_FormFindInfeasible: force_densities must be a list of dimensionless ratios, \
+                 got Real(1.0)"
+                    .to_string()
+            )
+        );
+    }
+
+    /// The located `{what}[{i}]` entry index: an author whose THIRD seed ratio
+    /// carries a unit must be told WHICH entry is wrong, not merely that
+    /// "seed_ratios" is wrong — the property the t1a / t1b e2e tests pin
+    /// end-to-end, caught here at the unit level first.
+    #[test]
+    fn crack_dimensionless_list_labels_the_offending_entry_index() {
+        let third_entry_dimensioned = Value::List(vec![
+            Value::Real(-1.0),
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::FORCE_DENSITY,
+            },
+        ]);
+        let err = crack_dimensionless_list(
+            &third_entry_dimensioned,
+            "seed_ratios",
+            FF_CODE,
+            FF_HINT,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "E_FormFindInfeasible: seed_ratios[2] has the wrong unit — expected a dimensionless \
+             ratio (a bare Real or a dimensionless Scalar), got a Scalar in kg·m^-2·s^-2; force \
+             densities, seed ratios and surface stresses are nullity-invariant RELATIVE ratios, \
+             not physical quantities — only their relative magnitudes and signs matter, so drop \
+             the unit (write `1.0`, not `1N/1m`)"
+        );
+        // Guards both degenerate labellings: a constant index, and a bare
+        // `what` naming only the list.
+        assert!(
+            !err.contains("seed_ratios[0]"),
+            "must name entry 2, got: {err}"
+        );
+        assert!(
+            !err.contains("seed_ratios has the wrong unit"),
+            "must locate the entry, not merely the list: {err}"
+        );
+    }
 }
