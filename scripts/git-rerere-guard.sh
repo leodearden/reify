@@ -34,8 +34,10 @@
 #                    1 = armed (the machine-readable signal);
 #                    3 = UNVERIFIABLE — no armed scope was found, but at least
 #                        one worktree's rerere state could not be determined at
-#                        all (unreadable config.worktree, or an include.path
-#                        chain git cannot resolve).  This is deliberately NOT 0:
+#                        all (an unreadable config.worktree, an include.path
+#                        chain git cannot resolve, or an unreadable `gitdir`
+#                        that leaves the entry's liveness unknown).  This is
+#                        deliberately NOT 0:
 #                        a periodic probe that read an unverifiable store as
 #                        clean would report the fleet healthy while a lane it
 #                        could not read was armed.  It is deliberately NOT 1
@@ -367,9 +369,22 @@ _report_armed_worktree() {
     echo "  git reads config.worktree FIRST, so this beats the shared .git/config." >&2
 }
 
-# _linked_worktree_is_live WT_DIR — 0 if the linked worktree administrative dir
-# still backs a working tree that exists on disk, 1 if the entry is STALE
-# (git's own term: prunable).
+# _linked_worktree_is_live WT_DIR — TRI-STATE, not a boolean:
+#   0  the admin dir still backs a working tree that exists on disk (LIVE);
+#   1  the entry is STALE (git's own term: prunable) — inert, skip silently;
+#   2  UNVERIFIABLE — the `gitdir` file EXISTS but could not be read, so
+#      liveness is unknown and the caller must count the lane UNKNOWN.
+#
+# 1 and 2 were once the same answer, and that made the sweep fail OPEN on its
+# only machine-readable channel: an unreadable `gitdir` in a live, armed lane
+# made the caller `continue` silently, the lane vanished from the sweep, and
+# `check` answered 0 = "safe AND fully verified".  Measured on git 2.43.0 —
+# with a lane's config.worktree setting rerere.enabled=true, `check` exited 1
+# and named it; after `chmod 000` on that lane's `gitdir`, `check` exited 0
+# printing nothing while `git -C <lane> config --get rerere.enabled` still
+# answered true.  ABSENT is genuinely prunable and stays a silent skip;
+# UNREADABLE is a permissions pathology and is now UNKNOWN, the same verdict an
+# unreadable config.worktree and an unresolvable include chain already get.
 #
 # WHY: the sweep walks <common>/worktrees/*/config.worktree straight off disk,
 # and a stale entry keeps its config.worktree long after the working tree it
@@ -400,10 +415,26 @@ _report_armed_worktree() {
 _linked_worktree_is_live() {
     local wt_dir="$1" pointer=""
 
-    # Missing or empty gitdir file — git calls this prunable too ("gitdir file
-    # does not exist").
-    [ -r "$wt_dir/gitdir" ] || return 1
-    IFS= read -r pointer < "$wt_dir/gitdir" || true
+    # ABSENT gitdir file — git calls this prunable too ("gitdir file does not
+    # exist").  The routine lane-churn transient: silent skip.
+    [ -e "$wt_dir/gitdir" ] || return 1
+
+    # PRESENT BUT UNREADABLE is a different animal, and must NOT collapse into
+    # the line above: nothing about a permission bit makes the entry prunable,
+    # so this may well be a live lane whose config.worktree is armed.  UNKNOWN.
+    [ -r "$wt_dir/gitdir" ] || return 2
+
+    # The open can still fail on a shape `-r` accepts (a dangling symlink, an
+    # I/O error), so the read's status is captured rather than discarded with
+    # `|| true`, and 2>/dev/null keeps bash's own redirect diagnostic out of the
+    # guard's stderr.  `read` also exits non-zero at EOF on a file with no
+    # trailing newline, so the verdict is taken from $pointer, not the status —
+    # and an empty $pointer is disambiguated by -s: no bytes at all is git's
+    # other prunable shape (stale, 1), bytes we could not get is UNKNOWN (2).
+    if ! IFS= read -r pointer < "$wt_dir/gitdir" 2>/dev/null && [ -z "$pointer" ]; then
+        [ -s "$wt_dir/gitdir" ] && return 2
+        return 1
+    fi
     [ -n "$pointer" ] || return 1
 
     # The file names the worktree's own .git FILE, e.g. /path/to/lane/.git, and
@@ -424,7 +455,7 @@ _linked_worktree_is_live() {
 
 _sweep_worktree_configs() {
     local armed=0 wt_config wt_dir wt_name mentions key value
-    local last_enabled last_autoupdate read_out read_status
+    local last_enabled last_autoupdate read_out read_status live_status
 
     # config.worktree is DEAD BYTES unless extensions.worktreeConfig is true —
     # git does not read those files at all, so a rerere.enabled=true sitting in
@@ -490,14 +521,39 @@ _sweep_worktree_configs() {
             wt_dir="${wt_config%/config.worktree}"
             wt_name="${wt_dir##*/}"
 
-            # STALE ENTRY: the admin dir outlived the working tree it describes
-            # and `git worktree prune` has not reclaimed it yet.  git will never
-            # read this config.worktree again, so it is inert — skip SILENTLY,
-            # and specifically do NOT count it as UNKNOWN: it is verified
-            # irrelevant, not unverifiable, and a routine transient on a pool
-            # that churns lanes would otherwise pin `check` at exit 3 forever.
-            # The main checkout is never stale, hence the else-branch placement.
-            _linked_worktree_is_live "$wt_dir" || continue
+            # The liveness gate is TRI-STATE; treating it as a boolean is what
+            # made the sweep fail open.  The main checkout is never stale and
+            # has no `gitdir` file at all, hence the else-branch placement.
+            live_status=0
+            _linked_worktree_is_live "$wt_dir" || live_status=$?
+
+            # STALE ENTRY (1): the admin dir outlived the working tree it
+            # describes and `git worktree prune` has not reclaimed it yet.  git
+            # will never read this config.worktree again, so it is inert — skip
+            # SILENTLY, and specifically do NOT count it as UNKNOWN: it is
+            # verified irrelevant, not unverifiable, and a routine transient on
+            # a pool that churns lanes would otherwise pin `check` at exit 3
+            # forever.
+            if [ "$live_status" -eq 1 ]; then
+                continue
+            fi
+
+            # ANYTHING ELSE non-zero (2): the entry EXISTS but its liveness
+            # could not be determined, so the lane is neither verified live nor
+            # verified inert — and if it is live, its config.worktree may be
+            # armed.  UNKNOWN, in the same vocabulary as an unreadable
+            # config.worktree below: cmd_check turns the count into exit 3, so a
+            # store the guard could not fully read never answers 0 = safe.
+            # Unconditional rather than `-eq 2`, so a future code can never fall
+            # through into the sweep as though the lane were verified live.
+            if [ "$live_status" -ne 0 ]; then
+                echo "WARNING: cannot read $wt_dir/gitdir — cannot tell whether worktree '$wt_name' is live." >&2
+                echo "  An unreadable gitdir does NOT make the entry prunable, so this lane's" >&2
+                echo "  config.worktree may still be the one git reads.  Its rerere state is" >&2
+                echo "  UNKNOWN, not verified safe." >&2
+                _SWEEP_UNKNOWN=$((_SWEEP_UNKNOWN + 1))
+                continue
+            fi
         fi
 
         # One unreadable config.worktree must not abort the sweep and mask every

@@ -1381,6 +1381,85 @@ assert "(g-k) a RELATIVE gitdir pointer is treated as live, not silently skipped
 assert "(g-k) an EMPTY gitdir file is a stale entry -> check exits 0" \
     bash "$GUARD" check "$GKS_REPO"
 
+# The gate's OTHER fail-safe direction: an UNREADABLE gitdir is not a prunable
+# entry.  It used to share the stale entry's `return 1`, so the caller skipped it
+# SILENTLY and did not count it UNKNOWN — a live, armed lane simply vanished from
+# the sweep and `check` answered 0 = "safe AND fully verified", fail-open on the
+# very channel exit 3 exists to close (and the shape the runbook §8.2 periodic
+# probe would consume).  It was also inconsistent with the two sibling cases:
+# (g-g) an unreadable config.worktree and (g-j-e) an unreadable include target
+# are both correctly UNKNOWN.  chmod 000 is meaningless as root, same as those.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: (g-k) unreadable-gitdir arm — running as root, chmod 000 does not deny root reads"
+else
+    read -r GKU_REPO GKU_A GKU_B <<< "$(make_wt_repo)"
+    GKU_A_GITDIR="$(git -C "$GKU_A" rev-parse --absolute-git-dir)"
+
+    assert "(g-k) negative control: nothing planted -> check exits 0" \
+        bash "$GUARD" check "$GKU_REPO"
+
+    git -C "$GKU_A" config --worktree rerere.enabled true
+
+    # POSITIVE CONTROL while the gitdir is still readable: the plant really is
+    # one the sweep detects, so a changed verdict afterwards can only be the
+    # liveness gate, never the detector failing to see the file.
+    assert "(g-k) positive control: with a readable gitdir the armed lane IS reported" \
+        bash -c "bash '$GUARD' check '$GKU_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtA'\""
+
+    chmod 000 "$GKU_A_GITDIR/gitdir"
+
+    # Fixture preconditions MEASURED, not assumed: the file is still THERE (so
+    # the entry is not prunable) and the lane is still genuinely armed.
+    assert "(g-k) fixture: the gitdir file exists but is unreadable" \
+        bash -c "test -e '$GKU_A_GITDIR/gitdir' && ! head -c1 '$GKU_A_GITDIR/gitdir' >/dev/null 2>&1"
+
+    assert "(g-k) fixture: the lane git itself reads is STILL armed" \
+        bash -c "[ \"\$(git -C '$GKU_A' config --get rerere.enabled)\" = true ]"
+
+    _gku_status=0
+    bash "$GUARD" check "$GKU_REPO" >/dev/null 2>&1 || _gku_status=$?
+
+    assert "(g-k) an unreadable gitdir is UNVERIFIABLE, so check exits 3 — never 0" \
+        test "$_gku_status" -eq 3
+
+    assert "(g-k) ...WARNing on the gitdir path rather than skipping in silence" \
+        bash -c "bash '$GUARD' check '$GKU_REPO' 2>&1 >/dev/null | grep -qF 'cannot read $GKU_A_GITDIR/gitdir'"
+
+    assert "(g-k) ...naming the lane, so an operator knows which one to fix" \
+        bash -c "bash '$GUARD' check '$GKU_REPO' 2>&1 >/dev/null | grep -q \"whether worktree '.*wtA' is live\""
+
+    assert "(g-k) ...reporting UNKNOWN in the same vocabulary as the sibling cases" \
+        bash -c "bash '$GUARD' check '$GKU_REPO' 2>&1 >/dev/null | grep -qF 'UNKNOWN, not verified safe'"
+
+    # `arm` must not turn an unverifiable lane into a hard failure — setup-dev.sh
+    # branches 0 | 2 | * under `set -e`, and `arm` writes --local so it could
+    # never repair a lane it cannot even locate.
+    _gku_arm=0
+    bash "$GUARD" arm "$GKU_REPO" >/dev/null 2>&1 || _gku_arm=$?
+
+    assert "(g-k) arm over an unreadable gitdir exits the advisory 2, not a failure" \
+        test "$_gku_arm" -eq 2
+
+    assert "(g-k) ...and still pinned the shared config (its half of the job)" \
+        bash -c "[ \"\$(git -C '$GKU_REPO' config --local --bool --get rerere.enabled)\" = false ]"
+
+    # The gate must not swallow the LIVE lanes with it.
+    git -C "$GKU_B" config --worktree rerere.enabled true
+
+    assert "(g-k) a readable armed lane in the same store is still reported" \
+        bash -c "bash '$GUARD' check '$GKU_REPO' 2>&1 >/dev/null | grep -q \"ARMED: worktree '.*wtB'\""
+
+    # ARMED wins over UNVERIFIABLE, exactly as the header promises.
+    _gku_both=0
+    bash "$GUARD" check "$GKU_REPO" >/dev/null 2>&1 || _gku_both=$?
+
+    assert "(g-k) ...and a store that is BOTH armed and unverifiable exits 1, not 3" \
+        test "$_gku_both" -eq 1
+
+    chmod 644 "$GKU_A_GITDIR/gitdir"
+    unset GKU_REPO GKU_A GKU_B GKU_A_GITDIR _gku_status _gku_arm _gku_both
+fi
+
 unset GK_REPO GK_A GK_B GK_A_GITDIR GKS_REPO GKS_A GKS_B GKS_A_GITDIR
 
 # ==============================================================================
