@@ -35,12 +35,14 @@
 //! cost, without the walk itself ever running there.
 
 use std::path::PathBuf;
+use std::process::Command;
 
-// Read by `git_at_workspace_root`'s contract tests below. Both come from the
-// workspace's SINGLE definition of the sanitizer
-// (`crates/reify-test-support/src/git_env.rs`) rather than a local twin, so
-// this module cannot drift from the set it is supposed to remove.
-use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars};
+// The workspace's SINGLE definition of the repo-redirect sanitizer, not a local
+// twin: `sanitize` is what `git_at_workspace_root` below applies, and
+// `REPO_REDIRECT_VARS`/`removed_vars` are what its contract tests read, so this
+// module cannot drift from the set it is supposed to remove.
+// (`crates/reify-test-support/src/git_env.rs`.)
+use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars, sanitize};
 
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
@@ -50,6 +52,39 @@ use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars};
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 // ─── step 21/22: one sanitized git constructor for every call site ───────────
+
+/// A pre-sanitized `git -C <workspace root>` command — the ONLY way this
+/// module reaches git.
+///
+/// Every git call here targets a specific repository (this workspace), and the
+/// workspace rule for that shape is stated at `reify_audit::git_env`: build it
+/// through a sanitized `-C <root>` constructor, because git exports
+/// `GIT_DIR`/`GIT_INDEX_FILE`/`GIT_WORK_TREE` into a hook's entire process tree
+/// and those OVERRIDE an explicit `-C`. The failure is silent — the command
+/// operates on a *different* repository rather than erroring — which for this
+/// module would mean enumerating some other tree's `.ri` files into the survey,
+/// or resolving the stamped anchor against the wrong object store. The rule's
+/// one carve-out is a bare `git --version` availability probe; this module has
+/// no such probe, so all three call sites route through here.
+///
+/// `reify_audit::git_env::command` is the same shape one crate up, and is
+/// deliberately NOT used: `reify-audit` is not a dependency of
+/// `reify-compiler`, and adding that edge to reuse a four-line constructor
+/// would be a far larger change than the sanctioned below-the-edge pattern its
+/// own doc describes — route repo-targeting spawns through
+/// `reify_test_support::git_env::sanitize` directly, which is the same single
+/// sanitizer either way.
+///
+/// Returns an owned `Command` rather than borrowing `sanitize`'s `&mut` return,
+/// because two of the three consumers need `.output()` and one needs only
+/// `.status`.
+fn git_at_workspace_root(args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(WORKSPACE_ROOT);
+    cmd.args(args);
+    sanitize(&mut cmd);
+    cmd
+}
 
 #[test]
 fn git_at_workspace_root_removes_every_repo_redirect_var() {
@@ -142,10 +177,7 @@ fn git_at_workspace_root_composes_with_the_corpus_enumeration_args() {
 /// would render a falsely-clean survey, which is the one failure mode this
 /// artifact must never have.
 fn tracked_ri_corpus() -> Vec<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(WORKSPACE_ROOT)
-        .args(["ls-files", "-z", "--", "*.ri"])
+    let out = git_at_workspace_root(&["ls-files", "-z", "--", "*.ri"])
         .output()
         .unwrap_or_else(|e| {
             panic!(
@@ -2753,10 +2785,7 @@ fn survey_output_path() -> PathBuf {
 /// [`stamp_decision`], which is precisely the "looks clean" reading that must
 /// never be reachable by accident.
 fn git_read(args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(WORKSPACE_ROOT)
-        .args(args)
+    let out = git_at_workspace_root(args)
         .output()
         .unwrap_or_else(|e| {
             panic!(
@@ -3077,10 +3106,7 @@ fn parse_stamped_base_commit(md: &str) -> Option<&str> {
 /// entire answer is the exit code, and where a non-zero exit is the finding
 /// rather than an infrastructure failure. [`git_read`] would panic on it.
 fn git_succeeds(args: &[&str]) -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(WORKSPACE_ROOT)
-        .args(args)
+    git_at_workspace_root(args)
         .output()
         .unwrap_or_else(|e| {
             panic!(
