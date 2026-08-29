@@ -10,7 +10,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
@@ -2539,6 +2542,32 @@ mod cli {
 // server-assigned session as a hard `Protocol` failure. The mock answers
 // the header but does not police it — see
 // [`write_response_with_session`] for why enforcement is off the table.
+//
+// Dual wire framing: every spawner comes in a JSON- and an SSE-framed
+// variant (`spawn_mock_mcp*` vs `spawn_mock_mcp_sse*`), selected by
+// [`Framing`] and threaded through [`write_response_framed`]. JSON drives
+// `FusedMemoryClient::post`'s bare-body `else` branch
+// (`fused_memory_client.rs:189-192`); SSE drives its
+// `ctype.contains("text/event-stream")` branch (:172-186), and the mock
+// wraps the body as a realistic `event: message\ndata: <json>\n\n` frame
+// rather than a bare `data:` line so the client's line-scan is genuinely
+// exercised rather than getting lucky on a single-line body. The
+// `notifications/initialized` leg always answers 202 with an empty body
+// under BOTH framings: that matches real MCP, and `post()`
+// short-circuits on status 202 before it ever sniffs content-type
+// (fused_memory_client.rs:152), so SSE-framing that leg would be
+// untestable fiction. Independently, [`ResultShape`] selects the
+// `tools/call` result envelope (`structuredContent` vs the
+// `content[0].text` fallback), mirroring `call_tool`'s two decode
+// branches (:221-236).
+//
+// All of this is purely additive: `spawn_mock_mcp`, `spawn_mock_mcp_on`,
+// `write_response` and `write_response_with_session` keep their exact
+// pre-existing signatures and just delegate into the framing/shape-aware
+// cores (`spawn_mock_mcp_on_shaped`, `write_response_framed`). That is
+// deliberate — those four helpers have 13 call sites elsewhere in this
+// file, in suites unrelated to this SSE work, and a signature change
+// would have dragged all of them into this diff.
 
 /// A single HTTP request the mock's accept loop observed, captured so
 /// tests can assert on it (e.g. session-id-on-every-POST). Header names
@@ -2780,7 +2809,12 @@ where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    spawn_mock_mcp_on_shaped(listener, Framing::Sse, ResultShape::ContentText, task_responder)
+    spawn_mock_mcp_on_shaped(
+        listener,
+        Framing::Sse,
+        ResultShape::ContentText,
+        task_responder,
+    )
 }
 
 /// Spawn a one-shot mock MCP server on an already-bound `listener`, speaking
@@ -3092,11 +3126,15 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--task", "9998",
+                "--task",
+                "9998",
                 "--pre-done",
-                "--fused-memory-url", mock.url(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit");
@@ -3112,7 +3150,11 @@ mod http_loader {
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         let findings = parse_findings_from_stderr(&stderr);
-        assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
+        assert!(
+            findings.is_empty(),
+            "expected zero findings; got {:#}",
+            serde_json::Value::Array(findings)
+        );
     }
 
     /// SSE-framed session-id lock: proves `mcp-session-id` rides EVERY POST
@@ -3155,11 +3197,15 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--task", "9996",
+                "--task",
+                "9996",
                 "--pre-done",
-                "--fused-memory-url", mock.url(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit");
@@ -3195,7 +3241,10 @@ mod http_loader {
             .iter()
             .map(|req| {
                 req.header("mcp-session-id").unwrap_or_else(|| {
-                    panic!("request for method {:?} missing mcp-session-id header", req.method)
+                    panic!(
+                        "request for method {:?} missing mcp-session-id header",
+                        req.method
+                    )
                 })
             })
             .collect();
@@ -3252,11 +3301,15 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--task", "9997",
+                "--task",
+                "9997",
                 "--pre-done",
-                "--fused-memory-url", mock.url(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit");
@@ -3272,7 +3325,11 @@ mod http_loader {
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         let findings = parse_findings_from_stderr(&stderr);
-        assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
+        assert!(
+            findings.is_empty(),
+            "expected zero findings; got {:#}",
+            serde_json::Value::Array(findings)
+        );
     }
 
     /// Pre-done via HTTP loader: a done/merged task with files but no
@@ -3382,11 +3439,15 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--task", "9995",
+                "--task",
+                "9995",
                 "--pre-done",
-                "--fused-memory-url", mock.url(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit");
@@ -3667,10 +3728,14 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--since", "1970-01-01",
-                "--fused-memory-url", mock.url(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
+                "--since",
+                "1970-01-01",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit");
