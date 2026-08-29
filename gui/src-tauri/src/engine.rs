@@ -2142,13 +2142,16 @@ impl EngineSession {
     /// other not — the next time this lookup widens (searching realizations as
     /// well as templates, say) is exactly when they would drift.
     ///
-    /// The type is returned by value because every caller needs `&mut self`
-    /// afterwards, which a borrow out of `compiled()` would block.
+    /// The type is BORROWED out of `compiled()` rather than cloned, so the
+    /// existence-only caller ([`Self::require_known_cell`], the write-back's
+    /// gate) pays nothing for a value it discards. `set_parameter`, the one
+    /// caller that genuinely needs an owned `Type` — it needs `&mut self`
+    /// afterwards, which this borrow would block — clones at its own call site.
     fn resolve_known_cell_type(
         &self,
         cell_id: &ValueCellId,
         cell_id_str: &str,
-    ) -> Result<reify_core::Type, String> {
+    ) -> Result<&reify_core::Type, String> {
         let compiled = self
             .core
             .compiled()
@@ -2157,7 +2160,7 @@ impl EngineSession {
             .templates
             .iter()
             .find_map(|t| t.value_cells.iter().find(|vc| vc.id == *cell_id))
-            .map(|vc| vc.cell_type.clone())
+            .map(|vc| &vc.cell_type)
             .ok_or_else(|| format!("Unknown parameter '{}'", cell_id_str))
     }
 
@@ -2192,12 +2195,14 @@ impl EngineSession {
         // the lookup first also keeps "Unknown parameter" ahead of any parse
         // diagnostic — an unknown cell is the more specific complaint.
         //
-        // The type is cloned rather than borrowed because `with_solve_slot`
-        // below needs `&mut self`, which the `compiled()` borrow would block.
+        // The clone lives HERE, at the one call site that needs an owned type:
+        // `with_solve_slot` below needs `&mut self`, which the `compiled()`
+        // borrow would block. The shared lookup hands back a borrow so the
+        // existence-only caller (`require_known_cell`) pays nothing for it.
         // The lookup itself is `resolve_known_cell_type` so this path and the
         // INV-GUI-3 write-back agree by construction about what a cell id
         // denotes — see that function.
-        let cell_type = self.resolve_known_cell_type(&cell_id, cell_id_str)?;
+        let cell_type = self.resolve_known_cell_type(&cell_id, cell_id_str)?.clone();
 
         let value = parse_value_string_for_cell(value_str, &cell_type)?;
 
@@ -2487,7 +2492,29 @@ impl EngineSession {
             // pre-edit text this rollback returns the engine to — the two agree
             // again without a second write down the path that just failed.
             return match self.update_source(path_str, &original) {
-                Ok(_) => Err(write_err),
+                Ok(_) => {
+                    // The SAME snapshot restore as the recompile-rejection arm
+                    // above, for the same reason and one step later. This call
+                    // has failed, so the ledger says none of the four surfaces
+                    // may move — but the rollback `update_source` SUCCEEDED,
+                    // and a successful `commit_state` clears `compile_failure`
+                    // and `last_reload_error` unconditionally, including any
+                    // that PREDATE this call. Without the restore a failed
+                    // write silently clears a staleness banner the user's
+                    // last hot reload really did earn, and `is_stale()` starts
+                    // claiming the GUI is in sync with a reload that never
+                    // succeeded.
+                    //
+                    // Restored only on the Ok arm on purpose: if the rollback
+                    // recompile itself failed, `record_compile_failure` has
+                    // just stored a diagnostic about a REAL, current
+                    // inconsistency (the engine is stuck on the post-edit
+                    // text), and overwriting it with the pre-edit snapshot
+                    // would hide exactly the state the combined error below is
+                    // shouting about.
+                    (self.compile_failure, self.last_reload_error) = failure_surface;
+                    Err(write_err)
+                }
                 Err(restore_err) => Err(format!(
                     "{write_err}; the engine could not be rolled back to the pre-edit \
                      source either: {restore_err}"

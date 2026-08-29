@@ -20480,6 +20480,57 @@ fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
 }
 
 #[test]
+fn apply_param_to_source_preserves_an_existing_staleness_banner_when_the_disk_write_fails() {
+    // The write-failure sibling of
+    // `apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects`,
+    // and it needs its own test for a reason the recompile one does not cover:
+    // on THIS path BOTH `update_source` calls succeed, and a successful
+    // `commit_state` clears `compile_failure` and `last_reload_error`
+    // unconditionally. So a failed write would "roll back" the engine while
+    // silently clearing a banner it never earned the right to clear — the GUI
+    // would then claim it is in sync with a hot reload that actually failed.
+    //
+    // The sibling assertion in `..._rolls_the_engine_back_when_the_disk_write_fails`
+    // is `!session.is_stale()` on a session that was never stale, which cannot
+    // fail no matter what the rollback does; this one starts the session STALE,
+    // so the assertion has a direction to regress in.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    session.record_reload_error("boom".to_string());
+    assert!(
+        session.is_stale(),
+        "precondition: the session must start stale for this test to mean anything"
+    );
+
+    // Same EISDIR trigger as the sibling test: deterministic, and still fails
+    // when the suite happens to run as root. Note the divergence guard passes
+    // FIRST — it reads the file before the swap, so this exercises the write
+    // failure and not the guard.
+    std::fs::remove_file(&path).expect("removing the fixture .ri should succeed");
+    std::fs::create_dir(&path).expect("creating a directory at the .ri path should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a failed disk write must surface as Err, not be swallowed");
+    assert!(
+        err.contains("writing"),
+        "precondition: the failure must be the WRITE, not a compile rejection, got: {err}"
+    );
+
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "a failed disk write must leave the pre-existing staleness banner exactly \
+         as it found it — the rollback recompile succeeds, and `commit_state` \
+         would otherwise clear a banner this call never earned the right to clear"
+    );
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the rollback must not leave diagnostics either — the snapshot restored \
+         is the pre-edit one, which had none"
+    );
+}
+
+#[test]
 fn apply_param_to_source_is_idempotent_on_reapply() {
     // D7: applying the SAME value twice is a no-op, not an error and not a
     // second textual edit. This is the property that makes the FS-watcher
