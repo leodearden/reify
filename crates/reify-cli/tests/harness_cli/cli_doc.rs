@@ -7,6 +7,12 @@
 //! - `1` — any failure: parse / compile errors that prevented doc generation,
 //!   I/O failures, and CLI usage errors (bad flag, missing positional,
 //!   conflicting flags).
+//!
+//! Because `1` is now shared by all three, the `Usage: reify doc` banner on
+//! stderr is the discriminator between a CLI usage error and a genuine
+//! compile / I-O failure.  The tests below pin that contract in both
+//! directions: every usage-error test asserts the banner is PRESENT, and the
+//! compile-error / parse-error / missing-file tests assert it is ABSENT.
 
 use crate::common;
 
@@ -87,6 +93,13 @@ fn doc_compile_error_exits_one_with_stderr() {
         stderr.contains("error:"),
         "stderr should contain 'error:' from a compile diagnostic, got: {stderr}"
     );
+    // Exit 1 is shared with usage errors, so the banner is the discriminator:
+    // a compile error must NOT print it.
+    assert!(
+        !stderr.contains("Usage: reify doc"),
+        "a compile error must not print the usage banner (it is the usage-error \
+         discriminator now that both exit 1), got: {stderr}"
+    );
     // No doc body should reach stdout when compilation fails.
     assert!(
         !stdout.contains("<!DOCTYPE html>"),
@@ -111,6 +124,12 @@ fn doc_missing_file_exits_one() {
         stderr.contains("Error reading"),
         "stderr should contain 'Error reading' for missing file, got: {stderr}"
     );
+    // An I/O failure is not a usage error: the banner must stay off stderr.
+    assert!(
+        !stderr.contains("Usage: reify doc"),
+        "a missing input file must not print the usage banner (it is the \
+         usage-error discriminator now that both exit 1), got: {stderr}"
+    );
 }
 
 #[test]
@@ -131,6 +150,12 @@ fn doc_parse_error_exits_one_with_stderr() {
     assert!(
         stderr.contains("Parse error:"),
         "stderr should contain 'Parse error:' for a parse failure, got: {stderr}"
+    );
+    // Same discriminator check as the compile-error test.
+    assert!(
+        !stderr.contains("Usage: reify doc"),
+        "a parse error must not print the usage banner (it is the usage-error \
+         discriminator now that both exit 1), got: {stderr}"
     );
     // No doc body should reach stdout when parsing fails.
     assert!(
@@ -282,13 +307,15 @@ fn doc_split_with_json_exits_one() {
         "reify doc --format json --split must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
+    // `contains("--split")` / `contains("markdown")` are both satisfied by the
+    // DOC_USAGE banner alone, so pin the specific guard line instead.
     assert!(
-        stderr.contains("--split"),
-        "stderr should mention '--split', got: {stderr}"
+        stderr.contains("Error: --split is only valid with --format markdown"),
+        "stderr should carry the specific --split guard line, got: {stderr}"
     );
     assert!(
-        stderr.contains("markdown only") || stderr.contains("markdown"),
-        "stderr should explain that --split is markdown-only, got: {stderr}"
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
     );
 }
 
@@ -303,13 +330,15 @@ fn doc_split_with_html_exits_one() {
         "reify doc --format html --split must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
+    // `contains("--split")` / `contains("markdown")` are both satisfied by the
+    // DOC_USAGE banner alone, so pin the specific guard line instead.
     assert!(
-        stderr.contains("--split"),
-        "stderr should mention '--split', got: {stderr}"
+        stderr.contains("Error: --split is only valid with --format markdown"),
+        "stderr should carry the specific --split guard line, got: {stderr}"
     );
     assert!(
-        stderr.contains("markdown only") || stderr.contains("markdown"),
-        "stderr should explain that --split is markdown-only, got: {stderr}"
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
     );
 }
 
@@ -324,13 +353,15 @@ fn doc_compact_with_markdown_exits_one() {
         "reify doc --format markdown --compact must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
+    // `contains("--compact")` / `contains("json")` are both satisfied by the
+    // DOC_USAGE banner alone, so pin the specific guard line instead.
     assert!(
-        stderr.contains("--compact"),
-        "stderr should mention '--compact', got: {stderr}"
+        stderr.contains("Error: --compact is only valid with --format json"),
+        "stderr should carry the specific --compact guard line, got: {stderr}"
     );
     assert!(
-        stderr.contains("json only") || stderr.contains("json"),
-        "stderr should explain that --compact is json-only, got: {stderr}"
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
     );
 }
 
@@ -345,13 +376,15 @@ fn doc_compact_with_html_exits_one() {
         "reify doc --format html --compact must exit 1 (usage error).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
+    // `contains("--compact")` / `contains("json")` are both satisfied by the
+    // DOC_USAGE banner alone, so pin the specific guard line instead.
     assert!(
-        stderr.contains("--compact"),
-        "stderr should mention '--compact', got: {stderr}"
+        stderr.contains("Error: --compact is only valid with --format json"),
+        "stderr should carry the specific --compact guard line, got: {stderr}"
     );
     assert!(
-        stderr.contains("json only") || stderr.contains("json"),
-        "stderr should explain that --compact is json-only, got: {stderr}"
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
     );
 }
 
@@ -510,6 +543,10 @@ fn doc_format_without_value_exits_one() {
         stderr.contains("--format requires a value"),
         "stderr should contain '--format requires a value', got: {stderr}"
     );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
+    );
 }
 
 #[test]
@@ -559,6 +596,10 @@ fn doc_o_without_value_exits_one() {
     assert!(
         stderr.contains("-o requires a path"),
         "stderr should contain '-o requires a path', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
     );
 }
 
@@ -625,6 +666,10 @@ fn doc_split_without_output_path_exits_one() {
         stderr.contains("--split requires -o"),
         "stderr should explain that --split requires -o, got: {stderr}"
     );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
+    );
 }
 
 #[test]
@@ -644,6 +689,10 @@ fn doc_unknown_flag_exits_one() {
     assert!(
         stderr.contains("--frobnicate"),
         "stderr should name the offending flag '--frobnicate', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
     );
 }
 
