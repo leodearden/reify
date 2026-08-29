@@ -25,10 +25,29 @@
 //! Submodules reach it via `use crate::differential::{…}`. No extra `#![allow]` is needed
 //! at this root — differential.rs carries its own `#![allow(dead_code)]`.
 //!
-//! Residual, stated rather than silently dropped: `differential.rs` is by far the largest
-//! member of `tests/common/`, so collapsing it takes most of the duplicated-compilation
-//! payload that was available here. The remaining `mod common;` includers are
-//! deliberately left standalone, each for a reason that consolidating would violate:
+//! # Residual — what the BONUS asked for vs. what shipped
+//!
+//! Stated rather than silently dropped, and stated against the ask so the delta is on the
+//! record rather than inferred. Task #5282's BONUS was to dedup `tests/common/` "as a
+//! single `mod common;` under the harnesses". What shipped is deliberately NARROWER:
+//!
+//! DONE — `common/differential.rs`, by far the largest member of `tests/common/`, is now
+//! declared once per compile unit instead of once per includer. Inside this unit that is
+//! 4 copies collapsed to the 1 declaration below, which is where nearly all of the
+//! available duplicated-compilation payload lived.
+//!
+//! NOT DONE — `differential.rs` is still compiled separately into `harness_engine` and
+//! `harness_selective_demand` (one root-level declaration each). That is not an oversight
+//! and no further `#[path]` bookkeeping can fix it: each integration-test root is its own
+//! crate, so a module cannot be shared across binaries. Removing those two compilations
+//! means merging the three units into one, which the PRD §7 cap forbids outright — their
+//! combined size, even after the two duplicate `differential` copies are netted out, is
+//! well past the cap, and `harness_engine` is already the unit that cap forced a split
+//! out of (see `harness_auto_resolution`). Re-measure with
+//! `tests/infra/test_harness_kloc_cap.sh` rather than trusting a number pinned here.
+//!
+//! NOT DONE — the `mod common;` half of the BONUS is untouched. Its includers are left
+//! standalone, each for a reason that consolidating would violate:
 //!   - `realization_cache_alloc` and `realization_cache_alloc_rotating_options_hash` each
 //!     declare their own `#[global_allocator] static GLOBAL`. Rust permits exactly one
 //!     global allocator per compile unit, so folding both here is a hard rustc error, and
