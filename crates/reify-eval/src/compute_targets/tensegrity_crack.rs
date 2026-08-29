@@ -80,6 +80,16 @@ pub(crate) fn crack_dimensioned_scalar(
 /// Crack a value at a DIMENSIONLESS position, rejecting a dimensioned `Scalar`
 /// instead of silently stripping its unit.
 ///
+/// Accepts all THREE numeric spellings of a bare ratio — `Real`, `Int`, and a
+/// `Scalar` carrying `DIMENSIONLESS` — and nothing else. `Int` is not redundant
+/// with `Real`: `Int → Real` widening in this codebase is a TYPE-level rule only
+/// (`type_compat.rs` defines it for `type_compatible`; `coerce.rs` states that
+/// overload selection "does NOT apply Int→Real (or any other) widening"), so
+/// there is no value-level coercion and an integer ratio literal such as
+/// `form_find(net, [1, 1, 1, 1], anchors)` arrives here as `Value::Int`
+/// verbatim. `elastic_static.rs::dimensionless_component` records the same
+/// reasoning for the `MaterialFrame` dimensionless axis.
+///
 /// The dimensionless counterpart of [`crack_dimensioned_scalar`]: that one wants
 /// one PARTICULAR unit, this one wants no unit at all, so the acceptance sets
 /// differ and they stay distinct functions — but they deliberately share the
@@ -95,6 +105,7 @@ pub(crate) fn crack_dimensionless_scalar(
 ) -> Result<f64, String> {
     match v {
         Value::Real(r) => Ok(*r),
+        Value::Int(n) => Ok(*n as f64),
         Value::Scalar {
             si_value,
             dimension,
