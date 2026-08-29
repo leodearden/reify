@@ -115,7 +115,7 @@
 //! the file only on machines that happen to have a kernel.
 
 use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, ValueCellId};
-use reify_eval::{CheckResult, TessellateResult};
+use reify_eval::{CheckResult, ConstraintCheckEntry, TessellateResult};
 use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value, ValueMap};
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -1295,57 +1295,28 @@ fn capstan_surfaces_only_the_finished_drum() {
     );
 
     // ---- The design still checks clean at its defaults (`reify check` equivalent) ----
-    // Filtering for `Violated` alone would be vacuously green two ways: an empty
-    // `constraint_results` (nothing checked at all), and `Indeterminate` — which is
-    // precisely what an undef input produces, i.e. the symptom of a geometry or
-    // scalar cell failing to evaluate. So assert positively instead.
-    assert!(
-        !result.constraint_results.is_empty(),
-        "no constraints were checked at all — every structure in {DEV_CAPSTAN} \
-         declares some, so an empty result means the check never ran"
+    // Two statements, both through [`assert_constraints_ok`] so the non-emptiness
+    // guard cannot go missing from either: a satisfaction filter over an empty
+    // `constraint_results` (nothing checked at all) is vacuously green. Scoped to
+    // `Capstan` the claim is the strict one — all of its constraint inputs are
+    // defined on the happy path, so `Indeterminate`, precisely what an undef input
+    // produces when a geometry or scalar cell fails to evaluate, has to fail here
+    // too. File-wide it is the weaker statement `reify check` itself makes.
+    assert_constraints_ok(
+        &result.constraint_results,
+        Some(CAPSTAN_ENTITY),
+        Strictness::AllSatisfied,
+        "the OCCT build surface",
+        "Anything other than `Satisfied` for this entity — Violated OR \
+         Indeterminate — is a regression in the rope-seat work this module gates.",
     );
-
-    let capstan_constraints: Vec<_> = result
-        .constraint_results
-        .iter()
-        .filter(|c| c.id.entity == CAPSTAN_ENTITY)
-        .collect();
-    assert!(
-        !capstan_constraints.is_empty(),
-        "expected constraint results for entity `{CAPSTAN_ENTITY}`, got none; \
-         entities checked: {:?}",
-        result
-            .constraint_results
-            .iter()
-            .map(|c| &c.id.entity)
-            .collect::<Vec<_>>()
-    );
-
-    // Strict for `Capstan`: all of its constraint inputs are defined on the happy
-    // path, so anything other than `Satisfied` — Violated OR Indeterminate — is a
-    // regression in the rope-seat work this module gates.
-    let unsatisfied: Vec<_> = capstan_constraints
-        .iter()
-        .filter(|c| c.satisfaction != Satisfaction::Satisfied)
-        .collect();
-    assert!(
-        unsatisfied.is_empty(),
-        "every `{CAPSTAN_ENTITY}` constraint must be Satisfied at the file's defaults \
-         ({} of {} were not; Indeterminate means an input cell failed to evaluate): \
-         {unsatisfied:#?}",
-        unsatisfied.len(),
-        capstan_constraints.len()
-    );
-
-    // File-wide, the weaker statement `reify check` makes: nothing is Violated.
-    let violated: Vec<_> = result
-        .constraint_results
-        .iter()
-        .filter(|c| c.satisfaction == Satisfaction::Violated)
-        .collect();
-    assert!(
-        violated.is_empty(),
-        "{DEV_CAPSTAN} must satisfy every constraint at its defaults; violated: {violated:#?}"
+    assert_constraints_ok(
+        &result.constraint_results,
+        None,
+        Strictness::NoneViolated,
+        "the OCCT build surface",
+        "This is the file-wide claim; the strict entity-scoped one is asserted \
+         just above.",
     );
 }
 
@@ -1376,8 +1347,9 @@ fn capstan_surfaces_only_the_finished_drum() {
 ///      records as not working: only `at` poses come through. So the stroke
 ///      stays a hand-set param and the assembly asserts it stays honest;
 ///   2. the checker actually EVALUATED what the template declares — one result
-///      per declared constraint. A declared-but-unevaluated relation would
-///      leave (3) below quantifying over an empty set, i.e. vacuously green;
+///      per declared constraint. A declared-but-unevaluated relation would leave
+///      (3) quantifying over less than the file states — and, if none reached the
+///      surface at all, over an empty set, i.e. vacuously green;
 ///   3. every one of those results is `Satisfied`.
 ///
 /// The direction of the comparison is deliberately NOT pinned: `capstan.band <=
@@ -1461,19 +1433,33 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
             .collect::<Vec<_>>()
     );
 
+    // ---- (3) …and it holds at the file's defaults ----
+    // Ordered ahead of (2) only because [`assert_constraints_ok`] leads with the
+    // non-emptiness guard and hands back the scoped `CapstanDrive` entries that (2)
+    // then counts — so both claims quantify over ONE scoped read rather than two
+    // filters that could drift apart. The claims stay numbered by the argument in
+    // the doc comment above, not by execution order.
+    let drive_constraints = assert_constraints_ok(
+        &result.constraint_results,
+        Some(CAPSTAN_DRIVE_ENTITY),
+        Strictness::AllSatisfied,
+        "the kernel-free check surface",
+        "`Violated` means the shuttle's stroke no longer covers the capstan's band \
+         migration — the fairlead runs out of travel before the wrap band does. \
+         `Indeterminate` means something quite different, and is why this scope is \
+         read at `AllSatisfied`: it is what a cross-sub field reference produces \
+         when it fails to EVALUATE, so the constraint is present but checking \
+         nothing.",
+    );
+
     // ---- (2) …the checker evaluated every constraint the template declares ----
-    let drive_constraints: Vec<_> = result
-        .constraint_results
-        .iter()
-        .filter(|c| c.id.entity == CAPSTAN_DRIVE_ENTITY)
-        .collect();
     assert_eq!(
         drive_constraints.len(),
         drive_template.constraints.len(),
         "the checker must report one result per `{CAPSTAN_DRIVE_ENTITY}` constraint \
          the template declares ({} declared, {} reported). A declared relation that \
          never reaches the check surface is not enforcing anything, and claim (3) \
-         below would quantify over an empty set and pass vacuously. Entities \
+         would then be quantifying over less than the file states. Entities \
          checked: {:?}",
         drive_template.constraints.len(),
         drive_constraints.len(),
@@ -1482,24 +1468,6 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
             .iter()
             .map(|c| &c.id.entity)
             .collect::<Vec<_>>()
-    );
-
-    // ---- (3) …and it holds at the file's defaults ----
-    let unsatisfied: Vec<_> = drive_constraints
-        .iter()
-        .filter(|c| c.satisfaction != Satisfaction::Satisfied)
-        .collect();
-    assert!(
-        unsatisfied.is_empty(),
-        "every `{CAPSTAN_DRIVE_ENTITY}` constraint must be Satisfied at the file's \
-         defaults ({} of {} were not). `Violated` means the shuttle's stroke no \
-         longer covers the capstan's band migration — the fairlead runs out of \
-         travel before the wrap band does. `Indeterminate` means something quite \
-         different and is why this is asserted positively: it is what a cross-sub \
-         field reference produces when it fails to EVALUATE, so the constraint is \
-         present but checking nothing. Results: {unsatisfied:#?}",
-        unsatisfied.len(),
-        drive_constraints.len()
     );
 }
 
@@ -1556,26 +1524,15 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
 fn capstan_design_file_checks_clean_without_a_kernel() {
     let result = dev_capstan_checked();
 
-    assert!(
-        !result.constraint_results.is_empty(),
-        "no constraints were checked at all on the kernel-free surface of \
-         {DEV_CAPSTAN} — every structure in the file declares some, so an empty \
-         result means the check never ran and the `Violated` filter below would \
-         pass vacuously"
-    );
-
-    let violated: Vec<_> = result
-        .constraint_results
-        .iter()
-        .filter(|c| c.satisfaction == Satisfaction::Violated)
-        .collect();
-    assert!(
-        violated.is_empty(),
-        "{DEV_CAPSTAN} must satisfy every constraint at its defaults — read off \
-         `constraint_results` directly, so this holds however the checker chooses \
-         to report a violation as a diagnostic. Reaching HERE rather than \
+    assert_constraints_ok(
+        &result.constraint_results,
+        None,
+        Strictness::NoneViolated,
+        "the kernel-free check surface",
+        "Read off `constraint_results` directly, so this holds however the checker \
+         chooses to report a violation as a diagnostic. Reaching HERE rather than \
          `check_dev_capstan` means the violation raised no Error diagnostic, which \
          is itself worth reading as a change in `SimpleConstraintChecker`'s \
-         reporting. Violated: {violated:#?}"
+         reporting.",
     );
 }
