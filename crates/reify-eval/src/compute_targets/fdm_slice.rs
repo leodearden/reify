@@ -41,6 +41,21 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// deliberately does not use it: the PrusaSlicer boundary scales m→mm by an
 /// explicit `* 1000.0` (see `read_slice_settings`, and the STL write reached
 /// from `export_body_stl`).
+///
+/// Task #6301 surveyed every OTHER G-code-derived marshalling into a DSL
+/// `Value` for this same mislabelled-unit shape, recorded here so it is not
+/// redone: `as_printed_material_r0.rs` already applies its own `MM_TO_M` in
+/// `toolpath_aabb` and emits `point3_length`, and its `Value::Field { source:
+/// AsPrintedZones }` payload is SI-in-metres per
+/// `reify_fdm::zone::ZoneProcessParams` — clean; `as_printed_material.rs`
+/// touches no G-code at all (its AABB comes from the realization mesh, already
+/// SI) — clean; the `reify-fdm` crate has no `reify-ir` dependency, so nothing
+/// in it can produce a `Value`, and `r0.rs` converts on its own — clean. The
+/// one remaining bare-`Real` G-code→`Value` site is `reify-stdlib`'s
+/// `trajectory::gcode_import::waypoint_to_value`, which is NOT this defect: its
+/// payload is an untyped `Value::Map` behind the bare `Profile` marker in
+/// `stdlib/trajectory.ri`, so no `.ri` declaration claims a dimension for it —
+/// undimensioned rather than mislabelled. Out of scope here, tracked as #6994.
 const MM_TO_M: f64 = 1.0e-3;
 
 /// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
