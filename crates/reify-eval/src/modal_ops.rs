@@ -1763,11 +1763,22 @@ fn run_mechanism_modal(
     // ── (6) shape ModalResult (7-field, mirroring run_modal_analysis step 7) ──
     // topology is always present (Value::Undef on the mechanism path — no B-rep
     // attributed mesh; stable contract for R3b per task 4654 R3a design decision).
+    //
+    // `damping` genuinely echoes the caller's `ModalOptions.damping` descriptor
+    // (task #6875) via the same [`field_or`] read the FEA path uses — it is no
+    // longer a placeholder. `Value::Undef` now means only "the caller supplied
+    // no descriptor", which is what a bare `ModalOptions()` produces, so an
+    // undamped solve is still reported as `Undef` exactly as before.
+    // `mass_matrix_norm` / `stiffness_matrix_norm` remain 0: the lumped
+    // generalized-coordinate model never forms the norms the FEA path reports.
     let result_fields: PersistentMap<String, Value> = [
         ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
         ("boundary_conditions".to_string(), Value::List(Vec::new())),
-        ("damping".to_string(), Value::Undef),
+        (
+            "damping".to_string(),
+            field_or(options, "damping", Value::Undef),
+        ),
         ("mass_matrix_norm".to_string(), Value::Real(0.0)),
         ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
         ("topology".to_string(), build_modal_topology_value()),
