@@ -24,7 +24,8 @@ use std::collections::HashMap;
 
 use reify_ast::{
     ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody, ImportKind,
-    MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl, WhereClause,
+    KeyedSubMemberEntry, MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl,
+    WhereClause,
 };
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{
@@ -262,9 +263,13 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
 /// binder-introducing field is deliberately not itself a use site here; see
 /// the "Known limitation" doc comment on `collect_idents_in_expr`).
 ///
-/// Excludes `body` and `keyed_members`: both consumers recurse into those
-/// separately, at `depth + 1`/nested-scope depth, since they open a nested
-/// member scope rather than being a direct expression of this `sub`.
+/// Excludes `body` and `keyed_members.overrides`: both consumers recurse into
+/// those separately, at `depth + 1`/nested-scope depth, since they open a
+/// nested member scope rather than being a direct expression of this `sub`.
+/// Each keyed entry's OWN direct expression (`param_overrides`) is not a
+/// `SubDecl`-level field, so it is not part of this iterator either — it is
+/// walked by both consumers via [`keyed_entry_param_override_exprs`] at the
+/// same keyed-block recursion site instead (see that function's doc comment).
 fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
     let SubDecl {
         // Identifiers, flags, and span/cache metadata below — never expressions.
@@ -279,7 +284,9 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         body: _,
         spec_param_overrides,
         // Nested member scope, not a direct expression — both consumers
-        // recurse into it separately at depth + 1 (see doc comment above).
+        // recurse into it separately at depth + 1, walking each entry's
+        // `overrides` member list AND `param_overrides` expressions (see
+        // doc comment above and `keyed_entry_param_override_exprs`).
         keyed_members: _,
         is_aux: _,
         is_priv: _,
@@ -302,6 +309,27 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         .chain(where_clause.iter().map(|w| &w.condition))
 }
 
+/// Exhaustively enumerate the direct expressions carried by a single keyed
+/// entry (`"key" => { param_overrides… }`): its `param_overrides` values.
+///
+/// Mirrors `SubDecl.spec_param_overrides` one level down, inside a single
+/// keyed block (`KeyedSubMemberEntry.param_overrides` doc comment,
+/// `crates/reify-ast/src/decl.rs` — task 3931 γ), so it needs the same
+/// direct-expression treatment `sub_direct_exprs` gives the sub-level
+/// overrides. `collect_uses_in_sub` and `cursor_on_member_segment`'s
+/// `MemberDecl::Sub` arm both consume this at their keyed-block recursion
+/// site instead of re-deriving it, so they cannot drift apart the way
+/// `sub_direct_exprs`'s own fields already have twice (see its doc comment)
+/// — `param_overrides` was itself a live, unwalked instance of that same
+/// drift (task #5579 amendment) until this helper closed it.
+///
+/// Excludes `entry.overrides` (the nested `Vec<MemberDecl>` specialization
+/// body): both consumers recurse into that separately as a nested member
+/// scope, exactly as `sub_direct_exprs` excludes `SubDecl::body`.
+fn keyed_entry_param_override_exprs(entry: &KeyedSubMemberEntry) -> impl Iterator<Item = &Expr> {
+    entry.param_overrides.iter().map(|(_, e)| e)
+}
+
 // ─── Member-segment detection helpers ────────────────────────────────────────
 //
 // These two helpers implement the AST-aware guard in `collect_references_at`
@@ -316,7 +344,8 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
 // use-collection scan.
 //
 // The `MemberDecl::Sub` arm's field set is centralized in `sub_direct_exprs`
-// — see its doc comment for why.
+// (plus each keyed entry's own fields in `keyed_entry_param_override_exprs`)
+// — see their doc comments for why.
 
 /// Return `true` when the cursor byte offset `off` falls on the `.member`
 /// segment of a `MemberAccess` node anywhere in `expr`.
@@ -465,7 +494,15 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
                         .as_ref()
                         .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
             }
-            MemberDecl::Sub(s) => sub_direct_exprs(s).any(|e| expr_member_segment_hit(e, off)),
+            MemberDecl::Sub(s) => {
+                sub_direct_exprs(s).any(|e| expr_member_segment_hit(e, off))
+                    // Each keyed entry's own `param_overrides` values (task
+                    // #5579 amendment) — see `keyed_entry_param_override_exprs`.
+                    || s.keyed_members.iter().any(|entry| {
+                        keyed_entry_param_override_exprs(entry)
+                            .any(|e| expr_member_segment_hit(e, off))
+                    })
+            }
             MemberDecl::Minimize(m) => {
                 expr_member_segment_hit(&m.expr, off)
                     || m.where_clause
@@ -974,7 +1011,9 @@ fn collect_uses_in_connect(c: &ConnectDecl, name: &str, out: &mut Vec<SourceSpan
 /// `sub_direct_exprs` enumerates (constructor args, specialization param
 /// overrides, the `at` placement pose, the indexer clause's domain
 /// expression, the inline relate-block relations, and the `where` guard),
-/// plus any nested specialization-body / keyed-block members (depth-bounded).
+/// each keyed block's own `param_overrides` expressions (task #5579
+/// amendment — see `keyed_entry_param_override_exprs`), plus any nested
+/// specialization-body / keyed-block-overrides members (depth-bounded).
 ///
 /// `index_binder` (the `i` in `sub xs[i in 0..4] = …`, task #5481 α) is
 /// deliberately NOT registered as a new local binding site here — see the
@@ -988,6 +1027,9 @@ fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<Sour
         collect_uses(body, name, depth + 1, out);
     }
     for entry in &s.keyed_members {
+        for expr in keyed_entry_param_override_exprs(entry) {
+            collect_idents_in_expr(expr, name, out);
+        }
         collect_uses(&entry.overrides, name, depth + 1, out);
     }
 }
@@ -1940,6 +1982,45 @@ mod tests {
         );
     }
 
+    /// Assert that `collect_references` rooted at the declaration token
+    /// `[decl_off, decl_off + name.len())` reaches exactly one use, at
+    /// `[use_off, use_off + name.len())`, resolving as `kind` — the shared
+    /// positive-reachability tail every `sub_direct_exprs`/keyed-entry
+    /// chain-link test in this file's task #5579 suite pins.
+    ///
+    /// Positions are caller-supplied byte offsets rather than derived here via
+    /// `occurrences(source, name)`, so a fixture whose identifier is a
+    /// substring of other tokens in the source (e.g. the 1-char `n` in `Int`/
+    /// `in`) can still use this shared tail: the caller locates its own two
+    /// offsets however is unambiguous for its fixture, then hands them off.
+    ///
+    /// Centralizes what were five independent ~15-line copies of this same
+    /// parse→query→assert tail (one per chain-link fixture), leaving each
+    /// test's unique fixture string and AST-field precondition assertion as
+    /// the only per-case code.
+    fn assert_sole_use_reachable(
+        source: &str,
+        parsed: &ParsedModule,
+        name: &str,
+        kind: RefSymbolKind,
+        decl_off: usize,
+        use_off: usize,
+    ) {
+        let pos = offset_to_position(source, decl_off as u32);
+        let refset = collect_references(source, parsed, pos, false).unwrap_or_else(|| {
+            panic!("`{name}` declaration at {decl_off} should resolve to a ReferenceSet")
+        });
+        assert_eq!(refset.name, name);
+        assert_eq!(refset.kind, kind);
+        assert_eq!(refset.declaration, span_of(decl_off, name));
+        assert_eq!(
+            refset.references,
+            vec![span_of(use_off, name)],
+            "the sole use of `{name}` must be reachable from a find-references \
+             query on its declaration"
+        );
+    }
+
     // ─── κ (task 4210): cross-file references + rename scaffolding ────────────
     //
     // The CANONICAL SIGNAL (PRD boundary row 8): a `Hole` structure declared in
@@ -2133,18 +2214,13 @@ structure S {
         assert_eq!(&source[decl_off..decl_off + 1], "n");
         assert_eq!(&source[domain_off..domain_off + 1], "n");
 
-        // Cursor on the `param n` declaration; query with declaration excluded.
-        let pos = offset_to_position(source, decl_off as u32);
-        let refset = collect_references(source, &parsed, pos, false)
-            .expect("param n declaration should resolve to a ReferenceSet");
-        assert_eq!(refset.name, "n");
-        assert_eq!(refset.kind, RefSymbolKind::Param);
-        assert_eq!(refset.declaration, span_of(decl_off, "n"));
-        assert_eq!(
-            refset.references,
-            vec![span_of(domain_off, "n")],
-            "the sole use of `n` inside the indexer domain expression `0..n` must \
-             be reachable from a find-references query on its declaration"
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "n",
+            RefSymbolKind::Param,
+            decl_off,
+            domain_off,
         );
     }
 
@@ -2185,18 +2261,7 @@ structure S {
         let gap = occurrences(source, "gap");
         assert_eq!(gap.len(), 2, "1 param decl + 1 use inside the relate block");
 
-        let pos = offset_to_position(source, gap[0] as u32);
-        let refset = collect_references(source, &parsed, pos, false)
-            .expect("param gap declaration should resolve to a ReferenceSet");
-        assert_eq!(refset.name, "gap");
-        assert_eq!(refset.kind, RefSymbolKind::Param);
-        assert_eq!(refset.declaration, span_of(gap[0], "gap"));
-        assert_eq!(
-            refset.references,
-            vec![span_of(gap[1], "gap")],
-            "the sole use of `gap` inside the inline relate-block relation must \
-             be reachable from a find-references query on its declaration"
-        );
+        assert_sole_use_reachable(source, &parsed, "gap", RefSymbolKind::Param, gap[0], gap[1]);
     }
 
     // --- task #5579 (amendment): mutation-coverage gap closure for the three
@@ -2231,18 +2296,7 @@ structure S {
         let dx = occurrences(source, "dx");
         assert_eq!(dx.len(), 2, "1 param decl + 1 use inside the pose expression");
 
-        let pos = offset_to_position(source, dx[0] as u32);
-        let refset = collect_references(source, &parsed, pos, false)
-            .expect("param dx declaration should resolve to a ReferenceSet");
-        assert_eq!(refset.name, "dx");
-        assert_eq!(refset.kind, RefSymbolKind::Param);
-        assert_eq!(refset.declaration, span_of(dx[0], "dx"));
-        assert_eq!(
-            refset.references,
-            vec![span_of(dx[1], "dx")],
-            "the sole use of `dx` inside the sub's `at` pose expression must be \
-             reachable from a find-references query on its declaration"
-        );
+        assert_sole_use_reachable(source, &parsed, "dx", RefSymbolKind::Param, dx[0], dx[1]);
     }
 
     #[test]
@@ -2276,17 +2330,13 @@ structure S {
             "1 param decl + 1 use inside the sub's where guard"
         );
 
-        let pos = offset_to_position(source, ready[0] as u32);
-        let refset = collect_references(source, &parsed, pos, false)
-            .expect("param ready declaration should resolve to a ReferenceSet");
-        assert_eq!(refset.name, "ready");
-        assert_eq!(refset.kind, RefSymbolKind::Param);
-        assert_eq!(refset.declaration, span_of(ready[0], "ready"));
-        assert_eq!(
-            refset.references,
-            vec![span_of(ready[1], "ready")],
-            "the sole use of `ready` inside the sub's own `where` guard must be \
-             reachable from a find-references query on its declaration"
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "ready",
+            RefSymbolKind::Param,
+            ready[0],
+            ready[1],
         );
     }
 
@@ -2321,18 +2371,72 @@ structure S {
             "1 param decl + 1 use inside the specialization-body override"
         );
 
-        let pos = offset_to_position(source, margin[0] as u32);
-        let refset = collect_references(source, &parsed, pos, false)
-            .expect("param margin declaration should resolve to a ReferenceSet");
-        assert_eq!(refset.name, "margin");
-        assert_eq!(refset.kind, RefSymbolKind::Param);
-        assert_eq!(refset.declaration, span_of(margin[0], "margin"));
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "margin",
+            RefSymbolKind::Param,
+            margin[0],
+            margin[1],
+        );
+    }
+
+    // --- task #5579 (amendment): keyed-entry `param_overrides` use reachable
+    // from find-references (reviewer-surfaced sibling gap to the five chain
+    // links above) ---
+
+    #[test]
+    fn collect_references_reaches_sub_keyed_param_override_use() {
+        // `margin` is used only inside a KEYED block's `param_overrides`
+        // value (`KeyedSubMemberEntry.param_overrides`, task 3931 γ) — distinct
+        // from `collect_references_reaches_sub_spec_param_override_use` above,
+        // which covers the sub-level `spec_param_overrides` of a plain
+        // (non-keyed) specialization body. Before this fix, neither
+        // `collect_uses_in_sub` nor `cursor_on_member_segment`'s
+        // `MemberDecl::Sub` arm walked any keyed entry's `param_overrides` —
+        // the identical silent find-references/rename miss this task closes
+        // for `index_domain`, just one level deeper (inside `keyed_members`).
+        let source = "\
+structure S {
+    param margin: Length = 1mm
+    sub b : Bearing {
+        \"k\" => { bore = margin }
+    }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("keyedoverride"));
+        assert!(
+            parsed.errors.is_empty(),
+            "keyed-override fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let sub = find_sub(&parsed, "b");
         assert_eq!(
-            refset.references,
-            vec![span_of(margin[1], "margin")],
-            "the sole use of `margin` inside the sub's specialization-body \
-             param override must be reachable from a find-references query \
-             on its declaration"
+            sub.keyed_members.len(),
+            1,
+            "fixture must lower one keyed entry"
+        );
+        assert_eq!(
+            sub.keyed_members[0].param_overrides.len(),
+            1,
+            "fixture must actually lower a param_overrides entry for the walker to reach"
+        );
+
+        // margin[0] = `param margin` decl, margin[1] = the sole use inside the
+        // keyed entry's override value.
+        let margin = occurrences(source, "margin");
+        assert_eq!(
+            margin.len(),
+            2,
+            "1 param decl + 1 use inside the keyed entry's param override"
+        );
+
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "margin",
+            RefSymbolKind::Param,
+            margin[0],
+            margin[1],
         );
     }
 
@@ -3691,6 +3795,73 @@ structure S {
             bolt_set.kind,
             RefSymbolKind::Sub,
             "base `bolt` resolves as Sub binding"
+        );
+    }
+
+    // --- task #5579 (amendment): member-access .field segment refuses inside
+    // a keyed entry's `param_overrides` expression (reviewer-surfaced sibling
+    // gap to the two refusal tests above) ---
+
+    #[test]
+    fn member_access_field_segment_refuses_in_keyed_param_override() {
+        // Fixture: `param area` collides in name with the `.area` member-access
+        // segment inside a KEYED entry's `param_overrides` value `cfg.area`.
+        // Same wrong-rename vector as the indexed-sub-domain / inline-relate-
+        // block cases above, reached through
+        // `KeyedSubMemberEntry.param_overrides` instead of
+        // `SubDecl::index_domain` / `relate_relations`.
+        let source = "\
+structure S {
+    param area: Length = 4mm
+    sub cfg = Cfg()
+    sub b : Bearing {
+        \"k\" => { bore = cfg.area }
+    }
+    let other: Length = area
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("keyedmember"));
+        assert!(
+            parsed.errors.is_empty(),
+            "keyed-override fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let sub = find_sub(&parsed, "b");
+        assert_eq!(
+            sub.keyed_members.len(),
+            1,
+            "fixture must lower one keyed entry"
+        );
+        assert_eq!(
+            sub.keyed_members[0].param_overrides.len(),
+            1,
+            "fixture must actually lower a param_overrides entry for the guard to refuse against"
+        );
+
+        // d[0] = `param area` decl, d[1] = `.area` segment in `cfg.area`,
+        // d[2] = the unrelated `let other` use.
+        let d = occurrences(source, "area");
+        assert_eq!(
+            d.len(),
+            3,
+            "1 param decl + 1 member-access segment + 1 unrelated use"
+        );
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+
+        // All four producers must refuse the `.area` segment inside the keyed override.
+        assert_all_producers_refuse(source, &parsed, member_pos, "inside keyed param override");
+
+        // Over-refusal guard: the BASE `cfg` (start of `cfg.area`) must still
+        // resolve as a Sub binding — the guard clause must refuse only the
+        // `.area` segment, not the whole override expression.
+        let cfg_off = source.find("cfg.area").expect("cfg.area present");
+        let cfg_pos = offset_to_position(source, cfg_off as u32);
+        let cfg_set = collect_references(source, &parsed, cfg_pos, false)
+            .expect("cursor on base `cfg` must resolve to a ReferenceSet");
+        assert_eq!(
+            cfg_set.kind,
+            RefSymbolKind::Sub,
+            "base `cfg` resolves as Sub binding"
         );
     }
 
