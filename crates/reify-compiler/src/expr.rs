@@ -3913,7 +3913,63 @@ fn compile_expr_guarded_with_expected_inner(
                         // name" and "I know this name but cannot infer its
                         // return type without arguments" cannot both hold of one
                         // call — so exactly one fires, never both.
+                        // ARG-SHAPE first, for the same complements-not-a-
+                        // hierarchy reason (task item 4). Three ladder arms
+                        // above are ARG-AWARE — `infer_list_helper_return_type`,
+                        // `affine_map_algebra_result_type`, `field_op_result_type`
+                        // — and return `None` when the name is theirs but the
+                        // argument SHAPE is not, deliberately, to preserve
+                        // anti-cascade. At this site that `None` is
+                        // indistinguishable from "not my name", so the call
+                        // arrived here and was typed from arg0 with no
+                        // diagnostic at all: measured pre-#5371, `single(42)`
+                        // and `sample(42, 7)` compiled clean as `Int`. That is
+                        // a worse failure than the unknown-name case, because
+                        // the user wrote a REAL builtin and got no hint its
+                        // contract was missed.
+                        //
+                        // Reaching this arm while the name is still in one of
+                        // the three families is, by construction, the "known
+                        // name, declined shape" signal — those arms are the
+                        // only route by which the names are claimed, so a
+                        // well-shaped call could never have got here. That is
+                        // what lets a name-only lookup diagnose an arg shape,
+                        // and why `arg_shape_expectation` is documented as
+                        // sound at this site ONLY.
+                        //
+                        // One code, one message per family's signature; no
+                        // typing change and no `Type::Error` poison (#6002's
+                        // sibling `E_BuiltinArgShape` owns that, and #6014
+                        // supersedes both). Emitting here rather than inside
+                        // the three resolvers keeps them pure `Option`-returning
+                        // functions with no `&mut Vec<Diagnostic>` threaded
+                        // through `units.rs` and `list_helpers.rs`.
+                        let arg_shape_expected =
+                            crate::unresolved_function::arg_shape_expectation(name);
+                        if let Some(expected) = arg_shape_expected {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "builtin '{name}' does not recognise this argument shape"
+                                ))
+                                .with_code(DiagnosticCode::BuiltinArgShapeUnrecognized)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    format!(
+                                        "'{name}' expects {expected}; these arguments do not \
+                                         match, so its return type was inferred from the first \
+                                         argument instead"
+                                    ),
+                                )),
+                            );
+                        }
+
                         let known = crate::unresolved_function::is_known_builtin(name);
+                        // Mutually exclusive with the arg-shape warning above
+                        // without needing a guard: all three arg-aware families
+                        // contribute production slices to `is_known_builtin`'s
+                        // union, so `arg_shape_expected.is_some()` implies
+                        // `known`. Pinned by
+                        // `mis_shaped_known_builtins_are_never_reported_unresolved`.
                         if !known {
                             diagnostics.push(
                                 Diagnostic::warning(format!("unresolved function: {name}"))
@@ -3945,7 +4001,14 @@ fn compile_expr_guarded_with_expected_inner(
                                 // E_UnresolvedFunction. The mutual exclusion below
                                 // exists only to keep the warn-mode window from
                                 // double-reporting one defect.
-                                if known {
+                                // …and equally noise stacked on the stronger
+                                // arg-shape claim: `single()` is a mis-shaped
+                                // call to a known builtin, and "you called
+                                // `single` with the wrong argument shape" is the
+                                // actionable half — "I could not infer the
+                                // return type" is only its mechanical
+                                // consequence. One defect, one line, either way.
+                                if known && arg_shape_expected.is_none() {
                                     diagnostics.push(
                                         Diagnostic::warning(format!(
                                             "cannot infer return type of zero-arg function '{}', defaulting to Real",

@@ -340,8 +340,16 @@ pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
 /// by the family that owns the name — several families are arg-aware and
 /// return `None` for a mis-shaped call by design (`datum_constructor_result_type`'s
 /// `offset` arity gate, `selector_composition_result_type`'s CSG fall-through,
-/// `infer_list_helper_return_type`'s structural match, `field_op_result_type`).
-/// Those cases are diagnosed separately by `DiagnosticCode::BuiltinArgShapeUnrecognized`.
+/// `infer_list_helper_return_type`'s structural match, `field_op_result_type`,
+/// `affine_map_algebra_result_type`).
+///
+/// Of those, the three covered by [`arg_shape_expectation`] — list-helper,
+/// field-op and affine-algebra — are diagnosed at the fallback with
+/// `DiagnosticCode::BuiltinArgShapeUnrecognized`. The datum-constructor and
+/// selector-composition arms are NOT: their `None` is a deliberate hand-off to
+/// a later ladder arm rather than a dead end, so warning on it would be false.
+/// Bringing them in needs the same per-name reachability measurement the three
+/// covered families got, which is #6014's to do when it deletes the fallback.
 ///
 /// Case-sensitive — Reify function names are snake_case.
 pub fn is_known_builtin(name: &str) -> bool {
@@ -384,6 +392,78 @@ pub fn is_known_builtin(name: &str) -> bool {
         // --- This module's two manifests. ---
         || FIRST_ARG_TYPED_NAMES.contains(&name)
         || EVAL_DEFERRED_BUILTIN_NAMES.contains(&name)
+}
+
+/// The argument shape a mis-shaped builtin call was expected to have, or
+/// `None` if `name` belongs to no **arg-aware** family.
+///
+/// # What a `Some` answer means *at the terminal fallback*
+///
+/// Three ladder arms read the compiled argument list and return `None` when
+/// the name is theirs but the shape is not — `infer_list_helper_return_type`,
+/// `affine_map_algebra_result_type`, and `field_op_result_type`. Their arms are
+/// the ONLY route by which those names are claimed, so a call that has reached
+/// the terminal fallback while `is_list_helper` / `is_affine_map_algebra_name`
+/// / `is_field_op` still answers `true` is, **by construction**, a call whose
+/// family recognised the name and declined the shape. That is what makes a
+/// name-only lookup a sound arg-shape diagnosis at that one site — and why
+/// this function must not be called anywhere else, where the same `Some` would
+/// mean nothing more than "this name is in one of three families".
+///
+/// # Honesty of the strings
+///
+/// Each is the family's own declared parameter list, copied from the resolver's
+/// signature table, so the label tells the user what the builtin wants rather
+/// than restating what they wrote. It is an upper bound on the diagnosis: for
+/// `curl`/`divergence`/`laplacian` a well-formed `Field` can still be declined
+/// by `differential_codomain` on its domain/codomain rank, so "expects
+/// `Field<D, C>`" is true but not the whole story. The label is phrased to say
+/// the arguments do not match rather than to claim exactly which one is wrong.
+///
+/// # Affine members are unreachable here today
+///
+/// No `AFFINE_ALGEBRA_NAMES` member can currently reach the fallback:
+/// `affine_compose`/`affine_inverse` answer `Some` from the name alone,
+/// `determinant` is claimed by the LATER `is_math_typed_fn` arm and
+/// `affine_apply` by the EARLIER `is_geometry_function` arm — the shadowing
+/// documented on `AFFINE_ALGEBRA_NAMES` itself. They are listed anyway as
+/// defense-in-depth against a ladder reorder, and
+/// `affine_algebra_names_never_reach_the_terminal_fallback` (in
+/// `tests/unresolved_function_tests.rs`) is the guard that makes such a reorder
+/// visible instead of silent.
+pub(crate) fn arg_shape_expectation(name: &str) -> Option<&'static str> {
+    // Guarded by the family predicates rather than by this `match` alone, so a
+    // name cannot acquire an expectation string without also being a member of
+    // the family whose resolver declined it.
+    if !(crate::list_helpers::is_list_helper(name)
+        || crate::units::is_affine_map_algebra_name(name)
+        || crate::units::is_field_op(name))
+    {
+        return None;
+    }
+    Some(match name {
+        // list-helper — list_helpers.rs
+        "single" => "(List<T>)",
+        "flat_map" => "(List<A>, (A) -> List<B>)",
+        "generate" => "(Int, (Int) -> B)",
+        // field-op — units.rs, PRD §5.1 signature table
+        "fn_field" => "((D) -> C)",
+        "from_samples" => "(List<D>, List<C>, method)",
+        "restrict" => "(Field<D, C>, Geometry)",
+        "compose" => "(Field<B, C>, Field<A, B>)",
+        "sample" => "(Field<D, C>, D)",
+        "gradient" | "divergence" | "curl" | "laplacian" => "(Field<D, C>)",
+        // affine-algebra — units.rs (unreachable today; see the note above)
+        "affine_compose" => "(AffineMap(3), AffineMap(3))",
+        "affine_inverse" | "determinant" => "(AffineMap(3))",
+        "affine_apply" => "(AffineMap(3), Point3<Q>)",
+        // Unreachable: the guard above admits only the three families, and
+        // `arg_shape_expectation_covers_every_arg_aware_family_member` iterates
+        // all three slices asserting each name lands on an arm above. A new
+        // slice entry with no arm here reds that test rather than silently
+        // emitting a shapeless label.
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -889,5 +969,88 @@ mod tests {
     fn is_known_builtin_rejects_a_genuinely_nonexistent_name() {
         assert!(!is_known_builtin("definitely_not_a_reify_builtin_xyz"));
         assert!(!is_known_builtin("line_of_nonsense"));
+    }
+
+    // --- arg_shape_expectation: the three arg-aware families ---
+
+    /// Every member of all three arg-aware slices has an expectation string.
+    ///
+    /// Iterates the slices themselves, not a hand-maintained fixture, so a
+    /// name added to `LIST_HELPER_NAMES` / `FIELD_OP_NAMES` /
+    /// `AFFINE_ALGEBRA_NAMES` without a parallel arm reds HERE rather than
+    /// shipping a `BuiltinArgShapeUnrecognized` label with no shape in it — the
+    /// same maintenance contract the three slices already carry towards their
+    /// resolvers.
+    #[test]
+    fn arg_shape_expectation_covers_every_arg_aware_family_member() {
+        for name in LIST_HELPER_NAMES
+            .iter()
+            .chain(FIELD_OP_NAMES.iter())
+            .chain(AFFINE_ALGEBRA_NAMES.iter())
+        {
+            let expected = arg_shape_expectation(name).unwrap_or_else(|| {
+                panic!(
+                    "{name:?} is in an arg-aware family slice but has no arm in \
+                     arg_shape_expectation — add one, or the fallback will label \
+                     the diagnostic with no expected shape"
+                )
+            });
+            assert!(
+                expected.starts_with('(') && expected.ends_with(')'),
+                "{name:?}'s expectation {expected:?} must be a parenthesised \
+                 parameter list, so the label reads as a signature"
+            );
+        }
+    }
+
+    /// …and nothing else does. A name outside the three families must answer
+    /// `None`, including a name that is a perfectly good builtin elsewhere.
+    ///
+    /// This is what keeps the `Some` answer meaningful at the fallback: it says
+    /// "an arg-aware family declined this call", not "the compiler knows this
+    /// name". `sqrt` is known, `volume` is known, and neither may acquire a
+    /// shape expectation.
+    #[test]
+    fn arg_shape_expectation_rejects_names_outside_the_three_families() {
+        for name in ["sqrt", "volume", "point3", "world", "mod", "floor"] {
+            assert_eq!(
+                arg_shape_expectation(name),
+                None,
+                "{name:?} is not in an arg-aware family and must have no shape \
+                 expectation"
+            );
+            assert!(
+                is_known_builtin(name),
+                "premise: {name:?} is a known builtin, so the assertion above is \
+                 about arg-awareness and not about membership"
+            );
+        }
+        assert_eq!(
+            arg_shape_expectation("definitely_not_a_reify_builtin_xyz"),
+            None
+        );
+    }
+
+    /// A `Some` answer implies `is_known_builtin` — the property the fallback's
+    /// mutual exclusion between `BuiltinArgShapeUnrecognized` and
+    /// `UnresolvedFunction` rests on, asserted here rather than assumed.
+    ///
+    /// It holds because all three arg-aware families contribute production
+    /// slices to the union. If a future edit dropped one of those slices from
+    /// `is_known_builtin`, the fallback would emit BOTH codes for one call and
+    /// only this test would say why.
+    #[test]
+    fn a_shape_expectation_implies_the_name_is_known() {
+        for name in LIST_HELPER_NAMES
+            .iter()
+            .chain(FIELD_OP_NAMES.iter())
+            .chain(AFFINE_ALGEBRA_NAMES.iter())
+        {
+            assert!(
+                is_known_builtin(name),
+                "{name:?} has a shape expectation but is outside the closed \
+                 world — the fallback would double-report it"
+            );
+        }
     }
 }

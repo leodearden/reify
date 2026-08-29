@@ -1792,6 +1792,50 @@ pub enum DiagnosticCode {
     /// itself, at which point this code becomes the sole outcome of a
     /// lookup miss rather than a warning layered over a guess.
     UnresolvedFunction,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — the same **terminal
+    /// first-arg fallback** as [`DiagnosticCode::UnresolvedFunction`], one
+    /// check earlier.
+    ///
+    /// Emitted as `Severity::Warning` when the callee IS a known builtin but
+    /// an **arg-aware** ladder arm declined the call because its ARGUMENT
+    /// SHAPE was not the family's. Three arms are arg-aware:
+    ///
+    /// | family | resolver | declines when |
+    /// |---|---|---|
+    /// | list-helper | `list_helpers::infer_list_helper_return_type` | arg0 is not a `List`, or the lambda's return type is wrong |
+    /// | field-op | `units::field_op_result_type` | arg0 is not a `Field` (or not a `Function`, for `fn_field`) |
+    /// | affine-algebra | `units::affine_map_algebra_result_type` | arg0 is not an `AffineMap` / `Point` |
+    ///
+    /// Each returns `None` for anti-cascade reasons, and at the call site that
+    /// `None` is indistinguishable from "not my name" — so the call slid to
+    /// the fallback and was typed from arg0 with **no diagnostic at all**.
+    /// Measured pre-#5371: `single(42)` and `sample(42, 7)` both compiled
+    /// clean as `Int`.
+    ///
+    /// Canonical message form:
+    /// `"builtin '<name>' does not recognise this argument shape"`, with the
+    /// expected shape carried in the label. The mnemonic is
+    /// `W_BUILTIN_ARG_SHAPE`.
+    ///
+    /// # Mutually exclusive with `UnresolvedFunction`
+    ///
+    /// The two are complements, never a hierarchy: "I have never heard of this
+    /// name" and "I know this name and you called it wrong" cannot both hold
+    /// of one call. All three families above are inside `is_known_builtin`'s
+    /// closed world, so a call carrying this code is by construction not
+    /// unresolved. It also suppresses the legacy bare zero-arg warning, on the
+    /// same one-defect-one-line reasoning.
+    ///
+    /// # Interim, and deliberately non-poisoning
+    ///
+    /// This code changes NO typing — the fallback still adopts arg0. That is
+    /// what makes it corpus-safe. **#6002 introduces a sibling
+    /// `E_BuiltinArgShape` that POISONS the cell to `Type::Error`**; this code
+    /// is not that, and must not be conflated with it by a consumer matching
+    /// on either. #6014 (registry ω) supersedes both by deleting the fallback
+    /// outright, at which point an unrecognised arg shape becomes an ordinary
+    /// signature mismatch against the builtin's registry row.
+    BuiltinArgShapeUnrecognized,
     /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (γ trampoline
     /// mapping of [`reify_shell_extract::SegmentationError::InvalidThreshold`]).
     ///
