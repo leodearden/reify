@@ -699,4 +699,117 @@ mod tests {
             reason: "test",
         });
     }
+    /// step-3 RED (ruling #6164): the `rotation` derivative channel is the
+    /// DESIGNATED CROSSING where the radian enters the elastic-result algebra.
+    /// This test pins the whole mechanism by which the `rad` tag reaches the
+    /// runtime: `sampled_rotation_field` DECLARES a `Vector3<Angle>` codomain,
+    /// and `sample_at_point` (`reify-expr/src/sampled.rs:137-143` + `:294-303`)
+    /// reads that declared codomain to decide what `Value::Scalar { dimension }`
+    /// to emit per component. Declaring the codomain is therefore sufficient —
+    /// no runtime change is needed anywhere.
+    ///
+    /// Drives the exact production composition
+    /// `sampled_rotation_field(rotation_sf_from_curl(&curl_sf))`, and asserts:
+    ///
+    ///   - domain `Point3<Length>`, codomain `Vector3<Angle>` (NOT
+    ///     `dimensionless_scalar` — THIS assertion is what encodes the ruling;
+    ///     the sibling divergence/gradient/curl wrappers all declare
+    ///     dimensionless codomains, and `curl` must stay that way);
+    ///   - `source == FieldSourceKind::Sampled`;
+    ///   - `data` is the curl input halved element-wise, BIT-EXACTLY.
+    ///
+    /// Bit-exactness is asserted at 0 ULP with `assert_eq!` on f64 rather than
+    /// with a tolerance, and that is a deliberate numeric-premise claim, not
+    /// laziness: IEEE-754 division by 2.0 only decrements the exponent, so it
+    /// is exact for every normal operand (subnormal underflow is unreachable at
+    /// physical strain magnitudes). The fixture values are 3.0 / 5.0 / 7.0 —
+    /// deliberately NOT powers of two — so a halving bug cannot hide behind a
+    /// coincidental exact result.
+    ///
+    /// The second half asserts every grid-metadata field survives the derive
+    /// unchanged (only `data` and `name` may differ), which is what lets the
+    /// rotation channel share the curl channel's Regular3D grid with no extra
+    /// BVH resample pass.
+    ///
+    /// RED: neither `sampled_rotation_field` nor `rotation_sf_from_curl`
+    /// exists yet, so this does not compile until step-4.
+    #[test]
+    fn sampled_rotation_field_declares_angle_codomain_and_halves_curl() {
+        use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
+        use std::sync::atomic::AtomicBool;
+
+        // stride-3 (one vector per node), 2 nodes on a Regular1D grid.
+        let curl_sf = SampledField {
+            name: "curl".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![1.0],
+            spacing: vec![1.0],
+            axis_grids: vec![vec![0.0, 1.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![3.0, 5.0, 7.0, -3.0, -5.0, -7.0],
+            oob_emitted: AtomicBool::new(false),
+        };
+
+        let rot_sf = super::rotation_sf_from_curl(&curl_sf);
+        let value = super::sampled_rotation_field(rot_sf);
+
+        let Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } = value
+        else {
+            panic!("expected Value::Field")
+        };
+
+        assert_eq!(
+            domain_type,
+            reify_core::Type::point3(reify_core::Type::length()),
+            "rotation field domain must be Point3<Length>"
+        );
+        assert_eq!(
+            codomain_type,
+            reify_core::Type::vec3(reify_core::Type::angle()),
+            "rotation field codomain must be Vector3<Angle> — this is ruling \
+             #6164's designated crossing, NOT vec3(dimensionless_scalar()) like \
+             the sibling divergence/gradient/curl wrappers"
+        );
+        assert_eq!(
+            source,
+            FieldSourceKind::Sampled,
+            "rotation field must be source Sampled"
+        );
+
+        let Value::SampledField(out) = lambda.as_ref() else {
+            panic!("expected lambda to be a Value::SampledField, got {lambda:?}")
+        };
+
+        // Bit-exact halving, 0 ULP. Do NOT soften this to a tolerance.
+        let expected: Vec<f64> = curl_sf.data.iter().map(|c| c / 2.0).collect();
+        assert_eq!(
+            out.data, expected,
+            "rotation data must be the curl data halved element-wise, bit-exactly"
+        );
+        assert_eq!(
+            out.data,
+            vec![1.5, 2.5, 3.5, -1.5, -2.5, -3.5],
+            "sanity: literal expected halves of the non-power-of-two fixture"
+        );
+        assert_eq!(
+            out.data.len(),
+            curl_sf.data.len(),
+            "rotation must have the same node/stride count as curl"
+        );
+
+        // Grid metadata preserved verbatim — only `data` and `name` may differ.
+        assert_eq!(out.name, "rotation", "derived field is renamed to rotation");
+        assert_eq!(out.kind, curl_sf.kind);
+        assert_eq!(out.bounds_min, curl_sf.bounds_min);
+        assert_eq!(out.bounds_max, curl_sf.bounds_max);
+        assert_eq!(out.spacing, curl_sf.spacing);
+        assert_eq!(out.axis_grids, curl_sf.axis_grids);
+        assert_eq!(out.interpolation, curl_sf.interpolation);
+    }
 }
