@@ -1496,7 +1496,7 @@ structure SphereCheck {
 ///
 /// ```text
 ///   0.10mm → 2.078e-4    0.35mm → 7.271e-4    0.49mm → 1.013e-3  VIOLATES
-///   0.25mm → 5.198e-4    0.48mm → 9.988e-4    0.50mm → 3.807e-4  (off-trend)
+///   0.25mm → 5.198e-4    0.48mm → 9.988e-4    0.50mm → 3.807e-4  (TOOTH, 0.76x)
 ///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
 /// ```
 ///
@@ -1505,7 +1505,8 @@ structure SphereCheck {
 /// label this comment used to carry). Seven of these eight points sit at
 /// 2.067x-2.081x the requested deflection, but that is a sample of the upper
 /// ENVELOPE only, not linearity: this 8-point grid is too coarse to resolve the
-/// periodic downward teeth (~0.758x) that punctuate that envelope, and
+/// periodic downward teeth (ratio in `dfm_with_repr_within.ri`'s header note)
+/// that punctuate that envelope, and
 /// the table this file's author was given had already dropped 0.44mm, 0.46mm,
 /// and 0.60mm — three off-trend rows that would have shown a tooth. Reading the
 /// near-uniform envelope ratio as "very close to LINEAR" and concluding adjacent
@@ -1534,8 +1535,8 @@ structure SphereCheck {
 /// note; see there rather than restating the digits here. That envelope
 /// argument extends ±17% around 0.3mm: every point in that neighbourhood is
 /// likewise envelope-bounded below the bound. The faster 0.48mm/0.50mm were rejected:
-/// 0.48mm clears the bound by only 0.12%, and 0.50mm passes only as an
-/// off-trend point with violations on both sides.
+/// 0.48mm clears the bound by only 0.12%, and 0.50mm was rejected because it
+/// clears only by landing on a tooth, with envelope violations on both sides.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
@@ -1646,15 +1647,20 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     // gate on it would turn a fully-correct environment red for no contractual
     // reason. (An earlier revision asserted a two-sided [4e-4, 8e-4] band and did
     // exactly that.)
+    // This diagnostic (not the assertion below it) is advisory only: it fires
+    // inside a still-PASSING test, so it is visible solely under
+    // `cargo test -- --nocapture` — the repo's cargo output-condensation
+    // wrapper (CLAUDE.md) collapses a normal run to
+    // `PASS: N | FAIL: M | SKIP: K` and hides it entirely.
     if achieved < 4e-4 {
         eprintln!(
             "BT7 note: fine sphere deviation ({achieved:.3e} m) is well below the \
              6.202e-4 m measured for #precision(0.3mm) on a 1 m sphere. NOT a failure \
              — the verdict is still Satisfied — but there are two possible causes: \
              (1) this OCCT build meshes finer than when the value was tuned, or (2) \
-             #precision(0.3mm) has drifted onto one of the ~0.758x downward teeth \
-             documented in dfm_with_repr_within.ri's header note (0.758 * 0.3mm = \
-             2.274e-4 m, which is under this 4e-4 m line). Re-measure OCCT_SOURCE_FINE's \
+             #precision(0.3mm) has drifted onto one of the downward teeth documented \
+             in dfm_with_repr_within.ri's header note (their ratio, applied to \
+             0.3mm, lands under this 4e-4 m line). Re-measure OCCT_SOURCE_FINE's \
              sweep before relying on its numbers; if it is cause (2), RETUNE #precision \
              back onto the envelope rather than merely re-measuring — a value sitting on \
              a tooth is one retune away from the envelope, which near the bound violates."
