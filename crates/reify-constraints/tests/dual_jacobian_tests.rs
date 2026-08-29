@@ -71,7 +71,12 @@ fn index_access(object: CompiledExpr, index: CompiledExpr) -> CompiledExpr {
 /// under test would make the comparison vacuous.  It mirrors the same
 /// mapping — `params[i] ↔ x[i]`, each auto inserted as a `Value::Scalar`
 /// carrying its declared dimension.
-fn trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
+fn trial_values(
+    base: &ValueMap,
+    params: &[AutoParam],
+    x: &[f64],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+) -> ValueMap {
     assert_eq!(params.len(), x.len());
     let mut values = base.clone();
     for (param, &val) in params.iter().zip(x.iter()) {
@@ -81,11 +86,28 @@ fn trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
         };
         values.insert(param.id.clone(), Value::Scalar { si_value: val, dimension });
     }
+    // Fold in STORED ORDER against the RUNNING map, so an earlier dependent
+    // cell is visible to a later one — the same guarantee the solver's own fold
+    // gives, re-derived here rather than borrowed, because this is the
+    // reference the subject is checked against.
+    for (id, expr) in dependent_cells {
+        let v = {
+            let ctx = EvalContext::simple(&values);
+            eval_expr(expr, &ctx)
+        };
+        values.insert(id.clone(), v);
+    }
     values
 }
 
-fn eval_at(expr: &CompiledExpr, base: &ValueMap, params: &[AutoParam], x: &[f64]) -> f64 {
-    let values = trial_values(base, params, x);
+fn eval_at(
+    expr: &CompiledExpr,
+    base: &ValueMap,
+    params: &[AutoParam],
+    x: &[f64],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+) -> f64 {
+    let values = trial_values(base, params, x, dependent_cells);
     let ctx = EvalContext::simple(&values);
     eval_expr(expr, &ctx).as_f64().expect("residual must be a scalar at the probe point")
 }
@@ -98,13 +120,16 @@ fn central_difference(
     params: &[AutoParam],
     x: &[f64],
     j: usize,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
 ) -> f64 {
     let h = 1e-6_f64 * x[j].abs().max(1e-3);
     let mut plus = x.to_vec();
     plus[j] += h;
     let mut minus = x.to_vec();
     minus[j] -= h;
-    (eval_at(expr, base, params, &plus) - eval_at(expr, base, params, &minus)) / (2.0 * h)
+    (eval_at(expr, base, params, &plus, dependent_cells)
+        - eval_at(expr, base, params, &minus, dependent_cells))
+        / (2.0 * h)
 }
 
 fn assert_row_matches_cd(
@@ -114,10 +139,11 @@ fn assert_row_matches_cd(
     base: &ValueMap,
     params: &[AutoParam],
     x: &[f64],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
 ) {
     assert_eq!(row.len(), params.len(), "{label}: every row is exactly auto_params wide");
     for (j, &ad) in row.iter().enumerate() {
-        let cd = central_difference(expr, base, params, x, j);
+        let cd = central_difference(expr, base, params, x, j, dependent_cells);
         assert!(
             cd.abs() >= 0.1,
             "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 in SI units so the \
@@ -227,7 +253,7 @@ fn every_jacobian_entry_agrees_with_central_differences_over_the_same_residuals(
     let (params, residuals, base, x) = two_auto_model();
     let j = jac(&params, &residuals, &base, &x);
     for (i, expr) in residuals.iter().enumerate() {
-        assert_row_matches_cd(&format!("r{i}"), &j.rows[i], expr, &base, &params, &x);
+        assert_row_matches_cd(&format!("r{i}"), &j.rows[i], expr, &base, &params, &x, &[]);
     }
 }
 
@@ -243,7 +269,7 @@ fn the_reported_residuals_match_ordinary_evaluation_at_the_same_point() {
     let (params, residuals, base, x) = two_auto_model();
     let j = jac(&params, &residuals, &base, &x);
     for (i, expr) in residuals.iter().enumerate() {
-        let expected = eval_at(expr, &base, &params, &x);
+        let expected = eval_at(expr, &base, &params, &x, &[]);
         assert_eq!(
             j.residuals[i], expected,
             "residual {i}: AD path reported {:?}, ordinary evaluation gives {expected:?}",
@@ -278,7 +304,7 @@ fn an_angle_auto_and_a_length_auto_both_get_correct_si_unit_columns() {
     let x = vec![0.5, 3.0];
     let j = jac(&params, std::slice::from_ref(&expr), &base, &x);
 
-    assert_row_matches_cd("mixed_units", &j.rows[0], &expr, &base, &params, &x);
+    assert_row_matches_cd("mixed_units", &j.rows[0], &expr, &base, &params, &x, &[]);
     // ∂r/∂a = cos(a)·w ≈ 2.633 per radian; ∂r/∂w = sin(a) ≈ 0.479 per metre.
     assert!((j.rows[0][0] - 0.5_f64.cos() * 3.0).abs() < 1e-9);
     assert!((j.rows[0][1] - 0.5_f64.sin()).abs() < 1e-9);
@@ -329,4 +355,182 @@ fn a_residual_with_an_unsupported_seed_dependent_construct_refuses_by_row() {
         err.to_string().contains('1'),
         "the row index must survive into the message η shows the user: {err}"
     );
+}
+
+// ===========================================================================
+// Step-17: dependent-cell tangent propagation
+// ===========================================================================
+//
+// The #5189 β "stale base value" trap, in derivative form.
+//
+// In a whole-model joint drive the residual typically does NOT read the auto
+// directly — it reads a DERIVED cell that is a function of it (the stdlib
+// `Costed` trait's `line_cost = unit_cost * quantity_produced` is the canonical
+// shape).  `build_trial_values` already re-folds those cells so the VALUE is
+// right at every trial point.  The tangent needs the same treatment: without a
+// dual-carrying fold, a derived cell is not a seed, so its tangent is
+// `Tangent::Zero` and the whole column comes out exactly 0.0 — the residual
+// looks flat in a variable it is entirely a function of.
+//
+// That is the silent-wrong-answer shape the PRD forbids, and it is worse here
+// than for values: a stale value is at least a wrong NUMBER, while a zero
+// derivative is a confident CLAIM that there is nothing to optimise.
+
+fn dl() -> DimensionVector {
+    DimensionVector::DIMENSIONLESS
+}
+
+fn dref(name: &str) -> CompiledExpr {
+    value_ref_typed(ENT, name, scalar_ty(dl()))
+}
+
+fn num(v: f64) -> CompiledExpr {
+    literal(Value::Real(v))
+}
+
+// ---------------------------------------------------------------------------
+// (1) The single-hop case
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_residual_reading_a_derived_cell_gets_a_nonzero_column_for_the_auto_behind_it() {
+    // line_cost = unit_cost · q ; r = line_cost − 12.  ∂r/∂q = unit_cost = 3.
+    let params = vec![auto("q", dl())];
+    let mut base = ValueMap::new();
+    base.insert(cell("unit_cost"), Value::Real(3.0));
+    let dependent = vec![(
+        cell("line_cost"),
+        binop(BinOp::Mul, dref("unit_cost"), dref("q")),
+    )];
+    let residual = binop(BinOp::Sub, dref("line_cost"), num(12.0));
+    let x = vec![5.0];
+
+    let j = residual_jacobian(&params, std::slice::from_ref(&residual), &base, &x, &dependent, &[], None)
+        .expect("differentiable through the fold");
+
+    assert!(
+        j.rows[0][0].abs() > 1e-9,
+        "without a dual-carrying fold this column is exactly 0.0 — the residual would look \
+         flat in the very variable it is a function of"
+    );
+    assert_row_matches_cd("line_cost", &j.rows[0], &residual, &base, &params, &x, &dependent);
+    assert!((j.rows[0][0] - 3.0).abs() < 1e-9, "∂r/∂q = unit_cost = 3");
+    assert_eq!(j.residuals[0], 3.0, "the primal still comes from the folded value path");
+}
+
+// ---------------------------------------------------------------------------
+// (2) A chain, in stored order
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_chain_of_dependent_cells_propagates_through_every_hop_in_stored_order() {
+    // b = 2q ; c = b·b ; r = c − 90.  At q = 5: b = 10, c = 100, r = 10.
+    // ∂c/∂q = 2b · 2 = 40 — only reachable if `b`'s tangent is visible to `c`,
+    // which is exactly the stored-order guarantee.
+    let params = vec![auto("q", dl())];
+    let base = ValueMap::new();
+    let dependent = vec![
+        (cell("b"), binop(BinOp::Mul, num(2.0), dref("q"))),
+        (cell("c"), binop(BinOp::Mul, dref("b"), dref("b"))),
+    ];
+    let residual = binop(BinOp::Sub, dref("c"), num(90.0));
+    let x = vec![5.0];
+
+    let j = residual_jacobian(&params, std::slice::from_ref(&residual), &base, &x, &dependent, &[], None)
+        .expect("differentiable through both hops");
+    assert_eq!(j.residuals[0], 10.0);
+    assert!(
+        (j.rows[0][0] - 40.0).abs() < 1e-9,
+        "∂r/∂q = 40; got {:?} — a second hop that cannot see the first would give 20",
+        j.rows[0][0]
+    );
+    assert_row_matches_cd("chain", &j.rows[0], &residual, &base, &params, &x, &dependent);
+}
+
+// ---------------------------------------------------------------------------
+// (3) The auto's own tangent survives the fold
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_fold_never_clobbers_an_auto_params_own_seed_column() {
+    // The residual reads BOTH the auto directly and a derived cell, so if the
+    // fold overwrote the auto's seed the direct term's contribution would
+    // vanish.  r = q + line_cost − 12, ∂r/∂q = 1 + 3 = 4.
+    let params = vec![auto("q", dl())];
+    let mut base = ValueMap::new();
+    base.insert(cell("unit_cost"), Value::Real(3.0));
+    let dependent = vec![(
+        cell("line_cost"),
+        binop(BinOp::Mul, dref("unit_cost"), dref("q")),
+    )];
+    let residual = binop(
+        BinOp::Sub,
+        binop(BinOp::Add, dref("q"), dref("line_cost")),
+        num(12.0),
+    );
+    let x = vec![5.0];
+
+    let j = residual_jacobian(&params, std::slice::from_ref(&residual), &base, &x, &dependent, &[], None)
+        .expect("differentiable");
+    assert!(
+        (j.rows[0][0] - 4.0).abs() < 1e-9,
+        "the direct term contributes 1 and the derived term 3; got {:?}",
+        j.rows[0][0]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (4) An empty dependent_cells list changes nothing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_empty_dependent_cells_list_leaves_the_non_clustered_path_bit_identical() {
+    let (params, residuals, base, x) = two_auto_model();
+    let with_empty = residual_jacobian(&params, &residuals, &base, &x, &[], &[], None).unwrap();
+    let baseline = jac(&params, &residuals, &base, &x);
+    assert_eq!(
+        with_empty, baseline,
+        "every non-clustered solve must take exactly the path it took before"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (5) A non-differentiable dependent cell refuses only the rows that read it
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_non_differentiable_dependent_cell_refuses_only_the_rows_that_read_it() {
+    // `bad = [q, 1][0]` is seed-dependent and not differentiable.  A residual
+    // that reads `bad` must refuse; one that reads only the auto must not — a
+    // single poisoned cell cannot be allowed to condemn the whole system.
+    let params = vec![auto("q", dl())];
+    let base = ValueMap::new();
+    let dependent = vec![(
+        cell("bad"),
+        index_access(
+            reify_test_support::builders::expr::list_expr(vec![dref("q"), num(1.0)]),
+            literal(Value::Int(0)),
+        ),
+    )];
+    let clean = binop(BinOp::Sub, binop(BinOp::Mul, num(2.0), dref("q")), num(4.0));
+    let poisoned = binop(BinOp::Sub, dref("bad"), num(4.0));
+    let x = vec![5.0];
+
+    // The clean residual alone is fine.
+    let ok = residual_jacobian(&params, std::slice::from_ref(&clean), &base, &x, &dependent, &[], None)
+        .expect("a residual that never reads the poisoned cell is unaffected");
+    assert!((ok.rows[0][0] - 2.0).abs() < 1e-9);
+
+    // The poisoned one refuses, and names its row.
+    let err = residual_jacobian(
+        &params,
+        &[clean, poisoned],
+        &base,
+        &x,
+        &dependent,
+        &[],
+        None,
+    )
+    .expect_err("a residual reading an undifferentiable derived cell must refuse");
+    assert_eq!(err.row, 1, "the SECOND residual is the one that reads it");
 }
