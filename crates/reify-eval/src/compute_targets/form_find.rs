@@ -68,7 +68,7 @@ use reify_solver_elastic::{
 };
 
 use super::tensegrity_crack::{
-    check_index, crack_dimensionless_scalar, crack_index_pairs, crack_index_triples, crack_nodes,
+    check_index, crack_dimensionless_list, crack_index_pairs, crack_index_triples, crack_nodes,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -255,24 +255,7 @@ fn crack_anchors(v: &Value, n: usize) -> Result<Vec<usize>, String> {
 /// than being silently stripped to its SI magnitude and reinterpreted as the
 /// bare ratio. See that helper for the Leg B "Deliberately bare" rationale.
 fn crack_reals(v: &Value, what: &str) -> Result<Vec<f64>, String> {
-    let list = match v {
-        Value::List(items) => items,
-        other => {
-            return Err(format!(
-                "E_FormFindInfeasible: {what} must be a list of reals, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, item) in list.iter().enumerate() {
-        out.push(crack_dimensionless_scalar(
-            item,
-            &format!("{what}[{i}]"),
-            CODE,
-            DIMENSIONLESS_HINT,
-        )?);
-    }
-    Ok(out)
+    crack_dimensionless_list(v, what, CODE, DIMENSIONLESS_HINT)
 }
 
 // ── result construction ──────────────────────────────────────────────────────

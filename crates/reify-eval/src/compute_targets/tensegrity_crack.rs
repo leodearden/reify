@@ -118,6 +118,42 @@ pub(crate) fn crack_dimensionless_scalar(
     }
 }
 
+/// Crack a `List<Real>` at a DIMENSIONLESS position, requiring every entry to be
+/// a bare ratio — the list lifting of [`crack_dimensionless_scalar`], whose
+/// `code` / `hint` it threads through unchanged.
+///
+/// Each entry's located name is `"{what}[{i}]"`, so a wrong-unit diagnostic tells
+/// the author WHICH entry carries a unit rather than merely naming the list —
+/// the same located-naming contract [`crack_scalar_list`] gives the dimensioned
+/// positions. Shared by all four of `form_find.rs`'s bare positions (anchored
+/// `force_densities` / `surface_stresses`, free `seed_ratios` /
+/// `surface_stresses`) through its `crack_reals` wrapper.
+pub(crate) fn crack_dimensionless_list(
+    v: &Value,
+    what: &str,
+    code: &str,
+    hint: &str,
+) -> Result<Vec<f64>, String> {
+    let list = match v {
+        Value::List(items) => items,
+        other => {
+            return Err(format!(
+                "{code}: {what} must be a list of dimensionless ratios, got {other:?}"
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        out.push(crack_dimensionless_scalar(
+            item,
+            &format!("{what}[{i}]"),
+            code,
+            hint,
+        )?);
+    }
+    Ok(out)
+}
+
 /// Crack a `List<Scalar>` requiring each entry to carry `expected` units (a bare
 /// `Real` is still accepted per entry for ergonomics) — the list lifting of
 /// [`crack_dimensioned_scalar`], whose `code` / `label` / `hint` it threads
