@@ -8,8 +8,12 @@
 //! 1. Every fence tagged EXACTLY ```` ```reify ```` compiles as a complete
 //!    module with zero `Severity::Error` diagnostics.
 //! 2. No fence is untagged. A bare opening delimiter is a violation naming
-//!    `file:line`.
-//! 3. Every `chunks/*.md` file on disk is reachable through the
+//!    `file:line`. Backtick and tilde (`~~~`) fences both count — CommonMark
+//!    allows either, so a backtick-only scan would leave a silent hole.
+//! 3. Every fence tagged EXACTLY ```` ```reify-invalid ```` genuinely FAILS to
+//!    compile. The inverse of 1, over the one exempt tag that makes a
+//!    falsifiable claim.
+//! 4. Every `chunks/*.md` file on disk is reachable through the
 //!    `reify_language_reference` MCP tool — i.e. both `include_str!`-ed AND
 //!    listed in `TOPICS`.
 //!
@@ -27,7 +31,15 @@
 //! - ```` ```reify-schematic ```` — not reify source at all: signature
 //!   listings, metavariable notation, `{ ... }` elisions. Never promotable.
 //! - ```` ```reify-invalid ```` — a DELIBERATE-error teaching sample. Distinct
-//!   from `reify-fragment`, which would falsely assert the body is valid.
+//!   from `reify-fragment`, which would falsely assert the body is valid. This
+//!   is the one exempt tag the gate still VERIFIES (check 3): the body is
+//!   compiled and a CLEAN compile is the violation. Without that, the tag would
+//!   be the vocabulary's free downgrade path — a `reify` fence that stopped
+//!   compiling could be made green by a one-line retag with nothing noticing.
+//!   The other two exempt tags make claims no gate can falsify: checking
+//!   `reify-fragment` would need an invisible harness-side wrapper, which is
+//!   exactly what the bare `reify` tag's meaning was written to reject, and
+//!   `reify-schematic` is a claim about intent.
 //! - anything else (`ebnf`, `text`, …) — a non-reify language, exempt like any
 //!   other explicit tag.
 //!
@@ -81,30 +93,44 @@
 //! plants below. It is `reify-schematic` (a signature listing, not compilable
 //! source), so this gate exempts it by design; rather than let the tag make it
 //! cosmetically green, the chunk carries a markdown annotation directly above
-//! that fence naming the real 2-/5-arity dispatch and citing the follow-up
-//! ticket filed for the correction.
+//! that fence naming the real 2-/5-arity dispatch and citing #6890, the
+//! follow-up that owns the correction. The annotation cites the TASK, not the
+//! ticket it was filed as: a reader of the shipped reference can look up
+//! `#6890` and see its status, whereas the ticket resolved to `combined` and is
+//! a dead end. `.md` is outside `ptodo.rs`'s scanned extensions (:786), so
+//! nothing will flag that cite when #6890 closes — the follow-up deletes the
+//! annotation along with the defect.
 //!
-//! There is one more gap, and it runs the OTHER way — a fence that IS compiled,
-//! IS green, and still names something that does not exist. `traits.md`'s
-//! `## Syntax` fence (line 7) carries the bare ```` ```reify ```` tag, so the
-//! strong reading above applies to it in full; yet its body binds
-//! `compute_moi(geometry, material.density)`, an illustrative placeholder the
-//! fence's own inline comment disclaims. It compiles clean because an
-//! UNRESOLVED CALL NAME is frequently not an error — a body types such a call
-//! from its first argument's `result_type`, the same tolerance
-//! `geometry_chunk_smoke.rs`'s scope statement warns about and the reason this
-//! module's phantom demo pins an ARITY failure on the KNOWN name `rotate`
-//! rather than an invented identifier. So for a `reify` fence, green means
-//! "the compiler accepted this", NOT "every name in it resolves"; a reader can
-//! still pay a probe cycle at eval time. The tag is kept anyway, deliberately:
-//! the body is a genuinely standalone trait declaration (`reify-fragment`
-//! would mislabel it) and it is one of only three `reify` fences in traits.md,
-//! so retagging would also drop compile coverage the per-file floors in
-//! `REIFY_FENCE_FLOORS` exist to protect. The limitation is pinned executably
-//! by `an_unresolved_call_name_compiles_clean_so_a_green_reify_tag_is_weaker`
+//! There is one more gap, and it runs the OTHER way — a fence can be compiled,
+//! be green, and still name something that does not exist. An UNRESOLVED CALL
+//! NAME is frequently not an error: a body types such a call from its first
+//! argument's `result_type`, the same tolerance `geometry_chunk_smoke.rs`'s
+//! scope statement warns about and the reason this module's phantom demo pins
+//! an ARITY failure on the KNOWN name `rotate` rather than an invented
+//! identifier. So for a `reify` fence, green means "the compiler accepted
+//! this", NOT "every name in it resolves"; a reader can still pay a probe cycle
+//! at eval time. The limitation is pinned executably by
+//! `an_unresolved_call_name_compiles_clean_so_a_green_reify_tag_is_weaker`
 //! below, so the day the compiler starts resolving call names that test goes
 //! red and this paragraph is deleted rather than quietly rotting into a false
 //! disclaimer.
+//!
+//! The corpus had exactly one instance of that gap and it is now GONE, which is
+//! worth recording because the fix direction matters. `traits.md`'s `## Syntax`
+//! fence carries the bare ```` ```reify ```` tag — the strongest claim in the
+//! vocabulary — while binding `compute_moi(geometry, material.density)`, a
+//! helper the fence's own inline comment disclaimed as "not a compiler/stdlib
+//! function". Attaching the strongest truth claim to a body containing a known
+//! phantom moved against this task's own grain, and DOCUMENTING why was the
+//! wrong resolution: the body was made honest instead, rewritten as the
+//! stdlib's own `trait Rigid` (`stdlib/structural_physical.ri`) over the real
+//! `moment_of_inertia` builtin, keeping the tag and the traits floor at 3. The
+//! now-obsolete `pdoccover:allow — placeholder` marker went with it (that lane
+//! reported `compute_moi` as a `fabricated-name`; with the phantom gone the
+//! suppression is dead weight). The general limitation above still stands — it
+//! is a property of the compiler, not of that one fence — which is why its
+//! pinning test is a synthetic fixture rather than a reference to a chunk that
+//! can be fixed out from under it.
 
 use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
 
@@ -136,22 +162,37 @@ struct Fence {
 /// and it must apply a stricter delimiter rule than CommonMark (below). Pulling
 /// in a markdown dependency for a test-only scan of 17 files would buy neither.
 ///
-/// A delimiter is a run of THREE OR MORE backticks starting at column 0. The
-/// run is COUNTED, not assumed to be exactly three, and the raw line is
-/// deliberately NOT `trim_start`-ed, so anything indented is body content.
-/// That is stricter than `enums_chunk_option_smoke.rs:106`'s
-/// `trim_start().strip_prefix("```")` on the indentation axis and faithful to
-/// CommonMark on the run-length axis — and both axes matter for one reason: a
-/// misread delimiter inverts the open/close state for the entire rest of the
-/// file, silently mislabelling every subsequent fence.
+/// A delimiter is a run of THREE OR MORE of a single FENCE CHARACTER —
+/// backtick or tilde, CommonMark allows both — starting at column 0. The run is
+/// COUNTED, not assumed to be exactly three, and the raw line is deliberately
+/// NOT `trim_start`-ed, so anything indented is body content. That is stricter
+/// than `enums_chunk_option_smoke.rs:106`'s `trim_start().strip_prefix("```")`
+/// on the indentation axis and faithful to CommonMark on the run-length and
+/// fence-character axes — and all three matter for one reason: a misread
+/// delimiter inverts the open/close state for the entire rest of the file,
+/// silently mislabelling every subsequent fence.
+///
+/// # Why the fence CHARACTER is tracked, not just backticks
+///
+/// No chunk uses `~~~` today, so this is latent rather than live — but the ban
+/// this module enforces is advertised over EVERY fence, and a backtick-only
+/// scan is blind to a tilde one on both axes. An untagged `~~~` would escape
+/// `no_chunk_fence_is_untagged` silently, which is the ban quietly not
+/// applying. Worse, a `~~~text` block whose body contains a column-0
+/// ```` ```reify ```` line — the natural way to write a chunk that DOCUMENTS
+/// this gate's vocabulary — would be read as a genuine open `reify` fence,
+/// desyncing the scan for the rest of the file in exactly the way the run-length
+/// counting below exists to prevent. A closer must therefore match BOTH the
+/// opener's character and at least its length; a run of the other character is
+/// ordinary body content, whatever its length.
 ///
 /// # Why the run length is counted rather than assumed
 ///
-/// CommonMark requires a CLOSING delimiter to be a backtick run at least as
-/// long as the opening one. That rule is what lets a markdown file NEST a
-/// fence — and the obvious future chunk to do so is one documenting this
-/// gate's own tag vocabulary, which needs a four-backtick block wrapping a
-/// three-backtick ```` ```reify ```` sample. Under a plain
+/// CommonMark requires a CLOSING delimiter to be a run of the OPENER'S OWN
+/// character, at least as long as the opening one. That rule is what lets a
+/// markdown file NEST a fence — and the obvious future chunk to do so is one
+/// documenting this gate's own tag vocabulary, which needs a four-backtick
+/// block wrapping a three-backtick ```` ```reify ```` sample. Under a plain
 /// `strip_prefix("```")` scan that opener parses with a BACKTICK captured into
 /// its info string (tag `` `text `` rather than `text`) and the first INNER
 /// three-backtick line closes the block, after which every fence in the file
@@ -178,38 +219,63 @@ struct Fence {
 /// the offending block would vanish from the scan and the corpus test would go
 /// green *because* the file is malformed.
 fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
+    /// The leading run of a single CommonMark fence character at column 0:
+    /// `(character, length)`, or `None` for a line that starts with neither.
+    ///
+    /// Both characters are ASCII, so the returned length is a valid byte AND
+    /// char boundary and the caller can slice the info string off with it.
+    fn delimiter_run(line: &str) -> Option<(u8, usize)> {
+        let first = line.as_bytes().first().copied()?;
+        if first != b'`' && first != b'~' {
+            return None;
+        }
+        let run = line.bytes().take_while(|byte| *byte == first).count();
+        Some((first, run))
+    }
+
+    fn name_of(fence_char: u8) -> &'static str {
+        if fence_char == b'~' { "tilde" } else { "backtick" }
+    }
+
     let mut fences: Vec<Fence> = Vec::new();
-    // (opening line, opening run length, tag, accumulated body lines)
-    let mut open: Option<(usize, usize, Option<String>, Vec<&str>)> = None;
+    // (opening line, opening fence char, opening run length, tag, body lines)
+    let mut open: Option<(usize, u8, usize, Option<String>, Vec<&str>)> = None;
 
     for (index, line) in content.lines().enumerate() {
         let line_no = index + 1;
-        // Backticks are ASCII, so `run` is a valid byte AND char boundary.
-        let run = line.bytes().take_while(|byte| *byte == b'`').count();
-        let rest = &line[run..];
+        let delimiter = delimiter_run(line);
 
-        // Does this line close the fence currently open? Only a run at least
-        // as long as the opener's can; a SHORTER run is body content, which is
-        // what makes a nested fence parse correctly.
-        let closes = match &open {
-            Some((_, open_run, _, _)) => run >= *open_run,
-            None => false,
+        // Does this line close the fence currently open? Only a run of the
+        // OPENER'S OWN character, at least as long as the opener's. A shorter
+        // run — or a run of the other character, at any length — is body
+        // content, which is what makes a nested fence parse correctly and what
+        // keeps a ```` ```reify ```` line inside a `~~~` block from being read
+        // as a genuine open `reify` fence.
+        let closes = match (&open, delimiter) {
+            (Some((_, open_char, open_run, _, _)), Some((char_here, run))) => {
+                char_here == *open_char && run >= *open_run
+            }
+            _ => false,
         };
 
         if closes {
-            let (open_line, open_run, _, _) = open.as_ref().expect("closes implies open");
+            let (_, run) = delimiter.expect("closes implies a delimiter");
+            let rest = &line[run..];
+            let (open_line, open_char, open_run, _, _) =
+                open.as_ref().expect("closes implies open");
             if !rest.trim().is_empty() {
                 return Err(format!(
                     "code fence delimiter at line {line_no} carries an info string \
                      ({info}) while the fence opened at line {open_line} (run of \
-                     {open_run} backticks) is still OPEN. A closing delimiter must be \
+                     {open_run} {kind}s) is still OPEN. A closing delimiter must be \
                      bare, so this is either a MISSING closer above or a nested fence \
                      that needs a longer outer run; either way, guessing would \
                      mislabel every fence after it",
-                    info = rest.trim()
+                    info = rest.trim(),
+                    kind = name_of(*open_char)
                 ));
             }
-            let (open_line, _, tag, body) = open.take().expect("closes implies open");
+            let (open_line, _, _, tag, body) = open.take().expect("closes implies open");
             fences.push(Fence {
                 ordinal: fences.len() + 1,
                 open_line,
@@ -221,31 +287,35 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
 
         match open.as_mut() {
             // Anything that did not close the open fence is its body — including
-            // a backtick run SHORTER than the opener's.
-            Some((_, _, _, body)) => body.push(line),
+            // a run SHORTER than the opener's, and a run of the OTHER fence
+            // character at any length.
+            Some((_, _, _, _, body)) => body.push(line),
             // Outside any fence, a run of >= 3 opens one; an empty info string
             // is the untagged case the bare-fence ban reports.
             None => {
-                if run >= 3 {
-                    let info = rest.trim();
-                    let tag = if info.is_empty() {
-                        None
-                    } else {
-                        Some(info.to_string())
-                    };
-                    open = Some((line_no, run, tag, Vec::new()));
+                if let Some((fence_char, run)) = delimiter {
+                    if run >= 3 {
+                        let info = line[run..].trim();
+                        let tag = if info.is_empty() {
+                            None
+                        } else {
+                            Some(info.to_string())
+                        };
+                        open = Some((line_no, fence_char, run, tag, Vec::new()));
+                    }
                 }
             }
         }
     }
 
-    if let Some((open_line, open_run, tag, _)) = open {
+    if let Some((open_line, open_char, open_run, tag, _)) = open {
         return Err(format!(
             "unterminated code fence: the delimiter opened at line {open_line} \
-             (run of {open_run} backticks, info string {}) is never closed, so \
+             (run of {open_run} {kind}s, info string {}) is never closed, so \
              every fence after it would be mislabelled — the scan cannot be \
              trusted",
-            tag.as_deref().unwrap_or("<none>")
+            tag.as_deref().unwrap_or("<none>"),
+            kind = name_of(open_char)
         ));
     }
 
@@ -348,6 +418,58 @@ fn reify_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
                 fence.ordinal,
                 errors.len(),
                 fence.body
+            ))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Check 3 — a ```reify-invalid fence must ACTUALLY be invalid
+// ---------------------------------------------------------------------------
+
+/// Every fence tagged EXACTLY ```` ```reify-invalid ```` whose body compiles
+/// CLEAN — i.e. whose "the error is the lesson" claim is no longer true.
+///
+/// # Why this tag, and not the other two exempt ones
+///
+/// The vocabulary defines four reify-family tags; three of them make claims a
+/// gate cannot check. `reify-fragment` says "real syntax, needs context it
+/// cannot carry" — checkable only by inventing a wrapper, and an invisible
+/// harness-side wrapper is exactly what the bare `reify` tag's meaning was
+/// written to reject. `reify-schematic` says "not reify source at all", which
+/// is a claim about intent.
+///
+/// `reify-invalid` is different in kind: it makes a FALSIFIABLE claim about the
+/// compiler's behaviour — this body errors, and the error is the point. Left
+/// unverified it is also the vocabulary's one free downgrade path: a `reify`
+/// fence that stops compiling can be made green by a one-line retag here, with
+/// no test noticing and no reviewer signal beyond the word itself. Checking it
+/// closes that path in the same direction the rest of the module argues for —
+/// executable over advisory.
+///
+/// The check is the MIRROR of `reify_fence_violations`: same helper, same
+/// message shape, opposite verdict. A clean compile is the violation.
+///
+/// Takes ALREADY-PARSED fences, for the reason given on
+/// `untagged_fence_violations`.
+fn reify_invalid_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
+    fences
+        .iter()
+        .filter(|fence| fence.tag.as_deref() == Some("reify-invalid"))
+        .filter_map(|fence| {
+            let compiled = compile_source_with_stdlib_allow_parse_errors(&fence.body);
+            if !errors_only(&compiled).is_empty() {
+                return None;
+            }
+            Some(format!(
+                "{path}:{} — fence #{} is tagged ```reify-invalid but compiles \
+                 CLEAN: zero Error diagnostics. That tag asserts the error IS \
+                 the lesson, so either the teaching sample no longer demonstrates \
+                 what it claims (the compiler changed, or the body drifted), or \
+                 the tag is being used to silence a fence that should be fixed \
+                 and retagged `reify`.\n  --- fence body ---\n{}\n  --- end \
+                 fence body ---",
+                fence.open_line, fence.ordinal, fence.body
             ))
         })
         .collect()
@@ -691,6 +813,119 @@ fn a_four_backtick_fence_nests_a_three_backtick_sample_as_body() {
 
 /// A closing run LONGER than the opening one still closes it (CommonMark: the
 /// closer must be *at least* as long, not exactly as long).
+/// A `~~~` fence is a delimiter too, so an untagged one does not escape the ban.
+///
+/// CommonMark allows tilde fences everywhere backtick fences are allowed, and
+/// this module's header advertises the ban over EVERY fence. A backtick-only
+/// scan would leave `~~~` as a silent hole in exactly the check whose whole
+/// value is that it has none.
+#[test]
+fn an_untagged_tilde_fence_is_a_delimiter_and_is_reported() {
+    let md = "prose\n\
+              ~~~\n\
+              bare body\n\
+              ~~~\n";
+
+    let fences = parse_fences(md).expect("well-formed markdown must parse");
+    assert_eq!(
+        fences.len(),
+        1,
+        "a `~~~` pair is ONE fence, not zero and not two; got {fences:#?}"
+    );
+    assert_eq!(fences[0].tag, None);
+    assert_eq!(fences[0].open_line, 2);
+    assert_eq!(fences[0].body, "bare body");
+
+    let violations = check_markdown("chunks/x.md", md, untagged_fence_violations);
+    assert_eq!(
+        violations.len(),
+        1,
+        "an untagged tilde fence must be reported like any other, got {violations:#?}"
+    );
+}
+
+/// A tagged `~~~` fence carries its info string, and its bare closer is not a
+/// second block — the tilde mirror of the backtick contract above.
+#[test]
+fn a_tagged_tilde_fence_carries_its_info_string() {
+    let md = "~~~text\n\
+              plain prose sample\n\
+              ~~~\n";
+
+    let fences = parse_fences(md).expect("well-formed markdown must parse");
+    assert_eq!(fences.len(), 1, "got {fences:#?}");
+    assert_eq!(fences[0].tag.as_deref(), Some("text"));
+}
+
+/// THE DESYNC CASE. A column-0 ```` ```reify ```` line inside a `~~~` block is
+/// BODY, never a fence.
+///
+/// This is the failure mode a backtick-only parser cannot see and the reason
+/// the fence CHARACTER is tracked rather than assumed. Under a backtick-only
+/// scan the inner line opens a `reify` fence the author never wrote, the outer
+/// `~~~` closer is not a backtick run so the block never closes, and the parse
+/// either errors at EOF or mislabels every fence after it — while
+/// `every_reify_tagged_fence_compiles_clean` tries to compile a body that is
+/// really a chunk of prose. The one shape most likely to hit this is a chunk
+/// documenting THIS gate's tag vocabulary, which needs to show a ```` ```reify ````
+/// line without it being one.
+#[test]
+fn a_backtick_fence_line_inside_a_tilde_block_is_body_not_a_fence() {
+    let md = "~~~text\n\
+              ```reify\n\
+              structure def NotReallyAFence { let n = 1 }\n\
+              ```\n\
+              ~~~\n\
+              ```reify\n\
+              structure def GenuinelyAFence { let n = 1 }\n\
+              ```\n";
+
+    let fences = parse_fences(md).expect("well-formed markdown must parse");
+
+    assert_eq!(
+        fences.len(),
+        2,
+        "the tilde block is ONE fence and the trailing backtick block is the \
+         other — the inner ```reify line is body. Got {fences:#?}"
+    );
+    assert_eq!(fences[0].tag.as_deref(), Some("text"));
+    assert!(
+        fences[0].body.contains("```reify"),
+        "the inner delimiter line must survive INTO the body verbatim, got: {}",
+        fences[0].body
+    );
+    assert_eq!(
+        fences[1].tag.as_deref(),
+        Some("reify"),
+        "the scan must still be in sync after the tilde block — a desync here \
+         mislabels every fence in the rest of the file"
+    );
+    assert_eq!(
+        fences[1].open_line, 6,
+        "and the open line of the genuine fence must be exact, got {fences:#?}"
+    );
+}
+
+/// A `~~~` run never closes a backtick fence, whatever its length.
+///
+/// The converse of the case above, and the property that makes the closer rule
+/// symmetric: mismatching characters are body content in both directions.
+#[test]
+fn a_tilde_run_does_not_close_a_backtick_fence() {
+    let md = "```text\n\
+              ~~~~~~\n\
+              still inside the backtick fence\n\
+              ```\n";
+
+    let fences = parse_fences(md).expect("well-formed markdown must parse");
+    assert_eq!(fences.len(), 1, "got {fences:#?}");
+    assert!(
+        fences[0].body.contains("~~~~~~"),
+        "the long tilde run is body content, got: {}",
+        fences[0].body
+    );
+}
+
 #[test]
 fn a_closing_run_longer_than_the_opening_one_still_closes_it() {
     let md = "```reify\n\
@@ -1082,11 +1317,13 @@ fn a_clean_self_contained_reify_fence_is_not_reported() {
 /// An UNRESOLVED CALL NAME compiles clean, so a green `reify` tag is weaker
 /// than the tag's stated meaning reads.
 ///
-/// The limitation named in this module's header, made executable. `traits.md`'s
-/// `## Syntax` fence is bare ```` ```reify ```` and green, yet calls
-/// `compute_moi(...)` — a placeholder its own inline comment disclaims. This
-/// fixture reproduces that shape hermetically: a body whose only call is a name
-/// that exists nowhere still produces zero Error diagnostics.
+/// The limitation named in this module's header, made executable. The fixture
+/// is deliberately SYNTHETIC rather than a reference to a live chunk: the
+/// corpus instance that motivated it — `traits.md`'s `compute_moi(...)`
+/// placeholder — was fixed by making that body honest, and a test anchored to a
+/// chunk would have been deleted along with it, taking the compiler property it
+/// pins with it. A body whose only call is a name that exists nowhere still
+/// produces zero Error diagnostics.
 ///
 /// If this test ever FAILS, that is good news, not a regression: the compiler
 /// has begun resolving call names, the gate's `reify` tag now means what it
@@ -1111,13 +1348,21 @@ fn an_unresolved_call_name_compiles_clean_so_a_green_reify_tag_is_weaker() {
     );
 }
 
-/// The IDENTICAL phantom body under an exempt tag is never compiled.
+/// The IDENTICAL phantom body under an exempt tag is never compiled BY THIS
+/// CHECK.
 ///
 /// This pins that the phantom is caught by the TAG contract and not
 /// incidentally — and it is the property the whole retag sweep rests on. If
 /// exempt tags were compiled anyway, retagging a fence would change nothing and
 /// the sweep would be theatre; if bare `reify` were matched by prefix, every
 /// `reify-fragment` in the corpus would be trial-compiled instead.
+///
+/// Scope note: exemption here is exemption from CHECK 1 only. `reify-invalid`
+/// is separately verified by `reify_invalid_fence_violations` (check 3), which
+/// compiles the body and demands the OPPOSITE verdict — so retagging a broken
+/// `reify` fence to `reify-invalid` is not a free downgrade, it just swaps
+/// which check owns it. The other two exempt tags make claims no gate can
+/// falsify, and are exempt outright.
 #[test]
 fn the_same_phantom_body_under_an_exempt_tag_is_never_compiled() {
     let phantom = "structure def PhantomRotate {\n\
@@ -1202,6 +1447,104 @@ fn the_violation_echoes_the_offending_fence_body() {
         "the fence body must be echoed in the violation, got: {}",
         violations[0]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Check 3 — a ```reify-invalid fence must ACTUALLY be invalid
+//
+// The mirror image of check 1, on the same synthetic fixtures: where check 1
+// reports a `reify` fence that FAILS to compile, this reports a
+// `reify-invalid` fence that SUCCEEDS. Hermetic for the same reason — the
+// contract is pinned independently of what the corpus happens to hold today.
+// ---------------------------------------------------------------------------
+
+/// A `reify-invalid` fence whose body compiles clean is reported.
+///
+/// The tag claims the error is the lesson. When there is no error, the claim is
+/// false and the reader is being shown a "do not write this" sample the
+/// compiler is perfectly happy with.
+#[test]
+fn a_reify_invalid_fence_that_compiles_clean_is_reported() {
+    let md = "prose\n\
+              ```reify-invalid\n\
+              structure def PerfectlyFine {\n\
+              \x20   let blank = box(20mm, 20mm, 20mm)\n\
+              }\n\
+              ```\n";
+
+    let violations = check_markdown("chunks/x.md", md, reify_invalid_fence_violations);
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    let message = &violations[0];
+    assert!(
+        message.contains("chunks/x.md") && message.contains("fence #1") && message.contains(":2"),
+        "the violation must name file, fence ORDINAL and OPENING line like every \
+         other check, got: {message}"
+    );
+    assert!(
+        message.contains("compiles CLEAN"),
+        "the violation must say WHAT is wrong — that it compiled — got: {message}"
+    );
+    assert!(
+        message.contains("structure def PerfectlyFine"),
+        "the body must be echoed so the fence is fixable without re-opening the \
+         chunk, got: {message}"
+    );
+}
+
+/// A `reify-invalid` fence that genuinely errors is NOT reported.
+///
+/// The control. Reusing the phantom 3-arg `rotate` makes the pairing exact:
+/// the SAME body is a violation under `reify` (check 1) and clean under
+/// `reify-invalid` (check 3), which is precisely what the two tags mean.
+#[test]
+fn a_reify_invalid_fence_that_genuinely_errors_is_not_reported() {
+    let md = "```reify-invalid\n\
+              structure def PhantomRotate {\n\
+              \x20   let blank = box(20mm, 20mm, 20mm)\n\
+              \x20   let turned = rotate(blank, vec3(0.0, 0.0, 1.0), 45deg)\n\
+              }\n\
+              ```\n";
+
+    assert!(
+        check_markdown("chunks/x.md", md, reify_invalid_fence_violations).is_empty(),
+        "a deliberate-error sample that DOES error is exactly what the tag \
+         claims — it must not be reported"
+    );
+}
+
+/// Check 3 compiles ONLY `reify-invalid`, matched exactly.
+///
+/// The symmetric guard to `hyphenated_tags_are_exact_and_never_collapse_to_bare_reify`:
+/// a clean body under any other tag — including bare `reify`, which check 1
+/// already owns — must not be dragged into this check and reported for the
+/// crime of compiling.
+#[test]
+fn check_three_never_reports_a_fence_under_any_other_tag() {
+    let clean = "structure def PerfectlyFine {\n\
+                 \x20   let blank = box(20mm, 20mm, 20mm)\n\
+                 }";
+
+    // Control: under `reify-invalid` the SAME clean body IS reported.
+    assert_eq!(
+        check_markdown(
+            "chunks/x.md",
+            &format!("```reify-invalid\n{clean}\n```\n"),
+            reify_invalid_fence_violations
+        )
+        .len(),
+        1,
+        "control: a clean body under `reify-invalid` must be reported"
+    );
+
+    for tag in ["reify", "reify-fragment", "reify-schematic", "text"] {
+        let md = format!("```{tag}\n{clean}\n```\n");
+        assert!(
+            check_markdown("chunks/x.md", &md, reify_invalid_fence_violations).is_empty(),
+            "tag `{tag}` is not `reify-invalid` and must never be reported by \
+             check 3 — one tag apart from a body that IS"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1369,6 +1712,10 @@ fn a_missing_topics_literal_is_itself_a_violation() {
 /// cost one fix cycle per malformed file — the very property this module's
 /// header claims accumulate-then-report-all bought.
 struct ChunkDoc {
+    /// The file stem (`traits`, `units`, …). Carried so a floor lookup keys on
+    /// the same identity `REIFY_FENCE_FLOORS` does, rather than reconstructing
+    /// a label and comparing strings.
+    stem: String,
     label: String,
     fences: Result<Vec<Fence>, String>,
 }
@@ -1386,9 +1733,18 @@ impl ChunkDoc {
 
     /// Fences tagged EXACTLY ```` ```reify ```` in this file.
     fn bare_reify_fences(&self) -> usize {
+        self.count_tagged("reify")
+    }
+
+    /// Fences tagged EXACTLY ```` ```reify-invalid ```` in this file.
+    fn reify_invalid_fences(&self) -> usize {
+        self.count_tagged("reify-invalid")
+    }
+
+    fn count_tagged(&self, tag: &str) -> usize {
         self.parsed()
             .iter()
-            .filter(|fence| fence.tag.as_deref() == Some("reify"))
+            .filter(|fence| fence.tag.as_deref() == Some(tag))
             .count()
     }
 }
@@ -1400,6 +1756,7 @@ fn corpus() -> Vec<ChunkDoc> {
         .map(|stem| ChunkDoc {
             label: chunk_label(&stem),
             fences: parse_fences(&read_chunk_file(&stem)),
+            stem,
         })
         .collect()
 }
@@ -1418,12 +1775,34 @@ fn corpus() -> Vec<ChunkDoc> {
 /// Lowering an entry is a legitimate move — a fence can genuinely stop being a
 /// standalone example — but it must be a deliberate, diff-visible edit HERE,
 /// reviewed alongside the retag that motivated it.
+///
+/// # The table is TOTAL, and that is enforced
+///
+/// A per-file table that covers only some files is not a ratchet, because the
+/// corpus-wide backstop below sums exactly these floors: a file the table does
+/// not know about can grow three `reify` fences (total 8 → 11) and a later task
+/// can retag all three away (11 → 8) with every assertion still passing, and
+/// three documented examples silently stop being compiled. So
+/// `assert_corpus_is_not_vacuous` requires that EVERY file carrying at least
+/// one bare ```` ```reify ```` fence appears here. Adding such a fence to a new
+/// file therefore forces a floor entry in the same diff, which is what makes
+/// the aggregate check unable to mask a loss.
 const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
     ("enums", 2),
     ("geometry", 2),
     ("purposes", 1),
     ("traits", 3),
 ];
+
+/// The corpus-wide floor on ```` ```reify-invalid ```` fences.
+///
+/// `every_reify_invalid_fence_actually_errors` compiles exactly these bodies
+/// and nothing else, so at zero it protects nothing while still reporting
+/// green. One is the count measured after this task's sweep (`units.md`'s
+/// dimension-crossing sample). Not a per-file table like the `reify` one: the
+/// tag is rare enough that a corpus total still attributes a loss unambiguously,
+/// and a per-file entry would freeze WHICH chunk gets to teach by counterexample.
+const REIFY_INVALID_FENCE_FLOOR: usize = 1;
 
 /// ANTI-VACUITY. Asserted BEFORE every corpus check.
 ///
@@ -1495,6 +1874,29 @@ fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
         );
     }
 
+    // TABLE COMPLETENESS. Without this the per-file table is not a ratchet at
+    // all for any file outside it, and the aggregate below — which sums exactly
+    // these floors — can be satisfied by fences that arrived after the table was
+    // written and were then retagged away. Requiring an entry for every file
+    // that HAS `reify` fences closes the loop: a new file's fences cannot enter
+    // the corpus without acquiring a floor in the same diff.
+    for doc in corpus.iter().filter(|doc| doc.bare_reify_fences() > 0) {
+        let found = doc.bare_reify_fences();
+        assert!(
+            REIFY_FENCE_FLOORS
+                .iter()
+                .any(|(stem, _)| *stem == doc.stem),
+            "{} carries {found} fence(s) tagged EXACTLY `reify` but has NO entry \
+             in REIFY_FENCE_FLOORS. Add `(\"{}\", {found})` there. Until it is \
+             listed, those fences are protected by nothing: the corpus-wide \
+             backstop is the SUM of the table's floors, so a later task can \
+             retag every one of them back to `reify-fragment` and every \
+             assertion here still passes while {found} documented example(s) \
+             silently stop being compiled.{context}",
+            doc.label, doc.stem
+        );
+    }
+
     let expected_reify: usize = REIFY_FENCE_FLOORS.iter().map(|(_, floor)| floor).sum();
     let reify_fences: usize = corpus.iter().map(ChunkDoc::bare_reify_fences).sum();
     assert!(
@@ -1503,8 +1905,22 @@ fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
          expected at least {expected_reify}, the sum of REIFY_FENCE_FLOORS. \
          `every_reify_tagged_fence_compiles_clean` compiles exactly these bodies \
          and nothing else, so every one lost is compile coverage lost with no \
-         test going red. If a NEW file grew `reify` fences the per-file table \
-         does not know about, add it there too.{context}"
+         test going red.{context}"
+    );
+
+    // CHECK 3's anti-vacuity floor. `reify-invalid` is the one exempt tag that
+    // makes a falsifiable claim, and check 3 verifies it — but only over fences
+    // that exist. At zero the check is green and empty.
+    let reify_invalid_fences: usize = corpus.iter().map(ChunkDoc::reify_invalid_fences).sum();
+    assert!(
+        reify_invalid_fences >= REIFY_INVALID_FENCE_FLOOR,
+        "the scan found only {reify_invalid_fences} ```reify-invalid fence(s) \
+         corpus-wide — expected at least {REIFY_INVALID_FENCE_FLOOR}. \
+         `every_reify_invalid_fence_actually_errors` compiles exactly these \
+         bodies, so at zero it reports green while verifying nothing. If a \
+         deliberate-error sample was legitimately removed, lower \
+         REIFY_INVALID_FENCE_FLOOR in the same diff so the loss is \
+         reviewable.{context}"
     );
 }
 
@@ -1553,6 +1969,28 @@ fn every_reify_tagged_fence_compiles_clean() {
          tag CLAIMS to be a complete, copy-pasteable module; if the compiler \
          rejects it, the doc is lying and the reader pays a probe cycle to find \
          out",
+        &violations,
+    );
+}
+
+/// CHECK 3 — every ```` ```reify-invalid ```` fence really does fail to compile.
+#[test]
+fn every_reify_invalid_fence_actually_errors() {
+    let corpus = corpus();
+    assert_corpus_is_not_vacuous(&corpus);
+
+    let violations: Vec<String> = corpus
+        .iter()
+        .flat_map(|doc| {
+            check_parse_outcome(&doc.label, &doc.fences, reify_invalid_fence_violations)
+        })
+        .collect();
+
+    report(
+        "```reify-invalid fences that compile clean. That tag says the ERROR is \
+         the lesson; a body the compiler accepts teaches the opposite of what \
+         the fence claims, and leaves the tag available as a silent downgrade \
+         path for a `reify` fence that stopped compiling",
         &violations,
     );
 }

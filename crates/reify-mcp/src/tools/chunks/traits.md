@@ -6,9 +6,17 @@ Traits are non-entity declarations: no identity, no determinacy state. They are 
 
 ```reify
 pub trait Rigid : Physical {
-    let moment_of_inertia = compute_moi(geometry, material.density) // illustrative placeholder helper, not a compiler/stdlib function — pdoccover:allow — placeholder
+    let body_density = material.density
+    let moment_of_inertia = moment_of_inertia(geometry, body_density)
 }
 ```
+
+Every name above is real: `Physical` is the stdlib trait supplying the
+`geometry` and `material` params, and `moment_of_inertia(solid, density)` is a
+compiler builtin. This is the stdlib's own `Rigid` (`stdlib/structural_physical.ri`)
+minus its positive-definiteness constraint — the `body_density` line is not
+decoration, it binds `material.density` to a name so the builtin receives a
+value reference rather than a member access.
 
 ## Trait Members
 
