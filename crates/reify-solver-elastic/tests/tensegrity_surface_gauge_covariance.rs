@@ -233,11 +233,81 @@ fn assert_all_non_vacuous(label: &str, values: &[f64]) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared assertion body
+// ---------------------------------------------------------------------------
+
+/// Shared assertion body for a single gauge-covariance check: both solves
+/// converged, solved geometry agrees, and each `(label, base, scaled)`
+/// quantity in `extra_echoes` scales by exactly `lambda` — on top of the
+/// member-force and force-density echoes checked unconditionally. Factored
+/// out so the four covariance tests (iso/aniso × [`LAMBDA`]/[`LAMBDA_SMALL`])
+/// share one assertion body instead of duplicating it a third and fourth time
+/// (task 6119).
+#[allow(clippy::too_many_arguments)]
+fn assert_gauge_covariant(
+    context: &str,
+    lambda: f64,
+    base_converged: bool,
+    scaled_converged: bool,
+    base_nodes: &[[f64; 3]],
+    scaled_nodes: &[[f64; 3]],
+    base_member_forces: &[f64],
+    scaled_member_forces: &[f64],
+    base_force_densities: &[f64],
+    scaled_force_densities: &[f64],
+    extra_echoes: &[(&str, &[f64], &[f64])],
+) {
+    eprintln!(
+        "[{context}] λ={lambda:e} base.converged={base_converged} scaled.converged={scaled_converged}",
+    );
+
+    assert!(
+        base_converged,
+        "[{context}] λ={lambda:e}: base-gauge solve must converge",
+    );
+    assert!(
+        scaled_converged,
+        "[{context}] λ={lambda:e}: λ-gauge solve must converge — the criterion must be gauge-invariant (task 6119)",
+    );
+
+    let node_err = max_coord_rel_diff(base_nodes, scaled_nodes);
+    assert!(
+        node_err < GAUGE_REL_TOL,
+        "[{context}] λ={lambda:e}: solved geometry must be gauge-invariant: rel err = {node_err:e}, expected < {GAUGE_REL_TOL:e}",
+    );
+
+    let force_err = max_rel_diff_scaled(base_member_forces, scaled_member_forces, lambda);
+    assert!(
+        force_err < GAUGE_REL_TOL,
+        "[{context}] λ={lambda:e}: member forces must scale by exactly λ: rel err = {force_err:e}, expected < {GAUGE_REL_TOL:e}",
+    );
+
+    let q_echo_err = max_rel_diff_scaled(base_force_densities, scaled_force_densities, lambda);
+    assert!(
+        q_echo_err < GAUGE_REL_TOL,
+        "[{context}] λ={lambda:e}: force_densities echo must scale by exactly λ: rel err = {q_echo_err:e}",
+    );
+
+    for (label, base_vals, scaled_vals) in extra_echoes {
+        let err = max_rel_diff_scaled(base_vals, scaled_vals, lambda);
+        assert!(
+            err < GAUGE_REL_TOL,
+            "[{context}] λ={lambda:e}: {label} echo must scale by exactly λ: rel err = {err:e}",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Isotropic surfaces path
 // ---------------------------------------------------------------------------
 
-#[test]
-fn iso_surfaces_form_find_is_gauge_covariant() {
+/// Solve the catenoid+ring-members fixture at both the base gauge and the
+/// `lambda`-scaled gauge via [`form_find_anchored_surfaces`], and assert the
+/// shared gauge-covariance invariants. Called at both [`LAMBDA`] (the
+/// large-λ / never-converges direction) and [`LAMBDA_SMALL`] (the small-λ /
+/// premature-stop direction), so both halves of the pre-fix defect are
+/// covered without duplicating the solve-and-assert body (task 6119).
+fn check_iso_surfaces_gauge_covariance(lambda: f64) {
     let (nodes, surfaces, anchors, _free, members, kinds) =
         build_catenoid_tube_with_ring_members(PERTURB);
     let q = ring_member_q(&kinds);
@@ -248,56 +318,57 @@ fn iso_surfaces_form_find_is_gauge_covariant() {
         form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
             .expect("base-gauge catenoid+ring-members solve must be feasible");
 
-    let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
-    let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
+    let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
+    let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * lambda).collect();
     let scaled = form_find_anchored_surfaces(
         &nodes, &members, &kinds, &q_scaled, &surfaces, &sigmas_scaled, &anchors,
     )
     .expect("λ-gauge catenoid+ring-members solve must be feasible");
 
-    eprintln!(
-        "[ISO] base.converged={} scaled.converged={}",
-        base.converged, scaled.converged,
-    );
-
-    assert!(base.converged, "base-gauge solve must converge");
-    assert!(
+    assert_gauge_covariant(
+        "ISO",
+        lambda,
+        base.converged,
         scaled.converged,
-        "λ-gauge solve must converge — the criterion must be gauge-invariant (task 6119)",
+        &base.nodes,
+        &scaled.nodes,
+        &base.member_forces,
+        &scaled.member_forces,
+        &base.force_densities,
+        &scaled.force_densities,
+        &[(
+            "surface_stresses",
+            &base.surface_stresses,
+            &scaled.surface_stresses,
+        )],
     );
+}
 
-    let node_err = max_coord_rel_diff(&base.nodes, &scaled.nodes);
-    assert!(
-        node_err < GAUGE_REL_TOL,
-        "solved geometry must be gauge-invariant: rel err = {node_err:e}, expected < {GAUGE_REL_TOL:e}",
-    );
+#[test]
+fn iso_surfaces_form_find_is_gauge_covariant() {
+    check_iso_surfaces_gauge_covariance(LAMBDA);
+}
 
-    let force_err = max_rel_diff_scaled(&base.member_forces, &scaled.member_forces, LAMBDA);
-    assert!(
-        force_err < GAUGE_REL_TOL,
-        "member forces must scale by exactly λ: rel err = {force_err:e}, expected < {GAUGE_REL_TOL:e}",
-    );
-
-    let q_echo_err = max_rel_diff_scaled(&base.force_densities, &scaled.force_densities, LAMBDA);
-    assert!(
-        q_echo_err < GAUGE_REL_TOL,
-        "force_densities echo must scale by exactly λ: rel err = {q_echo_err:e}",
-    );
-
-    let sigma_echo_err =
-        max_rel_diff_scaled(&base.surface_stresses, &scaled.surface_stresses, LAMBDA);
-    assert!(
-        sigma_echo_err < GAUGE_REL_TOL,
-        "surface_stresses echo must scale by exactly λ: rel err = {sigma_echo_err:e}",
-    );
+/// Small-λ direction (task 6119): a small `λ` SHRINKS the pre-fix absolute
+/// residual below its tolerance, stopping the iteration PREMATURELY on
+/// unconverged geometry — the silent half of the defect a large-λ-only suite
+/// cannot see (the large-λ direction fails loudly instead: the residual is
+/// INFLATED and the solve never converges).
+#[test]
+fn iso_surfaces_form_find_is_gauge_covariant_small_lambda() {
+    check_iso_surfaces_gauge_covariance(LAMBDA_SMALL);
 }
 
 // ---------------------------------------------------------------------------
 // Anisotropic surfaces path — shares the identical criterion (:708)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn aniso_surfaces_form_find_is_gauge_covariant() {
+/// Solve the catenoid+ring-members fixture at both the base gauge and the
+/// `lambda`-scaled gauge via [`form_find_anchored_surfaces_aniso`], and assert
+/// the shared gauge-covariance invariants plus the principal-stress echoes.
+/// Called at both [`LAMBDA`] and [`LAMBDA_SMALL`] — see
+/// [`check_iso_surfaces_gauge_covariance`] for why both directions matter.
+fn check_aniso_surfaces_gauge_covariance(lambda: f64) {
     let (nodes, surfaces, anchors, _free, members, kinds) =
         build_catenoid_tube_with_ring_members(PERTURB);
     let q = ring_member_q(&kinds);
@@ -314,12 +385,12 @@ fn aniso_surfaces_form_find_is_gauge_covariant() {
     )
     .expect("base-gauge aniso solve must be feasible");
 
-    let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
+    let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
     let prestress_scaled = vec![
         AnisotropicSurfaceStress {
             warp_dir,
-            sigma_warp: sigma_warp * LAMBDA,
-            sigma_weft: sigma_weft * LAMBDA,
+            sigma_warp: sigma_warp * lambda,
+            sigma_weft: sigma_weft * lambda,
         };
         surfaces.len()
     ];
@@ -328,52 +399,42 @@ fn aniso_surfaces_form_find_is_gauge_covariant() {
     )
     .expect("λ-gauge aniso solve must be feasible");
 
-    eprintln!(
-        "[ANISO] base.converged={} scaled.converged={}",
-        base.converged, scaled.converged,
-    );
-
-    assert!(base.converged, "base-gauge aniso solve must converge");
-    assert!(
-        scaled.converged,
-        "λ-gauge aniso solve must converge — same criterion as the isotropic path (task 6119)",
-    );
-
-    let node_err = max_coord_rel_diff(&base.nodes, &scaled.nodes);
-    assert!(
-        node_err < GAUGE_REL_TOL,
-        "aniso solved geometry must be gauge-invariant: rel err = {node_err:e}",
-    );
-
-    let force_err = max_rel_diff_scaled(&base.member_forces, &scaled.member_forces, LAMBDA);
-    assert!(
-        force_err < GAUGE_REL_TOL,
-        "aniso member forces must scale by exactly λ: rel err = {force_err:e}",
-    );
-
-    let q_echo_err = max_rel_diff_scaled(&base.force_densities, &scaled.force_densities, LAMBDA);
-    assert!(
-        q_echo_err < GAUGE_REL_TOL,
-        "aniso force_densities echo must scale by exactly λ: rel err = {q_echo_err:e}",
-    );
-
     // Principal-stress echo: recover_principal_stress reads σ_w/σ_f straight
     // from the input spec, so this is the aniso analogue of the isotropic
-    // surface_stresses echo check above.
+    // surface_stresses echo check.
     assert_eq!(base.principal_stresses.len(), scaled.principal_stresses.len());
     let major_base: Vec<f64> = base.principal_stresses.iter().map(|p| p.major).collect();
     let major_scaled: Vec<f64> = scaled.principal_stresses.iter().map(|p| p.major).collect();
-    let major_err = max_rel_diff_scaled(&major_base, &major_scaled, LAMBDA);
-    assert!(
-        major_err < GAUGE_REL_TOL,
-        "principal major-stress echo must scale by exactly λ: rel err = {major_err:e}",
-    );
-
     let minor_base: Vec<f64> = base.principal_stresses.iter().map(|p| p.minor).collect();
     let minor_scaled: Vec<f64> = scaled.principal_stresses.iter().map(|p| p.minor).collect();
-    let minor_err = max_rel_diff_scaled(&minor_base, &minor_scaled, LAMBDA);
-    assert!(
-        minor_err < GAUGE_REL_TOL,
-        "principal minor-stress echo must scale by exactly λ: rel err = {minor_err:e}",
+
+    assert_gauge_covariant(
+        "ANISO",
+        lambda,
+        base.converged,
+        scaled.converged,
+        &base.nodes,
+        &scaled.nodes,
+        &base.member_forces,
+        &scaled.member_forces,
+        &base.force_densities,
+        &scaled.force_densities,
+        &[
+            ("principal major-stress", &major_base, &major_scaled),
+            ("principal minor-stress", &minor_base, &minor_scaled),
+        ],
     );
+}
+
+#[test]
+fn aniso_surfaces_form_find_is_gauge_covariant() {
+    check_aniso_surfaces_gauge_covariance(LAMBDA);
+}
+
+/// Small-λ direction (task 6119) — see
+/// [`iso_surfaces_form_find_is_gauge_covariant_small_lambda`] for why this
+/// direction is a structurally distinct check from the large-λ test above.
+#[test]
+fn aniso_surfaces_form_find_is_gauge_covariant_small_lambda() {
+    check_aniso_surfaces_gauge_covariance(LAMBDA_SMALL);
 }
