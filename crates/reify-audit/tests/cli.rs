@@ -2918,11 +2918,21 @@ where
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
                     let resp_value = match responder(&args) {
-                        Some(structured) => serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "result": {"structuredContent": structured, "content": []}
-                        }),
+                        Some(structured) => {
+                            let result = match shape {
+                                ResultShape::StructuredContent => {
+                                    serde_json::json!({"structuredContent": structured, "content": []})
+                                }
+                                ResultShape::ContentText => serde_json::json!({
+                                    "content": [{"type": "text", "text": structured.to_string()}]
+                                }),
+                            };
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "result": result
+                            })
+                        }
                         None => serde_json::json!({
                             "jsonrpc": "2.0",
                             "id": req_id,
