@@ -1456,6 +1456,183 @@ describe('Viewport FEA auto-enable determinism', () => {
   });
 });
 
+// Task 5669: the FEA toolbar channel dropdown must reflect whatever channel
+// pickDefaultScalarChannel auto-selects, even for shell FEA meshes whose
+// preferred channel ('vonMises_top') is not part of feaToolbarChannels' fixed
+// base list. Verifies Viewport widens availableChannels from two narrow
+// sources — the store's current channel (seed) and PREFERRED_FEA_CHANNELS
+// actually present in the mesh set (scan) — that the rendered <select>'s value
+// matches the store's channel (no desync), and that the widening stops there
+// (arbitrary non-FEA vertex scalars are not offered as FEA channels).
+describe('Viewport FEA channel dropdown sync (task 5669)', () => {
+  it('shell mesh with {vonMises_top, vonMises_bottom} → dropdown offers both and value matches store.state.channel', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_top: new Float32Array([3]),
+          vonMises_bottom: new Float32Array([1]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5669" feaModeStore={store as any} />);
+
+    // Auto-enable picked the shell's preferred channel.
+    expect(store.state.channel).toBe('vonMises_top');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // Exact list, not membership: pins the ordering contract too (base list
+    // first, in its own order, then the widened extras appended lexicographically
+    // sorted — so the option order is insertion-order independent).
+    expect(options).toEqual([
+      'vonMises',
+      'displacement_magnitude',
+      'vonMises_bottom',
+      'vonMises_top',
+    ]);
+    expect(select.value).toBe(store.state.channel);
+  });
+
+  it('solid mesh carrying a non-FEA scalar channel → dropdown stays the base list (widening is restricted to PREFERRED_FEA_CHANNELS)', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      solid: {
+        entity_path: 'solid',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([1]),
+          displacement_magnitude: new Float32Array([2]),
+          // Non-empty, non-base, and NOT a member of PREFERRED_FEA_CHANNELS.
+          // A design may legitimately carry arbitrary vertex scalars; they are
+          // not FEA result surfaces and must not be listed as selectable "FEA"
+          // channels by the toolbar.
+          temperature: new Float32Array([300]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5669-base" feaModeStore={store as any} />);
+
+    // 'vonMises' is present, so pickDefaultScalarChannel prefers it over the
+    // lexicographic fallback — 'temperature' is never the selected channel here,
+    // which is what makes this an actual test of the *scan* rather than the seed.
+    expect(store.state.channel).toBe('vonMises');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // Regression guard against an over-broad scan: admitting every non-empty
+    // channel would append 'temperature' here.
+    expect(options).toEqual(['vonMises', 'displacement_magnitude']);
+  });
+
+  it('mesh whose ONLY channel is non-FEA → that auto-selected channel is still offered (current-channel seed, not the scan)', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      solid: {
+        entity_path: 'solid',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          temperature: new Float32Array([300]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5669-seed" feaModeStore={store as any} />);
+
+    // pickDefaultScalarChannel's last-resort branch takes the lexicographically
+    // smallest non-empty channel, so the store lands on a name outside both the
+    // base list and PREFERRED_FEA_CHANNELS. The narrowed scan skips it, but the
+    // current-channel seed must still keep the <select> in sync with the store.
+    expect(store.state.channel).toBe('temperature');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toEqual(['vonMises', 'displacement_magnitude', 'temperature']);
+    expect(select.value).toBe(store.state.channel);
+  });
+
+  it('mesh with a non-empty errorIndicator channel → no duplicate option (dedup vs. feaToolbarChannels\' own errorIndicator handling)', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      solid: {
+        entity_path: 'solid',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([1]),
+          errorIndicator: new Float32Array([0.5]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5669-dedup" feaModeStore={store as any} />);
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // feaToolbarChannels() already appends 'errorIndicator' to its base list when
+    // present; the widening scan must not re-add it as an "extra" alongside.
+    expect(options).toEqual(['vonMises', 'displacement_magnitude', 'errorIndicator']);
+    expect(options.filter((o) => o === 'errorIndicator')).toHaveLength(1);
+  });
+
+  it('mesh set swapped from shell to solid-only → select.value still matches store.state.channel (one-shot auto-enable residual desync)', () => {
+    const store = createFeaModeStore();
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_top: new Float32Array([3]),
+          vonMises_bottom: new Float32Array([1]),
+        },
+      },
+    });
+
+    render(() => <Viewport meshes={meshes()} viewportId="test-5669-swap" feaModeStore={store as any} />);
+
+    // Auto-enable fires once, picking the shell's preferred channel.
+    expect(store.state.channel).toBe('vonMises_top');
+
+    // Replace the mesh set with a solid-only rebuild whose channels don't
+    // include 'vonMises_top' at all. Auto-enable is one-shot (autoEnabledOnce),
+    // so store.state.channel does NOT change — the dropdown must still offer
+    // a matching option instead of silently falling back to the base list.
+    setMeshes({
+      solid: {
+        entity_path: 'solid',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([4]),
+        },
+      },
+    });
+
+    expect(store.state.channel).toBe('vonMises_top');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // 'vonMises_top' survives only via the current-channel seed — the new mesh
+    // set carries no shell sub-channel at all, so the scan contributes nothing.
+    expect(options).toEqual(['vonMises', 'displacement_magnitude', 'vonMises_top']);
+    expect(select.value).toBe(store.state.channel);
+  });
+});
+
 // ── β: surfaceManager integration ─────────────────────────────────────────────
 //
 // Verifies that Viewport.tsx creates a surfaceManager and drives surfaceManager.sync
