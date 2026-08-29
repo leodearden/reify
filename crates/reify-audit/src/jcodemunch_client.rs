@@ -1657,6 +1657,76 @@ mod tests {
         assert_eq!(symbols[0].line, 99);
     }
 
+    /// Companion to
+    /// [`changed_symbols_from_wire_tolerates_a_string_encoded_line_under_a_typeless_spec`]
+    /// for the FLOAT half of the same second-order defect. Both captured
+    /// fixtures type `confidence` as `float`
+    /// (`t:dead_symbols:id|name|kind|file|line|confidence|signals:str|str|str|str|int|float|str`),
+    /// but under the 3-segment (type-less) spec `parse_one_table_spec` now
+    /// ACCEPTS, `coerce_value` yields `Value::String("0.93")` — and a bare
+    /// `row.get("confidence")?.as_f64()?` inside `filter_map` silently drops
+    /// every PDEAD row rather than erroring loudly.
+    #[test]
+    fn dead_symbols_from_wire_tolerates_a_string_encoded_confidence_under_a_typeless_spec() {
+        let munch = concat!(
+            "#MUNCH/1 tool=get_dead_code_v2 enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:dead_symbols:id|name|kind|file|line|confidence|signals\n",
+            "t,a.rs::widget#function,widget,function,a.rs,99,0.93,['no_callers']\n",
+        );
+        let v = munch_decode(munch).expect("decode type-less dead_symbols munch");
+        let symbols = dead_symbols_from_wire(&v);
+        assert_eq!(
+            symbols.len(),
+            1,
+            "a string-encoded confidence must not cause the row to be dropped; got {symbols:?}"
+        );
+        assert_eq!(symbols[0].id, "a.rs::widget#function");
+        assert_eq!(symbols[0].name, "widget");
+        assert_eq!(symbols[0].kind, "function");
+        assert_eq!(symbols[0].file, "a.rs");
+        assert_eq!(symbols[0].line, 99, "the int column must stay intact too");
+        assert!(
+            (symbols[0].confidence - 0.93).abs() < 1e-9,
+            "confidence should round-trip out of the string form; got {}",
+            symbols[0].confidence
+        );
+        assert_eq!(symbols[0].signals, vec!["no_callers"]);
+    }
+
+    /// The PUNTESTED half of the same defect: `get_untested_symbols`'s
+    /// captured fixture types `confidence` as `float` too
+    /// (`t:symbols:symbol_id|name|kind|file|line|confidence|reason:...|float|str`),
+    /// so a type-less spec drops every untested row the same way.
+    #[test]
+    fn untested_symbols_from_wire_tolerates_a_string_encoded_confidence_under_a_typeless_spec() {
+        let munch = concat!(
+            "#MUNCH/1 tool=get_untested_symbols enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:symbols:symbol_id|name|kind|file|line|confidence|reason\n",
+            "t,a.rs::widget#function,widget,function,a.rs,99,0.93,unreached\n",
+        );
+        let v = munch_decode(munch).expect("decode type-less symbols munch");
+        let symbols = untested_symbols_from_wire(&v);
+        assert_eq!(
+            symbols.len(),
+            1,
+            "a string-encoded confidence must not cause the row to be dropped; got {symbols:?}"
+        );
+        assert_eq!(symbols[0].symbol_id, "a.rs::widget#function");
+        assert_eq!(symbols[0].name, "widget");
+        assert_eq!(symbols[0].file, "a.rs");
+        assert!(
+            !symbols[0].reached,
+            "reason \"unreached\" must derive reached == false"
+        );
+        assert!(
+            (symbols[0].confidence - 0.93).abs() < 1e-9,
+            "confidence should round-trip out of the string form; got {}",
+            symbols[0].confidence
+        );
+    }
+
     // ------------------------------------------------------------------
     // step-11 / step-12: layer_violations_from_wire (both fixtures)
     // ------------------------------------------------------------------
