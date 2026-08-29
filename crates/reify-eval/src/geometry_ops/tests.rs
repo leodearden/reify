@@ -30707,9 +30707,9 @@
                 ("height".into(), literal_length(0.05)),
             ],
         );
-        let err = result
-            .err()
-            .expect("an Undef width must drop the op (task 5743's three-state contract)");
+        let err = result.err().unwrap_or_else(|| {
+            panic!("an Undef width must drop the op (task 5743's three-state contract)")
+        });
         assert!(
             err.contains("unresolved (Undef)") && err.contains("'width'"),
             "an Undef width must use the LENGTH gate's DISTINCT unresolved wording, \
