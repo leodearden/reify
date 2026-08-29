@@ -3857,6 +3857,11 @@ pub(crate) fn compile_entity(
                     0,
                     &geometry_lets,
                     &mut HashSet::new(),
+                    &mut GeometryConstraintSink::new(
+                        entity_name,
+                        &mut constraints,
+                        &mut constraint_index,
+                    ),
                 ) {
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
@@ -3883,6 +3888,11 @@ pub(crate) fn compile_entity(
                         0,
                         &geometry_lets,
                         &mut HashSet::new(),
+                        &mut GeometryConstraintSink::new(
+                            entity_name,
+                            &mut constraints,
+                            &mut constraint_index,
+                        ),
                     )
                 {
                     realizations.push(RealizationDecl {
@@ -3914,9 +3924,17 @@ pub(crate) fn compile_entity(
                     realizations: &mut realizations,
                     realization_index: &mut realization_index,
                     diagnostics,
+                    constraints: &mut constraints,
+                    next_constraint_index: &mut constraint_index,
+                    guarded_groups: &mut guarded_groups,
                 };
-                emit_guarded_geometry_realizations(&g.members, &deps, &mut sink);
-                emit_guarded_geometry_realizations(&g.else_members, &deps, &mut sink);
+                emit_guarded_geometry_realizations(&g.members, &deps, &mut sink, GuardArm::Where);
+                emit_guarded_geometry_realizations(
+                    &g.else_members,
+                    &deps,
+                    &mut sink,
+                    GuardArm::Else,
+                );
             }
             _ => {}
         }
@@ -5303,6 +5321,32 @@ struct GeometryRealizationSink<'a> {
     realizations: &'a mut Vec<RealizationDecl>,
     realization_index: &'a mut u32,
     diagnostics: &'a mut Vec<Diagnostic>,
+    /// Compiler-synthesized constraints emitted by the geometry lowering
+    /// (see `GeometryConstraintSink`), plus the shared per-entity constraint
+    /// counter that names them. Carried here rather than as extra parameters
+    /// for the same reason as the other fields: one bundle of mutable outputs
+    /// with a lifetime independent of the read-only `GeometryRealizationDeps`.
+    constraints: &'a mut Vec<CompiledConstraint>,
+    next_constraint_index: &'a mut u32,
+    /// The entity's guarded groups, so a guarded geometry param's synthesized
+    /// constraint can be filed into its OWN arm rather than onto the flat
+    /// `constraints` list above. Borrowed mutably here and not through
+    /// `GeometryRealizationDeps`: every `guarded_groups` mutation site
+    /// precedes the third-pass loop this sink is built in, and `deps` borrows
+    /// only `scope` / `enum_defs` / `functions` / `known_geometry_lets` /
+    /// `geometry_lets`, so the two borrows are disjoint.
+    guarded_groups: &'a mut Vec<CompiledGuardedGroup>,
+}
+
+/// Which arm of a `where`/`else` group a member was declared in.
+///
+/// Only the POLARITY travels with the recursion — the guard CELL is looked up
+/// per-member via `CompilationScope::resolve_guard`, which already yields the
+/// innermost group a member belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GuardArm {
+    Where,
+    Else,
 }
 
 /// Recursively emit `RealizationDecl`s for Solid-typed geometry params inside
@@ -5315,16 +5359,84 @@ struct GeometryRealizationSink<'a> {
 /// Intentionally does NOT handle Lets — guarded geometry lets do not emit
 /// realizations (that is a separate, unimplemented feature; see the existing
 /// comment in the GuardedGroup arm of the third-pass loop).
+///
+/// # Arm-routing contract
+///
+/// A constraint the geometry lowering synthesizes for a guarded param (see
+/// `GeometryConstraintSink`) is filed into the arm that DECLARES the geometry —
+/// `constraints` for a `where` member, `else_constraints` for an `else` one —
+/// never onto the entity's flat `TopologyTemplate::constraints`. The two arms
+/// are mutually exclusive, so a flat filing would enforce a predicate over
+/// geometry that was never lowered.
+///
+/// `arm` carries only the POLARITY, and it is re-derived at each nesting level.
+/// The guard CELL comes from the per-member `CompilationScope::resolve_guard`
+/// lookup, which already yields the innermost group a member was registered
+/// under, so an inner `else` member reached from an outer `where` lands in the
+/// INNER group's `else_constraints`. When no guard cell resolves, the constraint
+/// falls back to the flat list rather than being dropped.
+///
+/// The consequence at runtime: `collect_active_constraints` (reify-eval's
+/// `engine_constraints.rs`) gates each group's two vecs on the group's
+/// `guard_value_cell`, so a guarded predicate is **never collected while its arm
+/// is inactive** — it does not merely evaluate true, it is not checked at all.
+///
+/// # Two pre-existing properties this deliberately matches
+///
+/// Both are true of EVERY guarded constraint in the language today, not
+/// introduced here, and are filed as follow-up work rather than absorbed
+/// silently:
+///
+/// 1. **A guarded constraint is not solver-bounded.**
+///    `filter_constraints_reading_autos` (reify-eval `engine_eval.rs`) is called
+///    only with `&template.constraints`, and `detect_underdetermined` reads that
+///    same flat vec. So an `auto` `corner_r` constrained ONLY inside a guard is
+///    checked but neither solver-bounded nor counted as determined — which is
+///    also why such a cell may now additionally draw `W_UNDERDETERMINED`.
+/// 2. **A nested else-arm over-approximates.** Its constraint activates whenever
+///    its `guard_value_cell` is false, and that includes "the outer guard was
+///    false, so this group was never reached" — `collect_active_constraints`
+///    keys on the cell alone. A hand-written nested `where`/`else` constraint
+///    over-approximates identically.
 fn emit_guarded_geometry_realizations(
     members: &[reify_ast::MemberDecl],
     deps: &GeometryRealizationDeps<'_>,
     sink: &mut GeometryRealizationSink<'_>,
+    arm: GuardArm,
 ) {
     for m in members {
         match m {
             reify_ast::MemberDecl::Param(param)
                 if deps.known_geometry_lets.contains(param.name.as_str()) =>
             {
+                // Resolve the constraint vec BEFORE lowering: a synthesized
+                // predicate over guarded geometry belongs to the arm that
+                // declares it, not to the entity's unconditional list.
+                //
+                // `sink.diagnostics`, `sink.guarded_groups` and
+                // `sink.next_constraint_index` are three DISJOINT fields of
+                // `*sink`, so the borrow checker accepts all three being
+                // borrowed across the `compile_geometry_call` below;
+                // `sink.realizations.push` happens afterwards, outside it.
+                let target_constraints =
+                    match deps.scope.resolve_guard(&param.name).and_then(|cell| {
+                        let cell = cell.clone();
+                        sink.guarded_groups
+                            .iter_mut()
+                            .find(|g| g.guard_value_cell == cell)
+                    }) {
+                        Some(group) => match arm {
+                            GuardArm::Where => &mut group.constraints,
+                            GuardArm::Else => &mut group.else_constraints,
+                        },
+                        // No guard cell resolved — fall back to the entity's
+                        // flat list rather than dropping the constraint. A
+                        // silent drop is exactly the bug class #5665 exists to
+                        // remove, so an unforeseen member shape must degrade to
+                        // "checked unconditionally", never to "not checked at
+                        // all".
+                        None => &mut *sink.constraints,
+                    };
                 if let Some(default_expr) = &param.default
                     && let Some(ops) = compile_geometry_call(
                         default_expr,
@@ -5335,6 +5447,11 @@ fn emit_guarded_geometry_realizations(
                         0,
                         deps.geometry_lets,
                         &mut HashSet::new(),
+                        &mut GeometryConstraintSink::new(
+                            deps.entity_name,
+                            target_constraints,
+                            sink.next_constraint_index,
+                        ),
                     )
                 {
                     sink.realizations.push(RealizationDecl {
@@ -5349,8 +5466,14 @@ fn emit_guarded_geometry_realizations(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                emit_guarded_geometry_realizations(&g.members, deps, sink);
-                emit_guarded_geometry_realizations(&g.else_members, deps, sink);
+                // Re-derive the polarity at each level rather than inheriting
+                // it: an inner `else` member reached from an outer `where`
+                // belongs to the INNER group's `else_constraints`. Only the
+                // polarity needs threading — the guard CELL comes from the
+                // per-member `resolve_guard` lookup above, which already yields
+                // the innermost group a member was registered under.
+                emit_guarded_geometry_realizations(&g.members, deps, sink, GuardArm::Where);
+                emit_guarded_geometry_realizations(&g.else_members, deps, sink, GuardArm::Else);
             }
             _ => {}
         }
