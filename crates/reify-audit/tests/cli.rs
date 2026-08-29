@@ -3161,6 +3161,68 @@ mod http_loader {
         );
     }
 
+    /// SSE-framed `content[0].text` fallback lock. Unlike its neighbours,
+    /// this test has NO JSON sibling to sit beside: the mock's `tools/call`
+    /// arm has always emitted `{"structuredContent": ..., "content": []}`,
+    /// and `structuredContent` always wins in `call_tool`
+    /// (`fused_memory_client.rs:221-236`), so the `content[0].text`
+    /// fallback at line 230 was unreachable through this mock under
+    /// EITHER framing before this test — this is the first coverage of
+    /// that branch, period.
+    ///
+    /// The mock emits a `tools/call` result with no `structuredContent`
+    /// key and a single `content` entry
+    /// `{"type":"text","text": <task serialized as a JSON STRING>}` — note
+    /// `text` is a JSON *string containing* serialized JSON, not a nested
+    /// object, since that is the shape `from_str(text)` expects and the
+    /// easiest thing to get wrong.
+    #[test]
+    fn pre_done_via_http_loader_sse_content_text_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        insert_completed_event(&runs_db, "9997");
+
+        let mock = spawn_mock_mcp_sse_content_text(|args| {
+            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9997"));
+            Some(serde_json::json!({
+                "id": "9997",
+                "title": "Mock task 9997",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "9997",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "content[0].text fallback must decode identically to structuredContent; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
+    }
+
     /// Pre-done via HTTP loader: a done/merged task with files but no
     /// runs.db corroboration event should emit a P5PhantomDone High finding.
     /// Proves the loader populates `files`/`done_provenance` correctly.
