@@ -2990,6 +2990,60 @@ const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
     },
 ];
 
+/// Every `Severity::Error` entry of `diagnostics`, in order.
+///
+/// The single per-diagnostic severity test, so [`has_error_diagnostic`] and
+/// [`check_gating_error`] cannot drift apart: `check`'s gate is exactly this
+/// filter plus [`allowlist_excuses`], never a restatement of the severity
+/// comparison.
+fn error_diagnostics(
+    diagnostics: &[reify_core::Diagnostic],
+) -> impl Iterator<Item = &reify_core::Diagnostic> {
+    diagnostics.iter().filter(|d| d.severity == Severity::Error)
+}
+
+/// The ONE definition of "this diagnostic set carries an Error".
+///
+/// Shared by [`cmd_eval`], `cmd_build` (as [`build_is_success`]' second
+/// argument) and [`check_gating_error`] — PRD §7's "one shared helper also
+/// used by eval/build".
+///
+/// Deliberately allowlist-BLIND: [`CHECK_ERROR_EXIT_ALLOWLIST`] is a
+/// `check`-only migration ratchet.  `eval` and `build` have gated on
+/// `Severity::Error` since #4458 and must keep gating on the trampoline Error
+/// — locked by `check_error_gate_tests::
+/// has_error_diagnostic_is_pure_severity_and_allowlist_blind`.
+fn has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
+    error_diagnostics(diagnostics).next().is_some()
+}
+
+/// Whether some [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses `d` from moving
+/// `reify check`'s exit code.
+fn allowlist_excuses(d: &reify_core::Diagnostic) -> bool {
+    CHECK_ERROR_EXIT_ALLOWLIST
+        .iter()
+        .any(|entry| match entry.matcher {
+            CheckErrorAllowlistMatcher::Code(code) => d.code == Some(code),
+            CheckErrorAllowlistMatcher::MessageContains(needle) => d.message.contains(needle),
+        })
+}
+
+/// `reify check`'s exit gate (INV-SF-2): the first `Severity::Error`
+/// diagnostic that no [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses, or `None`.
+///
+/// Applied identically on both `cmd_check` paths, over the MERGED diagnostic
+/// set — what the user was just shown — so a realization-only Error is no
+/// longer invisible to the exit code.
+///
+/// Returns the diagnostic rather than a `bool` so a caller can name the entry
+/// that gated, and so `an_excused_error_neither_gates_nor_masks` can assert
+/// that an allowlisted Error never masks a co-resident gating one.
+fn check_gating_error(
+    diagnostics: &[reify_core::Diagnostic],
+) -> Option<&reify_core::Diagnostic> {
+    error_diagnostics(diagnostics).find(|d| !allowlist_excuses(d))
+}
+
 /// Outcome of constraint checking.
 #[derive(Debug, PartialEq)]
 enum ConstraintOutcome {
@@ -5409,11 +5463,12 @@ mod check_error_gate_tests {
              check_fea_violated_constraint_is_not_gated`, which must stay exit 0"
         );
 
-        let gating = check_gating_error(&[
+        let mixed = [
             Diagnostic::error(TRAMPOLINE),
             Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit"),
-        ])
-        .expect("a co-resident non-allowlisted Error must still gate");
+        ];
+        let gating = check_gating_error(&mixed)
+            .expect("a co-resident non-allowlisted Error must still gate");
         assert!(
             gating.message.contains("E_DFM_OVERHANG"),
             "the gate must return the diagnostic that actually gates, not the \
