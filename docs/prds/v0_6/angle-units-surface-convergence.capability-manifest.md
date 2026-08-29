@@ -418,7 +418,7 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 | Capability | Evidence | Verdict |
 |---|---|---|
 | the chunks exist and are stale | `grep:crates/reify-mcp/src/tools/chunks/units.md:36` *"35 standard named dimensions"* (real 51 → 52 after η); `:50` "Angle as Base Dimension" | PASS |
-| the exemplar corpus + its bidirectional gate | `examples/best_practices/` (7 files incl. `INDEX.md`, `bolt_circle.ri`); `INDEX.md:43` bolt_circle row; gate `crates/reify-compiler/tests/examples_smoke.rs` | PASS |
+| the exemplar corpus + its bidirectional gate | `examples/best_practices/` (8 files incl. `INDEX.md`, `bolt_circle.ri`); `INDEX.md:53` bolt_circle row; gate `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` | PASS |
 | gap (b) target + its runtime coupling | `grep:examples/unit_expressions.ri:10,19`; `crates/reify-eval/tests/unit_expressions_e2e.rs:20`; `crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:274-280` | PASS |
 | cheatsheet anchors | `grep:.claude/skills/reify-design/SKILL.md:53` (**Quantities:**), `:135` (**Always units**) | PASS |
 | ρ asserts findability, not a build | scripted grep-and-read over the chunks + `INDEX.md`; no new capability asserted | PASS |

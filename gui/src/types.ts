@@ -26,6 +26,29 @@ export interface MeshAppearance {
 }
 
 /** Tessellated mesh data for 3D rendering (typed arrays for WebGL). */
+/**
+ * Per-channel unit / signedness tag for one `MeshData.scalar_channels` entry.
+ *
+ * Twin of `ScalarChannelTag` in `gui/src-tauri/src/types.rs` (task #6185).
+ * Unit and signedness are orthogonal facts, not one derived from the other: a
+ * `rad` channel need not be signed (an unwrapped magnitude is not), and a `Pa`
+ * channel can be (principal / normal stress).
+ *
+ * ## Load-bearing contract for `signed: true` channels
+ *
+ * A signed channel must NOT use the Rust-side `SCALAR_CHANNEL_OOB_SENTINEL`
+ * (`-1.0`) to mark out-of-bounds vertices: `-1.0` is a legal value there, and
+ * NaN is barred from the wire by the Rust finite-value guard, so no
+ * discriminator exists that a consumer could use. Its producer supplies an
+ * in-band finite value at OOB vertices, or omits the channel.
+ */
+export interface ScalarChannelTag {
+  /** Display-ready SI unit symbol, e.g. `'Pa'`, `'rad'`. */
+  unit: string;
+  /** Whether this channel's values may legitimately be negative. */
+  signed: boolean;
+}
+
 export interface MeshData {
   entity_path: string;
   /**
@@ -57,6 +80,15 @@ export interface MeshData {
    * from the wire when the map is empty).
    */
   scalar_channels?: Record<string, Float32Array>;
+  /**
+   * Per-channel unit/dimension tags for `scalar_channels` entries.
+   * Mirrors `scalar_channel_tags: HashMap<String, ScalarChannelTag>` in the
+   * Rust `MeshData` struct (task #6185). Sparse: a channel with no entry is
+   * untagged, and consumers treat it exactly as before this map existed — the
+   * legend shows no unit and the colormap range treats it as unsigned. Absent
+   * when the Rust side serializes an empty map.
+   */
+  scalar_channel_tags?: Record<string, ScalarChannelTag>;
   /**
    * Packed displaced vertex positions produced by the FEA deformation field.
    * Same layout as `vertices` (`[x0, y0, z0, x1, y1, z1, ...]`). Absent for
@@ -122,6 +154,13 @@ export interface RawMeshData {
    * Absent when the Rust backend serializes an empty map (`skip_serializing_if`).
    */
   scalar_channels?: Record<string, number[]>;
+  /**
+   * Per-channel unit/dimension tags from the IPC wire (task #6185).
+   * Plain JSON (strings + booleans) — no typed-array conversion needed, so
+   * `convertRawMesh` passes it straight through like `appearance`.
+   * Absent when the Rust backend serializes an empty map.
+   */
+  scalar_channel_tags?: Record<string, ScalarChannelTag>;
   /**
    * Packed displaced vertex positions as raw number array from the IPC wire.
    * Absent when `displaced_positions` is `None` on the Rust side.
@@ -191,6 +230,9 @@ export function convertRawMesh(raw: RawMeshData): MeshData {
   }
   if (raw.element_index !== undefined) {
     result.element_index = new Uint32Array(raw.element_index);
+  }
+  if (raw.scalar_channel_tags !== undefined) {
+    result.scalar_channel_tags = raw.scalar_channel_tags;
   }
   if (raw.appearance !== undefined) {
     result.appearance = raw.appearance;

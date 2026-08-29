@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
+use reify_compiler::{CompiledModule, CompiledTypeAlias, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_ast::{Declaration, ParsedModule};
@@ -207,7 +207,8 @@ impl AnalysisContext {
         None
     }
 
-    /// Look up the doc comment for a top-level entity (structure, fn, trait, or enum) by name.
+    /// Look up the doc comment for a top-level entity (structure, fn, trait, enum, or
+    /// type alias) by name.
     ///
     /// Returns `None` if the entity has no doc comment or doesn't exist.
     pub fn find_entity_doc(&self, name: &str) -> Option<&str> {
@@ -224,10 +225,26 @@ impl AnalysisContext {
                 }
                 reify_ast::Declaration::Trait(t) if t.name == name => return t.doc.as_deref(),
                 reify_ast::Declaration::Enum(e) if e.name == name => return e.doc.as_deref(),
+                reify_ast::Declaration::TypeAlias(t) if t.name == name => return t.doc.as_deref(),
                 _ => {}
             }
         }
         None
+    }
+
+    /// Look up a user-declared type alias by name in the compiled module.
+    ///
+    /// Scoped to the OPEN DOCUMENT's own declarations: `TypeAliasRegistry::into_compiled`
+    /// (reify-compiler type_resolution.rs) excludes prelude-seeded aliases, so stdlib
+    /// aliases never appear here and no LSP surface built on this can leak them.
+    ///
+    /// `resolved_type` being `None` on the returned entry is expected and
+    /// non-exceptional, not an error: the alias DFS runs before structures and traits
+    /// are compiled and passes empty structure/trait name sets, so an entity-named
+    /// alias (`type F = Fit`, see #6259) and every parameterized alias resolve to
+    /// `None` while still compiling clean. Task #6341.
+    pub fn find_type_alias(&self, name: &str) -> Option<&CompiledTypeAlias> {
+        self.compiled.type_aliases.iter().find(|a| a.name == name)
     }
 
     /// Return value cell members for a specific structure/occurrence: (name, kind, type).
@@ -560,9 +577,23 @@ pub fn compute_document_symbols_from_parsed(
                     None,
                 ));
             }
+            Declaration::TypeAlias(t) => {
+                // SymbolKind has no TypeAlias member; TYPE_PARAMETER is the
+                // conventional LSP mapping for a type alias (rust-analyzer maps
+                // its own SymbolKind::TypeAlias the same way). Task #6341.
+                symbols.push(make_symbol(
+                    &t.name,
+                    SymbolKind::TYPE_PARAMETER,
+                    span_to_range(source, t.span),
+                    name_selection_range(source, t.span, &t.name),
+                    None,
+                ));
+            }
             // All other top-level declarations are not navigable symbols:
-            // Import, Unit, TypeAlias, Constraint (ConstraintDef), Field,
-            // Purpose, and Module have no stable jump target and are skipped.
+            // Import, Unit, Constraint (ConstraintDef), Field, Purpose, and
+            // Module have no stable jump target and are skipped. Type aliases
+            // used to be listed here; since #6341 they emit a TYPE_PARAMETER
+            // symbol in the arm just above.
             _ => {}
         }
     }
@@ -1331,6 +1362,66 @@ mod tests {
             "/// A joint process.\noccurrence def Joint {\n    param diameter: Length = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         assert_eq!(ctx.find_entity_doc("Joint"), Some("A joint process."));
+    }
+
+    /// Task #6341: `doc` lives only on the parsed `reify_ast::TypeAliasDecl` —
+    /// `CompiledTypeAlias` has no doc field — so `find_entity_doc` is the only
+    /// path by which an alias doc can reach hover.
+    #[test]
+    fn find_entity_doc_returns_doc_for_type_alias() {
+        let source = "/// Speed of travel.\ntype Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Speed"), Some("Speed of travel."));
+    }
+
+    #[test]
+    fn find_entity_doc_returns_none_for_undocumented_type_alias() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Speed"), None);
+    }
+
+    // --- task #6341: compiled type-alias lookup ---
+
+    #[test]
+    fn find_type_alias_returns_compiled_entry() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let alias = ctx
+            .find_type_alias("Speed")
+            .expect("Speed must be present in compiled.type_aliases");
+        assert_eq!(alias.name, "Speed");
+        assert_eq!(
+            alias.resolved_type.as_ref().map(|t| t.to_string()),
+            Some("Scalar[m\u{b7}s^-1]".to_string())
+        );
+    }
+
+    #[test]
+    fn find_type_alias_returns_none_for_unknown_name() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(ctx.find_type_alias("NoSuchAlias").is_none());
+    }
+
+    /// No-leakage contract: `TypeAliasRegistry::into_compiled` filters prelude-seeded
+    /// names, so a document that declares no aliases has an EMPTY `type_aliases` —
+    /// even though `Rate` is a real stdlib prelude alias. Every LSP surface built on
+    /// this accessor is therefore scoped to the open document. Task #6341.
+    #[test]
+    fn find_type_alias_returns_none_for_stdlib_alias() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(
+            ctx.compiled.type_aliases.is_empty(),
+            "a document declaring no aliases must have no compiled aliases, got: {:?}",
+            ctx.compiled
+                .type_aliases
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(ctx.find_type_alias("Rate").is_none());
     }
 
     #[test]
@@ -2404,6 +2495,72 @@ mod tests {
             "fn is a leaf symbol (params are not surfaced as children)"
         );
         assert_selection_on_name(source, area);
+    }
+
+    // --- task #6341: type aliases as document symbols ---
+
+    /// A top-level `type` alias is a navigable symbol and a LEAF (no children),
+    /// per the `children_or_none` convention.
+    #[test]
+    fn document_symbols_include_type_alias() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "type Speed = Length / Time\n";
+        let uri = test_uri();
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single(module_name_from_uri(&uri)),
+        );
+        let symbols = compute_document_symbols_from_parsed(&parsed, source);
+        assert_eq!(
+            symbols.len(),
+            1,
+            "one type alias \u{2192} one top-level symbol, got: {:?}",
+            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+        );
+        let speed = &symbols[0];
+        assert_eq!(speed.name, "Speed");
+        assert_eq!(speed.kind, SymbolKind::TYPE_PARAMETER);
+        assert!(
+            speed.children.is_none(),
+            "a type alias is a leaf symbol, got: {:?}",
+            speed.children
+        );
+        // selection_range covers just the name token, not the whole declaration.
+        assert_eq!(speed.selection_range.start.line, 0);
+        assert_eq!(
+            speed.selection_range.start.character,
+            source.find("Speed").unwrap() as u32
+        );
+        assert_selection_on_name(source, speed);
+    }
+
+    #[test]
+    fn document_symbols_include_type_alias_alongside_structure() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "type Speed = Length / Time\nstructure S {\n    param v: Speed = 1.0\n}";
+        let uri = test_uri();
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single(module_name_from_uri(&uri)),
+        );
+        let symbols = compute_document_symbols_from_parsed(&parsed, source);
+        assert_eq!(
+            symbols.len(),
+            2,
+            "alias + structure \u{2192} two top-level symbols, got: {:?}",
+            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            symbols
+                .iter()
+                .map(|s| (s.name.as_str(), s.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Speed", SymbolKind::TYPE_PARAMETER),
+                ("S", SymbolKind::STRUCT)
+            ],
+            "symbols must be in source order"
+        );
     }
 
     #[test]

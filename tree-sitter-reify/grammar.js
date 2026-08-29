@@ -845,7 +845,8 @@ module.exports = grammar({
         // `0..4` domain needs zero new grammar.
         optional(seq('[', field('binder', $.identifier), 'in', field('domain', $._expression), ']')),
         '=',
-        field('structure_name', $.identifier),
+        // `$.namespaced_name` admits `sub p = pp.Pulley()` (task 5495 μ).
+        field('structure_name', choice($.identifier, $.namespaced_name)),
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         '(',
         optional($.named_argument_list),
@@ -872,7 +873,8 @@ module.exports = grammar({
         ':',
         'List',
         '<',
-        field('structure_name', $.identifier),
+        // `$.namespaced_name` admits `sub i : List<pp.Pulley>` (task 5495 μ).
+        field('structure_name', choice($.identifier, $.namespaced_name)),
         '>',
         optional(field('guard', $.where_clause)),
         optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
@@ -919,7 +921,13 @@ module.exports = grammar({
         'sub',
         field('name', $.identifier),
         ':',
-        field('structure_name', $.identifier),
+        // `$.namespaced_name` admits `sub h : pp.Pulley` (task 5495 μ).  The
+        // dotted form cannot collide with the `List<…>` collection arm above
+        // (which requires `<` immediately after `List`), so the lexer rule-#1 /
+        // rule-#2 discipline documented above is untouched — pinned by
+        // `list_vs_listicle_lexer_discipline_unchanged` in
+        // tree-sitter-reify/tests/qualified_ref_grammar_tests.rs.
+        field('structure_name', choice($.identifier, $.namespaced_name)),
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         optional(field('guard', $.where_clause)),
         optional(field('body', choice($.specialization_body, $.keyed_member_block))),
@@ -1096,10 +1104,17 @@ module.exports = grammar({
     // unambiguous from '<' and any identifier suffix, so tree-sitter does NOT
     // request a new conflict entry for it.  (Confirmed: `tree-sitter generate`
     // runs clean with no new unresolved-conflict errors after adding this rule.)
+    // The `$.namespaced_name` arm (task 5495 μ) adds the dotted qualified-ref
+    // form `pp.Pulley`.  Placing it here — rather than at each of the 23
+    // `$.type_expr` use sites — covers every type position plus `type_arg_list`
+    // (`List<pp.Pulley>`) with a single arm.  It is unambiguous against the
+    // three arms above: `.` is not `<` (parameterized), not `::` (qualified),
+    // and not `(` (function).
     type_expr: $ => choice(
       $.function_type,
       $.parameterized_type,
       $.qualified_type,
+      $.namespaced_name,
       $.identifier,
     ),
 
@@ -1147,6 +1162,30 @@ module.exports = grammar({
           ')',
         ),
       ),
+    ),
+
+    // Namespaced (qualified) reference through an import binding: `pp.Pulley`,
+    // where `pp` comes from `import parts as pp`.  PRD
+    // `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q2 / D-7 (task 5495 μ).
+    //
+    // ONE shared rule serves BOTH type position (via the `$.type_expr` arm
+    // above) and `sub_declaration`'s `structure_name` (all three arms), so the
+    // two positions cannot drift.  Expression position deliberately does NOT
+    // get a node of this kind: bare `pp.Pulley` is indistinguishable from
+    // `self.width` at parse time (the `identifier` rule is a single
+    // case-agnostic regex), so it keeps parsing as `member_access` and the
+    // resolution phase (task ν) performs the fixup — the same deferral the
+    // `Foo.Bar` enum-access form already relies on (resolution-unification D-9).
+    // The call form is handled separately by `namespaced_call`.
+    //
+    // Exactly two segments, and NO `optional(type_args)`: qualified GENERIC
+    // types (`pp.Box<T>`) are out of scope for μ.  Adding a `type_args` option
+    // here is the one formulation that produces an unresolved LR conflict
+    // (`namespaced_name … • '<'`) — verified during planning; do not add it.
+    namespaced_name: $ => seq(
+      field('binding', $.identifier),
+      '.',
+      field('name', $.identifier),
     ),
 
     // A type with type arguments: `Box<T>`, `Map<String, Int>`
@@ -1235,6 +1274,9 @@ module.exports = grammar({
     //   9: postfix index access ([]), qualified access (::)
     //  10: postfix ad-hoc selector (@)
     //  11: postfix member access (.), function call
+    //  12: namespaced call (`pp.Pulley()`) — one level above member access so
+    //      the `(` SHIFTS into namespaced_call rather than reducing the
+    //      `pp.Pulley` prefix to a bare member_access (task 5495 μ)
 
     _expression: $ => choice(
       $.range_expression,
@@ -1247,6 +1289,7 @@ module.exports = grammar({
       $.ad_hoc_selector,
       $.index_access,
       $.trait_method_call,
+      $.namespaced_call,
       $.qualified_access,
       $.instance_qualified_access,
       $._primary_expression,
@@ -1571,6 +1614,47 @@ module.exports = grammar({
 
     function_call: $ => prec(11, seq(
       field('name', $.identifier),
+      callTail($),
+    )),
+
+    // Call through an import binding: `pp.Pulley()`, `pp.compute(1)`
+    // (task 5495 μ; PRD docs/prds/v0_6/stdlib-namespace.md §3.3 NS-Q2 / D-7).
+    //
+    // `prec(12)` sits exactly one level above `member_access`'s `prec.left(11)`
+    // so that on `pp.Pulley` followed by `(` the parser SHIFTS the `(` into
+    // this rule instead of reducing to a bare `member_access` — see the
+    // precedence table above, level 12.
+    //
+    // The callee is a full `$.member_access`, mirroring the shape the
+    // `trait_method_call` rule uses for its `qualified_access` callee.  Two
+    // reasons: (1) restricting it to an inline `identifier '.' identifier`
+    // collides with `member_access` as a reduce-reduce ambiguity, whereas
+    // this generates conflict-free; (2) the callee node is then IDENTICAL to
+    // the call-less form, so ν's resolution-phase fixup sees one uniform base.
+    //
+    // Consequence: a 3+-segment callee (`a.b.c()`) is syntactically accepted
+    // here.  Bare full-path qualification is out of scope (D-7 / PRD §9) and is
+    // rejected in LOWERING with a specific diagnostic — a far better message
+    // than a bare ERROR node, and the user-facing outcome is unchanged in kind
+    // (`a.b.c()` is an error before and after μ).
+    //
+    // `callTail($)` is reused verbatim so the argument syntax cannot drift from
+    // `function_call`'s.
+    //
+    // ITEM-BOUNDARY CONSEQUENCE, measured and pinned rather than left latent.
+    // In a body whose repeat has NO separator — `constraint_def_predicate` and
+    // `relate_block`'s `relation_member` — greedy shift joins an item ending in
+    // `.name` with a following item opening `(`: `constraint def C { a.b ⏎ (x)
+    // > 0 }` is ONE predicate, not two. The hazard CLASS predates μ, because
+    // `function_call`'s prec 11 already joins a BARE trailing `ident` with a
+    // following `(` the same way — so μ widens an accepted trade rather than
+    // inventing one — and it stays latent: no committed `.ri` under examples/
+    // or tests/prd-gate/fixtures/ has a line ending in `.ident` directly above
+    // a line opening with `(`. All three joined readings are pinned in
+    // test/corpus/namespaced_ref.txt ("item boundary") and mirrored on the
+    // lezer surface in gui/src/__tests__/reifyGrammarQualifiedRef.test.ts.
+    namespaced_call: $ => prec(12, seq(
+      field('callee', $.member_access),
       callTail($),
     )),
 

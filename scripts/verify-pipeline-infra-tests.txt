@@ -313,6 +313,27 @@ scripts/check-manifold-deps.sh          tests/infra/test_occt_deps_preflight.sh
 crates/reify-build-utils/src/lib.rs     tests/infra/test_occt_deps_preflight.sh
 scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
 
+# Task 5888: the host-global systemd unit ExecStart pinning guard. The suite's
+# Part B EXTRACTS install_build_services() out of scripts/setup-dev.sh and runs
+# it in a sandboxed HOME, and its B5b/B5c cases assert statically ON THAT FILE
+# (no uncommented ExecStart=${repo_dir}/scripts/jobserver-* row; the five
+# per-worktree call sites still $(dirname "${BASH_SOURCE[0]}")-relative). Both
+# the artifact under test and the file the static pins read are setup-dev.sh,
+# so without this row a task-scope verify that edits ONLY setup-dev.sh — the
+# exact diff that reverts the pin, or over-pins a per-worktree call site —
+# selects zero infra poles: scripts/setup-dev.sh is NOT in
+# scripts/verify-pipeline-paths.txt (`verify-pipeline-guard.sh
+# requires-full-gate scripts/setup-dev.sh` -> exit 1), so such a diff does not
+# force the full --scope all gate either. Multiple rows per artifact are the
+# established pattern — setup-dev.sh already carries the OCCT row above.
+# The suite is `pool`-classified and hermetic (mktemp git fixtures, a no-op
+# systemctl shim, sandboxed HOME; ~2s), so it is safe to run inline in the
+# selective-infra block, which has no serialization machinery.
+# scripts/lib_main_checkout.sh is the resolver the generator sources; a
+# resolver-only edit is the other half of the same contract (Part A).
+scripts/setup-dev.sh                    tests/infra/test_host_global_unit_pinning.sh
+scripts/lib_main_checkout.sh            tests/infra/test_host_global_unit_pinning.sh
+
 # Task 6758 (spec-conformance leaf α): the sc-anchor substrate for
 # docs/reify-language-spec.md — the opaque, randomly-minted paragraph-level
 # cite targets the conformance suite quantifies over, their tombstone sidecar,

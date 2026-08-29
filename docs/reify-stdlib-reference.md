@@ -329,21 +329,56 @@ dimensionless rotation and `Length` translation. The same `Map` shape is
 returned by `joint_jacobian` (§13.1) so that solver code can compose twists
 and Jacobian columns uniformly.
 
-**Linear-component dimension convention.** `transform_log` preserves the
-input `Transform`'s translation dimension on `linear` verbatim, and
-`transform_exp` accepts `linear` with the same polymorphic policy:
+**Linear-component dimension convention.** `transform_log` requires the input
+`Transform`'s translation to be `Vector3<Length>` and emits `linear` as
+`Vector3<Length>`; `transform_exp` requires `linear` to be `Vector3<Length>`:
 
-| `linear` dimension | accepted? | notes                                   |
-|--------------------|-----------|-----------------------------------------|
-| `Length`           | ✓         | canonical — matches the `Twist` type    |
-| `Dimensionless`    | ✓         | unit-less twists / numerical work       |
-| `Angle`, `Mass`, … | ✗         | rejected as `Undef`                     |
+| `linear` dimension       | accepted? | notes                                                                            |
+|--------------------------|-----------|----------------------------------------------------------------------------------|
+| `Length`                 | ✓         | canonical — matches the `Twist` type                                             |
+| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Error` naming the offending dimension      |
+| `Angle`, `Mass`, …       | ✗         | same rejection + `Error`                                                          |
 
-The pair `transform_log` ↔ `transform_exp` round-trips exactly under both
-policies, so a `Transform` whose translation is `Dimensionless` will round-trip
-through a `Dimensionless` linear, and likewise for `Length`. `joint_jacobian`
-always emits `Dimensionless` on both `angular` and `linear` because joint
-parameters are unit-less in the joint's local frame.
+Rejection is uniform: every non-`Length` dimension takes the same branch.
+
+There is now ONE policy — `Length` — and both ends of the seam gate identically,
+so `transform_log` ↔ `transform_exp` round-trips exactly on `Length` and both
+ends reject in lockstep otherwise. Identity and pure-rotation transforms are
+unaffected: `transform3_identity` builds `Length` zeros.
+
+> **RULING #6126** (Leo, 2026-08-07): a twist's `linear` half is
+> `Vector3<Length>`, and mirrored, a `Transform`'s translation crossing this seam
+> carries `Length` and only `Length`. Grounds: decision D11 of
+> `docs/prds/v0_6/units-length-gate-completion.md` — after the `Real` →
+> `Scalar{Dimensionless}` unification, "also admits `Dimensionless`" means "also
+> admits bare numbers". This closes the last `Length | Dimensionless` disjunction
+> **on this seam**, which is the whole of the ruling's scope.
+>
+> **Severity amendment** (Leo, 2026-08-19, via esc-6080-6): the rejection is a
+> `Severity::Error`, so `reify eval` exits 1. A wrong dimension is a
+> design-correctness fault rather than a degradation to tolerate, and the sibling
+> angular half of the same builtin family (#6080) reports its equivalent fault at
+> the same severity — so one fault class does not report two ways across one
+> seam. The diagnostic stays code-less; minting
+> `DiagnosticCode::ArgDimensionMismatch` is owned by
+> `docs/prds/v0_6/dimension-checked-readers.md` §6.
+
+**Scope: this seam only.** The gate above is *not* evidence that the transform
+family is uniformly `Length`-only. `transform3`'s signature above declares
+`translation: Vector3<Length>`, but the evaluator applies no dimension check to
+it — only a 3-component `Vector` shape check — and `transform_compose` /
+`transform_inverse` propagate whatever dimension they are handed. So
+`transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still constructs, composes,
+and inverts without complaint; the rejection surfaces only downstream at
+`transform_log`. That asymmetry is deliberate and owned elsewhere — task #6089
+rules `Transform` translation `Length` and stamps the constructor arms, and
+#5747 (R12/R8) narrows the affine and pose-decode readers.
+
+By CONTRAST, `joint_jacobian` (§13.1) shares the `Map { angular, linear }` shape
+but its columns are ∂pose/∂q, **not** twists — a revolute column's linear part is
+m/rad — so they are not governed by this ruling and keep emitting
+`Dimensionless` on both halves because joint parameters are unit-less in the
+joint's local frame (#6102 gives them their own structure).
 
 ### 3.2 `std.geometry.primitive`
 

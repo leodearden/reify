@@ -3259,6 +3259,7 @@ impl EngineSession {
                             indices: surface.mesh.indices,
                             normals: surface.mesh.normals,
                             scalar_channels: std::collections::HashMap::new(),
+                            scalar_channel_tags: Default::default(),
                             displaced_positions: None,
                             element_kind: None,
                             region_tags: None,
@@ -3310,6 +3311,7 @@ impl EngineSession {
                         indices: m.indices.clone(),
                         normals: m.normals.clone(),
                         scalar_channels: std::collections::HashMap::new(),
+                        scalar_channel_tags: Default::default(),
                         displaced_positions: None,
                         element_kind: None,
                         region_tags: None,
@@ -7822,6 +7824,15 @@ pub(crate) fn extract_fea_convergence(
 /// - `mesh.scalar_channels["vonMises"]` (length = vertex_count): von-Mises stress
 ///   sampled at each vertex; OOB/out-of-solid vertices receive
 ///   `SCALAR_CHANNEL_OOB_SENTINEL`.
+///
+/// Both `"vonMises"` and (when populated) `"errorIndicator"` are stamped into
+/// `mesh.scalar_channel_tags` as
+/// [`ScalarChannelTag::pressure()`](crate::types::ScalarChannelTag::pressure) —
+/// unit [`PRESSURE_CHANNEL_UNIT`](crate::types::PRESSURE_CHANNEL_UNIT), unsigned.
+/// That is the declared GUI-boundary unit for these channels (the runtime
+/// `SampledField` carries no dimension, so it cannot be derived); `unsigned` is
+/// honest because both samplers return a norm — √(a quadratic form) and a field
+/// norm respectively — or exactly `SCALAR_CHANNEL_OOB_SENTINEL`.
 /// - `mesh.displaced_positions` (length = `vertices.len()`): vertex positions
 ///   plus warp = 1 displacement; OOB/out-of-solid vertices keep their original
 ///   position.
@@ -7886,9 +7897,20 @@ pub(crate) fn apply_fea_channels(
         }
 
         mesh.scalar_channels.insert("vonMises".to_string(), vm_vec);
+        mesh.scalar_channel_tags.insert(
+            "vonMises".to_string(),
+            crate::types::ScalarChannelTag::pressure(),
+        );
         mesh.displaced_positions = Some(disp_vec);
+        // The tag is stamped INSIDE this conditional, not beside it: a tag for a
+        // channel that was never inserted is an orphan and hard-fails
+        // MeshData::serialize.
         if error_indicator_sf.is_some() {
             mesh.scalar_channels.insert("errorIndicator".to_string(), ei_vec);
+            mesh.scalar_channel_tags.insert(
+                "errorIndicator".to_string(),
+                crate::types::ScalarChannelTag::pressure(),
+            );
         }
     }
 }
@@ -7938,7 +7960,11 @@ fn identity_element_index(face_count: usize) -> Vec<u32> {
 /// - `element_kind` = `view.element_kind` (all `1` = shell triangle),
 ///   `region_tags` = `view.region_tags` (`SegmentationResult` labels).
 /// - `scalar_channels` gains `vonMises_top` / `vonMises_mid` /
-///   `vonMises_bottom` (recovered per-vertex; `len == vertex_count`).
+///   `vonMises_bottom` (recovered per-vertex; `len == vertex_count`), each
+///   stamped into `scalar_channel_tags` as
+///   [`ScalarChannelTag::pressure()`](crate::types::ScalarChannelTag::pressure)
+///   — unit [`PRESSURE_CHANNEL_UNIT`](crate::types::PRESSURE_CHANNEL_UNIT),
+///   unsigned, since recovered von Mises is a norm.
 /// - `vector_channels` gains `shell_normal_per_face` — the
 ///   [`PER_FACE_CHANNEL_SUFFIX`](crate::types::PER_FACE_CHANNEL_SUFFIX) makes
 ///   the serialize-time length check use `3 * face_count`.
@@ -7975,6 +8001,10 @@ pub(crate) fn apply_shell_channels(
             .insert("vonMises_mid".to_string(), view.von_mises_mid.clone());
         mesh.scalar_channels
             .insert("vonMises_bottom".to_string(), view.von_mises_bottom.clone());
+        for key in ["vonMises_top", "vonMises_mid", "vonMises_bottom"] {
+            mesh.scalar_channel_tags
+                .insert(key.to_string(), crate::types::ScalarChannelTag::pressure());
+        }
 
         mesh.vector_channels.insert(
             format!("shell_normal{}", crate::types::PER_FACE_CHANNEL_SUFFIX),

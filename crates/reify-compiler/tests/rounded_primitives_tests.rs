@@ -1001,3 +1001,565 @@ fn extrude_accepts_rounded_rect_rejects_rounded_box() {
         compiled_box.diagnostics
     );
 }
+
+// ─── param-driven corner_r: runtime constraint synthesis (task #5665) ─────────
+
+/// Compile `source`, assert it produced no error diagnostics, and return its
+/// `name`d template.
+///
+/// The by-name lookup is `reify_test_support::compile_template`'s rather than a
+/// local re-implementation; this only adds the clean-compile assertion (the same
+/// one [`compile_no_errors`] makes) so a param-driven call's constraints can be
+/// asserted without also asserting the module compiled. `name` is a parameter,
+/// not a hardcoded `"S"`, so the helper carries over to any entity.
+fn compile_template_no_errors(source: &str, name: &str) -> reify_compiler::TopologyTemplate {
+    let (template, diagnostics) = reify_test_support::compile_template(source, name);
+    let errors = reify_test_support::collect_errors(&diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {errors:#?}"
+    );
+    template
+}
+
+/// A param-driven `corner_r` must not be silently waved through.
+///
+/// `validate_rounded_corner_constraint`'s static check can only fire when
+/// width/depth/corner_r all fold to constants. When one of them is a param it
+/// used to `return true` and record NOTHING, so `rounded_rect(40mm, 30mm,
+/// corner_r)` with an oversized `corner_r` reached OCCT and failed there with
+/// an opaque kernel error. The lowering must instead synthesize a constraint
+/// on the enclosing template, which `Engine::check` evaluates (and the solver
+/// honours) at runtime.
+///
+/// RED before the emission branch lands: `template.constraints` is empty for
+/// the param-driven source.
+#[test]
+fn rounded_rect_param_driven_corner_r_emits_runtime_constraint() {
+    let source = r#"structure def S {
+    param corner_r: Length = 5mm
+    let body = rounded_rect(40mm, 30mm, corner_r)
+}"#;
+    // The param-driven path must still compile clean — the point of the
+    // runtime constraint is to CHECK the radius, not to false-flag it.
+    let template = compile_template_no_errors(source, "S");
+
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "a param-driven corner_r must synthesize exactly one runtime constraint, got: {:#?}",
+        template.constraints
+    );
+    let constraint = &template.constraints[0];
+    assert_eq!(
+        constraint.expr.result_type,
+        Type::Bool,
+        "a synthesized constraint predicate must be Bool-typed, got: {:?}",
+        constraint.expr.result_type
+    );
+    // The label is the only text the designer sees on a violation:
+    // SimpleConstraintChecker emits no span, and Engine::labeled_diagnostics
+    // substitutes the label for the constraint id in the message.
+    let label = constraint
+        .label
+        .as_deref()
+        .expect("a synthesized constraint must carry a label");
+    assert!(
+        !label.is_empty(),
+        "a synthesized constraint's label must be non-empty"
+    );
+
+    // Negative half: the all-literal VALID call is decided statically, so it
+    // must NOT gain a redundant runtime constraint. The static check at
+    // geometry.rs is strictly stronger there (it aborts the lowering outright),
+    // so emitting one would be pure noise in `reify check` and an extra term in
+    // the solver's objective.
+    let source_const = r#"structure def S {
+    let body = rounded_rect(40mm, 30mm, 5mm)
+}"#;
+    let template_const = compile_template_no_errors(source_const, "S");
+    assert!(
+        template_const.constraints.is_empty(),
+        "an all-constant rounded_rect call must not synthesize a runtime constraint, got: {:#?}",
+        template_const.constraints
+    );
+}
+
+/// A `Type::Error` `corner_r` must synthesize NOTHING.
+///
+/// Compilation continues past a recorded type error, so the emission branch is
+/// genuinely reachable with the poison type: `rounded_rect(40mm, 30mm,
+/// nonexistent)` compiles the argument to `Type::Error` and reaches the branch
+/// with "unresolved name" already on the diagnostic list. A predicate built over
+/// poison evaluates to `Undef`, i.e. an Indeterminate-constraint warning stacked
+/// on top of the genuine error — noise at exactly the moment `reify check`'s
+/// output is least readable, saying nothing the root-cause error does not.
+///
+/// RED before the `is_error()` short-circuit lands: one constraint, not zero.
+#[test]
+fn type_error_corner_r_synthesizes_no_runtime_constraint() {
+    let source = r#"structure def S {
+    let body = rounded_rect(40mm, 30mm, nonexistent)
+}"#;
+    let (template, diagnostics) = reify_test_support::compile_template(source, "S");
+
+    // Precondition — the half that makes the skip sound: the designer is
+    // already being told what is wrong. If this ever stops erroring, dropping
+    // the constraint would be dropping the ONLY signal and the guard would have
+    // to go with it.
+    assert!(
+        !reify_test_support::collect_errors(&diagnostics).is_empty(),
+        "an unresolved name must be an error in its own right — the skip below \
+         is only sound because this fires; got: {diagnostics:#?}"
+    );
+
+    assert!(
+        template.constraints.is_empty(),
+        "a Type::Error corner_r must not also synthesize a runtime constraint, got: {:#?}",
+        template.constraints
+    );
+}
+
+/// NEGATIVE HALF — that skip must stay keyed on `Type::Error`, NOT on "not a
+/// Scalar".
+///
+/// A `Bool` radius reaches the same branch with its own type intact, and —
+/// measured, not assumed — the module compiles CLEAN: no error and no warning
+/// names it anywhere. So the synthesized constraint is the designer's only
+/// signal identifying the constructor and the argument before the geometry fails
+/// opaquely inside the kernel. Widening the guard to every non-Scalar type would
+/// delete that signal and restore exactly the silent skip #5665 removes.
+///
+/// (What the constraint then DECIDES — `Indeterminate`, the predicate having
+/// evaluated to `Undef` — is pinned runtime-side in
+/// `reify-eval/tests/harness_geometry/rounded_corner_runtime_constraint.rs`.)
+#[test]
+fn wrongly_typed_but_error_free_corner_r_keeps_its_constraint() {
+    let source = r#"structure def S {
+    param corner_r: Bool = true
+    let body = rounded_rect(40mm, 30mm, corner_r)
+}"#;
+    let (template, diagnostics) = reify_test_support::compile_template(source, "S");
+
+    assert!(
+        diagnostics.is_empty(),
+        "premise: a Bool corner_r is reported by nothing today — if that ever \
+         changes, re-derive whether this constraint is still the only signal; \
+         got: {diagnostics:#?}"
+    );
+    assert_eq!(
+        corner_labels(&template),
+        vec!["rounded_rect_corner_r_valid_0"],
+        "a wrongly-typed corner_r that nothing else reports must keep its \
+         constraint, got: {:#?}",
+        template.constraints
+    );
+}
+
+/// Several param-driven rounded-corner calls in one entity must each get their
+/// OWN constraint, with a label that names its constructor and distinguishes
+/// it from its siblings.
+///
+/// The label is the only channel that reaches the designer — the emitted
+/// diagnostic carries no span — so a shared or constructor-agnostic label
+/// leaves "which of these three calls is wrong?" unanswerable.
+///
+/// RED before the label lands: all three are the same fixed placeholder.
+#[test]
+fn multiple_param_driven_rounded_calls_get_distinct_self_identifying_labels() {
+    let source = r#"structure def S {
+    param corner_r: Length = 5mm
+    let plate = rounded_rect(40mm, 30mm, corner_r)
+    let block = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let shim = rounded_rect(60mm, 50mm, corner_r)
+}"#;
+    let template = compile_template_no_errors(source, "S");
+
+    assert_eq!(
+        template.constraints.len(),
+        3,
+        "each param-driven rounded-corner call needs its own constraint, got: {:#?}",
+        template.constraints
+    );
+
+    let labels: Vec<&str> = template
+        .constraints
+        .iter()
+        .map(|c| {
+            c.label
+                .as_deref()
+                .expect("a synthesized constraint must carry a label")
+        })
+        .collect();
+
+    let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        3,
+        "labels must be pairwise distinct so a violation identifies WHICH call, got: {labels:?}"
+    );
+
+    // Each label names the constructor it came from: two rounded_rect, one
+    // rounded_box.
+    assert_eq!(
+        labels.iter().filter(|l| l.contains("rounded_rect")).count(),
+        2,
+        "both rounded_rect calls must name their constructor, got: {labels:?}"
+    );
+    assert_eq!(
+        labels.iter().filter(|l| l.contains("rounded_box")).count(),
+        1,
+        "the rounded_box call must name its constructor, got: {labels:?}"
+    );
+}
+
+/// The labels of one constraint vec, in emission order.
+///
+/// Shared by `corner_labels` (the entity's flat, unguarded list) and by the
+/// guarded-arm assertions below (a `CompiledGuardedGroup`'s `constraints` /
+/// `else_constraints`), so both express the same "a synthesized constraint must
+/// carry a label" expectation in one place.
+fn group_arm_labels(constraints: &[reify_compiler::CompiledConstraint]) -> Vec<String> {
+    constraints
+        .iter()
+        .map(|c| {
+            c.label
+                .as_deref()
+                .expect("a synthesized constraint must carry a label")
+                .to_string()
+        })
+        .collect()
+}
+
+/// The corner-radius labels of a compiled template, in emission order.
+fn corner_labels(template: &reify_compiler::TopologyTemplate) -> Vec<String> {
+    group_arm_labels(&template.constraints)
+}
+
+/// ONE source-level rounded-corner call must synthesize exactly ONE constraint,
+/// however many times its geometry let is later reused.
+///
+/// `compile_geometry_call_inner` re-inlines a geometry let's initializer on
+/// EVERY reference of its name in geometry-argument position (reached from
+/// `resolve_boolean_arg`), threading the sink through with `reborrow()` — so
+/// without a guard each re-inline re-runs the rounded-corner arm and pushes
+/// another byte-identical copy, growing N+1 with the number of reuses.
+///
+/// Two designer-visible symptoms, both wrong: an oversized `corner_r` reports
+/// several Violated constraints carrying several different indices for a single
+/// offending call (so the label's index actively misleads about WHICH call is
+/// at fault), and the solver sees the same predicate's residual several times
+/// over, over-weighting that one piece of geometry.
+///
+/// RED before the dedup lands: 2 for one reuse, 4 for the deeper chain.
+#[test]
+fn geometry_let_reused_as_boolean_arg_emits_one_constraint() {
+    let source = r#"structure def S {
+    param corner_r: Length = 5mm
+    let plate = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let cut = difference(plate, box(10mm, 10mm, 10mm))
+}"#;
+    let template = compile_template_no_errors(source, "S");
+    assert_eq!(
+        corner_labels(&template),
+        vec!["rounded_box_corner_r_valid_0"],
+        "one rounded_box call reused as a boolean arg must synthesize exactly \
+         one constraint, got: {:#?}",
+        template.constraints
+    );
+
+    // A deeper reuse chain: `plate` is consumed twice more. A one-shot flag on
+    // the arm would not be enough — the growth is per-reuse, so this must pin
+    // 1 as well, not merely "fewer than before".
+    let source_chain = r#"structure def S {
+    param corner_r: Length = 5mm
+    let plate = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let a = difference(plate, box(10mm, 10mm, 10mm))
+    let b = union(a, plate)
+}"#;
+    let template_chain = compile_template_no_errors(source_chain, "S");
+    assert_eq!(
+        corner_labels(&template_chain),
+        vec!["rounded_box_corner_r_valid_0"],
+        "reusing the same geometry let three times must still synthesize one \
+         constraint, got: {:#?}",
+        template_chain.constraints
+    );
+}
+
+/// NEGATIVE HALF — two genuinely DISTINCT source calls must keep their two
+/// constraints even when their argument text is character-for-character
+/// identical.
+///
+/// This guards against an over-broad dedup. The two calls below carry DIFFERENT
+/// spans but the SAME `expr.content_hash` — the predicates really are
+/// structurally identical — so a dedup keyed on content alone would silently
+/// collapse them into one and drop a real check on the second call.
+///
+/// Passes today; must keep passing.
+#[test]
+fn distinct_rounded_calls_with_identical_args_keep_separate_constraints() {
+    let source = r#"structure def S {
+    param corner_r: Length = 5mm
+    let a = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let b = rounded_box(40mm, 30mm, 20mm, corner_r)
+}"#;
+    let template = compile_template_no_errors(source, "S");
+    let labels = corner_labels(&template);
+    assert_eq!(
+        labels.len(),
+        2,
+        "two distinct source calls each need their own constraint even with \
+         identical argument text, got: {:#?}",
+        template.constraints
+    );
+    let unique: std::collections::HashSet<&str> =
+        labels.iter().map(String::as_str).collect();
+    assert_eq!(
+        unique.len(),
+        2,
+        "the two constraints must stay distinguishable by label, got: {labels:?}"
+    );
+}
+
+/// NEGATIVE HALF — a rounded-corner call inside a GUARDED geometry let must
+/// still get its constraint, which is why the re-inline path must be
+/// deduplicated rather than muted.
+///
+/// A guarded geometry let emits NO realization of its own (entity.rs's
+/// third-pass `GuardedGroup` arm documents that as a separate, unimplemented
+/// feature) while `collect_geometry_exprs` DOES recurse into guarded groups when
+/// building the re-inline map. So for this shape the re-inline is the ONLY
+/// emission path: suppressing it would drop the constraint entirely and
+/// reintroduce exactly the silent skip task #5665 exists to remove.
+///
+/// ALSO the no-regression half of the guarded-arm routing below: this shape
+/// reaches the sink ONLY via the TOP-LEVEL `cut` realization's re-inline path,
+/// and `cut` is realized unconditionally — so its predicate is correctly
+/// UNGUARDED and must stay on the flat `template.constraints`. A naive "any
+/// rounded call under a `where` goes into that arm" fix would wrongly move it.
+///
+/// Passes today; must keep passing.
+#[test]
+fn guarded_geometry_let_reused_as_boolean_arg_still_emits_one_constraint() {
+    let source = r#"structure def S {
+    param active: Bool = true
+    param corner_r: Length = 5mm
+    where active {
+        let plate = rounded_box(40mm, 30mm, 20mm, corner_r)
+    }
+    let cut = difference(plate, box(10mm, 10mm, 10mm))
+}"#;
+    let template = compile_template_no_errors(source, "S");
+    assert_eq!(
+        corner_labels(&template),
+        vec!["rounded_box_corner_r_valid_0"],
+        "a guarded rounded_box let reaches the sink only via the re-inline \
+         path — it must emit exactly one constraint, not zero and not two, \
+         got: {:#?}",
+        template.constraints
+    );
+}
+
+/// A rounded-corner call inside a `where`/`else` group must file its constraint
+/// into THAT arm of the enclosing `CompiledGuardedGroup` — not onto the
+/// entity's flat, UNGUARDED `template.constraints`.
+///
+/// The two arms of a `where`/`else` are mutually exclusive: at most one of
+/// `plate` and `plate2` is ever realized. Filing both predicates on the flat
+/// list makes BOTH enforced unconditionally, so at least one of them always
+/// describes geometry that was never lowered — a `Violated` verdict naming a
+/// constructor the design never used, flipping `reify check`'s exit code on a
+/// design that is in fact valid.
+///
+/// The routing target is not invented for this fix: `CompiledGuardedGroup`
+/// already carries per-arm `constraints` / `else_constraints`, which
+/// `collect_active_constraints` gates on the group's `guard_value_cell`. This
+/// only puts the synthesized predicate where a hand-written one would go.
+///
+/// RED before the arm routing lands: both constraints sit on the flat list and
+/// both guarded arms are empty.
+#[test]
+fn guarded_geometry_constraint_lands_in_its_own_arm() {
+    let source = r#"structure def S {
+    param active: Bool = false
+    param corner_r: Length = 5mm
+    where active {
+        param plate: Solid = rounded_box(40mm, 30mm, 20mm, corner_r)
+    } else {
+        param plate2: Solid = rounded_rect(60mm, 50mm, corner_r)
+    }
+}"#;
+    let template = compile_template_no_errors(source, "S");
+
+    assert_eq!(
+        corner_labels(&template),
+        Vec::<String>::new(),
+        "a guarded call's predicate must NOT land on the entity's unguarded \
+         constraint list — that enforces a dead arm's geometry, got: {:#?}",
+        template.constraints
+    );
+
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "fixture must compile to exactly one guarded group, got: {:#?}",
+        template.guarded_groups
+    );
+    let group = &template.guarded_groups[0];
+
+    let where_labels = group_arm_labels(&group.constraints);
+    assert_eq!(
+        where_labels.len(),
+        1,
+        "the `where` arm must hold exactly its own rounded_box predicate, \
+         got: {where_labels:?}"
+    );
+    assert!(
+        where_labels[0].starts_with("rounded_box_corner_r_valid_"),
+        "the `where` arm's constraint must be the rounded_box one, got: \
+         {where_labels:?}"
+    );
+
+    let else_labels = group_arm_labels(&group.else_constraints);
+    assert_eq!(
+        else_labels.len(),
+        1,
+        "the `else` arm must hold exactly its own rounded_rect predicate, \
+         got: {else_labels:?}"
+    );
+    assert!(
+        else_labels[0].starts_with("rounded_rect_corner_r_valid_"),
+        "the `else` arm's constraint must be the rounded_rect one, got: \
+         {else_labels:?}"
+    );
+}
+
+/// A rounded-corner call inside a NESTED `where`/`else` must land in the INNER
+/// group's arm, not in the outer one's.
+///
+/// `emit_guarded_geometry_realizations` recurses into nested groups, so the arm
+/// polarity has to be re-derived at each level rather than inherited: an inner
+/// `else` member reached from an outer `where` belongs to the inner group's
+/// `else_constraints`. The guard CELL is already correct at any depth —
+/// `resolve_guard` yields the innermost group a member was registered under —
+/// so only the polarity is at stake here.
+///
+/// Groups are located by `guard_value_cell`, never by vec position: measured,
+/// `guarded_groups` is populated in POST-order, so the nested `__guard_1` group
+/// sits at index 0 and the outer `__guard_0` at index 1. An index-based
+/// assertion would silently assert the opposite of what it reads.
+///
+/// RED before the polarity threading lands: the recursive `GuardedGroup` arm
+/// forwards the caller's polarity, so `inner` and `inner2` both land on
+/// whichever arm the outer call was given.
+#[test]
+fn nested_guarded_geometry_constraint_lands_in_the_inner_arm() {
+    let source = r#"structure def S {
+    param active: Bool = true
+    param corner_r: Length = 5mm
+    where active {
+        param plate: Solid = rounded_box(40mm, 30mm, 20mm, corner_r)
+        where corner_r > 1mm {
+            param inner: Solid = rounded_rect(70mm, 55mm, corner_r)
+        } else {
+            param inner2: Solid = rounded_rect(80mm, 65mm, corner_r)
+        }
+    } else {
+        param plate2: Solid = rounded_rect(60mm, 50mm, corner_r)
+    }
+}"#;
+    let template = compile_template_no_errors(source, "S");
+
+    assert_eq!(
+        corner_labels(&template),
+        Vec::<String>::new(),
+        "no guarded call's predicate may land on the entity's unguarded list, \
+         got: {:#?}",
+        template.constraints
+    );
+    assert_eq!(
+        template.guarded_groups.len(),
+        2,
+        "fixture must compile to two guarded groups, got: {:#?}",
+        template.guarded_groups
+    );
+
+    // Locate each group by its guard cell, NOT by index — the vec is in
+    // post-order, so the nested group comes first.
+    let find = |cell: &str| {
+        template
+            .guarded_groups
+            .iter()
+            .find(|g| g.guard_value_cell.member == cell)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no guarded group for {cell}; cells were: {:?}",
+                    template
+                        .guarded_groups
+                        .iter()
+                        .map(|g| g.guard_value_cell.member.clone())
+                        .collect::<Vec<_>>()
+                )
+            })
+    };
+    let outer = find("__guard_0");
+    let inner = find("__guard_1");
+
+    // The OUTER group holds only its own directly-declared pair.
+    assert_eq!(
+        group_arm_labels(&outer.constraints),
+        vec!["rounded_box_corner_r_valid_0"],
+        "the outer `where` arm must hold only `plate`'s predicate, got: {:#?}",
+        outer.constraints
+    );
+    let outer_else = group_arm_labels(&outer.else_constraints);
+    assert_eq!(
+        outer_else.len(),
+        1,
+        "the outer `else` arm must hold only `plate2`'s predicate, got: \
+         {outer_else:?}"
+    );
+    assert!(
+        outer_else[0].starts_with("rounded_rect_corner_r_valid_"),
+        "the outer `else` arm's constraint must be `plate2`'s rounded_rect one, \
+         got: {outer_else:?}"
+    );
+
+    // The INNER group holds the nested pair, one per polarity.
+    let inner_where = group_arm_labels(&inner.constraints);
+    assert_eq!(
+        inner_where.len(),
+        1,
+        "the inner `where` arm must hold exactly `inner`'s predicate, got: \
+         {inner_where:?}"
+    );
+    assert!(
+        inner_where[0].starts_with("rounded_rect_corner_r_valid_"),
+        "the inner `where` arm's constraint must be a rounded_rect one, got: \
+         {inner_where:?}"
+    );
+    let inner_else = group_arm_labels(&inner.else_constraints);
+    assert_eq!(
+        inner_else.len(),
+        1,
+        "the inner `else` arm must hold exactly `inner2`'s predicate, got: \
+         {inner_else:?}"
+    );
+    assert!(
+        inner_else[0].starts_with("rounded_rect_corner_r_valid_"),
+        "the inner `else` arm's constraint must be a rounded_rect one, got: \
+         {inner_else:?}"
+    );
+
+    // All four predicates accounted for, each exactly once.
+    let total = outer.constraints.len()
+        + outer.else_constraints.len()
+        + inner.constraints.len()
+        + inner.else_constraints.len();
+    assert_eq!(
+        total, 4,
+        "each of the four rounded calls must synthesize exactly one constraint \
+         into exactly one arm, got {total}"
+    );
+}

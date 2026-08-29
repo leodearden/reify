@@ -6376,7 +6376,7 @@ structure Assembly {
                 op: GeometryOp::Draft {
                     target: GeometryHandleId(70),
                     faces: vec![],
-                    angle: Value::Real(0.1),
+                    angle: Value::angle(0.1),
                     plane: GeometryHandleId(71),
                 },
                 expected: vec![GeometryHandleId(70)],
@@ -7059,13 +7059,14 @@ structure Assembly {
 
         // Draft.plane is a constraint, not a parent — must NOT be remapped
         {
-            let mut op = GeometryOp::Draft { target: h(10), faces: vec![], angle: Value::Real(0.1), plane: h(20) };
+            let mut op = GeometryOp::Draft { target: h(10), faces: vec![], angle: Value::angle(0.1), plane: h(20) };
             seen.insert(GeometryOpDiscriminants::from(&op));
             substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
             match &op {
-                GeometryOp::Draft { target, plane, .. } => {
+                GeometryOp::Draft { target, angle, plane, .. } => {
                     assert_eq!(*target, h(110), "Draft.target must be remapped");
                     assert_eq!(*plane, h(20), "Draft.plane must NOT be remapped (reference constraint)");
+                    assert_eq!(*angle, Value::angle(0.1), "Draft.angle must be an ANGLE-dimensioned Value and must survive parent remapping unchanged (task 5777)");
                 }
                 _ => panic!("op must still be Draft"),
             }
@@ -7475,7 +7476,10 @@ structure Assembly {
                 op: GeometryOp::Draft {
                     target: h(1),
                     faces: vec![],
-                    angle: r(0.1),
+                    // NOT `r(..)` — that closure builds a bare `Value::Real` and is
+                    // shared with the LENGTH-semantic Chamfer/Shell/Thicken cases
+                    // in this same table, so it must stay as it is (task 5777).
+                    angle: Value::angle(0.1),
                     plane: h(2),
                 },
                 expected: Operation::ModifyDraft,

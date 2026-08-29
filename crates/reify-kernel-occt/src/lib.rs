@@ -8777,7 +8777,7 @@ mod tests {
         let draft_h = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
             faces: vec![],
-            angle: Value::Real(0.1),
+            angle: Value::angle(0.1),
             plane: plane_h.id,
         });
         // Draft is complex and may fail for certain shapes - we just verify it
@@ -8833,6 +8833,159 @@ mod tests {
         (target_h, plane_h)
     }
 
+    /// Dimensioning a Draft fixture's angle does not change the geometry OCCT
+    /// produces — PRD `docs/prds/v0_6/angle-units-surface-convergence.md`
+    /// decision D2, observed at the kernel boundary (task 5777, angle-units α).
+    ///
+    /// A CHARACTERIZATION pin, expected green against unchanged production
+    /// code: the OCCT Draft arm reads its angle via `extract_f64`, a thin
+    /// wrapper over `Value::as_f64`, so this closes at actual OCCT output what
+    /// `reify_ir::value::tests::angle_and_real_agree_bit_exactly_under_as_f64`
+    /// pins at the `Value` layer.
+    ///
+    /// Draft is finicky, so this sweeps up to two CURATED faces — never the
+    /// all-faces path, which `execute_draft_curated_faces_honored` explicitly
+    /// declines to use as an oracle — and requires `compared > 0` so a run
+    /// where no face produced geometry fails loudly instead of passing
+    /// silently. The three-way failure split below names the culprit: the two
+    /// forms DIVERGING is the D2 contradiction; both failing IDENTICALLY
+    /// exonerates the dimension tag and indicts the fixture.
+    ///
+    /// The success arm's oracle is equal VOLUME plus equal FACE COUNT, over two
+    /// handles asserted to be distinct. That is deliberately not a proof of
+    /// congruence — no cheap query here is — but it is strictly more than a
+    /// single scalar, and the handle assertion closes the vacuity path a
+    /// memoising `execute` would otherwise open.
+    #[test]
+    fn draft_angle_dimensioned_matches_bare_real_volume() {
+        let angle_rad = std::f64::consts::PI / 60.0;
+        let mut kernel = OcctKernel::new();
+
+        let (target, plane) = build_draft_fixture(&mut kernel);
+        let faces = kernel
+            .extract_faces(target.id)
+            .expect("extract_faces must succeed");
+        assert!(
+            faces.len() >= 2,
+            "box must have at least 2 faces, got {}",
+            faces.len()
+        );
+
+        // Any single face can legitimately be one OCCT declines to draft, so
+        // sweep up to two of them — exactly as
+        // `execute_draft_curated_faces_honored` does — stopping at the first
+        // where BOTH forms produced geometry, and requiring at least one.
+        let mut compared = 0usize;
+        for face in [faces[0], *faces.last().unwrap()] {
+            let bare = kernel.execute(&GeometryOp::Draft {
+                target: target.id,
+                faces: vec![face],
+                // Stays bare deliberately — task 5777. This is the CONTROL arm of
+                // the D2 equivalence pin; retyping it to `Value::angle` collapses
+                // both arms into one and deletes the comparison. δ (5780) owns
+                // `draft`, but not this site.
+                angle: Value::Real(angle_rad),
+                plane: plane.id,
+            });
+            let dimensioned = kernel.execute(&GeometryOp::Draft {
+                target: target.id,
+                faces: vec![face],
+                angle: Value::angle(angle_rad),
+                plane: plane.id,
+            });
+
+            match (bare, dimensioned) {
+                (Ok(b), Ok(d)) => {
+                    // Anti-vacuity, the axis the `compared > 0` guard does not
+                    // cover: the comparison only means something if the two
+                    // calls actually executed TWO drafts. `execute` builds a
+                    // fresh shape per call today, but a future content-hash
+                    // memoisation keyed on the `extract_f64` output — exactly
+                    // the change this pin exists to survive — would hand the
+                    // same handle back twice and make every assertion below
+                    // trivially true.
+                    assert_ne!(
+                        b.id, d.id,
+                        "both forms must have executed a fresh draft; identical handles \
+                         mean the comparison below is vacuous"
+                    );
+                    let vb = volume_of(&mut kernel, &b);
+                    let vd = volume_of(&mut kernel, &d);
+                    assert_eq!(
+                        vb, vd,
+                        "Value::angle({angle_rad}) and Value::Real({angle_rad}) must \
+                         produce equal draft volume — they differ only in a \
+                         dimension tag that extract_f64 discards"
+                    );
+                    // Volume alone is a weak oracle: two distinct shapes can
+                    // share one. Compare the face count too, so a divergence
+                    // that redistributes material without changing its total
+                    // is still caught. Neither oracle makes the shapes provably
+                    // congruent — the claim this pin actually supports is
+                    // "equal volume AND equal face count", not "bit-identical
+                    // geometry".
+                    let fb = kernel
+                        .extract_faces(b.id)
+                        .expect("extract_faces on the bare-form draft must succeed")
+                        .len();
+                    let fd = kernel
+                        .extract_faces(d.id)
+                        .expect("extract_faces on the dimensioned-form draft must succeed")
+                        .len();
+                    assert_eq!(
+                        fb, fd,
+                        "Value::angle({angle_rad}) and Value::Real({angle_rad}) must produce \
+                         the same face count; equal volume with a different face count would \
+                         be a shape change the volume oracle alone cannot see"
+                    );
+                    compared += 1;
+                }
+                // Same failure from both forms is itself the D2 signal, but it
+                // measures nothing about the geometry — try the other face.
+                (
+                    Err(GeometryError::OperationFailed(_)),
+                    Err(GeometryError::OperationFailed(_)),
+                ) => {}
+                // Both forms failed the SAME way, but not with the tolerated
+                // `OperationFailed`. The dimension tag is EXONERATED here — it
+                // changed nothing — so blaming D2 would be a misdiagnosis of
+                // what is really a broken fixture. Named separately for exactly
+                // that reason (the `compared > 0` guard below exists to stop the
+                // same confusion from the other direction).
+                (Err(bare_err), Err(dim_err))
+                    if std::mem::discriminant(&bare_err) == std::mem::discriminant(&dim_err) =>
+                {
+                    panic!(
+                        "both forms failed identically with {bare_err:?} — this says nothing \
+                         about D2 (the dimension tag changed neither branch nor error); \
+                         repair the fixture"
+                    )
+                }
+                (bare, dimensioned) => panic!(
+                    "dimensioning the angle changed which branch the draft took, which \
+                     contradicts D2: bare -> {:?}, dimensioned -> {:?}",
+                    bare.map(|h| h.id),
+                    dimensioned.map(|h| h.id)
+                ),
+            }
+
+            // One face where both forms produced geometry is the whole signal;
+            // a second costs another OCCT draft + volume pair for no added
+            // information. The sweep exists only to survive a face OCCT
+            // declines to draft.
+            if compared > 0 {
+                break;
+            }
+        }
+
+        assert!(
+            compared > 0,
+            "anti-vacuity: no face produced geometry under EITHER form, so this test \
+             proved nothing about D2 equivalence — the fixture needs repair rather \
+             than a silent pass"
+        );
+    }
+
     /// (a) CURATED SELECTION HONORED: a one-face draft (via `faces: [f0]`)
     /// must succeed with a positive volume that differs both from the
     /// undrafted box volume AND from any other single-face selection (proves
@@ -8858,7 +9011,7 @@ mod tests {
         let result_f0 = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![faces[0]],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8867,7 +9020,7 @@ mod tests {
         let result_fn = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![*faces.last().unwrap()],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8916,7 +9069,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8959,7 +9112,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![foreign_face],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
         match result {
@@ -9332,7 +9485,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
             faces: vec![],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: sphere_h.id,
         });
 
@@ -13685,11 +13838,26 @@ mod tests {
                 axis_origin: [0.0, 0.0, 0.0],
                 axis_dir: [0.0, 0.0, 1.0],
                 count: 2,
+                // Stays bare deliberately — task 5777. ε (5781) migrates
+                // `circular_pattern` angles, but NOT this one: it is a control
+                // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
+                // fixture. A bare `Value::Real` is the one shape
+                // `check_length_field` can never wave through — its early
+                // return is gated on the `Value::Scalar` variant — so the arm
+                // still catches a rewire to `extract_length_f64` even if that
+                // predicate is later loosened to accept any dimensioned
+                // `Scalar`. A retyped arm would still warn on a rewire today
+                // (an ANGLE `Scalar` is not LENGTH), but it gives that extra
+                // reach up for nothing. See
+                // docs/notes/angle-literal-migration-ledger.md §1.2.1.
                 angle: Value::Real(std::f64::consts::PI),
             });
             let _ = kernel.execute(&GeometryOp::Draft {
                 target,
                 faces: vec![],
+                // Stays bare deliberately — task 5777, same control contract as
+                // the arm above, but δ's (5780): `draft` is δ's migration
+                // target.
                 angle: Value::Real(0.05),
                 plane: target,
             });

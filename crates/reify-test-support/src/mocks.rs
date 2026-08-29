@@ -3135,7 +3135,7 @@ mod tests {
             .execute(&GeometryOp::Draft {
                 target: target.id,
                 faces: vec![],
-                angle: Value::Real(0.05),
+                angle: Value::angle(0.05),
                 plane: plane.id,
             })
             .unwrap();
@@ -3150,7 +3150,15 @@ mod tests {
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert!(faces.is_empty(), "expected empty faces for back-compat draft");
-                assert_eq!(*angle, Value::Real(0.05));
+                assert_eq!(
+                    *angle,
+                    Value::angle(0.05),
+                    "Draft fixtures are retyped to ANGLE ahead of δ's (5780) draft \
+                     gate — task 5777. Production's draft path is still an ungated \
+                     raw-Value passthrough (`let angle = eval_arg(\"angle\")?` in \
+                     reify-eval's modify_draft), so for a bare .ri literal it still \
+                     emits Value::Real today"
+                );
                 assert_eq!(*plane, GeometryHandleId(2));
             }
             other => panic!("expected Draft, got {:?}", other),

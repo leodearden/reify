@@ -12427,6 +12427,7 @@ fn make_test_mesh_data() -> crate::types::MeshData {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -12745,6 +12746,86 @@ fn apply_fea_channels_without_error_indicator_omits_error_indicator_channel() {
     );
 }
 
+// --- scalar_channel_tags producer stamping (task #6185) ---
+//
+// The FEA channel producers must stamp `ScalarChannelTag::pressure()` beside
+// each channel they insert, so the GUI legend can name the unit and the range
+// computation knows the channel is unsigned.  Compiles after step-2; FAILS on
+// the empty tags map until step-4 wires the stamping into engine.rs.
+
+/// apply_fea_channels tags the vonMises channel with the declared pressure unit.
+#[test]
+fn apply_fea_channels_tags_von_mises_as_pressure() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf);
+    let mut meshes = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    assert_eq!(
+        mesh.scalar_channel_tags.get("vonMises"),
+        Some(&crate::types::ScalarChannelTag::pressure()),
+        "vonMises must be tagged as an unsigned Pa channel"
+    );
+}
+
+/// apply_fea_channels tags errorIndicator as pressure when the indicator is
+/// populated, and stamps NO errorIndicator tag when it is absent — an orphan
+/// tag would trip the step-2 serialize contract.
+#[test]
+fn apply_fea_channels_tags_error_indicator_as_pressure() {
+    // (a) Populated indicator ⇒ channel present AND tagged.
+    let map = make_elastic_result_value_map_with_indicator(
+        make_stress_field(),
+        make_disp_field(),
+        Some(make_scalar_field()),
+    );
+    let mut meshes = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+    assert_eq!(
+        meshes[0].scalar_channel_tags.get("errorIndicator"),
+        Some(&crate::types::ScalarChannelTag::pressure()),
+        "errorIndicator must be tagged as an unsigned Pa channel when populated"
+    );
+
+    // (b) Absent indicator ⇒ NO channel and, critically, NO orphan tag.
+    let map_none = make_elastic_result_value_map(make_stress_field(), make_disp_field());
+    let mut meshes_none = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes_none, &map_none, None);
+    assert!(
+        !meshes_none[0]
+            .scalar_channels
+            .contains_key("errorIndicator"),
+        "errorIndicator channel must be absent when error_indicator is Option(None)"
+    );
+    assert!(
+        !meshes_none[0]
+            .scalar_channel_tags
+            .contains_key("errorIndicator"),
+        "no errorIndicator TAG may be stamped when the channel is absent — an \
+         orphan tag hard-fails MeshData::serialize"
+    );
+}
+
+/// The tagged mesh the producers actually emit satisfies the step-2 serialize
+/// contracts on real FEA data.  This is the check that would catch a genuinely
+/// negative von-Mises sample reaching an unsigned-tagged channel.
+#[test]
+fn apply_fea_channels_tagged_mesh_serializes() {
+    let map = make_elastic_result_value_map_with_indicator(
+        make_stress_field(),
+        make_disp_field(),
+        Some(make_scalar_field()),
+    );
+    let mut meshes = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    serde_json::to_value(&meshes[0])
+        .expect("a tagged FEA mesh must satisfy the orphan-tag and unsigned-negative contracts");
+}
+
 // ── Task 3001 step-7: RED — extract_fea_convergence ───────────────────────────
 //
 // `extract_fea_convergence(values, active_case)` resolves the active
@@ -12883,6 +12964,7 @@ fn apply_shell_channels_populates_matching_mesh() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -12932,6 +13014,41 @@ fn apply_shell_channels_populates_matching_mesh() {
         .expect("populated shell MeshData must serialize (length contracts hold)");
 }
 
+/// apply_shell_channels tags all three vonMises variants as pressure channels
+/// (task #6185).
+#[test]
+fn apply_shell_channels_tags_all_three_von_mises_variants_as_pressure() {
+    let mut meshes = vec![crate::types::MeshData {
+        entity_path: "FeaShellFlexure#realization[0]".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 9.0, 9.0, 9.0, 3.0, 3.0, 3.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    }];
+    let views = vec![make_test_shell_view()];
+
+    crate::engine::apply_shell_channels(&mut meshes, &views);
+
+    let mesh = &meshes[0];
+    for key in ["vonMises_top", "vonMises_mid", "vonMises_bottom"] {
+        assert_eq!(
+            mesh.scalar_channel_tags.get(key),
+            Some(&crate::types::ScalarChannelTag::pressure()),
+            "{key} must be tagged as an unsigned Pa channel"
+        );
+    }
+
+    serde_json::to_value(mesh)
+        .expect("a tagged shell MeshData must satisfy the scalar_channel_tags contracts");
+}
+
 /// apply_shell_channels leaves a non-matching mesh entirely untouched.
 #[test]
 fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
@@ -12941,6 +13058,7 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -12994,6 +13112,7 @@ fn element_kind_count_histograms_element_kind_bytes() {
         indices: Vec::new(),
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind,
         region_tags: None,

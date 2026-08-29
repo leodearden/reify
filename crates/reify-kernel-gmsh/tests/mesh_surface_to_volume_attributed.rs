@@ -27,9 +27,15 @@ fn h(n: u64) -> GeometryHandleId {
 /// Build a 2×2-subdivided unit cube (side 1.0, centred at origin):
 /// 8 corners + 12 edge midpoints + 6 face centres = 26 unique vertices,
 /// 48 triangles — watertight (shared corners). Mirrors the helper in
-/// `tests/node_attachment_producer.rs`: the attribution producer requires a
-/// watertight surface (it rejects vertex-merging repair, which would
-/// invalidate per-node attribution).
+/// `tests/node_attachment_producer.rs`. Deliberately watertight so this
+/// fixture exercises the attribution producer's already-watertight fast
+/// path directly (`repair_cfg = None` on an already-watertight raw
+/// surface skips the weld — `surface_needs_weld`, mesh_boundary.rs),
+/// keeping this exact vertex numbering. Post-#5116 the producer no
+/// longer REQUIRES a watertight surface (it welds unwelded input on
+/// demand, see [`unwelded_subdivided_unit_cube_surface`] below);
+/// watertightness here is a fixture property, not a producer
+/// precondition.
 fn subdivided_unit_cube_surface() -> Mesh {
     #[rustfmt::skip]
     let corners: [[f32; 3]; 8] = [

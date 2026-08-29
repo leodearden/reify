@@ -9921,7 +9921,7 @@ mod tests {
                 GeometryOp::Draft {
                     target: GeometryHandleId(1),
                     faces: vec![],
-                    angle: Value::Real(0.1),
+                    angle: Value::angle(0.1),
                     plane: GeometryHandleId(2),
                 },
             ),
@@ -11462,7 +11462,7 @@ mod tests {
         let curated = GeometryOp::Draft {
             target: GeometryHandleId(1),
             faces: vec![GeometryHandleId(2)],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: GeometryHandleId(3),
         };
         match curated {
@@ -11480,7 +11480,7 @@ mod tests {
         let all_faces = GeometryOp::Draft {
             target: GeometryHandleId(1),
             faces: vec![],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: GeometryHandleId(3),
         };
         match all_faces {

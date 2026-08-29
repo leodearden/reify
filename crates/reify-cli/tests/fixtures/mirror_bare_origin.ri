@@ -1,0 +1,47 @@
+module mirror_bare_origin
+
+// mirror_bare_origin.ri — task 5748 (PRD docs/prds/v0_6/check-diagnostic-truthfulness.md, leaf β).
+//
+// Reproduces the canonical `mirror(...)` bare-origin anti-pattern documented at
+// examples/best_practices/symmetry_mirror.ri:27 (`// WRONG — bare-0 origin`):
+// the 7-arg scalar form requires DIMENSIONED Length origin components while the
+// normal components stay bare dimensionless numbers.  Passing bare `0` for the
+// origin is a hard geometry-compile error at realization time.
+//
+// Verified baselines with the pre-change binary (task 5748, before D1/D2):
+//
+//   reify check <this file>
+//     stdout: "All constraints satisfied."   exit 0
+//     stderr: EMPTY — the compile-geometry-op error is entirely ABSENT, because
+//             `check` never realizes geometry for a module carrying no
+//             Conforms / RepresentationWithin / DFMRule constraint.
+//
+//   reify eval <this file>
+//     stderr: warning: mirror: ox argument expects Length, got Int; ...
+//             error: failed to compile geometry operation: missing or
+//                    non-Length argument 'ox' for mirror     [emitted TWICE]
+//             error: failed to compile geometry operation: unresolvable
+//                    GeomRef::Step(1) ...
+//     exit 1
+//
+// The `check` half of that baseline is exactly what leaf β makes truthful: after
+// D1 (geometry routing) + D2 (build-diagnostic merge), `reify check` reports the
+// geometry-compile error too — exactly ONCE, thanks to D2's accumulating dedup.
+// The exit code stays 0 until leaf γ (#5403) lands the Severity::Error gate.
+
+structure MirrorBareOrigin {
+    param arm_len       : Length = 40mm
+    param arm_width     : Length = 8mm
+    param arm_thickness : Length = 5mm
+
+    let arm = box(arm_len, arm_width, arm_thickness)
+
+    // WRONG on purpose — bare-Int origin components (should be `0mm`).
+    let reflected = mirror(arm, 0, 0, 0, 1, 0, 0)
+
+    param geometry : Solid = union(arm, reflected)
+
+    // Trivially satisfied, so the summary line is "All constraints satisfied."
+    // and the ONLY new observable is the geometry-compile diagnostic.
+    constraint arm_len > arm_width
+}

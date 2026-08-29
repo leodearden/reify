@@ -21,7 +21,9 @@
 
 structure Cyl {
     // 2π rad = 360° (a full revolution). revolve(profile, ox,oy,oz, ax,ay,az, angle).
-    let cyl = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586)
+    // The angle carries its `rad` unit explicitly; ax,ay,az stay bare, being
+    // dimensionless unit-vector components.
+    let cyl = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586rad)
 
     // Feature → datum: the cylinder's unique central axis.
     let a : Axis = cyl.axis
