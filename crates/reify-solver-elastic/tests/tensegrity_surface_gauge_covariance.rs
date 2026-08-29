@@ -276,12 +276,14 @@ fn assert_gauge_covariant(
         "[{context}] λ={lambda:e}: solved geometry must be gauge-invariant: rel err = {node_err:e}, expected < {GAUGE_REL_TOL:e}",
     );
 
+    assert_all_non_vacuous(&format!("[{context}] member_forces"), base_member_forces);
     let force_err = max_rel_diff_scaled(base_member_forces, scaled_member_forces, lambda);
     assert!(
         force_err < GAUGE_REL_TOL,
         "[{context}] λ={lambda:e}: member forces must scale by exactly λ: rel err = {force_err:e}, expected < {GAUGE_REL_TOL:e}",
     );
 
+    assert_all_non_vacuous(&format!("[{context}] force_densities"), base_force_densities);
     let q_echo_err = max_rel_diff_scaled(base_force_densities, scaled_force_densities, lambda);
     assert!(
         q_echo_err < GAUGE_REL_TOL,
@@ -289,6 +291,7 @@ fn assert_gauge_covariant(
     );
 
     for (label, base_vals, scaled_vals) in extra_echoes {
+        assert_all_non_vacuous(&format!("[{context}] {label}"), base_vals);
         let err = max_rel_diff_scaled(base_vals, scaled_vals, lambda);
         assert!(
             err < GAUGE_REL_TOL,
