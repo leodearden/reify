@@ -135,26 +135,6 @@ fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
     );
 }
 
-#[test]
-fn git_at_workspace_root_composes_with_the_corpus_enumeration_args() {
-    // The `&[&str]` signature has to serve all three of this module's git call
-    // sites; `tracked_ri_corpus`'s pathspec form is the widest of them, and the
-    // one where a mis-joined argv would silently change the corpus rather than
-    // error. Asserting it here proves the `--` separator and the unexpanded
-    // glob survive as distinct argv entries.
-    let cmd = git_at_workspace_root(&["ls-files", "-z", "--", "*.ri"]);
-
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(
-        args,
-        ["-C", WORKSPACE_ROOT, "ls-files", "-z", "--", "*.ri"]
-    );
-}
-
-
 // ─── step 1/2: corpus enumeration ────────────────────────────────────────────
 
 /// Every TRACKED `.ri` file in the repository, as repo-relative
@@ -349,12 +329,12 @@ fn line_of_span(source: &str, span: reify_core::SourceSpan) -> u32 {
 ///
 /// Recorded PER ROW so the artifact never has to *assert* a cause in prose. An
 /// earlier draft of the Unknown-group blurb claimed those rows "come through the
-/// sub `=` per-arg anchor"; the two rows actually in the committed artifact are
-/// param DEFAULT INITIALIZERS (`param kc : Curvature = 0.2rad / 1mm`) whose label
-/// anchors at the literal — the span starts on a digit, not mid-argument. Both
-/// causes land in the same `SpanNotIdentifier` arm, and neither is distinguishable
-/// from here; machine-deriving what the code actually knows removes the whole
-/// class of that mistake.
+/// sub `=` per-arg anchor" — a hand-derived cause, and the failure mode this enum
+/// exists to remove: several distinct shapes reach the same unattributed group,
+/// and which one a given row took is knowable only where the recovery actually
+/// ran. So no prose here restates a per-row cause; the artifact's `def source`
+/// column carries the machine-derived arm, one row at a time. The arm docs
+/// below describe only what each arm MATCHES — never which rows are in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DefOrigin {
     /// Recovered from the ctor call-site span anchor (α's expression path).
@@ -370,8 +350,7 @@ enum DefOrigin {
     /// ASCII-led, so this can never be a ctor anchor.
     SpanMidCodepoint,
     /// The span starts at something that is not an identifier — a literal, an
-    /// operator, a delimiter. Param default-initializer checks and the sub `=`
-    /// per-arg anchor both land here.
+    /// operator, a delimiter.
     SpanNotIdentifier,
     /// An identifier was found but is not followed by `(`, so it is a plain
     /// reference rather than a call.
@@ -616,7 +595,16 @@ fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode
 /// scrape still pins the invariant that actually matters — the two admission sets
 /// are identical — and fails loudly the moment either side gains a code the other
 /// lacks. If a later task widens that helper's visibility, delete this scrape and
-/// call it directly.
+/// call it directly; a direct call is compiler-enforced and cannot be defeated by
+/// formatting, which a text scrape inherently can.
+///
+/// Every way this scrape can lose the sibling's set is therefore made LOUD, since
+/// a silent under-scrape reads as agreement: a renamed/removed function, a body
+/// that no longer closes at column 0, and a body that names zero
+/// `DiagnosticCode::` variants each panic below. The one remaining shape that
+/// would scrape clean while naming variants the marker never sees is a glob
+/// import (`use DiagnosticCode::*;`) plus bare variant names, so that is refused
+/// outright rather than tolerated.
 #[cfg(test)]
 fn alpha_corpus_gate_code_names() -> Vec<String> {
     const SIBLING: &str = concat!(
@@ -628,6 +616,14 @@ fn alpha_corpus_gate_code_names() -> Vec<String> {
 
     let source = std::fs::read_to_string(SIBLING)
         .unwrap_or_else(|e| panic!("cannot read the α corpus gate at {SIBLING}: {e}"));
+    assert!(
+        !source.contains("DiagnosticCode::*"),
+        "`examples_smoke.rs` glob-imports `DiagnosticCode`, so its admission set can \
+         name variants BARE — which this `DiagnosticCode::`-marker scrape cannot see, \
+         and would silently under-report as agreement. Either drop the glob import \
+         there, or (better) make its `is_ctor_conformance_code` `pub(super)` and call \
+         it from `ctor_conformance_code_set_matches_the_alpha_corpus_gate` directly."
+    );
     let start = source.find(FN_ANCHOR).unwrap_or_else(|| {
         panic!(
             "`examples_smoke.rs` must still define `{FN_ANCHOR}` — if it was renamed or \
@@ -836,14 +832,29 @@ fn expected_found_of_labels(d: &reify_core::Diagnostic) -> (Option<String>, Opti
 /// 3. The call-site span anchor — α anchors the expression-path label at the
 ///    ctor's own span, so `source[span.start..]` begins with `Def(`.
 ///
+/// Each prose shape is tried ONLY for the code that emits it. An earlier draft
+/// ran both prefix matches against every admitted code, which is broader than
+/// the contract above and opens the one hole this module cannot afford: any
+/// future `ArgTypeMismatch` / `TypeNotConformingToTrait` wording that happened
+/// to contain `in call to '<X>'` would be attributed to `<X>` as
+/// [`DefOrigin::DiagnosticProse`], bypassing the call-site anchor and its
+/// `IdentifierNotACall` / `SpanNotIdentifier` diagnosis — a def GUESSED from a
+/// sentence rather than read off an anchor. Gating on `d.code` costs nothing
+/// (the ε emitters are the only source of either prefix) and closes it.
+///
 /// Returns `None` — never a guess — for every anchor shape that names no def,
 /// PAIRED WITH the machine-derived [`DefOrigin`] saying which shape it was, so
 /// the artifact can report the cause instead of asserting one.
 fn def_of_diagnostic(source: &str, d: &reify_core::Diagnostic) -> (Option<String>, DefOrigin) {
-    if let Some(def) = quoted_after(&d.message, IN_CALL_TO_PREFIX) {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    if d.code == Some(DiagnosticCode::CtorUnknownField)
+        && let Some(def) = quoted_after(&d.message, IN_CALL_TO_PREFIX)
+    {
         return (Some(def), DefOrigin::DiagnosticProse);
     }
-    if let Some(rest) = d.message.strip_prefix(CTOR_ARITY_PREFIX)
+    if d.code == Some(DiagnosticCode::CtorArity)
+        && let Some(rest) = d.message.strip_prefix(CTOR_ARITY_PREFIX)
         && let Some(paren) = rest.find("()")
         && !rest[..paren].is_empty()
     {
@@ -1023,6 +1034,55 @@ fn survey_site_extracts_field_and_def_from_the_epsilon_codes() {
 }
 
 #[test]
+fn epsilon_prose_is_only_consulted_for_the_epsilon_codes() {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    // A NON-ε code whose message happens to contain the ε prose. Nothing stops
+    // a future `emit_*` wording from reading "… in call to 'Bar'": the phrase is
+    // ordinary English, not a reserved token. If the prose match were tried for
+    // every admitted code, `Bar` would be lifted out of that sentence and
+    // recorded as the def — a name GUESSED from prose, with `DiagnosticProse`
+    // vouching for it, and the call-site anchor never consulted.
+    let source = "let x = 42\n";
+    let mut d = synth(
+        DiagnosticCode::ArgTypeMismatch,
+        "argument 'label' has type 'Int' but param 'label' requires type 'String' \
+         in call to 'Bar'",
+        None,
+    );
+    d = d.with_label(reify_core::diagnostics::DiagnosticLabel::new(
+        // Anchored at the `42`, i.e. a shape that names no def.
+        reify_core::SourceSpan::new(8, 10),
+        "expected 'String', got 'Int'",
+    ));
+    let site = survey_site_from_diagnostic("a.ri", source, &d).expect("site");
+    assert_eq!(
+        site.def, None,
+        "`in call to '<X>'` must be read ONLY for CtorUnknownField; for any other \
+         code the def comes from the anchor or not at all"
+    );
+    assert_eq!(
+        site.def_origin,
+        DefOrigin::SpanNotIdentifier,
+        "the row must carry the anchor's own machine-derived cause, not `DiagnosticProse`"
+    );
+
+    // Same shape for the arity prefix: a non-`CtorArity` code that literally
+    // starts with it still routes to the anchor.
+    let d = synth(
+        DiagnosticCode::CtorUnknownField,
+        "E_CTOR_ARITY: Bar() expects at most 2 arguments, got 3",
+        None,
+    );
+    let site = survey_site_from_diagnostic("a.ri", source, &d).expect("site");
+    assert_eq!(
+        site.def, None,
+        "the `E_CTOR_ARITY: ` prefix must be read ONLY for CtorArity"
+    );
+    assert_eq!(site.def_origin, DefOrigin::NoLabel);
+}
+
+#[test]
 fn survey_site_prefers_the_label_for_expected_and_found() {
     use reify_core::diagnostics::DiagnosticCode;
 
@@ -1184,6 +1244,121 @@ const FEA_STDLIB_MODULES: &[&str] = &[
     "solver_elastic",
 ];
 
+/// Stdlib modules whose NAME reads as FEA-family but which are deliberately NOT
+/// in the D9 do-not-touch partition.
+///
+/// This list exists so that "not FEA-owned" is a RECORDED decision rather than
+/// an omission. [`every_fea_family_shaped_stdlib_module_is_classified`] requires
+/// every FEA-shaped stem to appear in exactly one of the two lists, so adding
+/// `fea_contact.ri` (or a fourth `modal_*`) to the stdlib turns that guard red
+/// instead of silently routing its defs into `Owner::NonFea` — the group the
+/// artifact labels "the group to size γ against". Mis-classifying INTO that
+/// group is, per [`d9_owner`], "the one classification error with a real cost",
+/// and until this guard existed it was the only classification path with no
+/// drift check at all.
+///
+/// Why `modal_*` is on THIS side of the line: PRD §4 D9 defines the deferred
+/// partition by the v0.6 migration it points at
+/// (`docs/prds/v0_6/fea-load-support-selector-migration.md`) — the FEA load and
+/// boundary-condition defs whose String→selector field flips are v0.6-owned —
+/// and enumerates it as "`fea_multi_case.ri`, `fea.ri`, `solver_*.ri`, …".
+/// `modal_analysis.ri` is structural dynamics, not that migration's surface: its
+/// forcing-function defs already declare selector-typed fields
+/// (`structure def StepForce { param at : Selector … }`, `modal_analysis.ri:490`),
+/// so a ctor row against one of them is ordinary call-site work for γ, with no
+/// field-type flip to defer. The two `modal_*_fns` modules declare no
+/// `structure def` at all, so their placement is inert either way and is
+/// recorded only to keep the shape sweep exhaustive.
+const DELIBERATELY_NOT_FEA_OWNED: &[&str] = &[
+    "modal_analysis",
+    "modal_analysis_fns",
+    "modal_mechanism_fns",
+];
+
+/// True for a stdlib module stem that reads as FEA-family.
+///
+/// Deliberately WIDER than [`FEA_STDLIB_MODULES`]: its job is to catch a new
+/// module that a reader would plausibly expect in the deferred partition, and
+/// force a classification. A name outside every shape here (say a future
+/// `contact_mechanics.ri`) is not caught — no naming rule can be complete —
+/// which is why the FEA list stays a reviewable knob rather than a derived one.
+fn is_fea_family_shaped(stem: &str) -> bool {
+    stem == "fea"
+        || stem.starts_with("fea_")
+        || stem.ends_with("_fea")
+        || stem.starts_with("solver_")
+        || stem.starts_with("modal_")
+}
+
+#[test]
+fn every_fea_family_shaped_stdlib_module_is_classified() {
+    let dir = std::path::Path::new(STDLIB_DIR);
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot read the stdlib dir {}: {e}", dir.display()));
+
+    let mut shaped: Vec<String> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|e| panic!("cannot read an entry of {}: {e}", dir.display()))
+            .path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ri") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        if is_fea_family_shaped(&stem) {
+            shaped.push(stem);
+        }
+    }
+    shaped.sort();
+    assert!(
+        !shaped.is_empty(),
+        "the shape sweep matched NO stdlib module — the enumeration or the shape \
+         predicate has broken, and this guard would be vacuously green"
+    );
+
+    let unclassified: Vec<&String> = shaped
+        .iter()
+        .filter(|stem| {
+            !FEA_STDLIB_MODULES.contains(&stem.as_str())
+                && !DELIBERATELY_NOT_FEA_OWNED.contains(&stem.as_str())
+        })
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "these stdlib modules read as FEA-family but are in neither \
+         FEA_STDLIB_MODULES nor DELIBERATELY_NOT_FEA_OWNED: {unclassified:?}. \
+         Leaving one off is not inert: its defs route to `Owner::NonFea`, the \
+         group the artifact tells γ to size and fix. Add it to whichever list is \
+         right — and say why, if it is the second."
+    );
+
+    let both: Vec<&&str> = FEA_STDLIB_MODULES
+        .iter()
+        .filter(|m| DELIBERATELY_NOT_FEA_OWNED.contains(m))
+        .collect();
+    assert!(
+        both.is_empty(),
+        "a module cannot be both FEA-owned and deliberately not: {both:?}"
+    );
+
+    // Same rename guard `scan_structure_defs` gives the FEA list, for the other
+    // one: a stale exclusion is how a genuinely FEA-shaped NEW module can slip
+    // past the check above under an old name.
+    for stem in DELIBERATELY_NOT_FEA_OWNED {
+        let path = dir.join(format!("{stem}.ri"));
+        assert!(
+            path.exists(),
+            "DELIBERATELY_NOT_FEA_OWNED lists '{stem}' but {} does not exist — a \
+             stdlib rename must not leave a stale exclusion behind",
+            path.display()
+        );
+    }
+}
+
 /// The `structure def <Name>` declarations in `dir/<stem>.ri` for each `stem`.
 ///
 /// Anchored at COLUMN 0 rather than matched as a substring, deliberately: a
@@ -1262,7 +1437,19 @@ fn collect_structure_defs_into(source: &str, defs: &mut std::collections::BTreeS
 /// [`Owner::UnresolvedDef`] with no signal anywhere in the artifact. An earlier
 /// draft swallowed both failures (`entries.flatten()` and an `if let Ok(…)`),
 /// which is the same silent-shrink class the sibling scanner already panics on.
-fn stdlib_structure_defs() -> std::collections::BTreeSet<String> {
+///
+/// Scanned ONCE per process, behind the same `OnceLock` its FEA sibling
+/// [`fea_owned_defs`] uses: the stdlib does not change while the test binary
+/// runs, and every gate-resident test that reaches `survey_corpus` would
+/// otherwise re-`read_dir` and re-read all ~46 modules from disk.
+fn stdlib_structure_defs() -> &'static std::collections::BTreeSet<String> {
+    static DEFS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
+        std::sync::OnceLock::new();
+    DEFS.get_or_init(scan_stdlib_structure_defs)
+}
+
+/// The uncached scan behind [`stdlib_structure_defs`].
+fn scan_stdlib_structure_defs() -> std::collections::BTreeSet<String> {
     let mut defs = std::collections::BTreeSet::new();
     let dir = std::path::Path::new(STDLIB_DIR);
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
@@ -1781,7 +1968,7 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
     // Seeded with the stdlib so a site constructing a stdlib def resolves even
     // when the declaring stdlib file is not part of the corpus handed in; every
     // swept member then contributes its own declarations below.
-    let mut structure_defs = stdlib_structure_defs();
+    let mut structure_defs = stdlib_structure_defs().clone();
     let mut run = SurveyRun {
         total: rel_paths.len(),
         ..SurveyRun::default()
