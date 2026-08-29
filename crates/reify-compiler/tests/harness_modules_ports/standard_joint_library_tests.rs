@@ -177,10 +177,11 @@ fn planar_joint_definition_is_self_check_clean() {
 /// DOF type would become `Type::Error`, which suppresses the §7.1 count/kind
 /// verdict entirely (anti-cascade, `compile_builder/entities_phase.rs`) and
 /// emits nothing at all. This test would then pass for the wrong reason. Its
-/// companion `spherical_orientation_dof_is_actually_classified` (section (b′)
-/// below) closes that hole: it over-declares the same body and asserts the
-/// mismatch actually fires naming "declared 4 rotational free DOF", a phrase
-/// only reachable once `dof_kind_of` has classified `Type::Orientation(3)`.
+/// companion — the `spherical` row of `orientation_dof_is_classified_not_skipped`
+/// (section (b′) below) — closes that hole: it over-declares the same body and
+/// asserts the mismatch actually fires naming "declared 4 rotational free DOF",
+/// a phrase only reachable once `dof_kind_of` has classified
+/// `Type::Orientation(3)`.
 #[test]
 fn spherical_joint_definition_is_self_check_clean() {
     let module = compile_source_with_stdlib(
@@ -202,8 +203,8 @@ fn spherical_joint_definition_is_self_check_clean() {
 ///
 /// NON-VACUITY: same masking hazard as
 /// `spherical_joint_definition_is_self_check_clean` above — a clean verdict and
-/// a skipped verdict are both silent. Its companion
-/// `ball_orientation_dof_is_actually_classified` (section (b′) below) proves
+/// a skipped verdict are both silent. Its companion — the `ball` row of
+/// `orientation_dof_is_classified_not_skipped` (section (b′) below) — proves
 /// the verdict is genuinely computed, not skipped.
 #[test]
 fn ball_joint_definition_is_self_check_clean() {
@@ -241,109 +242,103 @@ fn ball_joint_definition_is_self_check_clean() {
 // It is therefore unsatisfiable unless the surface name `Orientation` really
 // resolves and really flows into the classifier.
 
-/// `Orientation` as a declared DOF type must be CLASSIFIED (3 rot, 0 trans),
-/// not silently skipped: over `concentric(a, b)` the residual is
-/// (3,3) − (2,2) = (1 rot, 1 trans), which (3,0) cannot match, so the §7.1
-/// count/kind verdict must fire.
+/// Assert that `source` draws EXACTLY ONE `E_JOINT_DOF_MISMATCH` whose message
+/// names both `declared_phrase` (from `describe_declared`) and
+/// `residual_phrase` (the body's computed residual).
 ///
-/// RED before the `resolve_type_name` arm exists: `Orientation` resolves to
-/// `None` → `Type::Error` → `skip_verdict` → zero diagnostics of any code.
+/// Both halves matter and neither is redundant:
+///   * exactly-one — zero would mean the DOF type never resolved and the
+///     verdict was SKIPPED (the `Type::Error` → `skip_verdict` path), which is
+///     byte-identically silent to a clean verdict;
+///   * `declared_phrase` — produced only by `describe_declared` inside
+///     `check_joint_dof`, code the skip path never reaches, and its rotational
+///     count is unreachable at N ≥ 3 unless `dof_kind_of` really classified
+///     `Type::Orientation(3)` as (3 rot, 0 trans);
+///   * `residual_phrase` — pins the value the (b) clean tests above claim
+///     `orientation: Orientation` matches.
+///
+/// `label` names the row so a failure in the table below is attributable
+/// without re-running each case by hand. The exact diagnostic prose lives HERE
+/// and in the table rows only, so a rewording of `describe_declared` /
+/// `check_joint_dof` is a one-place fix rather than three.
+fn assert_single_dof_mismatch(
+    label: &str,
+    source: &str,
+    declared_phrase: &str,
+    residual_phrase: &str,
+) {
+    let module = compile_source_with_stdlib(source);
+    let errs = joint_dof_errors(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "{label}: exactly one E_JOINT_DOF_MISMATCH must fire. Zero here means the \
+         declared DOF type never resolved and the §7.1 verdict was SKIPPED, not \
+         clean — which would make the matching (b) test above vacuous.\n\
+         source: {source}\n\
+         All diagnostics: {:#?}",
+        module.diagnostics
+    );
+    let msg = &errs[0].message;
+    assert!(
+        msg.contains(declared_phrase),
+        "{label}: the mismatch must report the declared side as {declared_phrase:?} \
+         (i.e. `dof_kind_of` actually classified the Orientation DOF as \
+         (3 rot, 0 trans)), got: {msg}",
+    );
+    assert!(
+        msg.contains(residual_phrase),
+        "{label}: the mismatch must report the body residual as {residual_phrase:?}, \
+         got: {msg}",
+    );
+}
+
+/// The `Orientation` DOF type must be CLASSIFIED, never silently skipped —
+/// proven over three rows, one per hazard:
+///
+///  1. `orient_probe` — a bare `with orientation: Orientation` over
+///     `concentric(a, b)`, whose residual (3,3) − (2,2) = (1 rot, 1 trans)
+///     cannot match (3, 0). The narrowest possible probe of the arm.
+///  2. `spherical` — the mutation companion for
+///     `spherical_joint_definition_is_self_check_clean`: the same
+///     `coincident(c, d)` body, but over-declaring
+///     `{ orientation: Orientation, extra: Angle }` = (3,0) + (1,0)
+///     = (4 rot, 0 trans) against the residual (3 rot, 0 trans).
+///  3. `ball` — the identical over-declaration on the kinematic synonym, so a
+///     future change touching only one of the two joint definitions cannot
+///     leave the other vacuously green.
+///
+/// Rows 2 and 3 are what make the (b) clean tests non-vacuous; row 1 pins the
+/// classifier itself independently of either joint definition.
 #[test]
 fn orientation_dof_is_classified_not_skipped() {
-    let module = compile_source_with_stdlib(
-        "joint orient_probe(a: Axis, b: Axis) \
-         with orientation: Orientation = concentric(a, b)",
-    );
-    let errs = joint_dof_errors(&module);
-    assert_eq!(
-        errs.len(),
-        1,
-        "declared `orientation: Orientation` = (3rot,0trans) cannot match \
-         concentric's residual (1rot,1trans); exactly one E_JOINT_DOF_MISMATCH must fire. \
-         Zero here means the DOF type never resolved and the verdict was SKIPPED, not clean.\n\
-         All diagnostics: {:#?}",
-        module.diagnostics
-    );
-    let msg = &errs[0].message;
-    assert!(
-        msg.contains("declared 3 rotational free DOF"),
-        "the mismatch must report the Orientation DOF as 3 rotational free DOF \
-         (i.e. `dof_kind_of(Type::Orientation(3))` = (3,0) actually ran), got: {msg}",
-    );
-    assert!(
-        msg.contains("1 rot + 1 trans"),
-        "the mismatch must report concentric's residual as `1 rot + 1 trans`, got: {msg}",
-    );
-}
-
-/// Mutation companion for `spherical_joint_definition_is_self_check_clean`.
-///
-/// Same body, but the DOF record over-declares by one rotational freedom:
-/// `{ orientation: Orientation, extra: Angle }` = (3,0) + (1,0) = (4 rot, 0 trans)
-/// against `coincident`'s residual (3 rot, 0 trans). The mismatch MUST fire.
-/// If it does not, the clean sibling above is passing through the skip path and
-/// proves nothing.
-#[test]
-fn spherical_orientation_dof_is_actually_classified() {
-    let module = compile_source_with_stdlib(
-        "joint spherical(c: Point3<Length>, d: Point3<Length>) \
-         with { orientation: Orientation, extra: Angle } = coincident(c, d)",
-    );
-    let errs = joint_dof_errors(&module);
-    assert_eq!(
-        errs.len(),
-        1,
-        "over-declared `{{ orientation: Orientation, extra: Angle }}` = (4rot,0trans) \
-         cannot match coincident's residual (3rot,0trans); exactly one \
-         E_JOINT_DOF_MISMATCH must fire. Zero here means \
-         `spherical_joint_definition_is_self_check_clean` is vacuous.\n\
-         All diagnostics: {:#?}",
-        module.diagnostics
-    );
-    let msg = &errs[0].message;
-    assert!(
-        msg.contains("declared 4 rotational free DOF"),
-        "the mismatch must sum Orientation (3,0) + Angle (1,0) = 4 rotational free DOF, \
-         got: {msg}",
-    );
-    assert!(
-        msg.contains("3 rot + 0 trans"),
-        "the mismatch must report coincident's residual as `3 rot + 0 trans` — the very \
-         value the clean sibling claims `orientation: Orientation` matches, got: {msg}",
-    );
-}
-
-/// Mutation companion for `ball_joint_definition_is_self_check_clean` — the
-/// same over-declaration applied to `ball`, the kinematic synonym. Both
-/// vocabularies are covered so that a future change touching only one of the
-/// two joint definitions cannot leave the other vacuously green.
-#[test]
-fn ball_orientation_dof_is_actually_classified() {
-    let module = compile_source_with_stdlib(
-        "joint ball(c: Point3<Length>, d: Point3<Length>) \
-         with { orientation: Orientation, extra: Angle } = coincident(c, d)",
-    );
-    let errs = joint_dof_errors(&module);
-    assert_eq!(
-        errs.len(),
-        1,
-        "over-declared `{{ orientation: Orientation, extra: Angle }}` = (4rot,0trans) \
-         cannot match coincident's residual (3rot,0trans); exactly one \
-         E_JOINT_DOF_MISMATCH must fire. Zero here means \
-         `ball_joint_definition_is_self_check_clean` is vacuous.\n\
-         All diagnostics: {:#?}",
-        module.diagnostics
-    );
-    let msg = &errs[0].message;
-    assert!(
-        msg.contains("declared 4 rotational free DOF"),
-        "the mismatch must sum Orientation (3,0) + Angle (1,0) = 4 rotational free DOF, \
-         got: {msg}",
-    );
-    assert!(
-        msg.contains("3 rot + 0 trans"),
-        "the mismatch must report coincident's residual as `3 rot + 0 trans`, got: {msg}",
-    );
+    for (label, source, declared_phrase, residual_phrase) in [
+        (
+            "orient_probe: declared Orientation (3rot,0trans) vs concentric residual (1rot,1trans)",
+            "joint orient_probe(a: Axis, b: Axis) \
+             with orientation: Orientation = concentric(a, b)",
+            "declared 3 rotational free DOF",
+            "1 rot + 1 trans",
+        ),
+        (
+            "spherical: over-declared {orientation: Orientation, extra: Angle} (4rot,0trans) \
+             vs coincident residual (3rot,0trans)",
+            "joint spherical(c: Point3<Length>, d: Point3<Length>) \
+             with { orientation: Orientation, extra: Angle } = coincident(c, d)",
+            "declared 4 rotational free DOF",
+            "3 rot + 0 trans",
+        ),
+        (
+            "ball: over-declared {orientation: Orientation, extra: Angle} (4rot,0trans) \
+             vs coincident residual (3rot,0trans)",
+            "joint ball(c: Point3<Length>, d: Point3<Length>) \
+             with { orientation: Orientation, extra: Angle } = coincident(c, d)",
+            "declared 4 rotational free DOF",
+            "3 rot + 0 trans",
+        ),
+    ] {
+        assert_single_dof_mismatch(label, source, declared_phrase, residual_phrase);
+    }
 }
 
 // ── (c) B8 boundary tests ─────────────────────────────────────────────────────
