@@ -36,6 +36,9 @@
 //! | P4b | `min x` s.t. `x >= 8mm` | 12mm | **12.000000 mm** (bits `0x3f889374bc6a7efa`) | the seed | yes — bit-exact |
 //! | P4c | `max x` s.t. `8mm <= x <= 40mm` | 11mm | **11.000000 mm** (bits `0x3f86872b020c49ba`) | the seed | yes — bit-exact |
 //! | P6 | `min x` s.t. `2mm < x < 50mm`, **wall (5mm, 100mm)** | 25mm | **5.000000 mm** (bits `0x3f747ae147ae147b`) | the clamp floor | — |
+//! | P8a | `min x` s.t. `8mm <= x <= 40mm` | none | **24.000000 mm** (bits `0x3f989374bc6a7efa`) | the seed — **bit-identical to P2's `max`** | yes |
+//! | P8b | `max x` s.t. `x >= 8mm` | none | **10000.000000 mm** = 10 m (bits `0x4024000000000000`) | `default_bounds_for(Length)` upper corner | yes |
+//! | P8c | `min x` s.t. `x <= 40mm` | none | **0.001000 mm** = 1e-6 m (bits `0x3eb0c6f7a0b5ed8d`) | `default_bounds_for(Length)` lower corner | yes |
 //!
 //! P6 is the single deliberate NON-production row (it sets an `AutoParam.bounds` wall);
 //! every other row uses `bounds: None`.
@@ -104,6 +107,14 @@
 //! * **P7** (`reify-eval/tests/objective_seed_parking_e2e.rs`) reproduces link 5 at the
 //!   `.ri` driver level and measures the silence: 24.000000 mm returned with **zero**
 //!   diagnostics of any kind.
+//! * **P8 closes the verdict.** `minimize` and `maximize` over the same two-sided problem
+//!   return bit-identical answers, so no soft-penalty, partial-progress or
+//!   seed-coincidence story survives. Its one-sided controls also sharpen link 5's
+//!   trigger condition: the seed comes back only when the objective points **toward** a
+//!   derived bound (penalty active → 5e-7 undershoot → reject → fallback). Pointing
+//!   **away**, the optimum is feasible and the optimiser runs to the
+//!   `default_bounds_for(Length)` corner instead (10 m / 1e-6 m) — which is this PRD's
+//!   §10 **item 3**, owned by `#6655`/`#6692`, not item 4.
 //! * Candidate (c), the Money robustness floor / centrality blend, needs no probe:
 //!   the floor is Money-gated (`:820`, `:1755-1760`) and
 //!   `tests/robustness_floor.rs:397` (`non_money_objective_unchanged`) already pins

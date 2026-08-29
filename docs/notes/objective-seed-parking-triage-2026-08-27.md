@@ -5,8 +5,9 @@ Triage record for `docs/prds/v0_6/solution-set-completeness.md` §10 item 4:
 returns `8.8mm`. Objectives look soft-penalised rather than bound-seeking. Needs triage
 before it is called a bug."*
 
-**Verdict: it is a bug — a correctness defect, not a numerics one.** Candidate (a), the
-silent seed-fallback, is CONFIRMED; (b), (c) and (d) are ruled out. Nothing here changes
+**Verdict: it is a bug — a correctness defect, not a numerics one** (§5: `minimize` and
+`maximize` return bit-identical answers). Candidate (a), the silent seed-fallback, is
+CONFIRMED; (b), (c) and (d) are ruled out. Nothing here changes
 solver behaviour: the fix is already owned, three ways, and the disposition is
 close-into-owner (§7). File:line anchors below are point-in-time — re-verify against
 current `main` before building on one.
@@ -22,7 +23,7 @@ current `main` before building on one.
   the probe set plus this verdict, explicitly **not** a fix.
 - **PRD:** `docs/prds/v0_6/solution-set-completeness.md` §10 item 4.
 - **Instrument (both files land with this task):**
-  - `crates/reify-constraints/tests/objective_seed_parking_triage.rs` — probes P1–P6.
+  - `crates/reify-constraints/tests/objective_seed_parking_triage.rs` — probes P1–P6, P8.
     `cargo test -p reify-constraints --test objective_seed_parking_triage`
   - `crates/reify-eval/tests/objective_seed_parking_e2e.rs` — probe P7, at the `.ri`
     driver level. `cargo test -p reify-eval --test objective_seed_parking_e2e`
@@ -53,6 +54,9 @@ and that exception is the point of P6.
 | P5 | `solve_ranked` on P1's problem | none | `BestFound { reason: ConvergedWithinBudget }`, 1 candidate, `objective_score: Some(0.0088)` | not `IterationLimit` | — |
 | P6 | `min x` s.t. `2mm < x < 50mm`, **wall (5mm, 100mm)** | 25mm | **5.000000 mm** (bits `0x3f747ae147ae147b`) | the clamp floor | — |
 | P7 | `.ri` driver, `min x` s.t. `8mm <= x <= 40mm` | none | **24.000000 mm** (bits `0x3f989374bc6a7efa`), **0 diagnostics** | the seed | yes (= P2) |
+| P8a | `min x` s.t. `8mm <= x <= 40mm` | none | **24.000000 mm** (bits `0x3f989374bc6a7efa`) | the seed — **bit-identical to P2's `max`** | yes |
+| P8b | `max x` s.t. `x >= 8mm` | none | **10000.000000 mm** = 10 m (bits `0x4024000000000000`) | `default_bounds_for(Length)` upper corner | yes |
+| P8c | `min x` s.t. `x <= 40mm` | none | **0.001000 mm** = 1e-6 m (bits `0x3eb0c6f7a0b5ed8d`) | `default_bounds_for(Length)` lower corner | yes |
 
 Every solve returned `SolveResult::Solved { unique: false }` — never `Infeasible`, never
 `NoProgress`. The `unique: false` is expected and is **not** a divergence: the
@@ -111,6 +115,11 @@ fixed and moving only the seed, the answer tracks the seed bit-for-bit: 30mm →
 12mm → 12mm, and (two-sided, opposite sense) 11mm → 11mm. An output that is a bit-exact
 function of the seed under those conditions can only be the seed being returned.
 
+**P8 is the closing evidence — see §5.** Minimise and maximise return the *identical*
+answer, bit for bit, on the same two-sided problem. An objective whose *sense* has no
+effect on the answer is not a soft-penalty artefact, a partial-progress artefact, or a
+seed coincidence. Nothing else in the candidate set survives it.
+
 **P7 measures the silence.** At the `.ri` driver level (`compile_source_with_stdlib` →
 `Engine::eval`), `minimize x` under `8mm <= x <= 40mm` returns 24.000000 mm — bit-identical
 to the solver-level P2 result, so the driver adds nothing — and the eval emits **zero
@@ -163,7 +172,57 @@ The objective reaches the solver and does drive the answer when it can:
 
 The differentiator is not plumbing; it is link 2.
 
-## §5 — Correction to the PRD's item-4 wording
+## §5 — Sense-invariance, and the sense × shape grid
+
+Not anticipated in the original filing; found by a throwaway probe run during planning
+and pinned as **P8**. On the **same** two-sided problem (`8mm <= x <= 40mm`, production
+shape, no seed):
+
+| sense | measured | bits |
+|---|---|---|
+| `Minimize` | 24.000000 mm | `0x3f989374bc6a7efa` |
+| `Maximize` | 24.000000 mm | `0x3f989374bc6a7efa` |
+
+**Bit-identical.** On this shape the objective's sense is ignored outright. That is what
+takes the finding out of the "tolerance / solution quality" category: no soft-penalty
+story, no partial-progress story and no seed-coincidence story survives an answer that is
+invariant under negating the objective.
+
+### The full grid — and a corrected prediction
+
+The one-sided controls **contradicted this task's planned prediction** (that a one-sided
+shape returns its nudged seed under *either* sense). They are pinned as MEASURED, and the
+divergence is filed as **`esc-6756-1`** rather than retuned:
+
+| | `x >= 8mm` | `x <= 40mm` | `8mm <= x <= 40mm` |
+|---|---|---|---|
+| `Minimize` | **8.800000 mm** — seed | **0.001000 mm** = 1e-6 m — default corner | **24.000000 mm** — seed |
+| `Maximize` | **10000.000000 mm** = 10 m — default corner | **36.000000 mm** — seed | **24.000000 mm** — seed |
+
+Both corner values are exactly `default_bounds_for(Length)` = `(1e-6, 10.0)`
+(`solver.rs:1585-1594`), so the pinned numbers remain *derived* — just from a different
+constant than planned.
+
+This **sharpens** §1's verdict rather than contradicting it. The seed is returned exactly
+when the objective points **toward** a derived bound: that is when the penalty term is
+active, so the optimum lands 5e-7 outside the bound (link 3), is rejected (link 4), and
+the fallback fires (link 5). When the objective points **away**, the optimum is feasible,
+nothing is rejected, no fallback fires, and the optimiser simply runs to the default-box
+corner. **Both reported numbers (8.8mm and 24mm) are the points-toward case.**
+
+Sense-invariance on the two-sided shape is therefore not a general claim that the sense is
+never read — on one-sided shapes the sense decides *which* of two silent failure modes you
+get. Neither is the optimum the author asked for.
+
+### Overlap with §10 item 3 — recorded, not taken into scope
+
+The 10 m corner independently reproduces this PRD's §10 **item 3** — *"An inequality-only
+strict `auto` with no upper bound parks at the `10 m` default-box corner with no
+warning"* — owned by **#6655** / P1-ε **#6692**. The `minimize` mirror image, the **1e-6 m
+lower corner**, is *not* named in item 3's wording; it is recorded here for that item's
+owner. This triage files nothing for it and does not widen its own scope to cover it.
+
+## §5.1 — Correction to the PRD's item-4 wording
 
 §10 item 4 reads *"`maximize` against a `<= 40mm` bound returns `24mm`"*, which implies a
 **one-sided** shape. Measured (P3), a genuinely one-sided `x <= 40mm` returns **36mm**
@@ -237,9 +296,11 @@ seed-fallback then **amplifies** — 5e-7 of undershoot is converted into a 0.8m
 16mm (P2/P7) deviation, because the fallback discards the optimum wholesale rather than
 projecting it back onto the bound.
 
-Finally, on severity: P4 means this should not be dispositioned as a solution-quality or
-tolerance issue. The answer is a bit-exact function of the seed, so the objective is not
-being *approximately* honoured — it is not being honoured at all.
+Finally, on severity: **§5 means this must not be dispositioned as a solution-quality or
+tolerance issue.** An objective whose sense has no effect on the answer is a
+**correctness** defect. P4 says the same thing from the other side — the answer is a
+bit-exact function of the seed, so the objective is not being *approximately* honoured, it
+is not being honoured at all. Neither reading leaves room for "the numbers are a bit off".
 
 ## §8 — The probes are a tripwire, not a specification
 
