@@ -433,6 +433,18 @@ not to hold for even a day — which is the whole argument for shipping a re-run
 `setup-dev.sh` rather than a one-time fix. Note the ordering, though: nothing re-asserts the pin until
 `setup-dev.sh` carries the guard, and that happens only when this task lands.
 
+**Re-measured 2026-08-29, read-only, three days after the disarm — still armed.**
+`bash scripts/git-rerere-guard.sh check /home/leo/src/reify` → **exit 1**,
+`ARMED: rerere.enabled=true`. Per-scope reads: `--local` → `true`; `--global` and `--system` both
+UNSET. `rerere.autoupdate` is `--local false` — so the store is in a *split* state, one key pinned and
+the other not, which no single write by `arm` produces (it writes both). The store now carries **254**
+linked worktrees. Three `check` runs took 1.51s / 0.63s / 0.91s wall — read-only and sub-second, which
+is what makes the periodic-probe item below cheap.
+
+> `Hypothesis:` the split state is consistent with a writer that sets `rerere.enabled` alone rather
+> than re-writing the whole `[rerere]` section. That narrows the *shape* of the write, **not** its
+> source; the writer is still unidentified and no candidate mechanism has been excluded.
+
 ## 8. Open items
 
 1. **`git fsck` on the shared store remains UNMEASURED.** The 2026-07-30 attempt was killed at a 900s
@@ -458,6 +470,19 @@ not to hold for even a day — which is the whole argument for shipping a re-run
    re-measurement on 2026-08-28 found the keys set **directly** in `/home/leo/src/reify/.git/config`
    (lines 46-48) with **no `include` directive anywhere in that file** — `check` exit 1,
    `rr-cache` 269 entries, still armed.
+
+3. **`arm` runs at developer-setup cadence, not lane cadence.** This is the concrete form of item 2's
+   "narrows the window, does not close it", and it is worth stating as its own gap because
+   `CLAUDE.md` states the disarm as an invariant: as landed, *no frequently-executed path upholds it*.
+   `setup-dev.sh` is the only caller, and a developer runs it rarely — which is why the 2026-08-29
+   re-measurement above found the store armed with nothing having re-asserted the pin in between.
+
+   The natural fix is a caller at lane cadence. `scripts/setup-main-gate-worktree-config.sh` is the
+   obvious candidate: it already exists to defend against the same per-worktree-enter shared-config
+   clobber, and it already runs per lane. The orchestrator's lane ACQUIRE is the other. Either is
+   cheap — `check` is sub-second on the live 254-lane store (measured, §7) and `arm` is a byte-level
+   no-op when the pin is already in place. Neither is wired today; both are outside this task's
+   module scope, so this is filed as follow-up rather than done here.
 
 ## Pointers
 
