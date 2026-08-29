@@ -470,8 +470,21 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// **Known limitation:** `reify check` still surfaces the engine-owned
 /// `Severity::Error` "no registered compute trampoline (falling back to
 /// body-inlining)" diagnostic on stderr for `@optimized` FEA solves.  The
-/// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
-/// separate engine-side concern (deferred, out of scope for this CLI task).
+/// severity is owned by `engine_eval.rs`.
+///
+/// Since #5403 that Error is still PRINTED but no longer moves the exit code:
+/// [`check_gating_error`] gates on every `Severity::Error` in the merged set,
+/// and [`CHECK_ERROR_EXIT_ALLOWLIST`] entry #1 explicitly excuses this one —
+/// a trampoline-free `check` is a healthy path BY DESIGN (see the posture
+/// section above), so Error is the wrong severity for it, not a defect this
+/// gate should punish.  That allowlist entry is a BOUNDED migration ratchet,
+/// not a permanent carve-out: **#5311** owns demoting the engine-side
+/// diagnostic to a Warning, after which **#5404** retires the entry and the
+/// end state has no per-message list at all (INV-SF-2).  The exit-0 contract
+/// this note describes is locked by
+/// `check_fea_violated_constraint_is_not_gated` in `cli_build_fea.rs`, which
+/// keeps passing unchanged across that burn-down because a Warning never
+/// gates.
 /// The constraint-indeterminacy message grammar, as one pair of literals:
 /// `constraint {label-or-id} indeterminate: {reason}`.
 ///
@@ -658,8 +671,18 @@ fn merge_post_build_verdicts(
 /// under #6048: build reporting `Violated` where check says `Satisfied` keeps
 /// build's error line (`mirror_case_build_side_violation_currently_survives`),
 /// and an id-less `ConstraintIndeterminate` carries no needle to match
-/// (`idless_indeterminate_warning_survives_an_upgrade`).  γ (#5403) owns the
-/// unified gate over the merged set and is the natural point to resolve both.
+/// (`idless_indeterminate_warning_survives_an_upgrade`).
+///
+/// γ (#5403) has since landed the unified gate over the merged set and did NOT
+/// resolve either — both remain #6048's.  The gate did make the FIRST gap
+/// consequential, which is why it is worth restating here: a surviving stale
+/// `ConstraintViolated` Error would now move the exit code, contradicting the
+/// `Satisfied` verdict `check` prints on stdout.  That is held off by
+/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry #4, which excuses `ConstraintViolated`
+/// with disposition `FixPath` — the fix belongs HERE (widen this helper's
+/// scope past `ConstraintIndeterminate`), not in the gate.  Real violations
+/// still exit non-zero via `ConstraintOutcome::SomeViolated` in
+/// [`finish_check`], so nothing is lost meanwhile.
 ///
 /// No exit code can move either way: `report_eval_output`'s outcome derives
 /// solely from `constraint_results`, never from the diagnostic list.  An empty
@@ -896,7 +919,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // discarded but are false errors now that the merge is live —
                 // `check` exports nothing.
                 //
-                // COST, recorded not paid down (task 5748 → γ/#5403): adding
+                // COST, recorded not paid down (task 5748 → #5973): adding
                 // `has_geometry` to this gate means a plain geometry module —
                 // which previously took the lightweight `Engine::new(None) +
                 // check()` path — now evaluates the module at least TWICE per
@@ -914,8 +937,23 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // redundant eval, the verdict merge AND the (b)/(c)
                 // composition asymmetry together, but it changes which passes
                 // run on the check path — a behaviour change this leaf is not
-                // scoped to make. γ (#5403) already rewrites the escalation
-                // predicates here and is the natural place to do it.
+                // scoped to make.
+                //
+                // γ (#5403) HAS SINCE LANDED and did NOT pay this down. It
+                // rewrote the escalation predicates below — both ad-hoc
+                // per-code bolt-ons replaced by one `check_gating_error` over
+                // the merged set — but that is an exit-code change over a set
+                // this arm already computes, and it neither adds nor removes a
+                // pass. The restructure is a different, larger move, and it is
+                // recorded here so the cost is not lost, not because γ owns it.
+                //
+                // OWNER: #5973 ("push the post-realization constraint re-check
+                // down into Engine::check(), retiring cmd_check's CLI-side
+                // merge_post_build_verdicts"), which is option (C) from
+                // esc-5748-1's steward ruling — the ruling took the CLI-side
+                // merge precisely BECAUSE (C) fell outside 5748's file scope.
+                // The double eval, the verdict merge and the (b)/(c) asymmetry
+                // all retire together there.
                 build_result = Some(engine.realize_for_check(&compiled));
             }
             if has_representation_within {
@@ -1634,9 +1672,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
                             println!("Some constraints violated.");
                         }
                     }
-                    let has_error_diagnostic =
-                        result.diagnostics.iter().any(|d| d.severity == Severity::Error);
-                    if build_is_success(&outcome, has_error_diagnostic) {
+                    if build_is_success(&outcome, has_error_diagnostic(&result.diagnostics)) {
                         ExitCode::SUCCESS
                     } else {
                         ExitCode::FAILURE
@@ -1787,9 +1823,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
                     println!("Some constraints violated.");
                 }
             }
-            let has_error_diagnostic =
-                all_diagnostics.iter().any(|d| d.severity == Severity::Error);
-            if build_is_success(&outcome, has_error_diagnostic) {
+            if build_is_success(&outcome, has_error_diagnostic(&all_diagnostics)) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -2191,7 +2225,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         eprintln!("persistent-cache: {} hit(s), {} miss(es)", hits, misses);
     }
 
-    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+    if has_error_diagnostic(&diagnostics) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -2811,8 +2845,16 @@ fn cmd_lsp() -> ExitCode {
 /// This resolves task-4458 concern (c): `cmd_build` previously exited 0 when
 /// an `Error`-severity engine diagnostic was emitted alongside a non-violated
 /// constraint outcome.  This helper aligns `cmd_build`'s exit code with
-/// `cmd_eval`'s `Severity::Error` gate (see `cmd_eval` at the
-/// `diagnostics.iter().any(|d| d.severity == Severity::Error)` check).
+/// `cmd_eval`'s `Severity::Error` gate: since #5403 both callers compute the
+/// `has_error_diagnostic` argument by calling [`has_error_diagnostic`], the
+/// one shared severity predicate, so the two commands cannot drift apart.
+///
+/// `reify check` gates on that SAME predicate and then layers one extra thing
+/// on top: [`check_gating_error`] excuses any Error a
+/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry claims (a bounded burn-down ratchet,
+/// #5404).  `build`/`eval` are deliberately NOT allowlist-aware — they have
+/// gated on raw `Severity::Error` since #4458 and must keep gating on e.g.
+/// the trampoline Error that `check` excuses.
 ///
 /// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
 /// unit-testable; callers convert to `ExitCode` at the boundary.
@@ -3327,7 +3369,13 @@ fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> boo
 /// first absorb its own internal UNCODED duplicates via [`dedup_diagnostics`].  The
 /// asymmetry is stderr ordering only — membership is a union under the same
 /// key either way, so no invariant depends on it and no exit code can move.
-/// γ/#5403 unifies both arms and is the natural point to pick one ordering.
+///
+/// γ (#5403) has landed and did NOT unify the arms: it adds one exit gate that
+/// reads whichever merged set each arm produced, and a gate over a set is
+/// blind to that set's order.  So the asymmetry stands, still costing nothing.
+/// The natural point to collapse it is **#5973**, which moves sub-path (b)
+/// onto (c)'s shape — after that both arms seed from the realization's list
+/// and there is only one ordering left to pick.
 ///
 /// # Dedup key
 ///
@@ -6915,9 +6963,20 @@ mod d2_pass_ordering_tests {
     ///
     /// The surviving error IS the stdout/stderr self-contradiction #6048
     /// describes.  It is pinned rather than fixed because dropping a violation
-    /// error is a heavier call than dropping an indeterminacy warning, and
-    /// γ/#5403 owns the unified gate over this merged set.  When #6048 lands,
-    /// THIS TEST MUST FAIL — that is the point; flip it to assert the drop.
+    /// error is a heavier call than dropping an indeterminacy warning.
+    ///
+    /// γ (#5403) has since landed the unified gate over this merged set, and
+    /// that raised the stakes rather than resolving it: a stale
+    /// `ConstraintViolated` Error surviving into the merged set would now move
+    /// `check`'s EXIT CODE, contradicting the `Satisfied` verdict on its own
+    /// stdout.  What stops that today is `CHECK_ERROR_EXIT_ALLOWLIST` entry #4
+    /// (`Code(ConstraintViolated)`, disposition `FixPath`) — so this test and
+    /// that entry are two views of one gap, and the entry's `FixPath` says the
+    /// repair belongs in `drop_falsified_indeterminate_diagnostics`, not in
+    /// the gate.
+    ///
+    /// When #6048 lands, THIS TEST MUST FAIL — that is the point; flip it to
+    /// assert the drop, and retire allowlist entry #4 in the same change.
     #[test]
     fn mirror_case_build_side_violation_currently_survives() {
         let needle = "BoltFlange#constraint[1]";

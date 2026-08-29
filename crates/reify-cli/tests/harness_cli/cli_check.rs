@@ -1167,10 +1167,17 @@ fn check_purpose_gate_matches_the_no_purpose_gate() {
 ///
 /// `reify check` writes no artifact, so "cannot export" is not a fact about the
 /// design — it is a FALSE error, and precisely the class of untruthful output
-/// PRD `check-diagnostic-truthfulness.md` exists to remove. It is also a
-/// forward landmine: leaf γ (#5403) replaces the two ad-hoc escalations with a
-/// general `Severity::Error` gate over this same merged set, at which point a
-/// leaked export error makes `reify check` EXIT 1 on a perfectly valid design.
+/// PRD `check-diagnostic-truthfulness.md` exists to remove.
+///
+/// That was written as a forward landmine; leaf γ (#5403) has since LANDED, so
+/// it is now a live consequence. `check_gating_error` exits non-zero on any
+/// non-allowlisted `Severity::Error` in exactly this merged set, and no
+/// allowlist entry covers the export-walk messages (nor should one — they are
+/// not "expected on a healthy path", they are output `check` must never
+/// produce at all). So the `realize_for_check` choice below is what keeps THIS
+/// TEST's `status.success()` assertion true: were `cmd_check` to go back to
+/// `Engine::build`, the leaked export error would now make `reify check` EXIT
+/// 1 on a perfectly valid design.
 ///
 /// Fix: `cmd_check` calls `Engine::realize_for_check` (realization with the
 /// Phase-B export disabled) instead of `Engine::build`. Both `cmd_check`
@@ -1213,8 +1220,9 @@ fn check_does_not_surface_export_only_diagnostics() {
         !stderr.contains("no product geometry to export"),
         "`reify check` writes no artifact, so an export-only diagnostic is a \
          FALSE error — `cmd_check` must realize via `realize_for_check` (Phase-B \
-         export disabled), never `build()`. Leaf γ (#5403) turns this leak into \
-         a false EXIT 1.\nstdout: {stdout}\nstderr: {stderr}"
+         export disabled), never `build()`. Under the landed γ (#5403) gate this \
+         leak is also a false EXIT 1, so the `status.success()` assertion above \
+         fails with it.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     // The other two export-only producers on the same walk.
