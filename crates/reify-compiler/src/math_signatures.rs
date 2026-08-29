@@ -2384,4 +2384,99 @@ mod tests {
             "max(Real, Real) must stay Real (kind-preserving identity)"
         );
     }
+
+    // ── Forward-trig argument-dimension check (task 6249, step-1 RED) ────────
+    //
+    // `check_transcendental_arg_dimensions` rejects a dimensioned, non-ANGLE
+    // argument to `sin`/`cos`/`tan`. RED until step-2 adds the function: the
+    // test module does not compile without it (the established RED idiom for a
+    // new resolver arm — cf. the `RED until S2 adds the "vec3" arm` tests above).
+
+    /// A `Scalar<Mass>` element expression — the second dimension used to pin
+    /// that the rejection is "any non-ANGLE dimension", not a LENGTH special case.
+    fn mass_elem(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(
+            Value::Scalar {
+                si_value: v,
+                dimension: DimensionVector::MASS,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
+        )
+    }
+
+    /// The established test-span idiom (`relation_signatures.rs:1204-1205`,
+    /// `arg_check.rs:121`).
+    fn trig_call_span() -> reify_core::SourceSpan {
+        reify_core::SourceSpan::new(0, 10)
+    }
+
+    /// Assert `name(arg)` pushes exactly one `ArgTypeMismatch` Error whose
+    /// message names the builtin and the word `Angle`, labelled at the call span.
+    fn assert_single_trig_rejection(name: &str, arg: CompiledExpr) {
+        let span = trig_call_span();
+        let mut diagnostics = Vec::new();
+        check_transcendental_arg_dimensions(name, &[arg], span, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "{name}(<dimensioned>) must push exactly ONE diagnostic, got {diagnostics:?}"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(
+            d.code,
+            Some(reify_core::DiagnosticCode::ArgTypeMismatch),
+            "{name}: diagnostic must reuse DiagnosticCode::ArgTypeMismatch"
+        );
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "{name}: diagnostic must be Error severity"
+        );
+        assert!(
+            d.message.contains(name),
+            "{name}: message must name the builtin, got {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("Angle"),
+            "{name}: message must mention `Angle`, got {:?}",
+            d.message
+        );
+        let label = d
+            .labels
+            .first()
+            .unwrap_or_else(|| panic!("{name}: diagnostic must carry a label"));
+        assert_eq!(
+            label.span, span,
+            "{name}: label must be anchored at the passed call span"
+        );
+    }
+
+    /// `sin(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn sin_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("sin", length_elem(0.005));
+    }
+
+    /// `cos(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn cos_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("cos", length_elem(0.005));
+    }
+
+    /// `tan(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn tan_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("tan", length_elem(0.005));
+    }
+
+    /// `sin(2.0kg)` — MASS argument is rejected too. Pins that the rule is
+    /// "any dimensioned non-ANGLE scalar", not a LENGTH special case.
+    #[test]
+    fn sin_rejects_mass_dimensioned_argument_not_just_length() {
+        assert_single_trig_rejection("sin", mass_elem(2.0));
+    }
 }
