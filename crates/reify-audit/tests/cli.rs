@@ -2628,6 +2628,20 @@ enum Framing {
     Sse,
 }
 
+/// Which JSON-RPC `result` envelope shape the mock's `tools/call` arm
+/// builds. Mirrors the two branches `FusedMemoryClient::call_tool`
+/// distinguishes (`fused_memory_client.rs:221-236`):
+/// [`ResultShape::StructuredContent`] drives the `result.structuredContent`
+/// early return at line 222; [`ResultShape::ContentText`] drives the
+/// `result.content[].text` fallback at lines 225-234. The `None` /
+/// error-envelope branch (task not found) is shape-independent and stays
+/// the same under either variant.
+#[derive(Clone, Copy, PartialEq)]
+enum ResultShape {
+    StructuredContent,
+    ContentText,
+}
+
 fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
     write_response_with_session(stream, status, None, body)
 }
@@ -2739,25 +2753,51 @@ where
 /// Spawn a one-shot mock MCP server that answers every leg with
 /// `Content-Type: text/event-stream` framing (see [`Framing::Sse`]) rather
 /// than bare JSON, binding an OS-assigned ephemeral port. SSE counterpart
-/// to [`spawn_mock_mcp`]; see [`spawn_mock_mcp_on_framed`] for exactly which
-/// leg stays JSON-shaped regardless (the `notifications/initialized` 202).
+/// to [`spawn_mock_mcp`]; result shape is [`ResultShape::StructuredContent`]
+/// (see [`spawn_mock_mcp_sse_content_text`] for the other shape). See
+/// [`spawn_mock_mcp_on_shaped`] for exactly which leg stays JSON-shaped
+/// regardless (the `notifications/initialized` 202).
 fn spawn_mock_mcp_sse<F>(task_responder: F) -> MockServer
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    spawn_mock_mcp_on_framed(listener, Framing::Sse, task_responder)
+    spawn_mock_mcp_on_shaped(
+        listener,
+        Framing::Sse,
+        ResultShape::StructuredContent,
+        task_responder,
+    )
+}
+
+/// Spawn a one-shot mock MCP server, SSE-framed, whose `tools/call` result
+/// uses the `content[0].text` shape (see [`ResultShape::ContentText`])
+/// instead of `structuredContent`. The only spawner in the harness that
+/// exercises `FusedMemoryClient::call_tool`'s text fallback
+/// (`fused_memory_client.rs:225-234`).
+fn spawn_mock_mcp_sse_content_text<F>(task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    spawn_mock_mcp_on_shaped(listener, Framing::Sse, ResultShape::ContentText, task_responder)
 }
 
 /// Spawn a one-shot mock MCP server on an already-bound `listener`, speaking
-/// JSON framing. Thin [`Framing::Json`] wrapper over
-/// [`spawn_mock_mcp_on_framed`]; see that function for the accept-loop
+/// JSON framing with the `structuredContent` result shape. Thin
+/// [`Framing::Json`]/[`ResultShape::StructuredContent`] wrapper over
+/// [`spawn_mock_mcp_on_shaped`]; see that function for the accept-loop
 /// details (non-blocking poll, stop-flag teardown, per-leg responses).
 fn spawn_mock_mcp_on<F>(listener: TcpListener, task_responder: F) -> MockServer
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
-    spawn_mock_mcp_on_framed(listener, Framing::Json, task_responder)
+    spawn_mock_mcp_on_shaped(
+        listener,
+        Framing::Json,
+        ResultShape::StructuredContent,
+        task_responder,
+    )
 }
 
 /// Spawn a one-shot mock MCP server on an ALREADY-BOUND `listener`, deriving
@@ -2771,14 +2811,16 @@ where
 /// leg, which always answers 202 with an empty body regardless of framing
 /// — that matches real MCP, and `FusedMemoryClient::post` short-circuits
 /// on status 202 before sniffing content-type, so SSE-framing that leg
-/// would be untestable fiction.
+/// would be untestable fiction. `shape` (see [`ResultShape`]) selects the
+/// `tools/call` result envelope shape independently of `framing`.
 ///
 /// The accept loop uses a short `set_nonblocking` poll so it wakes
 /// periodically to check the stop flag even without a wakeup connection —
 /// that way a stop request can't hang the test runner.
-fn spawn_mock_mcp_on_framed<F>(
+fn spawn_mock_mcp_on_shaped<F>(
     listener: TcpListener,
     framing: Framing,
+    shape: ResultShape,
     task_responder: F,
 ) -> MockServer
 where
