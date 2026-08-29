@@ -4036,6 +4036,24 @@ pub(crate) fn compile_entity(
                         0,
                         &geometry_lets,
                         &mut HashSet::new(),
+                        // Task #5665's sink, threaded exactly as the two
+                        // sibling arms below thread it: this arm walks
+                        // `structure.members`, so a geometry-LIST let here is
+                        // always TOP-LEVEL and its elements' synthesized
+                        // predicates belong on the entity's flat `constraints`,
+                        // never in a `where`/`else` arm.
+                        //
+                        // The elements also re-compile inside a
+                        // `union_all(<list>)` fold (geometry_boolean.rs), which
+                        // is handed a sink over this SAME vec. That is the exact
+                        // shape `GeometryConstraintSink::push` deduplicates on —
+                        // `(arm vec, span, content_hash)` — so one source
+                        // element still synthesizes one constraint.
+                        &mut GeometryConstraintSink::new(
+                            entity_name,
+                            &mut constraints,
+                            &mut constraint_index,
+                        ),
                     ) {
                         realizations.push(RealizationDecl {
                             id: RealizationNodeId::new(entity_name, realization_index),
