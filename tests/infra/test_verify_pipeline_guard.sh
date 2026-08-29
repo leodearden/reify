@@ -25,6 +25,23 @@
 #     therefore gated on an explicit precondition assertion that names that
 #     cause directly, rather than being left to fail as "the guard derived
 #     nothing".
+#
+# COST — MEASURED, not estimated (task 6426 review). ~35s wall for 123
+# assertions on this tree, against a previously fork-free suite. Know where it
+# goes before adding to it, because clause 4b is LAZY and that makes the
+# cost model counter-intuitive: EVERY exit-1 assertion falls through all the
+# static clauses and so reaches the fork, while exit-0 and exit-2 assertions
+# return without one. The budget is roughly: two make_runnable_verify_fixture
+# tree copies, the --print-plan captures (each up to 3 capture_print_plan
+# attempts), the >=3s deliberate wait in the BOUNDED case, and one fork per
+# remaining forking assertion.
+#
+# TO KEEP IT THERE, a new exit-1 assertion that is not specifically about
+# clause 4b should use run_guard_nofork rather than run_guard — same derived
+# sets, ~0.05s instead of ~0.4-1.4s; see that helper for why it costs no
+# assertion strength. Converting the seven real-tree exit-1 assertions to it
+# paid for the six added boundary-precision assertions and ~9s besides
+# (43.7s/117 -> 34.9s/123).
 
 set -euo pipefail
 
@@ -68,6 +85,44 @@ GUARD_SH="$REPO_ROOT/scripts/verify-pipeline-guard.sh"
 # run_guard <subcommand> [args...] — invoke the classifier under test.
 run_guard() {
     bash "$GUARD_SH" "$@"
+}
+
+# run_guard_nofork <subcommand> [args...] (task 6426 review) — same classifier,
+# same DERIVED SETS, without clause 4b's --print-plan fork. For the exit-1
+# (fast-path-safe) assertions, which are the ones that pay it.
+#
+# WHY THIS COSTS NOTHING IN ASSERTION STRENGTH. The fixture is a PRISTINE
+# `cp scripts/verify.sh` with no sibling libs beside it. Clauses 3 (sourced
+# libs) and 4a (source-text emitted gates) only READ verify.sh, and they read
+# byte-identical content here, so both derive exactly what they derive on the
+# real tree. Only clause 4b differs: --print-plan on a lib-less copy hard-fails
+# in ~0.03s ("occt-scope-lib.sh not found next to verify.sh") and the documented
+# fail-soft route yields an empty set — see the (c-bis) FAIL-SOFT case, which
+# pins that degradation directly on this same fixture shape.
+#
+# WHY THAT IS SAFE FOR THESE ASSERTIONS SPECIFICALLY. Clause 4b is MONOTONE: it
+# can only ADD paths, so dropping it can only turn an exit 0 into an exit 1 —
+# never the reverse. An assertion that a path is fast-path-safe therefore cannot
+# be made to pass spuriously by using this helper; it can only become
+# insensitive to 4b. And 4b's contribution is byte-identical to 4a's today, so
+# there is nothing to be insensitive to. Use run_guard (the real tree) for every
+# exit-0 assertion, where the direction of the monotonicity does matter.
+#
+# WHAT WOULD MAKE THIS WRONG, and where it would show: if verify.sh ever grows a
+# live variable-assembled plan line, 4b starts deriving a path 4a cannot see,
+# and an exit-1 assertion on THAT path would go stale here while staying honest
+# under run_guard. The live non-vacuity assertions in Pair E (c-bis)(a) compare
+# --list-plan-derived against the real tree precisely so that divergence is
+# visible somewhere, and Pair E's own cases keep using the runnable fixture.
+#
+# COST: measured, this takes the seven real-tree exit-1 assertions from a
+# ~0.4-1.4s fork each to ~0.05s each.
+_NOFORK_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_NOFORK_DIR")
+_NOFORK_VERIFY="$_NOFORK_DIR/verify.sh"
+cp "$REPO_ROOT/scripts/verify.sh" "$_NOFORK_VERIFY"
+run_guard_nofork() {
+    REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$_NOFORK_VERIFY" bash "$GUARD_SH" "$@"
 }
 
 # assert_exit DESC EXPECTED CMD [args...] — assert CMD exits EXPECTED_CODE.
@@ -187,13 +242,13 @@ assert_exit "POSITIVE: scripts/occt-touching-crates.txt is load-bearing (exit 0)
 # These prove the guard stays surgical and does not break the config-only
 # fast-path throughput benefit.
 assert_exit "NEGATIVE: docs/note.md is fast-path-safe (exit 1)" 1 \
-    run_guard requires-full-gate docs/note.md
+    run_guard_nofork requires-full-gate docs/note.md
 
 assert_exit "NEGATIVE: dark-factory-orchestrator.yaml is fast-path-safe (exit 1)" 1 \
-    run_guard requires-full-gate dark-factory-orchestrator.yaml
+    run_guard_nofork requires-full-gate dark-factory-orchestrator.yaml
 
 assert_exit "NEGATIVE: README.md is fast-path-safe (exit 1)" 1 \
-    run_guard requires-full-gate README.md
+    run_guard_nofork requires-full-gate README.md
 
 # MIXED: the incident shape — any load-bearing file in the diff forces the full gate.
 assert_exit "MIXED: docs/note.md + scripts/verify.sh -> full gate required (exit 0)" 0 \
@@ -362,7 +417,7 @@ fi
 # (The existing Pair A docs/note.md / README.md negatives already cover the
 # generic case.)
 assert_exit "PRECISION: docs/notes/unregistered-example.md NOT in doc-sync-paths.txt -> fast-path-safe (exit 1)" 1 \
-    run_guard requires-full-gate docs/notes/unregistered-example.md
+    run_guard_nofork requires-full-gate docs/notes/unregistered-example.md
 
 # (d) ANTI-DRIFT sweep: independently re-derive every doc-sync doc by
 # grepping tests/infra/*.sh for the $REPO_ROOT/docs/...\.md literal form each
@@ -461,18 +516,18 @@ assert_exit "NORMALIZE: ./tests/infra/test_new.sh stripped then glob-matched (ex
 # (h) PRECISION: a non-.sh file under tests/infra stays fast-path-safe -- the
 # glob is surgical to .sh, not a blanket route for all of tests/infra/.
 assert_exit "PRECISION: tests/infra/zzz-not-a-script.txt NOT .sh -> fast-path-safe (exit 1)" 1 \
-    run_guard requires-full-gate tests/infra/zzz-not-a-script.txt
+    run_guard_nofork requires-full-gate tests/infra/zzz-not-a-script.txt
 
 # (i) PRECISION: a .sh file OUTSIDE tests/infra is not caught by this clause
 # (proves the tests/infra/ prefix requirement).
 assert_exit "PRECISION: scripts/zzz-not-infra.sh OUTSIDE tests/infra -> fast-path-safe (exit 1)" 1 \
-    run_guard requires-full-gate scripts/zzz-not-infra.sh
+    run_guard_nofork requires-full-gate scripts/zzz-not-infra.sh
 
 # (j) PRECISION: an unanchored substring path is not caught (proves ^
 # anchoring to the repo-relative form, not a 'contains tests/infra/'
 # substring match).
 assert_exit "PRECISION: other/tests/infra/test_z.sh unanchored -> fast-path-safe (exit 1)" 1 \
-    run_guard requires-full-gate other/tests/infra/test_z.sh
+    run_guard_nofork requires-full-gate other/tests/infra/test_z.sh
 
 # ---------------------------------------------------------------------------
 # Pair E — emitted-gate plan-line derivation (task 6320)
@@ -608,6 +663,7 @@ awk '
     /^[[:space:]]*add_tool "\.\/scripts\/tree-sitter-generate\.sh"$/ && !_injected {
         match($0, /^[[:space:]]*/)
         print substr($0, 1, RLENGTH) "_zzz_pp_gate=\"./scripts/zzz-print-plan-variable.sh\"; add_tool \"$_zzz_pp_gate\""
+        print substr($0, 1, RLENGTH) "_zzz_pd_bait=\"other/scripts/zzz-pd-nested.sh scripts/zzz-pd-right.sha256sums\"; add_tool \"true $_zzz_pd_bait\""
         _injected = 1
     }
     { print }
@@ -623,6 +679,20 @@ chmod +x "$_SYNTH_VERIFY_E"
 # fire" from "it fired but the line is unreachable".
 assert "PREFLIGHT: awk injected the variable-assembled line into the fixture exactly once (anchor still exists)" \
     bash -c '[ "$(grep -c "_zzz_pp_gate=" "$1")" -eq 1 ]' _ "$_SYNTH_VERIFY_E"
+
+# Same preflight for the boundary-precision bait line injected alongside it
+# (see the (c) BOUNDARY PRECISION assertions further down for what it drives).
+assert "PREFLIGHT: awk injected the boundary-precision bait line exactly once" \
+    bash -c '[ "$(grep -c "_zzz_pd_bait=" "$1")" -eq 1 ]' _ "$_SYNTH_VERIFY_E"
+
+# The bait paths must be PLAN-DERIVED-ONLY for the boundary assertions to be
+# testing clause 4b rather than 4a: assert the source-text half cannot see them,
+# i.e. no line of the fixture both starts with an add()/add_tool() statement and
+# names a bait path literally. (It is the ASSIGNMENT that names them; the
+# add_tool statement names only "$_zzz_pd_bait".)
+assert "PREFLIGHT: bait paths are invisible to the source-text half (4a derives zero of them)" \
+    bash -c '! grep -E "^[[:space:]]*add(_tool)?[[:space:]]+" "$1" | grep -qE "zzz-pd-(nested|right)"' \
+    _ "$_SYNTH_VERIFY_E"
 
 # PIN (green on arrival): the bare './scripts/<x>.sh' emission shape derives.
 assert_exit "SELF-HEALING: zzz-synthetic-gate.sh auto-covered after plan-line injection (exit 0)" 0 \
@@ -720,38 +790,30 @@ assert_exit "SELF-HEALING: non-scripts/ emitted gate tests/zzz-nonscripts-gate.s
 # clause still does NOT cover rather than closing it.
 #
 # TASK 6426 RESCOPED THIS CASE; do not read it as the old claim. The clause is
-# now a UNION of two derivations: (4a) a grep of verify.sh's SOURCE TEXT for
-# add()/add_tool() statements, and (4b) one canonical widest `--print-plan`
-# invocation that reads the RESOLVED plan. 4b closes the variable-assembled
-# shape for every plan line the canonical invocation REACHES. The SELF-HEALING
-# case below pins that closure directly, and is the ONLY place it is exercised:
-# measured on the live tree, 4b derives nothing beyond 4a (the two sets are
-# byte-identical, 12 paths), because verify.sh has no plan line naming a *.sh
-# path from behind a variable.
-#
-# DO NOT cite the _gui_cmd / _sidecar_cmd / _ts_cmd triple (grep `_gui_cmd=` in
-# scripts/verify.sh) as the closed instance — an earlier draft of this comment
-# did, and it was wrong twice over. Those variables hold pure npm shell snippets
-# naming no *.sh path at all, so nothing is derivable from them either way; and
-# their `add_tool "$_gui_cmd"` emission is in the plain-path branch guarded by
-# `[ "$DO_LINT" -eq 0 ] || [ "$RUN_RUST" -eq 0 ]`, which the canonical widest
-# invocation never takes. They belong to the UNREACHED-BRANCH residual described
-# next, not to the closure.
+# now a UNION of (4a) a grep of verify.sh's SOURCE TEXT and (4b) one canonical
+# widest `--print-plan` invocation reading the RESOLVED plan. 4b closes the
+# variable-assembled shape for every plan line that invocation REACHES; the
+# SELF-HEALING case below pins that closure.
 #
 # WHAT IS LEFT is the UNREACHED-BRANCH case, and this fixture is a faithful
 # instance of it: `_zzz_variable_gate` is appended at EOF, AFTER verify.sh's
-# --print-plan block `exit 0`s, so build_plan never
-# executes the statement and NO invocation of any shape can emit it (measured:
-# 0 occurrences in this fixture's own printed plan). 4a cannot see it either,
-# because the path is behind a variable. Underived by BOTH halves of the union
-# — the honest successor to the old "source text only" limitation, not its
-# absence.
+# --print-plan block `exit 0`s, so build_plan never executes the statement and
+# NO invocation of any shape can emit it (measured: 0 occurrences in this
+# fixture's own printed plan). 4a cannot see it either, because the path is
+# behind a variable. Underived by BOTH halves of the union — the honest
+# successor to the old "source text only" limitation, not its absence.
+#
+# >>> CANONICAL WRITE-UP: clause 4b's block comment in
+# scripts/verify-pipeline-guard.sh. It owns the rationale, the current
+# measurements and — importantly — which live verify.sh plan lines are and are
+# NOT covered examples (the `_gui_cmd` triple is NOT one; an earlier draft of
+# this comment cited it and was wrong twice over). Read it there rather than
+# growing a second copy here.
 #
 # READ THIS BEFORE "FIXING" IT. If someone later makes the derivation cover
-# unreached branches too (symbolic evaluation of build_plan, an N-way
-# invocation matrix), this case goes RED — and the residual-limitation wording
-# in scripts/verify-pipeline-guard.sh's 'emitted' bullet,
-# scripts/verify-pipeline-paths.txt's EMITTED GATE SCRIPTS note and
+# unreached branches too (symbolic evaluation of build_plan, an N-way invocation
+# matrix), this case goes RED — and the residual-limitation wording in
+# scripts/verify-pipeline-guard.sh, scripts/verify-pipeline-paths.txt and
 # docs/notes/verify-pipeline-knobs.md must all be updated in the same change.
 assert_exit "RESIDUAL LIMITATION: variable-assembled plan line in a branch the canonical invocation never reaches derives nothing (exit 1; documented, pinned)" 1 \
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-variable-assembled.sh' \
@@ -801,6 +863,44 @@ assert_exit "SELF-HEALING: variable-assembled add_tool \"\$_cmd\" in a REACHED p
 assert "--list includes scripts/zzz-print-plan-variable.sh (plan-derived, not source-text-derived)" \
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" --list | grep -qxF scripts/zzz-print-plan-variable.sh' \
     _ "$_SYNTH_VERIFY_E" "$GUARD_SH"
+
+# --- (c) BOUNDARY PRECISION THROUGH THE PLAN-DERIVED HALF (task 6426 review) -
+#
+# Pair E's other PRECISION cases pin the over-match boundaries against clause
+# 4a: their bait is a LITERAL path in an add_tool statement, so the plan-derived
+# half never decides those verdicts. Since the two halves now share ONE
+# extraction filter (_extract_sh_paths in scripts/verify-pipeline-guard.sh),
+# these assertions pin that the shared filter is genuinely what 4b runs — a
+# future edit that gave 4b its own private regex again would show up here.
+#
+# The bait is VARIABLE-ASSEMBLED (certified plan-derived-only by the preflight
+# above), so every verdict below is clause 4b's alone:
+#   left  boundary — an emitted 'other/scripts/zzz-pd-nested.sh' must derive AS
+#                    ITSELF and must NOT collapse to top-level
+#                    'scripts/zzz-pd-nested.sh'
+#   right boundary — an emitted 'scripts/zzz-pd-right.sha256sums' must not
+#                    backtrack to a 'scripts/zzz-pd-right.sh' match
+#
+# ONE FORK FOR ALL FOUR: --list-plan-derived is captured once and the assertions
+# are pure string checks over that capture, rather than four more
+# requires-full-gate processes each paying their own --print-plan.
+_PD_SET_E=""
+_PD_SET_E="$(REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$_SYNTH_VERIFY_E" \
+             bash "$GUARD_SH" --list-plan-derived 2>/dev/null)" || true
+
+# Non-vacuity: everything below is a "must NOT contain" except the first, so an
+# empty capture (the fail-soft route) would pass three of them for free.
+assert "NON-VACUITY: fixture --list-plan-derived capture is non-empty" \
+    bash -c '[ -n "$1" ]' _ "$_PD_SET_E"
+
+assert "BOUNDARY (4b): emitted other/scripts/zzz-pd-nested.sh derives as itself (prefix-agnostic)" \
+    bash -c 'printf "%s\n" "$1" | grep -qxF other/scripts/zzz-pd-nested.sh' _ "$_PD_SET_E"
+
+assert "BOUNDARY (4b): other/scripts/zzz-pd-nested.sh must NOT promote scripts/zzz-pd-nested.sh (left boundary)" \
+    bash -c '! printf "%s\n" "$1" | grep -qxF scripts/zzz-pd-nested.sh' _ "$_PD_SET_E"
+
+assert "BOUNDARY (4b): emitted scripts/zzz-pd-right.sha256sums must NOT promote scripts/zzz-pd-right.sh (right boundary)" \
+    bash -c '! printf "%s\n" "$1" | grep -qxF scripts/zzz-pd-right.sh' _ "$_PD_SET_E"
 
 # --- (c-bis) ROBUSTNESS of the plan-derived half (task 6426) ---------------
 # Four properties the plan-derived half needs before it is safe in the

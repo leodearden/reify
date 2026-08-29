@@ -52,49 +52,35 @@
 # were in neither list.
 #
 #   ONE QUALIFICATION on "do not add one" — MUCH NARROWER SINCE TASK 6426, so
-#   do not add a row on the strength of the old advice. Auto-derivation is now
-#   a UNION of two halves: a grep of verify.sh's SOURCE TEXT for literal paths
-#   in add()/add_tool() statements, PLUS extraction from the RESOLVED plan
-#   printed by one canonical widest invocation
-#   (DF_VERIFY_ROLE=merge … all --scope all --profile both --include-infra
-#   --print-plan). A plan line assembled through a VARIABLE:
+#   do not add a row on the strength of the old advice. Auto-derivation is now a
+#   UNION: a grep of verify.sh's SOURCE TEXT for literal paths in
+#   add()/add_tool() statements, PLUS the paths named by the RESOLVED plan that
+#   one canonical widest --print-plan invocation prints. A plan line assembled
+#   through a VARIABLE:
 #
 #       _cmd="./scripts/new-gate.sh"      # <- invisible to the source-text half
 #       add_tool "$_cmd"                  #    but NAMED in the resolved plan
 #
-#   is therefore auto-derived after all, and needs NO row here, PROVIDED the
-#   canonical invocation reaches it.
-#
-#   NO LIVE INSTANCE IS COVERED TODAY, and that is not a defect — read it
-#   before pattern-matching on an example. Measured: the plan-derived half
-#   (`bash scripts/verify-pipeline-guard.sh --list-plan-derived`) is
-#   byte-identical to the source-text half, 12 paths, because verify.sh has no
-#   plan line that names a *.sh path from behind a variable. The half is
-#   FUTURE-PROOFING: it closes the idiom in advance so the first author to
-#   reach for it is covered without a row. The only exercised instance is the
-#   synthetic scripts/zzz-print-plan-variable.sh case in Pair E of
-#   tests/infra/test_verify_pipeline_guard.sh, which injects the shape into a
-#   REACHED branch of build_plan.
-#
-#   NOT AN EXAMPLE OF COVERAGE: the _gui_cmd / _sidecar_cmd / _ts_cmd triple
-#   (grep `_gui_cmd=` in scripts/verify.sh). It IS variable-assembled, but it
-#   belongs in the RESIDUAL bucket below on two independent counts — its value
-#   is a pure npm shell snippet naming no *.sh path at all, so nothing is
-#   derivable either way; and its `add_tool "$_gui_cmd"` emission sits in the
-#   plain-path branch guarded by `[ "$DO_LINT" -eq 0 ] || [ "$RUN_RUST" -eq 0 ]`,
-#   which the canonical widest invocation never takes.
+#   is therefore auto-derived after all and needs NO row here, PROVIDED the
+#   canonical invocation reaches it. Inspect that half alone with
+#   `bash scripts/verify-pipeline-guard.sh --list-plan-derived`.
 #
 #   WHAT STILL NEEDS A ROW is the narrow residual: a variable-assembled plan
-#   line in a branch of build_plan that the canonical invocation NEVER TAKES.
-#   Neither half sees it — the source-text half because the path is behind a
-#   variable, the plan-derived half because the line never executes — so it is
-#   silently fast-path eligible with no red signal anywhere. If you must wire a
-#   gate that way, add a row here and say why. Prefer, in order: a literal
-#   path; a branch the canonical invocation reaches; a row here as the last
-#   resort. Both the closure and the residual are pinned by Pair E in
+#   line in a branch of build_plan the canonical invocation NEVER TAKES. Neither
+#   half sees it — the source-text half because the path is behind a variable,
+#   the plan-derived half because the line never executes — so it is silently
+#   fast-path eligible with no red signal anywhere. If you must wire a gate that
+#   way, add a row here and say why. Prefer, in order: a literal path; a branch
+#   the canonical invocation reaches; a row here as the last resort.
+#
+#   >>> CANONICAL WRITE-UP: clause 4b's block comment in
+#   scripts/verify-pipeline-guard.sh. It owns the rationale, the current
+#   measurements, which live plan lines are and are NOT covered examples, and
+#   the monotonicity argument — read it before pattern-matching on any example.
+#   This note deliberately carries no second copy of those; both the closure and
+#   the residual are pinned by Pair E in
 #   tests/infra/test_verify_pipeline_guard.sh (the SELF-HEALING and RESIDUAL
-#   LIMITATION cases respectively), so this note and the code cannot drift
-#   apart.
+#   LIMITATION cases respectively).
 #
 # cpu-admit.sh (task α, #4630) is intentionally omitted: verify.sh sources it
 # directly (`source "$SCRIPT_DIR/cpu-admit.sh"`), so verify-pipeline-guard.sh
