@@ -1,4 +1,10 @@
+crates/reify-compute-contract/src/elastic_result.rs :: orphaned :: #3787 status=done: /// The `.ri` / gate exposure is deferred to consumer task #3787.
+crates/reify-core/src/diagnostics.rs :: orphaned :: #2947 status=cancelled: /// `dispatch_volume_mesh` (blocked on task #2947). The future dispatcher will
+crates/reify-core/src/diagnostics.rs :: orphaned :: #2947 status=cancelled: /// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring
+crates/reify-eval/src/compute_targets/elastic_static.rs :: orphaned :: #4092 status=done: // stays deferred to P2 (#4092) — this is a lightweight string check
+crates/reify-eval/src/compute_targets/elastic_static.rs :: orphaned :: #4092 status=done: /// resolution (deferred to P2 / task #4092): reads each support's raw
 crates/reify-eval/src/engine_build.rs :: malformed-cite :: #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+crates/reify-eval/src/engine_build.rs :: orphaned :: #3437 status=done: /// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel
 crates/reify-eval/src/engine_build.rs :: orphaned :: #4744 status=done: #[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β)
 crates/reify-eval/src/engine_build.rs :: untracked :: #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 crates/reify-eval/src/significance_filter.rs :: untracked :: #[allow(dead_code)] // wiring deferred to GHR-ζ; used in tests only for now
