@@ -17,7 +17,7 @@
 //! (the `is_math_typed_fn` arm) in step-14. The family is pinned disjoint from
 //! the geometry / dynamics families by the `units.rs` disjointness tests.
 
-use reify_core::{DimensionVector, Type};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 
 /// The complete set of math-linalg **construction** builtin names recognised
@@ -133,6 +133,133 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
     MATH_CONSTRUCTION_NAMES.contains(&name)
         || MATH_OPERATION_NAMES.contains(&name)
         || MATH_TRANSCENDENTAL_NAMES.contains(&name)
+}
+
+/// The forward-trig subset of [`MATH_TRANSCENDENTAL_NAMES`] whose ARGUMENT
+/// dimension is policed by [`check_transcendental_arg_dimensions`] (task 6249).
+///
+/// Deliberately NOT the whole transcendental slice — see that function's
+/// "Deliberately out of scope" section.
+const FORWARD_TRIG_NAMES: &[&str] = &["sin", "cos", "tan"];
+
+/// Compile-time argument-DIMENSION check for the forward-trig builtins
+/// `sin` / `cos` / `tan` (task 6249).
+///
+/// A pure side-effect on `diagnostics`, mirroring its two siblings
+/// [`crate::builtin_signatures::check_builtin_arg_types`] and
+/// [`crate::relation_signatures::check_relation_arg_types`]: it never
+/// influences the inferred result type, so `math_fn_result_type` still returns
+/// `Type::dimensionless_scalar()` for a rejected `sin(5mm)` and no secondary
+/// type errors cascade off the rejection.
+///
+/// # The eval contract this mirrors
+///
+/// `sin`/`cos`/`tan` route through `reify_stdlib::helpers::trig_input`
+/// (`crates/reify-stdlib/src/helpers.rs:102-118`), which returns `Some`
+/// radians for exactly three shapes — `Value::Scalar { dimension: ANGLE }`,
+/// `Value::Real`, and `Value::Int` — and `None` for a scalar of ANY other
+/// dimension, which `unary_f64` turns into a silent `Value::Undef`. This check
+/// rejects statically exactly the set eval already Undefs on, so no program
+/// that works today can start failing.
+///
+/// # Why BOTH `Angle` and dimensionless are accepted
+///
+/// Not a widening for convenience — both are load-bearing. `Value::Real`
+/// (== `Type::Scalar { DIMENSIONLESS }`) is the bare-radians input used by
+/// `examples/generate_bolt_circle.ri:35-36` and by `sin(pi)` / `cos(tau)` in
+/// `crates/reify-eval/tests/stdlib_constants_e2e.rs`; the ANGLE arm is what
+/// `crates/reify-compiler/tests/math_transcendental_signatures.rs`'s
+/// `BOUNDARY_SOURCE` depends on, feeding `sin(0.5rad)` / `cos(0.0rad)` /
+/// `tan(0.5rad)` and asserting zero Error-severity diagnostics. `Type::Int` is
+/// accepted for the same reason eval accepts `Value::Int`: overload resolution
+/// carries no Int→Real widening (`coerce.rs`), so a `Scalar`-only rule would
+/// statically reject `sin(2)`, which eval happily evaluates.
+///
+/// # Deliberately out of scope
+///
+/// Only the three [`FORWARD_TRIG_NAMES`] are gated. The remaining six
+/// transcendental names pass silently, and that non-enforcement is pinned by
+/// the scope-fence tests in `tests/math_transcendental_signatures.rs`:
+///
+///   * `exp` / `log` — owned by task **#6943**
+///     (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b)), which
+///     delivers them as registry rows with a chartered `E_ArgDimension` code
+///     family and dimension-aware fixit hints. Note the failure mode there is
+///     DIFFERENT: `unary_f64` extracts via `Value::as_f64`, whose `Value::Scalar`
+///     arm accepts any dimension, so `log(2mm)` silently evaluates `ln(0.002)`
+///     rather than Undefing.
+///   * `asin` / `acos` / `atan` / `atan2` — owned by task **#5809**
+///     (`docs/prds/v0_6/dimension-checked-readers.md` leaf κ). `atan2` needs a
+///     same-dimension-PAIR rule rather than a dimensionless-only one
+///     (`atan2(dy, dx)` over two LENGTHs is legitimate), which is why it is not
+///     expressible with this leaf's mechanism.
+///
+/// This leaf polices DIMENSION, not KIND: a `Bool` / `Geometry` / `Vector`
+/// argument passes silently here. Kind-policing across the math surface is
+/// #6943's `ResultSpec::ArgAware` job.
+///
+/// Only arg 0 is inspected — the three names are unary. A short call returns
+/// early; arity errors are raised elsewhere, matching both siblings.
+pub(crate) fn check_transcendental_arg_dimensions(
+    name: &str,
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !FORWARD_TRIG_NAMES.contains(&name) {
+        return;
+    }
+    let Some(arg) = compiled_args.first() else {
+        // Call is short — arity errors are handled elsewhere; a missing arg is
+        // not a dimension mismatch.
+        return;
+    };
+
+    match &arg.result_type {
+        // Gradualism: poison + unresolved pass silently (identical to
+        // `check_builtin_arg_types` / `check_relation_arg_types`).
+        Type::Error | Type::TypeParam(_) => {}
+
+        // Mirrors `trig_input`'s `Value::Int` arm.
+        Type::Int => {}
+
+        // Bare radians (dimensionless) or a true `Angle` — both accepted.
+        Type::Scalar { dimension }
+            if dimension.is_dimensionless() || *dimension == DimensionVector::ANGLE => {}
+
+        // Any OTHER dimensioned scalar: a definite static mismatch — eval
+        // would Undef here.
+        other @ Type::Scalar { .. } => {
+            emit_trig_dimension_mismatch(name, other, call_span, diagnostics);
+        }
+
+        // Every other `Type` variant (Bool, Geometry, Vector, List, …) passes
+        // silently: this leaf polices dimension, not kind.
+        _ => {}
+    }
+}
+
+/// Emit the single `ArgTypeMismatch` error for a forward-trig argument whose
+/// dimension is neither `Angle` nor dimensionless.
+///
+/// Reuses the EXISTING [`DiagnosticCode::ArgTypeMismatch`] rather than minting a
+/// new code: the `E_ArgDimension` taxonomy is #6943's chartered ruling
+/// (builtin-signature-registry INV-SF-6) and inventing it here would pre-empt it.
+/// Construction and wording mirror `relation_signatures::emit_unit_mismatch`, so
+/// this family's diagnostics read identically to the geometric-relation family's.
+fn emit_trig_dimension_mismatch(
+    name: &str,
+    actual: &Type,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let msg = format!("{name}: argument expects Angle or dimensionless, got {actual}");
+    let label = format!("expected Angle or dimensionless, got {actual}");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::ArgTypeMismatch)
+            .with_label(DiagnosticLabel::new(call_span, label)),
+    );
 }
 
 /// Result type for a math-linalg construction builtin, derived from the
