@@ -18,6 +18,11 @@
 //! comparison went unchecked.
 //! The eval signal (polymorphic_zero_eval.rs) proves the coercion fires at runtime
 //! and produces Satisfaction::Satisfied, including for compound dimensions (Stiffness).
+//! TRAIT-BODY shapes are unreachable from this file — a trait compiled with no
+//! conformer does not dimension-check its body, so a clean-compile probe written
+//! that way is vacuous (see `member_access_mismatched_non_zero_still_errors`).
+//! They are pinned at eval level instead, in
+//! `reify-eval/tests/polymorphic_zero_trait_eval.rs`.
 //!
 //! Step-5 tests (additive position + edge/negative cases) are added in the same
 //! file: the additive tests confirm the coercion fires before the Add/Sub dimension
@@ -333,6 +338,44 @@ structure S {
     );
 }
 
+/// CONTRAST CASE — a NON-ZERO bare-numeric RHS against a dimensioned Scalar is
+/// a COMPILE error, not a runtime `Indeterminate`.
+///
+/// Backs the `trait Conductive` note in materials_electrical.ri, whose
+/// `constraint resistivity < 0.0001ohm*m` is the one swept site whose RHS is
+/// non-zero. `0.0001` compiles to a DIMENSIONLESS `Type::Scalar` (which
+/// `Display`s as `Real`), so `resistivity < 0.0001` lands on the
+/// Scalar-vs-Scalar differing-dimension arm of
+/// `emit_comparison_operand_diagnostics` and carries
+/// `DiagnosticCode::DimensionMismatch`. Task-4629 W5 removed the former
+/// `!ld.is_dimensionless() && !rd.is_dimensionless()` suppression that used to
+/// let this shape through to eval.
+///
+/// So the dimensioned RHS at that site really is load-bearing — but for a
+/// different reason than the pre-task-4485/β rationale claimed: the bare form
+/// is rejected before eval, never degraded to `Indeterminate` at eval. Pairs
+/// with `real_literal_zero_rhs_no_error` above: same literal kind, and only the
+/// ZERO is coerced.
+#[test]
+fn nonzero_real_literal_rhs_emits_dimension_mismatch() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param resistivity : ElectricResistivity = 1ohm*m
+    constraint resistivity < 0.0001
+}
+"#,
+    );
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::DimensionMismatch)),
+        "expected DiagnosticCode::DimensionMismatch for `resistivity < 0.0001`          (ElectricResistivity vs dimensionless Real); got none. If this now          passes cleanly, the `trait Conductive` note in materials_electrical.ri          needs revisiting. Diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
 /// `material.density > 0` — MEMBER-ACCESS operand, the shape backing
 /// `structural_physical.ri`'s `trait Physical` / `constraint material.density
 /// > 0kg/m^3`.
@@ -347,7 +390,9 @@ structure S {
 ///
 /// Deliberately written as a `structure`, not the `trait Physical` it mirrors:
 /// see `member_access_mismatched_non_zero_still_errors` below for why a trait
-/// body would make this assertion vacuous.
+/// body would make this assertion vacuous. The trait-body form is pinned at
+/// eval level instead, by `trait_body_member_access_gt_bare_zero_satisfied` in
+/// `reify-eval/tests/polymorphic_zero_trait_eval.rs`.
 #[test]
 fn member_access_lhs_gt_zero_no_error() {
     let compiled = compile_source_with_stdlib(
