@@ -36,6 +36,8 @@ mod geometry_sub_ref_e2e;
 mod modify_sweep_length_units_e2e;
 #[path = "harness_geometry/primitive_profile_length_units_e2e.rs"]
 mod primitive_profile_length_units_e2e;
+#[path = "harness_geometry/rounded_corner_runtime_constraint.rs"]
+mod rounded_corner_runtime_constraint;
 #[path = "harness_geometry/symbolic_geometry_eval.rs"]
 mod symbolic_geometry_eval;
 #[path = "harness_geometry/symbolic_selector_composition_eval.rs"]

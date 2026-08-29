@@ -90,6 +90,8 @@ mod match_tests;
 mod member_span_tests;
 #[path = "harness_syntax/module_decl_tests.rs"]
 mod module_decl_tests;
+#[path = "harness_syntax/namespaced_ref_lowering_tests.rs"]
+mod namespaced_ref_lowering_tests;
 #[path = "harness_syntax/numeric_separators_grammar_tests.rs"]
 mod numeric_separators_grammar_tests;
 #[path = "harness_syntax/numeric_separators_lowering_tests.rs"]

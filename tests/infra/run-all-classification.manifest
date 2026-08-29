@@ -70,7 +70,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (154, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (155, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -100,6 +100,7 @@ test_harness_baseline_registration_gate.sh pool
 test_harness_kloc_cap.sh pool
 test_heavy_filter_atoms.sh pool
 test_hooks_call_verify.sh pool
+test_host_global_unit_pinning.sh pool
 test_infra_classification_manifest_gate.sh pool
 test_jcodemunch_index_reify.sh pool
 test_jobserver_acceptance.sh pool

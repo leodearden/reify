@@ -1,20 +1,31 @@
 //! Shared input-cracking helpers for the Tensegrity-consuming compute
-//! trampolines (`form_find.rs`, `tensegrity_load.rs`).
+//! trampolines (`form_find.rs`, `tensegrity_load.rs`, `membrane_load.rs`).
 //!
-//! Both trampolines crack a `Tensegrity` `Value::StructureInstance` into node
-//! coordinates + member connectivity, range-checking every index so the kernel
-//! never indexes out of bounds. Those helpers were near-verbatim copies that
-//! differed only in their `E_*Infeasible` diagnostic mnemonic (and an
-//! independently-drifted `crack_index_pairs` parameter order); centralising them
-//! here — the same single-definition-site discipline as the result builders in
-//! [`super`] (`point3_length` / `scalar_list`) — keeps each caller's located
-//! error wording while removing the copy, so the next Tensegrity-consuming
-//! trampoline reuses rather than re-clones.
+//! Each cracks a `Tensegrity` `Value::StructureInstance` into node coordinates +
+//! member connectivity (plus, for `membrane_load.rs`, surface triples),
+//! range-checking every index so the kernel never indexes out of bounds. Those
+//! helpers were near-verbatim copies that differed only in their
+//! `E_*Infeasible` diagnostic mnemonic (and an independently-drifted
+//! `crack_index_pairs` parameter order); centralising them here — the same
+//! single-definition-site discipline as the result builders in [`super`]
+//! (`point3_length` / `scalar_list`) — keeps each caller's located error wording
+//! while removing the copy, so the next Tensegrity-consuming trampoline reuses
+//! rather than re-clones. The same treatment folds the unit-checking scalar
+//! crackers in here alongside them: [`crack_dimensioned_scalar`] was a verbatim
+//! pair across `tensegrity_load.rs` and `membrane_load.rs`.
 //!
 //! Every fallible helper takes a `code: &str` diagnostic mnemonic (e.g.
 //! `"E_FormFindInfeasible"` or `"E_TensegrityLoadInfeasible"`) which is prefixed
 //! onto each message as `"{code}: …"`, so the located wording stays caller-owned.
+//! [`crack_dimensioned_scalar`] extends that convention with a second
+//! caller-owned string, `hint: &str` — the parenthetical argument-order advice.
+//! It is threaded in rather than inferred here because each trampoline's hint
+//! names that trampoline's OWN arguments (`membrane_load` has a
+//! `membrane_thickness`; `tensegrity_load` does not), so choosing it inside this
+//! module would mean enumerating its callers — exactly the coupling this file
+//! exists to remove.
 
+use reify_core::DimensionVector;
 use reify_ir::Value;
 
 /// Extract an f64 from a `Scalar` (any dimension) or a bare `Real`.
@@ -30,39 +41,25 @@ pub(crate) fn scalar_f64(v: &Value) -> Option<f64> {
     }
 }
 
-/// Extract an f64 from a value at a DIMENSIONLESS position, rejecting a
-/// dimensioned `Scalar` instead of silently stripping its unit.
+/// Crack a single dimensioned `Scalar` into an f64, requiring its unit to equal
+/// `expected`. A bare `Real` is still accepted — the dimensionless ergonomic
+/// escape hatch [`scalar_f64`] already allowed (so `[1.0, …]`-style literals keep
+/// working) — but a *dimensioned* `Scalar` whose unit disagrees (e.g. an Area
+/// passed where a Pressure is expected: the classic `youngs_modulus` ↔ `area`
+/// argument swap, or a Length where a Force is expected) is rejected with a
+/// located error rather than silently solving a physically wrong problem. This
+/// tightens the v1 form-find relaxation for the positionally-adjacent section
+/// scalars without losing the bare-`Real` ergonomics.
 ///
-/// Some trampoline inputs are genuinely bare RATIOS rather than physical
-/// quantities — force densities, seed ratios and surface stresses are read as
-/// relative magnitudes, so their overall scaling carries no information. The
-/// dimension-checked-readers PRD puts exactly these in its Leg B "Deliberately
-/// bare" bucket (`docs/prds/v0_6/dimension-checked-readers.md`): stay accepting
-/// of a bare `Real`, but do not quietly accept a *dimensioned* `Scalar` and
-/// reinterpret its SI magnitude as the ratio. Reading `1 N/m` as the ratio `1.0`
-/// is a silent reinterpretation of the author's intent, so it is a located error
-/// here instead.
-///
-/// This is the dimensionless counterpart of the `crack_dimensioned_scalar`
-/// helpers in `tensegrity_load.rs` and `membrane_load.rs`, which reject a
-/// wrong-unit `Scalar` against a specific EXPECTED dimension. The acceptance
-/// sets differ (those want one particular unit; this one wants no unit at all),
-/// so it is a sibling rather than a hoist candidate — but the "has the wrong
-/// unit" wording is deliberately shared so the tensegrity trampolines present
-/// one diagnostic vocabulary.
-///
-/// Both `code` and `hint` stay caller-owned, per this module's contract: `code`
-/// is the `E_*Infeasible` mnemonic and `hint` is the trailing clause explaining
-/// what the caller wanted instead.
-///
-/// Forward pointer: task alpha (#5791) proposes an `arg_acceptance::
-/// dimensionless_spec`. Today's `accept_arg` rejects a bare `Value::Real`
-/// outright, so it cannot express the stay-accepting half of the Leg B contract;
-/// once alpha lands that additive redesign, this helper should become a thin
-/// adapter over it rather than a second definition site.
-pub(crate) fn crack_dimensionless_scalar(
+/// `label` is the human unit name shown in the diagnostic. `hint` is the
+/// caller-owned argument-order advice appended in parentheses — the same
+/// caller-owned-wording convention as `code` (see the module doc), threaded in
+/// rather than inferred because it names the *caller's* own arguments.
+pub(crate) fn crack_dimensioned_scalar(
     v: &Value,
     what: &str,
+    expected: DimensionVector,
+    label: &str,
     code: &str,
     hint: &str,
 ) -> Result<f64, String> {
@@ -71,13 +68,52 @@ pub(crate) fn crack_dimensionless_scalar(
         Value::Scalar {
             si_value,
             dimension,
-        } if dimension.is_dimensionless() => Ok(*si_value),
-        Value::Scalar { dimension, .. } => Err(format!(
-            "{code}: {what} has the wrong unit — expected a dimensionless ratio \
-             (a bare Real or a dimensionless Scalar), got a Scalar in {dimension}; {hint}"
+        } if *dimension == expected => Ok(*si_value),
+        Value::Scalar { .. } => Err(format!(
+            "{code}: {what} has the wrong unit — expected a {label}; \
+             check the call argument order ({hint})"
         )),
-        other => Err(format!("{code}: {what} must be a real, got {other:?}")),
+        other => Err(format!("{code}: {what} must be a scalar, got {other:?}")),
     }
+}
+
+/// Crack a `List<Scalar>` requiring each entry to carry `expected` units (a bare
+/// `Real` is still accepted per entry for ergonomics) — the list lifting of
+/// [`crack_dimensioned_scalar`], whose `code` / `label` / `hint` it threads
+/// through unchanged.
+///
+/// Each entry's located name is `"{what}[{i}]"`, so a wrong-unit diagnostic tells
+/// the author WHICH entry is wrong rather than merely naming the list. Shared by
+/// `tensegrity_load.rs`'s `crack_forces` and `membrane_load.rs`'s `crack_forces`
+/// / `crack_pressures`, which supply the FORCE / PRESSURE choice.
+pub(crate) fn crack_scalar_list(
+    v: &Value,
+    what: &str,
+    expected: DimensionVector,
+    label: &str,
+    code: &str,
+    hint: &str,
+) -> Result<Vec<f64>, String> {
+    let list = match v {
+        Value::List(items) => items,
+        other => {
+            return Err(format!(
+                "{code}: {what} must be a list of {label} scalars, got {other:?}"
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        out.push(crack_dimensioned_scalar(
+            item,
+            &format!("{what}[{i}]"),
+            expected,
+            label,
+            code,
+            hint,
+        )?);
+    }
+    Ok(out)
 }
 
 /// Range-check a signed node index against `0..n`, returning a located
@@ -219,4 +255,264 @@ pub(crate) fn crack_index_triples(
         ));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_core::DimensionVector;
+
+    // The two REAL caller (code, hint) pairs, transcribed verbatim from the
+    // trampolines that own them — `tensegrity_load.rs` and `membrane_load.rs`.
+    // Pinning the production wording (rather than a synthetic stand-in) is what
+    // makes the full-string assertions below evidence that the hoist preserved
+    // both diagnostics byte-for-byte.
+    const TL_CODE: &str = "E_TensegrityLoadInfeasible";
+    const TL_HINT: &str =
+        "youngs_modulus is a Pressure, area is an Area, and prestress / loads are Forces";
+    const ML_CODE: &str = "E_MembraneLoadInfeasible";
+    const ML_HINT: &str = "youngs_modulus / membrane_youngs are Pressures, area is an Area, \
+                           membrane_thickness is a Length, and prestress / loads are Forces";
+
+    /// A bare `Real` is accepted whatever the expected dimension — the
+    /// dimensionless ergonomic escape hatch (`[1.0, …]`-style literals keep
+    /// working) that both trampolines rely on and that [`scalar_f64`] already
+    /// allowed. Deliberately NOT pinned: which dimension was expected, because a
+    /// `Real` carries none.
+    #[test]
+    fn crack_dimensioned_scalar_accepts_bare_real() {
+        let got = crack_dimensioned_scalar(
+            &Value::Real(2.5),
+            "prestress[0]",
+            DimensionVector::FORCE,
+            "Force",
+            TL_CODE,
+            TL_HINT,
+        );
+        assert_eq!(got, Ok(2.5));
+    }
+
+    /// A `Scalar` whose dimension equals `expected` yields its SI value.
+    #[test]
+    fn crack_dimensioned_scalar_accepts_matching_dimension() {
+        let got = crack_dimensioned_scalar(
+            &Value::Scalar {
+                si_value: 5000.0,
+                dimension: DimensionVector::FORCE,
+            },
+            "prestress[0]",
+            DimensionVector::FORCE,
+            "Force",
+            TL_CODE,
+            TL_HINT,
+        );
+        assert_eq!(got, Ok(5000.0));
+    }
+
+    /// The load-bearing assertion of the hoist: a *dimensioned* `Scalar` whose
+    /// unit disagrees is rejected with a message assembled from the shared
+    /// template `"{code}: {what} has the wrong unit — expected a {label}; check
+    /// the call argument order ({hint})"`, where BOTH the mnemonic and the
+    /// argument-order advice are caller-owned. Asserted by full string equality
+    /// against each of the two real caller pairs, so neither can be baked into
+    /// the shared helper; the final negative assertion catches the specific
+    /// regression of hardcoding membrane_load's hint, which a `contains`-style
+    /// check on the tensegrity_load message would otherwise let through.
+    #[test]
+    fn crack_dimensioned_scalar_rejects_wrong_dimension_with_caller_owned_code_and_hint() {
+        let an_area = Value::Scalar {
+            si_value: 1.0e-4,
+            dimension: DimensionVector::AREA,
+        };
+
+        let tl = crack_dimensioned_scalar(
+            &an_area,
+            "youngs_modulus",
+            DimensionVector::PRESSURE,
+            "Pressure",
+            TL_CODE,
+            TL_HINT,
+        );
+        assert_eq!(
+            tl,
+            Err(
+                "E_TensegrityLoadInfeasible: youngs_modulus has the wrong unit — expected a \
+                 Pressure; check the call argument order (youngs_modulus is a Pressure, area \
+                 is an Area, and prestress / loads are Forces)"
+                    .to_string()
+            )
+        );
+
+        let ml = crack_dimensioned_scalar(
+            &an_area,
+            "membrane_youngs",
+            DimensionVector::PRESSURE,
+            "Pressure",
+            ML_CODE,
+            ML_HINT,
+        );
+        assert_eq!(
+            ml,
+            Err(
+                "E_MembraneLoadInfeasible: membrane_youngs has the wrong unit — expected a \
+                 Pressure; check the call argument order (youngs_modulus / membrane_youngs are \
+                 Pressures, area is an Area, membrane_thickness is a Length, and prestress / \
+                 loads are Forces)"
+                    .to_string()
+            )
+        );
+
+        // A helper that hardcoded membrane_load's hint would still satisfy the
+        // tensegrity_load `{code}` prefix; it must not name an argument that
+        // trampoline does not have.
+        assert!(
+            !tl.unwrap_err().contains("membrane_thickness"),
+            "the tensegrity_load diagnostic must not advise about membrane_thickness"
+        );
+    }
+
+    /// A non-scalar `Value` takes the shape arm, which carries the mnemonic but
+    /// NOT the unit hint (the argument order is not the problem). The `{other:?}`
+    /// Debug tail is deliberately left unpinned — only the located prefix is a
+    /// contract.
+    #[test]
+    fn crack_dimensioned_scalar_rejects_non_scalar() {
+        let err = crack_dimensioned_scalar(
+            &Value::Undef,
+            "area",
+            DimensionVector::AREA,
+            "Area",
+            TL_CODE,
+            TL_HINT,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("E_TensegrityLoadInfeasible: area must be a scalar, got "),
+            "unexpected shape-arm message: {err}"
+        );
+    }
+
+    // ---- crack_scalar_list (task #6412, second hoist) -----------------------
+    //
+    // Earns the same treatment as `crack_dimensioned_scalar`: `membrane_load.rs`
+    // has this loop as a named helper and `tensegrity_load.rs::crack_forces`
+    // inlines the identical loop with FORCE/"Force" hardcoded — two copies, so
+    // the repo's single-definition-site norm applies.
+
+    /// Every entry is cracked in order, and the per-entry bare-`Real` escape
+    /// hatch survives the lift: a list may legitimately mix `3kN`-style
+    /// dimensioned scalars with bare `[1.0, …]` literals.
+    #[test]
+    fn crack_scalar_list_accepts_matching_dimension_entries() {
+        let all_dimensioned = Value::List(vec![
+            Value::Scalar {
+                si_value: -1000.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 3000.0,
+                dimension: DimensionVector::FORCE,
+            },
+        ]);
+        assert_eq!(
+            crack_scalar_list(
+                &all_dimensioned,
+                "prestress",
+                DimensionVector::FORCE,
+                "Force",
+                TL_CODE,
+                TL_HINT,
+            ),
+            Ok(vec![-1000.0, 3000.0]),
+        );
+
+        let mixed = Value::List(vec![
+            Value::Real(-1000.0),
+            Value::Scalar {
+                si_value: 3000.0,
+                dimension: DimensionVector::FORCE,
+            },
+        ]);
+        assert_eq!(
+            crack_scalar_list(
+                &mixed,
+                "prestress",
+                DimensionVector::FORCE,
+                "Force",
+                TL_CODE,
+                TL_HINT,
+            ),
+            Ok(vec![-1000.0, 3000.0]),
+        );
+    }
+
+    /// The list-SHAPE arm. This is the one message the hoist deliberately
+    /// changes: `tensegrity_load.rs::crack_forces` used to hardcode "must be a
+    /// list of forces", and now reports the parameterized (strictly more
+    /// informative) "must be a list of Force scalars" that `membrane_load.rs`
+    /// already produced. Nothing in the repo pinned the old phrase — so it is
+    /// pinned here, at the single definition site, for the first time. The
+    /// `{other:?}` Debug tail is deliberately left unpinned.
+    #[test]
+    fn crack_scalar_list_rejects_non_list() {
+        let err = crack_scalar_list(
+            &Value::Real(1.0),
+            "prestress",
+            DimensionVector::FORCE,
+            "Force",
+            TL_CODE,
+            TL_HINT,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(
+                "E_TensegrityLoadInfeasible: prestress must be a list of Force scalars, got "
+            ),
+            "unexpected list-shape message: {err}"
+        );
+    }
+
+    /// The located `{what}[{i}]` entry index: an author whose third prestress
+    /// entry carries the wrong unit must be told WHICH entry, not merely that
+    /// "prestress" is wrong. This is the contract `crack_forces` /
+    /// `crack_pressures` inherit and that the membrane e2e tests (f3/f4) pin
+    /// end-to-end; pinning it here catches a regression at the unit level first.
+    #[test]
+    fn crack_scalar_list_labels_the_offending_entry_index() {
+        let second_entry_wrong = Value::List(vec![
+            Value::Scalar {
+                si_value: 3000.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 1.0e5,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ]);
+        let err = crack_scalar_list(
+            &second_entry_wrong,
+            "prestress",
+            DimensionVector::FORCE,
+            "Force",
+            TL_CODE,
+            TL_HINT,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "E_TensegrityLoadInfeasible: prestress[1] has the wrong unit — expected a Force; \
+             check the call argument order (youngs_modulus is a Pressure, area is an Area, and \
+             prestress / loads are Forces)"
+        );
+        // Guards against both degenerate labellings: a constant index and a
+        // bare `what` with no index at all.
+        assert!(
+            !err.contains("prestress[0]"),
+            "must name entry 1, got: {err}"
+        );
+        assert!(
+            err.contains("prestress[1]"),
+            "must carry a located index: {err}"
+        );
+    }
 }

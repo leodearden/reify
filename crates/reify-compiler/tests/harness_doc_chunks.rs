@@ -17,6 +17,8 @@
 //! tests/common/mod.rs into this compile unit for nothing, in a PRD whose whole point is
 //! cutting merge-gate compile cost.
 
+#[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
+mod angle_crossings_diagnostics_smoke;
 #[path = "harness_doc_chunks/enums_chunk_option_smoke.rs"]
 mod enums_chunk_option_smoke;
 #[path = "harness_doc_chunks/geometry_chunk_smoke.rs"]
