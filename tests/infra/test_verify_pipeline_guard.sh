@@ -7,8 +7,24 @@
 # when verify.sh changes (matches the task-4523 'scripts/verify.sh ->
 # tests/infra/test_verify_*.sh' row in scripts/verify-pipeline-infra-tests.txt).
 #
-# This test is hermetic: it drives the classifier script directly with no
-# cargo or git operations.
+# HERMETICITY — NARROWED SINCE TASK 6426, do not read the old claim into it.
+# Most of this test drives the classifier script directly with no subprocess of
+# its own. But the guard's clause 4b now EXECUTES scripts/verify.sh
+# (`--print-plan`), and verify.sh runs its cargo-nextest probe unconditionally
+# in print mode — see verify.sh, search "Scope note re: --print-plan
+# hermeticity". So every case that reaches clause 4b forks verify.sh and,
+# through it, cargo. Still no git operations, and no cargo BUILD; the probe is
+# a presence/handshake check. Two consequences worth knowing:
+#   - Fixture cases set REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 per that scope note,
+#     and capture_print_plan retries a truncated capture.
+#   - The real-tree NON-VACUITY cases in Pair E (c-bis)(a) depend on the live
+#     tree's --print-plan succeeding. A cargo-nextest that is PRESENT but whose
+#     probe keeps failing makes verify.sh hard-fail; the guard then correctly
+#     fail-softs to an empty clause-4b set, which is a designed-for graceful
+#     degradation but WOULD read as a non-vacuity failure. Those cases are
+#     therefore gated on an explicit precondition assertion that names that
+#     cause directly, rather than being left to fail as "the guard derived
+#     nothing".
 
 set -euo pipefail
 
@@ -85,14 +101,32 @@ assert_exit() {
 # needs a fixture that actually executes. (The lone-copy shape is still used
 # deliberately in (c-bis) to drive the FAIL-SOFT path.)
 #
-# THE COPY LIST is the maintained one from tests/infra/test_verify_throughput.sh
-# make_branch_fixture — reused verbatim rather than forked, so it inherits that
-# test's maintenance instead of drifting as a second copy. verify.sh `source`s
-# only seven of these DIRECTLY; the remainder are transitive under an
-# already-copied lib, which is why the list must not be trimmed to the
-# direct-source set. scripts/verify-pipeline-infra-tests.txt is added on top
-# because verify.sh READS it (select_infra_tests) without sourcing it, so the
-# source-closure preflight below cannot discover it.
+# THE COPY LIST is COPIED from tests/infra/test_verify_throughput.sh
+# make_branch_fixture, not shared with it — say it plainly rather than claiming
+# a reuse that is not happening. It is the THIRD instance of the same 13
+# basenames plus .config/nextest.toml (test_verify_scope.sh carries the other),
+# and nothing keeps the three in step automatically.
+#
+# WHAT IS AND IS NOT PROTECTED. assert_source_closure_copied below is a real
+# shared drift guard, but it only sees libs reached by a double-quoted `source`
+# statement. The four NON-SOURCED data files this fixture must also copy —
+# occt-touching-crates.txt, release-sensitive-crates.txt,
+# verify-pipeline-infra-tests.txt and .config/nextest.toml — are exactly the
+# ones with no drift protection at all. verify-pipeline-infra-tests.txt is in
+# the list specifically because verify.sh READS it (select_infra_tests) without
+# sourcing it, so the preflight cannot discover it; if a future verify.sh reads
+# a fifth such data file, this list must be updated BY HAND and the failure
+# will surface as an opaque --print-plan error, not as a named drift.
+#
+# The right fix is to extract the sandbox construction (mkdir + cp list + chmod
+# + preflight) into a shared helper beside tests/infra/copy_list_preflight_lib.sh
+# and have all three callers use it. That requires editing
+# test_verify_throughput.sh and test_verify_scope.sh, which are outside task
+# 6426's lock scope, so it is filed as follow-up work rather than done here.
+#
+# verify.sh `source`s only seven of these DIRECTLY; the remainder are transitive
+# under an already-copied lib, which is why the list must not be trimmed to the
+# direct-source set.
 make_runnable_verify_fixture() {
     local _outvar="$1" _dir _f
     _dir="$(mktemp -d)"
@@ -445,8 +479,8 @@ assert_exit "PRECISION: other/tests/infra/test_z.sh unanchored -> fast-path-safe
 # the reviewer observed that its siblings share the identical defect.
 #
 # DEFECT: verify.sh's lint plan invokes these gate scripts via EMITTED plan
-# lines -- add() / add_tool() (scripts/verify.sh:1507 / :1571, the only two
-# PLAN+= sites) -- and never `source`s them. The guard's live sourced-lib
+# lines -- add() / add_tool() (grep `^add() {` and `^add_tool() {` in
+# scripts/verify.sh; the only two PLAN+= sites) -- and never `source`s them. The guard's live sourced-lib
 # clause therefore cannot see them, so a gate-script-only diff is classified
 # config-only and takes the dark-factory merge-worker trivial-pass fast-path,
 # skipping the full gate. That is exactly the #4618/#4624 -> #4288 ambush
@@ -548,13 +582,13 @@ SYNTH_PLAN_LINES_EOF
 # --- task 6426: a REACHABLE variable-assembled plan line --------------------
 # The heredoc above appends at EOF. That is enough for the SOURCE-TEXT half of
 # the emitted-gate clause, which only reads the file — but verify.sh `exit 0`s
-# at the end of its --print-plan block (scripts/verify.sh:3078), so an
+# at the end of its --print-plan block, so an
 # EOF-appended statement is NEVER EXECUTED and can never reach the printed plan
 # (measured: 0 occurrences). To drive the PLAN-DERIVED half, the
 # variable-assembled line has to be injected INSIDE build_plan, where it runs.
 #
 # ANCHOR: the `add_tool "./scripts/tree-sitter-generate.sh"` statement
-# (scripts/verify.sh:2435), inserted immediately before it at the same
+# in scripts/verify.sh, inserted immediately before it at the same
 # indentation — an unconditionally-reached RUN_RUST branch of build_plan under
 # the canonical widest invocation. Measured on this fixture: exactly one
 # occurrence in --print-plan output, and ZERO hits from the source-text grep
@@ -576,6 +610,15 @@ awk '
 mv "$_SYNTH_VERIFY_E.injected" "$_SYNTH_VERIFY_E"
 chmod +x "$_SYNTH_VERIFY_E"
 
+# SOURCE-LEVEL INJECTION PREFLIGHT (anti-vacuity, cheap half). The awk above is
+# anchored on a verify.sh statement; if that statement is moved, reindented,
+# renamed or deleted the awk silently no-ops. The --print-plan REACHABILITY
+# preflight further down catches that too, but only after a fork — this one
+# fails immediately and says which pass broke, distinguishing "the awk did not
+# fire" from "it fired but the line is unreachable".
+assert "PREFLIGHT: awk injected the variable-assembled line into the fixture exactly once (anchor still exists)" \
+    bash -c '[ "$(grep -c "_zzz_pp_gate=" "$1")" -eq 1 ]' _ "$_SYNTH_VERIFY_E"
+
 # PIN (green on arrival): the bare './scripts/<x>.sh' emission shape derives.
 assert_exit "SELF-HEALING: zzz-synthetic-gate.sh auto-covered after plan-line injection (exit 0)" 0 \
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-synthetic-gate.sh' \
@@ -583,7 +626,8 @@ assert_exit "SELF-HEALING: zzz-synthetic-gate.sh auto-covered after plan-line in
 
 # PIN (green on arrival): the guarded 'if test -f …; then bash scripts/<x>.sh; fi'
 # shape derives too -- that is the real shape of check_event_inventory.sh and
-# test_pm_standardization.sh at verify.sh:2630-2631, so this pins the exact
+# test_pm_standardization.sh (grep `test_pm_standardization.sh` in
+# scripts/verify.sh), so this pins the exact
 # emission form sub-block (a)'s ground truth depends on.
 assert_exit "SELF-HEALING: zzz-synthetic-guarded.sh ('if test -f …; then bash …' shape) auto-covered (exit 0)" 0 \
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-synthetic-guarded.sh' \
@@ -623,7 +667,8 @@ assert_exit "PRECISION: other/scripts/zzz-nested.sh must NOT promote scripts/zzz
 
 # PIN (green on arrival): the BARE `add "..."` emission shape derives, not just
 # `add_tool "..."`. This is how scripts/ensure-gui-sidecar-placeholder.sh
-# actually reaches the plan (scripts/verify.sh:2350, :2603), so without this
+# actually reaches the plan (grep `ensure-gui-sidecar-placeholder.sh` in
+# scripts/verify.sh), so without this
 # case the '(_tool)?' optional group has no direct pin -- only the indirect
 # ground-truth entry in (a), which a future refactor of that one gate would
 # silently take with it.
@@ -636,7 +681,8 @@ assert_exit "SELF-HEALING: bare add \"...\" shape (not add_tool) derives zzz-bar
 # ('^[[:space:]]*add(_tool)?[[:space:]]+"'), so `add './scripts/x.sh'` was
 # invisible -- and single quotes are the natural spelling for a literal gate
 # invocation that needs no interpolation. verify.sh already emits that shape
-# today (scripts/verify.sh:2610, `add 'wait "$_VERIFY_NODE_BG_PID"'`), so this
+# today (grep -E "^\s*add(_tool)? '" scripts/verify.sh — `add 'wait
+# "$_VERIFY_NODE_BG_PID"'`), so this
 # is a live idiom, not a hypothetical one. The '#'-comment exclusion the clause
 # relies on comes from the '^[[:space:]]*add' anchor itself, NOT from the quote
 # character, so accepting either quote costs no precision (the comment-only
@@ -657,7 +703,8 @@ assert_exit "PRECISION: emitted scripts/zzz-right.sha256sums must NOT promote sc
 
 # RED DRIVER: an emitted gate OUTSIDE scripts/ is the same ambush class and
 # must derive as well. Live instance: tests/sync_comments_test.sh
-# (scripts/verify.sh:2627), covered by (a)'s ground truth; this synthetic case
+# (grep `sync_comments_test.sh` in scripts/verify.sh), covered by (a)'s ground
+# truth; this synthetic case
 # pins the prefix-agnostic property itself, so a future gate under any repo
 # directory is covered without another amendment.
 assert_exit "SELF-HEALING: non-scripts/ emitted gate tests/zzz-nonscripts-gate.sh derives (exit 0)" 0 \
@@ -671,14 +718,24 @@ assert_exit "SELF-HEALING: non-scripts/ emitted gate tests/zzz-nonscripts-gate.s
 # now a UNION of two derivations: (4a) a grep of verify.sh's SOURCE TEXT for
 # add()/add_tool() statements, and (4b) one canonical widest `--print-plan`
 # invocation that reads the RESOLVED plan. 4b closes the variable-assembled
-# shape for every plan line the canonical invocation REACHES — including the
-# _gui_cmd / _sidecar_cmd / _ts_cmd shape at scripts/verify.sh:2568-2574
-# (assembled) / :2651-2653 (emitted) that the old wording here named as
-# underived. The SELF-HEALING case below pins that closure directly.
+# shape for every plan line the canonical invocation REACHES. The SELF-HEALING
+# case below pins that closure directly, and is the ONLY place it is exercised:
+# measured on the live tree, 4b derives nothing beyond 4a (the two sets are
+# byte-identical, 12 paths), because verify.sh has no plan line naming a *.sh
+# path from behind a variable.
+#
+# DO NOT cite the _gui_cmd / _sidecar_cmd / _ts_cmd triple (grep `_gui_cmd=` in
+# scripts/verify.sh) as the closed instance — an earlier draft of this comment
+# did, and it was wrong twice over. Those variables hold pure npm shell snippets
+# naming no *.sh path at all, so nothing is derivable from them either way; and
+# their `add_tool "$_gui_cmd"` emission is in the plain-path branch guarded by
+# `[ "$DO_LINT" -eq 0 ] || [ "$RUN_RUST" -eq 0 ]`, which the canonical widest
+# invocation never takes. They belong to the UNREACHED-BRANCH residual described
+# next, not to the closure.
 #
 # WHAT IS LEFT is the UNREACHED-BRANCH case, and this fixture is a faithful
 # instance of it: `_zzz_variable_gate` is appended at EOF, AFTER verify.sh's
-# --print-plan block `exit 0`s at scripts/verify.sh:3078, so build_plan never
+# --print-plan block `exit 0`s, so build_plan never
 # executes the statement and NO invocation of any shape can emit it (measured:
 # 0 occurrences in this fixture's own printed plan). 4a cannot see it either,
 # because the path is behind a variable. Underived by BOTH halves of the union
@@ -708,7 +765,8 @@ assert_exit "RESIDUAL LIMITATION: variable-assembled plan line in a branch the c
 # plan_capture_complete certifies the capture is not truncated; an interrupted
 # capture reads as "path absent" and would fire the preflight for the wrong
 # reason. REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 follows verify.sh's own
-# --print-plan hermeticity scope note (scripts/verify.sh:1702-1714): the
+# --print-plan hermeticity scope note (search "Scope note re: --print-plan
+# hermeticity" in scripts/verify.sh): the
 # nextest probe runs unconditionally in print mode and can otherwise fork cargo
 # and sleep before hard-failing.
 _PP_FIXTURE_DUMP=""
@@ -766,6 +824,25 @@ assert "--list includes scripts/zzz-print-plan-variable.sh (plan-derived, not so
 assert_exit "NON-VACUITY: --list-plan-derived is a real subcommand, exits 0 (diagnostic, not a diff verdict)" 0 \
     run_guard --list-plan-derived
 
+# PRECONDITION, asserted separately and FIRST so a flaky environment is
+# diagnosable rather than mysterious. The two non-vacuity assertions below
+# depend on the LIVE tree's --print-plan succeeding, and the guard deliberately
+# fail-softs to an EMPTY clause-4b set when it does not. That degradation is
+# correct behaviour — but it would surface below as "the guard derived nothing",
+# which reads as a derivation bug rather than as its actual cause. The most
+# likely cause is a cargo-nextest that is PRESENT but whose probe keeps failing:
+# verify.sh then hard-fails after up to 4 cargo forks (search "Scope note re:
+# --print-plan hermeticity" in scripts/verify.sh). capture_print_plan's retry
+# gives the same resilience the fixture preflights already get.
+_PP_REAL_DUMP=""
+capture_print_plan _PP_REAL_DUMP 3 \
+    env DF_VERIFY_ROLE=merge REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
+        bash "$REPO_ROOT/scripts/verify.sh" all --scope all --profile both --include-infra --print-plan \
+    || true
+
+assert "PRECONDITION: the real tree's own --print-plan succeeds and is complete (if THIS fails, the two NON-VACUITY assertions below are expected to fail too — fix the probe, not the guard)" \
+    plan_capture_complete "$_PP_REAL_DUMP"
+
 assert "NON-VACUITY: --list-plan-derived prints a NON-EMPTY set against the real tree" \
     bash -c '_o=$(bash "$1" --list-plan-derived) && [ -n "$_o" ]' \
     _ "$GUARD_SH"
@@ -803,6 +880,16 @@ assert_exit "FAIL-SOFT: a failing --print-plan degrades to the source-text floor
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-failsoft-gate.sh' \
     _ "$_LIBLESS_VERIFY_E" "$GUARD_SH"
 
+# The assertion above is answered by the source-text floor, which since clause
+# 4b became LAZY means it returns without ever attempting the failing fork —
+# correct, and the point of the union, but it no longer exercises the fail-soft
+# route itself. --list-plan-derived always forks, so it is the assertion that
+# still does: a failing --print-plan must yield an EMPTY set at exit 0, never a
+# non-zero abort under the guard's `set -euo pipefail` and never a partial set.
+assert "FAIL-SOFT: --list-plan-derived on a lib-less verify.sh exits 0 with an EMPTY set (the documented degradation, not an abort)" \
+    bash -c '_o=$(REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" --list-plan-derived 2>/dev/null) && [ -z "$_o" ]' \
+    _ "$_LIBLESS_VERIFY_E" "$GUARD_SH"
+
 # (c) BOUNDED / NO-HANG — the merge-worker hot-path requirement.
 #
 # A RUNNABLE fixture with a `sleep 600` injected at the same in-build_plan
@@ -810,17 +897,23 @@ assert_exit "FAIL-SOFT: a failing --print-plan degrades to the source-text floor
 # during PLAN CONSTRUCTION, before anything is printed — the shape a wedged
 # gate script or a stuck probe would produce in the field.
 #
-# RED today (measured): with no bound inside the plan-derived clause the guard
-# inherits the block, and an outer `timeout 8` killed it at exit 124 in 8.01s.
-# The fix is a bound INSIDE the clause. Its ceiling is
+# RED originally (measured): with no bound inside the plan-derived clause the
+# guard inherits the block, and an outer `timeout 8` killed it at exit 124 in
+# 8.01s. The fix is a bound INSIDE the clause. Its ceiling is
 # REIFY_VERIFY_PIPELINE_GUARD_PRINT_PLAN_TIMEOUT (default in the tens of
 # seconds — three orders of magnitude over the ~0.4s measured cost of the real
 # invocation); this case pins it low so the assertion stays cheap, and keeps
 # the outer `timeout 30` as the thing that must NEVER fire.
 #
-# Exit 0 rather than "0 or 1" is the deterministic form of the same property:
-# the fixture is a full verify.sh copy, so the source-text floor covers
-# check-manifold-deps.sh regardless of what the wedged plan does. Any 124 here
+# PROBE-PATH CHOICE IS LOAD-BEARING — read before "simplifying" it. This case
+# originally probed with scripts/check-manifold-deps.sh, and once clause 4b
+# became LAZY (task 6426 review) that made it VACUOUS: check-manifold-deps.sh
+# matches in the static source-text pass, so the guard returned in 0.11s
+# without ever forking the wedged fixture, and the assertion passed while
+# testing nothing. The probe must therefore be a path that NO static clause
+# matches, so every clause misses and 4b is genuinely consulted — docs/note.md,
+# the same fast-path-safe path Pair A uses. Expected exit is 1 for that reason:
+# the wedged plan derives nothing, and nothing else matches either. Any 124
 # means the bound is gone.
 make_runnable_verify_fixture _BLOCKING_VERIFY_E
 awk '
@@ -834,10 +927,66 @@ awk '
 mv "$_BLOCKING_VERIFY_E.blocking" "$_BLOCKING_VERIFY_E"
 chmod +x "$_BLOCKING_VERIFY_E"
 
-assert_exit "BOUNDED: a wedged --print-plan cannot hang the guard — returns via the source-text floor under an outer timeout 30, never 124" 0 \
+# FORK MARKER — makes "did the guard fork this fixture at all?" a DETERMINISTIC
+# observation rather than a timing inference. Written unconditionally at the top
+# of the fixture, so its existence after a call means clause 4b ran the fixture
+# and its absence means it did not. Timing alone cannot answer that without
+# being hostage to load under the concurrent run_all.sh pool, and the LAZY
+# assertion below is exactly a "this should be FAST" claim — the direction where
+# a timing threshold flakes.
+_BLOCKING_MARKER="$(dirname "$_BLOCKING_VERIFY_E")/pp-forked.marker"
+sed -i "2i : > \"$_BLOCKING_MARKER\"" "$_BLOCKING_VERIFY_E"
+
+# INJECTION PREFLIGHTS (anti-vacuity; NOT optional — same role as the
+# REACHABILITY PREFLIGHT above, which this case lacked until the task-6426
+# review). The awk is anchored on the SAME verify.sh statement the reachable
+# case uses, so a single refactor that moves, reindents, renames or deletes it
+# silently guts this assertion — the awk no-ops, --print-plan completes
+# normally in ~0.3s, and the assertion still passes with the timeout bound
+# entirely untested — while the other case goes loudly red. Pin both injections.
+assert "PREFLIGHT: awk injected 'sleep 600' into the blocking fixture exactly once (anchor still exists)" \
+    bash -c '[ "$(grep -c "sleep 600" "$1")" -eq 1 ]' _ "$_BLOCKING_VERIFY_E"
+
+assert "PREFLIGHT: the fork marker line was injected into the blocking fixture" \
+    bash -c 'grep -qF "pp-forked.marker" "$1"' _ "$_BLOCKING_VERIFY_E"
+
+rm -f "$_BLOCKING_MARKER"
+_BOUNDED_T0=$SECONDS
+assert_exit "BOUNDED: a wedged --print-plan cannot hang the guard — the 4b-consulting route returns under an outer timeout 30, never 124" 1 \
+    env REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$_BLOCKING_VERIFY_E" \
+        REIFY_VERIFY_PIPELINE_GUARD_PRINT_PLAN_TIMEOUT=3 \
+        timeout 30 bash "$GUARD_SH" requires-full-gate docs/note.md
+_BOUNDED_ELAPSED=$(( SECONDS - _BOUNDED_T0 ))
+
+# Marker present == the fork genuinely happened. This also certifies the marker
+# MECHANISM is live, which is what makes the LAZY assertion's marker-absent
+# check meaningful rather than trivially true.
+assert "BOUNDED: the 4b-consulting route really did fork the wedged fixture (marker written)" \
+    test -e "$_BLOCKING_MARKER"
+
+# ...and elapsed >= the configured bound is what proves the fork was cut short
+# by the clause's OWN timeout rather than completing on its own (the unwedged
+# invocation costs ~0.4s, well under 3s). Cannot flake: a `sleep 600` behind a
+# `timeout 3` takes at least 3s by construction, so this only goes red when the
+# bound is actually gone. Upper end is the outer timeout 30, asserted by the
+# exit code above.
+assert "BOUNDED: the wedged fork was cut by the clause's own timeout (elapsed ${_BOUNDED_ELAPSED}s >= 3s)" \
+    test "$_BOUNDED_ELAPSED" -ge 3
+
+# COMPLEMENT — the LAZY property itself (task 6426 review): the same wedged
+# fixture, probed with a path the STATIC clauses DO match, must return without
+# forking at all. That is the optimisation's whole point (the guard runs on
+# every dark-factory merge-worker classification), and it is also the guard
+# against silently reverting to eager evaluation — which would look green
+# everywhere else, since eager and lazy agree on every verdict.
+rm -f "$_BLOCKING_MARKER"
+assert_exit "LAZY: a statically-matched path returns via the source-text floor on the SAME wedged fixture (exit 0)" 0 \
     env REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$_BLOCKING_VERIFY_E" \
         REIFY_VERIFY_PIPELINE_GUARD_PRINT_PLAN_TIMEOUT=3 \
         timeout 30 bash "$GUARD_SH" requires-full-gate scripts/check-manifold-deps.sh
+
+assert "LAZY: that call did NOT fork --print-plan at all (marker absent — clause 4b stayed unevaluated)" \
+    bash -c '[ ! -e "$1" ]' _ "$_BLOCKING_MARKER"
 
 # (d) STDOUT CONTRACT — the merge worker parses the guard's stdout as
 # `result=$(...)`, the first matched load-bearing path (see the header's usage
@@ -861,7 +1010,8 @@ assert "STDOUT CONTRACT: an exit-1 (fast-path-safe) classification prints NOTHIN
 # (d) MAP-WIRING: this guard's own oracle and static manifest must select this
 # test as a per-task fail-fast pole.
 #
-# MEASURED GAP this closes: select_infra_tests() (scripts/verify.sh:1254-1280)
+# MEASURED GAP this closes: select_infra_tests() (grep `^select_infra_tests() {`
+# in scripts/verify.sh)
 # matches artifact fields by EXACT repo-relative path, and at HEAD fee75336ca
 # scripts/verify-pipeline-infra-tests.txt had NO row for either
 # scripts/verify-pipeline-guard.sh or scripts/verify-pipeline-paths.txt. The
