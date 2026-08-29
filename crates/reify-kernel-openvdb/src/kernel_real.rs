@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use reify_core::Type;
-use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SampledField, TessError, Value};
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
 
 use crate::ffi::ffi as openvdb_ffi;
 use crate::init::ensure_initialized;
@@ -627,6 +627,12 @@ impl GeometryKernel for OpenVdbKernel {
     ///   interior-saturation artefact where deep-interior voxels read
     ///   `-half_width × voxel_size` instead of the true SDF value.
     ///
+    /// That policy is bounding-box driven and therefore FEATURE-BLIND: a 1 mm
+    /// flexure in a 100 mm part is entirely sub-voxel at h = 1.5625. A caller
+    /// that knows its thinnest feature should use
+    /// [`Self::ingest_mesh_at_resolution`] with
+    /// [`VoxelResolution::MinFeature`] instead (task 6560).
+    ///
     /// # Returns
     ///
     /// - `Ok(GeometryHandle { id, repr: None })` — `repr` is `None` because
@@ -634,19 +640,54 @@ impl GeometryKernel for OpenVdbKernel {
     ///   `GeometryHandle` contract at `geometry.rs:121-128`).
     /// - `Err(GeometryError::OperationFailed(_))` for:
     ///   - malformed flat buffers (`vertices.len()` or `indices.len()` not
-    ///     a multiple of 3) — validated here before calling `honest_floor`
-    ///     so the diagnostic names the actual cause (buffer layout) rather
-    ///     than the misleading "bbox extent" message that `honest_floor`
-    ///     would produce (it uses `chunks_exact(3)` which drops the trailing
-    ///     partial triplet);
-    ///   - empty / degenerate / non-finite meshes (honest_floor returns None);
+    ///     a multiple of 3) — validated before deriving options so the
+    ///     diagnostic names the actual cause (buffer layout) rather than the
+    ///     misleading "bbox extent" message the bbox pass would produce (it
+    ///     uses `chunks_exact(3)`, which drops the trailing partial triplet);
+    ///   - empty / degenerate / non-finite meshes;
     ///   - invalid opts or FFI failure (propagated from
     ///     `realize_voxel_from_mesh_with_options`).
+    ///
+    /// # Single code path
+    ///
+    /// Implemented by delegating to [`Self::ingest_mesh_at_resolution`] with
+    /// [`VoxelResolution::HonestFloor`], which `for_resolution` in turn routes
+    /// verbatim to `honest_floor`. There is therefore exactly one body and no
+    /// chance of the two entry points drifting apart.
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
-        // Validate flat-buffer lengths before calling honest_floor so the error
-        // message names the true cause.  honest_floor's chunks_exact(3) silently
-        // drops a trailing partial triplet and would return None with the generic
-        // "bbox extent" message instead of the precise layout error below.
+        self.ingest_mesh_at_resolution(mesh, VoxelResolution::HonestFloor)
+    }
+
+    /// Convert a triangle-soup [`Mesh`] to a narrow-band SDF `FloatGrid` at a
+    /// caller-requested [`VoxelResolution`] (task 6560 — the v0.4-shells
+    /// `BRep→Voxel` resolution seam).
+    ///
+    /// This is the sole implementation; [`Self::ingest_mesh`] is the
+    /// [`VoxelResolution::HonestFloor`] special case of it.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::ingest_mesh`] returns, plus — bridged from
+    /// [`crate::VoxelResolutionError`] via its `Display` — a rejection when the
+    /// requested length is not finite and strictly positive, or when the grid
+    /// the request implies would exceed [`crate::DENSIFY_BUDGET_VOXELS`]. That
+    /// budget check is pure Rust and runs BEFORE any FFI work, so an
+    /// impossible request costs no `meshToVolume` allocation.
+    ///
+    /// # `unsafe impl Sync` audit
+    ///
+    /// This method touches no API on the audit list at the bottom of this file:
+    /// it calls only [`Self::realize_voxel_from_mesh_with_options`], which is
+    /// already `&mut self`. The audit list is therefore unchanged.
+    fn ingest_mesh_at_resolution(
+        &mut self,
+        mesh: &Mesh,
+        resolution: VoxelResolution,
+    ) -> Result<GeometryHandle, GeometryError> {
+        // Validate flat-buffer lengths first so the error message names the
+        // true cause.  The bbox pass's chunks_exact(3) silently drops a
+        // trailing partial triplet and would report the generic "bbox extent"
+        // message instead of the precise layout error below.
         if !mesh.vertices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
                 "mesh.vertices length {} is not a multiple of 3 (expected flat xyz layout)",
@@ -659,12 +700,8 @@ impl GeometryKernel for OpenVdbKernel {
                 mesh.indices.len(),
             )));
         }
-        let opts = crate::MeshToVoxelOptions::honest_floor(mesh).ok_or_else(|| {
-            GeometryError::OperationFailed(
-                "OpenVdbKernel::ingest_mesh: cannot derive honest-floor voxel size \
-                 — mesh has zero or non-finite bounding-box extent"
-                    .into(),
-            )
+        let opts = crate::MeshToVoxelOptions::for_resolution(mesh, resolution).map_err(|e| {
+            GeometryError::OperationFailed(format!("OpenVdbKernel::ingest_mesh_at_resolution: {e}"))
         })?;
         let id = self.realize_voxel_from_mesh_with_options(mesh, &opts)?;
         Ok(GeometryHandle { id, repr: None })

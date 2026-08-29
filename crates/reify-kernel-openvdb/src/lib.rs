@@ -36,7 +36,9 @@ pub mod mesh_to_voxel_options;
 pub mod register;
 
 pub use marching_cubes_options::MarchingCubesOptions;
-pub use mesh_to_voxel_options::MeshToVoxelOptions;
+pub use mesh_to_voxel_options::{
+    DENSIFY_BUDGET_VOXELS, MIN_FEATURE_VOXELS_ACROSS, MeshToVoxelOptions, VoxelResolutionError,
+};
 
 // Real FFI bridge — only compiled when the build script detects OpenVDB.
 #[cfg(has_openvdb)]

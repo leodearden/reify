@@ -153,12 +153,9 @@ fn min_feature_request_produces_a_strictly_finer_grid_than_honest_floor() {
     let plate = plate_100x100x1();
 
     let mut k = OpenVdbKernel::new();
-    let coarse = GeometryKernel::ingest_mesh_at_resolution(
-        &mut k,
-        &plate,
-        VoxelResolution::HonestFloor,
-    )
-    .expect("HonestFloor must succeed");
+    let coarse =
+        GeometryKernel::ingest_mesh_at_resolution(&mut k, &plate, VoxelResolution::HonestFloor)
+            .expect("HonestFloor must succeed");
     let fine =
         GeometryKernel::ingest_mesh_at_resolution(&mut k, &plate, VoxelResolution::MinFeature(1.0))
             .expect("MinFeature(1.0) must succeed");
