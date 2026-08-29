@@ -720,14 +720,24 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //     resolves to a live symbol) -- an upper bound on `start.elapsed()`;
 //     see the tombstone just below.
 //
+// FIXED BY #6462 (both deleted; replaced by a two-delivery
+// `wait_for_control_drain` barrier, not widened):
+//   * watcher_ignores_non_ri_file_changes -- a fixed 500ms sleep gating the
+//     `paths.is_empty()` NEGATIVE assertion on wall-clock separation alone.
+//     Now: two deliveries of a dedicated control.ri write. Two deliveries
+//     of the SAME path are necessarily two distinct debouncer batches (the
+//     debouncer is keyed by path), and the single worker thread completes
+//     batch N's callbacks before draining batch N+1, so observing the
+//     second delivery proves every callback of the first batch -- including
+//     any filtered write issued before it, whose earlier record implies an
+//     earlier debounce deadline -- has already run. Race-free by
+//     construction, not by timeout.
+//   * watcher_with_target_file_only_fires_for_that_file -- the same fixed
+//     500ms sleep and the same fix, using the test's own project.ri write
+//     as the control: it's the only path the target_file filter ever
+//     passes for a Changed event, so it doubles as its own barrier.
+//
 // JUDGED SAFE, and why:
-//   * Fixed sleeps gating NEGATIVE assertions, in
-//     watcher_ignores_non_ri_file_changes and
-//     watcher_with_target_file_only_fires_for_that_file.
-//     Descheduling makes a negative assertion MORE likely to hold, never
-//     less, so these cannot invert. They carry a VACUITY risk instead --
-//     a different class, out of scope here; both are already barriered by
-//     a positive registration confirmation, which is what stops it.
 //   * The sub-debounce-window sleep in
 //     watcher_rereads_final_content_after_nonatomic_truncate_then_append.
 //     If load stretches it past DEBOUNCE_DURATION the two writes merely
@@ -780,6 +790,12 @@ fn debouncer_a_record_stamped_after_now_is_never_ready_and_reports_a_full_window
 //     `wait_for_watch_registration_inner`'s retry cadence and budget.
 //     Both are driven through the `WaitClock` seam, and the cadence
 //     exceeding DEBOUNCE_DURATION is deliberate -- see that helper's doc.
+//   * `wait_for_control_drain`'s two `wait_for` budgets (added by #6462,
+//     used at both converted sites above). Each is a generous `wait_for`
+//     budget over a hard POSITIVE claim -- that a control delivery
+//     arrived -- the same shape the registration-barriered condition-polls
+//     row above already blesses: slack, not a claim, and monotone under
+//     descheduling.
 //   * The debouncer_* / VirtualClock tests. `Instant::now()` there is
 //     only a seed for synthetic arithmetic; no real time is consumed and
 //     none is asserted on.
