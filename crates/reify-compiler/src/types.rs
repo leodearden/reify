@@ -1349,6 +1349,40 @@ pub struct RealizationDecl {
     /// `TopologyTemplateBuilder` test helpers likewise default to `false`.
     /// Downstream (reify-eval) reads this to set `MeshSurface.default_visible`.
     pub is_aux: bool,
+    /// Whether this realization exists ONLY to give a geometry *query* an
+    /// evaluable handle, and is therefore not product geometry at all
+    /// (task 5345).
+    ///
+    /// Set exclusively for the synthetic `__geoq_<N>` lets that
+    /// `desugar_inline_geometry_query_args` (entity.rs) mints when hoisting an
+    /// inline geometry call out of a whole-handle query argument — e.g.
+    /// `let v = volume(torus(20mm, 5mm))` desugars to
+    /// `let __geoq_0 = torus(20mm, 5mm); let v = volume(__geoq_0)`. Every
+    /// user-authored `let`/`param` constructs with `false`.
+    ///
+    /// This is deliberately NOT the same axis as [`Self::is_aux`]. `aux` means
+    /// "real geometry the user declared, but with no external geometric
+    /// effect": it is still a body, it still participates in the
+    /// final-realization selection, and a structure whose bodies are ALL aux is
+    /// an error ("all realized bodies are aux; no product geometry to export").
+    /// A query-only realization is not a body at all — it is measurement
+    /// scaffolding synthesized by the desugarer, and the pre-hoist behaviour it
+    /// must preserve is "no realization existed here". Consequently reify-eval
+    /// must exclude it from:
+    ///   * the `had_realization_ops` predicate (so a structure whose only
+    ///     geometry lives inside a query arg exports nothing *without* an
+    ///     error, exactly as it did before the hoist);
+    ///   * final-realization selection AND the export skip set
+    ///     (`non_final_realization_indices`) — otherwise a later-indexed
+    ///     `__geoq_N` would displace the user's real product body from
+    ///     STEP/STL/3MF;
+    ///   * the tessellation body list (otherwise the viewer shows a phantom
+    ///     body the user never declared).
+    ///
+    /// It must NOT be excluded from realization *execution* or from
+    /// `named_steps`/`terminal_handles` recording — the query reads its handle
+    /// from exactly there.
+    pub is_query_only: bool,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
 }

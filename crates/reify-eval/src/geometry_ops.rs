@@ -12074,16 +12074,31 @@ pub(crate) fn non_final_realization_indices(
         .map(|(t_idx, template)| {
             // Index of the final geometry-producing realization (highest r_idx
             // with a recorded terminal handle) — equals `step_handles.last()`.
+            //
+            // task 5345: a query-only realization (a hoisted `__geoq_<N>`
+            // inline geometry-query argument) is measurement scaffolding, not a
+            // body, so it is INELIGIBLE to be the final realization. Without
+            // this, `let body = box(..)  let v = volume(torus(..))` would give
+            // `body`->r0 and `__geoq_0`->r1, and the user's real box would be
+            // silently dropped from STEP/STL/3MF in favour of the torus.
             let final_idx = terminal_handles.get(t_idx).and_then(|handles| {
-                handles
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(r_idx, h)| h.is_some().then_some(r_idx))
+                handles.iter().enumerate().rev().find_map(|(r_idx, h)| {
+                    let query_only = template
+                        .realizations
+                        .get(r_idx)
+                        .is_some_and(|r| r.is_query_only);
+                    (h.is_some() && !query_only).then_some(r_idx)
+                })
             });
-            // Skip every realization that is not the final one.
+            // Skip every realization that is not the final one — and every
+            // query-only realization unconditionally (it is never `final_idx`
+            // by the guard above, so this is belt-and-braces documentation of
+            // intent rather than an extra exclusion).
             (0..template.realizations.len())
-                .filter(|r_idx| Some(*r_idx) != final_idx)
+                .filter(|r_idx| {
+                    Some(*r_idx) != final_idx
+                        || template.realizations[*r_idx].is_query_only
+                })
                 .collect()
         })
         .collect()
@@ -12244,6 +12259,19 @@ pub(crate) fn surface_subtree(
     // contains misleading 0.0 entries (honest absence = missing key, B3).
     achieved_repr_tol: &mut BTreeMap<String, f64>,
 ) {
+    // Tessellation surfaces all *bodies*, so there is no path filter — but a
+    // query-only realization (task 5345: a hoisted `__geoq_<N>` inline
+    // geometry-query argument) is not a body at all. Without this gate the
+    // viewer/mesh list would show a phantom solid the user never declared,
+    // while the export walk correctly omits it (`non_final_realization_indices`)
+    // — the two lists must agree.
+    let not_query_only = |t: usize, r: usize, _path: &str| {
+        !module
+            .templates
+            .get(t)
+            .and_then(|tpl| tpl.realizations.get(r))
+            .is_some_and(|real| real.is_query_only)
+    };
     walk_placed_realizations(
         module,
         t_idx,
@@ -12259,9 +12287,7 @@ pub(crate) fn surface_subtree(
         functions,
         meta_map,
         diagnostics,
-        // Tessellation surfaces all bodies (no path filter needed); pass None to
-        // avoid any pre-filter overhead on the hot path.
-        None,
+        Some(&not_query_only),
         &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
             let budget = tessellation_budgets[t][r];
             match kernel.tessellate(placed_id, budget) {
