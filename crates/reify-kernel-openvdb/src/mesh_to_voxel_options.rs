@@ -99,6 +99,34 @@ pub const BAND_MARGIN_VOXELS: f64 = 2.0;
 /// regime and must not be done without re-measuring that floor.
 pub const MIN_FEATURE_VOXELS_ACROSS: f64 = 4.0;
 
+/// Maximum dense voxel count [`MeshToVoxelOptions::for_resolution`] will admit
+/// for a resolution request (task 6560).
+///
+/// # Why a Rust-side pre-check at all
+///
+/// `OpenVdbGridSource` (`ingest.rs:64-79`) and `reify_ir::SampledField`
+/// (`reify-ir/src/value.rs:94-114`) are both DENSE row-major buffers, so a
+/// fine-enough request on a large part is an allocation hazard rather than
+/// merely a slow one. Before this constant the only ceiling was the C++
+/// `GRID_DENSIFY_MAX_VOXELS` throw inside `grid_densify_to_buffer`
+/// (`cpp/openvdb_wrapper.h:146`) — which fires only AFTER a full
+/// `meshToVolume` has already been built, and reaches Rust mis-typed as
+/// `IngestError::FileReadError("grid too large")`. Checking here rejects the
+/// request before any FFI work, with a message naming the requested voxel
+/// size, the implied count and this budget.
+///
+/// # Relation to the C++ ceiling: `<=`, deliberately not `==`
+///
+/// This value MUST stay less than or equal to `GRID_DENSIFY_MAX_VOXELS`.
+/// Framing the relation as `<=` rather than `==` makes any future drift benign
+/// by construction: a tighter Rust budget rejects early with a good diagnostic,
+/// a looser one merely falls back to the existing late C++ throw. Neither
+/// direction can admit an allocation the C++ side would have refused, so no
+/// lockstep meta-test is needed.
+///
+/// 256M voxels ≈ 1 GiB at 4 bytes/float.
+pub const DENSIFY_BUDGET_VOXELS: i64 = 256 * 1024 * 1024;
+
 /// Why a resolution request could not be turned into [`MeshToVoxelOptions`].
 ///
 /// Shape follows [`crate::ingest::IngestError`] (`ingest.rs:85`): a plain
@@ -130,6 +158,29 @@ pub enum VoxelResolutionError {
         /// `"MinFeature"`.
         variant: &'static str,
     },
+
+    /// The request is well-formed but the grid it implies would exceed
+    /// [`DENSIFY_BUDGET_VOXELS`].
+    ///
+    /// Raised BEFORE any FFI work, so no `meshToVolume` allocation is paid for
+    /// a request that could never be densified. Every field is named in the
+    /// [`Display`](std::fmt::Display) message so the diagnostic is actionable
+    /// at the request site: it says what was asked for, what that implies, and
+    /// what the ceiling is.
+    DensifyBudgetExceeded {
+        /// The voxel size the request resolved to (for `MinFeature(t)` this is
+        /// the DERIVED `t / MIN_FEATURE_VOXELS_ACROSS`, not `t`).
+        requested_voxel_size: f64,
+        /// Dense voxel count the request implies, including the narrow-band
+        /// padding on every axis.
+        ///
+        /// Saturates at [`i64::MAX`] when the true product is not representable
+        /// — it is then a lower bound, which is all the caller needs given it
+        /// already exceeds the budget by many orders of magnitude.
+        implied_voxels: i64,
+        /// The budget it was measured against ([`DENSIFY_BUDGET_VOXELS`]).
+        budget: i64,
+    },
 }
 
 impl std::fmt::Display for VoxelResolutionError {
@@ -145,11 +196,71 @@ impl std::fmt::Display for VoxelResolutionError {
                 "invalid VoxelResolution::{variant}({requested}): the requested length \
                  must be finite and strictly positive"
             ),
+            Self::DensifyBudgetExceeded {
+                requested_voxel_size,
+                implied_voxels,
+                budget,
+            } => write!(
+                f,
+                "voxel size {requested_voxel_size} implies a dense grid of at least \
+                 {implied_voxels} voxels, exceeding the budget of {budget}; request a \
+                 coarser resolution or a smaller region"
+            ),
         }
     }
 }
 
 impl std::error::Error for VoxelResolutionError {}
+
+/// Dense voxel count a `(voxel_size, narrow_band)` pair implies for a body with
+/// these bounding-box `extents`, including the narrow-band padding.
+///
+/// Per axis: `ceil(extent / h) + 2 * ceil(narrow_band)` — the mesh bbox in
+/// voxels, grown by the band on both sides, which is the bbox
+/// `grid_densify_to_buffer` (`cpp/openvdb_wrapper.cpp`) will materialise.
+///
+/// # Overflow safety
+///
+/// Mirrors the guard at `cpp/openvdb_wrapper.cpp:377-393`: the running product
+/// is compared against `budget / next` BEFORE multiplying, never after, so a
+/// product that would wrap `i64` can never present itself as a small positive
+/// count that sneaks past the cap. Per-axis counts are saturated on the
+/// float→int cast (Rust float casts saturate rather than wrap or trap), and the
+/// accumulation uses [`i64::saturating_mul`], so the reported count is exact
+/// when representable and an honest lower bound otherwise.
+///
+/// # Returns
+///
+/// `Ok(count)` when the implied grid fits [`DENSIFY_BUDGET_VOXELS`],
+/// `Err(count)` when it does not.
+fn implied_dense_voxels(extents: &[f64; 3], voxel_size: f64, narrow_band: f64) -> Result<i64, i64> {
+    // 2 × band on each axis; `narrow_band` is finite and non-negative here
+    // (`voxel_size` is validated positive and `min_half_extent` is non-negative).
+    let pad = 2.0 * narrow_band.ceil();
+
+    let mut total: i64 = 1;
+    let mut over_budget = false;
+    for &extent in extents {
+        // Saturating float→int cast; clamped to >= 1 so a zero-thickness axis
+        // cannot zero the product and hide an over-budget request.
+        let n = ((extent / voxel_size).ceil() + pad).max(1.0) as i64;
+
+        // The over-budget DECISION compares before multiplying
+        // (openvdb_wrapper.cpp:377-393), so it never forms a product that could
+        // overflow — a wrap can never present an oversized request as a small
+        // positive count. `total > budget / n` implies `total * n > budget` in
+        // exact arithmetic, and its negation on every axis implies the final
+        // product is within budget, so the guard is exactly equivalent to
+        // testing the exact product.
+        if total > DENSIFY_BUDGET_VOXELS / n {
+            over_budget = true;
+        }
+        // The REPORTED count saturates rather than wrapping.
+        total = total.saturating_mul(n);
+    }
+
+    if over_budget { Err(total) } else { Ok(total) }
+}
 
 /// Axis-aligned bounding-box extents `[dx, dy, dz]` of `mesh`, in `f64`.
 ///
@@ -331,13 +442,32 @@ impl MeshToVoxelOptions {
 
         let extents = bbox_extents(mesh).ok_or(VoxelResolutionError::DegenerateMesh)?;
 
-        // PLACEHOLDER (task 6560, step-4): reuse honest_floor's longest-extent
-        // band rule so the voxel-size arithmetic can be tested on its own.
-        // Step-6 replaces this with the min-half-extent rule that makes
-        // thickness-scale resolution affordable on a thin feature in a large
-        // part, and adds the dense-grid budget pre-check.
-        let _ = extents;
-        let narrow_band = VOXELS_PER_LONGEST_AXIS / 2.0 + BAND_MARGIN_VOXELS;
+        // Band-covers-interior, derived from the MINIMUM half-extent.
+        //
+        // The bound is a containment identity, not a tuned number: the body is
+        // contained in its bounding box, so any interior point's distance to
+        // the BODY boundary is at most its distance to the BBOX boundary, which
+        // is at most the minimum half-extent (any path leaving the bbox must
+        // exit the body first). Covering `min_half_extent` therefore covers
+        // every interior point, and `BAND_MARGIN_VOXELS` absorbs the
+        // floating-point rounding in `meshToLevelSet`'s half_width_voxels.
+        //
+        // This is what makes thickness-scale resolution affordable: on the
+        // 100 × 100 × 1 plate at h = 0.25, `honest_floor`'s `longest_extent / 2`
+        // rule would demand 200+ band voxels, the containment identity needs 4.
+        // `honest_floor` DELIBERATELY keeps its longest-extent rule so every
+        // pre-existing caller and test is unchanged; only the two request-driven
+        // arms use this tighter one.
+        let min_half_extent = 0.5 * extents[0].min(extents[1]).min(extents[2]);
+        let narrow_band = min_half_extent / voxel_size + BAND_MARGIN_VOXELS;
+
+        if let Err(implied_voxels) = implied_dense_voxels(&extents, voxel_size, narrow_band) {
+            return Err(VoxelResolutionError::DensifyBudgetExceeded {
+                requested_voxel_size: voxel_size,
+                implied_voxels,
+                budget: DENSIFY_BUDGET_VOXELS,
+            });
+        }
 
         Ok(Self {
             voxel_size,
