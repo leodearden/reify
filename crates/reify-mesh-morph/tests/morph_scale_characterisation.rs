@@ -872,6 +872,21 @@ fn gmsh_tetrahedralise_produces_tets_at_a_requested_mesh_size() {
 /// drifts from the gmsh crate's.
 #[cfg(not(has_gmsh))]
 #[test]
+// `GMSH_AVAILABLE` is `pub const GMSH_AVAILABLE: bool = cfg!(has_gmsh)`
+// (`crates/reify-kernel-gmsh/src/lib.rs:139`), so this assertion is
+// constant-valued BY CONSTRUCTION and clippy's `assertions_on_constants`
+// fires on it — turning `scripts/verify.sh`'s `cargo clippy --all-targets --
+// -D warnings` pass into a hard failure on precisely the stub-build host
+// this test exists to serve. The constant-ness IS the point: the value under
+// test is another crate's view of its own build, which is not knowable when
+// this line is written.
+//
+// Deliberately NOT hoisted into a `const { … }` block (clippy's own
+// suggestion): that would make a detected drift a COMPILE error, taking the
+// whole test binary down and leaving a stub-build host with no test results
+// at all — where today it gets one loudly failing test and every sibling
+// still reported.
+#[allow(clippy::assertions_on_constants)]
 fn gmsh_arm_is_absent_in_a_stub_build() {
     assert!(
         !reify_kernel_gmsh::GMSH_AVAILABLE,
@@ -1138,6 +1153,17 @@ fn gmsh_from_scratch_vs_morph_wall_clock_at_10k_and_100k() {
             measurement
         })
         .collect();
+
+    // Step 4 below is `morphs`'s ONLY reader and is `#[cfg(has_gmsh)]`, so in
+    // a stub build the binding has no reader at all — yet it must still exist,
+    // because constructing it is what runs and prints the morph arm (the half
+    // of the table a stub build can still produce). Without this marker rustc
+    // reports `unused variable: morphs` there, and `scripts/verify.sh`'s
+    // `cargo clippy --all-targets -- -D warnings` pass turns that warning into
+    // a failure — on exactly the host configuration
+    // `gmsh_arm_is_absent_in_a_stub_build` exists to keep honest.
+    #[cfg(not(has_gmsh))]
+    let _ = &morphs;
 
     // ── 4. the count-matched pairing — the number #2953 actually needs ───────
     #[cfg(has_gmsh)]
