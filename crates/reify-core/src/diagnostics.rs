@@ -1751,6 +1751,47 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_NAME`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     UnresolvedName,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — the **terminal first-arg
+    /// fallback** of the `NoUserFunctions` arm of the `FunctionCall` ladder.
+    ///
+    /// Emitted as `Severity::Warning` when a call's CALLEE matches nothing the
+    /// compiler knows: no user or stdlib `fn`, and no builtin name in the
+    /// closed-world union computed by `reify_compiler::is_known_builtin`
+    /// (every classification family, plus the `FIRST_ARG_TYPED_NAMES`
+    /// allowlist and the `EVAL_DEFERRED_BUILTIN_NAMES` manifest). Before task
+    /// #5371 such a call compiled with ZERO diagnostics and silently adopted
+    /// its first argument's type — `line(point3(1mm,2mm,3mm), …)` type-checked
+    /// clean as `Scalar<LENGTH>`.
+    ///
+    /// Canonical message form:
+    /// `"unresolved function: <name>"`
+    ///
+    /// # How this differs from [`DiagnosticCode::UnresolvedName`]
+    ///
+    /// They are neighbours, not synonyms, and consumers matching on the code
+    /// depend on the split:
+    ///
+    /// | | `UnresolvedName` | `UnresolvedFunction` |
+    /// |---|---|---|
+    /// | mnemonic | `E_UNRESOLVED_NAME` | `W_UNRESOLVED_FUNCTION` |
+    /// | severity | Error | Warning |
+    /// | what is unresolved | an unbound IDENTIFIER in expression context | the CALLEE of a `FunctionCall` |
+    /// | origin | `expr.rs:670-681`, `annotations.rs:321` | the terminal fallback in `expr.rs` |
+    ///
+    /// It is also distinct from [`DiagnosticCode::FnTypeArgUnresolved`], which
+    /// concerns an unresolved TYPE ARGUMENT of a call that *did* resolve.
+    ///
+    /// # Why a Warning, and what changes it
+    ///
+    /// The mnemonic is `W_UNRESOLVED_FUNCTION` per the crate's severity
+    /// convention (`W_*` → Warning, `E_*` → Error). Warn-mode is deliberate and
+    /// interim: #5371 changes NO typing, so the existing corpus cannot break on
+    /// it, and the corpus sweep must be green before the severity can move.
+    /// **#5997 flips this to `E_UNRESOLVED_FUNCTION`/`Severity::Error` behind a
+    /// break-glass env knob**; #6014 (registry ω) then deletes the fallback
+    /// itself, at which point this code becomes the sole outcome of a
+    /// lookup miss rather than a warning layered over a guess.
+    UnresolvedFunction,
     /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (γ trampoline
     /// mapping of [`reify_shell_extract::SegmentationError::InvalidThreshold`]).
     ///

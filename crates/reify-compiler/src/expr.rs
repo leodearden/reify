@@ -3886,6 +3886,38 @@ fn compile_expr_guarded_with_expected_inner(
                         // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
                     } else {
+                        // TERMINAL FIRST-ARG FALLBACK — the open end of the
+                        // ladder. Any callee no arm above claimed is typed as
+                        // its first argument (or Real when zero-arg).
+                        //
+                        // Task #5371 closes the WORLD here without touching the
+                        // TYPING: `is_known_builtin` is the closed-world union
+                        // of every classification family plus the two manifests
+                        // in `unresolved_function`, so a name it rejects exists
+                        // nowhere at all — no family, no eval dispatch arm, no
+                        // user/stdlib `fn` (those resolve long before this arm).
+                        // Such a call used to compile with zero diagnostics and
+                        // silently adopt arg0's type; now it warns and STILL
+                        // adopts arg0's type. Warn-mode-first is deliberate: no
+                        // corpus can break on a diagnostic alone.
+                        //
+                        // Durable track: docs/prds/v0_6/builtin-signature-registry.md.
+                        // #5997 flips this Warning to Error behind a break-glass
+                        // env knob; #6014 (registry ω) DELETES this whole
+                        // fallback once every builtin holds a real signature row,
+                        // and with it the `FIRST_ARG_TYPED_NAMES` allowlist.
+                        if !crate::unresolved_function::is_known_builtin(name) {
+                            diagnostics.push(
+                                Diagnostic::warning(format!("unresolved function: {name}"))
+                                    .with_code(DiagnosticCode::UnresolvedFunction)
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        format!(
+                                            "no builtin or user function named '{name}' is in scope"
+                                        ),
+                                    )),
+                            );
+                        }
                         compiled_args
                             .first()
                             .map(|a| a.result_type.clone())
