@@ -949,6 +949,26 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         // unconditionally `Point3<Length>`, and the sole `.ri` consumer
         // (examples/differential_field_ops.ri) is metre-valued.
         //
+        // DELIBERATE REINTERPRETATION, and the one place where this ruling
+        // trades a check for a guarantee. The accessors do not merely decline to
+        // propagate a non-Length stored dimension — for a UNIFORMLY non-Length
+        // corner (an all-Angle box, say) they RELABEL those magnitudes as metres.
+        // A MIXED-dimension stored corner is still rejected outright, because the
+        // accessors read corners through `tensor_components_f64`. The relabelling
+        // is what makes reify-compiler's static rows `Vector3<Length>` /
+        // `Point3<Length>` sound rather than an over-claim: a row true only of
+        // constructor-produced boxes would be the very static/runtime
+        // disagreement this ruling removes, since `Value::BoundingBox` is also
+        // minted by `dispatch_bounding_box` and constructible directly in Rust.
+        // The narrowed constructor above is what makes the relabelled input
+        // impossible in the first place; a uniformly non-Length stored corner can
+        // now only be a PRODUCER bug, and if one ever appears the better answer
+        // is to reject it here (with a `diagnose` arm for `bbox_size` /
+        // `bbox_center`) rather than to coerce it. Not done today: there is no
+        // such producer, and the tests
+        // `bbox_size/bbox_center_emits_length_components_for_angle_bbox` pin the
+        // coercion as the current, deliberate behaviour.
+        //
         // Going monomorphic is the SAFE direction: a later `BoundingBox<Q>`
         // would be a WIDENING, which is the easy one. For scale, the static
         // type is a bare unit variant referenced across six crates
@@ -1000,7 +1020,11 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     // A BoundingBox is Length-valued by construction (task 6081),
                     // so the extent is Length regardless of what the stored
                     // corners carry — the stored dimension is deliberately NOT
-                    // propagated.
+                    // propagated. See the DELIBERATE REINTERPRETATION note on the
+                    // `bbox` constructor banner above: for a uniformly non-Length
+                    // stored corner this RELABELS the magnitudes as metres rather
+                    // than rejecting them, which is sound only because such a box
+                    // is impossible by construction.
                     let (min_vals, _) = match tensor_components_f64(min) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
@@ -1030,7 +1054,8 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                     // A BoundingBox is Length-valued by construction (task 6081),
                     // so the centre is Length regardless of what the stored
                     // corners carry — the stored dimension is deliberately NOT
-                    // propagated.
+                    // propagated. Same DELIBERATE REINTERPRETATION note as
+                    // `bbox_size` above; see the constructor banner.
                     let (min_vals, _) = match tensor_components_f64(min) {
                         Some(v) => v,
                         None => return Some(Value::Undef),
