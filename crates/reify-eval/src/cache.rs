@@ -201,8 +201,8 @@ impl CachedResult {
     /// **Warning for GHR-ζ (#3608), and for any consumer that needs a live
     /// handle for kernel dispatch: read `values` / `realization_handles`,
     /// never the eval-cache entry's `kernel_handle`.** Cached results are
-    /// handed back as live values on the production path (e.g.
-    /// `engine_admin.rs:2749`, `CachedResult::Value(v, _) => v.clone()`), so a
+    /// handed back as live values on the production path (e.g. the
+    /// `CachedResult::Value(v, _) => v.clone()` arm in `engine_admin.rs`), so a
     /// handle read from here can be arbitrarily stale while looking fresh.
     ///
     /// Pinned by `tests::geometry_handle_cache_key`, whose early-cutoff tests
