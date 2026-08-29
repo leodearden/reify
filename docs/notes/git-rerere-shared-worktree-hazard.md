@@ -136,11 +136,19 @@ scripts/git-rerere-guard.sh <check|arm|scan-locks> [target_dir]
 resolves — via `rev-parse --git-common-dir` — to the same shared config and the same `rr-cache`, so
 the main checkout and any lane are interchangeable.
 
-| Subcommand | Effect | Exit 0 | Non-zero |
-|---|---|---|---|
-| `check` | Read-only. Never writes config anywhere. Reads `rerere.enabled` / `rerere.autoupdate` at **two scopes** — the effective value for `target_dir` *and* the shared (`--local`) fleet default it may be masking — then sweeps every `config.worktree` in the store, the **main checkout's own** as well as every linked worktree's. | safe **and fully verified** | **1** — rerere effectively armed; **3** — UNVERIFIABLE: nothing found armed, but ≥1 worktree's state could not be determined |
-| `arm` | Idempotently writes `rerere.enabled=false` + `rerere.autoupdate=false` to shared local config (`--replace-all`), then re-verifies via `check`. Never prunes `rr-cache`. | disarmed | **2** — shared config pinned, but something out of reach survives: an override `arm` cannot clear, *or* a lane it cannot verify; **any other non-zero** — a failure of this run |
-| `scan-locks` | Read-only census of `MERGE_RR.lock` across the **main checkout and every linked worktree**, classified STALE vs OPERATION-IN-PROGRESS. Never deletes. | clean | **1** — lock(s) found |
+- **`check`** — read-only. Never writes config anywhere. Resolves `rerere.enabled` /
+  `rerere.autoupdate` at every scope that can decide the answer, then sweeps every `config.worktree`
+  in the store — the main checkout's own as well as every linked worktree's.
+- **`arm`** — idempotently pins both keys `false` in the shared local config, then re-verifies via
+  `check`. Never prunes `rr-cache`.
+- **`scan-locks`** — read-only census of `MERGE_RR.lock` across the main checkout and every linked
+  worktree, classified STALE vs OPERATION-IN-PROGRESS. Never deletes.
+
+> **The exit-code contract is normative in exactly one place: the header comment block of
+> `scripts/git-rerere-guard.sh`.** Read it there before writing a consumer. It is not restated here,
+> because five hand-maintained copies of it is how the next behavioural change ships four stale ones.
+> The sections below give the *rationale and the measured history* behind those codes — the part
+> that is genuinely not in the script.
 
 All diagnostics go to **stderr**; stdout stays empty so the exit code is the machine-readable signal.
 
@@ -149,33 +157,31 @@ at `<common-git-dir>/MERGE_RR.lock` and never under `worktrees/`. The main check
 merge site — `scripts/land.sh` runs a real `git merge --no-ff` there — so a census that only globbed
 `worktrees/*/` would report `clean` while every `git commit` on `main` exits 128.
 
-**Branch on `0 | 2 | *`, never on a closed set `{0,1,2}`.** The failure code is *normally* 1 — the
-shared write is guarded and returns 1 with a diagnostic naming the config path — but the script runs
-under `set -euo pipefail`, so a git invocation that aborts outside a guarded `if` propagates git's own
-status instead. A consumer that treated only 1 as fatal would read such a failure as success and leave
-the fleet armed. `setup-dev.sh` gets this right because its `else` arm is the fatal one; anything new
-must do the same. Pinned by `test_git_rerere_guard.sh` (h-g), which drops write permission on the git
-dir and asserts exit *exactly* 1 rather than git's status.
+**Why the header insists a consumer branch on `0 | 2 | *` rather than a closed set:** the guard runs
+under its own `set -euo pipefail`, so a git invocation that aborts outside a guarded `if` propagates
+git's status (4, 5, 128, 255…) instead of the documented failure code. A consumer that treated only 1
+as fatal would read such a failure as success and leave the fleet armed. `setup-dev.sh` gets this
+right because its `else` arm is the fatal one. Pinned by `test_git_rerere_guard.sh` (h-g), which
+drops write permission on the git dir and asserts exit *exactly* 1 rather than git's status.
 
 ### `arm` exit 2 — why it is advisory, not fatal
 
 `arm` writes `--local` only, so it can never clear **another lane's** `config.worktree` — and that is
-the dominant way its post-write re-verify still reports armed. Exit **2** says "the shared write
-succeeded; an override this run cannot reach still wins", and names it. `setup-dev.sh` runs `arm` on
-every invocation (beside the main-gate worktree config block) under `set -e`, and treats only exit 1
-as fatal: one self-armed lane must not abort everything after that point (the
+the dominant way its post-write re-verify still reports armed. That is what makes the code advisory
+rather than fatal: `setup-dev.sh` runs `arm` under `set -e` on every invocation (beside the main-gate
+worktree config block), and one self-armed lane must not abort everything after that point (the
 build-accelerator systemd units, npm, the smoke test) for every developer, with no remediation the
-script could offer. On exit 2 it warns and points here.
+script could offer. It warns and points here instead.
 
 The `config.worktree` sweep is itself gated on `extensions.worktreeConfig` being true, because git
 does not read those files at all while the extension is off — an inert plant would otherwise produce
 a false ARMED that `arm` could never clear.
 
-`arm` also returns 2 for the *other* out-of-reach case: a lane the guard could not verify at all
-(`check` exit 3, below). The shared write still landed; nothing is known to be armed; but the store
-was not fully verified. Advisory for the same reason — `arm` writes `--local` and cannot repair a
-lane whose config it cannot read, so aborting `setup-dev.sh` over it would help no one. Its stderr
-says which of the two it is: *"rerere is STILL armed"* vs *"N worktree(s) could not be verified"*.
+The *other* out-of-reach case shares the code: a lane the guard could not verify at all (`check`
+exit 3, below). The shared write still landed; nothing is known to be armed; but the store was not
+fully verified. Advisory for the same reason — `arm` cannot repair a lane whose config it cannot
+read. Its stderr says which of the two it is: *"rerere is STILL armed"* vs *"N worktree(s) could not
+be verified"*.
 
 ### `check` exit 3 — UNVERIFIABLE is not safe
 
@@ -189,13 +195,16 @@ machine-readable channel**: a store whose one armed lane was a lane the guard co
 "the fleet is clean". Exit **3** is now that third state — *nothing found armed, but not everything
 was checked*.
 
-- **`ARMED` wins over `UNVERIFIABLE`.** A store that is both exits **1**: that is the half an operator
-  can act on, and it is how `arm` tells "an override survived my write" from "I could not read a lane".
-- **3 is not 1**, deliberately. `arm` writes `--local` and cannot clear a per-worktree file, so folding
-  UNKNOWN into ARMED would strand the store on a permanent failure — the same trap the
-  `extensions.worktreeConfig` gate avoids.
-- **A consumer must treat any non-zero as "not verified safe"**, and only `1` as "armed". This matters
-  most for the periodic-probe use in §8: reading `!= 1` as clean re-opens the fail-open hole.
+The operational point the header's contract exists to serve: for the periodic-probe use in §8,
+reading `!= 1` as clean re-opens the fail-open hole this code was added to close.
+
+Three distinct conditions land here, each with its own test block: an unreadable `config.worktree`
+(g-g), an unresolvable `include.path` chain — circular or unreadable target (g-j), and an unreadable
+`gitdir` file, which leaves an entry's *liveness* unknown (g-k). That last one had the same fail-open
+shape as the original bug: it was folded into the stale-entry silent skip, so a live armed lane whose
+`gitdir` could not be read simply vanished from the sweep and `check` answered 0. An **absent**
+`gitdir` is genuinely prunable and stays a silent skip; a **present but unreadable** one is not —
+nothing about a permission bit makes an entry prunable.
 
 ### Stale worktree entries are inert, not armed
 
@@ -232,11 +241,8 @@ fleet stayed **armed**, the exact outcome the guard exists to prevent.
 
 `--replace-all` is a strict superset of the old write: **byte-identical** output for the unset and
 single-valued cases (so idempotence is unchanged), and it collapses a multi-valued key to one
-`false` instead of failing. The idempotence probe reads `--get-all`, not `--get`, for the matching
-reason: `--get` resolves a multi-valued key to its **last** value, so a shared config holding
-`enabled = true` followed by `enabled = false` would answer "false" and skip the write, leaving the
-stale `true` line one `--unset` away from re-arming the fleet. The probe still deliberately omits
-`--includes` — see below.
+`false` instead of failing. The idempotence probe reads `--get-all`, not `--get`, and deliberately
+omits `--includes`; the reasoning for both sits inline at the call site in `cmd_arm`.
 
 ### Why a guard, and not a one-time `git config` write
 
@@ -267,7 +273,7 @@ so from any lane a main-checkout self-arm would be invisible to both detection p
 where `scripts/land.sh` runs its sanctioned `git merge --no-ff` — an active merge site, the same
 reasoning that already makes `scan-locks` cover `<common-git-dir>/MERGE_RR.lock`.
 
-### Why `check` reads two scopes
+### Why `check` reads more than the effective value
 
 The effective value alone is not enough, and the gap is the exact *mirror* of the main-checkout blind
 spot above. `config.worktree` beats shared config in **both** directions, so a lane that disarms
@@ -276,13 +282,30 @@ against an earlier build of the guard: shared `rerere.enabled=true` + `rerere.au
 lane setting both false in its own `config.worktree` — `check <lane>` exited **0 printing nothing**.
 
 So `check` also reads the shared (`--local`) value explicitly and reports it whenever the target's own
-config merely masks it, covering both `shared=true` and *shared-unset-with-`rr-cache`-present* (git's
-`-1` default). It is reported **only** from the not-armed branch of the effective read, so an
+config merely masks it. It is reported **only** from the not-armed branch of the effective read, so an
 outright-armed store is never listed twice for the same key.
 
 Reporting this is safe by construction, unlike the inert-`config.worktree` case: `arm` is a `--local`
 writer, so the scope reported here is exactly the scope `arm` can clear — it self-heals to exit 0
 rather than the advisory 2. Pinned by `test_git_rerere_guard.sh` (g-f) and (g-f-g).
+
+**And "unset in `.git/config`" is not "git falls back to its built-in default".** Precedence is
+system < global < local < worktree, so what an unpinned lane *actually* inherits is the user's
+`~/.gitconfig` or `/etc/gitconfig` value whenever either sets the key — the `-1` fallback is never
+reached. Comparing only `--local` against the effective value got this wrong in both directions
+(measured, git 2.43.0):
+
+| global | shared `.git/config` | `rr-cache/` | old verdict | truth |
+|---|---|---|---|---|
+| `enabled = false` | unset | present | **ARMED**, blaming "$TARGET's *own config*" — a scope not involved | safe; no lane armed, because git never reaches `-1` |
+| `enabled = true` | unset, target's `config.worktree` sets false | — | **clean** | armed — every *other* lane inherits the `true` |
+
+The unset branch therefore resolves `--global` then `--system` (last-wins within a scope, `--includes`
+explicitly) before falling through to the `-1` verdict. An inherited `true` is ARMED and names that
+scope; an inherited `false` is exit **0** with a NOTE — safe, but *unpinned*: the disarm lives in a
+file outside the store, so it does not travel with the repo and one `git config --global --unset`
+re-arms every lane. Pinned by (g-l)/(g-l-b), the suite's only fixtures that point `GIT_CONFIG_GLOBAL`
+at a real file rather than the hermetic `/dev/null`.
 
 ### `include.path` — why the scoped reads pass `--includes`
 

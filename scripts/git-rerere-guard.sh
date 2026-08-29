@@ -96,24 +96,27 @@ Usage: git-rerere-guard.sh <subcommand> [target_dir]
 
 Subcommands:
   check       Report whether git rerere is effectively armed for the target
-              store (read-only).  Exit 0 = safe and fully verified, 1 = armed,
-              3 = at least one worktree could not be verified (UNKNOWN — not
-              the same as safe).  Only 1 means armed; any non-zero means "not
-              verified safe".
+              store.  Read-only.        [0 safe+verified | 1 armed | 3 UNKNOWN]
   arm         Idempotently disable rerere in the shared local config, then
-              re-verify.  Never deletes rr-cache.  Exit 0 = disarmed,
-              2 = pinned but an out-of-reach override survives, any other
-              non-zero = this run failed.  Branch on 0 | 2 | *.
+              re-verify.  Never deletes rr-cache.
+                                        [0 disarmed | 2 advisory | * failed]
   scan-locks  Read-only census of stale MERGE_RR.lock files across the whole
               store — the main checkout and every linked worktree.
-              Exit 0 = clean, 1 = lock(s) found.
+                                        [0 clean | 1 lock(s) found]
 
   target_dir  Optional git work tree inside the store; defaults to the repo
               root (one level up from this script).
 
-All diagnostics go to stderr.  See
-docs/notes/git-rerere-shared-worktree-hazard.md for the mechanism and the
-recovery procedure.
+All diagnostics go to stderr; stdout stays empty, so the exit code is the
+machine-readable signal.
+
+CALLER CONTRACT — what each code means and how to branch on it (notably: treat
+any non-zero from `check` as "not verified safe", and branch `arm` on 0 | 2 | *,
+never on a closed set) is NORMATIVE in the header comment block of this file,
+scripts/git-rerere-guard.sh.  It is stated once, there, on purpose.
+
+Mechanism, recovery procedure and incident history:
+docs/notes/git-rerere-shared-worktree-hazard.md
 USAGE
 }
 

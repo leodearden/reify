@@ -343,35 +343,18 @@ ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 
 # ---------- git rerere disarm ----------
 #
-# .git/rr-cache is a git COMMON path while MERGE_RR is per-worktree, so every
-# warm lane shares ONE unlocked resolution cache and git's rerere lock (taken on
-# the per-worktree MERGE_RR) gives zero cross-worktree exclusion.  A resolution
-# recorded by one task is then auto-applied AND auto-staged into an unrelated
-# task's merge, and a failed preimage write leaves a stale MERGE_RR.lock that
-# makes every later commit exit 128 while still landing.
+# Every warm lane shares ONE unlocked rr-cache, so a resolution recorded by one
+# task can be auto-staged into an unrelated task's merge.  Re-run every setup:
+# git's rerere.enabled default is -1 ("enabled iff rr-cache/ exists"), so LOSING
+# the explicit false silently re-arms the fleet.  Idempotent; never prunes
+# rr-cache.  Mechanism and recovery:
+# docs/notes/git-rerere-shared-worktree-hazard.md.
 #
-# Re-run on every setup because git's rerere.enabled default is -1 ("enabled iff
-# rr-cache/ exists"): with the residual rr-cache still on disk, LOSING the
-# explicit false silently re-arms the whole fleet.  Idempotent; never prunes
-# rr-cache.  See docs/notes/git-rerere-shared-worktree-hazard.md.
-
-# The shared-config write is the success criterion here, NOT a globally clean
-# verdict.  `arm` re-verifies with `check`, which sweeps every lane's
-# config.worktree — and `arm` writes --local only, so a FOREIGN lane that armed
-# itself is a condition it can never clear; nor is a lane whose config.worktree
-# the guard cannot read at all (an unreadable file, or an include.path chain git
-# cannot resolve), which `check` reports as UNVERIFIABLE.  Under this script's
-# `set -e`, either would otherwise abort everything after this point (the
-# build-accelerator systemd units, npm, the smoke test) for every developer, with
-# no remediation the script could offer.  Exit 2 covers both advisory cases; the
-# guard's own stderr says which.
-#
-# The branch below is `0 | 2 | *`, NOT a closed set {0,1,2}, and deliberately so:
-# `arm`'s failure code is normally 1, but it runs under its own `set -euo
-# pipefail`, so a git invocation that aborts outside a guarded `if` propagates
-# git's own status (4, 5, 128, 255…) instead.  Treating only 1 as fatal would
-# silently read a failed shared-config write as success and leave the fleet
-# armed.  Contract: scripts/git-rerere-guard.sh header.
+# EXIT-CODE CONTRACT — normative in the header of scripts/git-rerere-guard.sh;
+# read it there before touching the branch below.  In short: the shared-config
+# write is the success criterion here, not a globally clean verdict, so 2 is
+# advisory (something out of `arm`'s --local reach) and must not abort the rest
+# of setup — and the branch is `0 | 2 | *`, never a closed set {0,1,2}.
 
 info "Disabling git rerere repo-wide (shared rr-cache hazard)..."
 _rerere_arm_rc=0
