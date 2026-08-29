@@ -530,7 +530,7 @@ fn morph_once_times_a_connectivity_preserving_fillet_perturbation() {
     // Regenerate the source independently rather than reading it back off the
     // measurement, so the assertions below compare against the fixture rather
     // than against whatever `morph_once` happened to build.
-    let (source, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
+    let (source, surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
     let source_tet_indices = source
         .tet_indices()
         .expect("bracket(n=4) must expose tet connectivity")
@@ -584,7 +584,89 @@ fn morph_once_times_a_connectivity_preserving_fillet_perturbation() {
         "the clock was never read — `elapsed` is {:?}",
         measurement.elapsed
     );
+
+    // Everything above is satisfied by a morph that returns its input
+    // VERBATIM: index-length equality, three self-consistency fields read off
+    // the same fixture, and a nonzero clock. That is the one regression this
+    // harness could not survive — an identity `elasticity_morph` would make
+    // the whole 10K/100K table a timing of a no-op, and every ratio derived
+    // from it meaningless. So pin the two properties that make the timed call
+    // the morph this file claims to be measuring.
+
+    // (a) The mesh actually moved.
+    assert_eq!(
+        morphed.vertices.len(),
+        source.vertices.len(),
+        "the morph must preserve the vertex table's shape"
+    );
+    let max_delta = source
+        .vertices
+        .iter()
+        .zip(&morphed.vertices)
+        .map(|(a, b)| (*a as f64 - *b as f64).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_delta > 0.0,
+        "the morph returned the source mesh unmoved (max coordinate delta is \
+         exactly 0) — an identity morph satisfies every other assertion in \
+         this test while making the harness time a no-op"
+    );
+
+    // (b) The prescribed nodes landed where they were prescribed. This is the
+    // stronger half: it rules out a morph that moves the mesh but ignores the
+    // Dirichlet data. `elasticity_morph` applies the BCs by row elimination
+    // and writes `old + u` back narrowed to f32, so a satisfied prescribed
+    // node reproduces the target fixture's own f32 coordinate to within f32
+    // rounding plus the CG residual — orders of magnitude below the 0.01
+    // fillet step being prescribed, so the tolerance discriminates sharply.
+    let (target, _target_surface_indices) =
+        fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_TARGET, 4);
+    assert!(
+        !surface_indices.is_empty(),
+        "bracket(n=4) must yield surface nodes; without them the morph has no \
+         Dirichlet data and (a) above would be the only constraint left"
+    );
+    let mut worst = (0u32, 0.0_f64);
+    for &i in &surface_indices {
+        let want = target
+            .vertex_f64(i)
+            .expect("surface index must be in range for the target fixture");
+        let got = morphed
+            .vertex_f64(i)
+            .expect("surface index must be in range for the morphed mesh");
+        let delta = (0..3)
+            .map(|axis| (want[axis] - got[axis]).abs())
+            .fold(0.0_f64, f64::max);
+        if delta > worst.1 {
+            worst = (i, delta);
+        }
+    }
+    assert!(
+        worst.1 <= PRESCRIBED_TOLERANCE,
+        "prescribed surface node {} missed its target by {:e} (> {:e}): the \
+         morph moved the mesh but did not honour the Dirichlet data, so the \
+         harness would be timing a solve of a different problem",
+        worst.0,
+        worst.1,
+        PRESCRIBED_TOLERANCE
+    );
 }
+
+/// How far a Dirichlet-prescribed node may sit from its prescribed position.
+///
+/// `elasticity_morph` pins those DOFs by row elimination and narrows
+/// `old + u` back to `f32`. Because `u` is set to exactly
+/// `target_f64 - source_f64` over two `f32`-representable values, a satisfied
+/// node reproduces the target's own `f32` coordinate essentially bit-for-bit:
+/// the measured worst case at n=4 is 5.5e-26, i.e. the f32-rounding floor
+/// (~1.2e-7 at coordinate magnitude 1) is never actually reached.
+///
+/// The bound is nonetheless set well ABOVE that measurement rather than at
+/// it. Pinning a tolerance to a single observed residual would make this test
+/// a detector of harmless CG-residual drift across hosts and profiles; 1e-6
+/// still sits four orders of magnitude below the 0.01 fillet step being
+/// prescribed, so no morph that ignores the Dirichlet data can slip under it.
+const PRESCRIBED_TOLERANCE: f64 = 1e-6;
 
 // ── the gmsh from-scratch arm ────────────────────────────────────────────────
 
