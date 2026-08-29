@@ -342,3 +342,76 @@ fn sin_times_mm_cascade_is_length() {
         other => panic!("sin*mm cascade eval should be Value::Scalar, got {other:?}"),
     }
 }
+
+// ── Forward-trig argument-dimension rejection (task 6249, step-3 RED) ─────────
+//
+// `sin`/`cos`/`tan` reject a dimensioned, non-ANGLE argument at COMPILE time
+// with a coded `ArgTypeMismatch` Error. RED before step-4 wires
+// `math_signatures::check_transcendental_arg_dimensions` into
+// `expr.rs::resolve_function_overload` — verified first-hand on the base
+// commit, where `reify check` on `sin(5.0mm)` exits 0 with
+// "All constraints satisfied" and zero diagnostics.
+
+/// Every `ArgTypeMismatch` Error in `compiled` — mirrors the helper of the same
+/// name in `tests/builtin_arg_signature_tests.rs:214` so assertions here read
+/// the same way as the established sibling suite.
+fn arg_type_mismatch_errors(compiled: &CompiledModule) -> Vec<&reify_core::Diagnostic> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch)
+                && d.severity == Severity::Error
+        })
+        .collect()
+}
+
+/// Compile a one-`let` structure body and return its `ArgTypeMismatch` Errors'
+/// messages. `expr` is spliced verbatim into `let b = <expr>`.
+fn trig_arg_mismatch_messages(expr: &str) -> Vec<String> {
+    let src = format!("structure def TrigArgCheck {{\n    let b = {expr}\n}}\n");
+    let module = compile_with_stdlib_helper(&src);
+    arg_type_mismatch_errors(&module)
+        .iter()
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+/// Assert `expr` raises EXACTLY one `ArgTypeMismatch` Error naming `name`.
+///
+/// Exactly 1, not "at least 1": a duplicate would mean the diagnostic is being
+/// emitted from two wiring sites.
+fn assert_one_trig_arg_mismatch(expr: &str, name: &str) {
+    let msgs = trig_arg_mismatch_messages(expr);
+    assert_eq!(
+        msgs.len(),
+        1,
+        "`{expr}` must raise exactly one ArgTypeMismatch Error, got: {msgs:#?}"
+    );
+    assert!(
+        msgs[0].contains(name),
+        "`{expr}` diagnostic must name `{name}`, got: {:?}",
+        msgs[0]
+    );
+}
+
+/// `sin(5.0mm)` — a LENGTH argument. Eval silently yields `Value::Undef`
+/// (`trig_input` returns `None` for a non-ANGLE dimension); this pins the
+/// compile-time rejection that surfaces it instead.
+#[test]
+fn sin_of_length_raises_arg_type_mismatch() {
+    assert_one_trig_arg_mismatch("sin(5.0mm)", "sin");
+}
+
+/// `cos(5.0mm)` — sibling of the `sin` case.
+#[test]
+fn cos_of_length_raises_arg_type_mismatch() {
+    assert_one_trig_arg_mismatch("cos(5.0mm)", "cos");
+}
+
+/// `tan(2.0kg)` — a MASS argument, pinning that the rule is "any dimensioned
+/// non-ANGLE scalar", not a LENGTH special case.
+#[test]
+fn tan_of_mass_raises_arg_type_mismatch() {
+    assert_one_trig_arg_mismatch("tan(2.0kg)", "tan");
+}
