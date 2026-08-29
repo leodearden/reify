@@ -174,9 +174,8 @@ structure def BucklingOptions {
 //                `Real` and `Dimensionless` resolve to the same dimensionless
 //                scalar quantity slot in dimension position, so the two
 //                spellings are synonyms) — the defect the ruling retired was
-//                semantic, not syntactic: copying a neighbour's spelling
-//                instead of reading what the field denotes is exactly what
-//                the ruling retired.
+//                semantic, not syntactic: the former spelling copied a
+//                neighbour instead of reading what the field denotes.
 //                The `domain` deliberately KEEPS Length: it indexes sample
 //                positions, and a position is not a direction. In-repo
 //                precedent for a dimensionless Field codomain:
