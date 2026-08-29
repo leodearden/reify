@@ -7703,16 +7703,31 @@ fn expr_kind_name(kind: &reify_ast::ExprKind) -> &'static str {
 /// rename within one directory is atomic, so every reader sees the whole old
 /// file or the whole new one and that failure mode does not exist.
 ///
-/// Three details that are load-bearing rather than incidental:
+/// Four details that are load-bearing rather than incidental:
 ///
+/// * **Symlinks are followed, not replaced.** `rename(2)` does NOT follow a
+///   symlink at its destination, so renaming straight over `path` would DELETE
+///   a symlinked `.ri` and leave a regular file in its place, while the file
+///   the link pointed at kept the pre-edit content forever — and the caller's
+///   divergence guard could not notice, because `fs::read_to_string` follows
+///   the link and would keep comparing against the (matching) target's bytes.
+///   `path` is therefore resolved through [`std::fs::canonicalize`] first and
+///   the write goes to the RESOLVED file, matching the write-through behaviour
+///   a plain `fs::write` would have had. A path that cannot be canonicalized
+///   (it does not exist yet, say) falls back to itself unchanged.
 /// * **Same directory.** `rename` is only atomic within a filesystem, so the
-///   temp cannot live in `/tmp`.
-/// * **`.tmp` suffix, and the pid in the name.** The GUI's watcher filters on
-///   the `.ri` extension (`watcher.rs`), so a `.tmp` sibling never reads as a
-///   design file appearing in the project; the pid keeps two processes writing
-///   the same design from colliding on one temp path. The rename itself DOES
-///   fire a watch event for `path` — the watcher accepts `Modify(_)`, which
-///   covers inotify's rename-into-place — so hot reload still works.
+///   temp lives beside the resolved target — not in `/tmp`, and not beside the
+///   symlink when those differ.
+/// * **`.tmp` suffix, plus pid AND a process-local sequence number.** The GUI's
+///   watcher filters on the `.ri` extension (`watcher.rs`), so a `.tmp` sibling
+///   never reads as a design file appearing in the project. The pid keeps two
+///   PROCESSES writing the same design off one temp path, and the sequence
+///   number does the same for two `EngineSession`s inside ONE process, which
+///   share a pid. The rename itself DOES fire a watch event for the resolved
+///   path — the watcher accepts `Modify(_)`, which covers inotify's
+///   rename-into-place — so hot reload still works; through a symlink the event
+///   lands on the target's directory rather than the link's, which the
+///   authoritative in-process recompile (D7) already covers.
 /// * **Permissions are carried over** from the file being replaced, so a
 ///   design the user made read-only-for-group (or otherwise chmod'd) does not
 ///   silently come back with the process umask's mode. Best-effort: a
@@ -7721,23 +7736,38 @@ fn expr_kind_name(kind: &reify_ast::ExprKind) -> &'static str {
 /// The temp is removed on every failure path, so a failed write leaves no
 /// litter next to the user's design.
 ///
-/// **Residual:** the file contents are `sync_all`ed before the rename, but the
-/// containing DIRECTORY is not, so the rename is atomic without being durable —
-/// a power loss just after this returns can leave the pre-edit file in place.
-/// The failure mode is therefore "the edit did not happen", never "the file is
-/// half-written".
+/// Contents are `sync_all`ed before the rename, and the containing DIRECTORY is
+/// synced after it, so the replacement survives a power loss rather than merely
+/// being atomic against concurrent readers. The directory sync is best-effort:
+/// not every filesystem permits opening a directory for sync, and a design edit
+/// that already reached the page cache is not worth failing over one.
 fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    let file_name = path.file_name().ok_or_else(|| {
+    /// Disambiguates temp paths between two `EngineSession`s in ONE process,
+    /// which the pid alone cannot: they would otherwise race on the same name
+    /// and one would `create`-truncate the other's half-written temp.
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    // See the doc comment: rename(2) would otherwise destroy a symlinked `.ri`
+    // and orphan its target. Fall back to `path` when it cannot be resolved —
+    // there is then no link to follow and nothing this can improve on.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    let file_name = target.file_name().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "path has no file name to write",
         )
     })?;
     let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(".{}.tmp", std::process::id()));
-    let tmp_path = path.with_file_name(tmp_name);
+    tmp_name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp_path = target.with_file_name(tmp_name);
 
     let write_and_rename = || -> std::io::Result<()> {
         let mut file = std::fs::File::create(&tmp_path)?;
@@ -7751,13 +7781,25 @@ fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
         // Best-effort mode preservation — see the doc comment. Deliberately
         // ignores errors: failing an otherwise-good edit because a mode could
         // not be copied would be the wrong trade.
-        if let Ok(meta) = std::fs::metadata(path)
+        if let Ok(meta) = std::fs::metadata(&target)
             && meta.is_file()
         {
             let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
         }
 
-        std::fs::rename(&tmp_path, path)
+        std::fs::rename(&tmp_path, &target)?;
+
+        // Durability, not atomicity: the rename is already atomic against a
+        // concurrent reader, but the DIRECTORY entry it rewrote can still be
+        // lost to a power cut until the directory itself is synced. Mirrors
+        // `reify_eval::persistent_cache::write_entry`. Best-effort by design —
+        // see the doc comment.
+        if let Some(parent) = target.parent()
+            && let Ok(dir) = std::fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
+        }
+        Ok(())
     };
 
     let result = write_and_rename();

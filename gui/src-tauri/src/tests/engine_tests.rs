@@ -20423,7 +20423,7 @@ fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
     // A failed write must also clean up after itself: the write goes through a
     // sibling temp file, and the rename is what consumes it, so a rename that
     // fails leaves the temp behind unless the error path removes it. One
-    // `part.ri.<pid>.tmp` per failed edit accumulating next to the user's
+    // `part.ri.<pid>.<seq>.tmp` per failed edit accumulating next to the user's
     // design would be a user-visible regression.
     let litter: Vec<String> = std::fs::read_dir(_dir.path())
         .expect("the fixture directory should be readable")
@@ -20802,7 +20802,7 @@ fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
     // truncated `.ri` for the watcher to reload). The temp is an implementation
     // detail and must stay one: the rename consumes it on success, and the
     // failure path removes it — a project directory accumulating
-    // `part.ri.1234.tmp` siblings would be a user-visible regression.
+    // `part.ri.1234.0.tmp` siblings would be a user-visible regression.
     let (dir, path, mut session) = writeback_session();
 
     session
@@ -20829,6 +20829,78 @@ fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
         ],
         "a successful write-back must leave the design file and nothing else"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing_it() {
+    // `rename(2)` does NOT follow a symlink at its destination. Renaming the
+    // temp straight over the session's path would therefore DELETE a symlinked
+    // `.ri` and leave a regular file where the link was, while the file the
+    // link pointed at kept the pre-edit content forever — the exact opposite of
+    // the write-through a plain `fs::write` would have done, and INVISIBLE to
+    // the divergence guard, which reads through the link and so keeps comparing
+    // against the (still matching) target's bytes.
+    //
+    // Keeping `current.ri -> versions/v3.ri` and opening the link is an
+    // ordinary way to keep a design under version control, so this is a real
+    // shape rather than a contrived one.
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let target_dir = dir.path().join("versions");
+    std::fs::create_dir(&target_dir).expect("creating the target directory should succeed");
+    let target = target_dir.join("v3.ri");
+    std::fs::write(&target, writeback_source()).expect("writing the target .ri should succeed");
+
+    let link = dir.path().join("current.ri");
+    std::os::unix::fs::symlink(&target, &link).expect("creating the symlink should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_file(&link)
+        .expect("load_file through a symlink should succeed");
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source through a symlink should succeed");
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("the link should still exist")
+            .file_type()
+            .is_symlink(),
+        "the write-back must not replace the user's symlink with a regular file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("the link target should be readable"),
+        writeback_source().replace("80mm", "120mm"),
+        "the edit must land in the file the link points AT — a detached copy at \
+         the link path would leave the versioned design stale forever"
+    );
+
+    // Same no-litter contract as the non-symlinked path, checked in BOTH
+    // directories: the temp is a sibling of the RESOLVED target (rename is only
+    // atomic within one filesystem), so it must not appear beside the link
+    // either.
+    for probe in [dir.path(), target_dir.as_path()] {
+        let litter: Vec<String> = std::fs::read_dir(probe)
+            .expect("the probed directory should be readable")
+            .map(|e| {
+                e.expect("directory entry should be readable")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            litter.is_empty(),
+            "a successful write-back must leave no temp file in {}, found: {litter:?}",
+            probe.display()
+        );
+    }
 }
 
 #[test]
