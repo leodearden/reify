@@ -1900,6 +1900,80 @@ mod tests {
         );
     }
 
+    /// A `log_grep`-derived sibling is an ancestor of `MAIN_BASE` by
+    /// construction, so the pre-done scan must not fork to ask.
+    ///
+    /// `git log <MAIN_BASE> --grep=…` lists only commits REACHABLE FROM
+    /// `MAIN_BASE` — the same relation `git merge-base --is-ancestor` tests,
+    /// against the same ref in the same repo in the same process. Asking
+    /// anyway doubled the per-sibling fork count on the one path that runs
+    /// inside fused-memory's per-project write lock under a 30 s hard timeout:
+    /// 2 × `PRE_DONE_SIBLING_SCAN_CAP` ≈ 5.7 s at the measured ~57 ms/fork.
+    ///
+    /// The fixture pins the priming directly rather than counting forks:
+    /// `is_ancestor` for the sibling is LEFT at MockGitOps' `false` default,
+    /// so only a primed cache can send `changed_paths_for_claim` down the
+    /// `<commit>^1..<commit>` arm where the rescue evidence lives. Unprimed,
+    /// it takes the degenerate `main..<sha>` arm, finds nothing, and refuses.
+    ///
+    /// The invariant is provable at THIS call site only, which is why the
+    /// sweep's rescue leg still asks git.
+    #[test]
+    fn pre_done_gate_primes_ancestry_for_log_grep_siblings() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        // The repo-health probe keys on ("main", "main") — a different entry
+        // from the sibling's, which stays deliberately unset.
+        git.set_is_ancestor("main", "main", true);
+
+        git.set_log_grep(
+            "main",
+            "6345PRIME",
+            vec![GitCommit {
+                sha: "primemerge".to_string(),
+                subject: "Merge task/6345PRIME into main".to_string(),
+            }],
+        );
+        // NOT set: `git.set_is_ancestor("primemerge", "main", true)`.
+        git.set_changed_paths_in_commit(
+            "primemerge",
+            vec!["crates/reify-x/src/landed.rs".to_string()],
+        );
+        // The degenerate arm carries nothing, exactly as post-merge reality.
+        git.set_diff_changed_paths("main", "primemerge", vec![]);
+
+        // The declared file was removed by its own landing commit, so
+        // `path_tracked_on` stays false and the rescue leg must decide.
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345PRIME".to_string(),
+            pre_done_meta("6345PRIME", "review", &["crates/reify-x/src/landed.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345PRIME");
+        assert!(
+            findings.is_empty(),
+            "a `log_grep`-derived sibling must be treated as an ancestor without \
+             a `merge-base` fork — the reachability invariant makes the answer \
+             `true` by construction; got {:?}",
+            findings
+        );
+    }
+
     /// A truncated sibling scan must not refuse: the corroborating commit may
     /// simply have been the one past the cap.
     ///

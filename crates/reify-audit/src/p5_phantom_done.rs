@@ -596,15 +596,30 @@ fn try_task_referencing_commits(
 /// One `HashMap` lookup replaces a ~57 ms fork, which matters most on the
 /// pre-done path (held inside fused-memory's per-project write lock).
 ///
-/// Deliberately NOT pre-seeded with `true` for `log_grep`-derived SHAs even
-/// though `git log <MAIN_BASE> --grep=…` only lists commits reachable from
-/// `MAIN_BASE`: that would move the ancestry decision out of the helper and
-/// silently change behaviour for any caller (including `MockGitOps`) whose
-/// `log_grep` answers are not real ancestors.
+/// Deliberately NOT pre-seeded BY DEFAULT. `git log <MAIN_BASE> --grep=…`
+/// lists only commits reachable from `MAIN_BASE`, so a `log_grep`-derived SHA
+/// is an ancestor by construction — but baking that in here would move the
+/// ancestry decision out of [`changed_paths_for_claim`] and silently change
+/// behaviour for every caller (including `MockGitOps`) whose `log_grep`
+/// answers are not real ancestors. Instead, a call site that can prove the
+/// invariant LOCALLY asserts it via [`AncestryCache::prime`]; the only such
+/// caller is [`check_pre_done_landing`], where the whole candidate list is
+/// `log_grep`-derived and the fork cost is paid inside a held write lock.
 #[derive(Default)]
 struct AncestryCache(HashMap<String, bool>);
 
 impl AncestryCache {
+    /// Record a known ancestry answer without forking.
+    ///
+    /// For a caller that can prove the answer from where the SHA came from.
+    /// Misuse is a correctness bug, not a performance one: a wrong `true`
+    /// sends [`changed_paths_for_claim`] down the `<commit>^1..<commit>` arm
+    /// for a commit that is not on main. See the invariant named at the one
+    /// call site in [`check_pre_done_landing`].
+    fn prime(&mut self, commit: &str, is_ancestor: bool) {
+        self.0.insert(commit.to_string(), is_ancestor);
+    }
+
     fn is_ancestor_of_main(&mut self, ctx: &AuditContext, commit: &str) -> bool {
         if let Some(&known) = self.0.get(commit) {
             return known;
@@ -798,6 +813,24 @@ fn check_pre_done_landing(
     };
     let mut contributing: Vec<&GitCommit> = Vec::new();
     let mut ancestry = AncestryCache::default();
+    // INVARIANT, locally provable HERE and nowhere else in this module: every
+    // candidate in `siblings` came from `git log <MAIN_BASE> --grep=…`, which
+    // lists only commits REACHABLE FROM `MAIN_BASE` — the same relation
+    // `git merge-base --is-ancestor <sha> <MAIN_BASE>` tests, against the same
+    // ref, in the same repo, in the same process. The fork can therefore only
+    // answer `true`, and issuing it is pure cost: without this priming each
+    // inspected sibling pays TWO forks (ancestry + diff), i.e. up to
+    // 2 × PRE_DONE_SIBLING_SCAN_CAP ≈ 5.7 s at the measured ~57 ms/fork,
+    // inside fused-memory's per-project write lock against a 30 s hard timeout.
+    //
+    // Scoped to this call site on purpose: `changed_paths_for_claim` stays the
+    // sole ancestry POLICY point, and the sweep's rescue leg — whose
+    // candidates arrive the same way, but whose forks are not paid under a
+    // lock — keeps asking git, so a `MockGitOps` fixture there still reaches
+    // both arms.
+    for c in &siblings {
+        ancestry.prime(&c.sha, true);
+    }
     let mut truncated = false;
     for (scanned, c) in siblings.iter().enumerate() {
         if still_absent.is_empty() {
@@ -956,6 +989,11 @@ fn pre_done_refusal(
 /// ≈ 57 ms/path, so the cheap legs dominate the healthy case and this leg only
 /// runs when something is genuinely absent. Truncation emits a breadcrumb
 /// rather than silently reporting partial coverage as complete.
+///
+/// An inspected sibling costs exactly ONE fork — the diff — because the
+/// ancestry answer is primed from the `log_grep` reachability invariant (see
+/// the call site in [`check_pre_done_landing`]). The worst case is therefore
+/// 50 × ~57 ms ≈ 2.9 s, not the ~5.7 s two forks per sibling would cost.
 const PRE_DONE_SIBLING_SCAN_CAP: usize = 50;
 
 /// Break-glass: `REIFY_AUDIT_PREDONE_WARN_ONLY=1` downgrades the pre-done
