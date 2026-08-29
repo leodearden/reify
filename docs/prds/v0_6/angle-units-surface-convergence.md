@@ -380,9 +380,12 @@ outside a `unit_expr` remains an error (there is no general `·` operator in Rei
 > sentence above previously read "`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7
 > (UTF-8 `0xC2 0xB7`)"; unlike the 2026-08-19 note below it has been corrected **in place**,
 > because an implementer coding to the byte-pair wording writes a branch that provably can
-> never fire. Source: task 5784's decompose addendum **K1**, re-confirmed by the 2026-08-05
-> sweep filed as **esc-5784-4** and recommended for the PRD by **esc-5784-3**; it is also
-> binding record C1 of this PRD's capability manifest. Substrate fact:
+> never fire. Source: task 5784's decompose addendum **K1** (2026-07-29), re-confirmed by the
+> sweep filed as **esc-5784-3** (2026-08-03, L0) — which also recommended the PRD amendment —
+> and promoted the same day by the orphan reaper to **esc-5784-4** (L1). **2026-08-05** is the
+> date that sweep carries where it was folded into task 5784's description, not either filing
+> date; look the escalations up by ID, not by that date. It is also binding record C1 of this
+> PRD's capability manifest. Substrate fact:
 > `tree-sitter-reify/src/tree_sitter/parser.h:49` declares `int32_t lookahead;` — tree-sitter
 > delivers **decoded codepoints**, not raw bytes. U+00B7 therefore arrives as the single value
 > `0xB7`, the lead byte `0xC2` is never observable, and one unmodified `lexer->advance()`
@@ -401,10 +404,13 @@ outside a `unit_expr` remains an error (there is no general `·` operator in Rei
 > updated too. The rest of the paragraph stands — `_unit_div_op`, the exponent token and
 > `signed_integer` genuinely do not change, and `·` outside a `unit_expr` genuinely stays an error.
 > The correction was measured while planning task 5784 and is folded into that task's plan; it is
-> recorded here so a future reader of C2 does not repeat the omission. **Provenance:** the
-> measurement originated in the 2026-08-05 sweep filed as **esc-5784-4**; the **esc-5784-5**
-> cited above is that sweep's L2 rollup (`member_ids == ["esc-5784-4"]`) — the same measurement
-> under a later ID, not a second one.
+> recorded here so a future reader of C2 does not repeat the omission. **Provenance — one
+> measurement, five IDs, none of them a second finding.** It was first filed as **esc-5784-1**
+> (2026-07-31, L0) and promoted by the orphan reaper to **esc-5784-2** (L1); re-filed carrying
+> the PRD recommendation as **esc-5784-3** (2026-08-03, L0) and promoted the same way to
+> **esc-5784-4** (L1); rolled up as **esc-5784-5** (L2, `member_ids == ["esc-5784-4"]`), the ID
+> cited above. The **2026-08-05** stamp this correction once carried is the date the sweep bears
+> in task 5784's description, not the filing date of any of the five.
 
 ### C3 — Torque dimension
 
