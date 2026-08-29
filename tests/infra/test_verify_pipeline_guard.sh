@@ -26,9 +26,13 @@
 #     cause directly, rather than being left to fail as "the guard derived
 #     nothing".
 #
-# COST — MEASURED, not estimated (task 6426 review). ~35s wall for 123
-# assertions on this tree, against a previously fork-free suite. Know where it
-# goes before adding to it, because clause 4b is LAZY and that makes the
+# COST — MEASURED, not estimated (task 6426 review). 16s wall for 123
+# assertions on an idle tree, 35s for the same 123 under concurrent load —
+# quote the range, not a single number, since this suite runs inside the
+# concurrent tests/infra/run_all.sh pool at the merge gate, where the loaded
+# figure is the realistic one. Either way it is against a previously fork-free
+# suite. Know where the time goes before adding to it, because clause 4b is
+# LAZY and that makes the
 # cost model counter-intuitive: EVERY exit-1 assertion falls through all the
 # static clauses and so reaches the fork, while exit-0 and exit-2 assertions
 # return without one. The budget is roughly: two make_runnable_verify_fixture
