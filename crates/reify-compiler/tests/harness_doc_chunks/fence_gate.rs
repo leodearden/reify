@@ -233,13 +233,29 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
         Some((first, run))
     }
 
+    /// The fence currently open, if any.
+    ///
+    /// A named struct rather than a tuple: five positional fields read as
+    /// noise at every destructuring site, and the two `usize`s (a LINE and a
+    /// RUN LENGTH) are trivially swappable by accident.
+    struct Open<'a> {
+        line: usize,
+        /// The opener's fence character. A closer must match it — this is what
+        /// keeps a ```` ``` ```` line inside a `~~~` block from closing it.
+        fence_char: u8,
+        /// The opener's run length. A closer must be at least this long — this
+        /// is what lets a longer outer fence nest a shorter inner one.
+        run: usize,
+        tag: Option<String>,
+        body: Vec<&'a str>,
+    }
+
     fn name_of(fence_char: u8) -> &'static str {
         if fence_char == b'~' { "tilde" } else { "backtick" }
     }
 
     let mut fences: Vec<Fence> = Vec::new();
-    // (opening line, opening fence char, opening run length, tag, body lines)
-    let mut open: Option<(usize, u8, usize, Option<String>, Vec<&str>)> = None;
+    let mut open: Option<Open<'_>> = None;
 
     for (index, line) in content.lines().enumerate() {
         let line_no = index + 1;
@@ -252,8 +268,8 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
         // keeps a ```` ```reify ```` line inside a `~~~` block from being read
         // as a genuine open `reify` fence.
         let closes = match (&open, delimiter) {
-            (Some((_, open_char, open_run, _, _)), Some((char_here, run))) => {
-                char_here == *open_char && run >= *open_run
+            (Some(state), Some((char_here, run))) => {
+                char_here == state.fence_char && run >= state.run
             }
             _ => false,
         };
@@ -261,8 +277,7 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
         if closes {
             let (_, run) = delimiter.expect("closes implies a delimiter");
             let rest = &line[run..];
-            let (open_line, open_char, open_run, _, _) =
-                open.as_ref().expect("closes implies open");
+            let state = open.as_ref().expect("closes implies open");
             if !rest.trim().is_empty() {
                 return Err(format!(
                     "code fence delimiter at line {line_no} carries an info string \
@@ -272,15 +287,17 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
                      that needs a longer outer run; either way, guessing would \
                      mislabel every fence after it",
                     info = rest.trim(),
-                    kind = name_of(*open_char)
+                    open_line = state.line,
+                    open_run = state.run,
+                    kind = name_of(state.fence_char)
                 ));
             }
-            let (open_line, _, _, tag, body) = open.take().expect("closes implies open");
+            let state = open.take().expect("closes implies open");
             fences.push(Fence {
                 ordinal: fences.len() + 1,
-                open_line,
-                tag,
-                body: body.join("\n"),
+                open_line: state.line,
+                tag: state.tag,
+                body: state.body.join("\n"),
             });
             continue;
         }
@@ -289,33 +306,34 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
             // Anything that did not close the open fence is its body — including
             // a run SHORTER than the opener's, and a run of the OTHER fence
             // character at any length.
-            Some((_, _, _, _, body)) => body.push(line),
+            Some(state) => state.body.push(line),
             // Outside any fence, a run of >= 3 opens one; an empty info string
             // is the untagged case the bare-fence ban reports.
             None => {
-                if let Some((fence_char, run)) = delimiter {
-                    if run >= 3 {
-                        let info = line[run..].trim();
-                        let tag = if info.is_empty() {
-                            None
-                        } else {
-                            Some(info.to_string())
-                        };
-                        open = Some((line_no, fence_char, run, tag, Vec::new()));
-                    }
+                if let Some((fence_char, run)) = delimiter.filter(|(_, run)| *run >= 3) {
+                    let info = line[run..].trim();
+                    open = Some(Open {
+                        line: line_no,
+                        fence_char,
+                        run,
+                        tag: (!info.is_empty()).then(|| info.to_string()),
+                        body: Vec::new(),
+                    });
                 }
             }
         }
     }
 
-    if let Some((open_line, open_char, open_run, tag, _)) = open {
+    if let Some(state) = open {
         return Err(format!(
             "unterminated code fence: the delimiter opened at line {open_line} \
              (run of {open_run} {kind}s, info string {}) is never closed, so \
              every fence after it would be mislabelled — the scan cannot be \
              trusted",
-            tag.as_deref().unwrap_or("<none>"),
-            kind = name_of(open_char)
+            state.tag.as_deref().unwrap_or("<none>"),
+            open_line = state.line,
+            open_run = state.run,
+            kind = name_of(state.fence_char)
         ));
     }
 
