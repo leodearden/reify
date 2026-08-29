@@ -3361,6 +3361,52 @@ mod http_loader {
         );
     }
 
+    /// SSE-framed counterpart to `pre_done_via_http_loader_missing_task_exits_125`.
+    /// Proves the centralised JSON-RPC error-envelope check in `post()`
+    /// (`fused_memory_client.rs:200-202`) — HTTP 200 carrying a top-level
+    /// `{"error":{...}}` surfaces as `LoadError::Protocol` — fires
+    /// identically when the envelope arrives inside a `data:` frame rather
+    /// than as a bare JSON body. Also asserts the `get_task` tool-name
+    /// breadcrumb `call_tool` decorates Protocol errors with
+    /// (`fused_memory_client.rs:214-219`), so this proves the error
+    /// travelled the decorated Protocol path rather than dying at the
+    /// transport.
+    #[test]
+    fn pre_done_via_http_loader_sse_error_envelope_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        let mock = spawn_mock_mcp_sse(|_args| None);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "9995",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "missing task via SSE must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("get_task"),
+            "stderr should breadcrumb the tool name via call_tool's Protocol \
+             decoration; got: {stderr}"
+        );
+    }
+
     /// Sweep path via HTTP loader: `--since` (no `--pre-done`) routes
     /// through `get_tasks` + `collect_tasks_recursive` and must flatten
     /// subtasks before handing them to the detectors. This guards the
@@ -3592,6 +3638,49 @@ mod http_loader {
             out.status.code(),
             Some(125),
             "malformed get_tasks payload must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("get_tasks") && stderr.contains("tasks"),
+            "stderr should breadcrumb the malformed-tasks reason; got: {stderr}"
+        );
+    }
+
+    /// SSE-framed counterpart to `sweep_via_http_loader_malformed_tasks_payload_exits_125`.
+    /// Proves the `missing or non-array \`tasks\` field` refusal in
+    /// `FusedMemoryClient::get_tasks` (`fused_memory_client.rs:278-285`) is
+    /// reached identically under SSE framing — i.e. the framing change
+    /// cannot silently downgrade a malformed corpus into a healthy-looking
+    /// exit 0.
+    #[test]
+    fn sweep_via_http_loader_sse_malformed_tasks_payload_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // Responder returns an empty object — well-formed envelope,
+        // missing `tasks` field. Same shape as the JSON sibling, just
+        // delivered as an SSE `data:` frame.
+        let mock = spawn_mock_mcp_sse(|_args| Some(serde_json::json!({})));
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since", "1970-01-01",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "malformed get_tasks payload via SSE must exit 125; stderr: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
