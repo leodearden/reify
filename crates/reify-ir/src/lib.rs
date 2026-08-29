@@ -102,7 +102,8 @@ pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     KeyedMember, MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation, MemberKey, RegionRef,
     ResultRef, SOURCE_SPAN_KEY, SampledField, SampledGridKind, Satisfaction,
-    StructureInstanceData, UndefCause, Value, ValueMap, keyed_member_cell, quaternion_is_finite,
+    StructureInstanceData, UndefCause, Value, ValueMap, dimension_unit_label, keyed_member_cell,
+    quaternion_is_finite,
 };
 pub use warm::{OpaqueState, WarmStartable};
 pub use warm_registry::{WarmStartableRegistration, WarmStartableRegistry};

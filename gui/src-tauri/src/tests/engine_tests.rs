@@ -2058,7 +2058,7 @@ fn dimension_for_ladder_name(name: &str) -> reify_core::DimensionVector {
 /// from being read as 3 CUBIC METRES.
 #[test]
 fn parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings() {
-    use crate::engine::normalize_unit_label;
+    use crate::engine::{normalize_unit_label, superscript_label_spelling};
 
     // Any magnitude works; a non-unit one keeps a stray `* 1.0` from passing.
     // Kept integral so `format!` renders it without an exponent or a decimal
@@ -2082,7 +2082,19 @@ fn parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings() {
         );
         for opt in &ladder.units {
             let expected_si = MAGNITUDE * opt.si_scale;
-            for spelling in [opt.label.clone(), normalize_unit_label(&opt.label)] {
+            // All three spellings, so this stays a statement about the ASCII
+            // form AND the superscript one whichever of the two the curated
+            // table currently carries: before task λ (#5788) the label WAS the
+            // superscript form and `normalize_unit_label` supplied the other;
+            // since λ it is the ASCII form and `superscript_label_spelling`
+            // does. Iterating only the first two would silently have become
+            // "the ASCII spelling, twice" — and `COMPOSED_UNIT_INDEX` registers
+            // all three, so this must range over all three too.
+            for spelling in [
+                opt.label.clone(),
+                normalize_unit_label(&opt.label),
+                superscript_label_spelling(&opt.label),
+            ] {
                 let literal = format!("{MAGNITUDE}{spelling}");
                 let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
                     panic!(
@@ -2251,7 +2263,7 @@ fn parse_value_string_resolves_every_builtin_unit_symbol() {
 /// guard is precisely what licenses that flat lookup.
 #[test]
 fn curated_ladder_labels_are_unique_across_every_dimension() {
-    use crate::engine::normalize_unit_label;
+    use crate::engine::{normalize_unit_label, superscript_label_spelling};
     use std::collections::BTreeMap;
 
     let ladders = crate::display_units::unit_ladders();
@@ -2261,7 +2273,19 @@ fn curated_ladder_labels_are_unique_across_every_dimension() {
     let mut seen: BTreeMap<String, (String, f64)> = BTreeMap::new();
     for ladder in &ladders {
         for opt in &ladder.units {
-            for spelling in [opt.label.clone(), normalize_unit_label(&opt.label)] {
+            // All three spellings, so this stays a statement about the ASCII
+            // form AND the superscript one whichever of the two the curated
+            // table currently carries: before task λ (#5788) the label WAS the
+            // superscript form and `normalize_unit_label` supplied the other;
+            // since λ it is the ASCII form and `superscript_label_spelling`
+            // does. Iterating only the first two would silently have become
+            // "the ASCII spelling, twice" — and `COMPOSED_UNIT_INDEX` registers
+            // all three, so this must range over all three too.
+            for spelling in [
+                opt.label.clone(),
+                normalize_unit_label(&opt.label),
+                superscript_label_spelling(&opt.label),
+            ] {
                 if let Some((prev_dim, prev_scale)) =
                     seen.insert(spelling.clone(), (ladder.dimension.clone(), opt.si_scale))
                 {
@@ -10854,13 +10878,18 @@ structure Kinematic {
 /// TWO DIFFERENT THINGS ARE PINNED HERE; only the first is a designed boundary.
 ///
 /// (a) THE BOUNDARY. The curated display labels `L`, `mm³`, `kg/m³`, `mm^3` are
-/// not DSL unit symbols at all and must never resolve here — admitting them
-/// would let the GUI read a literal by a table the compiler does not share. They
-/// cannot be tested through the engine: `L` is declared nowhere
-/// (`reify-compiler/stdlib/units.ri` declares no SI volume units and
-/// `si_units.rs` generates none), superscripts have never been lexable, so the
-/// compiler rejects such a source outright with `unknown unit:` and no `.ri`
-/// file can carry one into this site. The table is the only observable.
+/// not `BUILTIN_UNITS` symbols and must never resolve here — admitting them
+/// would let the GUI read a literal by a table the compiler does not share.
+///
+/// The superscript spellings cannot be tested through the engine at all: they
+/// have never been lexable, so the compiler rejects such a source outright with
+/// `unknown unit:` and no `.ri` file can carry one into this site. The table is
+/// the only observable for those. `L` and `mm^3` ARE `.ri`-writable since task
+/// λ (#5788) declared `pub unit L : Volume` in `reify-compiler/stdlib/units.ri`
+/// and relabelled the curated ladders to the ASCII exponent alphabet — but they
+/// resolve through the compiler's unit machinery (a `units.ri` declaration for
+/// `L`, the unit-expression grammar for `mm^3`), never through
+/// `unit_symbol_to_si`, so the boundary this asserts is untouched by that.
 ///
 /// (b) THE DEFERRED GAP, `5MPa`. `MPa` is a curated Pressure rung that the
 /// compiler DOES resolve — `si_units.rs` generates `Pa` with the `k`/`M`/`G`

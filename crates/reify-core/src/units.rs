@@ -166,9 +166,12 @@ pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
 /// That table is also an ordered per-dimension unit ladder, and unifying the
 /// two would be a mistake. It answers a different question — what a human
 /// picks in the GUI unit picker — and is unusable here on three independent
-/// grounds: its labels include forms `unit_symbol_to_si` cannot resolve and
-/// the lexer cannot tokenise (`mm²`, `cm³`, `L`, `MPa`, `kg/m³`, `N`, `J`,
-/// `W`); its Length rungs end at `in` (0.0254) rather than a factor-1.0
+/// grounds: its labels include forms `unit_symbol_to_si` cannot resolve
+/// (`mm^2`, `cm^3`, `L`, `MPa`, `kg/m^3`, `N`, `J`, `W`) — several of which
+/// ARE writable in `.ri` since task λ (#5788) relabelled the curated tables to
+/// the ASCII exponent alphabet and declared `pub unit L : Volume`, but reach
+/// source through the compiler's unit machinery, never through this table; its
+/// Length rungs end at `in` (0.0254) rather than a factor-1.0
 /// terminator; and its coverage differs in both directions. Emission order is
 /// load-bearing for round-trip exactness, display order is picker ergonomics
 /// and is free to change. The two are cross-guarded for *physical* agreement
@@ -492,7 +495,8 @@ mod tests {
     ///
     /// `display_units::unit_ladders()` is a *display* table and is
     /// deliberately NOT reused as the emission table (its labels include
-    /// unparseable forms like `mm²`/`L`/`MPa`, its Length rungs end at `in`
+    /// forms `unit_symbol_to_si` does not resolve, like `mm^2`/`L`/`MPa`, its
+    /// Length rungs end at `in`
     /// rather than a factor-1.0 terminator, and its dimension coverage
     /// differs in both directions). This guard therefore asserts neither
     /// subset nor order — only that where the two tables name the same
