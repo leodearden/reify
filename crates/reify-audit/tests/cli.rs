@@ -2995,6 +2995,104 @@ mod http_loader {
         assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
     }
 
+    /// SSE-framed session-id lock: proves `mcp-session-id` rides EVERY POST
+    /// of the three-leg handshake (`initialize`, `notifications/initialized`,
+    /// `tools/call`) with one stable value per session — the "handshake
+    /// completing with `mcp-session-id` attached to every POST" item.
+    /// `notifications/initialized` is the interesting leg: it is a 202 with
+    /// an empty body, and this is the only assertion in the suite proving
+    /// the header rides that leg too.
+    ///
+    /// Deliberately does NOT assert the value is the client-minted 32-hex
+    /// id, and does NOT assert it differs from `MOCK_SESSION_ID` — per the
+    /// plan's design decision, `FusedMemoryClient` mints its own id and
+    /// never adopts the server's (unlike `JcodemunchClient` since #6106),
+    /// and freezing "must be client-minted" here would veto a legitimate
+    /// future alignment of the two clients. Presence-on-every-POST plus
+    /// one-id-per-session is exactly the contract this test locks.
+    #[test]
+    fn pre_done_via_http_loader_sse_session_id_on_every_post() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        insert_completed_event(&runs_db, "9996");
+
+        let mock = spawn_mock_mcp_sse(|args| {
+            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9996"));
+            Some(serde_json::json!({
+                "id": "9996",
+                "title": "Mock task 9996",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+        let observed = mock.observed_handle();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "9996",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        // `stop()` JOINS the accept thread, so `observed` is race-free to
+        // read from this point on.
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "corroborated task via SSE must exit 0; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let requests = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            requests.len() >= 3,
+            "expected at least 3 observed POSTs (initialize, notifications/initialized, tools/call); got {}",
+            requests.len()
+        );
+        let methods: std::collections::HashSet<&str> =
+            requests.iter().map(|r| r.method.as_str()).collect();
+        for expected in ["initialize", "notifications/initialized", "tools/call"] {
+            assert!(
+                methods.contains(expected),
+                "expected observed methods to contain {expected:?}; got {methods:?}"
+            );
+        }
+
+        let session_ids: Vec<&str> = requests
+            .iter()
+            .map(|req| {
+                req.header("mcp-session-id").unwrap_or_else(|| {
+                    panic!("request for method {:?} missing mcp-session-id header", req.method)
+                })
+            })
+            .collect();
+        for (req, sid) in requests.iter().zip(session_ids.iter()) {
+            assert!(
+                !sid.is_empty(),
+                "mcp-session-id must be non-empty on every POST; method={}",
+                req.method
+            );
+        }
+        let first = session_ids[0];
+        assert!(
+            session_ids.iter().all(|sid| *sid == first),
+            "expected one stable session id across the whole session; got {session_ids:?}"
+        );
+    }
+
     /// Pre-done via HTTP loader: a done/merged task with files but no
     /// runs.db corroboration event should emit a P5PhantomDone High finding.
     /// Proves the loader populates `files`/`done_provenance` correctly.
