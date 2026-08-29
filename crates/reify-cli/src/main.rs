@@ -992,52 +992,32 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        // Both ad-hoc escalations below read `result.diagnostics` — check()'s
-        // OWN list — and deliberately NOT the merged set that was just
-        // reported.
+        // INV-SF-2 (#5403): any Error-severity diagnostic on any channel makes
+        // `check` exit non-zero, unless an enumerated
+        // `CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.
         //
-        // This leaf fixes diagnostic COLLECTION, not the exit gate: every
-        // build()-only diagnostic now reaches the user's terminal, and none of
-        // them moves the exit code. That is exactly what the end-to-end tests
-        // assert for the geometry-compile case
-        // (`check_surfaces_geometry_compile_error_from_discarded_build` and
-        // friends print the error and still expect exit 0), and reading the
-        // merged set here would contradict it for one family: the
-        // post-geometry harvest in `engine_build::check_constraints_post_
-        // geometry` appends `dfm_build_diags` unconditionally, and
-        // `E_DFM_BUILD_VOLUME` (reify-stdlib `dfm.rs`) is always
-        // `Severity::Error` with the `E_DFM_` prefix `dfm_has_error_diagnostic`
-        // matches — so a `has_dfm_rule` module whose harvest carries one would
-        // flip exit 0 → FAILURE off the back of a *collection* change, with no
-        // `.ri` fixture exercising it end to end.
+        // Gated on `merged_diagnostics` — the set `report_eval_output` just
+        // showed the user — and NOT on `result.diagnostics` (check()'s own
+        // list, which is what the two ad-hoc escalations deleted here read).
+        // That is the widening leaf β recorded and deferred to γ: a
+        // realization-only Error is no longer invisible to the exit code. The
+        // post-geometry harvest's `E_DFM_BUILD_VOLUME` is the concrete family
+        // β named; it now gates, on purpose, pinned by
+        // `check_error_gate_tests::build_volume_harvest_error_now_gates`.
         //
-        // Leaf γ (#5403) is where the gate legitimately widens: it replaces
-        // both ad-hoc predicates with one general `Severity::Error` gate over
-        // the merged set, deliberately and with its own tests. Pinned in both
-        // directions by `d2_pass_ordering_tests::dfm_escalation_stays_on_
-        // checks_own_list_until_gamma`.
+        // Runs AFTER `finish_check` so stdout is byte-identical and only the
+        // exit code escalates — exactly the placement, and exactly the
+        // stdout/exit pair, the deleted bolt-ons already had.
         //
-        // Escalate to FAILURE when a GdtIllegalModifier error is present.
-        // Scoped strictly to this code so non-GD&T modules are byte-identical.
-        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
-        if result
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
-        {
-            return ExitCode::FAILURE;
-        }
-
-        // Escalate to FAILURE when any DFM Error-severity diagnostic is present
-        // (e.g. E_DFM_OVERHANG, E_DFM_UNDERCUT from DFMSeverity.Error rules).
-        // `dfm_has_error_diagnostic` matches on the `E_DFM_` message prefix so
-        // unrelated code-less Error diagnostics co-resident in a DFM module
-        // (e.g. FEA "no registered compute trampoline") are NOT escalated.
-        // Gated on `has_dfm_rule` as a first-pass guard so non-DFM modules
-        // remain byte-identical (C2).
-        // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
-        // exit 0, never a false positive (C1 graceful degradation).
-        if has_dfm_rule && dfm_has_error_diagnostic(&result.diagnostics) {
+        // Both deleted escalations are SUBSUMED, not lost:
+        // `GdtIllegalModifier` has a single, unconditionally-`Diagnostic::
+        // error` emission site (`engine_constraints::illegal_modifier_error`),
+        // and the deleted `dfm_has_error_diagnostic` was this same severity
+        // test plus an `E_DFM_` message filter. Locked by
+        // `check_error_gate_tests::the_deleted_bolt_ons_are_subsumed`.
+        // Warning-severity diagnostics (GdtRemoved2018, W_DFM_*) stay
+        // non-fatal, as before (C1).
+        if check_gating_error(&merged_diagnostics).is_some() {
             return ExitCode::FAILURE;
         }
 
@@ -2896,9 +2876,19 @@ enum CheckErrorAllowlistDisposition {
 
 /// One row of the `reify check` Error-exit burn-down allowlist.
 struct CheckErrorExitAllowance {
+    /// The only field the gate itself reads — see [`allowlist_excuses`].
     matcher: CheckErrorAllowlistMatcher,
+    /// What retiring this entry will take.  BURN-DOWN METADATA: read by
+    /// `check_error_exit_allowlist_ratchet`, never by the gate, so it carries
+    /// a bare `#[allow(dead_code)]` (no trailing `//` rationale, so it anchors
+    /// no PTODO marker — the work is cited by `cite` below, not here).
+    /// Deliberately data rather than prose: the burn-down owner reads it off
+    /// the table instead of re-deriving it from each message.
+    #[allow(dead_code)]
     disposition: CheckErrorAllowlistDisposition,
     /// PTODO-canonical cite (`#NNNN`) of the LIVE task that retires this entry.
+    /// Burn-down metadata, same as `disposition` above.
+    #[allow(dead_code)]
     cite: &'static str,
 }
 
@@ -3296,27 +3286,6 @@ fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> boo
                     )
             })
         })
-}
-
-/// Returns `true` when `diagnostics` contains at least one DFM Error-severity
-/// violation (e.g. `E_DFM_OVERHANG`, `E_DFM_UNDERCUT`, `E_DFM_DRAFT`).
-///
-/// All DFM Error diagnostics embed their code prefix `E_DFM_` at the start of
-/// the [`reify_core::Diagnostic::message`] field (the format is
-/// `"E_DFM_<KIND>: <human description>"`).  Matching on the message substring
-/// is more precise than `d.code.is_none()`: it avoids escalating unrelated
-/// code-less Error diagnostics (e.g. FEA "no registered compute trampoline",
-/// build-volume usage errors) that may co-reside with a DFMRule in the same
-/// module.
-///
-/// Note: `E_DFM_UNDERCUT` is always [`Severity::Error`] regardless of the
-/// rule's declared `DFMSeverity` (a re-entrant wall is a hard manufacturability
-/// failure per PRD §2.3), so this predicate correctly captures it alongside
-/// `E_DFM_OVERHANG` / `E_DFM_DRAFT` from `DFMSeverity::Error` rules.
-fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
-    diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error && d.message.contains("E_DFM_"))
 }
 
 /// Structural-equality merge of a discarded [`reify_eval::BuildResult`]'s
@@ -5268,7 +5237,8 @@ mod check_error_exit_allowlist_ratchet {
 
 /// Unit behaviour for INV-SF-2's two pure exit-gate helpers, built from
 /// synthetic [`reify_core::Diagnostic`] values — no OCCT, no CLI exec, so
-/// these run in stub mode exactly as `dfm_error_escalation_tests` did.
+/// these run in a stub-mode build, as the `dfm_error_escalation_tests` module
+/// this one replaces did.
 #[cfg(test)]
 mod check_error_gate_tests {
     use super::{check_gating_error, has_error_diagnostic};
@@ -5349,9 +5319,9 @@ mod check_error_gate_tests {
     ///   (`engine_constraints::illegal_modifier_error`) and it is
     ///   unconditionally `Diagnostic::error`, so every diagnostic the deleted
     ///   code-scoped escalation could see is Error-severity;
-    /// - `dfm_has_error_diagnostic` matched `severity == Error && message
-    ///   contains "E_DFM_"`, which is the general predicate AND a message
-    ///   filter.
+    /// - the deleted `dfm_has_error_diagnostic` matched `severity == Error &&
+    ///   message contains "E_DFM_"`, which is the general predicate AND a
+    ///   message filter.
     ///
     /// Deleting them therefore cannot lose a gate, only widen one.
     #[test]
@@ -5474,80 +5444,6 @@ mod check_error_gate_tests {
             "the gate must return the diagnostic that actually gates, not the \
              excused one it scanned past; got {:?}",
             gating.message
-        );
-    }
-}
-
-#[cfg(test)]
-mod dfm_error_escalation_tests {
-    use super::dfm_has_error_diagnostic;
-    use reify_core::Diagnostic;
-
-    /// Non-OCCT test: `dfm_has_error_diagnostic` must return `true` only for
-    /// diagnostics whose message contains `E_DFM_`, distinguishing DFM Error
-    /// violations from unrelated code-less Error diagnostics.
-    ///
-    /// This exercises the escalation predicate (used in `cmd_check`'s
-    /// `has_dfm_rule && dfm_has_error_diagnostic(...)` gate) without requiring
-    /// OCCT or a CLI exec — the gate logic is tested at the unit level with
-    /// synthetic [`reify_core::Diagnostic`] values.
-    ///
-    /// Covers the reviewer concern (amend: robustness_error_handling) that a
-    /// module carrying BOTH a DFMRule and an unrelated code-less Error diagnostic
-    /// (e.g. FEA "no registered compute trampoline") must NOT escalate to FAILURE:
-    /// the `E_DFM_` prefix match is keyed to the DFM diagnostic, not to mere
-    /// code-lessness.
-    #[test]
-    fn dfm_error_escalation_requires_e_dfm_prefix() {
-        // E_DFM_ prefix Error → escalates (DFM violation)
-        let diag_e_dfm =
-            Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit");
-        assert!(
-            dfm_has_error_diagnostic(&[diag_e_dfm]),
-            "E_DFM_ prefix Error must trigger escalation (DFM violation)"
-        );
-
-        // Another DFM Error code variant → also escalates
-        let diag_e_undercut =
-            Diagnostic::error("E_DFM_UNDERCUT: re-entrant wall — part cannot release");
-        assert!(
-            dfm_has_error_diagnostic(&[diag_e_undercut]),
-            "E_DFM_UNDERCUT Error must trigger escalation"
-        );
-
-        // Code-less Error WITHOUT E_DFM_ prefix (e.g. FEA) → must NOT escalate
-        let diag_fea = Diagnostic::error("no registered compute trampoline");
-        assert!(
-            !dfm_has_error_diagnostic(&[diag_fea]),
-            "non-DFM code-less Error must NOT trigger escalation \
-             (FEA 'no registered compute trampoline' must remain exit 0 under check)"
-        );
-
-        // W_DFM_ Warning → must NOT escalate (only Errors escalate)
-        let diag_w_dfm =
-            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit");
-        assert!(
-            !dfm_has_error_diagnostic(&[diag_w_dfm]),
-            "W_DFM_ Warning must NOT trigger escalation (non-fatal by design)"
-        );
-
-        // Empty slice → no escalation
-        assert!(
-            !dfm_has_error_diagnostic(&[]),
-            "empty diagnostics must not trigger escalation"
-        );
-
-        // Mixed: FEA Error + W_DFM_ Warning → must NOT escalate
-        // (the mix that triggered the reviewer concern: a DFM module
-        // co-resident with an unrelated FEA Error must stay exit 0)
-        let mixed: Vec<Diagnostic> = vec![
-            Diagnostic::error("no registered compute trampoline"),
-            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit"),
-        ];
-        assert!(
-            !dfm_has_error_diagnostic(&mixed),
-            "FEA Error + W_DFM_ Warning must NOT trigger escalation \
-             (only E_DFM_ Errors are fatal)"
         );
     }
 }
@@ -6407,7 +6303,7 @@ mod merge_post_build_verdicts_tests {
 #[cfg(test)]
 mod d2_pass_ordering_tests {
     use super::{
-        dedup_diagnostics, dfm_has_error_diagnostic, drop_falsified_indeterminate_diagnostics,
+        check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
         merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
     };
     use reify_core::{
@@ -6731,29 +6627,33 @@ mod d2_pass_ordering_tests {
         );
     }
 
-    /// The exit gate stays where β found it: the `has_dfm_rule` escalation reads
-    /// `result.diagnostics` — check()'s OWN list — not the merged set that was
-    /// just reported.
+    /// POST-γ (#5403): the exit gate reads the MERGED set — what
+    /// `report_eval_output` just showed the user — and NOT `result.diagnostics`,
+    /// check()'s own list, where β deliberately left it.
     ///
-    /// `check_constraints_post_geometry` appends `dfm_build_diags` to the
-    /// realization's diagnostics unconditionally, and `E_DFM_BUILD_VOLUME` is
-    /// always `Severity::Error` with the `E_DFM_` prefix
-    /// `dfm_has_error_diagnostic` matches.  Feeding the MERGED set to the
-    /// escalation would therefore flip a DFM-rule module from exit 0 to FAILURE
-    /// off the back of a collection change — contradicting this leaf's own
-    /// end-to-end contract, where every newly-collected build diagnostic prints
-    /// and none of them moves the exit code
-    /// (`cli_check.rs::check_surfaces_geometry_compile_error_from_discarded_build`
-    /// and its siblings all assert `status.success()`).
+    /// This is the inversion of the pre-γ pin that stood here. That pin held
+    /// the split the two ad-hoc escalations depended on: the harvest error IS
+    /// in the merged set (D2 — it must reach the user) and is NOT in the
+    /// predicate's input (β — it must not move the exit), because feeding the
+    /// merged set to the since-deleted `dfm_has_error_diagnostic` would have
+    /// widened the gate off
+    /// the back of a pure COLLECTION change, with no `.ri` fixture exercising
+    /// it. Its doc named this test as the one γ must update.
     ///
-    /// This test pins the split the escalation depends on: the harvest error IS
-    /// in the merged set (D2 — it must reach the user), and is NOT in the
-    /// predicate's input (β — it must not move the exit).  γ (#5403) is the leaf
-    /// that legitimately widens this, replacing both ad-hoc predicates with one
-    /// general `Severity::Error` gate over the merged set; when it lands, THIS
-    /// TEST is the one to update, deliberately and with an `.ri` fixture.
+    /// γ makes exactly that widening, deliberately: `check_gating_error` is a
+    /// general `Severity::Error` gate, `E_DFM_BUILD_VOLUME` (appended
+    /// unconditionally by `check_constraints_post_geometry`) is not
+    /// allowlisted, and it now gates. The `.ri` fixture the pre-γ doc asked for
+    /// is `cli_check.rs::check_exits_nonzero_on_eval_phase_circular_let_binding`,
+    /// which exercises the same "Error in the reported set → non-zero exit"
+    /// contract end to end on a kernel-free file.
+    ///
+    /// The D2 precondition is preserved verbatim, because it is what makes the
+    /// widening meaningful rather than accidental: if the harvest error ever
+    /// stops reaching the merged set, this test must fail loudly rather than
+    /// pass vacuously.
     #[test]
-    fn dfm_escalation_stays_on_checks_own_list_until_gamma() {
+    fn gate_reads_the_merged_set_not_checks_own_list() {
         let harvest_error = Diagnostic::error("E_DFM_BUILD_VOLUME: realized volume is zero");
         let harvest_warning = Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit");
         let check_diags = vec![Diagnostic::warning("unrelated")];
@@ -6765,22 +6665,22 @@ mod d2_pass_ordering_tests {
              through the merged, REPORTED set"
         );
         assert!(
-            !dfm_has_error_diagnostic(&check_diags),
-            "the escalation reads check()'s own list, which carries no DFM \
-             error — so this module keeps exiting 0 until γ (#5403) lands the \
-             general Severity::Error gate"
+            check_gating_error(&check_diags).is_none(),
+            "check()'s own list carries no Error at all here — so a gate still \
+             reading it, as β's did, would let this module exit 0"
         );
         assert!(
-            dfm_has_error_diagnostic(&merged),
-            "and the widening is real, which is exactly why the predicate must \
-             not be pointed at the merged set by accident: if this assertion \
-             ever fails, `dfm_has_error_diagnostic` stopped matching the harvest \
-             and γ's gate needs rethinking, not just re-pointing"
+            check_gating_error(&merged).is_some(),
+            "and the merged set does gate: this is γ's widening, the one β \
+             recorded and deferred. If this ever stops holding, the harvest \
+             error stopped reaching the reported set and the D2 precondition \
+             above is the assertion to trust"
         );
         assert!(
-            !dfm_has_error_diagnostic(&merge_build_diagnostics(&check_diags, &[harvest_warning])),
-            "a W_DFM_ warning in the same harvest must NOT escalate on either \
-             list (C1: graceful degradation never invents a failure)"
+            check_gating_error(&merge_build_diagnostics(&check_diags, &[harvest_warning]))
+                .is_none(),
+            "a W_DFM_ warning in the same harvest must NOT gate on either list \
+             (C1: graceful degradation never invents a failure)"
         );
     }
 

@@ -679,7 +679,8 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
 ///    `finish_check` and does NOT rewrite the summary. That stdout/exit pair
 ///    looks contradictory in isolation and is deliberate: it is exactly how
 ///    the two ad-hoc escalations this task deletes (GdtIllegalModifier and
-///    `has_dfm_rule && dfm_has_error_diagnostic`) already behaved, so `check`'s
+///    the now-deleted `has_dfm_rule && dfm_has_error_diagnostic`) already
+///    behaved, so `check`'s
 ///    stdout stays byte-identical across the change.
 ///
 /// Deliberately NOT OCCT-gated: the fixture declares no geometry, so it takes
