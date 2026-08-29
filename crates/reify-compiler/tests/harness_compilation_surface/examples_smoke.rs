@@ -577,6 +577,42 @@ fn discovery_floor_tracks_the_live_corpus() {
     );
 }
 
+/// Pins the single-source-of-`exercised` invariant that [`exercised_paths`]'s
+/// doc comment claims: the memoized [`ctor_conformance_corpus_walk`] must take
+/// its exercised set FROM that helper rather than re-deriving the `SKIP_SET`
+/// filter itself.
+///
+/// Without this the same quantity has two independent derivations — the gate's
+/// floor in [`no_example_emits_ctor_field_conformance_diagnostics`] reads the
+/// walk's count, while [`discovery_floor_tracks_the_live_corpus`] measures
+/// `exercised_paths`. They agree today, so this is a characterization test; it
+/// exists so that if a later edit reintroduces a second filter the divergence
+/// fails HERE, naming the invariant, instead of silently invalidating the
+/// ratchet's freshness claim about the floor the gate actually enforces.
+///
+/// Free to run: [`ctor_conformance_corpus_walk`] is memoized behind a
+/// `OnceLock`, so this reuses the corpus pass the sibling gate already paid
+/// for rather than compiling anything a second time.
+///
+/// Deliberately does NOT re-assert the floor — that is the gate's job. This
+/// test is about the two derivations AGREEING, not about how large they are.
+#[test]
+fn ctor_conformance_walk_exercises_exactly_the_exercised_paths_set() {
+    let walk_exercised = ctor_conformance_corpus_walk().exercised;
+    let helper_exercised = exercised_paths(&discover_ri_files()).len();
+
+    assert_eq!(
+        walk_exercised, helper_exercised,
+        "ctor_conformance_corpus_walk() reported {} exercised .ri files but \
+         exercised_paths() yields {} — the walk must derive its exercised set \
+         from exercised_paths() instead of re-deriving the SKIP_SET filter, or \
+         the gate's MIN_EXERCISED_RI_FILES floor and \
+         discovery_floor_tracks_the_live_corpus's ratchet are measuring two \
+         different quantities.",
+        walk_exercised, helper_exercised
+    );
+}
+
 /// Parse `path`, compile it with the stdlib prelude, and append an entry to
 /// `failures` if either parse errors or Error-severity compile diagnostics are
 /// found.  Returns without appending when the file is clean.
