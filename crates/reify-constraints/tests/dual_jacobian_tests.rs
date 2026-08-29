@@ -534,3 +534,120 @@ fn a_non_differentiable_dependent_cell_refuses_only_the_rows_that_read_it() {
     .expect_err("a residual reading an undifferentiable derived cell must refuse");
     assert_eq!(err.row, 1, "the SECOND residual is the one that reads it");
 }
+
+// ===========================================================================
+// Step-19: λ's end-to-end consumption contract, through the solver seam
+// ===========================================================================
+//
+// This is what makes B19 implementable by λ (#6679) without re-deriving
+// anything: the branch records reach λ through the same call that produces the
+// Jacobian, so the record and the row it explains are always the same
+// traversal of the same point.
+
+use reify_expr::{BranchChoice, KinkKind};
+
+/// `r = clamp(q, 1, 4) − 2`, over a single auto `q`.
+///
+/// Inside `[1, 4]` the residual tracks `q` and `∂r/∂q = 1`; outside it is
+/// pinned to a constant bound and the derivative is genuinely 0.
+fn clamped_model() -> (Vec<AutoParam>, CompiledExpr) {
+    let params = vec![auto("q", dl())];
+    let residual = binop(
+        BinOp::Sub,
+        call("clamp", vec![dref("q"), num(1.0), num(4.0)], dl()),
+        num(2.0),
+    );
+    (params, residual)
+}
+
+fn clamp_jac(x: f64) -> reify_constraints::Jacobian {
+    let (params, residual) = clamped_model();
+    residual_jacobian(&params, &[residual], &ValueMap::new(), &[x], &[], &[], None)
+        .expect("clamp is differentiable away from its bounds")
+}
+
+#[test]
+fn residual_jacobian_returns_one_branch_record_per_row_naming_the_active_clamp_region() {
+    for (x, expected) in [
+        (0.5, BranchChoice::BelowLo),
+        (2.5, BranchChoice::Interior),
+        (7.0, BranchChoice::AboveHi),
+    ] {
+        let j = clamp_jac(x);
+        assert_eq!(j.branch_records.len(), j.rows.len(), "one record per row, always");
+        let entries = j.branch_records[0].entries();
+        let clamp = entries
+            .iter()
+            .find(|e| e.kind == KinkKind::Clamp)
+            .unwrap_or_else(|| panic!("x={x}: the clamp must appear in the record"));
+        assert_eq!(clamp.choice, expected, "x={x}: the recorded region");
+    }
+}
+
+#[test]
+fn two_trial_points_across_a_clamp_bound_report_the_flip_and_name_its_site() {
+    // This IS the primitive η's trust-region contraction and λ's chatter
+    // counter consume: the two points are two different smooth functions, so
+    // their Jacobians are not two samples of one.
+    let inside = clamp_jac(2.5);
+    let outside = clamp_jac(7.0);
+    let (row, site) = inside
+        .differs_from(&outside)
+        .expect("crossing a clamp bound is a branch change, not a rounding difference");
+    assert_eq!(row, 0, "the refusal names WHICH residual flipped");
+    let entry = inside.branch_records[0]
+        .entries()
+        .iter()
+        .find(|e| e.site == site)
+        .expect("the named site must be one this record actually holds");
+    assert_eq!(entry.kind, KinkKind::Clamp, "and it names the clamp, not some neighbour");
+}
+
+#[test]
+fn two_trial_points_on_the_same_side_of_a_clamp_agree_on_signature_and_key() {
+    let a = clamp_jac(2.0);
+    let b = clamp_jac(3.0);
+    assert_eq!(a.differs_from(&b), None, "same branches ⇒ one smooth function ⇒ no contraction");
+    assert_eq!(
+        a.signature_key(),
+        b.signature_key(),
+        "the problem-level key is a function of the branch set alone"
+    );
+    assert_ne!(
+        a.signature_key(),
+        clamp_jac(7.0).signature_key(),
+        "and it must move when any row's branch set does"
+    );
+}
+
+#[test]
+fn the_clamp_row_carries_the_active_branch_derivative_and_the_record_explains_the_zero() {
+    // Interior: the residual tracks q.
+    assert!((clamp_jac(2.5).rows[0][0] - 1.0).abs() < 1e-12);
+
+    // Outside: the derivative really IS zero — and the record is what
+    // distinguishes that from "we could not differentiate".  A bare 0.0 in the
+    // matrix cannot tell those apart; a `Clamp`/`AboveHi` entry beside it can.
+    let above = clamp_jac(7.0);
+    assert_eq!(above.rows[0][0], 0.0);
+    assert!(
+        above.branch_records[0].entries().iter().any(|e| e.kind == KinkKind::Clamp),
+        "a zero row with an empty record would be indistinguishable from a refusal"
+    );
+}
+
+#[test]
+fn a_residual_with_no_kink_yields_an_empty_record() {
+    // The negative control: an empty record must mean "this row's derivative is
+    // an ordinary one", never "we did not look".
+    let (params, residuals, base, x) = two_auto_model();
+    let j = jac(&params, &residuals, &base, &x);
+    for (i, record) in j.branch_records.iter().enumerate() {
+        assert!(record.is_empty(), "row {i} is smooth, got {:?}", record.entries());
+    }
+    assert_eq!(
+        j.signature_key(),
+        jac(&params, &residuals, &base, &[3.5, 4.5]).signature_key(),
+        "a smooth problem has the same signature everywhere"
+    );
+}
