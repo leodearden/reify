@@ -905,8 +905,17 @@ pub(crate) fn is_affine_map_algebra_name(name: &str) -> bool {
 ///
 /// `first_arg_type` is used to disambiguate `determinant`: when the first arg
 /// is an `AffineMap(3)` the result is `Real`; when it is something else
-/// (e.g. a Matrix) we return `None` and let the caller fall through to the
-/// existing first-arg fallback, preserving the matrix-determinant behaviour.
+/// (e.g. a Matrix) we return `None` and let the caller fall through,
+/// preserving the matrix-determinant behaviour.
+///
+/// That fall-through does **not** reach the terminal first-arg fallback — as
+/// this comment asserted until task #5371 measured it. `determinant` is also
+/// in [`crate::math_signatures::MATH_OPERATION_NAMES`], whose ladder arm sits
+/// LATER and claims it, typing the matrix determinant dimensionally (`Q^N`) —
+/// strictly better than first-arg typing. The stale wording here is what made
+/// #5371's plan expect a reachable affine shape-mismatch path; see the
+/// shadowing note on [`AFFINE_ALGEBRA_NAMES`], which has it right, and the
+/// guard test `affine_algebra_names_never_reach_the_terminal_fallback`.
 ///
 /// Returns `None` for any name / arg-type combination not in scope here.
 pub(crate) fn affine_map_algebra_result_type(
@@ -925,8 +934,10 @@ pub(crate) fn affine_map_algebra_result_type(
             reify_core::Type::AffineMap(3),
         ))),
         "determinant" => {
-            // Only override when the first arg is an AffineMap; otherwise fall
-            // through to the existing matrix-determinant first-arg fallback.
+            // Only override when the first arg is an AffineMap; otherwise
+            // fall through to the LATER math arm, which types the matrix
+            // determinant dimensionally (Q^N). NOT to the terminal first-arg
+            // fallback — this arm cannot reach it (#5371).
             if matches!(first_arg_type, Some(reify_core::Type::AffineMap(_))) {
                 Some(reify_core::Type::dimensionless_scalar())
             } else {
