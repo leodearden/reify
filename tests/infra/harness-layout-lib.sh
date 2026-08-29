@@ -126,11 +126,14 @@ declare -ga _HL_CRATES=(reify-cli reify-syntax reify-kernel-occt reify-eval reif
 #     and spilling into an override stem is that same accommodation reached
 #     by a different route.
 #   - these stems carry NO line limit: rule (a)'s CAP_LINES applies only to
-#     `harness_*.rs` roots, and every override stem falls to rule (b) in
-#     harness_layout_in_scope_standalone below, which checks sanctioning and
-#     imposes no cap. Lines parked here are measured by nothing, anywhere —
-#     that is what makes the spill an evasion of the C2 accounting, not a
-#     neutral placement choice.
+#     `harness_*.rs` roots, and an override stem is excluded from the
+#     re-accretion predicate — harness_layout_in_scope_standalone below
+#     returns 1 on it, and rule (b) in test_harness_kloc_cap.sh's
+#     harness_layout_violations `continue`s on it. 5 of the 7 stems aren't
+#     even in one of the 5 _HL_CRATES above, so they never reach rule (b) at
+#     all. No rule measures lines parked here, anywhere — that is what makes
+#     the spill an evasion of the C2 accounting, not a neutral placement
+#     choice.
 #   - it contradicts the exemption's own rationale: these 7 are permanently
 #     standalone for "distinct harness/#[should_panic]/single-focus
 #     semantics that a shared harness would break" (invariant I1,
