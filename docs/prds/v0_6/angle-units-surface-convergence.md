@@ -225,10 +225,12 @@ is dimensionally identical — `5N*m`, `5m^2*kg*s^-2` and their difference all e
 referenced at `:1511`), scanned in `tree-sitter-reify/src/scanner.c:244-258`
 (`if (valid_symbols[UNIT_MUL_OP] && c == '*') { … if (is_unit_start(lookahead)) …}`), with
 `is_unit_start` at `:101` matching `[A-Za-z_(]`. U+00B7 appears **nowhere** in `grammar.js` or
-`scanner.c`. The change is therefore a scanner-local widening of one character class **only** —
+`scanner.c`. The change is therefore a scanner-local widening of one character class —
 no UTF-8-aware decoding is required, because `lexer->lookahead` is an `int32_t` carrying an
-already-decoded codepoint (see §5 C2's CORRECTION 2026-08-29) — a materially smaller diff than
-"a grammar change" implies, but still a parser-seam change (→ G5 B+H).
+already-decoded codepoint (see §5 C2's CORRECTION 2026-08-29) — **plus the `ts_parser.rs`
+lowering update required by §5 C2's CORRECTION 2026-08-19, without which the declaration is
+silently dropped**: a materially smaller diff than "a grammar change" implies, but still a
+parser-seam change (→ G5 B+H).
 
 ### 3.9 Migration blast radius (MEASURED at authoring; re-measure at decompose per G6)
 
