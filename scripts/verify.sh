@@ -1300,6 +1300,19 @@ decide_scope
 # ---------------------------------------------------------------------------
 SELECTED_INFRA_GLOBS=""
 
+# add_selected_infra_glob <glob-or-path> — append into SELECTED_INFRA_GLOBS
+# with whole-token dedup via space sentinels (prevents false dedup when one
+# glob is a substring of another, e.g. a specific path vs a broader wildcard
+# pattern). Shared by every selector below (select_infra_tests,
+# select_harness_kloc_guard, select_cheap_ptodo_gate, ...) so the sentinel
+# trick is written once instead of hand-copied per selector.
+add_selected_infra_glob() {
+    case " $SELECTED_INFRA_GLOBS " in
+        *" $1 "*) : ;;
+        *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$1" ;;
+    esac
+}
+
 select_infra_tests() {
     local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
     # Graceful degradation: absent map or empty changed-file list -> empty.
@@ -1314,14 +1327,8 @@ select_infra_tests() {
         while IFS= read -r _f; do
             [ -z "$_f" ] && continue
             if [ "$_f" = "$_artifact" ]; then
-                # Append glob to selection if not already present (whole-token
-                # dedup via space sentinels — prevents false dedup when one
-                # glob is a substring of another, e.g. a specific path vs a
-                # broader wildcard pattern).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" $_glob "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
-                esac
+                # Append glob to selection if not already present.
+                add_selected_infra_glob "$_glob"
                 break
             fi
         done <<< "$CHANGED_FILES_RAW"
@@ -1430,11 +1437,7 @@ select_harness_kloc_guard() {
         esac
         case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
             *" $_crate "*)
-                # Whole-token dedup via space sentinels (mirrors select_infra_tests).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" tests/infra/test_harness_kloc_cap.sh "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }tests/infra/test_harness_kloc_cap.sh" ;;
-                esac
+                add_selected_infra_glob "tests/infra/test_harness_kloc_cap.sh"
                 return 0
                 ;;
         esac
@@ -1478,12 +1481,15 @@ select_harness_kloc_guard
 # 0m3.362s warm on 2026-08-28 (main checkout, target/release/{reify-audit,
 # ptodo-baseline-gen} already built) — a single cheap leaf, not a cargo pole.
 #
-# Extension arm is `.ri` ONLY for now (task 6817 step-2); step-4 widens it to
-# reify-audit's full swept-extension set (crates/reify-audit/src/ptodo.rs::
-# is_swept_ext) under a derive-from-source drift guard (test_verify_scope.sh's
-# PT-DRIFT scenario), closing the same-class docs/**/*.ri and
-# gui/**/*.{ts,tsx,js} holes in one rule instead of enumerating decide_scope's
-# no-heavy case arms one at a time.
+# Extension arm landed at reify-audit's FULL swept-extension set
+# (crates/reify-audit/src/ptodo.rs::is_swept_ext) in one piece (task 6817
+# step-4), not built up path-by-path: keying on the whole extension set
+# rather than the .ri-only tests/prd-gate/fixtures/ path closes the
+# same-class docs/**/*.ri and gui/**/*.{ts,tsx,js} holes in one rule, instead
+# of enumerating decide_scope's no-heavy case arms one at a time. Kept honest
+# by a derive-from-source drift guard, test_verify_scope.sh's PT-DRIFT
+# scenario — see the case arm below for exactly what direction that guard
+# covers.
 #
 # ACCEPTED RESIDUAL: REIFY_AUDIT_NO_COLD_BUILD is deliberately NOT set on this
 # path (the merge tier sets it, paired with a pre-build and a positive
@@ -1494,6 +1500,23 @@ select_harness_kloc_guard
 # reopening exactly the hole this selector closes. A cold build that blows
 # the wall fails the commit loudly, which is the correct direction of error
 # for a gate protecting a main landing.
+#
+# A THIRD outcome is accepted too, not just the two above: if
+# reify_audit_guard's rebuild attempt still leaves the binary judged stale
+# (rc=125 — e.g. a cargo no-op fingerprint match against an on-disk mtime
+# older than the last crates/reify-audit commit, such as a warm-lane target/
+# with stamped mtimes) while REIFY_AUDIT_BIN stays executable,
+# tests/infra/test_reify_audit_ptodo.sh sets RATCHET_SKIP=1 and skips exactly
+# scenario (a)+(b) — the gen-driven fingerprint ratchet this selector exists
+# to run — while still executing its (c)-(f) exit-code hard gate, which is
+# High-severity-only. phantom-tracking is MEDIUM, so that hard gate does not
+# catch it: this path can exit GREEN on a main landing without the ratchet
+# having run at all. Left accepted rather than closed here because closing it
+# needs a change to test_reify_audit_ptodo.sh, outside this task's scope
+# (scripts/verify.sh + tests/infra/test_verify_scope.sh) — e.g. an opt-in
+# REIFY_PTODO_RATCHET_REQUIRED that turns the rc=125-with-present-binary case
+# into a hard failure instead of RATCHET_SKIP=1. Filed as follow-up work
+# rather than done inline (task 6817 amendment pass).
 # ---------------------------------------------------------------------------
 select_cheap_ptodo_gate() {
     [ "$SCOPE" = "staged" ] || return 0
@@ -1508,20 +1531,18 @@ select_cheap_ptodo_gate() {
         # source of truth is BEHAVIOURAL, not this comment:
         # tests/infra/test_verify_scope.sh's PT-DRIFT scenario re-derives the
         # set from is_swept_ext's source on every infra run and goes RED if
-        # either side drifts, so the two can never silently diverge. The
-        # direction of error on drift is over-selection (one extra ~3.4s
-        # leaf), never a silent coverage hole. Note `*.ts` also matches
-        # `*.tsx` under a bash glob; both are listed anyway so this reads as
-        # a faithful mirror of the Rust function rather than a minimal set.
+        # is_swept_ext GAINS an extension this list lacks. That check is
+        # ONE-DIRECTIONAL: nothing asserts the reverse (this list still
+        # carrying an extension is_swept_ext later drops), so the direction
+        # of error on THAT side is over-selection (one extra ~3.4s leaf),
+        # never a silent coverage hole. Note `*.ts` also matches `*.tsx`
+        # under a bash glob; both are listed anyway so this reads as a
+        # faithful mirror of the Rust function rather than a minimal set.
         case "${_f,,}" in
             *.rs|*.ri|*.sh|*.py|*.ts|*.tsx|*.js) : ;;
             *) continue ;;
         esac
-        # Whole-token dedup via space sentinels (mirrors select_infra_tests).
-        case " $SELECTED_INFRA_GLOBS " in
-            *" tests/infra/test_reify_audit_ptodo.sh "*) : ;;
-            *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }tests/infra/test_reify_audit_ptodo.sh" ;;
-        esac
+        add_selected_infra_glob "tests/infra/test_reify_audit_ptodo.sh"
         return 0
     done <<< "$CHANGED_FILES_RAW"
 }

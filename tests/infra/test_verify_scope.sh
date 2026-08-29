@@ -171,7 +171,7 @@ assert "docs/yaml-only: zero command leaves (preamble only)" \
 # family below (plan_for_branch is not defined until then).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks, ONE cheap PTODO leaf (task 6817; RED until step-2) ---"
+echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks, ONE cheap PTODO leaf (task 6817) ---"
 plan_for staged docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
     tests/prd-gate/fixtures/new_prd_fixture.ri
 assert "PG-1/docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
@@ -408,7 +408,7 @@ done <<< "$_PG_GUI_PINS"
 # in the MERGE-tier run_all.sh pool (task 5125), and a hook-gated main commit
 # is not a merge.
 #
-# PT-1 is the user-observable signal (RED until step-2): the hook-gated path
+# PT-1 is the user-observable signal: the hook-gated path
 # must also run the cheap PTODO ratchet as its own selective-infra leaf,
 # alongside — not instead of — 5536's no-heavy-checks classification.
 # PT-1-vacuity guards the emitted loop's `[ -f "$_vt" ] || continue` from
@@ -416,7 +416,7 @@ done <<< "$_PG_GUI_PINS"
 # VS-coverage above).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PT-1: staged uncoupled prd-gate .ri fixture -> cheap PTODO gate leaf emitted (RED until step-2) ---"
+echo "--- Scenario PT-1: staged uncoupled prd-gate .ri fixture -> cheap PTODO gate leaf emitted ---"
 plan_for staged tests/prd-gate/fixtures/new_prd_fixture.ri
 assert "PT-1: plan contains tests/infra/test_reify_audit_ptodo.sh selective leaf" \
     plan_has 'tests/infra/test_reify_audit_ptodo\.sh'
@@ -439,20 +439,20 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # select_cheap_ptodo_gate is a DERIVED COPY of reify-audit's swept-extension
 # set (crates/reify-audit/src/ptodo.rs::is_swept_ext). This scenario
 # re-derives the set from that function's SOURCE on every infra run and
-# asserts every member fires the gate — do not hand-edit either side without
-# re-running this file (same derive-from-source idiom as PG-DRIFT /
-# PG-DRIFT-GUI above).
+# asserts every derived member fires the gate (same derive-from-source idiom
+# as PG-DRIFT / PG-DRIFT-GUI above). This is ONE-DIRECTIONAL: it goes RED if
+# is_swept_ext gains an extension verify.sh's list lacks, but nothing here
+# asserts the reverse — verify.sh's list keeping an extension is_swept_ext
+# later drops. That reverse direction is over-selection only (one extra
+# ~3.4s leaf), never a coverage hole, so it is accepted rather than asserted.
 #
 # `docs/pt_probe.<ext>` is used because docs/* is a no-heavy-checks path arm
 # for EVERY extension (Scenario 1 above), which isolates the extension rule
 # from path classification: any gate leaf seen here can only come from
 # select_cheap_ptodo_gate's own extension test.
-#
-# RED until step-4 for every extension but .ri (step-2 keyed the selector on
-# `.ri` only).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PT-DRIFT: every is_swept_ext-derived extension fires the cheap PTODO gate under docs/* (RED until step-4, except .ri) ---"
+echo "--- Scenario PT-DRIFT: every is_swept_ext-derived extension fires the cheap PTODO gate under docs/* ---"
 _PT_EXTS="$(sed -n '/^pub fn is_swept_ext/,/^}/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
     | grep -o 'ends_with("\.[a-z]*")' | sed 's/.*("\.\([a-z]*\)")/\1/' | sort -u)"
 # Non-empty FIRST: a renamed/reshaped is_swept_ext or a broken sed range must
