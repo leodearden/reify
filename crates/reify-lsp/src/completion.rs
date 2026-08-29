@@ -1434,6 +1434,62 @@ mod tests {
         }
     }
 
+    /// RED (task 6450 step-3): a gated geometry builtin's served completion
+    /// **signature** (the `detail` field) must type its LENGTH-gated slots as
+    /// `Length`, not `Real` — advertising `Real` is worse than the silence
+    /// step-1/step-2 close, because it affirmatively contradicts the gate
+    /// rather than merely omitting a note about it. Scoped to exactly the 15
+    /// `GATED_LENGTH_BUILTIN_ROWS` names (not every builtin in the table) so
+    /// this cannot fire on a legitimately dimensionless neighbour elsewhere —
+    /// e.g. `02-numeric`'s `sqrt(x: Real)`, or `half_space`'s own
+    /// `nx/ny/nz: Float` direction components.
+    ///
+    /// Fails today for exactly three rows — `box`, `cylinder`, `sphere` —
+    /// which still advertise `Real` for slots task 5743 gated as LENGTH,
+    /// while every other solid primitive in this same table already says
+    /// `Length` (compare `box_centered`/`cylinder_centered` immediately
+    /// below them, which have the identical shape and already say `Length`).
+    #[test]
+    fn geometry_completion_signatures_type_gated_slots_as_length() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        let detail_for = |name: &str| -> String {
+            let item = items
+                .iter()
+                .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label == name)
+                .unwrap_or_else(|| panic!("{name}: missing FUNCTION completion"));
+            item.detail
+                .clone()
+                .unwrap_or_else(|| panic!("{name}: completion has no detail (signature)"))
+        };
+
+        let box_detail = detail_for("box");
+        assert!(
+            box_detail.contains("width: Length"),
+            "box's signature should type `width` as Length, got: {box_detail}"
+        );
+        let cylinder_detail = detail_for("cylinder");
+        assert!(
+            cylinder_detail.contains("radius: Length"),
+            "cylinder's signature should type `radius` as Length, got: {cylinder_detail}"
+        );
+        let sphere_detail = detail_for("sphere");
+        assert!(
+            sphere_detail.contains("radius: Length"),
+            "sphere's signature should type `radius` as Length, got: {sphere_detail}"
+        );
+
+        for (name, _, _, _) in GATED_LENGTH_BUILTIN_ROWS {
+            let name = *name;
+            let detail = detail_for(name);
+            assert!(
+                !detail.contains(": Real"),
+                "{name}: signature should not type any gated slot as Real, got: {detail}"
+            );
+        }
+    }
+
     #[test]
     fn re_im_not_in_builtin_completions() {
         // re, im, real, imag are method-only accessors, not standalone builtins.
