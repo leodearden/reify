@@ -77,6 +77,36 @@ pub(crate) fn crack_dimensioned_scalar(
     }
 }
 
+/// Crack a value at a DIMENSIONLESS position, rejecting a dimensioned `Scalar`
+/// instead of silently stripping its unit.
+///
+/// The dimensionless counterpart of [`crack_dimensioned_scalar`]: that one wants
+/// one PARTICULAR unit, this one wants no unit at all, so the acceptance sets
+/// differ and they stay distinct functions — but they deliberately share the
+/// "has the wrong unit" wording, and the same caller-owned `code` / `hint`
+/// convention (see the module doc), so the tensegrity trampolines present one
+/// diagnostic vocabulary. There is no `expected: DimensionVector` parameter
+/// because "no dimension at all" is not a choice the caller gets to make.
+pub(crate) fn crack_dimensionless_scalar(
+    v: &Value,
+    what: &str,
+    code: &str,
+    hint: &str,
+) -> Result<f64, String> {
+    match v {
+        Value::Real(r) => Ok(*r),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if dimension.is_dimensionless() => Ok(*si_value),
+        Value::Scalar { dimension, .. } => Err(format!(
+            "{code}: {what} has the wrong unit — expected a dimensionless ratio \
+             (a bare Real or a dimensionless Scalar), got a Scalar in {dimension}; {hint}"
+        )),
+        other => Err(format!("{code}: {what} must be a real, got {other:?}")),
+    }
+}
+
 /// Crack a `List<Scalar>` requiring each entry to carry `expected` units (a bare
 /// `Real` is still accepted per entry for ergonomics) — the list lifting of
 /// [`crack_dimensioned_scalar`], whose `code` / `label` / `hint` it threads
