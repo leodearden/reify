@@ -51,6 +51,11 @@ pub use sketch::{
 // the crate root so η (#6675), μ (#6680) and λ (#6679) name
 // `reify_constraints::residual_jacobian` rather than reaching into the module.
 pub use dual_jacobian::{Jacobian, JacobianError, residual_jacobian};
+// λ (#6679) reads the branch vocabulary through ONE import site rather than
+// depending on reify-expr's module layout.
+pub use reify_expr::{
+    BranchChoice, BranchEntry, BranchRecord, KinkKind, KinkSite, NonDifferentiable, ReductionKind,
+};
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
 // compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend

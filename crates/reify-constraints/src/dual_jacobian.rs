@@ -21,6 +21,26 @@
 //! `+1e-12` kinks, or `PENALTY_WEIGHT` — replacing the loop is η's job, and a
 //! half-replacement would leave two solvers disagreeing about the same model.
 //!
+//! # Branch records: ε emits, λ interprets
+//!
+//! Every row carries the non-smooth branches its traversal actually took (PRD
+//! §7.7, "Kinks — active-branch (Clarke) Jacobian").  Emitting that record is
+//! ε's job and it ends there.  Everything downstream of it is λ (#6679)'s:
+//! assembling the Clarke Jacobian, contracting the trust region when the
+//! signature changes, raising `W_SOLVER_NONSMOOTH_STALL` after K alternations
+//! between two signatures, and choosing the derivative-free fallback.  ε
+//! deliberately takes none of those decisions — a derivative source that also
+//! decided when to distrust itself would be answering a question only the
+//! optimiser has the context to answer.
+//!
+//! **A note λ needs:** a `KinkSite` is a STRUCTURAL child-index path, not a
+//! `SourceSpan` — `CompiledExpr` carries no general span field (only
+//! `StructureInstanceCtor` has one, `reify-ir/src/expr.rs:209`), so there is no
+//! user-facing position to record here even in principle.  λ resolves the span
+//! for `W_SOLVER_NONSMOOTH_STALL` from the owning constraint's
+//! `ConstraintNodeId`, which `reify-constraints` already carries alongside
+//! every `CompiledExpr`.
+//!
 //! # Reuse, not re-implementation
 //!
 //! The trial point is materialised by the solver's own
@@ -32,7 +52,7 @@
 //! reconstruction of it that could drift.
 
 use reify_expr::{
-    BranchRecord, DualEnv, NonDifferentiable, Seeds, Tangent, eval_dual_with_env,
+    BranchRecord, DualEnv, KinkSite, NonDifferentiable, Seeds, Tangent, eval_dual_with_env,
     jacobian_row_with_env,
 };
 use reify_core::ValueCellId;
@@ -55,6 +75,54 @@ pub struct Jacobian {
     /// The non-smooth branches each row's traversal actually took.
     /// `branch_records[i]` corresponds to `rows[i]`.
     pub branch_records: Vec<BranchRecord>,
+}
+
+impl Jacobian {
+    /// A stable, order-sensitive key for this Jacobian's whole branch set.
+    ///
+    /// Equal branch sets hash equal; a flip in ANY row moves the key.  λ counts
+    /// alternations between keys, so the key is a pure function of the records
+    /// and reproduces exactly when re-evaluated at the same point.
+    pub fn signature_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.branch_records.len().hash(&mut hasher);
+        for record in &self.branch_records {
+            record.signature_key().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    /// The first `(row, site)` at which these two Jacobians took different
+    /// branches, or `None` when every row took the same ones.
+    ///
+    /// `Some(..)` means the two trial points sampled two DIFFERENT smooth
+    /// functions, so their rows are not two samples of one — which is exactly
+    /// when η must contract its trust region rather than trust a secant.
+    pub fn differs_from(&self, other: &Jacobian) -> Option<(usize, KinkSite)> {
+        for (i, (a, b)) in self.branch_records.iter().zip(other.branch_records.iter()).enumerate() {
+            if let Some(site) = a.differs_from(b) {
+                return Some((i, site));
+            }
+        }
+        // Different row counts are a different PROBLEM, not a branch flip, so
+        // there is no site to name; report the first row only one side has.
+        let (longer, n) = if self.branch_records.len() > other.branch_records.len() {
+            (self, other.branch_records.len())
+        } else if other.branch_records.len() > self.branch_records.len() {
+            (other, self.branch_records.len())
+        } else {
+            return None;
+        };
+        Some((
+            n,
+            longer.branch_records[n]
+                .entries()
+                .first()
+                .map(|e| e.site.clone())
+                .unwrap_or_else(KinkSite::root),
+        ))
+    }
 }
 
 /// Why a Jacobian could not be assembled, and WHICH residual is responsible.
