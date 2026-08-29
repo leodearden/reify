@@ -362,6 +362,453 @@
         );
     }
 
+    // ── Site 2: `three_nearest_node_indices` fail-closed ordering (task 6378) ─
+
+    /// A NaN-poisoned node's squared distance is NaN, so it must never win the
+    /// pick. `nodes[0]` is poisoned; the true 3 finite-nearest (by ascending
+    /// distance) are nodes 2, 3, 1 (dist² = 0, 1, 16 respectively) and must be
+    /// returned in that order with the poisoned node excluded entirely.
+    ///
+    /// Currently RED: the `partial_cmp(...).unwrap_or(Ordering::Equal)`
+    /// insertion sort ranks the NaN-poisoned node FIRST (`[0, 2, 3]`) instead.
+    #[test]
+    fn three_nearest_node_indices_excludes_nan_poisoned_node() {
+        let nodes = [
+            [f64::NAN, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            three_nearest_node_indices(&nodes, target),
+            vec![2, 3, 1],
+            "the 3 true finite-nearest nodes, ascending by distance, with the \
+             NaN-poisoned node excluded entirely"
+        );
+    }
+
+    /// A *negatively*-signed NaN coordinate (the x86_64 "real indefinite" QNaN
+    /// bit pattern `0xFFF8_0000_0000_0000`) must not win the pick either. Bare
+    /// `total_cmp` alone ranks a negative-signed NaN BELOW every finite value,
+    /// so without an explicit NaN → `+INFINITY` normalization applied before
+    /// `total_cmp`, this exact case would select the poisoned node first — the
+    /// fail-open a bare-`total_cmp` rewrite would (wrongly) produce. Mirrors
+    /// `nearest_node_picks_true_finite_nearest_over_negative_signed_nan`
+    /// (modal_ops.rs).
+    #[test]
+    fn three_nearest_node_indices_picks_true_finite_nearest_over_negative_signed_nan() {
+        let neg_nan = f64::from_bits(0xFFF8_0000_0000_0000);
+        assert!(neg_nan.is_nan(), "fixture must actually be NaN");
+        assert!(
+            neg_nan.is_sign_negative(),
+            "fixture must be a negative-signed NaN"
+        );
+
+        let nodes = [[neg_nan, 0.0, 0.0], [5.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            three_nearest_node_indices(&nodes, target),
+            vec![2, 1, 0],
+            "true finite nodes (dist² = 0, 16) must rank ahead of the \
+             negative-signed-NaN-poisoned node — bare total_cmp alone would \
+             wrongly rank it first"
+        );
+    }
+
+    /// `+infinity`/`-infinity` node coordinates must also rank behind every
+    /// finite node — the general non-finite case `dist3_sq` can produce
+    /// alongside NaN (e.g. from an overflowing or already-infinite
+    /// coordinate).
+    #[test]
+    fn three_nearest_node_indices_ranks_infinite_coordinate_nodes_behind_finite_nodes() {
+        let nodes = [
+            [f64::INFINITY, 0.0, 0.0],
+            [f64::NEG_INFINITY, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ];
+        let target = [0.0, 0.0, 0.0];
+
+        assert_eq!(
+            three_nearest_node_indices(&nodes, target),
+            vec![2, 3, 0],
+            "both infinite-coordinate nodes must rank behind every finite \
+             node (idx0 fills the truncated 3rd slot ahead of idx1 only via \
+             the stable sort's original-order tie-break between two equal \
+             +infinity keys)"
+        );
+    }
+
+    /// A non-finite `target` (e.g. an unguarded `iface.location`) makes every
+    /// key non-finite; the pick must still degrade deterministically to
+    /// exactly 3 indices rather than panicking or returning a different
+    /// cardinality.
+    #[test]
+    fn three_nearest_node_indices_returns_three_indices_without_panicking_on_non_finite_target() {
+        let nodes = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ];
+        let target = [f64::NAN, 0.0, 0.0];
+
+        let result = three_nearest_node_indices(&nodes, target);
+        assert_eq!(
+            result.len(),
+            3,
+            "deterministic degrade: still exactly 3 indices, no panic"
+        );
+    }
+
+    /// On equal finite distances the lowest index still wins first — pinning
+    /// that the fail-closed rewrite does not perturb the existing
+    /// deterministic tie-break the seam relies on (`slice::sort_by` is
+    /// stable).
+    #[test]
+    fn three_nearest_node_indices_preserves_lowest_index_tie_break() {
+        let nodes = [
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+        ];
+        let target = [0.0, 0.0, 0.0];
+
+        assert_eq!(
+            three_nearest_node_indices(&nodes, target),
+            vec![0, 1, 2],
+            "tied finite distances resolve to the lowest indices, in order"
+        );
+    }
+
+    /// Non-finite node/target coordinates latch a single WARN per call (not
+    /// once per non-finite node), and an all-finite call stays quiet. Mirrors
+    /// `nearest_node_warns_once_on_non_finite_and_is_quiet_on_finite`
+    /// (modal_ops.rs:4292-4311).
+    ///
+    /// Currently RED: `three_nearest_node_indices` emits no tracing events at
+    /// all, so the first assertion sees 0 instead of 1.
+    #[test]
+    fn three_nearest_node_indices_warns_once_on_non_finite_and_is_quiet_on_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            // Two non-finite nodes (indices 0 and 1) in one call must still
+            // latch exactly one WARN, not one per poisoned node.
+            let nodes = [
+                [f64::NAN, 0.0, 0.0],
+                [f64::INFINITY, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+            ];
+            let _ = three_nearest_node_indices(&nodes, [1.0, 0.0, 0.0]);
+        });
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+            let _ = three_nearest_node_indices(&nodes, [1.9, 0.0, 0.0]);
+        });
+        capture.assert_count(0);
+    }
+
+    // ── Site 1: `build_mixed_region_mesh` node-coordinate guard (task 6378) ──
+
+    /// A NaN shell vertex, with one otherwise-valid interface present, makes
+    /// the build fail closed instead of silently scrambling the tet
+    /// top/mid/bot assignment at the `dot3` projection sort. Shell vertices
+    /// keep their index in the unified node list (shell nodes are first), so
+    /// poisoning shell vertex 1 must report `node_index: 1`.
+    ///
+    /// Currently RED (does not compile until step-6 adds the variant):
+    /// `MixedRegionError::NonFiniteNodeCoordinate` does not exist yet.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_finite_shell_node() {
+        let mut shell = make_shell_mesh();
+        shell.vertices[1] = [f64::NAN, 0.0, 0.0];
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("a NaN shell vertex must be rejected before the ordering hazard");
+        assert_eq!(
+            err,
+            MixedRegionError::NonFiniteNodeCoordinate { node_index: 1 },
+            "unified node index must equal the shell vertex's own index"
+        );
+    }
+
+    /// An infinite TET vertex likewise errors, and the reported `node_index`
+    /// carries the `n_shell +` offset the merge applies — pinning that the
+    /// reported index is in UNIFIED space, not tet-local space, which is the
+    /// detail a consumer would otherwise mis-read.
+    ///
+    /// Currently RED (does not compile until step-6 adds the variant).
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_finite_tet_node_with_unified_index() {
+        let shell = make_shell_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        let mut tet = make_tie_tet_mesh();
+        tet.vertices[0] = f32::INFINITY; // x of tet local node 0 ("top")
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("an infinite tet vertex must be rejected before the ordering hazard");
+        assert_eq!(
+            err,
+            MixedRegionError::NonFiniteNodeCoordinate {
+                node_index: n_shell // 3
+            },
+            "reported index must be tet local node 0 offset by n_shell (unified space), \
+             not the tet-local index 0"
+        );
+    }
+
+    /// The node-coordinate guard is SCOPED to the interface-tying (ordering)
+    /// path: with no interfaces, the same NaN-poisoned mesh still merges
+    /// successfully, exactly as
+    /// `build_mixed_region_mesh_merges_shell_then_tet_nodes_and_elements`
+    /// expects for a clean mesh. This is the regression pin for the
+    /// deliberate `!interfaces.is_empty()` gate — the pure merge has no
+    /// comparison anywhere, so a non-finite vertex cannot scramble it, and a
+    /// later refactor must not silently widen the guard to reject it.
+    #[test]
+    fn build_mixed_region_mesh_with_no_interfaces_tolerates_non_finite_node() {
+        let mut shell = make_shell_mesh();
+        shell.vertices[1] = [f64::NAN, 0.0, 0.0];
+        let tet = make_p1_tet_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        let n_tet = tet.vertices.len() / 3; // 4
+
+        let result = build_mixed_region_mesh(&shell, &tet, &[])
+            .expect("no interfaces → no ordering hazard → the guard must not fire");
+
+        assert_eq!(
+            result.nodes.len(),
+            n_shell + n_tet,
+            "merge still concatenates the full node list"
+        );
+        assert!(
+            result.nodes[1][0].is_nan(),
+            "the poisoned coordinate is preserved verbatim by the pure merge"
+        );
+        assert!(result.mpc_rows.is_empty(), "no interfaces → no MPC rows");
+    }
+
+    /// Telemetry: the erroring non-finite-node call emits exactly one WARN
+    /// containing "non-finite", and an all-finite interface-bearing happy
+    /// path (the same fixture as
+    /// `build_mixed_region_mesh_wires_interface_mpc_rows_in_d6_layout`)
+    /// stays quiet.
+    ///
+    /// Currently RED (does not compile until step-6 adds the variant).
+    #[test]
+    fn build_mixed_region_mesh_warns_once_on_non_finite_node_and_is_quiet_on_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut poisoned_shell = make_shell_mesh();
+        poisoned_shell.vertices[1] = [f64::NAN, 0.0, 0.0];
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = build_mixed_region_mesh(&poisoned_shell, &tet, std::slice::from_ref(&interface));
+        });
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let shell = make_shell_mesh();
+            let _ = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+                .expect("all-finite fixture should succeed");
+        });
+        capture.assert_count(0);
+    }
+
+    // ── Site 1: `iface.location` finiteness guard (task 6378) ────────────────
+
+    /// A NaN `iface.location` is the remaining unguarded operand feeding both
+    /// `nearest_node_index` (shell tie node) and `three_nearest_node_indices`
+    /// (tet nearest-3) — it must be rejected the same way a non-unit `normal`
+    /// or non-positive `thickness` already is.
+    ///
+    /// Currently RED: the validation block checks only `thickness` and
+    /// `normal`, so this input sails through to `Ok`.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_finite_interface_location_nan() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [f64::NAN, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("a NaN interface location must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-finite location → InvalidInterfaceGeometry"
+        );
+    }
+
+    /// An infinite `iface.location` component is rejected the same way as
+    /// NaN — `location` feeds `dist3_sq` on the target side of both
+    /// `nearest_node_index` and `three_nearest_node_indices`, and an
+    /// infinite coordinate there is just as capable of producing a
+    /// non-finite (or, against a node sharing that infinite coordinate, a
+    /// `dist3_sq` `inf - inf = NaN`-manufactured) squared distance as a
+    /// non-finite node coordinate is.
+    ///
+    /// Currently RED, for the same reason as the NaN case above.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_finite_interface_location_infinite() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, f64::INFINITY, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("an infinite interface location must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-finite location → InvalidInterfaceGeometry"
+        );
+    }
+
+    /// With multiple interfaces, the reported `interface_index` must name the
+    /// actual offending interface (1), not the first (valid) one (0).
+    ///
+    /// Currently RED, for the same reason as the single-interface cases
+    /// above.
+    #[test]
+    fn build_mixed_region_mesh_reports_correct_interface_index_for_non_finite_location_among_multiple()
+     {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let interfaces = vec![
+            ShellTetInterface {
+                shell_region: 0,
+                tet_region: 1,
+                normal: [0.0, 0.0, 1.0],
+                thickness: 0.1,
+                location: [0.0, 0.0, 0.0],
+            },
+            ShellTetInterface {
+                shell_region: 0,
+                tet_region: 1,
+                normal: [0.0, 0.0, 1.0],
+                thickness: 0.1,
+                location: [f64::NAN, 0.0, 0.0],
+            },
+        ];
+
+        let err = build_mixed_region_mesh(&shell, &tet, &interfaces)
+            .expect_err("the second interface's non-finite location must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 1 },
+            "must name the offending interface (index 1), not the valid one at index 0"
+        );
+    }
+
+    /// Telemetry: the rejected non-finite-location call emits exactly one
+    /// WARN containing "non-finite", and an all-finite interface stays
+    /// quiet.
+    ///
+    /// Currently RED: not only does the call not yet error (as in the cases
+    /// above), but even counting warns alone would be misleading here — a
+    /// NaN `location` also propagates into `three_nearest_node_indices`'s
+    /// own (already fail-closed, SITE 2) telemetry today, which would
+    /// coincidentally satisfy a warn-count-only assertion for the wrong
+    /// reason both before and after this guard lands. Asserting the `Err`
+    /// first forces this test to actually fail pre-fix, and to prove
+    /// post-fix that the warn comes from THIS guard — `three_nearest_node_indices`
+    /// is never reached once the validation block rejects the interface
+    /// up front.
+    #[test]
+    fn build_mixed_region_mesh_warns_once_on_non_finite_location_and_is_quiet_on_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let bad_location = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [f64::NAN, 0.0, 0.0],
+        };
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&bad_location))
+        });
+        let err = result.expect_err("a non-finite interface location must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-finite location → InvalidInterfaceGeometry"
+        );
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let valid = ShellTetInterface {
+                shell_region: 0,
+                tet_region: 1,
+                normal: [0.0, 0.0, 1.0],
+                thickness: 0.1,
+                location: [0.0, 0.0, 0.0],
+            };
+            let _ = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&valid))
+                .expect("all-finite fixture should succeed");
+        });
+        capture.assert_count(0);
+    }
+
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
 
     /// Pins the `(Operation, ReprKind)` input-repr classifier table for the

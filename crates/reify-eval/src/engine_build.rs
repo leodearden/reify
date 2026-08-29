@@ -13061,12 +13061,29 @@ pub(crate) enum MixedRegionError {
     },
     /// An interface's tie geometry violates `MpcRow::shell_tet_tying`'s
     /// preconditions — a non-unit `normal` or a non-positive `thickness`, both
-    /// of which that builder asserts on (and would panic). `partition_body`
-    /// guarantees these invariants, so this only arises for an interface
-    /// constructed directly by a caller that bypasses the partition layer.
+    /// of which that builder asserts on (and would panic) — or has a
+    /// non-finite `location`, which `shell_tet_tying` never sees (only the
+    /// resolved DOF indices are passed downstream) but which would instead
+    /// poison this function's own nearest-node tie resolution.
+    /// `partition_body` guarantees the `normal`/`thickness` invariants, so
+    /// this only arises for an interface constructed directly by a caller
+    /// that bypasses the partition layer; [`ShellTetInterface`] documents no
+    /// invariant for `location` at all, so its finiteness is checked here
+    /// rather than assumed.
     InvalidInterfaceGeometry {
         /// Index of the offending interface in the input `interfaces` slice.
         interface_index: usize,
+    },
+    /// A unified node coordinate (shell vertex, or tet vertex offset by
+    /// `n_shell`) is NaN or ±infinite. Left unchecked, it would poison the
+    /// interface-tying comparisons — the `dot3` projection sort that assigns
+    /// the tet top/mid/bot triple, and the `dist3_sq` nearest-node picks —
+    /// silently rather than loudly. Only checked when at least one interface
+    /// is present; the pure shell/tet merge has no comparison anywhere, so a
+    /// non-finite vertex cannot scramble it.
+    NonFiniteNodeCoordinate {
+        /// Unified index (into the merged node list) of the offending node.
+        node_index: usize,
     },
 }
 
@@ -13081,8 +13098,13 @@ impl std::fmt::Display for MixedRegionError {
             MixedRegionError::InvalidInterfaceGeometry { interface_index } => write!(
                 f,
                 "interface {interface_index} has invalid tie geometry: `normal` must be \
-                 a unit vector and `thickness` must be positive \
-                 (MpcRow::shell_tet_tying preconditions)"
+                 a unit vector, `thickness` must be positive \
+                 (MpcRow::shell_tet_tying preconditions), and `location` must be finite"
+            ),
+            MixedRegionError::NonFiniteNodeCoordinate { node_index } => write!(
+                f,
+                "unified node {node_index} has a non-finite coordinate (NaN or ±infinity); \
+                 it would poison the interface-tying comparisons"
             ),
         }
     }
@@ -13111,6 +13133,12 @@ impl std::error::Error for MixedRegionError {}
 ///
 /// Returns [`MixedRegionError::InterfaceResolutionFailed`] if an interface
 /// cannot be resolved to tie nodes (empty shell or tet mesh on one side).
+/// Returns [`MixedRegionError::InvalidInterfaceGeometry`] if an interface's
+/// `normal`/`thickness`/`location` violate `MpcRow::shell_tet_tying`'s
+/// preconditions. Returns [`MixedRegionError::NonFiniteNodeCoordinate`] if
+/// any unified node coordinate is non-finite and at least one interface is
+/// present (the pure merge with no interfaces tolerates non-finite nodes,
+/// since it performs no comparison on them).
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
@@ -13153,6 +13181,31 @@ pub(crate) fn build_mixed_region_mesh(
         });
     }
 
+    // ── Node-coordinate finiteness guard (task 6378) ──────────────────────────
+    //
+    // A NaN/±Inf unified node coordinate would poison the interface-tying
+    // comparisons below (the `dot3` projection sort assigning the tet
+    // top/mid/bot triple, and the `dist3_sq` nearest-node picks) silently
+    // rather than loudly. Scoped to the ordering path via `!interfaces.is_
+    // empty()`: the merge above performs no comparison on `nodes`, so it
+    // tolerates non-finite coordinates when there is nothing to tie. Hoisted
+    // out of the interface loop below (checked once, O(n)) rather than
+    // re-scanned per interface.
+    if !interfaces.is_empty()
+        && let Some(node_index) = nodes.iter().position(|p| p.iter().any(|c| !c.is_finite()))
+    {
+        tracing::warn!(
+            target: "reify_eval::engine_build",
+            reason = "non_finite_node_coordinate",
+            node_index,
+            n_nodes = nodes.len(),
+            "build_mixed_region_mesh: non-finite unified node coordinate; \
+             abandoning the mixed-region build rather than emitting MPC rows \
+             from a scrambled top/mid/bot tie triple"
+        );
+        return Err(MixedRegionError::NonFiniteNodeCoordinate { node_index });
+    }
+
     // ── Interface → MPC wiring (D=6 unified DOF layout) ───────────────────────
     //
     // Shell elements force the global DOFs-per-node to 6 (shell dominates, as
@@ -13173,13 +13226,39 @@ pub(crate) fn build_mixed_region_mesh(
         // exactly, so any interface passing here also passes `shell_tet_tying`;
         // binding to booleans first keeps a NaN normal/thickness rejected (NaN
         // comparisons are false) without tripping clippy::neg_cmp_op_on_partial_ord.
+        // `location` gets the same treatment even though `shell_tet_tying` never
+        // sees it (only the resolved DOF indices are passed downstream) — it
+        // feeds this function's own `nearest_node_index` / `three_nearest_node_
+        // indices` tie resolution below, and `ShellTetInterface`
+        // (reify-shell-extract/src/partition.rs:57-71) documents invariants for
+        // `normal` and `thickness` only, so `location`'s finiteness is checked
+        // here rather than assumed.
         let normal_mag = (iface.normal[0] * iface.normal[0]
             + iface.normal[1] * iface.normal[1]
             + iface.normal[2] * iface.normal[2])
             .sqrt();
         let thickness_ok = iface.thickness > 0.0;
         let normal_is_unit = (normal_mag - 1.0).abs() < 1e-9;
-        if !thickness_ok || !normal_is_unit {
+        let location_is_finite = iface.location.iter().all(|c| c.is_finite());
+        if !thickness_ok || !normal_is_unit || !location_is_finite {
+            let reason_detail = if !location_is_finite {
+                "non-finite `location`"
+            } else if !thickness_ok {
+                "non-positive `thickness`"
+            } else {
+                "non-unit `normal`"
+            };
+            tracing::warn!(
+                target: "reify_eval::engine_build",
+                reason = "invalid_interface_geometry",
+                interface_index,
+                thickness_ok,
+                normal_is_unit,
+                location_is_finite,
+                "build_mixed_region_mesh: interface {interface_index} has invalid tie \
+                 geometry ({reason_detail}); rejecting rather than emitting an MPC row \
+                 from invalid geometry"
+            );
             return Err(MixedRegionError::InvalidInterfaceGeometry { interface_index });
         }
 
@@ -13208,7 +13287,7 @@ pub(crate) fn build_mixed_region_mesh(
         nearest3.sort_by(|&m1, &m2| {
             let p1 = dot3(nodes[n_shell + m1], iface.normal);
             let p2 = dot3(nodes[n_shell + m2], iface.normal);
-            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal)
+            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — all node coords finite here (non-finite → early `Err(NonFiniteNodeCoordinate)` from the node-coordinate finiteness guard above) and `iface.normal` unit-checked by the `normal_is_unit` binding above, so `dot3` is finite at any physically-realizable coordinate magnitude and `partial_cmp` never returns None
         });
         let tet_top = n_shell + nearest3[0];
         let tet_mid = n_shell + nearest3[1];
@@ -13266,16 +13345,55 @@ fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
 
 /// The 3 indices of `nodes` nearest `target`, nearest first. The caller
 /// guarantees `nodes.len() >= 3`.
+///
+/// Fail-closed, never panics (PRD `compute-fea-hardening.md` Resolved design
+/// decision 4): normalizes a non-finite squared distance (NaN, or an
+/// overflow-to-`+INFINITY` from a non-finite or overflowing node/target
+/// coordinate) to `+INFINITY` before comparing, so a non-finite candidate can
+/// never win the pick. The normalization must run BEFORE [`f64::total_cmp`],
+/// not be replaced by it: `total_cmp` alone is a total order, but it ranks a
+/// negative-signed NaN BELOW every finite value (and below `-infinity`) — in
+/// a nearest-node pick that would let the poisoned node win, i.e. fail OPEN
+/// in exactly the direction this guard exists to prevent. Emits one WARN
+/// (not one per non-finite node) when any candidate's squared distance was
+/// non-finite, as telemetry for the mis-selection this fallback can still
+/// cause.
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
-    let mut idx: Vec<usize> = (0..nodes.len()).collect();
-    idx.sort_by(|&a, &b| {
-        dist3_sq(nodes[a], target)
-            .partial_cmp(&dist3_sq(nodes[b], target))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    idx.truncate(3);
-    idx
+    // Latches on any non-finite dist3_sq (NaN, or +INFINITY from a non-finite
+    // or overflowing coordinate) for the WARN below, and normalizes NaN to
+    // +INFINITY so it can never win the total_cmp pick (see doc comment).
+    let saw_non_finite = std::cell::Cell::new(false);
+    let key = |i: usize| -> f64 {
+        let d = dist3_sq(nodes[i], target);
+        if !d.is_finite() {
+            saw_non_finite.set(true);
+        }
+        if d.is_nan() { f64::INFINITY } else { d }
+    };
+
+    // Precompute each node's key once, rather than inside the `sort_by`
+    // comparator (which would otherwise re-run `dist3_sq` ~O(n log n) times
+    // for a 3-element result).
+    let mut keyed: Vec<(usize, f64)> = (0..nodes.len()).map(|i| (i, key(i))).collect();
+    // `sort_by` (stable), not `sort_unstable_by`: preserves the lowest-index
+    // tie-break on equal keys that callers rely on.
+    keyed.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+    keyed.truncate(3);
+
+    if saw_non_finite.get() {
+        tracing::warn!(
+            target: "reify_eval::engine_build",
+            reason = "non_finite_squared_distance",
+            n_nodes = nodes.len(),
+            "three_nearest_node_indices: non-finite squared distance \
+             (non-finite or overflowing node/target coordinate); falling \
+             back to total_cmp for a deterministic 3-nearest pick (a \
+             shell↔tet tie node may consequently be mis-selected)"
+        );
+    }
+
+    keyed.into_iter().map(|(i, _)| i).collect()
 }
 
 /// Returns `true` if `expr`'s compiled tree contains a `CrossSubGeometryRef`
