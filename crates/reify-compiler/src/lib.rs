@@ -68,6 +68,7 @@ mod type_compat;
 mod type_resolution;
 mod types;
 mod units;
+mod unresolved_function;
 mod variant_construct;
 
 pub use annotations::materialize::{
@@ -127,6 +128,12 @@ pub use units::{
     UnitResolveError, WHOLE_HANDLE_GEOMETRY_QUERY_NAMES, geometry_query_result_type,
     resolve_unit_expr, topology_selector_result_type,
 };
+/// Closed-world builtin-name membership oracle (task #5371).
+///
+/// `pub` so reify-lsp can gate an "unknown function" hint on the same oracle
+/// the compiler's `UnresolvedFunction` warning uses, instead of re-deriving
+/// the union of every builtin-name family.
+pub use unresolved_function::is_known_builtin;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
