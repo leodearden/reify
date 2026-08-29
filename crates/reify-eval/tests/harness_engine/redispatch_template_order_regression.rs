@@ -7,9 +7,18 @@
 //! ## The defect these tests pin
 //!
 //! `redispatch_geometry_consuming_compute_nodes` is called once per template,
-//! from inside `build()`'s `for (t_idx, template) in module.templates.iter()`
-//! loop (`engine_build.rs:4619`, nested under `:4246`), and each call scans
-//! **all** compute nodes in the graph — not just the current template's.
+//! from inside the `for (t_idx, template) in module.templates.iter()` loop of
+//! `Engine::build_with_geometry_output` in `engine_build.rs` — the shared
+//! realization worker that `build()` and `realize_for_check()` both delegate
+//! to, and whose call is mirrored in `build_snapshot`'s own template loop.
+//! Each call scans **all** compute nodes in the graph — not just the current
+//! template's.
+//!
+//! (Both of those were literal line pins until a rebase moved them 29 lines;
+//! an earlier commit on this branch recorded them as verified-correct, which
+//! no longer holds. They are symbol-anchored here so a rebase cannot re-stale
+//! them — the same remedy that commit applied to the Phase-1 scan anchor
+//! cited below.)
 //!
 //! Its Phase-1 candidate gate is `realization_inputs.is_empty()`: a node whose
 //! `realization_inputs` are already non-empty is skipped. That gate is a

@@ -639,9 +639,9 @@ structure FeaBodyMultiCase {
 /// returns `Failed { diagnostics: vec![] }` by design, and the `ReprKind::BRep`
 /// projection arm is identity-only per PRD §4 D1).
 ///
-/// The kernel-agnostic unit-level statement of the same contract lives in
-/// `tests/redispatch_template_order_regression.rs`; this test closes it on the
-/// real OCCT+gmsh path.
+/// The kernel-agnostic unit-level statement of the same contract lives in the
+/// `harness_engine` integration binary's `redispatch_template_order_regression`
+/// module; this test closes it on the real OCCT+gmsh path.
 ///
 /// # The field bar is [`assert_box_grid_miss_measurement`]'s, same as the sibling
 ///
@@ -1268,11 +1268,13 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 /// (`docs/prds/v0_4/fea-result-model.md:100`, the normative field-contract row),
 /// and §3's grid rationale calls that out-of-solid `f64::NAN` a load-bearing
 /// sentinel, "skipped uniformly by the reductions' `is_finite()` discipline"
-/// (:82). `compute_targets/elastic_static.rs:143-144` is the producer side of
-/// the same contract. On the REALIZED path the §7a grid spans the tet mesh
-/// AABB, so for a CURVED body most grid points legitimately fall outside the
-/// solid: an `all(is_finite)` bar would measure the sampler's AABB coverage
-/// rather than the solve.
+/// (:82). The producer side of the same contract is the `displacement` and
+/// `stress` bullets of `compute_targets/elastic_static.rs`'s
+/// "Field-population contract" module doc, each of which states the
+/// out-of-solid `f64::NAN` for its own component count. On the REALIZED path
+/// the §7a grid spans the tet mesh AABB, so for a CURVED body most grid points
+/// legitimately fall outside the solid: an `all(is_finite)` bar would measure
+/// the sampler's AABB coverage rather than the solve.
 ///
 /// So (4) states the bar the way #6154 built it to be stated — as a
 /// BUCKET SPLIT, via [`assert_cylinder_grid_miss_measurement`], whose closed
@@ -1323,7 +1325,8 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 /// `realization_inputs.is_empty()` candidate gate, so the later correct pass was
 /// skipped forever. Task #5951 fixed that; the tolerance-free statement of the
 /// same defect is [`multi_case_body_solve_survives_a_preceding_template`], and
-/// the kernel-agnostic one is `tests/redispatch_template_order_regression.rs`.
+/// the kernel-agnostic one is the `harness_engine` integration binary's
+/// `redispatch_template_order_regression` module.
 /// The `all(is_finite)` clause was an embellishment added along with that
 /// attribution — B9's normative content is the cache-reuse row
 /// (`docs/prds/v0_4/fea-result-model.md:243`) plus the §3 field contract, and
