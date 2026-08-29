@@ -254,6 +254,17 @@ mod tests {
         ("ORIENTATION_TYPED_FN_NAMES", ORIENTATION_TYPED_FN_NAMES),
     ];
 
+    /// The four families promoted from resolver-only `match` arms to real
+    /// slices by #5371 — kept separate from `ALL_FAMILY_SLICES` because the
+    /// fifteen pre-existing `*_are_disjoint_from_other_families` tests in
+    /// `units.rs` iterate the nineteen registered slices only.
+    const RESOLVER_ONLY_FAMILY_SLICES: &[(&str, &[&str])] = &[
+        ("DATUM_CONSTRUCTOR_NAMES", DATUM_CONSTRUCTOR_NAMES),
+        ("SELECTOR_COMPOSITION_NAMES", SELECTOR_COMPOSITION_NAMES),
+        ("LIST_HELPER_NAMES", LIST_HELPER_NAMES),
+        ("AFFINE_ALGEBRA_NAMES", AFFINE_ALGEBRA_NAMES),
+    ];
+
     /// `is_known_builtin` must accept EVERY member of EVERY classification
     /// family the `expr.rs` ladder consults — not a spot-check per family.
     ///
@@ -576,6 +587,115 @@ mod tests {
                 is_known_builtin(name),
                 "FIRST_ARG_TYPED_NAMES entry {name:?} is not accepted by \
                  is_known_builtin — the family is not wired into the union"
+            );
+        }
+    }
+
+
+    /// A manifest entry says "no family owns this name yet". The moment a
+    /// family DOES own it, the entry becomes a lie — and, worse, a silent one:
+    /// `is_known_builtin` would still return `true`, so nothing would surface
+    /// the stale claim. This test is what forces the removal.
+    ///
+    /// It also rules out the subtler double-claim with `FIRST_ARG_TYPED_NAMES`:
+    /// the two manifests make DIFFERENT claims about the same fallback (one
+    /// says its typing is verified right, the other says its typing is simply
+    /// unexamined), so a name in both would be asserting two things at once.
+    #[test]
+    fn eval_deferred_names_are_disjoint_from_every_registered_family() {
+        for name in EVAL_DEFERRED_BUILTIN_NAMES {
+            for (family, slice) in ALL_FAMILY_SLICES {
+                assert!(
+                    !slice.contains(name),
+                    "EVAL_DEFERRED_BUILTIN_NAMES entry {name:?} is now claimed \
+                     by {family} — remove it from the manifest; the deferral it \
+                     records has been discharged"
+                );
+            }
+            for (family, slice) in RESOLVER_ONLY_FAMILY_SLICES {
+                assert!(
+                    !slice.contains(name),
+                    "EVAL_DEFERRED_BUILTIN_NAMES entry {name:?} is now claimed \
+                     by {family} — remove it from the manifest"
+                );
+            }
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "{name:?} is in BOTH manifests. They make different claims — \
+                 FIRST_ARG_TYPED_NAMES asserts the fallback types it CORRECTLY, \
+                 EVAL_DEFERRED_BUILTIN_NAMES asserts only that it is \
+                 eval-dispatchable and unregistered. Pick one."
+            );
+            assert!(
+                !crate::relation_signatures::is_relation_shared_verb(name),
+                "{name:?} is an arity-gated relation shared verb"
+            );
+            assert!(
+                !DETERMINACY_PREDICATE_NAMES.contains(name),
+                "{name:?} in DETERMINACY_PREDICATE_NAMES"
+            );
+        }
+    }
+
+    /// The manifest must actually contain the deferrals we know about, or it
+    /// is a closed world in name only — an unlisted eval-dispatchable name
+    /// produces a false `UnresolvedFunction` warning at every call site.
+    ///
+    /// Two groups, with different owners:
+    ///
+    /// * the numeric + complex names owned by #6003 (registry tau1) and #6943,
+    ///   whose ratified semantics this task must NOT pre-empt (dimensionless-only
+    ///   rulings, a new 2-arg `floor(x, quantum)` overload, dimensioned-arg ->
+    ///   compile diagnostic). Manifesting them makes the deferral
+    ///   machine-visible without deciding anything for those tasks.
+    /// * the `std.fea` MultiCaseResult accessors, name-dispatched in
+    ///   `reify-stdlib/src/fea.rs`'s `eval_fea` and absent from every compiler
+    ///   family — these have NO owning registry task yet.
+    #[test]
+    fn eval_deferred_manifest_contains_the_known_deferred_names() {
+        for name in [
+            // --- #6003 / #6943: numeric ---
+            "floor", "ceil", "round", "sinh", "cosh", "tanh", "log10",
+            // --- #6943: dimension-transforming complex ---
+            "complex_mul", "complex_div", "complex_pow",
+            // --- un-owned: std.fea MultiCaseResult accessors ---
+            "result_for", "case_names", "worst_case", "linear_combine",
+            "envelope_max", "envelope_min", "min_max_stress",
+        ] {
+            assert!(
+                EVAL_DEFERRED_BUILTIN_NAMES.contains(&name),
+                "{name:?} is eval-dispatchable and claimed by no compiler \
+                 family, so it MUST be manifested — otherwise every call site \
+                 gets a false UnresolvedFunction warning"
+            );
+        }
+
+        // Premise guard deferred from
+        // `first_arg_typed_names_exclude_the_already_claimed_and_the_dimension_transforming`
+        // (step-5, written before this manifest existed): the three
+        // dimension-transforming complex names are excluded from the allowlist
+        // ONLY because the manifest catches them instead. If that stopped
+        // being true they would fall out of the closed world entirely and
+        // warn at every call site.
+        for name in ["complex_mul", "complex_div", "complex_pow"] {
+            assert!(
+                is_known_builtin(name),
+                "{name:?} is excluded from FIRST_ARG_TYPED_NAMES as \
+                 dimension-transforming; the manifest must still keep it \
+                 inside the closed world"
+            );
+        }
+    }
+
+    /// Same wiring check as `first_arg_typed_names_are_all_known_builtins`,
+    /// for the other manifest: membership is inert unless the union reads it.
+    #[test]
+    fn eval_deferred_names_are_all_known_builtins() {
+        for name in EVAL_DEFERRED_BUILTIN_NAMES {
+            assert!(
+                is_known_builtin(name),
+                "EVAL_DEFERRED_BUILTIN_NAMES entry {name:?} is not accepted by \
+                 is_known_builtin — the manifest is not wired into the union"
             );
         }
     }
