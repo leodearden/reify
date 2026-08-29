@@ -257,10 +257,10 @@ fn warnings(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnos
 /// `expr.rs`'s fallback), so there is no code to match on. #6014 deletes it
 /// outright, at which point this helper goes with it.
 fn has_legacy_zero_arg_warning(module: &reify_compiler::CompiledModule) -> bool {
-    module
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("cannot infer return type of zero-arg function"))
+    module.diagnostics.iter().any(|d| {
+        d.message
+            .contains("cannot infer return type of zero-arg function")
+    })
 }
 
 /// An UNKNOWN zero-arg callee is diagnosed ONCE, as `UnresolvedFunction` — the

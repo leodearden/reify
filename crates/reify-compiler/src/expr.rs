@@ -3906,7 +3906,15 @@ fn compile_expr_guarded_with_expected_inner(
                         // env knob; #6014 (registry ω) DELETES this whole
                         // fallback once every builtin holds a real signature row,
                         // and with it the `FIRST_ARG_TYPED_NAMES` allowlist.
-                        if !crate::unresolved_function::is_known_builtin(name) {
+                        // The membership question is resolved BEFORE the arity
+                        // split below, because the answer decides which of the
+                        // two warnings this fallback can emit. They are
+                        // complements, not a hierarchy — "I do not know this
+                        // name" and "I know this name but cannot infer its
+                        // return type without arguments" cannot both hold of one
+                        // call — so exactly one fires, never both.
+                        let known = crate::unresolved_function::is_known_builtin(name);
+                        if !known {
                             diagnostics.push(
                                 Diagnostic::warning(format!("unresolved function: {name}"))
                                     .with_code(DiagnosticCode::UnresolvedFunction)
@@ -3922,16 +3930,33 @@ fn compile_expr_guarded_with_expected_inner(
                             .first()
                             .map(|a| a.result_type.clone())
                             .unwrap_or_else(|| {
-                                diagnostics.push(
-                                    Diagnostic::warning(format!(
-                                        "cannot infer return type of zero-arg function '{}', defaulting to Real",
-                                        name
-                                    ))
-                                    .with_label(DiagnosticLabel::new(
-                                        expr.span,
-                                        "zero-arg function: return type inferred as Real",
-                                    )),
-                                );
+                                // Zero-arg. The legacy warning is TRUE only for a
+                                // name the compiler actually knows (e.g. `world`,
+                                // a real zero-arg builtin still awaiting its
+                                // registry row): there the return type genuinely
+                                // cannot be inferred from arguments, and the
+                                // warning is the only signal the user gets. For an
+                                // UNKNOWN name it is noise stacked on the stronger
+                                // claim already made above.
+                                //
+                                // INTERIM SHAPE, not a design: #6014 (registry ω)
+                                // deletes this legacy warning outright along with
+                                // the fallback, and its cases become
+                                // E_UnresolvedFunction. The mutual exclusion below
+                                // exists only to keep the warn-mode window from
+                                // double-reporting one defect.
+                                if known {
+                                    diagnostics.push(
+                                        Diagnostic::warning(format!(
+                                            "cannot infer return type of zero-arg function '{}', defaulting to Real",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            expr.span,
+                                            "zero-arg function: return type inferred as Real",
+                                        )),
+                                    );
+                                }
                                 Type::dimensionless_scalar()
                             })
                     };
