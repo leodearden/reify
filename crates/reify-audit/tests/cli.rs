@@ -2546,20 +2546,20 @@ mod cli {
 // Dual wire framing: every spawner comes in a JSON- and an SSE-framed
 // variant (`spawn_mock_mcp*` vs `spawn_mock_mcp_sse*`), selected by
 // [`Framing`] and threaded through [`write_response_framed`]. JSON drives
-// `FusedMemoryClient::post`'s bare-body `else` branch
-// (`fused_memory_client.rs:189-192`); SSE drives its
-// `ctype.contains("text/event-stream")` branch (:172-186), and the mock
-// wraps the body as a realistic `event: message\ndata: <json>\n\n` frame
-// rather than a bare `data:` line so the client's line-scan is genuinely
-// exercised rather than getting lucky on a single-line body. The
-// `notifications/initialized` leg always answers 202 with an empty body
-// under BOTH framings: that matches real MCP, and `post()`
-// short-circuits on status 202 before it ever sniffs content-type
-// (fused_memory_client.rs:152), so SSE-framing that leg would be
-// untestable fiction. Independently, [`ResultShape`] selects the
-// `tools/call` result envelope (`structuredContent` vs the
-// `content[0].text` fallback), mirroring `call_tool`'s two decode
-// branches (:221-236).
+// `FusedMemoryClient::post`'s bare-body `else` branch; SSE drives its
+// `ctype.contains("text/event-stream")` branch, and the mock wraps the
+// body as a realistic `event: message\ndata: <json>\n\n` frame rather
+// than a bare `data:` line so the client's line-scan is genuinely
+// exercised rather than getting lucky on a single-line body.
+// [`Framing::SseNoData`] is the SSE branch's other failure mode: a
+// data-less keep-alive-shaped frame, for locking `post()`'s "no SSE data
+// line" refusal. The `notifications/initialized` leg always answers 202
+// with an empty body under ALL framings: that matches real MCP, and
+// `post()` short-circuits on status 202 before it ever sniffs
+// content-type, so SSE-framing that leg would be untestable fiction.
+// Independently, [`ResultShape`] selects the `tools/call` result envelope
+// (`structuredContent` vs the `content[0].text` fallback), mirroring
+// `call_tool`'s two decode branches.
 //
 // All of this is purely additive: `spawn_mock_mcp`, `spawn_mock_mcp_on`,
 // `write_response` and `write_response_with_session` keep their exact
@@ -2576,7 +2576,10 @@ mod cli {
 /// case-insensitive lookup regardless so an assertion never depends on
 /// that).
 struct ObservedRequest {
-    method: String,
+    /// The JSON-RPC `method` field from the request body (`initialize`,
+    /// `notifications/initialized`, `tools/call`) — NOT the HTTP verb,
+    /// which is always POST for every request this mock accepts.
+    rpc_method: String,
     headers: Vec<(String, String)>,
 }
 
@@ -2626,17 +2629,6 @@ fn read_request(stream: &mut TcpStream) -> Option<(Vec<(String, String)>, serde_
     Some((headers, body))
 }
 
-/// As [`read_request`], but discarding the header half. Kept for parity
-/// with the crate's other additive-delegation pairs
-/// (`write_response`/`write_response_framed`,
-/// `spawn_mock_mcp_on`/`spawn_mock_mcp_on_framed`) even though the accept
-/// loop itself now calls `read_request` directly to also capture headers
-/// for [`MockServer::observed`].
-#[allow(dead_code)]
-fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
-    read_request(stream).map(|(_, body)| body)
-}
-
 /// The session id this mock assigns on `initialize`.
 ///
 /// `JcodemunchClient` requires the server to assign one — an `initialize`
@@ -2647,22 +2639,30 @@ fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
 const MOCK_SESSION_ID: &str = "mock-mcp-session";
 
 /// Which wire framing the mock's accept loop answers with. Mirrors the two
-/// branches `FusedMemoryClient::post` distinguishes on `content-type`
-/// (`fused_memory_client.rs:172`): [`Framing::Json`] drives the `else`
-/// bare-JSON-body branch, [`Framing::Sse`] drives the
-/// `ctype.contains("text/event-stream")` branch.
+/// branches `FusedMemoryClient::post` distinguishes on `content-type`:
+/// [`Framing::Json`] drives the `else` bare-JSON-body branch,
+/// [`Framing::Sse`] drives the `ctype.contains("text/event-stream")`
+/// branch.
 #[derive(Clone, Copy, PartialEq)]
 enum Framing {
     Json,
     Sse,
+    /// A degenerate SSE frame carrying no `data:` line at all — just
+    /// `event: message\n\n`, as a keep-alive/comment-only chunk might
+    /// look. Exercises `post()`'s "no SSE data line in response"
+    /// refusal, the SSE branch's other failure mode alongside a
+    /// malformed `data:` payload (which is the raw-decode layer's own
+    /// coverage — out of scope here). The `body` argument passed to
+    /// [`write_response_framed`] is ignored under this variant: there is
+    /// by definition no data to carry.
+    SseNoData,
 }
 
 /// Which JSON-RPC `result` envelope shape the mock's `tools/call` arm
 /// builds. Mirrors the two branches `FusedMemoryClient::call_tool`
-/// distinguishes (`fused_memory_client.rs:221-236`):
-/// [`ResultShape::StructuredContent`] drives the `result.structuredContent`
-/// early return at line 222; [`ResultShape::ContentText`] drives the
-/// `result.content[].text` fallback at lines 225-234. The `None` /
+/// distinguishes: [`ResultShape::StructuredContent`] drives the
+/// `result.structuredContent` early return; [`ResultShape::ContentText`]
+/// drives the `result.content[].text` fallback. The `None` /
 /// error-envelope branch (task not found) is shape-independent and stays
 /// the same under either variant.
 #[derive(Clone, Copy, PartialEq)]
@@ -2706,10 +2706,12 @@ fn write_response_with_session(
 /// Under [`Framing::Sse`] the body is wrapped as a realistic MCP
 /// streamable-HTTP frame — `event: message\ndata: <json>\n\n` — rather
 /// than a bare `data:` line. The `event:` line and trailing blank line
-/// matter: they prove the client's `body.lines()` scan
-/// (`fused_memory_client.rs:174-183`) actually skips a non-`data:` line
-/// rather than getting lucky on a single-line body. `Content-Length` is
-/// computed over the WRAPPED bytes, matching what a real server would send.
+/// matter: they prove the client's `post()` SSE branch's `body.lines()`
+/// scan actually skips a non-`data:` line rather than getting lucky on a
+/// single-line body. `Content-Length` is computed over the WRAPPED bytes,
+/// matching what a real server would send. [`Framing::SseNoData`] instead
+/// wraps as a data-less frame regardless of `body` — see its own doc
+/// comment.
 fn write_response_framed(
     stream: &mut TcpStream,
     status: u16,
@@ -2724,7 +2726,7 @@ fn write_response_framed(
     };
     let content_type = match framing {
         Framing::Json => "application/json",
-        Framing::Sse => "text/event-stream",
+        Framing::Sse | Framing::SseNoData => "text/event-stream",
     };
     let framed_body = match framing {
         Framing::Json => body.to_vec(),
@@ -2736,6 +2738,7 @@ fn write_response_framed(
             framed.extend_from_slice(b"\n\n");
             framed
         }
+        Framing::SseNoData => b"event: message\n\n".to_vec(),
     };
     let mut header = format!(
         "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -2802,8 +2805,8 @@ where
 /// Spawn a one-shot mock MCP server, SSE-framed, whose `tools/call` result
 /// uses the `content[0].text` shape (see [`ResultShape::ContentText`])
 /// instead of `structuredContent`. The only spawner in the harness that
-/// exercises `FusedMemoryClient::call_tool`'s text fallback
-/// (`fused_memory_client.rs:225-234`).
+/// exercises `FusedMemoryClient::call_tool`'s `content[].text` fallback
+/// branch.
 fn spawn_mock_mcp_sse_content_text<F>(task_responder: F) -> MockServer
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
@@ -2813,6 +2816,25 @@ where
         listener,
         Framing::Sse,
         ResultShape::ContentText,
+        task_responder,
+    )
+}
+
+/// Spawn a one-shot mock MCP server whose `initialize` response is a
+/// degenerate, data-less SSE frame (see [`Framing::SseNoData`]). The MCP
+/// handshake fails while decoding that very response, so `task_responder`
+/// is never invoked and no later leg is ever sent — reusing
+/// [`spawn_mock_mcp_on_shaped`]'s general accept loop here (rather than a
+/// bespoke no-responder listener) is harmless for exactly that reason.
+fn spawn_mock_mcp_sse_no_data<F>(task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    spawn_mock_mcp_on_shaped(
+        listener,
+        Framing::SseNoData,
+        ResultShape::StructuredContent,
         task_responder,
     )
 }
@@ -2915,7 +2937,7 @@ where
             {
                 let mut log = observed_clone.lock().unwrap_or_else(|e| e.into_inner());
                 log.push(ObservedRequest {
-                    method: method.clone(),
+                    rpc_method: method.clone(),
                     headers,
                 });
             }
@@ -3096,9 +3118,32 @@ mod http_loader {
     /// Proves what the JSON sibling does not: the full three-POST MCP
     /// handshake and the `get_task` `structuredContent` decode complete
     /// when the server answers `Content-Type: text/event-stream` instead
-    /// of `application/json` — i.e. the `ctype.contains("text/event-stream")`
-    /// branch at `fused_memory_client.rs:172-186` is exercised end-to-end
-    /// through the real binary for the first time.
+    /// of `application/json` — i.e. `post()`'s
+    /// `ctype.contains("text/event-stream")` branch is exercised
+    /// end-to-end through the real binary for the first time.
+    ///
+    /// Also locks the session-id-on-every-POST contract on this same run
+    /// (folded in here rather than kept as its own test — a second full
+    /// three-POST handshake against the real binary would buy nothing
+    /// these assertions can't ride on this one's): `mcp-session-id` must
+    /// ride EVERY POST of the three-leg handshake (`initialize`,
+    /// `notifications/initialized`, `tools/call`) with one stable value
+    /// per session — the "handshake completing with `mcp-session-id`
+    /// attached to every POST" item. `notifications/initialized` is the
+    /// interesting leg: it is a 202 with an empty body, and this is the
+    /// only assertion in the suite proving the header rides that leg too.
+    /// Also asserts the `Accept: application/json, text/event-stream`
+    /// request header `post()` sets rides every POST — the precondition
+    /// for a real server ever choosing SSE framing in the first place.
+    ///
+    /// Deliberately does NOT assert the session-id value is the
+    /// client-minted 32-hex id, and does NOT assert it differs from
+    /// `MOCK_SESSION_ID` — per the plan's design decision,
+    /// `FusedMemoryClient` mints its own id and never adopts the
+    /// server's (unlike `JcodemunchClient` since #6106), and freezing
+    /// "must be client-minted" here would veto a legitimate future
+    /// alignment of the two clients. Presence-on-every-POST plus
+    /// one-id-per-session is exactly the contract locked here.
     #[test]
     fn pre_done_via_http_loader_sse_corroborated_exits_zero() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -3122,83 +3167,13 @@ mod http_loader {
                 }
             }))
         });
-
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
-            .args([
-                "--task",
-                "9998",
-                "--pre-done",
-                "--fused-memory-url",
-                mock.url(),
-                "--runs-db",
-                runs_db.to_str().unwrap(),
-                "--project-root",
-                dir.to_str().unwrap(),
-            ])
-            .output()
-            .expect("invoke reify-audit");
-
-        mock.stop();
-
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "corroborated task via SSE must exit 0; stdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let findings = parse_findings_from_stderr(&stderr);
-        assert!(
-            findings.is_empty(),
-            "expected zero findings; got {:#}",
-            serde_json::Value::Array(findings)
-        );
-    }
-
-    /// SSE-framed session-id lock: proves `mcp-session-id` rides EVERY POST
-    /// of the three-leg handshake (`initialize`, `notifications/initialized`,
-    /// `tools/call`) with one stable value per session — the "handshake
-    /// completing with `mcp-session-id` attached to every POST" item.
-    /// `notifications/initialized` is the interesting leg: it is a 202 with
-    /// an empty body, and this is the only assertion in the suite proving
-    /// the header rides that leg too.
-    ///
-    /// Deliberately does NOT assert the value is the client-minted 32-hex
-    /// id, and does NOT assert it differs from `MOCK_SESSION_ID` — per the
-    /// plan's design decision, `FusedMemoryClient` mints its own id and
-    /// never adopts the server's (unlike `JcodemunchClient` since #6106),
-    /// and freezing "must be client-minted" here would veto a legitimate
-    /// future alignment of the two clients. Presence-on-every-POST plus
-    /// one-id-per-session is exactly the contract this test locks.
-    #[test]
-    fn pre_done_via_http_loader_sse_session_id_on_every_post() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path();
-        let runs_db = write_empty_runs_db(dir);
-        insert_completed_event(&runs_db, "9996");
-
-        let mock = spawn_mock_mcp_sse(|args| {
-            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9996"));
-            Some(serde_json::json!({
-                "id": "9996",
-                "title": "Mock task 9996",
-                "status": "done",
-                "updatedAt": "2026-05-16T07:39:04Z",
-                "metadata": {
-                    "files": [],
-                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
-                }
-            }))
-        });
         let observed = mock.observed_handle();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--task",
-                "9996",
+                "9998",
                 "--pre-done",
                 "--fused-memory-url",
                 mock.url(),
@@ -3221,6 +3196,13 @@ mod http_loader {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "expected zero findings; got {:#}",
+            serde_json::Value::Array(findings)
+        );
 
         let requests = observed.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
@@ -3229,7 +3211,7 @@ mod http_loader {
             requests.len()
         );
         let methods: std::collections::HashSet<&str> =
-            requests.iter().map(|r| r.method.as_str()).collect();
+            requests.iter().map(|r| r.rpc_method.as_str()).collect();
         for expected in ["initialize", "notifications/initialized", "tools/call"] {
             assert!(
                 methods.contains(expected),
@@ -3242,8 +3224,8 @@ mod http_loader {
             .map(|req| {
                 req.header("mcp-session-id").unwrap_or_else(|| {
                     panic!(
-                        "request for method {:?} missing mcp-session-id header",
-                        req.method
+                        "request for JSON-RPC method {:?} missing mcp-session-id header",
+                        req.rpc_method
                     )
                 })
             })
@@ -3251,8 +3233,8 @@ mod http_loader {
         for (req, sid) in requests.iter().zip(session_ids.iter()) {
             assert!(
                 !sid.is_empty(),
-                "mcp-session-id must be non-empty on every POST; method={}",
-                req.method
+                "mcp-session-id must be non-empty on every POST; rpc_method={}",
+                req.rpc_method
             );
         }
         let first = session_ids[0];
@@ -3260,16 +3242,26 @@ mod http_loader {
             session_ids.iter().all(|sid| *sid == first),
             "expected one stable session id across the whole session; got {session_ids:?}"
         );
+
+        for req in requests.iter() {
+            assert_eq!(
+                req.header("accept"),
+                Some("application/json, text/event-stream"),
+                "expected the SSE-advertising Accept header on every POST \
+                 (the precondition for a real server ever choosing SSE \
+                 framing); rpc_method={}",
+                req.rpc_method
+            );
+        }
     }
 
     /// SSE-framed `content[0].text` fallback lock. Unlike its neighbours,
     /// this test has NO JSON sibling to sit beside: the mock's `tools/call`
     /// arm has always emitted `{"structuredContent": ..., "content": []}`,
-    /// and `structuredContent` always wins in `call_tool`
-    /// (`fused_memory_client.rs:221-236`), so the `content[0].text`
-    /// fallback at line 230 was unreachable through this mock under
-    /// EITHER framing before this test — this is the first coverage of
-    /// that branch, period.
+    /// and `structuredContent` always wins in `call_tool`, so its
+    /// `result.content[].text` fallback branch was unreachable through
+    /// this mock under EITHER framing before this test — this is the
+    /// first coverage of that branch, period.
     ///
     /// The mock emits a `tools/call` result with no `structuredContent`
     /// key and a single `content` entry
@@ -3420,14 +3412,17 @@ mod http_loader {
 
     /// SSE-framed counterpart to `pre_done_via_http_loader_missing_task_exits_125`.
     /// Proves the centralised JSON-RPC error-envelope check in `post()`
-    /// (`fused_memory_client.rs:200-202`) — HTTP 200 carrying a top-level
-    /// `{"error":{...}}` surfaces as `LoadError::Protocol` — fires
-    /// identically when the envelope arrives inside a `data:` frame rather
-    /// than as a bare JSON body. Also asserts the `get_task` tool-name
-    /// breadcrumb `call_tool` decorates Protocol errors with
-    /// (`fused_memory_client.rs:214-219`), so this proves the error
-    /// travelled the decorated Protocol path rather than dying at the
-    /// transport.
+    /// — HTTP 200 carrying a top-level `{"error":{...}}` surfaces as
+    /// `LoadError::Protocol` — fires identically when the envelope
+    /// arrives inside a `data:` frame rather than as a bare JSON body.
+    ///
+    /// Asserts BOTH `post()`'s own distinctive `"JSON-RPC error"` text
+    /// AND the `get_task` tool-name breadcrumb `call_tool` decorates
+    /// Protocol errors with — `get_task` alone is not enough, since an
+    /// SSE-decode failure (e.g. "no SSE data line in response") would
+    /// ALSO exit 125 and get the same `get_task:` decoration, which
+    /// would let this test pass green even if SSE decoding never
+    /// actually reached the error envelope.
     #[test]
     fn pre_done_via_http_loader_sse_error_envelope_exits_125() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -3465,6 +3460,65 @@ mod http_loader {
             stderr.contains("get_task"),
             "stderr should breadcrumb the tool name via call_tool's Protocol \
              decoration; got: {stderr}"
+        );
+        assert!(
+            stderr.contains("JSON-RPC error"),
+            "stderr should carry post()'s own JSON-RPC error-envelope text, \
+             proving the failure is the error envelope and not merely an \
+             SSE-decode failure that also happens to exit 125; got: {stderr}"
+        );
+    }
+
+    /// Negative SSE lock: a data-less SSE frame (e.g. a keep-alive or
+    /// comment-only chunk, no `data:` line at all) on the `initialize`
+    /// leg must be refused rather than silently treated as an empty or
+    /// successful response. Exercises `post()`'s "no SSE data line in
+    /// response" refusal — the SSE branch's other failure mode, sibling
+    /// to the malformed-`data:`-payload case that the raw decode layer
+    /// (not this task) owns.
+    #[test]
+    fn pre_done_via_http_loader_sse_no_data_line_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // `initialize` fails to decode before any later leg is ever sent,
+        // so this responder must never run.
+        let mock = spawn_mock_mcp_sse_no_data(|_args| {
+            panic!(
+                "tools/call must never be reached — the handshake fails \
+                 while decoding `initialize`"
+            );
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9994",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "data-less SSE frame must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("no SSE data line"),
+            "stderr should breadcrumb the missing-data-line refusal; got: {stderr}"
         );
     }
 
@@ -3710,10 +3764,16 @@ mod http_loader {
 
     /// SSE-framed counterpart to `sweep_via_http_loader_malformed_tasks_payload_exits_125`.
     /// Proves the `missing or non-array \`tasks\` field` refusal in
-    /// `FusedMemoryClient::get_tasks` (`fused_memory_client.rs:278-285`) is
-    /// reached identically under SSE framing — i.e. the framing change
-    /// cannot silently downgrade a malformed corpus into a healthy-looking
-    /// exit 0.
+    /// `FusedMemoryClient::get_tasks` is reached identically under SSE
+    /// framing — i.e. the framing change cannot silently downgrade a
+    /// malformed corpus into a healthy-looking exit 0.
+    ///
+    /// Asserts the refusal's own distinctive text (`"missing or
+    /// non-array"`), not just the `get_tasks`/`tasks` breadcrumb —
+    /// `"tasks"` is a substring of `"get_tasks"`, so a bare
+    /// `contains("get_tasks") && contains("tasks")` check is satisfied by
+    /// ANY Protocol error mentioning the tool name, including an
+    /// SSE-decode failure that never reached this refusal at all.
     #[test]
     fn sweep_via_http_loader_sse_malformed_tasks_payload_exits_125() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -3750,8 +3810,18 @@ mod http_loader {
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("get_tasks") && stderr.contains("tasks"),
-            "stderr should breadcrumb the malformed-tasks reason; got: {stderr}"
+            stderr.contains("missing or non-array"),
+            "stderr should carry get_tasks()'s own missing/non-array `tasks` \
+             refusal text, proving the sweep actually reached that check \
+             rather than failing for an unrelated (e.g. SSE-decode) reason; \
+             got: {stderr}"
+        );
+        assert!(
+            !stderr.contains("SSE"),
+            "a healthy SSE decode should never surface the word \"SSE\" in \
+             this refusal's breadcrumb; its presence would mean the failure \
+             is actually an SSE-framing error, not the intended malformed- \
+             tasks refusal; got: {stderr}"
         );
     }
 }
