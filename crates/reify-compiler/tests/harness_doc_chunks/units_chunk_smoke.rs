@@ -197,7 +197,6 @@ fn wrap_form(form: &str) -> String {
     )
 }
 
-
 /// The `(rejected, accepted)` rows of the ```` ```reify-rejected ```` block.
 ///
 /// PANICS on a non-empty row that is not a pair, rather than skipping it. A
@@ -725,10 +724,7 @@ fn rejected_form_rows_pairs_the_two_columns_and_ignores_annotations() {
     );
     assert_eq!(
         rejected_form_rows(&markdown, REJECTED_TAG),
-        vec![(
-            "box(0, 0, 0)".to_string(),
-            "box(0mm, 0mm, 0mm)".to_string()
-        )]
+        vec![("box(0, 0, 0)".to_string(), "box(0mm, 0mm, 0mm)".to_string())]
     );
 }
 

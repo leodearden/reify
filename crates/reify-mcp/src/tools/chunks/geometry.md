@@ -136,8 +136,16 @@ When in doubt, prefer the `_centered` variant over a manual
 
      Two chunk guards run over this section:
      geometry_chunk_smoke.rs::documented_call_names_in_the_length_section_are_real_registry_entries
-     extracts every call name below and asserts each is a real compiler registry entry, so a
-     constructor named here that does not exist is RED rather than a phantom an author copies.
+     asserts every constructor named here is a real compiler registry entry, so a name that does
+     not exist is RED rather than a phantom an author copies. It reads TWO things, and the
+     difference matters to whoever edits this section next:
+       - the TABLE's FIRST CELL, one row at a time, floored at the live row count — so DELETING a
+         catalogue row is RED. A row is a `|`-leading line whose first cell backticks the
+         constructor it is about; keep that shape. Later columns are free prose and are NOT
+         scanned, which is why they may safely backtick argument names like `n_points`.
+       - the section's CALL FORMS, i.e. `name(`, which is what the fence below carries.
+     The three sentinel constructors (`translate`, `polygon`, `nurbs`) must appear in BOTH — named
+     by a table row AND called by the fence — so neither half can cover for the other losing one.
      geometry_chunk_smoke.rs::reify_tagged_fences_in_geometry_chunk_compile compiles the ```reify
      fence below as a whole module, so the migration forms are verified rather than asserted. Both
      scans are scoped BYTE-EXACTLY by the `<!-- LENGTH-ARGS-SECTION -->` marker on the line above,
@@ -145,8 +153,9 @@ When in doubt, prefer the `_centered` variant over a manual
      heading it opens.
 
      What those guards do NOT establish: they check NAMES and compile-acceptance, never that a
-     documented argument really carries the DIMENSION claimed for it. That half is pinned on the
-     eval side; see the PINNED/UNPINNED inventory in the `units` chunk. -->
+     documented argument really carries the DIMENSION claimed for it, and never that a table row's
+     PROSE columns are accurate. That half is pinned on the eval side; see the PINNED/UNPINNED
+     inventory in the `units` chunk. -->
 
 Geometry constructors take **dimensioned** lengths. At a length-semantic argument position a bare
 number is rejected outright with a diagnostic — it is not read as metres, and **bare `0` is not

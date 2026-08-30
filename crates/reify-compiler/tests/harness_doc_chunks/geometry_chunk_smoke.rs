@@ -1120,6 +1120,71 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
     }
 }
 
+/// Minimum CATALOGUE ROWS the LENGTH-ARGUMENTS table must carry.
+///
+/// The EXACT live count (`translate`, `rotate_around`, `revolve`,
+/// `line_segment`, `arc`, `helix`, `interp`/`bezier`, `nurbs`, `polygon`), not a
+/// round number under it — at a lower floor a whole row could be deleted while
+/// this stayed green, which is precisely the regression the floor claims to
+/// catch. Raise it WITH the table; never lower it to go green.
+const MINIMUM_CATALOGUE_ROWS: usize = 9;
+
+/// The constructor names the LENGTH-ARGUMENTS catalogue TABLE claims a
+/// dimensioned argument for — one entry per markdown row, in document order.
+///
+/// FIRST COLUMN ONLY, and that is the whole point of the scan rather than a
+/// simplification of it. The catalogue's claim is made by the row's subject: the
+/// later columns are prose that legitimately backticks argument NAMES
+/// (`degree`, `n_points`), which are not constructors and must not be fed to a
+/// registry lookup. Taking column one keeps "every name this asserts is real" a
+/// true statement instead of one needing an allowlist to stay green.
+///
+/// A cell may name more than one constructor (the live table's
+/// ``| `interp` / `bezier` |`` row), so a row yields a Vec. Rows that yield
+/// nothing — the header, the `|---|---|---|` delimiter, any `|`-leading line
+/// without a backticked identifier — are dropped, so `.len()` counts CATALOGUE
+/// rows and nothing else.
+///
+/// A backticked span is accepted only if it is a bare identifier, optionally
+/// followed by a call form: ``` `helix` ``` and ``` `helix(radius, pitch,
+/// height)` ``` both yield `helix`. Anything else (a prose span, a unit
+/// literal) is skipped rather than guessed at.
+pub(crate) fn catalogue_table_rows(section: &str) -> Vec<Vec<String>> {
+    fn is_ident(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    for line in section.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix('|') else {
+            continue;
+        };
+        // The FIRST cell: everything up to the next `|`, or the whole remainder
+        // for a (malformed) single-column row.
+        let first_cell = rest.split('|').next().unwrap_or_default();
+
+        let mut names: Vec<String> = Vec::new();
+        for span in first_cell.split('`').skip(1).step_by(2) {
+            // Trim a trailing call form, so `helix` and
+            // `helix(radius, pitch, height)` are the same claim.
+            let head = span.split('(').next().unwrap_or_default().trim();
+            if !head.is_empty()
+                && head.chars().all(is_ident)
+                && !head.starts_with(|c: char| c.is_ascii_digit())
+                && !names.contains(&head.to_string())
+            {
+                names.push(head.to_string());
+            }
+        }
+        if !names.is_empty() {
+            rows.push(names);
+        }
+    }
+    rows
+}
+
 /// Every geometry constructor the LENGTH-ARGUMENTS section names as taking a
 /// dimensioned argument must be a REAL registry entry.
 ///
@@ -1137,6 +1202,28 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
 /// compile, and — because a `structure def` body types an unresolved call from
 /// its first argument — often will not even say so.
 ///
+/// # What is actually scanned
+///
+/// TWO INDEPENDENT SETS, because [`called_names`] alone did not reach the
+/// catalogue this test is named for. That scanner harvests an identifier only
+/// where it is immediately followed by `(`, and the table writes eight of its
+/// nine constructors as a bare backticked name — so DELETING EVERY TABLE ROW
+/// left this test green, all three sentinels still satisfied by the ```reify
+/// fence below the table (measured; only the `helix(radius, pitch, height)` row
+/// was ever visible). The advertised reach was the reach a future editor would
+/// rely on, so the scan was widened rather than the docstring narrowed:
+///
+///   - [`catalogue_table_rows`] harvests the TABLE's first column, floored at
+///     [`MINIMUM_CATALOGUE_ROWS`] so deleting rows is RED;
+///   - [`called_names`] harvests the section's CALL FORMS, floored at
+///     [`MINIMUM_SECTION_CALL_NAMES`] so rewriting the fence into prose is RED.
+///
+/// Every name from either set faces the same registry assertion, and the three
+/// sentinels are asserted against BOTH — the table must NAME them and the fence
+/// must CALL them. Union-sentinels would let one half lose a constructor while
+/// the other half covered for it, which is the failure this amendment exists to
+/// close.
+///
 /// SCOPE — this checks NAMES, not arities and not argument dimensions. Arity for
 /// the oracle names is cross-checked separately by
 /// `documented_oracle_arities_are_exercised_by_a_compiling_fence`; argument
@@ -1153,35 +1240,65 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
         CHUNK_PATH,
         LENGTH_ARGS_SECTION_TITLE,
     );
-    let names = called_names(&strip_reify_comments(&section));
 
-    // Anti-vacuity, two independent halves. The COUNT floor catches a section
-    // rewritten into a shape the scan cannot read (prose without call forms);
-    // the SENTINELS catch a section that kept its shape but lost the specific
-    // positions the catalogue exists for. `translate` is the headline case
-    // (every component length-semantic, bare `0` included); `polygon` is the one
-    // with NO dimensionless position at all; `nurbs` is the one that mixes both
-    // in a single argument list, so it is where a catalogue is load-bearing.
+    let table_rows = catalogue_table_rows(&section);
+    let table_names: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        for row in &table_rows {
+            for name in row {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+        }
+        out
+    };
+    let called = called_names(&strip_reify_comments(&section));
+
+    // Anti-vacuity, one floor per set. The ROW floor catches a deleted or
+    // gutted catalogue table — the case that used to pass silently. The CALL
+    // floor catches a section rewritten into prose without call forms, so the
+    // worked fence stops demonstrating anything.
     assert!(
-        names.len() >= 5,
-        "only {} distinct call name(s) found in {CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` \
-         section — expected at least 5. The catalogue was rewritten into prose without call \
-         forms, so this check has nothing to verify and gives NO protection. Names seen: \
-         {names:?}",
-        names.len()
+        table_rows.len() >= MINIMUM_CATALOGUE_ROWS,
+        "only {} catalogue row(s) found in {CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` table — \
+         expected at least {MINIMUM_CATALOGUE_ROWS}. Either rows were deleted, or the table was \
+         reformatted into a shape this scan cannot read: a catalogue row is a `|`-leading line \
+         whose FIRST cell backticks the constructor it is about. Rows seen: {table_rows:?}",
+        table_rows.len()
     );
+    assert!(
+        called.len() >= MINIMUM_SECTION_CALL_NAMES,
+        "only {} distinct call name(s) found in {CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` \
+         section — expected at least {MINIMUM_SECTION_CALL_NAMES}. The worked forms were \
+         rewritten into prose without call forms, so the section demonstrates nothing a compiler \
+         has seen. Names seen: {called:?}",
+        called.len()
+    );
+
+    // Sentinels, against BOTH sets. `translate` is the headline case (every
+    // component length-semantic, bare `0` included); `polygon` is the one with
+    // NO dimensionless position at all; `nurbs` is the one that mixes both in a
+    // single argument list, so it is where a catalogue is load-bearing.
     for sentinel in ["translate", "polygon", "nurbs"] {
         assert!(
-            names.iter().any(|n| n == sentinel),
-            "{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` section no longer names `{sentinel}` \
-             as a call form. That position is one of the three the catalogue exists to \
+            table_names.iter().any(|n| n == sentinel),
+            "{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` TABLE no longer has a row for \
+             `{sentinel}`. That position is one of the three the catalogue exists to \
              distinguish — `translate` (every component length-semantic, bare `0` included), \
              `polygon` (no dimensionless position at all) and `nurbs` (lengths and counts in one \
-             argument list). Names seen: {names:?}"
+             argument list). A worked fence below the table is NOT a substitute: the table is \
+             what an author scans to find their constructor. Table names seen: {table_names:?}"
+        );
+        assert!(
+            called.iter().any(|n| n == sentinel),
+            "{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` section no longer CALLS `{sentinel}` \
+             outside a comment, so the row that names it is no longer demonstrated by anything \
+             the compiler has accepted. Call names seen: {called:?}"
         );
     }
 
-    for name in &names {
+    for name in table_names.iter().chain(called.iter()) {
         assert!(
             registry_family(name).is_some()
                 || LENGTH_SECTION_NAME_ALLOWLIST.contains(&name.as_str()),
@@ -1194,6 +1311,13 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
         );
     }
 }
+
+/// Minimum distinct CALL names the LENGTH-ARGUMENTS section's worked forms must
+/// carry, as the anti-vacuity floor on the [`called_names`] half.
+///
+/// Unchanged at 5 from before the table half existed: it floors the FENCE, which
+/// is a separate claim from the table's coverage and keeps its own number.
+const MINIMUM_SECTION_CALL_NAMES: usize = 5;
 
 /// Names the length-arguments section may call that are in none of
 /// [`CALLABLE_NAME_REGISTRIES`], each with its justification.
@@ -1552,13 +1676,22 @@ fn cited_test_paths_in_the_chunk_resolve() {
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// `call_sites`, `strip_reify_comments`, `section_body` and `cited_source_paths`
-// are the hand-rolled text scanners in this file, and every doc↔fence assertion
-// above is downstream of one of them, so they are pinned directly here rather
-// than only through the chunk. Mirrors the posture of
-// `stdlib_chunk_geometry_ops_smoke.rs`, whose `documented_geometry_op_forms`
-// scanner carries its own `_extracts_exact_arity` / `_zero_arg_span_is_exact_zero` /
-// `_skips_unbalanced_parens_without_panicking` unit tests.
+// `call_sites`, `strip_reify_comments`, `section_body`, `cited_source_paths`,
+// `called_names` and `catalogue_table_rows` are the hand-rolled text scanners in
+// this file, and every doc↔fence assertion above is downstream of one of them,
+// so they are pinned directly here rather than only through the chunk. Mirrors
+// the posture of `stdlib_chunk_geometry_ops_smoke.rs`, whose
+// `documented_geometry_op_forms` scanner carries its own `_extracts_exact_arity`
+// / `_zero_arg_span_is_exact_zero` / `_skips_unbalanced_parens_without_panicking`
+// unit tests.
+//
+// THE FAILURE THESE CLOSE IS SELF-CONCEALING. `called_names` is the sole
+// extraction path for BOTH chunks' phantom-name gates, and `catalogue_table_rows`
+// for geometry.md's catalogue floor — but every anti-vacuity floor and sentinel
+// above is drawn from those same scanners' OWN output. A regression that made one
+// of them over-skip would weaken the gate while leaving every floor and sentinel
+// satisfied, because both sides of the comparison would shrink together. Only a
+// direct test over a known input can see that.
 
 #[test]
 fn call_sites_counts_a_nested_call_as_one_argument() {
@@ -1791,5 +1924,131 @@ fn cited_source_paths_leaves_a_cxx_cite_alone() {
     assert!(
         cited_source_paths("BRepExtrema_DistShapeShape::InnerSolution()").is_empty(),
         "a C++ `Type::method()` cite is not a source-file cite"
+    );
+}
+
+/// A digit-prefixed run juxtaposed with `(` is a numeric literal, not a call.
+///
+/// The discriminator `called_names` documents, asserted directly. Without the
+/// skip, `2(x + 1)` would feed `2` to `registry_family` and every registry gate
+/// downstream would fail on a name no author ever wrote.
+#[test]
+fn called_names_skips_a_numeric_literal_juxtaposed_with_a_paren() {
+    assert_eq!(
+        called_names("let scaled = 2(x) + box(1mm, 1mm, 1mm)"),
+        vec!["box".to_string()],
+        "`2(` is a literal juxtaposed with a paren; only `box` is a call"
+    );
+}
+
+/// A `name(` whose parens never balance is skipped, matching `call_sites`.
+///
+/// The two scanners CONFIRM each other by construction — `called_names` runs
+/// every candidate back through `call_sites` — and this pins that the
+/// confirmation actually discriminates. A call form wrapped across a markdown
+/// line is the live shape this protects against: half a call is not a call, and
+/// counting it would let a fence "demonstrate" a form it never compiled.
+///
+/// The skip is PER NAME, not per line, which is the behaviour the assertion
+/// below fixes in place: in `translate(box(1mm, 1mm, 1mm),` the OUTER
+/// `translate(` never closes and is dropped, while the INNER `box(…)` closes on
+/// its own and is kept. That is the right call — `box` really is demonstrated
+/// here — and it is worth pinning precisely because the coarser "drop the whole
+/// unbalanced line" reading is the one a reader assumes.
+#[test]
+fn called_names_skips_a_call_whose_parens_never_balance() {
+    assert_eq!(
+        called_names("let wrapped = translate(box(1mm, 1mm, 1mm),"),
+        vec!["box".to_string()],
+        "`translate(` never closes so it is not a call; the nested `box(…)` does, so it is"
+    );
+    // Control: the same text, closed, yields BOTH in document order — so the
+    // assertion above is about `translate` being unbalanced, not about the
+    // scanner being unable to see an outer call at all.
+    assert_eq!(
+        called_names("let ok = translate(box(1mm, 1mm, 1mm), 0mm, 0mm, 0mm)"),
+        vec!["translate".to_string(), "box".to_string()]
+    );
+}
+
+/// Repeated calls collapse to ONE entry, and the order is the order of first
+/// appearance.
+///
+/// Both halves matter to the callers: the registry loops assert per DISTINCT
+/// name, and every anti-vacuity floor above counts `names.len()`, so a scanner
+/// that stopped deduping would inflate a floor into passing on one repeated
+/// constructor.
+#[test]
+fn called_names_dedups_and_preserves_document_order() {
+    assert_eq!(
+        called_names("polygon(0mm, 0mm) ; nurbs(1, 2) ; polygon(1mm, 1mm) ; nurbs(3, 4)"),
+        vec!["polygon".to_string(), "nurbs".to_string()]
+    );
+}
+
+/// A call appearing ONLY inside a `//` comment is absent once the input is
+/// comment-stripped.
+///
+/// `called_names` documents "`text` MUST already be comment-free" as a
+/// PRECONDITION, not a behaviour — it does no stripping of its own. This pins
+/// the contract from the caller's side, which is how every call site above uses
+/// it: `called_names(&strip_reify_comments(&section))`. The hazard is live, not
+/// hypothetical — geometry.md's FORM A fence carries a commented call at exactly
+/// the documented arity (see `strip_reify_comments`), and a commented-out call
+/// is not a call.
+#[test]
+fn called_names_does_not_see_a_call_that_only_appears_in_a_comment() {
+    let src = "// let old = helix(10mm, 2mm, 50mm)\nlet spine = interp(0mm, 0mm, 0mm)";
+    assert_eq!(
+        called_names(&strip_reify_comments(src)),
+        vec!["interp".to_string()],
+        "the commented `helix(` must not count once the input is stripped"
+    );
+    // Control: UNSTRIPPED, the scanner does see it — so the assertion above is
+    // about the precondition being honoured, not about the input being inert.
+    assert!(called_names(src).contains(&"helix".to_string()));
+}
+
+/// The catalogue scan reads the FIRST cell only, and takes both spellings of a
+/// constructor name.
+///
+/// The first-column rule is what keeps "every name this asserts is real" true:
+/// `n_points` here is a backticked ARGUMENT name in a later column, and feeding
+/// it to a registry lookup would force an allowlist entry for a name that is not
+/// a constructor at all.
+#[test]
+fn catalogue_table_rows_reads_the_first_cell_and_strips_a_call_form() {
+    let table = "\
+| Constructor | Length-semantic arguments | Stays dimensionless |
+|---|---|---|
+| `helix` | **all three** — `helix(radius, pitch, height)` | — |
+| `nurbs` | the control points | leading `n_points` counts |
+";
+    assert_eq!(
+        catalogue_table_rows(table),
+        vec![vec!["helix".to_string()], vec!["nurbs".to_string()]],
+        "the header, the delimiter row, the trailing call form and the later-column \
+         `n_points` must all be absent"
+    );
+}
+
+/// A cell naming two constructors yields both, and a `|`-leading line with no
+/// backticked identifier yields no ROW at all.
+///
+/// The row count is a floor in `documented_call_names_in_the_length_section_are_
+/// real_registry_entries`, so what counts as a row is load-bearing: a header or
+/// delimiter line that slipped into the count would let a real catalogue row be
+/// deleted while the floor stayed satisfied.
+#[test]
+fn catalogue_table_rows_splits_a_shared_cell_and_drops_a_rowless_line() {
+    let table = "\
+|---|---|
+| `interp` / `bezier` | every argument |
+| no backticks here | so this is not a catalogue row |
+prose, not a table row at all
+";
+    assert_eq!(
+        catalogue_table_rows(table),
+        vec![vec!["interp".to_string(), "bezier".to_string()]]
     );
 }
