@@ -28,8 +28,9 @@
 //! before this task, as `harness_units_materials/affine_constructor_typing_tests.rs`, and
 //! correspondingly holds no baseline row. `datum_constructor_tests.rs` was a second such
 //! precedent until #5694 absorbed it, and its baseline row, into
-//! `harness_physical_modeling/datum_constructor_tests.rs`. The one grandfathered
-//! standalone this crate still carries is `tests/math_construction_signatures_tests.rs`;
+//! `harness_physical_modeling/datum_constructor_tests.rs`. The one sibling
+//! constructor-family precedent this crate still carries as a grandfathered standalone
+//! is `tests/math_construction_signatures_tests.rs`;
 //! it is the natural next absorption, shrinking the baseline ratchet by one more row, and
 //! is left alone here only because it is outside #5344's file scope.
 

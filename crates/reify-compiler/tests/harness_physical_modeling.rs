@@ -19,8 +19,10 @@
 //! per-member `mod common;` would load the same source repeatedly in one compile unit
 //! (`clippy::duplicate_mod`). Its four consumers (`compound_unit_resolution_tests`,
 //! `imperial_units_tests`, `physical_constants_tests`, `si_units_tests`) reach it as
-//! `use crate::common[::…]` — so this unit's `external_lines` of 363 is that charge,
-//! expected rather than stray.
+//! `use crate::common[::…]` — so this unit's `external_lines` charge is that one
+//! shared `tests/common/mod.rs`, expected rather than stray. The line count itself is
+//! computed by `harness_layout_unit_lines` (tests/infra/harness-layout-lib.sh) and
+//! deliberately not pinned here, where nothing would recompute it.
 //!
 //! `m9_error_cases` and `m11_annotations_solver_hint_tests` are here BY SCOPE, not by
 //! subject: their prefixes fall inside leaf CMP-4 and no better in-scope home exists.

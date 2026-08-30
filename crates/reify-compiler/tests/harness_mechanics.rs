@@ -18,8 +18,10 @@
 //! Crate-local: this harness declares the shared `common` helper ONCE, because a
 //! per-member `mod common;` would load the same source repeatedly in one compile unit
 //! (`clippy::duplicate_mod`). Its one consumer, `flexure_dimension_types`, reaches it
-//! as `use crate::common[::…]` — so this unit's `external_lines` of 363 is that
-//! charge, expected rather than stray.
+//! as `use crate::common[::…]` — so this unit's `external_lines` charge is that one
+//! shared `tests/common/mod.rs`, expected rather than stray. The line count itself is
+//! computed by `harness_layout_unit_lines` (tests/infra/harness-layout-lib.sh) and
+//! deliberately not pinned here, where nothing would recompute it.
 //!
 //! Routing vs. the sibling `harness_physical_modeling` root added by this same leaf —
 //! the line is subsystem, not filename. THIS root holds mechanics and behaviour: what
