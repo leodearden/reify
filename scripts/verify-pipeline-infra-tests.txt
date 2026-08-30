@@ -31,6 +31,10 @@
 #   row here satisfies the sweep on its own, with no scripts/doc-sync-paths.txt
 #   entry and no full --scope all gate. Prefer it whenever an edit should select
 #   the artifact's guarding test rather than route the whole diff to that gate.
+#   That query is NOT a registry-membership oracle, though: it also answers 0
+#   for the guard's static load-bearing set and for ANY tests/infra/*.sh path,
+#   so an exit 0 does not imply a row below. Matched sets: the is-registered
+#   entry in scripts/verify-pipeline-guard.sh's header.
 #   ACTIVE-ROW RULE, mirrored by both consumers: BOTH fields must be non-empty.
 #   A one-field row selects no test, so it registers nothing.
 #
