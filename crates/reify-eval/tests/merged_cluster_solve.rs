@@ -1282,6 +1282,10 @@ impl ConstraintSolver for IterationLimitRankedSolver {
             optimality: OptimalityStatus::BestFound {
                 reason: BestFoundReason::IterationLimit,
             },
+            // BT13 (#6706): an overriding mock that establishes nothing about the
+            // solution set. The engine must IGNORE this field at task α — every
+            // merged-cluster expectation below is asserted unchanged.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }
@@ -2040,6 +2044,10 @@ impl ConstraintSolver for DivergentRankedSolver {
             optimality: OptimalityStatus::BestFound {
                 reason: BestFoundReason::IterationLimit,
             },
+            // BT13 (#6706): an overriding mock that establishes nothing about the
+            // solution set. The engine must IGNORE this field at task α — every
+            // merged-cluster expectation below is asserted unchanged.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }

@@ -62,6 +62,10 @@ impl ConstraintSolver for EmptyRankedSolver {
         RankedSolveResult::Ranked {
             candidates: vec![],
             optimality: OptimalityStatus::FeasibilityOnly,
+            // #6706: carrying the field changes nothing about the I2 violation —
+            // the two `should_panic` tests below must still fire on the SAME
+            // messages, at the same two seams.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }
@@ -404,4 +408,87 @@ fn empty_ranked_candidates_trips_i2_assert_registry_seam() {
     let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(registry));
     let _ = engine.eval(&compiled);
+}
+
+// ── BT13: the engine consumes the carrier read-only at task α (#6706) ────────
+
+/// A solver that reports a NON-default completeness verdict on a well-formed
+/// (I2-satisfying) ranked result, so the engine's handling of the field is
+/// observable rather than vacuous.
+struct ExhaustiveRankedSolver {
+    values: HashMap<reify_core::identity::ValueCellId, reify_ir::Value>,
+}
+
+impl ConstraintSolver for ExhaustiveRankedSolver {
+    fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+        SolveResult::Solved { values: self.values.clone(), unique: false }
+    }
+
+    fn solve_ranked(&self, _problem: &ResolutionProblem) -> RankedSolveResult {
+        RankedSolveResult::Ranked {
+            candidates: vec![reify_ir::RankedCandidate {
+                values: self.values.clone(),
+                objective_score: Some(1.0),
+                unique: false,
+            }],
+            optimality: OptimalityStatus::FeasibilityOnly,
+            completeness: reify_ir::Completeness::Exhaustive,
+        }
+    }
+}
+
+/// BT13: the value the engine reconstructs at the seam is still exactly
+/// `SolveResult::Solved { values: candidate.values, unique: candidate.unique }`.
+///
+/// The engine consumes `completeness` read-only at task α and derives NOTHING new
+/// from it — not `unique`, not a diagnostic. Deriving from it is δ #6709's work
+/// (verdict policy) and ζ #6711's (basin identity). This test pins that: an
+/// `Exhaustive` verdict on a candidate whose `unique` is `false` must NOT be
+/// promoted to `unique: true`, even though C1 would permit it for a
+/// one-element set, because the engine has not been given the deduplicated
+/// count that C1 requires.
+#[test]
+fn engine_does_not_derive_unique_from_completeness_at_alpha() {
+    let solver = ExhaustiveRankedSolver { values: HashMap::new() };
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: reify_ir::ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    // The seam reconstruction, spelled out: candidate 0's values and unique,
+    // verbatim, regardless of what the completeness verdict says.
+    match solver.solve_ranked(&problem) {
+        RankedSolveResult::Ranked { candidates, completeness, .. } => {
+            assert_eq!(completeness, reify_ir::Completeness::Exhaustive);
+            let candidate = &candidates[0];
+            assert!(
+                !candidate.unique,
+                "the producer said unique: false and the carrier must not change it"
+            );
+            // C1 is available and would say 'unique' for this one-element
+            // Exhaustive set — the point is that NOTHING at task α applies it.
+            assert!(completeness.derived_unique(candidates.len()));
+
+            let reconstructed = SolveResult::Solved {
+                values: candidate.values.clone(),
+                unique: candidate.unique,
+            };
+            match (reconstructed, solver.solve(&problem)) {
+                (
+                    SolveResult::Solved { values: a, unique: ua },
+                    SolveResult::Solved { values: b, unique: ub },
+                ) => {
+                    assert_eq!(a, b, "seam values must match solve() exactly");
+                    assert_eq!(ua, ub, "seam unique must match solve() exactly");
+                }
+                other => panic!("expected two Solved results, got {other:?}"),
+            }
+        }
+        other => panic!("expected Ranked, got {other:?}"),
+    }
 }
