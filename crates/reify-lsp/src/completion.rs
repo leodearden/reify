@@ -232,6 +232,35 @@ fn push_builtins(items: &mut Vec<CompletionItem>) {
 /// `half_space`'s example deliberately leaves `nx`/`ny`/`nz` bare — only its
 /// `px`/`py`/`pz` point is LENGTH-gated (arg_acceptance.rs:109-119: the
 /// outward normal is a dimensionless unit vector, not a residual).
+///
+/// Positions elsewhere in `BUILTIN_FUNCTIONS` deliberately left
+/// dimensionless, scoped to what actually appears in this table (the wider
+/// gated families named in task 6450's own description — patterns,
+/// translate/rotate_around, revolve, line_segment, arc, helix, interp,
+/// bezier, nurbs poles, ... — have no entry here at all, so naming them
+/// would invent a residual with no surface). The authoritative
+/// "deliberately NOT gated" enumeration is
+/// crates/reify-eval/src/arg_acceptance.rs:91-129 — cited, not restated:
+/// - `half_space`'s `nx`/`ny`/`nz` (above) — the same ORIGIN-vs-DIRECTION
+///   split arg_acceptance.rs draws there for the same builtin.
+/// - `point3`/`vec3` (:836, :848) and their 2D siblings — left `Real` on
+///   purpose. Their quantity slot is argument-DEPENDENT, not fixed at
+///   Length: crates/reify-compiler/src/units.rs:652-661 routes both to
+///   `math_signatures::MATH_CONSTRUCTION_NAMES` for exactly that reason, and
+///   task 5745's decoded-value gate fires at the CONSUMER (reading a
+///   decoded origin back out), never at construction — `Length` here would
+///   reject correct `.ri` code.
+/// - Every ANGLE — owned by
+///   docs/prds/v0_6/angle-units-surface-convergence.md by seam-table
+///   decree; gating one here would be a scope violation.
+/// - `02-numeric`/`03-trig` `Real` arguments, instance counts and
+///   dimensionless scale factors — legitimately dimensionless.
+///
+/// RESIDUAL: this table is a snapshot of the families gated as of task
+/// 5745, taken before the units-length-gate-completion PRD's closure guard
+/// (task ι) has landed to close the gated set by construction. TODO(#5752):
+/// once ι lands, re-check this table against its allowlist — the gated set
+/// can still grow via ι's downstream siblings.
 const LENGTH_GATED_EXAMPLES: &[(&str, &str)] = &[
     ("box", "box(20mm, 10mm, 30mm)"),
     ("cylinder", "cylinder(5mm, 20mm)"),
