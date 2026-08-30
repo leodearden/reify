@@ -10,6 +10,7 @@ use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
 use reify_eval::cache::NodeId;
 use reify_eval::tolerance_combine::{
     OutputTarget, conforms_to_output, extract_output_export_spec,
+    unenforced_representation_bound_diagnostic,
 };
 use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{
@@ -3315,11 +3316,49 @@ impl EngineSession {
     }
 
     /// Export geometry to a file.
+    ///
+    /// Refuses outright — writing nothing — when the module declares a
+    /// `RepresentationWithin` bound this path cannot demonstrate it honours; see the
+    /// η gate below and PRD
+    /// `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
     pub fn export(&mut self, format: ExportFormat, path: &Path) -> Result<(), String> {
         // split_compiled_and_engine_mut surfaces the compiled-immutable /
         // engine-mutable disjoint-field borrow through the encapsulation boundary.
         let (compiled_opt, engine) = self.core.split_compiled_and_engine_mut();
         let compiled = compiled_opt.ok_or_else(|| "No module loaded".to_string())?;
+
+        // η export refusal (PRD docs/prds/v0_6/precision-nominal-representation-guarantee.md,
+        // C-SURFACE (2)). The GUI is this gate's THIRD call site, after
+        // `Engine::build_outputs_with_result` (Mode B) and `cmd_build`'s `-o` arm
+        // (Mode A, crates/reify-cli/src/main.rs) — and both GUI export callers,
+        // `commands::export_impl` and `mcp_context::TauriToolContext::export`,
+        // delegate here, so this is the single chokepoint for both. Three properties
+        // of the shape below are load-bearing and must not be "simplified" away:
+        //
+        // * WHY IT PRECEDES `engine.build`. `std::fs::write` runs inside the
+        //   `Some(data)` arm below, and `Engine::build` → `build_with_geometry_output`
+        //   never emits this diagnostic at all (the refusal lives only in the sibling
+        //   `build_outputs_with_result`), so a gate riding the existing
+        //   `diag.severity == Severity::Error` loop would catch NOTHING. Sited here it
+        //   gates the WRITE. It also skips realization and OCCT tessellation on a build
+        //   about to write nothing (PRD §6 gate-cost rule), matching the CLI Mode-A
+        //   siting term for term.
+        // * WHY IT IS UNCONDITIONAL ON `Some(_)` AND DOES NOT RE-TEST `diag.severity`.
+        //   Returning `Err` IS the refusal on this surface, so deriving it from
+        //   severity would let a future severity change silently reopen the bypass this
+        //   gate exists to close. (The CLI's `debug_assert_eq!` on severity is
+        //   deliberately not ported: it guards `cmd_build`'s exit-code derivation, which
+        //   has no analogue in a `Result<(), String>` surface.)
+        // * WHY THE MESSAGE IS RETURNED VERBATIM, not wrapped in the loop's
+        //   `"Build error: {}"` prefix. It already leads with the stable
+        //   `E_REPR_BOUND_UNENFORCED_ON_EXPORT` token and words itself as a refusal; no
+        //   build ran, so labelling it a build error would be false, and the prefix
+        //   would push the token off the front of the string both callers surface
+        //   unmodified (`export_impl` → the frontend; `mcp_context::export` →
+        //   `ToolError::EngineError`).
+        if let Some(diag) = unenforced_representation_bound_diagnostic(compiled) {
+            return Err(diag.message);
+        }
 
         let result = engine.build(compiled, format);
 
