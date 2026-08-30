@@ -4015,6 +4015,125 @@ structure def Part {
         );
     }
 
+    // ── Task 5097 δ step-7: RED — `reify_set_parameter`, the INV-GUI-3 AI
+    // write path (PRD §6.1/§6.3) ──
+    //
+    // FAILS TO COMPILE until step-8 adds
+    // `reify_set_parameter_on_engine_and_refresh_baseline` and
+    // `reify_write_str_param`.
+
+    #[tokio::test]
+    async fn reify_set_parameter_writes_disk_and_refreshes_the_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        let s1 = reify_set_parameter_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            "Part.width",
+            "120mm",
+        )
+        .await
+        .expect("reify_set_parameter_on_engine_and_refresh_baseline must return Ok");
+
+        // INV-GUI-3: the `.ri` on disk is the canonical truth, so the AI edit
+        // must have LANDED there — and nowhere else in the file.
+        let disk = std::fs::read_to_string(&canonical).expect("part.ri must be readable");
+        assert_eq!(
+            disk,
+            ai_write_source().replace("80mm", "120mm"),
+            "only the width default may change on disk — the comment, the depth \
+             declaration and the body must survive byte for byte"
+        );
+
+        // eval state ≡ source: the returned GuiState already reports the edit.
+        let width = s1
+            .values
+            .iter()
+            .find(|v| v.cell_id == "Part.width")
+            .expect("Part.width must be present in the returned GuiState");
+        assert_eq!((width.value.as_str(), width.unit.as_str()), ("120", "mm"));
+
+        // §6.2 invariant (a): the baseline advanced with the mutation.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1),
+            "the tool must route through the shared seam, which refreshes last_state"
+        );
+    }
+
+    #[tokio::test]
+    async fn reify_set_parameter_rejection_mutates_nothing() {
+        // PRD §7 B7 atomicity, on the two rejection shapes an AI client will
+        // actually hit: a cell that does not exist, and a bare number on a
+        // dimensioned cell (the #5757 ladder rung). Neither may leave a trace
+        // on disk OR advance the baseline half a step.
+        let cases: &[(&str, &str, &str)] = &[
+            ("Part.nope", "1mm", "Unknown parameter"),
+            ("Part.width", "120", "bare number"),
+        ];
+
+        for (cell_id, value, expected) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let (engine, canonical) = ai_write_engine(dir.path());
+
+            let s0 = current_gui_state(&engine);
+            let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+                std::sync::Mutex::new(Some(s0.clone()));
+
+            let err = reify_set_parameter_on_engine_and_refresh_baseline(
+                &engine,
+                &last_state,
+                cell_id,
+                value,
+            )
+            .await
+            .expect_err(&format!("({cell_id}, {value}) must be REFUSED"));
+            assert!(
+                err.contains(expected),
+                "({cell_id}, {value}) should be refused with {expected:?}, got: {err}"
+            );
+
+            assert_eq!(
+                std::fs::read_to_string(&canonical).expect("part.ri must be readable"),
+                ai_write_source(),
+                "a refused write must leave the on-disk bytes IDENTICAL"
+            );
+            assert_eq!(
+                *last_state.lock().unwrap(),
+                Some(s0),
+                "a refused write must leave the baseline at S0"
+            );
+        }
+    }
+
+    #[test]
+    fn reify_write_params_reject_missing_fields() {
+        // The param extraction is the AI client's first contact with the tool,
+        // so its refusals keep the reify-mcp spelling verbatim
+        // (crates/reify-mcp/src/tools/write.rs): a client that learned the
+        // message on one surface must not meet a different one here.
+        let missing = reify_write_str_param(&json!({}), "cell_id")
+            .expect_err("an absent field must be refused");
+        assert_eq!(missing, "cell_id is required");
+
+        // A field of the WRONG TYPE is refused identically — `as_str()` on a
+        // number is `None`, and inventing a second message for it would tell
+        // the client the field is absent when it is merely mistyped.
+        let mistyped = reify_write_str_param(&json!({ "value": 120 }), "value")
+            .expect_err("a non-string field must be refused");
+        assert_eq!(mistyped, "value is required");
+
+        assert_eq!(
+            reify_write_str_param(&json!({ "value": "120mm" }), "value"),
+            Ok("120mm".to_string())
+        );
+    }
+
     // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──
     //
