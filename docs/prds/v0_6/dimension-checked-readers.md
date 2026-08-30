@@ -209,10 +209,14 @@ positive/negative lists are in the leaf bodies):
   (`List<Real>` unit vectors, deliberate per task 4439), `vec3` axis components (already
   strict via `validate_dimensionless_unit_axis_vec3`), joint `ratio` (already
   DIMENSIONLESS-checked by `ratio_input`), the buckling eigenvalue λ,
-  `infill_gibson_ashby_c/n`, `read_location_index`, and **tensegrity `force_densities`**
-  (`tensegrity.ri:284/:403`) — nullity-invariant relative ratios, documented as such in
-  the "Dimensional bridge" paragraph of `tensegrity.ri`'s `FormFindResult` doc block;
-  genuinely dimensionless, not a gap.
+  `infill_gibson_ashby_c/n`, `read_location_index`, and tensegrity's bare `List<Real>`
+  force/ratio inputs — `form_find`'s `force_densities` parameter, `form_find_free`'s
+  `seed_ratios` parameter, and both functions' `surface_stresses` parameter
+  (illustrative, not an exhaustive list of every such site) — nullity-invariant
+  relative ratios, documented as such in the "Dimensional bridge" paragraph of
+  `tensegrity.ri`'s `FormFindResult` doc block, which also covers `FormFindResult`'s
+  own `force_densities` field (a solver-constructed *output* echo, not a reader
+  input); genuinely dimensionless, not a gap.
 - **Angle-semantic positions** (`revolute` binds, planar/cylindrical θ, `ramp_profile`
   from/to on a revolute) route through `reify-stdlib`'s existing ANGLE-checked `trig_input`.
   This PRD changes **no angle policy** — it replaces ad-hoc `as_f64()` with the helper that
