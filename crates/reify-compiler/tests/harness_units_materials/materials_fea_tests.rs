@@ -906,6 +906,66 @@ fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() 
     assert_fea_material_property_values("ABS_Plastic", 2.3e9, 0.35, 1050.0, Some(40.0e6), 2.0e-2);
 }
 
+// ─── task α (#6877): prd-gate fixtures compiled from a test target ────────────
+
+/// Compiles both `damped_material_*.ri` prd-gate fixtures through the real
+/// stdlib and asserts zero error diagnostics.
+///
+/// Reading them from a `#[test]` is what GATES them. `tests/prd-gate/README.md`
+/// is explicit that fixtures there are "not required to parse or to pass
+/// `reify check`" and that "nothing in the repo compiles this directory
+/// wholesale" — so an unread fixture is inert, and the sanctioned way to make
+/// one genuinely gated is to name it from a compiled test target and register
+/// its basename in `scripts/verify.sh`'s `_RUST_COUPLED_RI_FIXTURES`. Path
+/// resolution follows `harness_units/torque_unit_tests.rs`'s
+/// `prd_gate_fixture_unit_nm_torque_immediate_compiles_clean` verbatim.
+///
+/// Read-only input: this test must never edit either fixture.
+///
+/// The two fixtures pin DIFFERENT things, which is why both are covered here
+/// rather than one standing in for the other:
+///
+///   - `damped_material_mixin_conformance.ri` is the pre-existing SUBSTRATE
+///     probe. Its trait names are probe-local (`DampedProbe` /
+///     `DampedElasticProbe`) and deliberately do not collide with the stdlib
+///     `Damped` / `DampedMaterial`, so it pins the grammar and semantics the
+///     mixin design assumes — user trait declaration, multi-parent refinement,
+///     a conformer declaring both parents' params, and member access through a
+///     trait-typed param. It was green before α and must stay green after;
+///     that is this task's first user-observable signal.
+///   - `damped_material_preset_conformance.ri` is the sibling that pins the
+///     LANDED STDLIB SURFACE — the PRD §Goal user spelling plus preset η
+///     exposure.
+///
+/// If the mixin fixture's arm is what fails, the substrate broke and that must
+/// be root-caused rather than papered over.
+#[test]
+fn prd_gate_damped_material_fixtures_compile_clean() {
+    for name in [
+        "damped_material_mixin_conformance.ri",
+        "damped_material_preset_conformance.ri",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/prd-gate/fixtures")
+            .join(name);
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
+
+        let module = compile_source_with_stdlib(&src);
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "fixture {} should compile with no errors, got: {:?}",
+            path.display(),
+            errors
+        );
+    }
+}
+
 // ─── task α (#6877): transitive conformance survives the DampedMaterial flip ──
 
 /// The four presets now DECLARE only `DampedMaterial + Visual`, and
