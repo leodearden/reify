@@ -653,7 +653,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
                 stdout=proc.stdout,
                 stderr=proc.stderr,
             )
-        return _run_bounded(cmd, cwd=cwd, timeout=timeout)
+        return _run_bounded(cmd, cwd=cwd, timeout=timeout, env=env)
     except OSError as exc:
         # Represent rather than propagate: callers run this at import time in the
         # test harness, where a raise costs the whole suite instead of one skip.
@@ -671,7 +671,12 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
 _KILL_DRAIN_TIMEOUT_S = 2.0
 
 
-def _run_bounded(cmd: List[str], cwd: Optional[str], timeout: float) -> ProbeRun:
+def _run_bounded(
+    cmd: List[str],
+    cwd: Optional[str],
+    timeout: float,
+    env: Optional[Dict[str, str]] = None,
+) -> ProbeRun:
     """Run `cmd` under a wall-clock bound, killing its whole process tree on timeout.
 
     Split out so the unbounded gate path keeps plain subprocess.run().  A bounded
@@ -686,6 +691,13 @@ def _run_bounded(cmd: List[str], cwd: Optional[str], timeout: float) -> ProbeRun
     stays in the caller's process group, where an operator's Ctrl-C still
     reaches it.
 
+    `env` is the caller's already-built environment for the child, or None to
+    inherit the parent's — None is exactly Popen's own default, so a caller that
+    passes nothing is provably unchanged.  Grammar probes rely on it to reach
+    their private XDG_CACHE_HOME; this arm is the one grammar_substrate_usable()
+    takes, so dropping it here would leave the gate's FIRST real
+    `tree-sitter parse` on the host-global cache.
+
     Raises:
         OSError: if the command cannot be launched — run_probe()'s handler turns
             that into the _BINARY_NOT_FOUND_SENTINEL representation, so the two
@@ -697,6 +709,7 @@ def _run_bounded(cmd: List[str], cwd: Optional[str], timeout: float) -> ProbeRun
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
+        env=env,
         start_new_session=True,
     ) as proc:
         try:
