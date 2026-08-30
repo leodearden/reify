@@ -1520,6 +1520,43 @@ async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<
     open_path_into_engine(state, &relpath).await
 }
 
+/// Pure serializer: packs a `GuiState` — and, optionally, the editor buffer
+/// that must be reconciled with it — into the JSON object sent to
+/// `query_frontend("apply_gui_state", ...)`.
+///
+/// Returns `Ok(json!({ "guiState": <serialized> }))`, plus a
+/// `{"file": {"path", "content"}}` member when `file` is `Some`. An absent
+/// file is an ABSENT KEY, never a `null` one: the frontend handler
+/// distinguishes the two, and every pre-existing `apply_gui_state` sender
+/// must stay byte-identical to what it produced before this seam existed.
+///
+/// The `file` member exists because `reify_update_source` (task 5097 δ)
+/// routes through the IN-MEMORY `EngineSession::update_source` and writes no
+/// disk, so no FS-watcher re-fire will reconcile the editor buffer — without
+/// it an AI source edit leaves the editor visibly stale, exactly the silent
+/// desync INV-GUI-2 exists to prevent.
+///
+/// THE ONE serializer for this push shape: `fea_case_frontend_payload` is
+/// expressed in terms of it rather than beside it, so the two cannot drift
+/// about how a `GuiState` reaches the frontend.
+///
+/// Pure/deterministic: no kernel, no Tauri handle, no I/O. Tested headlessly
+/// by `write_tool_frontend_payload_survives_the_transport` /
+/// `..._omits_file_when_absent` (tests/debug_boundary_tests.rs), which
+/// round-trip it through a real `DebugTransport`.
+pub fn write_tool_frontend_payload(
+    gui_state: &crate::types::GuiState,
+    file: Option<(&str, &str)>,
+) -> Result<Value, String> {
+    let gs = serde_json::to_value(gui_state)
+        .map_err(|e| format!("serialize gui_state failed: {e}"))?;
+    let mut payload = json!({ "guiState": gs });
+    if let Some((path, content)) = file {
+        payload["file"] = json!({ "path": path, "content": content });
+    }
+    Ok(payload)
+}
+
 /// Pure serializer: packs a `GuiState` and a case name into the JSON object
 /// sent to `query_frontend("apply_gui_state", ...)`.
 ///
@@ -1528,14 +1565,19 @@ async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<
 /// (step-22), which round-trips `payload["guiState"]` to verify the
 /// `vonMises` channel survives serde intact.
 ///
+/// The `guiState` member comes from [`write_tool_frontend_payload`] (with no
+/// file to sync) rather than from a second `serde_json::to_value` call, so
+/// the FEA-case push and the δ write-tool pushes are the same shape by
+/// construction. This function adds only the `case` key on top.
+///
 /// Pure/deterministic: no kernel, no Tauri handle, no I/O.
 pub fn fea_case_frontend_payload(
     case: &str,
     gui_state: &crate::types::GuiState,
 ) -> Result<Value, String> {
-    let gs = serde_json::to_value(gui_state)
-        .map_err(|e| format!("serialize gui_state failed: {e}"))?;
-    Ok(json!({ "guiState": gs, "case": case }))
+    let mut payload = write_tool_frontend_payload(gui_state, None)?;
+    payload["case"] = json!(case);
+    Ok(payload)
 }
 
 /// Run `EngineSession::set_active_fea_case` on an OS thread (avoids the
