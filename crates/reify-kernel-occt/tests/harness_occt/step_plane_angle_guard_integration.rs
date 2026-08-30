@@ -164,7 +164,6 @@ fn guard_accepts_a_real_multi_context_export() {
 /// absence of `"unexpected"` — is what proves the refusal is the guard's own
 /// deliberate diagnostic rather than an OCCT crash that happened to fire. This
 /// is the idiom `loft_guided_integration.rs` uses.
-#[allow(dead_code)]
 fn assert_reify_authored_refusal(msg: &str) {
     assert!(
         msg.starts_with("export_step: "),
@@ -184,7 +183,6 @@ fn assert_reify_authored_refusal(msg: &str) {
 }
 
 /// Helper: run one fault and require it to be REFUSED, returning the message.
-#[allow(dead_code)]
 fn refusal_message(kernel: &OcctKernel, id: GeometryHandleId, fault: &str) -> String {
     match kernel.export_step_with_injected_fault_for_test(id, "AP214", fault) {
         Err(ExportError::FormatError(msg)) => {
@@ -200,4 +198,98 @@ fn refusal_message(kernel: &OcctKernel, id: GeometryHandleId, fault: &str) -> St
              for a model whose plane-angle declaration is corrupt"
         ),
     }
+}
+
+/// The three counts the refusal diagnostic reports, parsed back out of it.
+///
+/// The counts are part of the user-visible message on purpose: "which unit is
+/// wrong" is only half the diagnosis, and "how many of the file's contexts are
+/// still correct" is the half that tells a reader whether they are looking at
+/// a whole-file regression or a partial flip.
+fn parse_counts(msg: &str) -> (u32, u32, u32) {
+    fn field(msg: &str, key: &str) -> u32 {
+        let at = msg
+            .find(key)
+            .unwrap_or_else(|| panic!("refusal must report {key:?}; got: {msg}"));
+        let rest = &msg[at + key.len()..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits
+            .parse()
+            .unwrap_or_else(|_| panic!("{key:?} must be followed by a number; got: {msg}"))
+    }
+    (
+        field(msg, "contexts="),
+        field(msg, "plane_angle_units="),
+        field(msg, "radian_ok="),
+    )
+}
+
+/// Assert the refusal blames a specific context by its model entity index.
+///
+/// A diagnostic that only says "a bad plane-angle unit exists somewhere"
+/// cannot be acted on: the file has several contexts and the reader needs to
+/// know WHICH one to open.
+fn assert_names_a_context_index(msg: &str) {
+    let at = msg
+        .find("context #")
+        .unwrap_or_else(|| panic!("refusal must name the offending context as \"context #N\"; got: {msg}"));
+    let rest = &msg[at + "context #".len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    assert!(
+        !digits.is_empty(),
+        "\"context #\" must be followed by the context's entity index; got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Negative path — a wrong plane-angle unit
+// ---------------------------------------------------------------------------
+
+/// A non-radian plane-angle declaration is REFUSED, and the diagnostic is
+/// actionable.
+///
+/// The fault flips exactly ONE plane-angle unit to steradian, leaving the
+/// other contexts radian. That partial flip is the case a file-wide
+/// `content.contains(".RADIAN.")` grep passes — the token is still there,
+/// twice — and it is precisely what the per-context association walk exists to
+/// catch. Assertion (d) is what pins that: `radian_ok` must be strictly less
+/// than `plane_angle_units`, i.e. the guard noticed the difference between
+/// "some context declares a radian" and "every context does".
+#[test]
+fn guard_refuses_a_non_radian_plane_angle_declaration() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) + (b): refused, with Reify attribution rather than OCCT's.
+    let msg = refusal_message(&kernel, union_id, "non_radian");
+
+    // (c) The offending unit is NAMED. `.STERADIAN.` is the STEP token for
+    // what the fault installs; `sunSteradian` is the OCCT enumerator spelling.
+    // Either is actionable; "bad unit" alone is not.
+    assert!(
+        msg.contains(".STERADIAN.") || msg.contains("sunSteradian"),
+        "the refusal must name the offending unit — a reader cannot act on \
+         \"some plane-angle unit is wrong\"; got: {msg}"
+    );
+    assert_names_a_context_index(&msg);
+
+    // (d) The counts are reported, and they show a PARTIAL defect.
+    let (contexts, plane_angle_units, radian_ok) = parse_counts(&msg);
+    assert!(
+        contexts >= 2,
+        "the fixture must still carry several contexts for this to be a \
+         partial flip; got contexts={contexts} in: {msg}"
+    );
+    assert!(
+        radian_ok < plane_angle_units,
+        "exactly one unit was corrupted, so radian_ok must be strictly less \
+         than plane_angle_units — equal counts would mean the walk never \
+         classified the corrupted unit; got radian_ok={radian_ok} \
+         plane_angle_units={plane_angle_units} in: {msg}"
+    );
+    assert!(
+        radian_ok > 0,
+        "the OTHER contexts are untouched and must still classify as radian — \
+         if radian_ok is 0 the fault corrupted more than the one unit it \
+         claims to, and this test is no longer about a partial flip; got: {msg}"
+    );
 }
