@@ -1545,6 +1545,124 @@ fn export_end_to_end() {
     assert!(!data.is_empty(), "exported file should not be empty");
 }
 
+// --- eta export refusal: the GUI surface (task 6190) ---
+//
+// PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
+// `EngineSession::export` is this gate's THIRD call site, after
+// `Engine::build_outputs_with_result` (Mode B) and `cmd_build`'s `-o` arm (Mode A).
+// Both GUI export callers — `commands::export_impl` (the Tauri command) and
+// `TauriToolContext::export` (the MCP debug surface) — delegate here, so this one
+// chokepoint covers both.
+
+/// [`bracket_source`] plus a non-circular checker structure declaring the bound.
+///
+/// This is the CLI's `representation_within_satisfied.ri` idiom (a structure owning
+/// the geometry + a separate `structure XCheck { param subject : X  constraint
+/// RepresentationWithin(subject, <bound>) }`) grafted onto the geometry-bearing
+/// source that [`export_end_to_end`] already exports successfully — so the ONLY
+/// delta between the passing case and the refused case is the declared bound.
+///
+/// The `1mm` value carries no measured meaning and must not be retuned against an
+/// achieved deviation: η's refusal is a STATIC module-shape decision taken before
+/// any deviation is measured, so it fires identically for any bound.
+fn bounded_bracket_source() -> String {
+    format!(
+        "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
+        bracket_source()
+    )
+}
+
+/// η / C-SURFACE (2) at the GUI export boundary: a design declaring a
+/// `RepresentationWithin` bound the export path cannot demonstrate it honours must
+/// REFUSE, not write the artifact and report success (PRD §1.1).
+///
+/// The op-count assertion is the PRD §6 gate-cost property asserted STRUCTURALLY:
+/// the refusal must short-circuit before realization, and
+/// `tests/infra/test_no_new_wallclock_upper_bounds.sh` forbids expressing that as a
+/// wall clock. `load_from_source` already realizes, so the baseline is non-zero —
+/// snapshot it, never assert zero.
+#[test]
+fn export_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Clone the recorder BEFORE the kernel is boxed — it is unreachable through the
+    // boxed `dyn GeometryKernel` afterwards (see `MockGeometryKernel::reset_calls_ref`).
+    let ops = kernel.operations_ref();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(&bounded_bracket_source(), "bracket")
+        .expect("the bounded bracket fixture should compile and load");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bracket.step");
+
+    let ops_before = ops.lock().unwrap().len();
+    let result = session.export(ExportFormat::Step, &path);
+    let ops_after = ops.lock().unwrap().len();
+
+    let err = result.expect_err(
+        "GUI export of a design declaring a RepresentationWithin bound must refuse \
+         (PRD §1.1: refused, not written-and-reported-successful)",
+    );
+    assert!(
+        err.contains(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must carry the stable E_* token the CLI surface also emits, so \
+         both surfaces can be pinned against the same exported const; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export"
+    );
+    assert_eq!(
+        ops_after, ops_before,
+        "the refusal must precede realization — no geometry op may be dispatched by a \
+         refused export (PRD §6 gate-cost rule, asserted structurally rather than as a \
+         wall clock)"
+    );
+}
+
+/// The refusal gates the WRITE, not merely the return value.
+///
+/// Mirrors `build_dash_o_refusal_does_not_overwrite_an_existing_file`
+/// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:511`).
+/// `EngineSession::export` calls `std::fs::write(path, &data)` inside its
+/// `Some(data)` arm, so a refusal implemented as a diagnostic bolt-on downstream of
+/// the build would still truncate whatever sits at the target before refusing.
+/// Seeding sentinel bytes and requiring them back byte-for-byte is what
+/// distinguishes a real write-gate from that.
+#[test]
+fn export_refusal_does_not_overwrite_an_existing_file() {
+    const SENTINEL: &[u8] = b"pre-existing bytes that must survive a refused export";
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(&bounded_bracket_source(), "bracket")
+        .expect("the bounded bracket fixture should compile and load");
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out.step");
+    std::fs::write(&target, SENTINEL).expect("failed to seed the export target");
+
+    let err = session
+        .export(ExportFormat::Step, &target)
+        .expect_err("a bounded design must be refused at the GUI export boundary");
+    assert!(
+        err.contains(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must carry the stable E_* token; got: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("the export target must still exist"),
+        SENTINEL,
+        "a refused export must NOT truncate or overwrite a pre-existing file at the \
+         target — the refusal has to gate the write itself, not ride the diagnostic \
+         stream after `std::fs::write` has already run"
+    );
+}
+
 // --- Source-map consistency after load/update ---
 
 /// Review bug #2: source_map key inconsistency.

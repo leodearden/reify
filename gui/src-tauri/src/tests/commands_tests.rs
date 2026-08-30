@@ -488,6 +488,56 @@ fn end_to_end_export_via_impl() {
     assert!(path.exists(), "exported file should exist");
 }
 
+/// η / C-SURFACE (2) at the FRONTEND-visible surface (task 6190).
+///
+/// `commands::export_impl` is the Tauri command the frontend calls; it delegates to
+/// `EngineSession::export`, which is where the gate lives. This test exists to PROVE
+/// that delegation rather than assert it — it would go red if a future refactor gave
+/// `export_impl` its own build path, which is exactly the multi-site drift task 6170
+/// was chartered to eliminate.
+///
+/// `make_loaded_session`'s construction is duplicated inline with the bounded source
+/// rather than parameterizing that shared helper, which many neighbouring tests use.
+#[test]
+fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::commands::export_impl;
+
+    let mut session = make_session();
+    session
+        .load_from_source(&bounded_bracket_source(), "bracket")
+        .expect("the bounded bracket fixture should compile and load");
+    let engine = Mutex::new(session);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("e2e_bounded.step");
+
+    let err = export_impl(&engine, "step", path.to_str().unwrap()).expect_err(
+        "export_impl must surface the η refusal for a design declaring a \
+         RepresentationWithin bound",
+    );
+    assert!(
+        err.contains(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the message reaching the frontend must LEAD with the stable E_* token — it is \
+         returned verbatim, not wrapped in a \"Build error:\" prefix that would push the \
+         token off the front; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// The bounded fixture for the η export-refusal test above: [`bracket_source`] plus a
+/// non-circular checker structure declaring the bound. Kept local to this file (the
+/// twin in `engine_tests.rs` is private to that module), so the ONLY delta from the
+/// already-green `end_to_end_export_via_impl` case is the declared bound.
+fn bounded_bracket_source() -> String {
+    format!(
+        "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
+        bracket_source()
+    )
+}
+
 #[test]
 fn module_structure_all_public_types() {
     // Verify all public types are accessible from the crate
