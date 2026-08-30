@@ -450,19 +450,19 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     // --- 01-geometry: solid geometry primitives ---
     BuiltinFunctionInfo {
         name: "box",
-        signature: "box(width: Real, height: Real, depth: Real) -> Solid",
+        signature: "box(width: Length, height: Length, depth: Length) -> Solid",
         doc: "Creates a rectangular box solid centred at the origin.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
         name: "cylinder",
-        signature: "cylinder(radius: Real, height: Real) -> Solid",
+        signature: "cylinder(radius: Length, height: Length) -> Solid",
         doc: "Creates a cylinder solid along the Z axis.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
         name: "sphere",
-        signature: "sphere(radius: Real) -> Solid",
+        signature: "sphere(radius: Length) -> Solid",
         doc: "Creates a sphere solid centred at the origin.",
         sort_group: "01-geometry",
     },
