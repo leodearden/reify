@@ -85,13 +85,15 @@
 #   harness_layout_declared_members <root-harness-rs>
 #                                          print, one per line, the
 #                                          `_harness_layout_norm_path`-normalized
-#                                          path of every file DECLARED FROM
-#                                          <root-harness-rs> ITSELF (a
-#                                          single-hop walk over the root's own
-#                                          `mod` declarations only) that lands
-#                                          under <root-harness-rs>'s own module
-#                                          dir (${root%.rs}). "member" means "a
-#                                          file under the root's own
+#                                          path of every file in the
+#                                          TRANSITIVE `mod`-graph closure
+#                                          reachable from <root-harness-rs>
+#                                          (the same walk harness_layout_unit_lines
+#                                          runs, via the shared private
+#                                          `_harness_layout_walk_unit`) that
+#                                          lands under <root-harness-rs>'s own
+#                                          module dir (${root%.rs}). "member"
+#                                          means "a file under the root's own
 #                                          harness_<subsystem>/ module
 #                                          directory". Consumed by rule (d) in
 #                                          test_harness_kloc_cap.sh to detect a
@@ -642,20 +644,70 @@ harness_layout_unit_lines() {
     fi
 
     # Transitive `mod`-graph walk for the EXTERNAL attribution (see the header
-    # block above). BFS a WAVE at a time — every file discovered at depth N is
-    # parsed by ONE `_harness_layout_mod_decls` call — because an awk fork per
-    # file dominated this walk's cost (see that function's header). Each decl
-    # carries its own source file back, so batching costs no fidelity: a decl is
-    # still resolved relative to the file that declared it, not to the wave.
-    local -A _visited=()
+    # block above) — hoisted (task #7042 step 4) into the shared
+    # _harness_layout_walk_unit, which harness_layout_declared_members below
+    # also drives, so the two can never disagree about which files a harness
+    # unit declares. See that function's header for the walk itself (BFS wave
+    # rationale, resolution rules, the esc-5172-1 SIGPIPE-safe drain) — only
+    # the totals are read back here, into the SAME local names the unchanged
+    # printf below already expects.
+    _harness_layout_walk_unit "$root"
+    external_lines="$_HL_WALK_EXT_LINES"
+    external_files="$_HL_WALK_EXT_FILES"
+
+    printf '%s %s %s %s %s %s\n' \
+        "$((root_lines + module_lines + external_lines))" \
+        "$root_lines" "$module_lines" "$module_files" \
+        "$external_lines" "$external_files"
+}
+
+# _harness_layout_walk_unit <root-harness-rs> — the TRANSITIVE `mod`-graph BFS
+# shared by harness_layout_unit_lines above (EXTERNAL attribution) and
+# harness_layout_declared_members below (the declared-member set rule (d) in
+# test_harness_kloc_cap.sh consumes) — hoisted out of harness_layout_unit_lines
+# (task #7042 step 4) so the rustc resolution rules exist in exactly ONE place
+# (G7 no-lockstep-duplication) and the two callers can never disagree about
+# which files a harness unit declares.
+#
+# Sets, and at the top of every call RESETS (a second call must not inherit
+# the first's visited set):
+#   _HL_WALK_VISITED        assoc array, normalized resolved path -> 1, for
+#                            every file reachable from <root>'s transitive
+#                            mod-graph, INCLUDING <root> itself.
+#   _HL_WALK_EXT_LINES       sum of `wc -l` / count over every visited file
+#   _HL_WALK_EXT_FILES       that resolves OUTSIDE <root>'s own module dir
+#                            (the EXTERNAL ATTRIBUTION harness_layout_unit_lines'
+#                            header above documents).
+#   _HL_WALK_MODDIR_PREFIX   the normalized `${root%.rs}/` prefix, so a caller
+#                            can classify a visited path as in-module-dir vs
+#                            external without re-deriving it.
+#
+# Below is the walk exactly as it read inline in harness_layout_unit_lines
+# before this hoist (see that function for the surrounding <total>/<root_lines>
+# contract its own two return values feed).
+#
+# Transitive `mod`-graph walk for the EXTERNAL attribution (see
+# harness_layout_unit_lines' header block above). BFS a WAVE at a time — every
+# file discovered at depth N is parsed by ONE `_harness_layout_mod_decls` call
+# — because an awk fork per file dominated this walk's cost (see that
+# function's header). Each decl carries its own source file back, so batching
+# costs no fidelity: a decl is still resolved relative to the file that
+# declared it, not to the wave.
+_harness_layout_walk_unit() {
+    local root="$1"
+    local moddir="${root%.rs}"
+    local n
     local -a _wave=() _next=()
     local _cur _dir _base _kind _ln _val _cand _target
-    local _moddir_prefix
-    _harness_layout_norm_path "$moddir"; _moddir_prefix="$_HL_NORM_OUT/"
+
+    declare -gA _HL_WALK_VISITED=()
+    _HL_WALK_EXT_LINES=0
+    _HL_WALK_EXT_FILES=0
+    _harness_layout_norm_path "$moddir"; _HL_WALK_MODDIR_PREFIX="$_HL_NORM_OUT/"
 
     if [ -f "$root" ]; then
         _harness_layout_norm_path "$root"
-        _visited["$_HL_NORM_OUT"]=1
+        _HL_WALK_VISITED["$_HL_NORM_OUT"]=1
         _wave=("$root")
     fi
 
@@ -703,99 +755,52 @@ harness_layout_unit_lines() {
             # Unresolvable target: contributes 0, and never aborts a `set -e`
             # caller (it would not compile; Section 6 flags that class).
             [ -n "$_target" ] || continue
-            [ -z "${_visited[$_target]:-}" ] || continue
-            _visited["$_target"]=1
+            [ -z "${_HL_WALK_VISITED[$_target]:-}" ] || continue
+            _HL_WALK_VISITED["$_target"]=1
             _next+=("$_target")
             # Under the module dir => already counted by the find walk above.
             # Still queued, so its OWN escaping includes are attributed.
             case "$_target" in
-                "$_moddir_prefix"*) continue ;;
+                "$_HL_WALK_MODDIR_PREFIX"*) continue ;;
             esac
             n="$(wc -l < "$_target")"
             n="${n//[[:space:]]/}"   # portable: strip any wc padding
-            external_lines=$((external_lines + n))
-            external_files=$((external_files + 1))
+            _HL_WALK_EXT_LINES=$((_HL_WALK_EXT_LINES + n))
+            _HL_WALK_EXT_FILES=$((_HL_WALK_EXT_FILES + 1))
         done < <(_harness_layout_mod_decls "${_wave[@]}")
         _wave=("${_next[@]}")
     done
-
-    printf '%s %s %s %s %s %s\n' \
-        "$((root_lines + module_lines + external_lines))" \
-        "$root_lines" "$module_lines" "$module_files" \
-        "$external_lines" "$external_files"
 }
 
 # harness_layout_declared_members <root-harness-rs> — print, one per line, the
-# `_harness_layout_norm_path`-normalized path of every file DECLARED from
-# <root-harness-rs> that lands under its own module dir (${root%.rs}). See the
-# header block above for the full contract.
+# `_harness_layout_norm_path`-normalized path of every file in the TRANSITIVE
+# `mod`-graph closure reachable from <root-harness-rs> that lands under its
+# own module dir (${root%.rs}). See the header block above for the full
+# contract.
 #
-# task #7042 step 2: implemented as a SINGLE-HOP walk over
-# `_harness_layout_mod_decls "$root"` only — the root's OWN declarations, not
-# the transitive closure. task #7042 step 4 folds this into the same
-# transitive BFS harness_layout_unit_lines already runs (hoisted into a shared
-# `_harness_layout_walk_unit`), so the two can never disagree about which
-# files a harness unit declares; until then this is deliberately narrower than
-# that walk and does not see a member declared from a nested `mod.rs`.
+# Driven by the shared _harness_layout_walk_unit BFS immediately above (task
+# #7042 step 4 hoisted it out of harness_layout_unit_lines, this function's
+# other consumer) — see that function's header for the resolution rules
+# (rustc's `#[path]` / bare-`mod` semantics) and the SIGPIPE-safe walk itself.
+# One walk, two consumers: harness_layout_unit_lines and this function can
+# never disagree about which files a harness unit declares — in particular,
+# this correctly sees a member declared TRANSITIVELY, e.g. from a nested
+# `mod.rs` inside the module dir rather than from <root-harness-rs> itself.
 #
-# Resolution mirrors the `_cur == root` branch of harness_layout_unit_lines'
-# walk exactly — a harness root IS a crate root, so a bare `mod X;` resolves
-# against the root's OWN directory, never a stem subdirectory:
-#
-#   `#[path = "P"] mod X;`  in <root>  ->  dirname(root)/P
-#   bare `mod X;`           in <root>  ->  dirname(root)/X.rs,
-#                                           else dirname(root)/X/mod.rs
-#
-# Every resolved, existing target is normalized and filtered to those landing
-# under the root's own module dir — a bare `mod common;` resolving to a
-# retained `tests/` sibling (Section 6's principled exception in
-# test_harness_kloc_cap.sh) is correctly NOT a member, since it lands outside
-# the module dir. An unresolvable target contributes nothing: it would not
-# compile, and that same Section 6 is what flags that class of declaration.
+# "member" means "a file under the root's own harness_<subsystem>/ module
+# directory" — a bare `mod common;` resolving to a retained `tests/` sibling
+# (Section 6's principled exception in test_harness_kloc_cap.sh) is correctly
+# NOT a member, since it resolves OUTSIDE the module dir: the walk still
+# visits it (for harness_layout_unit_lines' external attribution) but this
+# function filters it out via `_HL_WALK_MODDIR_PREFIX`.
 harness_layout_declared_members() {
     local root="$1"
-    local moddir="${root%.rs}"
-    local _dir _cur _kind _ln _val _cand _target _moddir_prefix
-    local -A _seen=()
+    local _p
 
-    [ -f "$root" ] || return 0
-
-    _harness_layout_norm_path "$moddir"; _moddir_prefix="$_HL_NORM_OUT/"
-    case "$root" in
-        */*) _dir="${root%/*}" ;;
-        *)   _dir="." ;;
-    esac
-
-    # Process substitution (not a pipe) draining to completion — never an
-    # early-closing consumer, same esc-5172-1 SIGPIPE-141 posture as the BFS
-    # above.
-    while IFS='|' read -r _cur _kind _ln _val; do
-        [ -n "$_kind" ] || continue
-        _target=""
-        case "$_kind" in
-            path)
-                _harness_layout_norm_path "$_dir/$_val"
-                _cand="$_HL_NORM_OUT"
-                [ -f "$_cand" ] && _target="$_cand"
-                ;;
-            bare)
-                for _cand in "$_dir/$_val.rs" "$_dir/$_val/mod.rs"; do
-                    _harness_layout_norm_path "$_cand"
-                    _cand="$_HL_NORM_OUT"
-                    if [ -f "$_cand" ]; then _target="$_cand"; break; fi
-                done
-                ;;
+    _harness_layout_walk_unit "$root"
+    for _p in "${!_HL_WALK_VISITED[@]}"; do
+        case "$_p" in
+            "$_HL_WALK_MODDIR_PREFIX"*) printf '%s\n' "$_p" ;;
         esac
-        # Unresolvable target: contributes nothing (see header).
-        [ -n "$_target" ] || continue
-        # Not under the module dir (e.g. a retained `tests/` sibling): not a
-        # member.
-        case "$_target" in
-            "$_moddir_prefix"*) ;;
-            *) continue ;;
-        esac
-        [ -z "${_seen["$_target"]:-}" ] || continue
-        _seen["$_target"]=1
-        printf '%s\n' "$_target"
-    done < <(_harness_layout_mod_decls "$root")
+    done
 }
