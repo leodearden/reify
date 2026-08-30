@@ -289,14 +289,14 @@ fn derived_unique_rejects_the_four_dishonest_claims() {
             reason: PartialReason::ProbeOnly
         }
         .derived_unique(1),
-        "Partial{ProbeOnly} + 1: found one, established nothing"
+        "Partial{{ProbeOnly}} + 1: found one, established nothing"
     );
     assert!(
         !Completeness::Partial {
             reason: PartialReason::NotAttempted
         }
         .derived_unique(1),
-        "Partial{NotAttempted} + 1: no completeness reasoning was attempted"
+        "Partial{{NotAttempted}} + 1: no completeness reasoning was attempted"
     );
 
     // Refutation is not uniqueness — it proves none exist, not that one does.

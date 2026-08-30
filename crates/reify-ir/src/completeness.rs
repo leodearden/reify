@@ -151,3 +151,49 @@ pub enum PartialReason {
     /// resolution.
     NotAttempted,
 }
+
+impl Completeness {
+    /// Whether this verdict is [`Completeness::Exhaustive`].
+    ///
+    /// Exposed as a named predicate rather than leaving callers to `matches!` so
+    /// the two rules that key on it — C1 ([`Self::derived_unique`]) and C2
+    /// ([`Self::permits_proven_optimal`]) — read as the invariants they are.
+    pub const fn is_exhaustive(&self) -> bool {
+        matches!(self, Completeness::Exhaustive)
+    }
+
+    /// **Invariant C1 — `unique` is derived, never asserted.**
+    ///
+    /// `unique == (completeness == Exhaustive && solutions.len() == 1)`.
+    ///
+    /// This function is **THE single site** from which any producer may compute
+    /// `unique`. No producer may write `unique: true` from any other reasoning —
+    /// not from a hardcoded literal, not from local Jacobian rank, not from a
+    /// one-shot perturbation probe that failed to find a second point. Each of
+    /// those is a claim about the *whole* solution set derived from *local*
+    /// evidence, which is the false-completeness shape this axis exists to prevent.
+    ///
+    /// The sweep that enforces this across in-tree producers is **#6903**; until it
+    /// lands, producers that have not opted in report
+    /// [`Completeness::not_attempted`] and this function correctly returns `false`
+    /// for them.
+    ///
+    /// # `solution_count` means DISTINCT solutions
+    ///
+    /// The count is the number of **distinct** solutions — basins, in the sense of
+    /// invariant C5 (basin identity is the containing verified box, design decision
+    /// D3). It is **NOT**
+    /// [`crate::ranked::RankedSolveResult::Ranked`]`::candidates.len()`, which is
+    /// not deduplicated: a K-start multistart can converge K times into one basin
+    /// and produce K near-identical candidates. Feeding that length in here would
+    /// turn one solution into a claim of K, and — worse, in the other direction —
+    /// would make a genuinely unique solution look non-unique.
+    ///
+    /// Deduplication arrives with the box-based basin identity at ζ (#6711). That
+    /// is precisely why no `derived_unique` is offered on
+    /// [`crate::ranked::RankedSolveResult`] itself: there is no honest count to
+    /// pass it there yet.
+    pub const fn derived_unique(&self, solution_count: usize) -> bool {
+        self.is_exhaustive() && solution_count == 1
+    }
+}
