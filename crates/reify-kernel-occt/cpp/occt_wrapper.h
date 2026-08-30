@@ -1620,6 +1620,9 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 ///                       Exactly one, so the other contexts stay radian: that
 ///                       partial flip is invisible to a file-wide `.RADIAN.`
 ///                       grep and can only be caught by the association walk.
+///   - `"prefixed"`    — give the FIRST SI plane-angle unit the MILLI prefix,
+///                       leaving its name at RADIAN: a MILLIRADIAN, which a
+///                       name-only check and a `.RADIAN.` grep both accept.
 ///
 /// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) on
 /// an unrecognised `fault`, so a typo in a test reads as a rejected fault name

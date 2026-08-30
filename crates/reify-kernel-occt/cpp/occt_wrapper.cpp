@@ -6822,6 +6822,34 @@ std::string si_unit_name_token(StepBasic_SiUnitName name) {
     }
 }
 
+/// Part-21 token for a `StepBasic_SiPrefix`, for the refusal diagnostic.
+///
+/// Same numeric-fallback discipline as `si_unit_name_token`: an enumerator
+/// this switch does not know about prints as `SiPrefix(<n>)` rather than as a
+/// guessed token, so a future OCCT enumerator addition degrades to a number
+/// the reader can look up instead of to a confidently wrong prefix name.
+std::string si_prefix_token(StepBasic_SiPrefix prefix) {
+    switch (prefix) {
+        case StepBasic_spKilo:
+            return ".KILO.";
+        case StepBasic_spDeci:
+            return ".DECI.";
+        case StepBasic_spCenti:
+            return ".CENTI.";
+        case StepBasic_spMilli:
+            return ".MILLI.";
+        case StepBasic_spMicro:
+            return ".MICRO.";
+        case StepBasic_spNano:
+            return ".NANO.";
+        default: {
+            std::ostringstream oss;
+            oss << "SiPrefix(" << static_cast<int>(prefix) << ")";
+            return oss.str();
+        }
+    }
+}
+
 /// How a single unit entity classifies for INV-AD-4's purposes.
 enum class StepAngleUnitKind {
     /// Not an angular unit at all (a length, a solid angle carrier, …).
@@ -6864,7 +6892,7 @@ StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& ent
             std::ostringstream oss;
             oss << "SI plane-angle unit declared as " << si_unit_name_token(si->Name());
             if (si->HasPrefix()) {
-                oss << " with SI prefix " << static_cast<int>(si->Prefix());
+                oss << " with SI prefix " << si_prefix_token(si->Prefix());
             } else {
                 oss << " with no SI prefix";
             }
@@ -7070,6 +7098,11 @@ enum class StepGuardFault {
     None,
     /// Rename the first SI plane-angle unit to STERADIAN.
     NonRadian,
+    /// Give the first SI plane-angle unit the MILLI prefix, LEAVING its name
+    /// at RADIAN. The declaration then reads `SI_UNIT(.MILLI.,.RADIAN.)` — a
+    /// milliradian — which a name-only check and a `.RADIAN.` grep both
+    /// accept, and which is off from the payload by exactly 1000x.
+    Prefixed,
 };
 
 /// Map the FFI fault name onto the enum.
@@ -7084,8 +7117,11 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
     if (name == "non_radian") {
         return StepGuardFault::NonRadian;
     }
+    if (name == "prefixed") {
+        return StepGuardFault::Prefixed;
+    }
     throw ContractViolation("unknown injected fault \"" + name +
-                            "\"; accepted faults: none, non_radian");
+                            "\"; accepted faults: none, non_radian, prefixed");
 }
 
 /// Corrupt exactly ONE thing in `model`, per `fault`.
@@ -7118,6 +7154,12 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         switch (fault) {
             case StepGuardFault::NonRadian:
                 si->SetName(StepBasic_sunSteradian);
+                break;
+            case StepGuardFault::Prefixed:
+                // Name deliberately left at RADIAN — the prefix alone is the
+                // defect, and `classify_step_angle_unit`'s `!HasPrefix()`
+                // conjunct is the only thing that catches it.
+                si->SetPrefix(StepBasic_spMilli);
                 break;
             case StepGuardFault::None:
                 break;
