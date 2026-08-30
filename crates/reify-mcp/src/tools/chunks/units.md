@@ -81,6 +81,47 @@ structure def Bracket {
 }
 ```
 
+**What it looks like when you get it wrong.** Each row pairs the rejected form with the migration
+that replaces it. `g` stands for any let-bound geometry.
+
+<!-- The ```reify-rejected info string is what scopes this block, matched BYTE-EXACTLY. It is
+     deliberately NOT ```reify: the forms in the left column are meant to FAIL, and a ```reify
+     fence is compiled with a zero-error assertion, so tagging this block ```reify would report
+     "the documented migration does not compile" — the opposite of what is wrong.
+
+     units_chunk_smoke.rs::documented_rejected_forms_are_actually_rejected scrapes these rows and
+     runs the real compiler over BOTH columns: the left must produce an Error that names the
+     offending argument and carries the migration hint, and the right must compile CLEAN. So a
+     row whose migration stopped working is RED here, not stale advice.
+     units_chunk_smoke.rs::bare_zero_is_not_special_cased additionally requires the D1 row below
+     to still be present.
+
+     SCOPED TO THE COMPILE LAYER. Every row here is rejected by the COMPILER, which is what that
+     test can observe. Constructors rejected only at build/eval time are a separate block; do not
+     move a row between the two without moving it in the tests as well.
+
+     FORMAT IS LOAD-BEARING: one row per line, the two columns separated by `-->`, never wrapped.
+     `//` annotations are stripped before scraping, so a row may carry one. The test binds
+     `let g = box(10mm, 10mm, 10mm)` around each form, which is what makes the `g` rows real. -->
+
+```reify-rejected
+box(20, 20, 10)                    -->  box(20mm, 20mm, 10mm)
+box(0, 0, 0)                       -->  box(0mm, 0mm, 0mm)                    // D1: no special case for zero
+translate(g, 0, 0, 5)              -->  translate(g, 0mm, 0mm, 5mm)
+fillet(box(10mm, 10mm, 10mm), 1)   -->  fillet(box(10mm, 10mm, 10mm), 1mm)
+```
+
+Every rejection reads the same way — one diagnostic per offending argument, so a `box` with three
+bare dimensions reports three:
+
+```
+box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`
+```
+
+The `pass a dimensioned length such as `5mm`` tail is `reify-core::units::LENGTH_MIGRATION_HINT`,
+rendered by both the compile-time and the run-time check, so one authoring mistake reads identically
+whichever layer catches it.
+
 **What legitimately stays bare.** Not every geometry argument is a length. Unit-vector and
 axis-direction components, repeat counts, NURBS weights, knot values, polynomial degrees, `scale`
 factors and indices are dimensionless by construction, and putting a unit on one of them says

@@ -206,8 +206,11 @@ structure def LengthArguments {
 gate runs in one direction only: a bare number in a length slot is rejected, but a unit in a
 dimensionless slot generally is not. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a
 dimensioned axis direction in `mirror` or `linear_pattern`. Write those bare because it is what you
-mean — nothing will tell you otherwise. The rejected forms and their migrations are tabulated once,
-in the `units` chunk.
+mean — nothing will tell you otherwise.
+
+The rejected forms and their migrations are tabulated once, in the `units` chunk under "What it
+looks like when you get it wrong" — one row per form, each row executed by
+units_chunk_smoke.rs::documented_rejected_forms_are_actually_rejected. Not repeated here.
 
 
 ## Interference & Clearance Queries
