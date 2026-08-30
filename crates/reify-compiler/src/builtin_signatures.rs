@@ -35,6 +35,10 @@
 //!   slot. It hosts here only because the mechanism is generic (name-keyed),
 //!   which avoids standing up a parallel checker for one slot.
 //! - Pattern SPACING (task 5652) — `linear_pattern` / `linear_pattern_2d`.
+//! - Pattern ORIGIN triples (task 5662) — `mirror`'s 7-arg and
+//!   `circular_pattern`'s 9-arg scalar forms, `ox`/`oy`/`oz`. The row task 5652
+//!   deferred; it mirrors the `pattern` rows of `arg_acceptance.rs`' family
+//!   table (mirror plane, task 5214; circular axis, task 5350).
 //! - The Contract C LENGTH families of PRD
 //!   `docs/prds/v0_6/units-length-gate-completion.md` leaf η (task 5750):
 //!   PRIMITIVE and PROFILE producers, MODIFY, SWEEP, and the TRANSFORM row
@@ -83,17 +87,6 @@
 //! - **Names with no dimensioned-scalar argument have no arm at all**
 //!   (`split`, `face`, `edge`, `solid_body`, `volume`, `edges`, `faces`, …).
 //!
-//! One position is eligible under every rule above and still absent, on a
-//! recorded decision rather than by omission:
-//!
-//! - `mirror` (arity 7) / `circular_pattern` (arity 9) origin triples
-//!   `ox`/`oy`/`oz` — length-semantic and eligible, but deliberately DEFERRED
-//!   by task 5652: LENGTH slots there turn at least six existing valid-today
-//!   call sites into hard compile errors, spanning `reify-eval` tests and
-//!   `examples/` — a separable breaking-surface migration outside 5652's
-//!   scope. TODO(#5662): add the ox/oy/oz LENGTH slots and migrate those call
-//!   sites.
-//!
 //! # Contract C positions this table deliberately does NOT cover (task 5750)
 //!
 //! Task 5750 (units-length η) closed the four families its PRD leaf names —
@@ -102,9 +95,11 @@
 //! left to be rediscovered, and each entry states WHY, so a reader can tell a
 //! decision from an oversight. These are PROSE, not `TODO`s, on purpose: under
 //! the repo's PTODO grammar a `TODO` must cite a live non-terminal task, and
-//! only the `mirror`/`circular_pattern` row above has one (`#5662`). Task 5752
-//! (leaf ι, the Contract C closure guard) is the backstop that will surface any
-//! of these if they are ever forgotten.
+//! NONE of these has one. (The `mirror`/`circular_pattern` row was the last
+//! that did; task 5662 landed those slots, so that row moved UP into the
+//! COVERED list above and its `TODO` retired with it — this table now carries
+//! no live `TODO` at all.) Task 5752 (leaf ι, the Contract C closure guard) is the
+//! backstop that will surface any of these if they are ever forgotten.
 //!
 //! - The task-5623 CURVE row — `line_segment`'s endpoints `x1`…`z2`, `arc`'s
 //!   centre `cx`/`cy`/`cz` plus its `radius`, and `helix`'s
@@ -519,6 +514,92 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 },
             },
         ],
+
+        // ── Pattern CSG producers: the ORIGIN triple is a Length (task 5662) ──
+        //
+        // The pattern-origin row task 5652 deferred (it turned six then-valid
+        // call sites into hard compile errors, a separable breaking-surface
+        // migration) and this task closes. These mirror, at the compile layer,
+        // the `pattern` rows of `crates/reify-eval/src/arg_acceptance.rs`'s
+        // family table: the mirror-plane origin (task 5214) and the
+        // circular-pattern axis origin (task 5350). Arg names are COPIED from
+        // `geometry.rs`'s lowering sites — the `("ox".to_string(), …)` triples
+        // in its n==7 and n==9 arms — never invented, so the two layers word one
+        // authoring mistake identically (PRD decision D9).
+        //
+        // mirror(target, ox, oy, oz, nx, ny, nz)          — 7-arg scalar form
+        // mirror(target, plane)                           — 2-arg value form
+        //   args1-3: the mirror-plane ORIGIN → LENGTH ("Length"). A point in
+        //            space, so a bare `10` is silently read as 10 SI METRES —
+        //            1000× a plausible 10 mm offset.
+        //   args4-6: the plane NORMAL `nx`/`ny`/`nz` — a DIMENSIONLESS unit
+        //            vector, deliberately UNSLOTTED. Legitimately bare in
+        //            correct `.ri` (a normal's scale is irrelevant to the plane
+        //            it defines), so a LENGTH slot would reject valid code.
+        //            This is the FOURTH builtin whose args STRADDLE the
+        //            ORIGIN-vs-DIRECTION boundary, after `half_space`,
+        //            `revolve` and `rotate_around` — the split is stated binding
+        //            at `arg_acceptance.rs`' "unit-vector DIRECTIONS" paragraph.
+        //            Pinned by `mirror_slots_the_origin_but_never_the_normal`.
+        //
+        // The `arg_count == 7` guard is SEMANTICALLY LOAD-BEARING, not
+        // forward-compat: index 1 is `ox` at arity 7 but `plane` at arity 2, so
+        // an arity-agnostic slot would demand a Length of a Plane on correct
+        // code — the same class of false positive the `linear_pattern_2d` and
+        // `fillet` guards exist to prevent. Note this is NOT justified by "the
+        // eval layer covers the value form": that hole was task 5745's and is
+        // separately closed. The justification is that index 1 denotes a
+        // DIFFERENT PARAMETER in each overload.
+        "mirror" if arg_count == 7 => const { &[
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+        ] },
+
+        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)  — 9-arg
+        // circular_pattern(target, axis, count, angle)                    — 4-arg
+        //   args1-3: the rotation-axis ORIGIN → LENGTH ("Length").
+        //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
+        //            vector, UNSLOTTED for the same reason as `mirror`'s normal.
+        //            The FIFTH and widest straddle case.
+        //   arg7:    `count` — an Int. A wrong count is an arity/semantic error,
+        //            not a dimension error.
+        //   arg8:    `angle` — owned by
+        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
+        //            binding seam decree; gating it here would be a scope
+        //            violation.
+        //   Pinned by
+        //   `circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle`.
+        //
+        // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
+        // arity 4.
+        //
+        // MEASURED PREFIX DIVERGENCE. This layer is keyed on the CALL, so it
+        // reports the SURFACE name `circular_pattern:`, while the eval layer
+        // renders its `{builtin}` from `PatternKind::Circular`'s `Display` — its
+        // `kind_label` — which is `"circular"` (`types.rs:1748`). That is the
+        // same class as the `box_centered`-vs-`box` divergence already recorded
+        // under `check_builtin_arg_types`' "# Message format", and it holds this
+        // way deliberately: reporting the name the author actually typed beats
+        // reporting a lowering detail they never wrote. `mirror` does NOT
+        // diverge — `PatternKind::Mirror` displays as `"mirror"`
+        // (`types.rs:1749`) — so the two layers agree byte-for-byte there. Both
+        // halves are pinned by
+        // `circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind`
+        // in `tests/builtin_arg_signature_tests.rs`.
+        //
+        // These two arms make `reify check` a REAL gate for these positions, not
+        // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
+        // compile `Severity::Error` and short-circuits BEFORE constraint checking
+        // and before `build()`. That is exactly why task 5748's CLI fixtures
+        // (`crates/reify-cli/tests/fixtures/mirror_bare_origin*.ri`) had to move
+        // to the decoded-value route, which is structurally excluded from this
+        // table — see their headers.
+        "circular_pattern" if arg_count == 9 => const { &[
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+        ] },
 
         // ── Primitive CSG producers: every dimension is a Length (task 5750) ──
         //
@@ -1103,6 +1184,16 @@ mod tests {
     ///   Same story again: both are registered in `GEOMETRY_FUNCTION_NAMES`,
     ///   neither is a topology selector, and neither may be moved into the
     ///   selector slice.
+    ///
+    /// - The task-5662 PATTERN ORIGIN producers — `mirror` and
+    ///   `circular_pattern`. Same story a third time: both are CSG producers
+    ///   registered in `GEOMETRY_FUNCTION_NAMES`, neither is a topology
+    ///   selector, and neither may be moved into
+    ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset assertion —
+    ///   doing so would route every `mirror(...)` call through the selector arm
+    ///   at `expr.rs:3243`, whose
+    ///   `topology_selector_result_type(name).expect(...)` has no entry for
+    ///   them and would panic.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
@@ -1142,6 +1233,9 @@ mod tests {
         // Task 5750 — transforms.
         "translate",
         "rotate_around",
+        // Task 5662 — pattern origin triples.
+        "mirror",
+        "circular_pattern",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -1995,7 +2089,15 @@ mod tests {
         // list: adding them to GEOMETRY_TOPOLOGY_SELECTOR_NAMES would satisfy the
         // subset assertion above while actively breaking dispatch — see
         // NON_SELECTOR_ARG_SLOT_KEYS for the mechanism.
-        for &name in &["linear_pattern", "linear_pattern_2d"] {
+        for &name in &[
+            "linear_pattern",
+            "linear_pattern_2d",
+            // Task 5662 — same mechanism, and the one where a mis-move would
+            // panic rather than merely misreport: `expr.rs`' selector arm calls
+            // `topology_selector_result_type(name).expect(...)`.
+            "mirror",
+            "circular_pattern",
+        ] {
             assert!(
                 !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
                 "{:?} must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES — it is a CSG \
