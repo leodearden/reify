@@ -22,11 +22,16 @@
 //
 // ── Reproduction ──
 //
-// First measured 2026-08-24 at HEAD=2306e029ec via a /tmp scratch probe with
-// this same control net; reproduced in this committed fixture at
-// HEAD=7d92605bc83b.  EXCERPT of a longer transcript (elides the leading
-// `warning: constraint expression has type PnrgNurbsSurface, expected Bool`
-// line):
+//   reify check tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri
+//
+// First measured 2026-08-24 at HEAD=2306e029ec — a commit on main, so it stays
+// checkout-able — via a /tmp scratch probe carrying this same control net; the
+// command above reproduces it from this committed fixture.  No sha is cited for
+// THAT run on purpose: until this file lands it exists only on a task branch,
+// and every amend or rebase orphans a branch-local sha (which has already
+// happened twice to this header).  EXCERPT of a longer transcript (elides the
+// leading `warning: constraint expression has type PnrgNurbsSurface, expected
+// Bool` line):
 //
 //     error: RepresentationWithin: sampled facet deviation 1.713e-2 m
 //     exceeds bound 1.000e-6 m for PnrgNurbsSurfaceCheck

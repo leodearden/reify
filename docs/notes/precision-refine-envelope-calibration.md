@@ -213,9 +213,14 @@ PnrgSplineCheck` suffix):
     error: RepresentationWithin: sampled facet deviation 1.713e-2 m exceeds bound 1.000e-6 m
 
 The corrected call is now committed as its own runnable fixture,
-`tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` — reproduces the same
-transcript, reconfirmed at HEAD=`7d92605bc83b` — rather than living only as a comment,
-so a future measurer does not have to reconstruct it from prose.
+`tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` (`reify check` it), rather than
+living only as a comment, so a future measurer does not have to reconstruct it from
+prose. It reproduces the same **deviation** — 1.713e-2 m — but not the excerpt above
+verbatim: the fixture's checker is named `PnrgNurbsSurfaceCheck` rather than
+`PnrgSplineCheck`, and its elided warning names `PnrgNurbsSurface`. Identifier only; the
+measurement is identical. No commit sha is cited for that run on purpose — until the
+fixture lands it exists only on a task branch, and every amend or rebase orphans a
+branch-local sha.
 
 `Operation::SurfaceNurbs` remains genuinely absent from `occt_capability_descriptor()`
 (`crates/reify-kernel-occt/src/register.rs`) — that fact still holds. What was wrong was
