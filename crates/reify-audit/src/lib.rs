@@ -149,9 +149,13 @@ pub enum Pattern {
     ///   (the cite parses but the id is absent from the DB).
     /// - **Inverse lane (task ζ)** — for each non-terminal task in the master
     ///   task DB, each `metadata.files` path absent from the tracked-file set
-    ///   is checked for git history: if history exists the path was deleted →
-    ///   `task-cites-deleted-path` (summary carries the task id, path, and last
-    ///   commit sha). Paths that never existed (presumed to-be-created) pass.
+    ///   is checked for git history. If history exists, the last-touching
+    ///   commit decides between two kinds: it RENAMED the path to a target
+    ///   still tracked at HEAD → `task-cites-renamed-path` (summary carries
+    ///   the task id, both paths, and the commit sha); otherwise the path was
+    ///   deleted → `task-cites-deleted-path` (summary carries the task id,
+    ///   path, and last commit sha). Paths that never existed (presumed
+    ///   to-be-created) pass.
     ///
     /// The liveness and inverse lanes degrade fail-soft together (§6.7): when
     /// the task DB is missing or unreadable both are skipped with a single stderr
@@ -503,12 +507,42 @@ pub trait GitOps {
     /// exit, non-UTF-8 output) returns `None` rather than propagating an
     /// error, so the caller (ζ inverse lane) can treat "no history" and
     /// "git unavailable" identically — a git failure can never manufacture a
-    /// false-positive `task-cites-deleted-path` finding.
+    /// false-positive `task-cites-deleted-path` / `task-cites-renamed-path`
+    /// finding.
     ///
     /// Implementation note: uses [`LOG_GREP_FORMAT`] (`%H%x09%s`) and the
     /// same `splitn(2, '\t')` parse as [`log_grep`], keeping the two seam
     /// methods consistent.
     fn last_commit_for_path(&self, path: &str) -> Option<GitCommit>;
+
+    /// Equivalent of `git show -M --name-status --format= <sha>`: given a
+    /// commit that touched `path`, returns `Some(new_path)` iff that commit
+    /// RENAMED `path`, i.e. its name-status output carries an `R` line whose
+    /// old side is exactly `path`. Used by the ζ inverse lane to tell a
+    /// renamed-not-deleted `metadata.files` citation from a genuine deletion,
+    /// on the commit [`last_commit_for_path`](GitOps::last_commit_for_path)
+    /// already resolved.
+    ///
+    /// Fail-safe semantics — every one of these returns `None`, and `None`
+    /// means the caller keeps the unchanged `task-cites-deleted-path`
+    /// classification:
+    ///   1. No `R` line whose old side equals `path` (a genuine delete prints
+    ///      only `D\t<path>`; a modification prints `M\t<path>`).
+    ///   2. A **merge** commit: `git show` defaults to `--cc`, which prints no
+    ///      diff for a merge at all (measured), so a rename landed directly in
+    ///      a merge degrades to the deleted kind rather than being mislabelled.
+    ///   3. Any git error — spawn failure, non-zero exit (e.g. `fatal: bad
+    ///      object` from an unreachable/recycled sha).
+    ///   4. Non-UTF-8 output.
+    ///
+    /// So a git failure can never manufacture a false `task-cites-renamed-path`
+    /// finding; it can only ever cause a MISSED reclassification.
+    ///
+    /// Implementation note: `-M` is passed explicitly rather than relying on
+    /// git's `diff.renames` default, because a user or global
+    /// `diff.renames=false` would otherwise silently disable detection. Copies
+    /// (`C` status) are deliberately not resolved — only `-M` is passed.
+    fn rename_target_for_path(&self, path: &str, sha: &str) -> Option<String>;
 }
 
 /// Production [`GitOps`] impl that shells out to `git`. Untested by the
@@ -600,6 +634,40 @@ fn parse_added_lines(stdout: &str) -> Vec<(usize, String)> {
         }
     }
     result
+}
+
+/// Extract the rename TARGET of `old_path` from `git show -M --name-status
+/// --format= <sha>` stdout: the third TAB-separated field of the `R` line
+/// whose second field is exactly `old_path`.
+///
+/// Pure (no I/O) so the parse can be unit-tested against the measured real
+/// shapes; [`RealGitOps::rename_target_for_path`] supplies the stdout.
+///
+/// The only shape that yields `Some` is a status field of `R` followed by
+/// zero or more ASCII digits (git's similarity score, e.g. `R100`) whose OLD
+/// side matches. That exactness is the safety property: a bare
+/// `starts_with('R')` would let a future status letter false-match, and
+/// requiring the old side to match keeps the relation from being inverted
+/// (querying a rename's TARGET must not resolve).
+fn parse_rename_target(stdout: &str, old_path: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        let mut fields = line.split('\t');
+        // Status: `R` + similarity score (`R100`, `R087`); reject `D`, `M`,
+        // `A`, `C…`, and any hypothetical future `R`-prefixed letter.
+        let score = fields.next()?.strip_prefix('R')?;
+        if !score.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        // Old side must be the cited path; new side is the answer.
+        if fields.next()? != old_path {
+            return None;
+        }
+        let new_path = fields.next()?;
+        if new_path.is_empty() {
+            return None;
+        }
+        Some(new_path.to_string())
+    })
 }
 
 impl RealGitOps {
@@ -1017,6 +1085,20 @@ impl GitOps for RealGitOps {
         let subject = parts.next().unwrap_or("").to_string();
         Some(GitCommit { sha, subject })
     }
+
+    fn rename_target_for_path(&self, path: &str, sha: &str) -> Option<String> {
+        // `git show -M --name-status --format= <sha>` prints one status line
+        // per path the commit touched, with rename detection ON. `--format=`
+        // suppresses the commit header so only status lines remain, and `-M`
+        // is explicit so a user/global `diff.renames=false` cannot silently
+        // disable detection. run_or_warn returns None on any git failure →
+        // fail-safe (the caller keeps `task-cites-deleted-path`).
+        let stdout = self.run_or_warn(
+            "show -M --name-status",
+            &["show", "-M", "--name-status", "--format=", sha],
+        )?;
+        parse_rename_target(&stdout, path)
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -1049,6 +1131,7 @@ pub struct MockGitOps {
     is_ancestor: HashMap<(String, String), bool>,
     ls_files: Vec<String>,
     last_commit_for_path: HashMap<String, GitCommit>,
+    rename_target_for_path: HashMap<(String, String), String>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1156,6 +1239,12 @@ impl MockGitOps {
     pub fn set_last_commit_for_path(&mut self, path: &str, commit: GitCommit) {
         self.last_commit_for_path.insert(path.to_string(), commit);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_rename_target_for_path(&mut self, path: &str, sha: &str, target: &str) {
+        self.rename_target_for_path
+            .insert((path.to_string(), sha.to_string()), target.to_string());
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1228,6 +1317,12 @@ impl GitOps for MockGitOps {
 
     fn last_commit_for_path(&self, path: &str) -> Option<GitCommit> {
         self.last_commit_for_path.get(path).cloned()
+    }
+
+    fn rename_target_for_path(&self, path: &str, sha: &str) -> Option<String> {
+        self.rename_target_for_path
+            .get(&(path.to_string(), sha.to_string()))
+            .cloned()
     }
 }
 
@@ -1541,4 +1636,86 @@ pub(crate) fn is_symbol_suppressed(symbol: &ChangedSymbol) -> bool {
             .g_allow_marker
             .as_deref()
             .is_some_and(|r| !r.trim().is_empty())
+}
+
+// -----------------------------------------------------------------------
+// Unit tests — pure parse helpers
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::parse_rename_target;
+
+    /// The measured single-rename shape: `git show -M --name-status --format=`
+    /// prints `R<score>\t<old>\t<new>`.
+    #[test]
+    fn parse_rename_target_matches_measured_rename_line() {
+        let stdout = "R100\told.rs\tsub/new.rs\n";
+        assert_eq!(
+            parse_rename_target(stdout, "old.rs"),
+            Some("sub/new.rs".to_string()),
+            "an R line whose old side matches must yield the new side",
+        );
+    }
+
+    /// Modelled on 60be72d922, whose measured shape has the rename line NOT
+    /// first (one unrelated `A` line precedes it), so the scan must not stop at
+    /// the first non-`R` line. The preceding lines here are synthetic — the
+    /// property under test is the position of the `R` line, not the exact
+    /// neighbours that commit happens to carry.
+    #[test]
+    fn parse_rename_target_finds_rename_after_other_status_lines() {
+        let stdout = "A\tcrates/reify-compiler/tests/harness_doc_chunks/mod.rs\n\
+                      M\tcrates/reify-compiler/src/lib.rs\n\
+                      R100\tcrates/reify-compiler/tests/geometry_chunk_smoke.rs\tcrates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs\n";
+        assert_eq!(
+            parse_rename_target(stdout, "crates/reify-compiler/tests/geometry_chunk_smoke.rs"),
+            Some(
+                "crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs"
+                    .to_string()
+            ),
+            "a rename line preceded by A/M lines must still be found",
+        );
+    }
+
+    /// A genuine delete prints only `D\t<path>` lines — the fail-safe path that
+    /// keeps `task-cites-deleted-path` unchanged.
+    #[test]
+    fn parse_rename_target_delete_only_output_is_none() {
+        let stdout = "D\tdoomed.rs\nD\tcrates/other.rs\n";
+        assert_eq!(
+            parse_rename_target(stdout, "doomed.rs"),
+            None,
+            "a delete-only commit must not resolve a rename target",
+        );
+    }
+
+    /// An `R` line for a DIFFERENT path must not match: the old side is the
+    /// key, so the relation can never be inverted or cross-wired.
+    #[test]
+    fn parse_rename_target_other_path_rename_is_none() {
+        let stdout = "R100\tunrelated.rs\tsub/unrelated.rs\n";
+        assert_eq!(
+            parse_rename_target(stdout, "old.rs"),
+            None,
+            "an R line whose old side is a different path must not match",
+        );
+        assert_eq!(
+            parse_rename_target(stdout, "sub/unrelated.rs"),
+            None,
+            "querying the rename TARGET as if it were the source must not match",
+        );
+    }
+
+    /// Empty stdout — the measured MERGE-commit shape (`git show` defaults to
+    /// `--cc`, which prints no diff for a merge) and the empty-output case in
+    /// general.
+    #[test]
+    fn parse_rename_target_empty_stdout_is_none() {
+        assert_eq!(
+            parse_rename_target("", "old.rs"),
+            None,
+            "empty stdout (e.g. a merge commit) must not resolve a rename target",
+        );
+    }
 }
