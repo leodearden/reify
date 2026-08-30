@@ -846,3 +846,193 @@ fn two_structurally_identical_sibling_kinks_get_distinct_sites() {
         "identical content must NOT collapse to one site"
     );
 }
+
+// ===========================================================================
+// Step-23: BOUNDED field reductions — the record must name the winner INSIDE
+// the bounds
+// ===========================================================================
+//
+// `eval_expr` intercepts field reductions at TWO arities: the whole-field form
+// (lib.rs:459-484) and the BOUNDED form `max/min/argmax/argmin(field,
+// bounds: BoundingBox)` (lib.rs:490-533), which restricts the reduction to the
+// grid nodes inside a bounding box.  The dual path mirrors both, so a bounded
+// reduction is a kink like any other and gets a `BranchEntry`.
+//
+// The entry's `BranchChoice` is what λ (#6679) compares across solver
+// iterations, and for the bounded form it has to name the BOUNDS-RESTRICTED
+// winner.  Reusing the whole-field `compute_argmax`/`compute_argmin` sibling
+// would record a grid node that may sit outside the box entirely, and λ would
+// then see a PHANTOM flip when the global extremum moves while the bounded
+// winner did not — and, worse, MISS a real flip when the bounded winner moves
+// while the global one did not.
+//
+// `sampled_field()` above is built for exactly this: its global max (9 at
+// x = 1) lies outside the x ∈ [2, 3] box used throughout this block, so the
+// bounded winner (7 at x = 3) and the global one are different grid nodes by
+// construction.
+
+/// The canonical `bounding_box(solid)` shape: two 3-component `Value::Point`
+/// corners.  `sampled_field()` has one axis, so only the x span is consulted.
+fn bbox_x(lo: f64, hi: f64) -> Value {
+    Value::BoundingBox {
+        min: Box::new(Value::Point(vec![Value::Real(lo), Value::Real(0.0), Value::Real(0.0)])),
+        max: Box::new(Value::Point(vec![Value::Real(hi), Value::Real(0.0), Value::Real(0.0)])),
+    }
+}
+
+fn bounded_call(name: &str, lo: f64, hi: f64) -> CompiledExpr {
+    call(name, vec![literal(sampled_field()), literal(bbox_x(lo, hi))])
+}
+
+/// `(builtin name, kink kind, bounded argextremum coord over x ∈ [2, 3])`.
+const BOUNDED_REDUCTIONS: [(&str, KinkKind, f64); 4] = [
+    ("max", KinkKind::FieldReduction(ReductionKind::Max), 3.0),
+    ("min", KinkKind::FieldReduction(ReductionKind::Min), 2.0),
+    ("argmax", KinkKind::FieldReduction(ReductionKind::ArgMax), 3.0),
+    ("argmin", KinkKind::FieldReduction(ReductionKind::ArgMin), 2.0),
+];
+
+fn sole_arg_extremum(rec: &BranchRecord, label: &str) -> f64 {
+    assert_eq!(rec.len(), 1, "{label}: expected exactly one entry, got {:?}", rec.entries());
+    match &rec.entries()[0].choice {
+        BranchChoice::FieldArgExtremum(v) => v
+            .as_f64()
+            .unwrap_or_else(|| panic!("{label}: expected a scalar argextremum, got {v:?}")),
+        other => panic!("{label}: expected FieldArgExtremum, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (1) The bounded form is recorded at all
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_bounded_field_reduction_records_exactly_one_entry_of_its_own_kind() {
+    // An EMPTY record has to mean "no kink here", never "we did not look" —
+    // that guarantee is the whole basis on which λ reads a record.  A bounded
+    // reduction genuinely selects an extremum grid node, so it is a kink and
+    // must appear.
+    for (name, kind, _) in BOUNDED_REDUCTIONS {
+        let (_, _, rec) = run(&bounded_call(name, 2.0, 3.0), &[("x", Value::Real(2.0))], &["x"]);
+        assert_eq!(
+            rec.len(),
+            1,
+            "{name}(field, bbox): one entry per reduction, got {:?}",
+            rec.entries()
+        );
+        assert_eq!(rec.entries()[0].kind, kind, "{name}(field, bbox): kink kind");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (2) THE DISCRIMINATING ASSERTION — the winner is the one inside the box
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_recorded_winner_of_a_bounded_reduction_is_inside_the_bounds() {
+    // The box excludes the global maximiser at x = 1 (value 9).  A record that
+    // named x = 1 would be describing a grid node the reduction never even
+    // considered.
+    for (name, _, expected) in BOUNDED_REDUCTIONS {
+        let (_, _, rec) = run(&bounded_call(name, 2.0, 3.0), &[("x", Value::Real(2.0))], &["x"]);
+        let got = sole_arg_extremum(&rec, name);
+        assert!(
+            (got - expected).abs() < 1e-12,
+            "{name}(field, bbox over x ∈ [2,3]): the recorded winner must be the BOUNDED \
+             one at x = {expected}, got x = {got} (the unbounded global winner is x = 1 \
+             for max and x = 2 for min)"
+        );
+    }
+}
+
+#[test]
+fn the_recorded_winner_moves_with_the_box_even_when_the_global_winner_does_not() {
+    // The sharpest form of the same property: the field never changes, so the
+    // whole-field `compute_argmax` answer is x = 1 in BOTH evaluations.  Only
+    // the box moves, and the record has to follow it.
+    let wide = run(&bounded_call("max", 0.0, 3.0), &[("x", Value::Real(2.0))], &["x"]).2;
+    let narrow = run(&bounded_call("max", 2.0, 3.0), &[("x", Value::Real(2.0))], &["x"]).2;
+    assert!(
+        (sole_arg_extremum(&wide, "max over [0,3]") - 1.0).abs() < 1e-12,
+        "the whole field is in range, so the winner is the global one at x = 1"
+    );
+    assert!(
+        (sole_arg_extremum(&narrow, "max over [2,3]") - 3.0).abs() < 1e-12,
+        "restricted to x ∈ [2,3] the winner moves to x = 3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (3) λ's flip primitive works across a bounds change
+// ---------------------------------------------------------------------------
+
+#[test]
+fn differs_from_names_the_reduction_when_a_bounds_change_moves_the_winner() {
+    let cells = [("x", Value::Real(2.0))];
+    let wide = run(&bounded_call("max", 0.0, 3.0), &cells, &["x"]).2;
+    let narrow = run(&bounded_call("max", 2.0, 3.0), &cells, &["x"]).2;
+
+    let site = wide
+        .differs_from(&narrow)
+        .expect("the selected grid node moved, so λ must see a flip");
+    assert_eq!(
+        site.path(),
+        wide.entries()[0].site.path(),
+        "the reported site must name the reduction that flipped"
+    );
+    assert_ne!(
+        wide.signature_key(),
+        narrow.signature_key(),
+        "two different branch sets must not share a signature key"
+    );
+}
+
+#[test]
+fn two_boxes_that_select_the_same_node_are_indistinguishable_to_lambda() {
+    // x ∈ [2, 3] and x ∈ [1.5, 3.2] both put the maximum at x = 3.  Nothing
+    // flipped, so λ must see no flip: a spurious `Some(site)` here would
+    // contract η's trust region for no reason.
+    let cells = [("x", Value::Real(2.0))];
+    let a = run(&bounded_call("max", 2.0, 3.0), &cells, &["x"]).2;
+    let b = run(&bounded_call("max", 1.5, 3.2), &cells, &["x"]).2;
+    assert_eq!(a.differs_from(&b), None, "same winning node ⇒ no flip");
+    assert_eq!(a.signature_key(), b.signature_key(), "same branch set ⇒ same signature key");
+}
+
+// ---------------------------------------------------------------------------
+// (4) An unresolvable bounded reduction records `Unresolved`
+// ---------------------------------------------------------------------------
+
+/// An `Analytical`-source field whose stored lambda is not applicable, so
+/// every grid node sampled inside the box yields nothing and
+/// `compute_*_bounded` returns `Value::Undef`.
+fn unresolvable_analytical_field() -> Value {
+    Value::Field {
+        domain_type: dimensionless(),
+        codomain_type: dimensionless(),
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(Value::Real(0.0)),
+    }
+}
+
+#[test]
+fn an_unresolvable_bounded_reduction_records_unresolved_rather_than_vanishing() {
+    // The reduction is still a kink — λ has to know it is on this path even
+    // when the evaluator cannot say which node won.  Silently omitting the
+    // entry would read to λ as "this row is a smooth-function sample".
+    for (name, kind, _) in BOUNDED_REDUCTIONS {
+        let expr = call(name, vec![
+            literal(unresolvable_analytical_field()),
+            literal(bbox_x(2.0, 3.0)),
+        ]);
+        let (value, _, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
+        assert_eq!(value, Value::Undef, "{name}: the fixture must really be unresolvable");
+        assert_eq!(rec.len(), 1, "{name}: the entry is emitted even when the winner is unknown");
+        assert_eq!(rec.entries()[0].kind, kind, "{name}: kink kind");
+        assert_eq!(
+            rec.entries()[0].choice,
+            BranchChoice::Unresolved,
+            "{name}: an unknown winner is recorded as Unresolved, never invented"
+        );
+    }
+}
