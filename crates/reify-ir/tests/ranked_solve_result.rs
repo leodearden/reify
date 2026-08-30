@@ -7,6 +7,7 @@
 
 use reify_ir::OptimalityStatus;
 use reify_ir::{BestFoundReason, RankedCandidate, RankedSolveResult, Value};
+use reify_ir::{Completeness, PartialReason};
 use reify_core::diagnostics::Diagnostic;
 use reify_core::identity::ValueCellId;
 use std::collections::HashMap;
@@ -197,4 +198,56 @@ fn ranked_solve_result_debug_and_clone_smoke() {
     let d2 = format!("{:?}", cloned);
     assert!(d1.contains("Ranked"));
     assert_eq!(d1, d2);
+}
+
+// ── Completeness carrier on Ranked (solution-set-completeness §3.1, #6706) ────
+
+/// `RankedSolveResult::Ranked` carries the additive `completeness` field and it
+/// round-trips out of a full three-binding destructure.
+///
+/// The optimality binding is present but nothing is asserted about it: #6706 does
+/// not touch the optimality axis.
+#[test]
+fn ranked_carries_completeness() {
+    let result = RankedSolveResult::Ranked {
+        candidates: vec![make_candidate()],
+        optimality: OptimalityStatus::FeasibilityOnly,
+        completeness: Completeness::Exhaustive,
+    };
+
+    match &result {
+        RankedSolveResult::Ranked { candidates, optimality: _, completeness } => {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(*completeness, Completeness::Exhaustive);
+        }
+        _ => panic!("expected Ranked"),
+    }
+
+    // Clone and Debug still hold with the new field.
+    let cloned = result.clone();
+    let d1 = format!("{result:?}");
+    assert_eq!(d1, format!("{cloned:?}"));
+    assert!(d1.contains("Ranked"));
+    assert!(d1.contains("Exhaustive"), "completeness must appear in Debug");
+}
+
+/// A `Partial` verdict on `Ranked` round-trips its reason, so a consumer can
+/// attribute the decline without reaching past the carrier.
+#[test]
+fn ranked_carries_partial_completeness_with_reason() {
+    let result = RankedSolveResult::Ranked {
+        candidates: vec![make_candidate()],
+        optimality: OptimalityStatus::FeasibilityOnly,
+        completeness: Completeness::Partial { reason: PartialReason::NotAttempted },
+    };
+
+    match result {
+        RankedSolveResult::Ranked { completeness, .. } => {
+            assert_eq!(
+                completeness,
+                Completeness::Partial { reason: PartialReason::NotAttempted }
+            );
+        }
+        _ => panic!("expected Ranked"),
+    }
 }

@@ -1092,6 +1092,91 @@ mod tests {
         }
     }
 
+    /// BT13 (solution-set-completeness, #6706): the default `solve_ranked` lift
+    /// reports `Partial { NotAttempted }` — a solver that only implements `solve`
+    /// has, by construction, established nothing about the solution set — and
+    /// changes nothing else about the result it already produced.
+    ///
+    /// The optimality field is bound with `..` and asserted about NOWHERE: this
+    /// task does not touch the optimality axis, and pinning a `BestFoundReason`
+    /// variant here would couple this test to P2 μ #6680's landing.
+    #[test]
+    fn solve_ranked_default_lift_reports_not_attempted() {
+        use crate::completeness::{Completeness, PartialReason};
+        use crate::ranked::RankedSolveResult;
+
+        let mut solved_values = HashMap::new();
+        solved_values.insert(ValueCellId::new("Part", "x"), Value::length(0.01));
+
+        // Both problem shapes the two lift tests above cover: objective None and
+        // objective Some. Completeness is orthogonal to that split (D6), so both
+        // must report the same verdict.
+        let problems = [
+            (
+                "objective: None",
+                ResolutionProblem {
+                    dependent_cells: Vec::new(),
+                    auto_params: vec![],
+                    constraints: vec![],
+                    current_values: ValueMap::new(),
+                    objective: None,
+                    functions: vec![].into(),
+                },
+            ),
+            (
+                "objective: Some",
+                ResolutionProblem {
+                    dependent_cells: Vec::new(),
+                    auto_params: vec![],
+                    constraints: vec![],
+                    current_values: ValueMap::new(),
+                    objective: Some(ObjectiveSet::single(
+                        ObjectiveSense::Minimize,
+                        make_literal_expr(),
+                    )),
+                    functions: vec![].into(),
+                },
+            ),
+        ];
+
+        for (label, problem) in &problems {
+            let solver = MockSolvedSolver { values: solved_values.clone(), unique: true };
+
+            // BT13, half 1: `solve()` is byte-identical to what it returned before.
+            match solver.solve(problem) {
+                SolveResult::Solved { values, unique } => {
+                    assert_eq!(values, solved_values, "{label}: solve() values unchanged");
+                    assert!(unique, "{label}: solve() unique unchanged");
+                }
+                other => panic!("{label}: expected Solved, got {other:?}"),
+            }
+
+            // BT13, half 2: the lift adds the completeness verdict and nothing else.
+            let ranked = solver.solve_ranked(problem);
+            match &ranked {
+                RankedSolveResult::Ranked { candidates, completeness, .. } => {
+                    assert_eq!(
+                        *completeness,
+                        Completeness::Partial { reason: PartialReason::NotAttempted },
+                        "{label}: a solver that only implements solve() establishes nothing"
+                    );
+                    assert!(!completeness.derived_unique(candidates.len()), "{label}: C1");
+                    assert!(!completeness.permits_proven_optimal(), "{label}: C2");
+
+                    assert_eq!(candidates.len(), 1, "{label}: candidate count unchanged");
+                    let c = &candidates[0];
+                    assert_eq!(c.values, solved_values, "{label}: candidate values unchanged");
+                    assert!(
+                        c.objective_score.is_none(),
+                        "{label}: default lift objective_score stays None"
+                    );
+                    assert!(c.unique, "{label}: candidate unique forwarded unchanged");
+                }
+                other => panic!("{label}: expected Ranked, got {other:?}"),
+            }
+        }
+    }
+
     /// B3 case (c): Infeasible → RankedSolveResult::Infeasible with diagnostics preserved.
     #[test]
     fn solve_ranked_default_lift_infeasible() {
