@@ -473,11 +473,32 @@ harness_path_attr_violations() {
 # compile error, no link error, no test-count signal. Neither direction
 # subsumes the other.
 #
+# WHY THIS IS A GUARD AND NOT A COMMENT (mirrors harness_path_attr_violations'
+# own header framing). harness_path_attr_violations walks declarations -> files
+# and, BY DESIGN, passes a bare `mod x;` whose crate-root-relative resolution
+# lands on a retained `tests/` sibling (Section 6's principled exception) —
+# that is correct FOR THAT DETECTOR'S QUESTION. But it means a module-dir file
+# of the SAME STEM (`tests/harness_<subsystem>/x.rs`, left behind mid-move, or
+# never removed) is structurally INVISIBLE to it: rustc also resolves the bare
+# `mod x;` to the sibling, so the module-dir file is silently never compiled —
+# no compile error, no link error, no test-count signal, exactly the silent
+# mode that makes prose alone insufficient here too.
+#
 # For every <tests_dir>/harness_<subsystem>.rs root that has a module dir
 # (${root%.rs}; a single-file harness with no module dir has nothing to
 # scan), compares every *.rs file found under that module dir at any depth
 # against harness-layout-lib.sh's harness_layout_declared_members, and flags
-# any file absent from that set.
+# any file absent from that set. Both sides of the comparison are run through
+# `_harness_layout_norm_path` — the declared set already comes normalized
+# (harness_layout_declared_members' contract), and the `find` result and the
+# <tests_dir> prefix used to derive `member=` are normalized here — so a
+# `#[path]` value written as `./harness_sub/a.rs` or a `..`-round-trip cannot
+# compare unequal to its canonical form and false-fire (the same moddir-prefix
+# hazard harness-layout-lib.sh's header calls out). `member=` is always the
+# canonical, <tests_dir>-relative form (`harness_sub/a.rs`) a developer can
+# paste straight into `#[path = "…"]`, never a `./`- or `..`-bearing echo of
+# whatever form the caller's <tests_dir> or the file's declaration happened to
+# use.
 #
 # Prints one structured FAIL line per violation; returns 1 if <crate> has any.
 # Parameterized on <tests_dir> so hermetic fixtures drive it exactly as live.
@@ -487,12 +508,14 @@ harness_undeclared_member_violations() {
     local tests_dir="$2"
 
     local violations=0
-    local root moddir f member decl
+    local root moddir f member decl tests_dir_norm
 
     if [ ! -d "$tests_dir" ]; then
         _emit FAIL "crate=$crate" "dir=$tests_dir" "reason=missing-tests-dir"
         return 1
     fi
+
+    _harness_layout_norm_path "$tests_dir"; tests_dir_norm="$_HL_NORM_OUT"
 
     for root in "$tests_dir"/harness_*.rs; do
         [ -f "$root" ] || continue          # skip a literal no-match glob
@@ -500,6 +523,8 @@ harness_undeclared_member_violations() {
         [ -d "$moddir" ] || continue        # single-file harness: nothing to scan
 
         # Rebuilt fresh per root: membership is root-scoped, not crate-scoped.
+        # Keys are already normalized (harness_layout_declared_members' own
+        # contract), so only the `find` side below needs normalizing to match.
         local -A _declared=()
         while IFS= read -r decl; do
             [ -n "$decl" ] || continue
@@ -509,8 +534,10 @@ harness_undeclared_member_violations() {
         # Process substitution (not a pipe) draining to completion — the same
         # esc-5172-1 SIGPIPE-141 posture harness_layout_unit_lines documents.
         while IFS= read -r -d '' f; do
+            _harness_layout_norm_path "$f"
+            f="$_HL_NORM_OUT"
             [ -n "${_declared["$f"]:-}" ] && continue
-            member="${f#"$tests_dir"/}"
+            member="${f#"$tests_dir_norm"/}"
             _emit FAIL "crate=$crate" "file=$root" "reason=undeclared-member" "member=$member"
             violations=$((violations + 1))
         done < <(find "$moddir" -type f -name '*.rs' -print0)
