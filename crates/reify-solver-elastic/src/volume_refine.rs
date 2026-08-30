@@ -218,7 +218,13 @@ pub(crate) fn project_per_element_sizes_to_vertices(
 ///
 /// # Errors
 ///
-/// Returns `RefineError::SizeHintsLengthMismatch` if
+/// Returns [`RefineError::UnsupportedConnectivity`] if `volume_mesh`'s
+/// connectivity is `Hex` or `Wedge` — this refiner is tet-only. That gate is
+/// the shared `element_count` chokepoint and runs **first**, ahead of the
+/// size-hint validation below and before any gmsh work, so a mis-routed
+/// hex/wedge mesh fails fast and build-agnostically.
+///
+/// Otherwise returns `RefineError::SizeHintsLengthMismatch` if
 /// `size_hints.len() != element_count`, `RefineError::NonFiniteSize` on NaN
 /// or ±∞, `RefineError::NonPositiveSize` on `<= 0`, or kernel errors on
 /// Gmsh failures.

@@ -506,10 +506,15 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 ///
 /// # Errors
 ///
-/// Two malformed-input guards run **before** any gmsh work (and before
+/// Three malformed-input guards run **before** any gmsh work (and before
 /// [`dorfler_size_hints`] indexes the sizes), so a bad call fails fast and
 /// build-agnostically:
 ///
+/// * [`RefineError::UnsupportedConnectivity`] when `volume_mesh`'s
+///   connectivity is `Hex` or `Wedge` — this refinement pipeline is tet-only.
+///   This guard runs **first**, ahead of both checks below: it is the shared
+///   `element_count` chokepoint, which is called before either the length or
+///   the marked-index validation.
 /// * [`RefineError::SizeHintsLengthMismatch`] when
 ///   `current_sizes.len() != element_count`.
 /// * [`RefineError::MarkedIndexOutOfRange`] when any `marked` index is
