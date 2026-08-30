@@ -845,6 +845,184 @@ class TestRunProbe(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# task-5925 (RED): grammar probes must run under a PRIVATE XDG_CACHE_HOME
+# ---------------------------------------------------------------------------
+
+class TestGrammarCacheIsolation(unittest.TestCase):
+    """Pins that a grammar probe's subprocess gets an ISOLATED tree-sitter cache.
+
+    WHY THIS EXISTS.  `tree-sitter parse` compiles the grammar to a shared object
+    cached at ``$XDG_CACHE_HOME/tree-sitter/lib/<language-name>.so`` — keyed by
+    LANGUAGE NAME, not by grammar path, and invalidated only on source mtime.
+    Every one of the ~235 linked worktrees of this store therefore shares ONE
+    ``~/.cache/tree-sitter/lib/reify.so``, so a patched build made in any other
+    lane silently serves THIS lane's parses.  That is not hypothetical: it is the
+    recorded false PASS at
+    docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2.
+
+    The assertions deliberately go beyond "XDG_CACHE_HOME is set" — "is set" is
+    satisfied by the ambient value and would enshrine the bug.  Each case pins
+    that the child's cache is neither the ambient one nor ``~/.cache``.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _make_probe(self, kind="grammar",
+                    fixture="tests/prd-gate/fixtures/arrow_type.ri"):
+        return pcc.Probe(
+            capability="test",
+            probe_kind=kind,
+            fixture=fixture,
+            expected={"observation": "present", "match": {}},
+        )
+
+    def _reported_cache(self, run) -> str:
+        """Extract the XDG_CACHE_HOME the CHILD saw out of a stub's stdout.
+
+        Asserts the line is actually present first: a silent "" would let every
+        downstream inequality assertion pass vacuously.
+        """
+        for line in run.stdout.splitlines():
+            if line.startswith("XDG_CACHE_HOME="):
+                return line.split("=", 1)[1]
+        self.fail(
+            "stub did not report XDG_CACHE_HOME; "
+            f"exit={run.exit_code} stdout={run.stdout!r} stderr={run.stderr!r}"
+        )
+
+    def _assert_isolated(self, value: str, ambient) -> None:
+        """The reported cache must be a real private dir, not the shared one."""
+        self.assertNotEqual(
+            value, _UNSET_CACHE_MARKER,
+            "grammar probe child ran with XDG_CACHE_HOME unset — it would fall "
+            "back to the host-global ~/.cache/tree-sitter shared by every lane",
+        )
+        self.assertTrue(value, "reported XDG_CACHE_HOME must be non-empty")
+        if ambient is not None:
+            self.assertNotEqual(
+                value, ambient,
+                "grammar probe must NOT inherit the ambient XDG_CACHE_HOME; "
+                "'is set' is satisfied by the ambient value and enshrines the bug",
+            )
+        home_cache = os.path.expanduser("~/.cache")
+        self.assertNotEqual(
+            value, home_cache,
+            f"grammar probe cache must not be the host-global {home_cache}",
+        )
+
+    # ── (a) the unbounded arm sets an isolated cache ──────────────────────────
+
+    def test_grammar_probe_sets_xdg_cache_home(self):
+        """run_probe(grammar) hands the child an EXPLICIT cache dir.
+
+        The ambient XDG_CACHE_HOME is deleted for the duration so the only way to
+        reach a set value is run_probe() supplying one.  Without that deletion
+        this test would pass by pure inheritance on any host that happens to
+        export XDG_CACHE_HOME — and this one does: the orchestrator sets
+        XDG_CACHE_HOME=/tmp/reify-agent-xdg-cache for every agent
+        (dark-factory-orchestrator.yaml:1041), which merely RELOCATES the shared
+        artifact rather than isolating it.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            os.environ.pop("XDG_CACHE_HOME", None)
+            run = pcc.run_probe(probe)
+        self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
+        value = self._reported_cache(run)
+        self.assertNotEqual(
+            value, _UNSET_CACHE_MARKER,
+            "grammar probe child must receive an explicit XDG_CACHE_HOME",
+        )
+
+    # ── (b) and it is not the ambient one, however the host is configured ─────
+
+    def test_grammar_probe_cache_is_not_ambient(self):
+        """The child's cache differs from the ambient value AND from ~/.cache.
+
+        Run under BOTH host configurations — an ambient XDG_CACHE_HOME pointed at
+        a sentinel dir, and no ambient XDG_CACHE_HOME at all — so the assertion
+        holds whichever way the machine running the gate happens to be set up.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        sentinel = os.path.join(self._tmpdir, "ambient_cache")
+        os.makedirs(sentinel, exist_ok=True)
+
+        with self.subTest(ambient="set"):
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"TREE_SITTER_BIN": stub, "XDG_CACHE_HOME": sentinel},
+            ):
+                run = pcc.run_probe(probe)
+            self._assert_isolated(self._reported_cache(run), sentinel)
+
+        with self.subTest(ambient="unset"):
+            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                os.environ.pop("XDG_CACHE_HOME", None)
+                run = pcc.run_probe(probe)
+            self._assert_isolated(self._reported_cache(run), None)
+
+    # ── (c) the dir the child was pointed at is real and writable ─────────────
+
+    def test_grammar_probe_cache_dir_exists(self):
+        """The reported path is an existing, writable directory.
+
+        tree-sitter does not create a missing $XDG_CACHE_HOME root for us in
+        every version, and a non-writable one degrades to a load failure — so
+        "isolated" is only useful if the dir is also usable.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        # Ambient popped for the same reason as (a): otherwise an inherited
+        # XDG_CACHE_HOME that already exists satisfies this vacuously.
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            os.environ.pop("XDG_CACHE_HOME", None)
+            run = pcc.run_probe(probe)
+        value = self._reported_cache(run)
+        self.assertNotEqual(value, _UNSET_CACHE_MARKER)
+        self.assertTrue(
+            os.path.isdir(value),
+            f"grammar cache dir must exist after the probe ran; got {value!r}",
+        )
+        self.assertTrue(
+            os.access(value, os.W_OK),
+            f"grammar cache dir must be writable; got {value!r}",
+        )
+
+    # ── (d) regression: adding env= must not disturb the CWD contract ─────────
+
+    def test_grammar_probe_still_runs_in_tree_sitter_reify(self):
+        """Grammar probes keep CWD = <repo_root>/tree-sitter-reify.
+
+        The env plumbing is additive; `tree-sitter parse` still needs the grammar
+        directory as its CWD to resolve the reify grammar at all.  Pinned here so
+        a regression shows up as this test rather than as "No language found".
+        """
+        stub = _write_ts_stub(
+            self._tmpdir, "ts_stub_cwd", 'echo "CWD=$PWD"\nexit 0\n'
+        )
+        probe = self._make_probe()
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe)
+        self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
+        cwd_lines = [ln for ln in run.stdout.splitlines() if ln.startswith("CWD=")]
+        self.assertEqual(len(cwd_lines), 1, f"expected one CWD line; got {run.stdout!r}")
+        cwd = cwd_lines[0].split("=", 1)[1]
+        self.assertTrue(
+            cwd.endswith("tree-sitter-reify"),
+            f"grammar probe must run inside tree-sitter-reify/; got {cwd!r}",
+        )
+
+
+
+# ---------------------------------------------------------------------------
 # step-11 (RED): harness exit-code aggregation
 # ---------------------------------------------------------------------------
 
@@ -2016,6 +2194,27 @@ def _ts_stub_parse_error(tmpdir: str, name: str = "ts_stub_parse_error") -> str:
 def _ts_stub_clean(tmpdir: str, name: str = "ts_stub_clean") -> str:
     """Stub reproducing a clean parse: exit 0, no output."""
     return _write_ts_stub(tmpdir, name, "exit 0\n")
+
+
+# Sentinel the echo-cache stub prints when XDG_CACHE_HOME is absent from its
+# environment.  A distinct marker rather than "" so a test can tell "the child
+# saw no cache override" apart from "the child saw an empty one".
+_UNSET_CACHE_MARKER = "<unset>"
+
+
+def _ts_stub_echo_cache(tmpdir: str, name: str = "ts_stub_echo_cache") -> str:
+    """Stub that reports the XDG_CACHE_HOME its own process was handed, exit 0.
+
+    The whole point of the grammar-cache isolation contract is what the CHILD
+    sees, which no in-process assertion on os.environ can observe — the parent's
+    environment is exactly what is NOT supposed to reach the child.  Echoing it
+    back through stdout is the only way to measure it.
+    """
+    return _write_ts_stub(tmpdir, name, """\
+        echo "XDG_CACHE_HOME=${XDG_CACHE_HOME:-<unset>}"
+        exit 0
+    """)
+
 
 
 def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -> str:
