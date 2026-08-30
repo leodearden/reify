@@ -394,3 +394,72 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
          radian_ok is 0 the fault did more than remove one reference; got: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The half-wired `step.angleunit.mode` trap — a SEPARATE arm
+// ---------------------------------------------------------------------------
+
+/// The degree regime of `step.angleunit.mode` is REFUSED, and the fault does
+/// not leak out of the export.
+///
+/// THE DECLARATION WALK CANNOT CATCH THIS, and the guard does not pretend it
+/// can. `step.angleunit.mode` is a registered `Interface_Static` whose only
+/// write-side consumer is `TopoDSToStep_MakeStepFace::Init` ->
+/// `GeomConvert_Units::RadianToDegree`, which rescales PCURVE PARAMETER space.
+/// The unit declaration ignores it entirely: the #6184 measurement recorded in
+/// `cpp/occt_wrapper.cpp` exported one cone under all three enum values and
+/// found `#84 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) )`
+/// byte-identical in every one, with the only difference a pcurve
+/// `CARTESIAN_POINT` moving from `(-6.28318530718,0.)` to `(-360.,0.)`. The
+/// payload moves; the declaration does not. So the four declaration arms above
+/// provably cannot see this, and it needs its own check of the static —
+/// which is also a far more actionable diagnostic than any unit walk could be.
+///
+/// Setting the static to Deg produces degree pcurves under a radian header:
+/// a silently self-inconsistent file, NOT a degrees file.
+#[test]
+fn guard_refuses_the_half_wired_degree_angle_mode() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, same attribution arms as every other refusal.
+    let msg = refusal_message(&kernel, union_id, "angle_mode_deg");
+
+    // (b) The diagnostic names the static VERBATIM and explains the mechanism.
+    // "some angle setting is wrong" would send the reader looking through the
+    // unit declarations, where — by construction — they will find nothing.
+    assert!(
+        msg.contains("step.angleunit.mode"),
+        "the refusal must name the `step.angleunit.mode` static verbatim — it \
+         is the one string a reader can grep for; got: {msg}"
+    );
+    assert!(
+        msg.contains("pcurve"),
+        "the refusal must say WHAT the degree regime moves: pcurve parameter \
+         space, not the declaration; got: {msg}"
+    );
+    assert!(
+        msg.contains("RadianToDegree"),
+        "the refusal must name the consumer that does the rescaling \
+         (GeomConvert_Units::RadianToDegree), so the reader can confirm the \
+         mechanism rather than take it on faith; got: {msg}"
+    );
+    assert!(
+        msg.contains("declaration"),
+        "the refusal must say the DECLARATION stays at radians — that is what \
+         makes the file self-inconsistent rather than simply a degrees file; \
+         got: {msg}"
+    );
+
+    // (c) NO LEAK. `step.angleunit.mode` is a process-global Interface_Static
+    // and this harness runs its tests as threads in ONE process, so a fault
+    // that failed to restore it would make unrelated sibling tests' exports
+    // refuse. This also pins restoration on the THROWING path, which is the
+    // only path this fault ever takes.
+    kernel
+        .export_step_with_injected_fault_for_test(union_id, "AP214", "none")
+        .expect(
+            "the injected `step.angleunit.mode` value must be restored even \
+             though the export threw — it is a process-global Interface_Static \
+             shared with every other test in this harness binary",
+        );
+}
