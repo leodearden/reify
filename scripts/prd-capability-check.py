@@ -238,14 +238,26 @@ def _grammar_cache_home(repo_root: str) -> str:
     """
     override = os.environ.get(_CACHE_HOME_OVERRIDE_ENV)
     if override:
-        os.makedirs(override, exist_ok=True)
-        return override
+        try:
+            os.makedirs(override, exist_ok=True)
+            return override
+        except OSError:
+            # TIER 1 — a bad override DEGRADES.  An operator typo or a
+            # REIFY_TS_CACHE_HOME that has become unwritable must not break the
+            # gate, and falling through to the derived dir PRESERVES isolation,
+            # which is the property this whole seam exists to guarantee; only
+            # the operator's custom-dir intent is lost.
+            pass
 
     key = hashlib.sha256(
         "\0".join((os.path.abspath(repo_root), _grammar_fingerprint(repo_root)))
         .encode("utf-8")
     ).hexdigest()[:16]
     path = os.path.join(tempfile.gettempdir(), f"reify-ts-cache-{key}")
+    # TIER 2 — an uncreatable DERIVED dir is left to RAISE, and run_probe()
+    # represents it as exit 127 + _BINARY_NOT_FOUND_SENTINEL.  Deliberately not
+    # an ambient fallback: a silent run against the shared cache is exactly the
+    # cross-lane false PASS this module exists to prevent.
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -703,10 +715,14 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     env: Optional[Dict[str, str]] = None
     if probe.probe_kind == "grammar":
         cwd = os.path.join(repo_root, "tree-sitter-reify")
-        # ONE expression feeds both launch arms below, so they cannot drift.
-        env = _grammar_probe_env(repo_root)
 
     try:
+        if probe.probe_kind == "grammar":
+            # INSIDE the try on purpose, not tidiness: building this env CREATES
+            # the private cache dir, so an OSError from that setup must reach the
+            # handler below and be represented, exactly like a launch failure.
+            # ONE expression feeds both launch arms below, so they cannot drift.
+            env = _grammar_probe_env(repo_root)
         if timeout is None:
             proc = subprocess.run(
                 cmd,
