@@ -1293,6 +1293,118 @@ class TestGrammarCacheHome(unittest.TestCase):
         self.assertTrue(os.path.isdir(path), f"must exist; got {path!r}")
         self.assertTrue(os.access(path, os.W_OK), f"must be writable; got {path!r}")
 
+    # ── (h) a bad override degrades to the DERIVED dir — isolation preserved ──
+
+    def test_bad_override_falls_back_to_derived(self):
+        """An unusable REIFY_TS_CACHE_HOME yields exactly the derived path.
+
+        "Does not raise" is necessary and NOT sufficient: it says nothing about
+        WHICH dir the fallback lands on, and a fallback to the ambient shared
+        cache would satisfy it while destroying the isolation invariant.  So the
+        assertion is EQUALITY with the no-override derivation, which proves the
+        fallback is the isolated per-lane dir rather than merely "a path that
+        exists".  Only the operator's custom-dir intent is lost.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+        derived = self._cache_home(root)
+
+        blocker = os.path.join(self._tmpdir, "override_parent_is_a_file")
+        with open(blocker, "w") as f:
+            f.write("x")
+        bad = os.path.join(blocker, "cache")
+
+        with unittest.mock.patch.dict(
+            os.environ, {pcc._CACHE_HOME_OVERRIDE_ENV: bad}
+        ):
+            path = pcc._grammar_cache_home(root)
+        self.assertEqual(
+            path, derived,
+            "an unusable override must fall back to the DERIVED per-lane dir; "
+            "any other target (notably the ambient shared cache) silently "
+            "restores the cross-lane collision this seam exists to kill",
+        )
+
+    def test_bad_override_never_raises(self):
+        """Several OSError shapes all degrade rather than propagate.
+
+        Matches the "Never raises" contract _grammar_fingerprint() already
+        upholds, and for the same reason: grammar_substrate_usable() runs at
+        test-harness IMPORT time, where a raise costs the whole suite.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+
+        blocker = os.path.join(self._tmpdir, "parent_is_a_file")
+        with open(blocker, "w") as f:
+            f.write("x")
+
+        locked = os.path.join(self._tmpdir, "parent_unwritable")
+        os.makedirs(locked, exist_ok=True)
+        os.chmod(locked, 0o500)
+
+        shapes = (
+            ("parent-is-a-file", os.path.join(blocker, "cache")),
+            ("parent-unwritable", os.path.join(locked, "cache")),
+        )
+        try:
+            for label, bad in shapes:
+                with self.subTest(shape=label):
+                    # Assert the shape actually FAILS before asserting it
+                    # degrades: a case that quietly succeeds (root ignores the
+                    # mode bits) would pass vacuously and guard nothing.
+                    try:
+                        os.makedirs(bad, exist_ok=True)
+                    except OSError:
+                        pass
+                    else:
+                        self.skipTest(
+                            f"{label}: os.makedirs unexpectedly succeeded, so "
+                            "this shape cannot exercise the fallback "
+                            "(running as root?)"
+                        )
+                    with unittest.mock.patch.dict(
+                        os.environ, {pcc._CACHE_HOME_OVERRIDE_ENV: bad}
+                    ):
+                        path = pcc._grammar_cache_home(root)
+                    self._made.append(path)
+                    self.assertTrue(
+                        os.path.isdir(path),
+                        f"{label}: the fallback must be a real, usable directory",
+                    )
+        finally:
+            # Restored here rather than via addCleanup: cleanups run AFTER
+            # tearDown, by which point rmtree has already removed the dir and
+            # the chmod would fail with ENOENT.
+            os.chmod(locked, 0o700)
+
+    # ── (i) an uncreatable DERIVED dir is deliberately FAIL-CLOSED ────────────
+
+    def test_uncreatable_derived_dir_raises_oserror(self):
+        """A wedged derived path RAISES; it must not degrade to anything.
+
+        The other half of the two-tier contract, pinned so a later well-meaning
+        change to a silent ambient fallback fails by NAME here instead of quietly
+        restoring the hazard.  run_probe() is what turns this raise into a
+        represented exit 127 + sentinel; the derivation itself stays loud.
+
+        Unprivileged-reachable, not just an operator mistake: /tmp is
+        world-writable, so any other uid can pre-create reify-ts-cache-<key> as a
+        plain file.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            with unittest.mock.patch.dict(os.environ, {}):
+                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+                derived = pcc._grammar_cache_home(root)
+                shutil.rmtree(derived, ignore_errors=True)
+                with open(derived, "w") as f:
+                    f.write("x")
+                self.assertTrue(
+                    os.path.isfile(derived),
+                    "precondition: the derived path must be a FILE",
+                )
+                with self.assertRaises(OSError):
+                    pcc._grammar_cache_home(root)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2987,6 +3099,52 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             "would still pass with the errno detail dropped entirely",
         )
 
+
+    def test_cache_setup_failure_reason_names_cache(self):
+        """A cache-setup failure must be attributable from the reason text.
+
+        run_probe() represents an uncreatable private cache dir through the SAME
+        _BINARY_NOT_FOUND_SENTINEL as a missing CLI and a missing grammar dir, so
+        the reason's static sentence — which today enumerates only that pair —
+        would confidently print the wrong subsystem for this third cause.
+
+        Asserted on the reason with the offending path REDACTED, because that
+        path is literally named `reify-ts-cache-<key>`: a bare "cache" substring
+        check would pass on the errno detail alone while the static sentence
+        still named only the CLI and the grammar directory.  Same vacuity trap
+        test_launch_failure_reason_carries_the_offending_path documents, inverted.
+        """
+        # The clean stub deliberately, not the echo-cache one: its own path
+        # reaches the reason via _resolve_tree_sitter_bin() and a name carrying
+        # "cache" would satisfy the assertion below by itself.
+        stub = self._clean_stub()
+        self.assertNotIn("cache", stub.lower(), "the stub path must be neutral")
+        self.assertNotIn(
+            "cache", self._tmpdir.lower(), "the tempdir path must be neutral"
+        )
+
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+                wedged = pcc._grammar_cache_home(pcc._find_repo_root())
+                shutil.rmtree(wedged, ignore_errors=True)
+                with open(wedged, "w") as f:
+                    f.write("x")
+                usable, reason = pcc.grammar_substrate_usable()
+
+        self.assertFalse(usable, "a wedged grammar cache is an unusable substrate")
+        self.assertIn(
+            wedged, reason,
+            "the errno detail naming the offending cache path must reach the "
+            "reason — it is what actually distinguishes the three causes",
+        )
+        redacted = reason.replace(wedged, "<path>").lower()
+        self.assertIn(
+            "cache", redacted,
+            "the static sentence must name the cache-setup cause alongside the "
+            "missing-CLI and missing-grammar-dir ones it already enumerates; "
+            "otherwise the SKIP line points an operator at the wrong subsystem",
+        )
     # ── (e) present-but-unlaunchable CLI → unusable, never a raise ────────────
 
     def test_non_executable_cli_is_unusable_with_reason(self):
