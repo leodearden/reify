@@ -945,6 +945,100 @@ structure def Bearing<T: Seal> {
 structure def Assembly { sub b = Bearing<auto: Seal>() }
 "#;
 
+/// Containment fixture for the `auto:`-resolution-failure panic hazard (task
+/// #6798 amendment round 2; the underlying compiler defect is owned by task
+/// **#6851**).
+///
+/// A SINGLE-candidate `auto:` bound whose constraint references a param with a
+/// LITERAL default. Three measured properties make this the right fixture, and
+/// none of them may be "simplified" away:
+///
+/// 1. **`param seal : T` is REQUIRED** — deliberately unlike
+///    [`BT8_CONSTANT_CONSTRAINT_SRC`], which leaves `T` unused for exactly the
+///    opposite reason. Using `T` in the body is what creates the
+///    `TypeParam("T")`-typed value cell that a failed resolution leaves
+///    unsubstituted, and therefore what makes the hazard reachable at all.
+///
+/// 2. **Exactly ONE candidate (`GasketSeal`) plus a PARAM-REFERENCING
+///    constraint (`constraint bore > 10.0`, not a constant)** are what make
+///    the hazard NEWLY reachable by task #6798's checker swap rather than
+///    pre-existing. Measured: under the compile-time
+///    `CompileTimeIndeterminateChecker` stub, `bore > 10.0` has `ValueRef`
+///    leaves → `Indeterminate` → the sole candidate is feasible → resolution
+///    SUCCEEDS → `compile_with_stdlib` emits ZERO diagnostics and eval
+///    completes cleanly. Under the real `SimpleConstraintChecker`, `bore`
+///    binds to its literal default `1.0` → `1.0 > 10.0` → `Bool(false)` →
+///    `Violated` → zero feasible candidates → `E_AUTO_TYPE_PARAM_NO_CANDIDATE`
+///    → resolution fails → unsubstituted cell → panic. Make the constraint
+///    constant, or add a second candidate, and the shape collapses into the
+///    pre-existing multi-candidate case that panics on either checker — which
+///    would no longer test what this fixture exists to test.
+///
+/// 3. **The trigger is not contrived.** A literal-default param plus a
+///    momentarily-violated constraint is the single most common transient
+///    state while typing in an editor — which is why containment belongs in
+///    this diff rather than being deferred wholesale to #6851.
+#[cfg(test)]
+pub(crate) const AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC: &str = r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    param seal : T
+    constraint bore > 10.0
+}
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+"#;
+
+/// Anti-vacuity guard shared by the containment tests over
+/// [`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`].
+///
+/// Deliberately NOT [`assert_bt8_fixture_still_diverges`]: that guard pins the
+/// AMBIGUOUS↔NO_CANDIDATE divergence of the two-candidate constant-constraint
+/// fixture, which is a DIFFERENT claim. This one pins the
+/// clean↔NO_CANDIDATE divergence that makes the panic hazard NEWLY reachable:
+/// the stub compiles the fixture with zero errors, and only the real checker
+/// fails resolution.
+///
+/// Shared between `diagnostics::tests::…_does_not_panic_diagnostics_entry_points`
+/// and `analysis::tests::…_does_not_panic_analysis_context` so the two cannot
+/// drift apart.
+#[cfg(test)]
+pub(crate) fn assert_auto_fail_fixture_is_newly_reachable() {
+    let parsed = reify_compiler::parse_with_stdlib(
+        AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+        ModulePath::single("test"),
+    );
+    let stub = reify_compiler::compile_with_stdlib(&parsed);
+    let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    assert!(
+        !stub
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error),
+        "anti-vacuity guard: the compile-time stub must compile \
+         AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC with ZERO Error-severity \
+         diagnostics — that is what makes the panic hazard NEWLY reachable \
+         via task #6798's checker swap rather than pre-existing. If the stub \
+         now errors too, this fixture has stopped demonstrating newly-reachable \
+         failure and the containment tests below are vacuous. stub \
+         diagnostics: {:#?}",
+        stub.diagnostics
+    );
+    assert!(
+        real.diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+            && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+        "anti-vacuity guard: the real SimpleConstraintChecker must fail \
+         `auto:` resolution on AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC with an \
+         Error-severity AutoTypeParamNoCandidate — that failed resolution is \
+         what leaves the unsubstituted TypeParam cell the containment guard \
+         exists to keep away from the engine (task #6851). If it no longer \
+         does, this fixture has stopped demonstrating newly-reachable failure \
+         and the containment tests below are vacuous. real-checker \
+         diagnostics: {:#?}",
+        real.diagnostics
+    );
+}
+
 /// Anti-vacuity guard shared by every BT8 forward test: assert the
 /// compile-time stub and the real `SimpleConstraintChecker` still
 /// genuinely diverge on [`BT8_CONSTANT_CONSTRAINT_SRC`] before any
@@ -1359,6 +1453,70 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
             "severity is a required conjunct: a WARNING-severity \
              AutoTypeParamNoCandidate (not emitted today, pinned so a future \
              severity downgrade cannot silently widen the guard) must not fire"
+        );
+    }
+
+    /// AMENDMENT ROUND 2 (task #6798, reviewer_comprehensive / robustness) —
+    /// containment regression lock for the two entry points in this file.
+    ///
+    /// A failed `auto:` type-parameter resolution leaves a `param seal : T`
+    /// member carrying `cell_type = Type::TypeParam("T")` into the evaluation
+    /// graph, where `reify-eval`'s `#[cfg(debug_assertions)]`
+    /// `assert_value_cell_types_representable` PANICS
+    /// ("unrepresentable cell_type: value cell `Assembly.b.seal` has
+    /// cell_type TypeParam(\"T\")", `crates/reify-eval/src/engine_eval.rs`).
+    /// The root-cause fix is owned by task **#6851**; this test locks the
+    /// LSP-side containment ([`super::auto_type_param_resolution_failed`]),
+    /// which skips the eval/check pass so the language server survives and
+    /// still reports the compile-stage error.
+    ///
+    /// **Reaching the assertions AT ALL is half the contract.** Without the
+    /// guard these two calls PANIC before they can return, so "the test ran to
+    /// completion" IS the no-panic assertion. Wrapping either call in
+    /// `#[should_panic]` or `catch_unwind` would invert the contract this test
+    /// exists to state — do not.
+    #[test]
+    fn auto_resolution_failure_does_not_panic_diagnostics_entry_points() {
+        // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
+        assert_auto_fail_fixture_is_newly_reachable();
+
+        let no_candidate_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamNoCandidate".to_string(),
+        ));
+
+        // --- Stateless surface: compute_diagnostics ---
+        // Panics at engine_eval.rs without the containment guard (measured).
+        let diags = compute_diagnostics(AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, &test_uri());
+        assert!(
+            diags.iter().any(|d| d.code == no_candidate_code),
+            "containment (compute_diagnostics): a failed `auto:` resolution \
+             must still surface the compile-stage AutoTypeParamNoCandidate \
+             error — reaching this assertion at all means the eval pass was \
+             correctly skipped rather than panicking on the unsubstituted \
+             TypeParam cell (task #6851). A panic here means the containment \
+             guard has regressed; an empty/miscoded result means the guard \
+             fires too early and swallows the compile diagnostics. got: {:#?}",
+            diags
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(
+            &mut state,
+            AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+            &test_uri(),
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == no_candidate_code),
+            "containment (compute_diagnostics_with_state): the live server's \
+             keystroke path must still surface the compile-stage \
+             AutoTypeParamNoCandidate error without feeding the unsubstituted \
+             TypeParam graph to the engine (task #6851). A panic here means \
+             the containment guard has regressed. got: {:#?}",
+            result.diagnostics
         );
     }
 
