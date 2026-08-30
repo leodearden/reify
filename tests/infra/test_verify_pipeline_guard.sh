@@ -442,25 +442,19 @@ assert_exit "PRECISION: docs/notes/unregistered-example.md NOT in doc-sync-paths
 # REGISTERED. This is the recurrence guard: a FUTURE doc-sync grep added on a
 # new doc that is registered in NEITHER registry goes RED here until it is.
 #
-# THE PREDICATE IS "REGISTERED IN EITHER REGISTRY", NOT "REQUIRES FULL GATE"
-# (task 6857, filed from esc-6758-2). It used to be the latter, which answers
-# only "is this doc in scripts/doc-sync-paths.txt?" — but reify registers a
-# load-bearing artifact at TWO deliberate cost points, and that tradeoff was
-# explicitly weighed and recorded by task 4955 (see the TRADEOFF BREADCRUMB in
-# scripts/doc-sync-paths.txt):
-#   - doc-sync-paths.txt      BLUNT: any edit routes the whole diff to the
-#                             full --scope all gate.
-#   - verify-pipeline-infra-tests.txt
-#                             SURGICAL: an edit SELECTS the doc's guarding
-#                             infra test at task scope, via verify.sh's
-#                             select_infra_tests().
-# A doc registered only surgically IS load-bearing, just at the cheaper point —
-# and the old predicate called that drift. The only remedy available to a task
-# without doc-sync-paths.txt in its lock charter was to stop matching the grep
-# above, which silently shrinks this population and teaches the next author the
-# same dodge. Asking `is-registered` instead removes the false positive without
-# touching the population heuristic, whose whole value is that it enrols docs by
-# TEXTUAL COINCIDENCE — i.e. without the author's cooperation.
+# THE PREDICATE IS "REGISTERED", NOT "REQUIRES FULL GATE" (task 6857, filed
+# from esc-6758-2). It used to be the latter, which sees only ONE of reify's
+# two registration cost points and so called a surgical-only registration
+# drift; the only remedy that left a task was to stop matching the grep above,
+# which silently shrinks this population and teaches the next author the same
+# dodge. Asking `is-registered` removes the false positive without touching the
+# population heuristic, whose whole value is that it enrols docs by TEXTUAL
+# COINCIDENCE — i.e. without the author's cooperation.
+#
+# CANONICAL WRITE-UP — the two cost points, the full matched-set list, and the
+# caution that exit 0 there means REGISTERED and not FULL GATE REQUIRED: the
+# `is-registered` entry in scripts/verify-pipeline-guard.sh's header. It owns
+# that rationale; this file deliberately carries no second copy of it.
 #
 # THE RECURRENCE GUARD IS UNCHANGED IN STRENGTH: membership in either registry
 # is always a deliberate registration, so a genuinely unregistered new doc still
@@ -493,25 +487,16 @@ while IFS= read -r _doc; do
         run_guard is-registered "$_doc"
 done <<< "$_ANTI_DRIFT_DOCS"
 
-# (e) REGISTERED-IN-EITHER-REGISTRY predicate (task 6857, filed from esc-6758-2)
+# (e) The `is-registered` membership predicate (task 6857, filed from esc-6758-2)
 #
-# THE DEFECT THIS BLOCK PINS THE FIX FOR. Clause (d) above asserted
-# `requires-full-gate`, a predicate that answers only "is this doc listed in
-# scripts/doc-sync-paths.txt?". But reify registers a load-bearing artifact at
-# TWO deliberate cost points: doc-sync-paths.txt (BLUNT -- any edit routes the
-# whole diff to the full --scope all gate) and scripts/verify-pipeline-infra-tests.txt
-# (SURGICAL -- an edit SELECTS the guarding infra test at task scope, via
-# verify.sh's select_infra_tests()). A doc registered only surgically IS
-# load-bearing, just at the cheaper point -- and the sweep called that drift.
-# The only remedy available to a task without doc-sync-paths.txt in its lock
-# charter was to stop matching the sweep's grep, which silently shrinks the
-# swept population and teaches the next author the same dodge (esc-6758-2 did
-# exactly that; step-5 of this task undoes it). The repair is a new read-only
-# `is-registered <path>` subcommand asserting membership in EITHER registry.
-#
-# EXIT-0 HERE MEANS "REGISTERED", NOT "FULL GATE REQUIRED". The two
-# subcommands share an exit-0 spelling and answer different questions; the
-# NO-LEAK pins at the end of this block are what keep them from converging.
+# CONTRACT PINS for the subcommand clause (d) above now asks. The rationale for
+# the switch lives in exactly ONE place -- the `is-registered` entry in
+# scripts/verify-pipeline-guard.sh's header, which owns the matched sets, the
+# two registration cost points, and the caution that exit 0 there means
+# REGISTERED and not FULL GATE REQUIRED. What follows PINS that contract rather
+# than restating it: each assertion's comment says only what THAT case buys.
+# The NO-LEAK pins at the end are what keep the two subcommands' shared exit-0
+# spelling from converging into one answer.
 
 # POSITIVE (doc-sync registry): the blunt cost point still answers 0.
 assert_exit "IS-REGISTERED: docs/notes/verify-pipeline-knobs.md is registered (doc-sync-paths.txt; exit 0)" 0 \
@@ -553,12 +538,6 @@ assert_exit "ARITY: is-registered with ZERO args is a usage error (exit 2; no st
 assert_exit "ARITY: is-registered with TWO paths is a usage error (ANY/ALL ambiguity refused, not guessed; exit 2)" 2 \
     run_guard is-registered docs/notes/verify-pipeline-knobs.md docs/note.md
 
-# CONTRACT PIN (green on arrival) -- adding a subcommand must not loosen the
-# documented 0/1/2 exit contract for a genuinely unknown flag. Mirrors Pair E's
-# same-named pin for --list-plan-derived.
-assert_exit "CONTRACT: an unknown flag still exits 2 (0/1/2 contract not loosened by is-registered)" 2 \
-    run_guard --bogus-registered
-
 # STDOUT PIN -- the merge worker parses the guard's stdout as `result=$(...)`.
 # is-registered must write NOTHING there on EITHER route, so a future caller
 # cannot come to depend on output this subcommand does not promise. stderr is
@@ -572,13 +551,12 @@ assert "STDOUT CONTRACT: is-registered prints NOTHING on stdout on the NO-MATCH 
     bash -c '_o=$(bash "$1" is-registered docs/note.md) || true; [ -z "$_o" ]' \
     _ "$GUARD_SH"
 
-# NO-LEAK PINS (green on arrival; load-bearing from step-2 onward). These are
-# the mechanical encoding of task 6857's RULED-SEPARATELY decision: the
-# surgical registry is read LAZILY inside the is-registered branch and is never
-# folded into _SET. Folding it in would route every edit of every surgically
-# registered artifact to the full global gate -- spending exactly the
-# throughput Pair C (c) PRECISION exists to protect, and silently rewriting the
-# cross-repo merge-worker contract that consumes exit 0.
+# NO-LEAK PINS — the mechanical encoding of task 6857's RULED-SEPARATELY
+# decision: the surgical registry is read LAZILY inside the is-registered
+# branch and is never folded into _SET. Folding it in would route every edit of
+# every surgically registered artifact to the full global gate -- spending
+# exactly the throughput Pair C (c) PRECISION exists to protect, and silently
+# rewriting the cross-repo merge-worker contract that consumes exit 0.
 assert_exit "NO-LEAK: docs/notes/spec-anchor-contract.md stays fast-path-safe for requires-full-gate (surgical != full gate; exit 1)" 1 \
     run_guard_nofork requires-full-gate docs/notes/spec-anchor-contract.md
 
@@ -608,16 +586,19 @@ docs/zzz-no-glob.md
 docs/zzz-key.md    scripts/zzz-not-a-key.sh
 SYNTH_MAP_EOF
 
-# SYNTHETIC — THE RED of this pair: the knob does not exist yet, so the
-# injection is ignored, the REAL map is read instead, and this exits 1.
+# SYNTHETIC — the SELF-HEALING half: a key present only in the INJECTED map
+# answers 0, so a future row in the real map is auto-covered with no edit to
+# this test. It doubles as the pin that the knob is honoured AT ALL — without
+# it, every case below could be reading the real map and passing for the wrong
+# reason.
 assert_exit "SYNTHETIC: docs/zzz-synthetic-surgical.md auto-covered after map injection (self-healing; exit 0)" 0 \
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered docs/zzz-synthetic-surgical.md' \
     _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
 
-# The remaining four are GREEN ON ARRIVAL — under the ignored knob they read the
-# real map, which carries none of these paths either, so they exit 1 (or 0 via
-# the glob clause) for the right-looking reason today. They become load-bearing
-# regression pins on the ROW PARSE the moment the knob lands in step-4.
+# The cases below are regression pins on the ROW PARSE — what the guard counts
+# as an ACTIVE ROW, and which field of one is a KEY. Each is driven through the
+# same injected map, so each states a property of the PARSE rather than of the
+# real registry's current contents.
 
 # PRECISION: a sibling not listed in the injected map stays unregistered —
 # the clause does not blanket-register every docs/zzz-*.md.
@@ -646,11 +627,42 @@ assert_exit "GLOB-FIELD PRECISION: scripts/zzz-not-a-key.sh is only a row's SECO
 
 # ...and the companion that makes the case above legible: an infra-test path IS
 # registered, but via the OPEN-ENDED GLOB CLAUSE, never because some row happens
-# to name it. It answers 0 with the map injection in force and would answer 0
-# with no map at all.
+# to name it. TAKEN ALONE this assertion cannot tell those two mechanisms apart
+# -- the injected map's first row names exactly this path, so a (hypothetical)
+# second-field harvest would answer 0 here too. The MISSING-MAP pair below
+# supplies the discriminator, by taking the map away entirely.
 assert_exit "GLOB-CLAUSE: tests/infra/test_zzz_synthetic.sh is registered via the tests/infra/*.sh glob, not via the row that names it (exit 0)" 0 \
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered tests/infra/test_zzz_synthetic.sh' \
     _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# MISSING MAP — the graceful degradation registry_keys() promises
+# (`[ -f "$_infra_tests_map" ] || return 0`: an absent map yields NO KEYS rather
+# than an error). It is the one failure mode that arm explicitly handles, and it
+# would regress SILENTLY: drop the -f test and a missing map becomes a `set -e`
+# abort or a bare grep error, both of which surface as a non-zero exit that
+# every caller reads as an ordinary NOT-REGISTERED verdict. The exit code alone
+# is therefore NOT a sufficient pin, so the first assertion additionally
+# requires the arm to REACH its own documented no-match diagnostic, and to do so
+# without grep ever having been handed the missing file.
+_MISSING_INFRA_MAP="$_SYNTH_INFRA_MAP_DIR/does-not-exist.txt"
+
+assert "MISSING MAP: is-registered REACHES its documented no-match route (exit 1 + the guard's own diagnostic, no grep error) instead of aborting en route" \
+    bash -c '
+        _err=$(REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" \
+               bash "$2" is-registered docs/notes/spec-anchor-contract.md 2>&1 >/dev/null) \
+            && _rc=0 || _rc=$?
+        [ "$_rc" -eq 1 ]                                  || exit 1
+        case "$_err" in *"NOT registered"*) ;; *) exit 1 ;; esac
+        case "$_err" in *"No such file"*) exit 1 ;; esac
+    ' _ "$_MISSING_INFRA_MAP" "$GUARD_SH"
+
+# ...and the discriminator the GLOB-CLAUSE case above needs: with NO map at all
+# the same infra-test path STILL answers 0, which can only be the glob clause
+# talking. Together the two MISSING-MAP assertions cover both verdict routes
+# through an absent map, so the degradation cannot regress on one of them only.
+assert_exit "MISSING MAP: the glob clause alone still answers 0 with no map whatsoever (the verdict is not row-derived; exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered tests/infra/test_zzz_synthetic.sh' \
+    _ "$_MISSING_INFRA_MAP" "$GUARD_SH"
 
 # SYNTHETIC self-healing: build a throwaway doc-sync manifest containing only
 # a synthetic path, prove the classifier auto-covers it via
@@ -1170,9 +1182,12 @@ assert "NON-VACUITY: --list-plan-derived contains scripts/check-manifold-deps.sh
     bash -c 'bash "$1" --list-plan-derived | grep -qxF scripts/check-manifold-deps.sh' \
     _ "$GUARD_SH"
 
-# PIN (green on arrival) — adding a subcommand must not loosen the documented
-# 0/1/2 exit contract for a genuinely unknown flag.
-assert_exit "CONTRACT: an unknown flag still exits 2 (0/1/2 contract not loosened by the new subcommand)" 2 \
+# PIN — the 0/1/2 exit contract is CLOSED to new subcommands: whatever joins
+# the dispatch (--list-plan-derived at task 6426, is-registered at task 6857,
+# whatever comes next), a genuinely unknown flag must still be a usage error.
+# This is the SINGLE home for that pin — do not add a per-subcommand copy of it
+# alongside each new arm; the code path under test is the same `*)` arm.
+assert_exit "CONTRACT: an unknown flag exits 2 — the 0/1/2 contract is closed to new subcommands" 2 \
     run_guard --list-bogus
 
 # (b) FAIL-SOFT / NEVER-FAIL-OPEN — the property that makes the hybrid safe.
