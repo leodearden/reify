@@ -1610,7 +1610,15 @@ fi
 # Stdout contract in the header, pinned by C5/C6/E3/H1c/I3). The guard is
 # stderr-only today; the redirect makes that a property of this call site rather
 # than a property inherited from the callee.
-if [ -x "$_SCRIPT_DIR/git-rerere-guard.sh" ]; then
+#
+# MODE GATE — $FRESH_CHECKOUT, not a new flag. --reset-in-place is a TEST-ONLY
+# control arm (the B13 warmth-delta test) whose lane was built at its own path,
+# while per D10 always-re-seed-at-acquire production acquires — task lanes AND
+# merge-spec slots — ALWAYS use --fresh-checkout. So this gate covers 100% of
+# the production ACQUIRE path while keeping the test-only arm inert, reusing the
+# discriminator the script already switches on at the three sites above rather
+# than inventing a mode flag for it.
+if [ -n "$FRESH_CHECKOUT" ] && [ -x "$_SCRIPT_DIR/git-rerere-guard.sh" ]; then
     _rerere_arm_rc=0
     "$_SCRIPT_DIR/git-rerere-guard.sh" arm "$LANE_DIR" >/dev/null || _rerere_arm_rc=$?
     if [ "$_rerere_arm_rc" -eq 0 ]; then
@@ -1625,7 +1633,7 @@ if [ -x "$_SCRIPT_DIR/git-rerere-guard.sh" ]; then
         warn "  the shared store may be rerere-ARMED; run 'scripts/git-rerere-guard.sh check'"
     fi
     unset _rerere_arm_rc
-else
+elif [ -n "$FRESH_CHECKOUT" ]; then
     warn "scripts/git-rerere-guard.sh not executable — skipping the shared-store rerere disarm"
 fi
 
