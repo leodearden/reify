@@ -69,6 +69,90 @@ pub struct DiagnosticsResult {
     pub geometry_output: Option<Vec<u8>>,
 }
 
+/// True when a compiled module's diagnostics show that an `auto:`
+/// type-parameter resolution FAILED, leaving the evaluation graph carrying an
+/// unsubstituted `Type::TypeParam` value cell.
+///
+/// ## What this is for (task #6851 containment)
+///
+/// `phase_auto_type_param_resolution`
+/// (`crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`)
+/// gates ALL substitution behind `if !sigma.is_empty()`. On a FAILED
+/// resolution `outcome.substitution` is empty, so no monomorph is
+/// synthesized: the sub-component still names the generic template, and a
+/// member declared `param seal : T` keeps `cell_type = Type::TypeParam("T")`
+/// all the way into the evaluation graph. `reify-eval`'s
+/// `#[cfg(debug_assertions)]` `assert_value_cell_types_representable`
+/// (`crates/reify-eval/src/engine_eval.rs`) then PANICS —
+/// "unrepresentable cell_type" — taking the language server down mid-keystroke
+/// in a debug build.
+///
+/// The root-cause fix (synthesize a fallback substitution, or make the cell
+/// representable) is owned by **task #6851**, whose addendum independently
+/// designates a caller-side error gate as its "fix-site 2
+/// (defence-in-depth)". This predicate is that gate, scoped to `reify-lsp`
+/// only: the three LSP production entry points skip their eval/check pass
+/// when it returns `true`, so the user still gets the compile-stage
+/// `E_AUTO_TYPE_PARAM_*` error that explains what is wrong, and the server
+/// stays alive. `crates/reify-cli/src/mcp_context.rs`'s ungated `engine.eval`
+/// sites remain #6851's to fix.
+///
+/// ## Why it filters on `Severity::Error`
+///
+/// The WARNING-severity members of the family accompany a SUCCESSFUL
+/// substitution, so there is no unrepresentable cell and no hazard:
+/// `AutoTypeParamNonUnique` (task #6851's addendum records that `auto(free):`
+/// with ≥2 feasible candidates returns `Selected(lex_first)` and emits only
+/// that warning — sigma is non-empty and substitution proceeds normally) and
+/// `AutoTypeParamConstraintUnevaluated` (the honesty warning task #6798's
+/// checker swap newly surfaces in the editor). Suppressing eval on either
+/// would be a pure regression on a healthy graph. Pinned by
+/// `tests::auto_type_param_resolution_failed_classifies_by_severity_and_code_family`'s
+/// negative cases.
+///
+/// ## Why a serde prefix rather than an explicit `matches!` list
+///
+/// Mirrors the deliberate serde routing already documented in
+/// `crate::convert::convert_diagnostic` ("route through serde so future
+/// field-bearing `DiagnosticCode` variants don't leak Debug-style strings"),
+/// and auto-covers a future `AutoTypeParam*` Error variant with no list to
+/// drift. The stringly-typed seam that buys is converted back into a CHECKED
+/// coupling by that same unit test: rename a variant in this family and the
+/// test goes RED rather than the guard silently ceasing to fire.
+///
+/// ## Why narrow rather than the CLI's blanket error gate
+///
+/// `reify-cli` skips eval on `any(|d| d.severity == Severity::Error)`
+/// (`crates/reify-cli/src/main.rs`). The LSP deliberately evaluates THROUGH
+/// non-fatal compile errors so keystroke-time eval diagnostics keep flowing
+/// while the user is mid-edit; adopting the blanket form here would silently
+/// drop them for every error shape and is a far larger behaviour change than
+/// this leaf owns. Task #6851's fix-site 2 may still choose the blanket form
+/// for `mcp_context.rs`; that is its call, not this one's.
+fn diagnostic_is_auto_type_param_error(d: &Diagnostic) -> bool {
+    d.severity == reify_core::Severity::Error
+        && d.code.is_some_and(|c| {
+            serde_json::to_value(c)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .is_some_and(|name| name.starts_with("AutoTypeParam"))
+        })
+}
+
+/// Whether any diagnostic in `compiled` is an `auto:` type-parameter
+/// resolution FAILURE — see [`diagnostic_is_auto_type_param_error`] for the
+/// full rationale, the task #6851 mechanism, and why the predicate is
+/// deliberately narrow.
+///
+/// The LSP's three production entry points call this before their eval/check
+/// pass and skip it when it returns `true`.
+pub(crate) fn auto_type_param_resolution_failed(compiled: &reify_compiler::CompiledModule) -> bool {
+    compiled
+        .diagnostics
+        .iter()
+        .any(diagnostic_is_auto_type_param_error)
+}
+
 /// Run the stateful parse → compile → eval → check pipeline.
 ///
 /// Maintains a persistent Engine in EvalState across calls. On each call:
