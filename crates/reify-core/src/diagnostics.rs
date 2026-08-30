@@ -3275,6 +3275,77 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 η, design §6 B6).
     AssemblyGlobalFloat,
+    /// Origin: `crates/reify-eval/src/relate_solve.rs` (the zero-auto static-
+    /// verification arm of `solve_scopes`, DIC α).
+    ///
+    /// Canonical message form:
+    /// `"relate: 2 relations are geometrically violated at the subs' fixed \
+    /// placements: concentric(bush.bore_axis, plate.boss_axis) off by 30 mm; \
+    /// flush(bush.seat_plane, plate.top_plane) off by 5 mm"` — ONE aggregated
+    /// Error per relate block naming the full violated set, never one per
+    /// relation.
+    ///
+    /// Emitted as `Severity::Error` when a relate scope has ZERO `at auto` subs
+    /// — so there is nothing to solve for — and at least one of its relations
+    /// evaluates to a residual ABOVE the assertion tolerance at the subs' fixed
+    /// placements. Such a scope was previously skipped outright (the filter
+    /// required a non-empty auto set), making a geometrically FALSE relate block
+    /// a silent no-op that `reify check` reported as "All constraints
+    /// satisfied." — the false green this code exists to kill
+    /// (`docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 1,
+    /// §4.4; `docs/legibility/design-invariants.md` INV-SF-3: a declared intent
+    /// must be consumed or its non-consumption said out loud).
+    ///
+    /// Aggregation is load-bearing rather than stylistic: `dedup_diagnostics`
+    /// (`crates/reify-cli/src/main.rs`) short-circuits on `code.is_some()`, so a
+    /// CODED per-relation diagnostic would reach the user uncollapsed and spam
+    /// one line per relation.
+    ///
+    /// Distinct from [`DiagnosticCode::AssemblyGlobalFloat`], which is about an
+    /// auto-FUL scope having no ground reference; this code is the auto-FREE
+    /// scope's verdict, where no pose is ever solved.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_RELATE_STATIC_VIOLATED`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 1).
+    RelateStaticViolated,
+    /// Origin: `crates/reify-eval/src/relate_solve.rs` (the zero-auto static-
+    /// verification arm of `solve_scopes`, DIC α).
+    ///
+    /// Canonical message form:
+    /// `"relate: 1 relation could not be statically verified: \
+    /// tangent(a.axis, b.plane, 4mm) — no residual model for these operand \
+    /// kinds"` — ONE aggregated Warning per relate block naming the full
+    /// unverifiable set.
+    ///
+    /// Emitted as `Severity::Warning` when a zero-auto relate scope carries a
+    /// relation whose satisfaction this arm cannot DECIDE, rather than one it
+    /// decided negatively. Two sources:
+    /// 1. The relation contributes no residual rows at all — an uncurated
+    ///    relation name, an operand shape with no residual model, or a
+    ///    `Value::Undef` / unrealized operand datum.
+    /// 2. An operand's sub carries a concrete `at <pose>` placement. Realized
+    ///    datums are keyed by `(structure, member)` and are the structure's LOCAL
+    ///    datums in its OWN identity frame — a declared sub pose is never
+    ///    composed in — so judging such a scope would compare datums at the WRONG
+    ///    configuration and yield a confidently WRONG verdict in either direction
+    ///    (`docs/prds/v0_6/declared-intent-consumption-accounting.md` §10 open
+    ///    question 5, decided as: say it is unverifiable and why).
+    ///
+    /// The empty-residual case MUST NOT be folded into "satisfied": an empty row
+    /// vector and an all-zero row vector are different facts, and collapsing them
+    /// would trade the false green this family exists to kill for a quieter one
+    /// (INV-SF-3). Honest non-consumption beats a false verdict.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_RELATE_STATIC_UNVERIFIABLE`
+    /// (severity convention: `W_*` → Warning; see
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.4).
+    ///
+    /// NOT to be confused with the dropped `W_RELATE_NO_AUTO` of the
+    /// placement-relations belt's δ leaf, which would have warned even when the
+    /// assertion HOLDS; that leaf was superseded by this task at decompose
+    /// (ratified 2026-07-25). A statically SATISFIED relate block is silent.
+    RelateStaticUnverifiable,
     /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (StructureRef nominal
     /// arg/default mismatch — task 4584).
     ///
@@ -4933,6 +5004,62 @@ mod tests {
         assert_eq!(
             serde_json::to_value(DiagnosticCode::EvalUnresolved).unwrap(),
             serde_json::Value::String("EvalUnresolved".to_owned())
+        );
+    }
+
+    /// Task 5415 (DIC α, prereq-1): the two additive codes emitted by the
+    /// zero-auto static-verification arm of `solve_scopes` —
+    /// `RelateStaticViolated` (E_RELATE_STATIC_VIOLATED, Error) and
+    /// `RelateStaticUnverifiable` (W_RELATE_STATIC_UNVERIFIABLE, Warning) —
+    /// must exist, be distinct from each other and from the sibling relate-family
+    /// codes, and be attachable via the builder with the code reading back.
+    ///
+    /// The two must stay distinct because they carry opposite verdicts: one says
+    /// "decided, and FALSE", the other "not decidable". Collapsing them would
+    /// re-introduce the false green (INV-SF-3).
+    #[test]
+    fn relate_static_codes_exist_and_attach() {
+        // Exist + distinct from each other.
+        assert_ne!(
+            DiagnosticCode::RelateStaticViolated,
+            DiagnosticCode::RelateStaticUnverifiable
+        );
+        // Distinct from the sibling relate/assembly family they sit beside.
+        assert_ne!(
+            DiagnosticCode::RelateStaticViolated,
+            DiagnosticCode::AssemblyGlobalFloat
+        );
+        assert_ne!(
+            DiagnosticCode::RelateStaticUnverifiable,
+            DiagnosticCode::RelateExpectsRelation
+        );
+
+        // Attachable via the builder; code reads back at the matching severity.
+        let violated =
+            Diagnostic::error("violated").with_code(DiagnosticCode::RelateStaticViolated);
+        assert_eq!(violated.code, Some(DiagnosticCode::RelateStaticViolated));
+        let unverifiable =
+            Diagnostic::warning("unverifiable").with_code(DiagnosticCode::RelateStaticUnverifiable);
+        assert_eq!(
+            unverifiable.code,
+            Some(DiagnosticCode::RelateStaticUnverifiable)
+        );
+    }
+
+    /// Task 5415 (DIC α, prereq-1): the additive codes serialize to their
+    /// PascalCase wire identifiers under the `serde` feature (matching the enum's
+    /// `rename_all = "PascalCase"`), so downstream tooling — and this task's own
+    /// e2e tests — match stable strings rather than message substrings.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn relate_static_codes_serialize_to_pascalcase_wire_strings() {
+        assert_eq!(
+            serde_json::to_value(DiagnosticCode::RelateStaticViolated).unwrap(),
+            serde_json::Value::String("RelateStaticViolated".to_owned())
+        );
+        assert_eq!(
+            serde_json::to_value(DiagnosticCode::RelateStaticUnverifiable).unwrap(),
+            serde_json::Value::String("RelateStaticUnverifiable".to_owned())
         );
     }
 
