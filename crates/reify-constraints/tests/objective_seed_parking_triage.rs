@@ -13,8 +13,14 @@
 //! * Companion driver-level probe: `crates/reify-eval/tests/harness_engine/objective_seed_parking_e2e.rs`.
 //! * Write-up: `docs/notes/objective-seed-parking-triage-2026-08-27.md`.
 //!
-//! **All `file:line` anchors in this file are point-in-time, valid at the HEAD above —
-//! re-verify against current `main` before relying on them.**
+//! **Citation convention.** Anchors here lead with the **symbol** and carry the line
+//! range only as a parenthetical hint — the house convention stated in
+//! `docs/prds/v0_6/solution-set-completeness.md:5` ("Main moves fast — cite-by-symbol;
+//! re-locate lines at implementation time"), which matters doubly for this file: it is
+//! written to be read LATER, by the owners of `#5711` / `#6678` / `#6654`, i.e. exactly
+//! when the line numbers will have rotted. Symbols survive line drift and are greppable;
+//! **every line range below is point-in-time, valid only at the HEAD above.** Grep the
+//! symbol first, and treat a range that does not match it as stale, not as a finding.
 //!
 //! # What these probes are (and are not)
 //!
@@ -45,10 +51,11 @@
 //!
 //! Every probe returned `SolveResult::Solved { unique: false }` — never `Infeasible`
 //! or `NoProgress`. The `unique: false` is **expected and not a divergence**: the
-//! `unique: true` constructed by the drift fallback at `solver.rs:2029` is documented
-//! at `solver.rs:1691-1693` as a *placeholder*, and `finalise_uniqueness`
-//! (`solver.rs:2694-2730`) overwrites it — an all-`free` problem skips the uniqueness
-//! re-solve entirely and reports `unique: false` (`solver.rs:2723-2728`).
+//! `unique: true` constructed by the `initially_feasible` drift fallback in
+//! `solve_core_with_sd_tolerance` (`solver.rs:2029`) is documented as a *placeholder* by
+//! that function's own doc comment (`:1691-1693`), and `finalise_uniqueness`
+//! (`:2694-2730`) overwrites it — its all-`free` arm skips the uniqueness re-solve
+//! entirely and reports `unique: false` (`:2723-2728`).
 //!
 //! P5 (`solve_ranked` on P1's problem) measured
 //! `Ranked { candidates: [ { objective_score: Some(0.0088) } ], optimality: BestFound
@@ -70,26 +77,32 @@
 //!    `:239`, `SEED_NUDGE_ABS = 1e-6` at `:244`). Arm 1 takes `current_values` when
 //!    present — which is what P4 varies.
 //! 2. **NO CLAMP WALL.** The clamp box handed to the optimiser is gated on
-//!    `floor_applied` (`:1809-1825`): the constraint-derived clamp box is used ONLY
-//!    when the Money robustness floor fired. A `Length` objective is not Money
-//!    (`objective_is_money` `:820`, gate `:1755-1760`), so the else-branch takes
-//!    `effective_bounds` = `default_bounds_for(Length)` = `(1e-6, 10.0)` (`:1585-1594`).
-//!    With `AutoParam.bounds` always `None` in production (`:993-997`), there is no
-//!    wall anywhere near the user's bound.
+//!    `floor_applied` — the `let bounds = if floor_applied` gate in
+//!    `solve_core_with_sd_tolerance` (`:1809-1825`): the constraint-derived clamp box is
+//!    used ONLY when the Money robustness floor fired. A `Length` objective is not Money
+//!    (`objective_is_money` `:820`, its gate in `solve_core_with_sd_tolerance`
+//!    `:1755-1760`), so the else-branch takes `effective_bounds` =
+//!    `default_bounds_for(Length)` = `(1e-6, 10.0)` (`:1585-1594`). With
+//!    `AutoParam.bounds` always `None` in production — the "Constraint-derived parameter
+//!    bounds (task #5618)" header comment above `default_bounds_for` (`:993-997`) names
+//!    all three construction sites — there is no wall anywhere near the user's bound.
 //! 3. **PENALTY UNDERSHOOT.** Cost is `obj + PENALTY_WEIGHT × violation +
-//!    PENALTY_WEIGHT × bound_penalty` (`:1539-1548`) with `PENALTY_WEIGHT = 1e6`
-//!    (`:25`). Minimising `x + 1e6·(b − x)²` is stationary at
-//!    `b − 1/(2 × PENALTY_WEIGHT)` = `b − 5e-7`, i.e. 5e-7 OUTSIDE the active bound.
-//!    `solver.rs:1017-1021` and `:1776-1781` state this verbatim, and `:1780-1781`
-//!    already names the symptom: "a feasible-but-badly-suboptimal answer (the seed,
-//!    returned via the drift fallback)".
+//!    PENALTY_WEIGHT × bound_penalty` — `ConstraintCostFunction::cost` (`:1539-1548`) —
+//!    with `PENALTY_WEIGHT = 1e6` (`:25`). Minimising `x + 1e6·(b − x)²` is stationary at
+//!    `b − 1/(2 × PENALTY_WEIGHT)` = `b − 5e-7`, i.e. 5e-7 OUTSIDE the active bound. The
+//!    `#5618` header comment above `default_bounds_for` (`:1017-1021`) and
+//!    `solve_core_with_sd_tolerance`'s own penalty-undershoot note (`:1776-1781`) state
+//!    this verbatim, and the latter already names the symptom: "a
+//!    feasible-but-badly-suboptimal answer (the seed, returned via the drift fallback)".
 //! 4. **FEASIBILITY REJECT.** The final check measures the LINEAR residual against
-//!    `FEASIBILITY_THRESHOLD = 1e-12` (`:20`, `:1997`). `5e-7 >> 1e-12`, so the
-//!    converged optimum is rejected.
-//! 5. **SILENT SEED-FALLBACK.** Because the seed *is* feasible (`initially_feasible`),
-//!    the rejected optimum is replaced by the untouched initial point and returned as
-//!    `Solved` (`:1997-2031`). The objective is ignored, and the only trace is a
-//!    `tracing::debug!` — no diagnostic.
+//!    `FEASIBILITY_THRESHOLD` = 1e-12 (the const at `:20`; the
+//!    `final_max_residual > FEASIBILITY_THRESHOLD` check in
+//!    `solve_core_with_sd_tolerance` at `:1997`). `5e-7 >> 1e-12`, so the converged
+//!    optimum is rejected.
+//! 5. **SILENT SEED-FALLBACK.** Because the seed *is* feasible, the `initially_feasible`
+//!    drift fallback in `solve_core_with_sd_tolerance` (`:1997-2031`) replaces the
+//!    rejected optimum with the untouched initial point and returns it as `Solved`. The
+//!    objective is ignored, and the only trace is a `tracing::debug!` — no diagnostic.
 //!
 //! What each probe rules out:
 //!
@@ -119,7 +132,8 @@
 //!   `default_bounds_for(Length)` corner instead (10 m / 1e-6 m) — which is this PRD's
 //!   §10 **item 3**, owned by `#6655`/`#6692`, not item 4.
 //! * Candidate (c), the Money robustness floor / centrality blend, needs no probe:
-//!   the floor is Money-gated (`:820`, `:1755-1760`) and
+//!   the floor is Money-gated (`objective_is_money` `:820`, its gate in
+//!   `solve_core_with_sd_tolerance` `:1755-1760`) and
 //!   `tests/robustness_floor.rs:397` (`non_money_objective_unchanged`) already pins
 //!   that a non-Money objective is untouched, while `build_centrality_objective` is
 //!   synthesised only when `problem.objective.is_none()` (`:1847`) and so cannot fire
@@ -128,8 +142,10 @@
 //! # These probes are a TRIPWIRE, not a specification
 //!
 //! They characterise CURRENT behaviour and are **expected to go RED when the owning
-//! fix lands** — `#5711` (the `floor_applied` clamp gate, bound by `solver.rs:1801-1809`
-//! and `:2605-2612` to the `verify_uniqueness` contract: "Revisit both together;
+//! fix lands** — `#5711` (the `floor_applied` clamp gate, bound by
+//! `solve_core_with_sd_tolerance`'s gate note (`solver.rs:1801-1809`) and
+//! `verify_uniqueness`'s own doc comment (`:2605-2612`) to the `verify_uniqueness`
+//! contract: "Revisit both together;
 //! neither is actionable in isolation") or `#6678` (retire `PENALTY_WEIGHT`, the 5e-7
 //! trigger; `#6688` was cancelled-absorbed into `#6678` on 2026-08-27). A RED here is
 //! the signal to RE-MEASURE and update the table, not a regression to revert.
@@ -138,7 +154,9 @@
 //!
 //! Every probe builds its auto param with `bounds: None` — the PRODUCTION shape.
 //! `AutoParam.bounds` is *always* `None` in production: all three construction sites
-//! hardcode it (`crates/reify-constraints/src/solver.rs:993-997` names them —
+//! hardcode it (the "Constraint-derived parameter bounds (task #5618)" header comment
+//! above `default_bounds_for`, `crates/reify-constraints/src/solver.rs:993-997`, names
+//! them —
 //! `reify-eval/src/engine_eval.rs:1436`, `engine_edit.rs:1470`, `:3635`) and no `.ri`
 //! surface sets it. `free: true` keeps `verify_uniqueness` out of the probe (same
 //! rationale as the 8+ existing `free: true` sites in `solver_integration.rs`), so a
@@ -156,8 +174,8 @@ use reify_test_support::*;
 const ENTITY: &str = "Probe";
 const MEMBER: &str = "x";
 
-/// Mirror of the private `SEED_NUDGE_REL` at
-/// `crates/reify-constraints/src/solver.rs:239`. Re-declared here (the solver const is
+/// Mirror of the private `SEED_NUDGE_REL` const read by `extract_initial_point`
+/// (`crates/reify-constraints/src/solver.rs:239`). Re-declared here (the solver const is
 /// private) so every prediction below is *derived* from the shipped constant rather
 /// than guessed.
 const SEED_NUDGE_REL: f64 = 0.1;
@@ -176,7 +194,8 @@ const TOL_M: f64 = 1e-9;
 /// the **10 m** `default_bounds_for(Length)` corner an absolute 1e-9 is a 1e-10 *relative*
 /// tolerance — far tighter than anything Nelder-Mead promises. That corner comes back
 /// bit-exact today only because the final `val.clamp(lo, hi)` in
-/// `solve_core_with_sd_tolerance` (`solver.rs:1971-1980`) snaps the penalty-method
+/// `solve_core_with_sd_tolerance` (`solver.rs:1971-1980`, whose `clamped` vector is what
+/// `build_solved_values` returns at `:2139`) snaps the penalty-method
 /// overshoot back onto the box, NOT because NM converged there to 1e-10. If NM ever
 /// terminated marginally INSIDE the bound (say 9.9999996 m), an absolute pin would go RED
 /// while the CHARACTERISED behaviour — "runs to the default-box corner instead of parking
@@ -186,7 +205,7 @@ const TOL_REL: f64 = 1e-9;
 /// Build a probe problem in the PRODUCTION shape (`bounds: None`, `free: true`).
 ///
 /// `seed_mm` populates `current_values`, exercising arm 1 of `extract_initial_point`
-/// (`solver.rs:402-419`); `None` leaves `current_values` empty so arm 3 (the
+/// (doc `solver.rs:402-419`, body `:420-440`); `None` leaves `current_values` empty so arm 3 (the
 /// constraint-derived box, task #5618) supplies the seed.
 fn probe_problem(
     constraints: Vec<CompiledExpr>,
@@ -290,8 +309,8 @@ fn p1_minimize_one_sided_lower_bound_parks_at_nudged_seed() {
     assert!(
         (got - predicted).abs() <= TOL_M,
         "P1 `minimize x` s.t. `x >= 8mm`: expected the one-sided nudged SEED \
-         {predicted} m (= 8mm × (1 + SEED_NUDGE_REL), SEED_NUDGE_REL = 0.1 at \
-         solver.rs:239); MEASURED 8.800000 mm at HEAD 9c1bed42a7. Got {got} m \
+         {predicted} m (= 8mm × (1 + SEED_NUDGE_REL) — extract_initial_point arm 3, \
+         SEED_NUDGE_REL = 0.1, solver.rs:239 at HEAD 9c1bed42a7); MEASURED 8.800000 mm. Got {got} m \
          ({} mm). Minimizing would reach 8mm.",
         got * 1000.0
     );
@@ -321,8 +340,8 @@ fn p2_maximize_two_sided_parks_at_derived_box_midpoint() {
     assert!(
         (got - predicted).abs() <= TOL_M,
         "P2 `maximize x` s.t. `8mm <= x <= 40mm`: expected the two-sided derived-box \
-         MIDPOINT seed {predicted} m (extract_initial_point arm 3, solver.rs:402-419); \
-         MEASURED 24.000000 mm at HEAD 9c1bed42a7. Got {got} m ({} mm). \
+         MIDPOINT seed {predicted} m (extract_initial_point arm 3, doc solver.rs:402-419 \
+         at HEAD 9c1bed42a7); MEASURED 24.000000 mm. Got {got} m ({} mm). \
          Maximizing would reach 40mm.",
         got * 1000.0
     );
@@ -349,8 +368,8 @@ fn p3_maximize_one_sided_upper_bound_parks_at_nudged_seed() {
     assert!(
         (got - predicted).abs() <= TOL_M,
         "P3 `maximize x` s.t. `x <= 40mm`: expected the one-sided nudged SEED \
-         {predicted} m (= 40mm − 0.1 × 40mm, SEED_NUDGE_REL at solver.rs:239); \
-         MEASURED 36.000000 mm at HEAD 9c1bed42a7. Got {got} m ({} mm). \
+         {predicted} m (= 40mm − 0.1 × 40mm — extract_initial_point arm 3, \
+         SEED_NUDGE_REL at solver.rs:239); MEASURED 36.000000 mm at HEAD 9c1bed42a7. Got {got} m ({} mm). \
          This is the discriminator against P2's 24mm.",
         got * 1000.0
     );
@@ -380,7 +399,8 @@ fn p3_maximize_one_sided_upper_bound_parks_at_nudged_seed() {
 ///   not make the output a function of the seed).
 ///
 /// Asserted bit-exactly (`to_bits()`), because the drift fallback returns the
-/// **exact** initial point (`solver.rs:2025-2031`; pinned by
+/// **exact** initial point (the `build_solved_values(&problem.auto_params, initial)` in
+/// `solve_core_with_sd_tolerance`'s drift fallback, `solver.rs:2025-2031`; pinned by
 /// `solver_integration.rs:1483`).
 ///
 /// MEASURED at HEAD `9c1bed42a7`, all `Solved { unique: false }`: seed 30mm →
@@ -427,11 +447,13 @@ fn p4_answer_tracks_the_seed_bit_exactly() {
 /// on its sd-tolerance, not on the iteration cap. The optimiser is not stalling; its
 /// answer is computed and then DISCARDED by the feasibility reject + seed fallback.
 ///
-/// Corroborated in-tree by `reify-eval/tests/solver_optimality_unproven.rs:123-127`,
-/// which documents the identical 1-param case.
+/// Corroborated in-tree by the `SMALL_MM_SOURCE` doc comment ("B6 source") in
+/// `reify-eval/tests/solver_optimality_unproven.rs:123-127`, which documents the
+/// identical 1-param case.
 ///
 /// Consequence: `W_SOLVER_OPTIMALITY_UNPROVEN` cannot fire — the warning is gated on
-/// the `IterationLimit` variant at `reify-eval/src/engine_eval.rs:6120-6136` — so the
+/// the `IterationLimit` variant by the γ-gate in `Engine::eval`
+/// (`reify-eval/src/engine_eval.rs:6120-6136`, the "γ (task #4804)" comment) — so the
 /// wrong number is returned **silently**. That is what makes loudness (#6654 arm 3) a
 /// separate, real deliverable from the fix itself.
 ///
@@ -494,7 +516,8 @@ fn p5_optimality_status_is_not_iteration_limited() {
 ///
 /// Its role is to isolate the differentiator. The defect appears only when NO clamp
 /// wall lies inside the constraint region — which is the PRODUCTION configuration,
-/// because `AutoParam.bounds` is always `None` (`solver.rs:993-997`). Every in-tree
+/// because `AutoParam.bounds` is always `None` (the `#5618` header comment above
+/// `default_bounds_for`, `solver.rs:993-997`). Every in-tree
 /// objective fixture that asserts real progress sets such a wall, so the corpus cannot
 /// see this defect; and the one fixture that puts the wall OUTSIDE the region
 /// (`solver_integration.rs:618`,
@@ -551,11 +574,11 @@ fn p6_wall_inside_constraint_region_makes_real_progress() {
 // P8 — SENSE-INVARIANCE. The sharpest single discriminator in the set.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Mirror of `default_bounds_for(Length)` at
-/// `crates/reify-constraints/src/solver.rs:1585-1594` — "1 micron to 10 meters". This is
-/// what `effective_bounds` degrades to in production, because `AutoParam.bounds` is
-/// always `None` (`solver.rs:993-997`) and the constraint-derived clamp box is gated on
-/// `floor_applied` (`:1809-1825`).
+/// Mirror of `default_bounds_for(Length)` (`crates/reify-constraints/src/solver.rs:1585-1594`)
+/// — "1 micron to 10 meters". This is what `effective_bounds` degrades to in production,
+/// because `AutoParam.bounds` is always `None` (the `#5618` header comment above
+/// `default_bounds_for`, `:993-997`) and the constraint-derived clamp box is gated on
+/// `floor_applied` in `solve_core_with_sd_tolerance` (`:1809-1825`).
 const DEFAULT_LENGTH_BOUNDS_M: (f64, f64) = (1e-6, 10.0);
 
 /// **P8 — on a two-sided problem, the objective's SENSE has no effect on the answer.**
@@ -600,9 +623,10 @@ const DEFAULT_LENGTH_BOUNDS_M: (f64, f64) = (1e-6, 10.0);
 ///
 /// This SHARPENS the candidate-(a) verdict rather than contradicting it. The seed is
 /// returned exactly when the objective points **toward** a derived bound — that is when
-/// the penalty term is active, so the optimum lands 5e-7 outside the bound (`:25`,
-/// `:1539-1548`), is rejected against `FEASIBILITY_THRESHOLD` (`:20`, `:1997`), and the
-/// fallback fires (`:1997-2031`). When the objective points **away**, the optimum is
+/// the penalty term is active, so the optimum lands 5e-7 outside the bound
+/// (`PENALTY_WEIGHT` `:25`, `ConstraintCostFunction::cost` `:1539-1548`), is rejected
+/// against `FEASIBILITY_THRESHOLD` (`:20`, checked in `solve_core_with_sd_tolerance` at
+/// `:1997`), and the `initially_feasible` drift fallback fires (`:1997-2031`). When the objective points **away**, the optimum is
 /// feasible, nothing is rejected, no fallback fires, and the optimiser simply runs to the
 /// default-box corner. Both reported numbers (8.8mm, 24mm) are the points-toward case.
 ///
@@ -651,7 +675,8 @@ fn p8_objective_sense_has_no_effect_on_the_answer() {
         (max_one_sided_lower - default_hi).abs() <= TOL_REL * default_hi.abs().max(1.0),
         "P8 control: `maximize x` s.t. `x >= 8mm` is unbounded above by the constraints, \
          so it runs to the default_bounds_for(Length) UPPER corner {default_hi} m \
-         (solver.rs:1585-1594) — NOT to P1's 8.8mm seed. Got {max_one_sided_lower} m \
+         (fn default_bounds_for, solver.rs:1585-1594 at HEAD 9c1bed42a7) — NOT to P1's \
+         8.8mm seed. Got {max_one_sided_lower} m \
          ({} mm). This reproduces PRD §10 item 3 (owned by #6655 / #6692).",
         max_one_sided_lower * 1000.0
     );
@@ -661,7 +686,7 @@ fn p8_objective_sense_has_no_effect_on_the_answer() {
         (min_one_sided_upper - default_lo).abs() <= TOL_REL * default_lo.abs().max(1.0),
         "P8 control: `minimize x` s.t. `x <= 40mm` is unbounded below by the constraints, \
          so it runs to the default_bounds_for(Length) LOWER corner {default_lo} m \
-         (solver.rs:1585-1594) — the mirror image of the 10 m corner, which PRD §10 \
+         (fn default_bounds_for, solver.rs:1585-1594) — the mirror image of the 10 m corner, which PRD §10 \
          item 3 does not name. Got {min_one_sided_upper} m ({} mm).",
         min_one_sided_upper * 1000.0
     );

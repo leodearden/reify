@@ -14,8 +14,12 @@
 //!   `crates/reify-constraints/tests/objective_seed_parking_triage.rs`.
 //! * Write-up: `docs/notes/objective-seed-parking-triage-2026-08-27.md`.
 //!
-//! **All `file:line` anchors in this file are point-in-time, valid at the HEAD above —
-//! re-verify against current `main` before relying on them.**
+//! **Citation convention.** Anchors lead with the **symbol**; the line range is only a
+//! parenthetical hint, point-in-time and valid at the HEAD above. That is the house
+//! convention (`docs/prds/v0_6/solution-set-completeness.md:5` — "Main moves fast —
+//! cite-by-symbol; re-locate lines at implementation time"), and it matters here because
+//! this file is written to be read later, by the owners of `#5711`/`#6678`/`#6654`.
+//! Grep the symbol first; a range that no longer matches it is stale, not a finding.
 //!
 //! # What this probe adds over P1–P6
 //!
@@ -46,7 +50,7 @@
 //! | shape | clamp wall inside the constraint region? | outcome |
 //! |---|---|---|
 //! | P1–P4, P7 (**production**, `bounds: None`) | no | parks at the seed, bit-exactly |
-//! | P6 (`solver_integration.rs:498`'s shape) | yes (5mm–100mm) | real progress to the 5mm floor |
+//! | P6 (the shape of `optimize_with_feasible_initial_point`, `solver_integration.rs:498`) | yes (5mm–100mm) | real progress to the 5mm floor |
 //!
 //! # Candidate (c) needs no probe of its own
 //!
@@ -54,12 +58,14 @@
 //! and the two anchors are cited here rather than duplicated into a new fixture:
 //!
 //! * The floor is Money-gated — `objective_is_money`
-//!   (`crates/reify-constraints/src/solver.rs:820`) with the gate at `:1755-1760` — and
+//!   (`crates/reify-constraints/src/solver.rs:820`) with its gate in
+//!   `solve_core_with_sd_tolerance` at `:1755-1760` — and
 //!   `crates/reify-constraints/tests/robustness_floor.rs:397`
 //!   (`non_money_objective_unchanged`) already pins that a non-Money objective is
 //!   untouched. Every probe here uses a `Length` objective.
 //! * `build_centrality_objective` is synthesised only when `problem.objective.is_none()`
-//!   (`solver.rs:1847`), so it cannot fire when the author wrote `minimize`/`maximize`.
+//!   (`build_centrality_objective`'s call site in `solve_core_with_sd_tolerance`,
+//!   `solver.rs:1847`), so it cannot fire when the author wrote `minimize`/`maximize`.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
@@ -70,8 +76,9 @@ use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
 /// P7 source: the two-sided production shape, at the driver level.
 ///
 /// `minimize x` under `8mm <= x <= 40mm`. A correct `minimize` returns 8mm; the
-/// derived-box midpoint SEED is 24mm (`extract_initial_point` arm 3,
-/// `crates/reify-constraints/src/solver.rs:402-419`).
+/// derived-box midpoint SEED is 24mm (`extract_initial_point` arm 3 — doc
+/// `crates/reify-constraints/src/solver.rs:402-419`, body `:420-440`; the line range is a
+/// point-in-time hint, the symbol is the durable cite).
 ///
 /// The two-sided form is used deliberately: a one-sided-only auto can trip the separate
 /// one-sided-auto path owned by `#6692`/`#6655`, which would confound the reading.
@@ -89,8 +96,9 @@ structure SeedParking {
 /// PREDICTION: `SeedParking.x` resolves to **24mm** (the derived-box midpoint seed),
 /// NOT the 8mm bound that `minimize x` points at — and no
 /// `DiagnosticCode::SolverOptimalityUnproven` is emitted, because that warning is gated
-/// on `BestFoundReason::IterationLimit` (`crates/reify-eval/src/engine_eval.rs:6120-6136`)
-/// and this solve converges within budget (measured by P5).
+/// on `BestFoundReason::IterationLimit` by the γ-gate in `Engine::eval`
+/// (`crates/reify-eval/src/engine_eval.rs:6120-6136`, the "γ (task #4804)" comment) and
+/// this solve converges within budget (measured by P5).
 ///
 /// MEASURED at HEAD `9c1bed42a7`: `SeedParking.x` = `2.40000000000000005e-2` m =
 /// **24.000000 mm**, bits `0x3f989374bc6a7efa` — **bit-identical** to the solver-level
@@ -148,7 +156,8 @@ fn p7_ri_driver_minimize_parks_at_seed_silently() {
     assert!(
         optimality_warnings.is_empty(),
         "P7: expected NO SolverOptimalityUnproven diagnostic (the gate at \
-         engine_eval.rs:6120-6136 requires BestFoundReason::IterationLimit, and this \
+         the gamma-gate in Engine::eval (engine_eval.rs:6120-6136) requires \
+         BestFoundReason::IterationLimit, and this \
          solve converges within budget — see P5). Getting one means the loudness work \
          in #6654 arm 3 has landed; update this probe rather than reverting. Got: {:#?}",
         optimality_warnings

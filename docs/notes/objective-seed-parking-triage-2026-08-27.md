@@ -9,8 +9,16 @@ before it is called a bug."*
 `maximize` return bit-identical answers). Candidate (a), the silent seed-fallback, is
 CONFIRMED; (b), (c) and (d) are ruled out. Nothing here changes
 solver behaviour: the fix is already owned, three ways, and the disposition is
-close-into-owner (§7). File:line anchors below are point-in-time — re-verify against
-current `main` before building on one.
+close-into-owner (§7).
+
+**Citation convention.** Anchors below lead with the **symbol** and carry the line range
+only as a parenthetical hint. That is the house convention this PRD states in its own
+header (`docs/prds/v0_6/solution-set-completeness.md:5` — *"Main moves fast —
+cite-by-symbol; re-locate lines at implementation time"*), and it binds here because this
+note is written to be read **later**, by the owners of #5711 / #6678 / #6654 — i.e.
+exactly when the line numbers will have rotted. Grep the symbol first; every line range is
+point-in-time, valid only at the HEAD in the provenance block, and one that no longer
+matches its symbol is stale rather than a finding.
 
 ## Provenance
 
@@ -72,7 +80,7 @@ re-solve entirely and reports `unique: false` (`solver.rs:2723-2728`).
 Both reported numbers are **exactly the seed**, returned by the silent seed-fallback. The
 chain has five links, all in `crates/reify-constraints/src/solver.rs`:
 
-1. **SEED.** `extract_initial_point` (`:420-440`, doc `:402-419`) resolves, per auto param,
+1. **SEED.** `extract_initial_point` (body `:420-440`, doc `:402-419`) resolves, per auto param,
    the first applicable of: (1) the current value; (2) an explicit `AutoParam::bounds`
    midpoint; (3) the **constraint-derived box** (task #5618) — the midpoint when BOTH sides
    were derived, else nudged inward from the single derived bound by
@@ -82,30 +90,39 @@ chain has five links, all in `crates/reify-constraints/src/solver.rs`:
    So a one-sided `x >= 8mm` seeds at `8mm × 1.1` = **8.8mm** (P1), a one-sided
    `x <= 40mm` seeds at `40mm − 0.1 × 40mm` = **36mm** (P3), and a two-sided
    `8mm..40mm` seeds at the midpoint **24mm** (P2). Arm 2 never fires in production
-   because `AutoParam.bounds` is always `None` (`:993-997`).
+   because `AutoParam.bounds` is always `None` — the *"Constraint-derived parameter
+   bounds (task #5618)"* header comment above `default_bounds_for` (`:993-997`) names all
+   three construction sites.
 
-2. **NO CLAMP WALL.** The clamp box handed to the optimiser is gated on `floor_applied`
+2. **NO CLAMP WALL.** The clamp box handed to the optimiser is gated on `floor_applied` —
+   the `let bounds = if floor_applied` gate in `solve_core_with_sd_tolerance`
    (`:1809-1825`): the constraint-derived clamp box is used **only** when the Money
    robustness floor fired. A `Length` objective is not Money (`objective_is_money` `:820`,
-   gate `:1755-1760`), so the else-branch takes `effective_bounds` =
+   its gate in `solve_core_with_sd_tolerance` `:1755-1760`), so the else-branch takes
+   `effective_bounds` =
    `default_bounds_for(Length)` = `(1e-6, 10.0)` (`:1585-1594`). There is no wall anywhere
    near the user's bound.
 
 3. **PENALTY UNDERSHOOT.** Cost is `obj + PENALTY_WEIGHT × violation + PENALTY_WEIGHT ×
-   bound_penalty` (`:1539-1548`) with `PENALTY_WEIGHT = 1e6` (`:25`). Minimising
+   bound_penalty` — `ConstraintCostFunction::cost` (`:1539-1548`) — with
+   `PENALTY_WEIGHT = 1e6` (`:25`). Minimising
    `x + 1e6·(b − x)²` is stationary at `b − 1/(2 × PENALTY_WEIGHT)` = `b − 5e-7`, i.e.
-   **5e-7 outside the active bound**. The solver's own comments state this verbatim
-   (`:1017-1021`, `:1776-1781`) and `:1780-1781` already names the symptom this triage
+   **5e-7 outside the active bound**. The solver's own comments state this verbatim — the
+   `#5618` header comment above `default_bounds_for` (`:1017-1021`) and
+   `solve_core_with_sd_tolerance`'s penalty-undershoot note (`:1776-1781`) — and the
+   latter (`:1780-1781`) already names the symptom this triage
    was filed for: *"Deriving from the RAW box instead yields a feasible-but-badly-suboptimal
    answer (the seed, returned via the drift fallback)."*
 
 4. **FEASIBILITY REJECT.** The final check measures the LINEAR residual against
-   `FEASIBILITY_THRESHOLD = 1e-12` (`:20`, `:1997`). `5e-7 >> 1e-12`, so the converged
+   `FEASIBILITY_THRESHOLD` = 1e-12 (the const at `:20`; the
+   `final_max_residual > FEASIBILITY_THRESHOLD` check in `solve_core_with_sd_tolerance`
+   at `:1997`). `5e-7 >> 1e-12`, so the converged
    optimum is rejected as infeasible.
 
-5. **SILENT SEED-FALLBACK.** Because the seed *is* feasible (`initially_feasible`), the
-   rejected optimum is discarded and the **untouched initial point** is returned as
-   `Solved` (`:1997-2031`). The objective is ignored. The only trace is a
+5. **SILENT SEED-FALLBACK.** Because the seed *is* feasible, the `initially_feasible`
+   drift fallback in `solve_core_with_sd_tolerance` (`:1997-2031`) discards the rejected
+   optimum and returns the **untouched initial point** as `Solved`. The objective is ignored. The only trace is a
    `tracing::debug!` — no diagnostic. `warm_start_fallback_returns_exact_initial_values`
    (`crates/reify-constraints/tests/solver_integration.rs:1483`) pins that the return is
    the EXACT initial, which is why every measurement above is bit-exact rather than "near".
@@ -134,6 +151,7 @@ and measures `OptimalityStatus::BestFound { reason: ConvergedWithinBudget }` —
 `IterationLimit`. Nelder-Mead converges fine; its answer is then discarded at link 4.
 
 Corroborated in-tree, and predating this triage:
+the `SMALL_MM_SOURCE` doc comment ("B6 source") in
 `crates/reify-eval/tests/solver_optimality_unproven.rs:123-127` documents the identical
 1-param case — *"converges at the infeasible minimum (y ≈ 1mm − 500nm), triggers the
 initially-feasible fallback to y=10mm, but iter_limited=false → BestFound{reason~'converged
@@ -141,7 +159,8 @@ within iteration budget'} → no warning"*. That 500nm **is** the 5e-7 of link 3
 
 This has a second consequence, which is why loudness is a separate deliverable:
 `W_SOLVER_OPTIMALITY_UNPROVEN` is gated on the `IterationLimit` variant
-(`crates/reify-eval/src/engine_eval.rs:6120-6136`), so it cannot fire here. P4 also rules
+(the γ-gate in `Engine::eval` — `crates/reify-eval/src/engine_eval.rs:6120-6136`, the
+*"γ (task #4804)"* comment), so it cannot fire here. P4 also rules
 (b) out independently: a stalling optimizer does not produce an output that is a bit-exact
 function of the seed.
 
@@ -156,7 +175,8 @@ new fixture would add coverage without adding information.
   (`non_money_objective_unchanged`) already pins that a non-Money objective is untouched.
   Every probe in this triage uses a `Length` objective.
 - `build_centrality_objective` is synthesised **only** when `problem.objective.is_none()`
-  (`solver.rs:1847`), so it cannot fire when the author wrote `minimize`/`maximize`.
+  — its call site in `solve_core_with_sd_tolerance` (`solver.rs:1847`) — so it cannot fire
+  when the author wrote `minimize`/`maximize`.
 
 ## §4 — Candidate (d): objective-plumbing defect — **RULED OUT**
 
@@ -243,7 +263,7 @@ A real defect with fully green coverage, for a structural reason worth recording
 (5mm–100mm) prevent the solver from overshooting the constraint boundary at 2mm, so the
 optimizer converges at the bounds floor."* That wall is what supplies the clamp of link 2,
 and **that shape never occurs in production**, where `bounds` is always `None`
-(`solver.rs:993-997`).
+(the `#5618` header comment above `default_bounds_for`, `solver.rs:993-997`).
 
 P6 isolates exactly this. Same objective, same solver, wall inside the region:
 25mm seed → 5.000000 mm, i.e. the objective moves the answer 20mm. Production shape,
@@ -259,7 +279,8 @@ Worse, the one fixture that puts the wall **outside** the region —
 `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible` (minimize `x` under
 `x > 5mm ∧ x < 6mm`, returning exactly the 5.5mm midpoint seed) — encodes the symptom as
 **intended behaviour**. So the corpus does not merely miss the defect; part of it pins the
-defect in place. `solver.rs:1801-1809` records the same tension from the other side: making
+defect in place. `solve_core_with_sd_tolerance`'s gate note (`solver.rs:1801-1809`)
+records the same tension from the other side: making
 the clamp unconditional breaks that fixture and one other, which is why the question is
 bound to the `verify_uniqueness` contract (§7).
 
@@ -271,8 +292,8 @@ jointly. Filing a fourth task would fragment an already-owned decision.
 
 | arm | owner | anchor |
 |---|---|---|
-| **Loudness** of the silent seed-fallback | **#6654 arm 3** (pending) | already names `solver.rs:1998-2032` explicitly in its own scope |
-| **The clamp gate** (`floor_applied`, `solver.rs:1809-1825`) | **#5711** | `solver.rs:1801-1809` and `:2605-2612` |
+| **Loudness** of the silent seed-fallback | **#6654 arm 3** (pending) | already names the `initially_feasible` drift fallback in `solve_core_with_sd_tolerance` (`solver.rs:1998-2032`) explicitly in its own scope |
+| **The clamp gate** (`floor_applied` in `solve_core_with_sd_tolerance`, `solver.rs:1809-1825`) | **#5711** | that function's gate note (`:1801-1809`) and `verify_uniqueness`'s doc (`:2605-2612`) |
 | **The 5e-7 root cause** (`PENALTY_WEIGHT`) | **#6678** (P2 leaf κ) | squared-slack inequalities, retire `PENALTY_WEIGHT`, re-encode centrality |
 
 Notes on each:
@@ -282,7 +303,8 @@ Notes on each:
   **zero** diagnostics, and `W_SOLVER_OPTIMALITY_UNPROVEN` structurally cannot fire here
   (§2).
 - **#5711** owns the clamp gate *jointly with the `verify_uniqueness` contract*.
-  `solver.rs:1801-1809` records that the unconditional-clamp form fails two named non-Money
+  `solve_core_with_sd_tolerance`'s gate note (`solver.rs:1801-1809`) records that the
+  unconditional-clamp form fails two named non-Money
   drift-fallback fixtures and produces `ConstraintNonUnique` via the flat-objective
   mechanism, and concludes: *"Revisit both together; neither is actionable in isolation."*
   This triage does not reopen that.
