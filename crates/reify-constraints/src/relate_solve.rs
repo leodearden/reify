@@ -518,6 +518,94 @@ fn pick_ab(datums: &[(Value, bool)]) -> Option<(&Value, &Value)> {
     Some((a, b))
 }
 
+/// The residual row vector of `rel` evaluated at its operands' **fixed** current
+/// placements — the STATIC witness, for a relate scope with ZERO `at auto` subs.
+///
+/// Nothing moves here: there is no Frame to solve for, only a verdict to render
+/// on the datums as they already sit. Returns the full row vector rather than a
+/// collapsed magnitude, because the caller must distinguish three outcomes, not
+/// two — see (iii).
+///
+/// # (i) Why nominating a "moving" sub does not perturb anything
+///
+/// The witness pose is [`Pose::identity`], under which [`transform_datum`] is a
+/// provable no-op: `rotate` short-circuits on `angle < 1e-12` and returns its
+/// input unchanged, and `transform_point` adds a zero translation. So the datum
+/// nominated as moving is passed through BITWISE. The nomination is a routing
+/// device for [`pick_ab`], not a transformation.
+///
+/// # (ii) Why a sub MUST be nominated — the load-bearing subtlety
+///
+/// It is tempting to pass a sentinel [`FrameUnknown`] naming no real sub, since
+/// by construction nothing moves. That is WRONG, and wrong in both directions.
+/// [`relation_residual`] marks an operand moving iff `op.sub == unknown.sub`, and
+/// [`pick_ab`] then resolves `a` to the first MOVING operand *else*
+/// `datums.first()`, and `b` to the first NON-MOVING operand *else*
+/// `datums.last()`. With zero moving operands, `a` falls through to `datums[0]`
+/// and `b` resolves to the first non-moving operand — which is also `datums[0]`.
+/// The relation is compared against ITSELF:
+///
+/// - `concentric` / `flush` / `coincident` / `fasten` / `parallel` → identically
+///   `0.0`, i.e. every violated relation reported as satisfied; and
+/// - `perpendicular` → `d·d` = 1.0, `antiparallel` → 2.0, `distance` / `offset` →
+///   `|d|`, `angle` → `1 − cos θ` → false VIOLATIONS on correct models.
+///
+/// Only `on` / `tangent`, which read `datums` positionally, would survive it.
+///
+/// Nominating the FIRST datum operand's own sub fixes both: `a` becomes that
+/// first datum (moving, but identity-transformed, so bitwise unchanged) and `b`
+/// the first operand on a DIFFERENT sub — the genuine second operand. When both
+/// operands share one sub (`concentric(a.x, a.y)`) every datum is moving, no
+/// non-moving operand exists, and `pick_ab`'s `datums.last()` fallback is then
+/// CORRECT: last is a genuinely different operand from first.
+///
+/// That last case is why the arity guard below is on the datum COUNT rather than
+/// on the subs being distinct.
+///
+/// # (iii) An EMPTY return means UNVERIFIABLE, never satisfied
+///
+/// Callers MUST NOT read an empty row vector as "no error". It means this
+/// relation has no residual model for its name/operand-kind combination, or did
+/// not have two realized datums to compare, so its satisfaction was not DECIDED —
+/// a fact that has to be said out loud rather than folded into silence
+/// (`docs/legibility/design-invariants.md` INV-SF-3). Two sources:
+///
+/// - an uncurated relation name, or an operand shape `residual_dispatch` does not
+///   model, contributes no rows; and
+/// - fewer than two datum operands (e.g. one failed to realize and is
+///   [`Value::Undef`]) cannot be compared at all. Passing such a relation through
+///   would hit the very self-compare described in (ii) and return four exact
+///   zeros — a *confident* "satisfied" derived from missing input.
+///
+/// Collapsing this to an `f64` would render "unmodelled" and "measured zero"
+/// identically, trading the false green this function exists to kill for a
+/// quieter one.
+///
+/// Purely additive: no existing call site changes, so the auto-ful solve path is
+/// untouched.
+pub fn static_relation_residuals(rel: &RelationInstance) -> Vec<f64> {
+    // Arity guard — see (iii). Two datum operands are the minimum any residual
+    // form can compare; below that, `pick_ab` would self-compare.
+    if rel.operands.iter().filter(|op| is_datum(&op.datum)).count() < 2 {
+        return Vec::new();
+    }
+
+    // The witness sub — see (ii). The first datum operand carrying a sub.
+    let Some(sub) = rel
+        .operands
+        .iter()
+        .find(|op| is_datum(&op.datum) && op.sub.is_some())
+        .and_then(|op| op.sub.clone())
+    else {
+        // Datum operands exist but none names a sub, so no nomination can make
+        // `pick_ab` pick two distinct operands. Unverifiable rather than guessed.
+        return Vec::new();
+    };
+
+    let unknown = FrameUnknown { sub, free: false };
+    relation_residual(rel, &unknown, &Pose::identity())
+}
+
 // ── Per-relation residual forms ──────────────────────────────────────────────
 
 /// Axis-coincidence (concentric / coincident over Axis), codim 4: 2 direction
