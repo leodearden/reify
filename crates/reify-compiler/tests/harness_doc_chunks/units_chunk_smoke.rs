@@ -59,8 +59,8 @@ use reify_core::units::LENGTH_MIGRATION_HINT;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 use crate::geometry_chunk_smoke::{
-    assert_module_compiles, called_names, phantom_name_panic, registry_family, reify_tagged_fences,
-    strip_reify_comments,
+    assert_module_compiles, called_names, cited_source_paths, phantom_name_panic, registry_family,
+    reify_tagged_fences, resolve_cited_path, source_files_by_basename, strip_reify_comments,
 };
 
 /// The chunk this file owns. Read (never written) at RUNTIME rather than
@@ -441,4 +441,112 @@ fn bare_zero_is_not_special_cased() {
     );
 
     assert_rejected_as_documented(BARE_ZERO_FORM);
+}
+
+/// Cites units.md must carry, as the anti-vacuity floors for
+/// [`cited_test_paths_in_the_units_chunk_resolve`].
+///
+/// The EXACT live counts, not round numbers under them — the reasoning
+/// `geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve` spells out:
+/// at a floor below the live count one whole cite can be deleted while the check
+/// stays green, which is precisely the regression the floor claims to catch. Six
+/// `<path>::<fn>` cites across three `.rs` files (this module's own self-cites,
+/// plus the primitive-profile and modify-sweep eval pins), and one `.ri`
+/// exemplar (`angle_crossings.ri`, which predates this task).
+///
+/// Raise these WITH the chunk when a cite is added. Never lower one to go green:
+/// a lowered floor is a SYNC row that has quietly stopped claiming anything.
+const MINIMUM_FN_CITES: usize = 6;
+const MINIMUM_RS_FILES: usize = 3;
+const MINIMUM_RI_FILES: usize = 1;
+
+/// Every test units.md cites as PINNING a claim must still exist.
+///
+/// Twin of `geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve`,
+/// built on the same three helpers rather than a new path resolver. Both halves
+/// are checked: the cited file resolves against the tree, and it declares the
+/// cited `fn`.
+///
+/// THIS IS WHAT MAKES A "PINNED" ROW HONEST. units.md's check-visibility note
+/// marks some claims PINNED and others UNPINNED, and a reader is invited to
+/// trust the distinction. Without this test a PINNED row survives the deletion
+/// or rename of the test it names, and the chunk — served verbatim to the in-GUI
+/// assistant — goes on asserting a guarantee that no longer exists. A dangling
+/// cite is not a broken link; it is a false claim.
+///
+/// SCOPE — an EXISTENCE check, not a semantic one. It cannot tell that a
+/// still-named test stopped asserting what the row claims, it says nothing about
+/// rows marked UNPINNED, and it does not verify the fn is a `#[test]`. What it
+/// buys is that every `path::fn` cite in the chunk resolves to something real.
+#[test]
+fn cited_test_paths_in_the_units_chunk_resolve() {
+    let markdown = read_chunk();
+    let index = source_files_by_basename();
+    let cites = cited_source_paths(&markdown);
+
+    // Keyed by the RESOLVED path, not the cite token: a file cited both by bare
+    // basename and by full repo-relative path must count ONCE, or a floor could
+    // stay satisfied by a duplicate while a real reference disappeared.
+    let mut rs_paths: std::collections::BTreeSet<std::path::PathBuf> =
+        std::collections::BTreeSet::new();
+    let mut ri_paths: std::collections::BTreeSet<std::path::PathBuf> =
+        std::collections::BTreeSet::new();
+    let mut fn_cites = 0usize;
+
+    for (path_token, fn_name) in &cites {
+        let resolved = resolve_cited_path(path_token, &index).unwrap_or_else(|why| {
+            panic!(
+                "{UNITS_CHUNK_PATH} cites `{path_token}`, which does not resolve: {why}. The \
+                 chunk is served verbatim to the in-GUI assistant and its PINNED/UNPINNED rows \
+                 are written to be read as the authority on which claims a real test guards — a \
+                 dangling cite is a false claim. Update the cite, or mark the row UNPINNED."
+            )
+        });
+
+        if path_token.ends_with(".ri") {
+            ri_paths.insert(resolved.clone());
+        } else {
+            rs_paths.insert(resolved.clone());
+        }
+
+        let Some(fn_name) = fn_name else { continue };
+        fn_cites += 1;
+        let body = std::fs::read_to_string(&resolved)
+            .unwrap_or_else(|e| panic!("{resolved:?} must be readable ({e})"));
+        assert!(
+            body.contains(&format!("fn {fn_name}(")),
+            "{UNITS_CHUNK_PATH} cites `{path_token}::{fn_name}` as pinning one of its claims, \
+             but {resolved:?} declares no `fn {fn_name}(`. The test was renamed or deleted, so \
+             that row now claims a pin that does not exist. Re-point the cite, or downgrade the \
+             row to UNPINNED."
+        );
+    }
+
+    // Anti-vacuity. Reformatting a SYNC block into a shape this scan cannot read
+    // — a path wrapped across two lines is exactly invisible here — would empty
+    // the loop above and pass.
+    assert!(
+        fn_cites >= MINIMUM_FN_CITES,
+        "only {fn_cites} `<path>::<fn>` cite(s) found in {UNITS_CHUNK_PATH} — expected at least \
+         {MINIMUM_FN_CITES}. CITES MUST BE WRITTEN WHOLE ON ONE LINE, never wrapped and never \
+         tabulated into a two-column layout; a wrapped path is invisible to this scan. Either \
+         the chunk was reformatted into a shape it cannot read, or a row lost its cite while \
+         still claiming to pin something. Cites seen: {cites:?}"
+    );
+    assert!(
+        rs_paths.len() >= MINIMUM_RS_FILES,
+        "only {} distinct `.rs` FILE(s) cited in {UNITS_CHUNK_PATH} (distinct after resolution — \
+         the same file cited two ways counts once), expected at least {MINIMUM_RS_FILES}: this \
+         chunk's own guard plus the two eval-layer pins the check-visibility note relies on. \
+         Losing one of those turns a PINNED row into prose. Cites seen: {cites:?}",
+        rs_paths.len()
+    );
+    assert!(
+        ri_paths.len() >= MINIMUM_RI_FILES,
+        "only {} distinct `.ri` example FILE(s) cited in {UNITS_CHUNK_PATH}, expected at least \
+         {MINIMUM_RI_FILES} — `examples/best_practices/angle_crossings.ri` is the compile-gated \
+         exemplar this chunk defers to as the canonical copy of the angle-crossing diagnostics, \
+         so losing the cite orphans that deferral. Cites seen: {cites:?}",
+        ri_paths.len()
+    );
 }
