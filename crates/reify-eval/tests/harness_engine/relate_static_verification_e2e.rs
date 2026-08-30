@@ -568,3 +568,138 @@ fn zero_auto_scope_is_verified_alongside_an_autoful_scope() {
         "a zero-auto scope determines no placement"
     );
 }
+
+// ── Invariant V3: consumption facts reach the build surface ──────────────────
+//
+// `verify_static_scope` produces `StaticRelateFacts` on the returned
+// `RelateSolution`, but `build_with_geometry_output` DROPS `relate_solutions`
+// after its consumption loop — so the facts exist and are unreachable from a
+// completed `Engine::build`. That build is the surface ζ (#5420)'s `finish_check`
+// ledger reads, so without an accessor the facts are produced for nobody.
+//
+// This task only PRODUCES the rows; rendering them into the check summary is
+// #5420's leaf.
+
+/// A module with a relate block but no geometry output, and no zero-auto scope.
+const RELATE_FREE_SOURCE: &str = r#"
+structure Lonely {
+    let body = box(10mm, 10mm, 10mm)
+}
+"#;
+
+/// Build `source` on a fresh OCCT engine and return the engine, so the caller can
+/// interrogate its per-build state.
+fn build_and_keep_engine(source: &str) -> reify_eval::Engine {
+    let module = reify_test_support::parse_and_compile_with_stdlib(source);
+    let mut engine = occt_engine();
+    let _ = engine.build(&module, reify_ir::ExportFormat::Step);
+    engine
+}
+
+/// **V3** — a completed build exposes one consumption row per zero-auto relate
+/// scope, for both the violated and the satisfied fixture.
+///
+/// The satisfied case is the one that matters most: it emits NO diagnostic, so the
+/// ledger row is the ONLY evidence the relate block was consumed at all. Without
+/// it, "verified 2" and "there was no relate block" are indistinguishable
+/// downstream — which is the same conflation, one layer up, that this whole task
+/// exists to remove.
+#[test]
+fn build_exposes_static_relate_facts_per_zero_auto_scope() {
+    if skip_without_occt("build_exposes_static_relate_facts_per_zero_auto_scope") {
+        return;
+    }
+
+    let violated = build_and_keep_engine(violated_fixture_source());
+    assert_eq!(
+        violated.relate_static_facts(),
+        &[(
+            "DicRelateViolated".to_string(),
+            reify_eval::relate_solve::StaticRelateFacts {
+                verified: 0,
+                violated: 2,
+                unverifiable: 0,
+            }
+        )][..],
+        "the violated fixture must contribute exactly one ledger row"
+    );
+
+    let ok = build_and_keep_engine(ok_fixture_source());
+    assert_eq!(
+        ok.relate_static_facts(),
+        &[(
+            "DicRelateOk".to_string(),
+            reify_eval::relate_solve::StaticRelateFacts {
+                verified: 2,
+                violated: 0,
+                unverifiable: 0,
+            }
+        )][..],
+        "a SATISFIED zero-auto scope emits no diagnostic, so this row is the only \
+         evidence the relate block was consumed — without it, `verified: 2` and \
+         `no relate block` are indistinguishable downstream"
+    );
+}
+
+/// **V3** — an auto-ful relate scope contributes NO row, and neither does a module
+/// with no relate block at all.
+///
+/// A solved scope is not a statically-verified one: ζ renders those as separate
+/// ledger rows, and folding them together here would misreport an assembly that
+/// was actually placed by the solver as one that was merely checked in place.
+#[test]
+fn build_reports_no_static_facts_for_autoful_or_relate_free_modules() {
+    if skip_without_occt("build_reports_no_static_facts_for_autoful_or_relate_free_modules") {
+        return;
+    }
+
+    let autoful = build_and_keep_engine(AUTOFUL_SOURCE);
+    assert!(
+        autoful.relate_static_facts().is_empty(),
+        "an auto-ful scope is SOLVED, not statically verified — it must not appear \
+         in the static ledger; got {:?}",
+        autoful.relate_static_facts()
+    );
+
+    let none = build_and_keep_engine(RELATE_FREE_SOURCE);
+    assert!(
+        none.relate_static_facts().is_empty(),
+        "a module with no relate block contributes no rows; got {:?}",
+        none.relate_static_facts()
+    );
+}
+
+/// **V3** — the rows are PER-BUILD and do not accumulate across builds on the same
+/// engine.
+///
+/// A `Vec` on a long-lived engine that is pushed to but never cleared would grow
+/// without bound and, worse, would report a PREVIOUS module's relate scopes as if
+/// they belonged to the current one. Two consecutive builds on one engine — first
+/// a zero-auto relate module, then a relate-free one — must leave the accessor
+/// EMPTY, which is only true if the field is reset per build.
+#[test]
+fn static_relate_facts_do_not_accumulate_across_builds() {
+    if skip_without_occt("static_relate_facts_do_not_accumulate_across_builds") {
+        return;
+    }
+
+    let with_relate = reify_test_support::parse_and_compile_with_stdlib(ok_fixture_source());
+    let without_relate = reify_test_support::parse_and_compile_with_stdlib(RELATE_FREE_SOURCE);
+    let mut engine = occt_engine();
+
+    let _ = engine.build(&with_relate, reify_ir::ExportFormat::Step);
+    assert_eq!(
+        engine.relate_static_facts().len(),
+        1,
+        "fixture guard: the first build must actually produce a row, or the \
+         non-accumulation assertion below is vacuous"
+    );
+
+    let _ = engine.build(&without_relate, reify_ir::ExportFormat::Step);
+    assert!(
+        engine.relate_static_facts().is_empty(),
+        "rows must be reset per build — a stale row here would report the PREVIOUS \
+         module's relate scope as belonging to this one; got {:?}",
+        engine.relate_static_facts()
+    );
+}
