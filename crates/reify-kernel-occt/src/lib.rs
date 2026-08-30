@@ -100,6 +100,12 @@ pub fn boolean_pass_count() -> u64 {
 #[cfg(has_occt)]
 pub use ffi::ffi::RevolveSynthesisPostSortResult;
 
+// Same re-export rationale for the #6344 STEP plane-angle guard probe: the
+// `export_step_with_injected_fault_for_test` wrapper below returns it, so
+// integration tests must be able to name it.
+#[cfg(has_occt)]
+pub use ffi::ffi::StepGuardProbeResult;
+
 /// Fixture for integration tests: runs only the post-sort/dedup helper on
 /// a synthetic flat-records input, without requiring real OCCT geometry.
 ///
@@ -4817,6 +4823,40 @@ impl OcctKernel {
 /// real isolation comes from the cfg gate above.
 #[cfg(all(has_occt, feature = "test-fixtures"))]
 impl OcctKernel {
+    /// Run the FULL production STEP export — same mutex, same
+    /// `wrap_occt_call("export_step")` label, same INV-AD-4 plane-angle
+    /// refusal guard — with exactly one fault injected into the transferred
+    /// STEP model, returning the guard's audit counts alongside the file text.
+    ///
+    /// This is the ONLY way to reach the guard's failure arms.
+    /// `STEPConstruct_UnitContext::Init` emits `SI_UNIT($,.RADIAN.)` as an
+    /// immediate constant with no branch, so no input shape and no
+    /// `Interface_Static` can make a real export declare a non-radian plane
+    /// angle — without injection the guard would be untestable and therefore
+    /// decorative. The accepted `fault` values are documented on the C++
+    /// declaration in `cpp/occt_wrapper.h`.
+    ///
+    /// # Errors
+    ///
+    /// - `ExportError::InvalidHandle` — if the handle is unknown.
+    /// - `ExportError::FormatError` — the guard REFUSED the export (the
+    ///   interesting case), or the `fault` name was not recognised. Both
+    ///   surface with the production `"export_step: "` attribution, so a test
+    ///   asserting refusal text is asserting exactly what a user would see.
+    #[doc(hidden)]
+    pub fn export_step_with_injected_fault_for_test(
+        &self,
+        handle: GeometryHandleId,
+        schema: &str,
+        fault: &str,
+    ) -> Result<StepGuardProbeResult, ExportError> {
+        let shape = self
+            .get_shape(handle)
+            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        ffi::ffi::export_step_with_injected_fault_for_test(shape, schema, fault)
+            .map_err(|e| ExportError::FormatError(e.to_string()))
+    }
+
     /// Outward unit normal at the centroid of `face` as a typed `[f64; 3]`.
     ///
     /// Test-side counterpart to `kernel.query(GeometryQuery::FaceNormal(id))`

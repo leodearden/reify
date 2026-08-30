@@ -6710,245 +6710,630 @@ std::unique_ptr<OcctShapeVec> split_shape(
 // all concurrent export_step() calls across all kernel threads.
 static std::mutex g_step_export_mutex;
 
-ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
-    std::lock_guard<std::mutex> lock(g_step_export_mutex);
-    return wrap_occt_call("export_step", [&]() {
-        // Register the STEP statics BEFORE setting them. STEPControl_Controller
-        // ::Init() is the idempotent call that REGISTERS the
-        // `write.step.schema` Interface_Static; calling SetCVal before any
-        // controller exists is a silent no-op (the static is not registered
-        // yet). The writer's own constructor also runs Init(), but it then
-        // immediately builds its model from the STEP Template Model — which
-        // bakes in whatever `write.step.schema` holds AT CONSTRUCTION TIME.
-        // So the correct order is: Init() → SetCVal → construct writer →
-        // Transfer → Write. Setting the static AFTER constructing the writer
-        // is too late: the model has already captured the default schema.
-        STEPControl_Controller::Init();
+namespace {
 
-        // Map the kernel-neutral schema name (StepSchema::as_str()) to the
-        // OCCT `write.step.schema` enum token. The accepted tokens for this
-        // build are AP203 / AP214CD / AP214DIS / AP214IS / AP242DIS; we use
-        // the DIS variants for AP214/AP242. Unknown inputs default to the
-        // AP214 token so a malformed schema never aborts the export.
-        std::string neutral(schema);
-        const char* token = "AP214DIS";
-        bool want_ap242 = false;
-        if (neutral == "AP203") {
-            token = "AP203";
-        } else if (neutral == "AP214") {
-            token = "AP214DIS";
-        } else if (neutral == "AP242") {
-            token = "AP242DIS";
-            want_ap242 = true;
+// ===========================================================================
+// STEP PLANE-ANGLE UNIT REFUSAL GUARD (#6344) — INV-AD-4's third arm.
+//
+// #6184 landed the DECLARATION half of INV-AD-4 (the contract comment inside
+// export_step below, plus two text-level pins in src/handle.rs). This is the
+// RUNTIME half: after the shape has been transferred into the STEP model but
+// BEFORE any bytes reach a file, walk the model and refuse to write it unless
+// every representation context declares the *unprefixed SI radian* for plane
+// angles.
+//
+// WHY REFUSE RATHER THAN WARN. A mislabelled angular unit is not a degraded
+// capability honestly reported (contrast ExportWarning::StepAp242Fallback,
+// which is a real lesser capability delivered honestly) — it is a correctness
+// defect in the emitted bytes. A warning on stderr does not stop the wrong
+// file from reaching an external CAD tool, and the sibling LENGTH regime
+// twenty lines below already took the throw posture for exactly this class of
+// defect ("Fail loudly rather than exporting geometry mislabelled by 1000x").
+// There is deliberately NO break-glass env var: a bypass would let a user
+// write the mislabelled file the guard exists to prevent.
+//
+// WHY THIS CANNOT FIRE ON A CORRECT FILE. STEPConstruct_UnitContext::Init,
+// the sole builder of the write-side unit context, emits `SI_UNIT($,.RADIAN.)`
+// as an immediate constant with no branch on any writer option (measured for
+// #6184 — see the OBSERVATION LOG in export_step below). So no benign OCCT
+// change can move the declaration; only a change that genuinely alters the
+// declared unit trips this guard, and that IS the defect. The corollary is
+// that the failure arms are unreachable from ordinary inputs, which is why
+// they are exercised through `export_step_with_injected_fault_for_test`
+// rather than through a crafted input shape.
+//
+// THE WALK IS BY ASSOCIATION, NOT BY COUNT. An earlier draft of this guard
+// compared `plane_angle_unit_count == unit_assigned_context_count`. That
+// proxy is measured-true against system OCCT 7.8 but is NOT a property STEP
+// guarantees — several contexts may legally share ONE unit instance, so an
+// OCCT bump that deduped unit entities would have reddened the guard on a
+// perfectly correct file. The same reasoning is recorded on the #6184
+// text-level walk in src/handle.rs, whose model-level mirror this is.
+// ===========================================================================
+
+/// Counts from one walk of a transferred STEP model's plane-angle units.
+///
+/// `plane_angle_units` / `radian_ok` count (context, angular unit)
+/// ASSOCIATIONS, not model-wide entities: the sound question is "does THIS
+/// context reach a radian?", and a model-wide entity tally cannot answer it
+/// (it stays unchanged when a context stops referencing a unit that still
+/// exists in the model). Orphan angular units no context references are
+/// checked separately by V4 below and are deliberately not counted here.
+struct StepPlaneAngleAuditCounts {
+    /// Unit-assigned contexts resolved from the model.
+    uint32_t contexts = 0;
+    /// Summed over contexts: how many angular units each context reaches.
+    uint32_t plane_angle_units = 0;
+    /// Of those associations, how many resolve to the unprefixed SI radian.
+    uint32_t radian_ok = 0;
+};
+
+/// Resolve `entity` to the `StepRepr_GlobalUnitAssignedContext` it carries,
+/// or a null handle if it carries none.
+///
+/// THE DIRECT DOWNCAST ALONE IS NOT ENOUGH, and getting this wrong is silent:
+/// what OCCT actually emits for a solid is the COMPLEX entity
+/// `StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx`, which
+/// derives from `StepRepr_RepresentationContext` and merely *composes* a
+/// `Handle(StepRepr_GlobalUnitAssignedContext)` member. A direct
+/// `DownCast<StepRepr_GlobalUnitAssignedContext>` therefore returns null on
+/// every one of them, the walk reports ZERO contexts on a file that carries
+/// three, and every per-context arm below passes vacuously. The integration
+/// test `guard_accepts_a_real_multi_context_export` cross-checks this count
+/// against the `GLOBAL_UNIT_ASSIGNED_CONTEXT` occurrences in the very bytes
+/// the same export produced, which is what reddens that naive form.
+Handle(StepRepr_GlobalUnitAssignedContext) step_unit_assigned_context(
+    const Handle(Standard_Transient)& entity) {
+    Handle(StepRepr_GlobalUnitAssignedContext) direct =
+        Handle(StepRepr_GlobalUnitAssignedContext)::DownCast(entity);
+    if (!direct.IsNull()) {
+        return direct;
+    }
+    Handle(StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx) composed =
+        Handle(StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx)::DownCast(
+            entity);
+    if (!composed.IsNull()) {
+        return composed->GlobalUnitAssignedContext();
+    }
+    return Handle(StepRepr_GlobalUnitAssignedContext)();
+}
+
+/// How a single unit entity classifies for INV-AD-4's purposes.
+enum class StepAngleUnitKind {
+    /// Not an angular unit at all (a length, a solid angle carrier, …).
+    NotAngular,
+    /// The one accepted form: an SI plane-angle unit, name RADIAN, no prefix.
+    SiRadian,
+    /// An SI plane-angle unit that is NOT the unprefixed radian.
+    SiWrong,
+    /// A conversion-based plane-angle unit — the spelling a degree or grad
+    /// unit takes. Never accepted: reify's payload is radians.
+    ConversionBased,
+};
+
+/// Classify one model entity as an angular unit declaration.
+///
+/// DOWNCAST TO THE `…And…` COMPOSITES, NOT TO `StepBasic_PlaneAngleUnit`.
+/// Verified in the OCCT 7.8 headers: `StepBasic_SiUnitAndPlaneAngleUnit`
+/// derives from `StepBasic_SiUnit` and only *composes* a
+/// `Handle(StepBasic_PlaneAngleUnit)` member, so a
+/// `DownCast<StepBasic_PlaneAngleUnit>` returns null on the real emitted
+/// entity. `StepBasic_ConversionBasedUnitAndPlaneAngleUnit` has the identical
+/// shape over `StepBasic_ConversionBasedUnit`.
+///
+/// On a non-accepted classification `detail` (when non-null) receives a
+/// description of what was observed, for the refusal diagnostic.
+StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& entity,
+                                           std::string* detail) {
+    Handle(StepBasic_SiUnitAndPlaneAngleUnit) si =
+        Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(entity);
+    if (!si.IsNull()) {
+        // BOTH conjuncts are load-bearing. A name-only check accepts
+        // SI_UNIT(.MILLI.,.RADIAN.) — a MILLIRADIAN, whose declaration is off
+        // from the payload by exactly 1000x, the same factor the length
+        // regime below exists to prevent. `$` (no prefix) is the only
+        // acceptable prefix slot.
+        if (si->Name() == StepBasic_sunRadian && !si->HasPrefix()) {
+            return StepAngleUnitKind::SiRadian;
         }
+        if (detail != nullptr) {
+            std::ostringstream oss;
+            oss << "SI plane-angle unit with name=" << static_cast<int>(si->Name());
+            if (si->HasPrefix()) {
+                oss << " prefix=" << static_cast<int>(si->Prefix());
+            } else {
+                oss << " prefix=none";
+            }
+            *detail = oss.str();
+        }
+        return StepAngleUnitKind::SiWrong;
+    }
+    Handle(StepBasic_ConversionBasedUnitAndPlaneAngleUnit) conv =
+        Handle(StepBasic_ConversionBasedUnitAndPlaneAngleUnit)::DownCast(entity);
+    if (!conv.IsNull()) {
+        if (detail != nullptr) {
+            *detail =
+                "CONVERSION_BASED_UNIT plane-angle unit (the spelling a degree "
+                "or grad unit takes)";
+        }
+        return StepAngleUnitKind::ConversionBased;
+    }
+    return StepAngleUnitKind::NotAngular;
+}
 
-        // Set the schema EXPLICITLY on every call — including the AP214
-        // default. `write.step.schema` is a process-global Interface_Static;
-        // export_step is serialized by g_step_export_mutex, but the static
-        // persists between calls, so without an explicit per-call set a prior
-        // AP203 export would leak its schema into a later default export.
-        bool ap242_fell_back = false;
-        Standard_Boolean set_ok =
-            Interface_Static::SetCVal("write.step.schema", token);
+/// Walk `model` and audit every plane-angle unit declaration BY ASSOCIATION.
+///
+/// Four arms, each a distinct failure the others cannot see:
+///   V1  the model carries NO unit-assigned context at all. Also the
+///       anti-naive-downcast tripwire: a direct-only `step_unit_assigned_
+///       context` reports zero on a real file, and V1 is what turns that
+///       silent vacuity into a loud refusal.
+///   V2  a context reaches NO angular unit — a MISSING declaration, which no
+///       "is the declared unit right?" check can catch.
+///   V3  a context reaches an angular unit that is not the unprefixed SI
+///       radian. Fires on a PARTIAL flip, which a file-wide `.RADIAN.` grep
+///       cannot see because the other contexts are still correct.
+///   V4  an angular unit entity that NO context references is not the
+///       unprefixed SI radian. Disjoint from V3 by construction (V3 covers
+///       the referenced ones), so between them every angular unit entity in
+///       the model is checked exactly once.
+///
+/// Appends one line per violation to `violations` (when non-null) and returns
+/// the counts either way — the counts are also useful on the accepting path,
+/// where the fixture-hook returns them so a test can prove the walk actually
+/// saw the whole file rather than passing vacuously.
+StepPlaneAngleAuditCounts audit_step_plane_angle_units(
+    const Handle(Interface_InterfaceModel)& model,
+    std::vector<std::string>* violations) {
+    StepPlaneAngleAuditCounts counts;
+    if (model.IsNull()) {
+        if (violations != nullptr) {
+            violations->push_back(
+                "the STEP model is null, so no unit declaration could be "
+                "verified");
+        }
+        return counts;
+    }
 
-        // Why `set_ok` is consulted ONLY for AP242 (and not AP203/AP214):
-        // STEPControl_Controller::Init() registers AP203 and all AP214 tokens
-        // (AP214CD/AP214DIS/AP214IS) unconditionally in every STEP-capable
-        // OCCT build, so SetCVal for those tokens cannot fail here — a failure
-        // would mean no STEP controller exists at all, in which case
-        // export_step itself could not run. They also have no safer fallback
-        // target, so reading back set_ok for them would be dead code. AP242DIS
-        // is the only token whose availability varies across OCCT builds/configs
-        // (it can be compiled out of older/minimal builds), so it is the only
-        // one that needs the rejection readback + honest AP214 fallback below.
-        if (want_ap242) {
-            // Honest AP242 degradation: if the linked OCCT rejected AP242DIS
-            // (SetCVal failed, or the static did not actually take the value),
-            // fall back to AP214DIS and report it. The linked OCCT 7.9.3 DOES
-            // support AP242DIS, so this branch is a guard for builds that
-            // don't — it is intentionally not exercised in-tree.
-            const char* current = Interface_Static::CVal("write.step.schema");
-            bool accepted = set_ok && current != nullptr &&
-                            std::string(current) == "AP242DIS";
-            if (!accepted) {
-                Interface_Static::SetCVal("write.step.schema", "AP214DIS");
-                ap242_fell_back = true;
+    const Standard_Integer n = model->NbEntities();
+
+    // Pass 1: resolve every unit-assigned context and walk its own unit
+    // reference list. `referenced` records which angular unit entities some
+    // context actually reaches, so pass 2 can restrict itself to the orphans.
+    std::set<const Standard_Transient*> referenced;
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        const Handle(Standard_Transient)& entity = model->Value(i);
+        Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+            step_unit_assigned_context(entity);
+        if (ctx.IsNull()) {
+            continue;
+        }
+        counts.contexts += 1;
+
+        Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+        uint32_t angular_here = 0;
+        // EVERY unit this context reaches, not just the angular subset: when
+        // a context reaches no angular unit at all, the diagnostic question
+        // is "then what DID it reach?", and a pre-filtered list answers that
+        // with an empty string. Same reasoning as `resolved_units_summary`
+        // on the #6184 text-level walk in src/handle.rs.
+        std::ostringstream reached;
+        bool first_reached = true;
+        if (!units.IsNull()) {
+            for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+                Handle(StepBasic_NamedUnit) unit = units->Value(k);
+                if (unit.IsNull()) {
+                    continue;
+                }
+                if (!first_reached) {
+                    reached << ", ";
+                }
+                first_reached = false;
+                reached << "#" << model->Number(unit) << " "
+                        << unit->DynamicType()->Name();
+
+                std::string detail;
+                StepAngleUnitKind kind = classify_step_angle_unit(unit, &detail);
+                if (kind == StepAngleUnitKind::NotAngular) {
+                    continue;
+                }
+                referenced.insert(unit.get());
+                angular_here += 1;
+                counts.plane_angle_units += 1;
+                if (kind == StepAngleUnitKind::SiRadian) {
+                    counts.radian_ok += 1;
+                } else if (violations != nullptr) {
+                    // V3
+                    std::ostringstream oss;
+                    oss << "context #" << i << " reaches plane-angle unit #"
+                        << model->Number(unit)
+                        << ", which is not the unprefixed SI radian: " << detail;
+                    violations->push_back(oss.str());
+                }
             }
         }
 
-        // Construct the writer AFTER the schema is set, so its model captures
-        // the requested `write.step.schema`.
-        STEPControl_Writer writer;
-
-        // LENGTH UNIT REGIME. Reify model space is SI METRES; exported STEP is
-        // MILLIMETRES (the CAD-interop default, and the unit OCCT already
-        // declares as SI_UNIT(.MILLI.,.METRE.) in the written file). Setting
-        // these two values is what makes the declaration and the payload
-        // AGREE: without them OCCT's scale factor is 1.0 and reify's metre
-        // coordinates are emitted verbatim under a millimetre declaration, so
-        // a 30 mm part reads back as 30 µm — a 1000x shrink.
-        //
-        // Both APIs express a unit as its SIZE IN MILLIMETRES, so the local
-        // (in-memory) unit is 1000.0 — "reify's coordinates are metres" — and
-        // the write unit is 1.0 — "emit millimetres". OCCT derives the scale
-        // factor from the ratio local/write and applies the x1000 itself; the
-        // declared SI_UNIT line is unchanged, only the payload moves.
-        //
-        // ORDERING IS LOAD-BEARING, for the same reason the `write.step.schema`
-        // ordering above is: the units cannot be set BEFORE the writer is
-        // constructed (the model does not exist yet — Model() is what creates
-        // and owns it) nor AFTER Transfer (which has already computed and
-        // applied the scale factor). Construct writer -> set units -> Transfer
-        // is the only correct order.
-        //
-        // BOTH values are set EXPLICITLY on every call, for the same reason the
-        // schema is re-set per call above: SetWriteLengthUnit is otherwise
-        // uninitialised and falls back to the process-global `write.step.unit`
-        // Interface_Static, which another caller could have moved.
-        //
-        // The PER-MODEL API is chosen deliberately over the equivalent
-        // process-global `xstep.cascade.unit` / `write.step.unit` statics: a
-        // per-model setting cannot leak into a concurrent export or into a
-        // future STEP reader, whereas this function already needs
-        // g_step_export_mutex and a per-call schema re-set precisely because
-        // OCCT's globals do leak.
-        Handle(StepData_StepModel) step_model = writer.Model();
-        if (step_model.IsNull()) {
-            // Fail loudly rather than exporting geometry mislabelled by 1000x.
-            throw std::runtime_error(
-                "STEPControl_Writer::Model() returned null; cannot set the STEP "
-                "length unit regime");
+        if (angular_here == 0 && violations != nullptr) {
+            // V2 — worded so it cannot be confused with V3/V4: a MISSING
+            // declaration and a WRONG one have different causes and different
+            // fixes, so one shared "bad plane angle unit" string would be a
+            // regression in the guard's only user-visible output.
+            std::ostringstream oss;
+            oss << "context #" << i << " reaches NO plane-angle unit; the units "
+                << "it does reach are: "
+                << (first_reached ? std::string("(none — its reference list "
+                                                "resolved to no unit instance)")
+                                  : reached.str());
+            violations->push_back(oss.str());
         }
-        step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
-        step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
+    }
 
-        // PLANE-ANGLE UNIT REGIME. Plane angles cross this boundary as SI
-        // RADIANS in both directions, and — unlike the length regime above —
-        // there is nothing to CALL to make that so. OCCT declares radians
-        // unconditionally: STEPConstruct_UnitContext::Init, the sole builder of
-        // the write-side unit context, emits `SI_UNIT($,.RADIAN.)` with no
-        // branch on any writer option. Contrast the length unit twenty
-        // instructions above, which carries a full conditional
-        // CONVERSION_BASED_UNIT chain driven by `write.step.unit`. So reify's
-        // angular declaration is correct BY CONSTRUCTION — which is precisely
-        // why it needed a DECLARATION: rad = 1 by SI coherence is numerically
-        // right, but until #6184 it was nowhere stated (INV-AD-4).
-        //
-        // THERE IS NO WRITE-SIDE ANGLE KNOB. No SetWriteAngleUnit /
-        // WriteAngleUnit / SetLocalAngleUnit exists, and StepData_StepModel —
-        // which carries SetLocalLengthUnit / SetWriteLengthUnit and a
-        // `myLocalLengthUnit` member — has no angular counterpart of any kind.
-        // This was settled empirically across several OCCT versions; do not
-        // re-investigate. See MEASURED below for the sweep.
-        //
-        // THE TRAP: `step.angleunit.mode`. It is a REGISTERED Interface_Static,
-        // an enum of File/Rad/Deg, and STEPControl_ActorWrite::Transfer
-        // genuinely reads it —
-        // `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`.
-        // But it is HALF-WIRED: its only write-side consumer is
-        // TopoDSToStep_MakeStepFace::Init -> GeomConvert_Units::RadianToDegree,
-        // which rescales PCURVE PARAMETER space; the unit DECLARATION ignores
-        // it entirely. Setting it to Deg therefore emits degree pcurves under a
-        // radian header — a silently self-inconsistent file, NOT a degrees
-        // file. reify never sets this static, and MUST NOT.
-        //
-        // INTERACTION WITH THE LENGTH REGIME above: the two are independent
-        // here ONLY because the plane-angle factor is 1.0. StepData_Factors
-        // carries myLengthFactor and myPlaneAngleFactor as separate members,
-        // and 7.9 added DEFAULTED StepData_Factors arguments across the
-        // GeomToStep_* entry points — so a forgotten-factors regression would
-        // be INVISIBLE in the angle (factor 1.0, no observable change) and
-        // FATAL in the length (factor 1000). Do not infer from "angles are
-        // fine" that the factor plumbing is fine.
-        //
-        // THE GUARANTEE BOUNDARY. reify guarantees the declaration and the
-        // payload AGREE. It does NOT guarantee a consumer honours the
-        // declaration: a 26.565 deg cone semi-angle misread as 0.4636 deg puts
-        // the top edge 14.76 mm off its own surface on a 30 mm part — a
-        // topologically invalid face that importers resolve inconsistently.
-        // Nor do the pins below catch the `step.angleunit.mode` trap: they
-        // quantify over unit DECLARATIONS, and as measured below the
-        // declaration does not move when the payload does.
-        //
-        // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
-        // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
-        // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
-        // quantify over EVERY unit context — a compound emits one per
-        // representation_context, three for a two-cone union — rather than
-        // grepping for one ".RADIAN." token, so a partial flip fails. INV-AD-4's
-        // third arm, a runtime refusal guard, is deliberately DEFERRED to #6344
-        // so this leaf keeps its no-behaviour-change character.
-        //
-        // ------------------------------------------------------------------
-        // MEASURED 2026-08-29 (task #6184) against SYSTEM OCCT 7.8. Everything
-        // ABOVE this line is version-independent contract; everything BELOW is
-        // a DATED OBSERVATION LOG, kept because it is the evidence the contract
-        // rests on and no test asserts any of it. Read it as "what one run on
-        // one version showed", never as a claim about the OCCT you are linking
-        // today: instance numbers renumber on any writer change, so if they no
-        // longer match, the log is STALE, not the export broken — re-measure
-        // and re-date rather than trusting these numbers. (Longer-term home for
-        // this log is docs/prds/v0_6/angle-dimension-completion.md section 9
-        // B7, where dated findings belong; the move is deferred because #6184
-        // holds no lock on that file.)
-        //
-        // WHICH OCCT. This writer is SYSTEM OCCT 7.8 from
-        // /usr/lib/x86_64-linux-gnu, NOT the 7.9.3 in /opt/reify-deps:
-        // crates/reify-build-utils/src/lib.rs deliberately lists system paths
-        // first for NativeDep::Occt (the deps tree ships 7.9 only as a
-        // transitive gmsh dependency). Both are loaded into one address space,
-        // and exported files carry 'Open CASCADE STEP processor 7.8'.
-        //
-        // NO-ANGLE-KNOB SWEEP. Checked in the 7.8 headers, and additionally in
-        // V7_9_0, V7_9_3, V8_0_1 and master: all clean, and there is no 7.10.
-        // OCCT's own docs describe the one angle parameter as "obsolete ...
-        // when a STEP file is read". Both versions hardcode the radian, which
-        // is why the contract above is stated as version-independent.
-        //
-        // THE step.angleunit.mode DIFF. Exporting one 30 mm cone under each of
-        // the three enum values:
-        //   - modes 0 (File) and 1 (Rad): byte-identical DATA sections.
-        //   - mode 2 (Deg): differs in exactly ONE entity, the pcurve point
-        //     inside a DEFINITIONAL_REPRESENTATION —
-        //       mode 0/1  #39 = CARTESIAN_POINT('',(-6.28318530718,0.))  [-2*pi rad]
-        //       mode 2    #39 = CARTESIAN_POINT('',(-360.,0.))           [same angle, degrees]
-        //   - the declaration is byte-identical in ALL THREE modes:
-        //       #84 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
-        //     with zero CONVERSION_BASED_UNIT and zero "degree" tokens anywhere
-        //     in the file, in every mode.
-        // The payload moves; the declaration does not. That is the whole defect
-        // in one diff, and the reason the pins cannot catch this trap.
-        // ------------------------------------------------------------------
-        //
-        // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4,
-        // section 9 B7). Length regime above: #6186.
+    if (counts.contexts == 0 && violations != nullptr) {
+        // V1
+        std::ostringstream oss;
+        oss << "the model declares NO unit-assigned context at all (walked "
+            << n << " entities), so nothing states the plane-angle unit";
+        violations->push_back(oss.str());
+    }
 
-        writer.Transfer(shape.shape, STEPControl_AsIs);
-
-        // Write to a temporary file, then read back
-        char tmpname[] = "/tmp/reify_step_XXXXXX";
-        int fd = mkstemp(tmpname);
-        if (fd < 0) {
-            throw std::runtime_error("Failed to create temp file for STEP export");
+    // Pass 2 (V4): an angular unit entity no context references. It cannot
+    // mislabel the payload of a context that never reaches it, but it is
+    // still a declaration in the emitted file, and a reader that resolves
+    // units differently than this walk does would see it.
+    if (violations != nullptr) {
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            const Handle(Standard_Transient)& entity = model->Value(i);
+            if (referenced.count(entity.get()) != 0) {
+                continue;
+            }
+            std::string detail;
+            StepAngleUnitKind kind = classify_step_angle_unit(entity, &detail);
+            if (kind == StepAngleUnitKind::NotAngular ||
+                kind == StepAngleUnitKind::SiRadian) {
+                continue;
+            }
+            std::ostringstream oss;
+            oss << "unreferenced plane-angle unit #" << i
+                << " is not the unprefixed SI radian: " << detail;
+            violations->push_back(oss.str());
         }
-        close(fd);
+    }
 
-        IFSelect_ReturnStatus status = writer.Write(tmpname);
-        if (status != IFSelect_RetDone) {
-            std::remove(tmpname);
-            throw std::runtime_error("STEPControl_Writer::Write failed");
+    return counts;
+}
+
+/// Run `audit_step_plane_angle_units` and REFUSE the export if it found
+/// anything.
+///
+/// Throws `ContractViolation`, not `std::runtime_error`, so `wrap_occt_call`
+/// renders it as `"export_step: <message>"` (a Reify-authored diagnostic)
+/// rather than misattributing it as `"OCCT export_step: unexpected: …"`. Per
+/// that type's contract the message must NOT repeat the op name — the wrapper
+/// already prefixes it.
+///
+/// Returns the counts on the accepting path so callers that want them (the
+/// fixture hook) need not walk the model twice.
+StepPlaneAngleAuditCounts enforce_step_plane_angle_radians(
+    const Handle(Interface_InterfaceModel)& model) {
+    std::vector<std::string> violations;
+    StepPlaneAngleAuditCounts counts = audit_step_plane_angle_units(model, &violations);
+    if (violations.empty()) {
+        return counts;
+    }
+    std::ostringstream oss;
+    oss << "refusing to write STEP: INV-AD-4 requires every representation "
+           "context to declare the unprefixed SI radian for plane angles "
+           "(contexts=" << counts.contexts
+        << " plane_angle_units=" << counts.plane_angle_units
+        << " radian_ok=" << counts.radian_ok << ")";
+    for (const std::string& v : violations) {
+        oss << "\n  - " << v;
+    }
+    throw ContractViolation(oss.str());
+}
+
+/// Everything one STEP export produces, before it is narrowed to the FFI
+/// shape the caller asked for.
+struct StepExportLockedResult {
+    std::string content;
+    bool ap242_fell_back = false;
+    StepPlaneAngleAuditCounts audit;
+};
+
+}  // anonymous namespace (STEP plane-angle guard)
+
+/// The whole body of `export_step`, factored out so the fixture hook
+/// `export_step_with_injected_fault_for_test` runs the SAME code under the
+/// SAME lock rather than a lookalike copy that could drift from it.
+///
+/// PRECONDITION: the caller already holds `g_step_export_mutex`. This
+/// function does not take it (a non-recursive std::mutex would deadlock) and
+/// it does not install `wrap_occt_call` either — both stay with the callers,
+/// so the exception taxonomy the user sees is identical on both paths.
+static StepExportLockedResult export_step_locked(const OcctShape& shape, rust::Str schema) {
+    // Register the STEP statics BEFORE setting them. STEPControl_Controller
+    // ::Init() is the idempotent call that REGISTERS the
+    // `write.step.schema` Interface_Static; calling SetCVal before any
+    // controller exists is a silent no-op (the static is not registered
+    // yet). The writer's own constructor also runs Init(), but it then
+    // immediately builds its model from the STEP Template Model — which
+    // bakes in whatever `write.step.schema` holds AT CONSTRUCTION TIME.
+    // So the correct order is: Init() → SetCVal → construct writer →
+    // Transfer → Write. Setting the static AFTER constructing the writer
+    // is too late: the model has already captured the default schema.
+    STEPControl_Controller::Init();
+
+    // Map the kernel-neutral schema name (StepSchema::as_str()) to the
+    // OCCT `write.step.schema` enum token. The accepted tokens for this
+    // build are AP203 / AP214CD / AP214DIS / AP214IS / AP242DIS; we use
+    // the DIS variants for AP214/AP242. Unknown inputs default to the
+    // AP214 token so a malformed schema never aborts the export.
+    std::string neutral(schema);
+    const char* token = "AP214DIS";
+    bool want_ap242 = false;
+    if (neutral == "AP203") {
+        token = "AP203";
+    } else if (neutral == "AP214") {
+        token = "AP214DIS";
+    } else if (neutral == "AP242") {
+        token = "AP242DIS";
+        want_ap242 = true;
+    }
+
+    // Set the schema EXPLICITLY on every call — including the AP214
+    // default. `write.step.schema` is a process-global Interface_Static;
+    // export_step is serialized by g_step_export_mutex, but the static
+    // persists between calls, so without an explicit per-call set a prior
+    // AP203 export would leak its schema into a later default export.
+    bool ap242_fell_back = false;
+    Standard_Boolean set_ok =
+        Interface_Static::SetCVal("write.step.schema", token);
+
+    // Why `set_ok` is consulted ONLY for AP242 (and not AP203/AP214):
+    // STEPControl_Controller::Init() registers AP203 and all AP214 tokens
+    // (AP214CD/AP214DIS/AP214IS) unconditionally in every STEP-capable
+    // OCCT build, so SetCVal for those tokens cannot fail here — a failure
+    // would mean no STEP controller exists at all, in which case
+    // export_step itself could not run. They also have no safer fallback
+    // target, so reading back set_ok for them would be dead code. AP242DIS
+    // is the only token whose availability varies across OCCT builds/configs
+    // (it can be compiled out of older/minimal builds), so it is the only
+    // one that needs the rejection readback + honest AP214 fallback below.
+    if (want_ap242) {
+        // Honest AP242 degradation: if the linked OCCT rejected AP242DIS
+        // (SetCVal failed, or the static did not actually take the value),
+        // fall back to AP214DIS and report it. The linked OCCT 7.9.3 DOES
+        // support AP242DIS, so this branch is a guard for builds that
+        // don't — it is intentionally not exercised in-tree.
+        const char* current = Interface_Static::CVal("write.step.schema");
+        bool accepted = set_ok && current != nullptr &&
+                        std::string(current) == "AP242DIS";
+        if (!accepted) {
+            Interface_Static::SetCVal("write.step.schema", "AP214DIS");
+            ap242_fell_back = true;
         }
+    }
 
-        std::ifstream ifs(tmpname);
-        std::string content((std::istreambuf_iterator<char>(ifs)),
-                            std::istreambuf_iterator<char>());
-        ifs.close();
+    // Construct the writer AFTER the schema is set, so its model captures
+    // the requested `write.step.schema`.
+    STEPControl_Writer writer;
+
+    // LENGTH UNIT REGIME. Reify model space is SI METRES; exported STEP is
+    // MILLIMETRES (the CAD-interop default, and the unit OCCT already
+    // declares as SI_UNIT(.MILLI.,.METRE.) in the written file). Setting
+    // these two values is what makes the declaration and the payload
+    // AGREE: without them OCCT's scale factor is 1.0 and reify's metre
+    // coordinates are emitted verbatim under a millimetre declaration, so
+    // a 30 mm part reads back as 30 µm — a 1000x shrink.
+    //
+    // Both APIs express a unit as its SIZE IN MILLIMETRES, so the local
+    // (in-memory) unit is 1000.0 — "reify's coordinates are metres" — and
+    // the write unit is 1.0 — "emit millimetres". OCCT derives the scale
+    // factor from the ratio local/write and applies the x1000 itself; the
+    // declared SI_UNIT line is unchanged, only the payload moves.
+    //
+    // ORDERING IS LOAD-BEARING, for the same reason the `write.step.schema`
+    // ordering above is: the units cannot be set BEFORE the writer is
+    // constructed (the model does not exist yet — Model() is what creates
+    // and owns it) nor AFTER Transfer (which has already computed and
+    // applied the scale factor). Construct writer -> set units -> Transfer
+    // is the only correct order.
+    //
+    // BOTH values are set EXPLICITLY on every call, for the same reason the
+    // schema is re-set per call above: SetWriteLengthUnit is otherwise
+    // uninitialised and falls back to the process-global `write.step.unit`
+    // Interface_Static, which another caller could have moved.
+    //
+    // The PER-MODEL API is chosen deliberately over the equivalent
+    // process-global `xstep.cascade.unit` / `write.step.unit` statics: a
+    // per-model setting cannot leak into a concurrent export or into a
+    // future STEP reader, whereas this function already needs
+    // g_step_export_mutex and a per-call schema re-set precisely because
+    // OCCT's globals do leak.
+    Handle(StepData_StepModel) step_model = writer.Model();
+    if (step_model.IsNull()) {
+        // Fail loudly rather than exporting geometry mislabelled by 1000x.
+        throw std::runtime_error(
+            "STEPControl_Writer::Model() returned null; cannot set the STEP "
+            "length unit regime");
+    }
+    step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
+    step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
+
+    // PLANE-ANGLE UNIT REGIME. Plane angles cross this boundary as SI
+    // RADIANS in both directions, and — unlike the length regime above —
+    // there is nothing to CALL to make that so. OCCT declares radians
+    // unconditionally: STEPConstruct_UnitContext::Init, the sole builder of
+    // the write-side unit context, emits `SI_UNIT($,.RADIAN.)` with no
+    // branch on any writer option. Contrast the length unit twenty
+    // instructions above, which carries a full conditional
+    // CONVERSION_BASED_UNIT chain driven by `write.step.unit`. So reify's
+    // angular declaration is correct BY CONSTRUCTION — which is precisely
+    // why it needed a DECLARATION: rad = 1 by SI coherence is numerically
+    // right, but until #6184 it was nowhere stated (INV-AD-4).
+    //
+    // THERE IS NO WRITE-SIDE ANGLE KNOB. No SetWriteAngleUnit /
+    // WriteAngleUnit / SetLocalAngleUnit exists, and StepData_StepModel —
+    // which carries SetLocalLengthUnit / SetWriteLengthUnit and a
+    // `myLocalLengthUnit` member — has no angular counterpart of any kind.
+    // This was settled empirically across several OCCT versions; do not
+    // re-investigate. See MEASURED below for the sweep.
+    //
+    // THE TRAP: `step.angleunit.mode`. It is a REGISTERED Interface_Static,
+    // an enum of File/Rad/Deg, and STEPControl_ActorWrite::Transfer
+    // genuinely reads it —
+    // `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`.
+    // But it is HALF-WIRED: its only write-side consumer is
+    // TopoDSToStep_MakeStepFace::Init -> GeomConvert_Units::RadianToDegree,
+    // which rescales PCURVE PARAMETER space; the unit DECLARATION ignores
+    // it entirely. Setting it to Deg therefore emits degree pcurves under a
+    // radian header — a silently self-inconsistent file, NOT a degrees
+    // file. reify never sets this static, and MUST NOT.
+    //
+    // INTERACTION WITH THE LENGTH REGIME above: the two are independent
+    // here ONLY because the plane-angle factor is 1.0. StepData_Factors
+    // carries myLengthFactor and myPlaneAngleFactor as separate members,
+    // and 7.9 added DEFAULTED StepData_Factors arguments across the
+    // GeomToStep_* entry points — so a forgotten-factors regression would
+    // be INVISIBLE in the angle (factor 1.0, no observable change) and
+    // FATAL in the length (factor 1000). Do not infer from "angles are
+    // fine" that the factor plumbing is fine.
+    //
+    // THE GUARANTEE BOUNDARY. reify guarantees the declaration and the
+    // payload AGREE. It does NOT guarantee a consumer honours the
+    // declaration: a 26.565 deg cone semi-angle misread as 0.4636 deg puts
+    // the top edge 14.76 mm off its own surface on a 30 mm part — a
+    // topologically invalid face that importers resolve inconsistently.
+    // Nor do the pins below catch the `step.angleunit.mode` trap: they
+    // quantify over unit DECLARATIONS, and as measured below the
+    // declaration does not move when the payload does.
+    //
+    // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
+    // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
+    // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
+    // quantify over EVERY unit context — a compound emits one per
+    // representation_context, three for a two-cone union — rather than
+    // grepping for one ".RADIAN." token, so a partial flip fails. INV-AD-4's
+    // third arm, a runtime refusal guard, is deliberately DEFERRED to #6344
+    // so this leaf keeps its no-behaviour-change character.
+    //
+    // ------------------------------------------------------------------
+    // MEASURED 2026-08-29 (task #6184) against SYSTEM OCCT 7.8. Everything
+    // ABOVE this line is version-independent contract; everything BELOW is
+    // a DATED OBSERVATION LOG, kept because it is the evidence the contract
+    // rests on and no test asserts any of it. Read it as "what one run on
+    // one version showed", never as a claim about the OCCT you are linking
+    // today: instance numbers renumber on any writer change, so if they no
+    // longer match, the log is STALE, not the export broken — re-measure
+    // and re-date rather than trusting these numbers. (Longer-term home for
+    // this log is docs/prds/v0_6/angle-dimension-completion.md section 9
+    // B7, where dated findings belong; the move is deferred because #6184
+    // holds no lock on that file.)
+    //
+    // WHICH OCCT. This writer is SYSTEM OCCT 7.8 from
+    // /usr/lib/x86_64-linux-gnu, NOT the 7.9.3 in /opt/reify-deps:
+    // crates/reify-build-utils/src/lib.rs deliberately lists system paths
+    // first for NativeDep::Occt (the deps tree ships 7.9 only as a
+    // transitive gmsh dependency). Both are loaded into one address space,
+    // and exported files carry 'Open CASCADE STEP processor 7.8'.
+    //
+    // NO-ANGLE-KNOB SWEEP. Checked in the 7.8 headers, and additionally in
+    // V7_9_0, V7_9_3, V8_0_1 and master: all clean, and there is no 7.10.
+    // OCCT's own docs describe the one angle parameter as "obsolete ...
+    // when a STEP file is read". Both versions hardcode the radian, which
+    // is why the contract above is stated as version-independent.
+    //
+    // THE step.angleunit.mode DIFF. Exporting one 30 mm cone under each of
+    // the three enum values:
+    //   - modes 0 (File) and 1 (Rad): byte-identical DATA sections.
+    //   - mode 2 (Deg): differs in exactly ONE entity, the pcurve point
+    //     inside a DEFINITIONAL_REPRESENTATION —
+    //       mode 0/1  #39 = CARTESIAN_POINT('',(-6.28318530718,0.))  [-2*pi rad]
+    //       mode 2    #39 = CARTESIAN_POINT('',(-360.,0.))           [same angle, degrees]
+    //   - the declaration is byte-identical in ALL THREE modes:
+    //       #84 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
+    //     with zero CONVERSION_BASED_UNIT and zero "degree" tokens anywhere
+    //     in the file, in every mode.
+    // The payload moves; the declaration does not. That is the whole defect
+    // in one diff, and the reason the pins cannot catch this trap.
+    // ------------------------------------------------------------------
+    //
+    // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4,
+    // section 9 B7). Length regime above: #6186.
+
+    writer.Transfer(shape.shape, STEPControl_AsIs);
+
+    // INV-AD-4 RUNTIME REFUSAL GUARD (#6344). Placed AFTER Transfer —
+    // which is what populates the model's unit contexts, so there is
+    // nothing to walk before it — and BEFORE Write, so a violation
+    // refuses the export instead of diagnosing a file that already
+    // exists. See the guard's own contract block above `export_step_locked`.
+    StepPlaneAngleAuditCounts audit = enforce_step_plane_angle_radians(step_model);
+
+    // Write to a temporary file, then read back
+    char tmpname[] = "/tmp/reify_step_XXXXXX";
+    int fd = mkstemp(tmpname);
+    if (fd < 0) {
+        throw std::runtime_error("Failed to create temp file for STEP export");
+    }
+    close(fd);
+
+    IFSelect_ReturnStatus status = writer.Write(tmpname);
+    if (status != IFSelect_RetDone) {
         std::remove(tmpname);
+        throw std::runtime_error("STEPControl_Writer::Write failed");
+    }
 
+    std::ifstream ifs(tmpname);
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+    ifs.close();
+    std::remove(tmpname);
+
+    StepExportLockedResult result;
+    result.content = std::move(content);
+    result.ap242_fell_back = ap242_fell_back;
+    result.audit = audit;
+    return result;
+}
+
+ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
+    std::lock_guard<std::mutex> lock(g_step_export_mutex);
+    return wrap_occt_call("export_step", [&]() {
+        StepExportLockedResult locked = export_step_locked(shape, schema);
+        // The audit counts are deliberately dropped here: the production
+        // signature is unchanged by #6344, and a violation has already been
+        // turned into a refusal by the time control reaches this line.
         ExportStepResult result;
-        result.content = rust::String(content);
-        result.ap242_fell_back = ap242_fell_back;
+        result.content = rust::String(locked.content);
+        result.ap242_fell_back = locked.ap242_fell_back;
         return result;
+    });
+}
+
+StepGuardProbeResult export_step_with_injected_fault_for_test(const OcctShape& shape,
+                                                              rust::Str schema,
+                                                              rust::Str fault) {
+    // Same mutex as `export_step`, for the same reason: OCCT's STEP writer
+    // pipeline is backed by process-global state.
+    std::lock_guard<std::mutex> lock(g_step_export_mutex);
+    // DELIBERATELY the production op name, not a fixture-specific one. The
+    // refusal text these tests pin has to be byte-identical to what a real
+    // refusal produces — a hook that stamped its own label would let the
+    // production diagnostic drift without reddening anything.
+    return wrap_occt_call("export_step", [&]() {
+        std::string fault_name(fault);
+        if (fault_name != "none") {
+            throw ContractViolation("unknown injected fault \"" + fault_name +
+                                    "\"; accepted faults: none");
+        }
+        StepExportLockedResult locked = export_step_locked(shape, schema);
+        StepGuardProbeResult out;
+        out.content = rust::String(locked.content);
+        out.contexts = locked.audit.contexts;
+        out.plane_angle_units = locked.audit.plane_angle_units;
+        out.radian_ok = locked.audit.radian_ok;
+        return out;
     });
 }
 

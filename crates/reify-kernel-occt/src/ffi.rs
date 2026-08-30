@@ -38,6 +38,25 @@ pub mod ffi {
         ap242_fell_back: bool,
     }
 
+    /// Result of `export_step_with_injected_fault_for_test` (#6344): the STEP
+    /// text plus the plane-angle guard's audit counts for that same export.
+    ///
+    /// The counts are what let a test prove the guard actually WALKED the file
+    /// rather than passing vacuously — `contexts` is cross-checked against the
+    /// `GLOBAL_UNIT_ASSIGNED_CONTEXT` occurrences in `content`, and a naive
+    /// direct downcast reports zero on a file that carries three.
+    ///
+    /// `plane_angle_units` / `radian_ok` count (context, angular unit)
+    /// ASSOCIATIONS, not model-wide entities: a context that stops referencing
+    /// a unit which still exists in the model must move these counts, and a
+    /// model-wide tally would not.
+    struct StepGuardProbeResult {
+        content: String,
+        contexts: u32,
+        plane_angle_units: u32,
+        radian_ok: u32,
+    }
+
     /// Full 3×3 inertia tensor returned from `query_inertia_tensor`.
     ///
     /// Fields are named m{row}{col} in row-major order (m11 = row 1, col 1).
@@ -1339,6 +1358,23 @@ pub mod ffi {
             dy: f64,
             dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+
+        /// Run the FULL `export_step` body — same mutex, same
+        /// `wrap_occt_call("export_step")` label, same INV-AD-4 plane-angle
+        /// guard — after injecting exactly one fault into the transferred STEP
+        /// model, returning the audit counts alongside the file text.
+        ///
+        /// OCCT emits `SI_UNIT($,.RADIAN.)` unconditionally, so no input shape
+        /// and no `Interface_Static` can drive a real export into the guard's
+        /// failure arms; injection is the only way to exercise them, and
+        /// without it the guard would be decorative. Same justification as
+        /// `make_null_shape_for_test` above. See the C++ header for the
+        /// accepted `fault` values.
+        fn export_step_with_injected_fault_for_test(
+            shape: &OcctShape,
+            schema: &str,
+            fault: &str,
+        ) -> Result<StepGuardProbeResult>;
 
         // --- Export ---
         /// Export `shape` to STEP using the given kernel-neutral `schema`

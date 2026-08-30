@@ -80,6 +80,9 @@ struct Point3;
 struct BBox;
 struct TessResult;
 struct ExportStepResult;
+/// Returned by `export_step_with_injected_fault_for_test` (#6344); defined by
+/// the cxx bridge (ffi.rs).
+struct StepGuardProbeResult;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
@@ -1594,6 +1597,33 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
     const OcctShape& shape,
     double ax, double ay, double az, double angle_rad,
     double dx, double dy, double dz
+);
+
+/// Run the FULL `export_step` body — same mutex, same `wrap_occt_call("export_step")`
+/// label, same guard — after injecting exactly one fault into the transferred
+/// STEP model, and return the plane-angle audit counts alongside the file text.
+///
+/// WHY THIS EXISTS. `STEPConstruct_UnitContext::Init`, the sole builder of the
+/// write-side unit context, emits `SI_UNIT($,.RADIAN.)` as an immediate
+/// constant with no branch on any writer option, so NO input shape and NO
+/// `Interface_Static` can make a real export produce a non-radian plane-angle
+/// declaration. The INV-AD-4 refusal guard's failure arms are therefore
+/// unreachable from ordinary inputs, and without injection the guard would be
+/// decorative. Same argument as `make_null_shape_for_test` above, which exists
+/// because its crash input "cannot be built from Rust".
+///
+/// `fault` selects the corruption, applied inside the export mutex and after
+/// the shape has been transferred:
+///   - `"none"`  — no fault; asserts the guard ACCEPTS a legitimate export and
+///                 reports counts proving it saw the whole model.
+///
+/// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) on
+/// an unrecognised `fault`, so a typo in a test reads as a rejected fault name
+/// rather than as a silently-skipped injection that passes vacuously.
+StepGuardProbeResult export_step_with_injected_fault_for_test(
+    const OcctShape& shape,
+    rust::Str schema,
+    rust::Str fault
 );
 
 // --- Export ---
