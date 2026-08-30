@@ -113,14 +113,14 @@ fn constraint_data_serializes_with_expected_fields() {
     let c = ConstraintData {
         node_id: "Bracket.0".to_string(),
         expression: "thickness > 2mm".to_string(),
-        status: "Satisfied".to_string(),
+        status: "satisfied".to_string(),
         label: None,
         parameter_ids: vec!["Bracket.thickness".to_string()],
     };
     let v = serde_json::to_value(&c).unwrap();
     assert_eq!(v["node_id"], json!("Bracket.0"));
     assert_eq!(v["expression"], json!("thickness > 2mm"));
-    assert_eq!(v["status"], json!("Satisfied"));
+    assert_eq!(v["status"], json!("satisfied"));
     assert!(v["label"].is_null());
     assert_eq!(v["parameter_ids"].as_array().unwrap().len(), 1);
 }

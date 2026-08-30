@@ -158,7 +158,7 @@ fn constraint_violation_set_thickness_1mm() {
     };
 
     // thickness=1mm violates "thickness > 2mm"
-    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "Violated");
+    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "violated");
 
     assert!(
         thickness_gt_constraint.is_some(),
@@ -433,7 +433,7 @@ fn constraint_violation_and_recovery() {
     let violated_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .count();
     assert!(
         violated_count >= 1,
@@ -444,7 +444,7 @@ fn constraint_violation_and_recovery() {
     let satisfied_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Satisfied")
+        .filter(|c| c.status == "satisfied")
         .count();
     assert!(
         satisfied_count >= 1,
@@ -458,7 +458,7 @@ fn constraint_violation_and_recovery() {
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "all constraints should be satisfied after restoring thickness=5mm, but {} is {}",
             c.node_id, c.status
         );
@@ -3582,7 +3582,7 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
     );
     assert_ne!(
         find_moi_principal_constraint(&state).status,
-        "Satisfied",
+        "satisfied",
         "the `moi_principal[0] > 0` PD constraint must not be re-checked to \
          Satisfied off a RETAINED pre-edit `moi_principal` — that is the same stale \
          value wearing a constraint badge"

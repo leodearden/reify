@@ -4996,6 +4996,28 @@ fn build_values(
     values
 }
 
+/// The wire token for a constraint verdict. Lower-case: this is the casing
+/// every frontend consumer compares against, and it matches the sibling
+/// `determinacy` field on the same payload (`"determined"`, see `build_values`).
+///
+/// SINGLE source of truth — `build_constraints` and
+/// `surface_geometry_derived_cells` must both route through it, INCLUDING their
+/// Indeterminate GUARD comparisons.  Two independent copies of this mapping is
+/// what let the casing drift from the frontend in the first place (task 6723);
+/// one helper makes that divergence structurally impossible.
+///
+/// The token set is closed at three.  Pinned two-way:
+/// `tests/types_tests.rs::constraint_data_status_wire_tokens_are_lowercase_and_closed`
+/// on this side, `gui/src/__tests__/constraintVerdictParity.test.ts` on the
+/// consumer side (which reads these very match arms out of this file).
+pub(crate) fn satisfaction_token(s: Satisfaction) -> &'static str {
+    match s {
+        Satisfaction::Satisfied => "satisfied",
+        Satisfaction::Violated => "violated",
+        Satisfaction::Indeterminate => "indeterminate",
+    }
+}
+
 /// Build the `Vec<ConstraintData>` shared between `build_gui_state` and
 /// `build_preview_gui_state`.
 ///
@@ -5018,11 +5040,7 @@ pub(crate) fn build_constraints(
 ) -> Vec<ConstraintData> {
     let mut constraints = Vec::new();
     for entry in &check.constraint_results {
-        let status = match entry.satisfaction {
-            Satisfaction::Satisfied => "Satisfied",
-            Satisfaction::Violated => "Violated",
-            Satisfaction::Indeterminate => "Indeterminate",
-        };
+        let status = satisfaction_token(entry.satisfaction);
         let (expression, parameter_ids) = compiled
             .templates
             .iter()
@@ -5328,7 +5346,18 @@ fn surface_geometry_derived_cells(
     // The overlay is built INSIDE the guard so a pass that surfaces cells but has
     // no Indeterminate constraint left — the non-`Rigid` majority — pays neither
     // the clone nor the dispatch.
-    if surfaced_any && constraints.iter().any(|c| c.status == "Indeterminate") {
+    //
+    // Both Indeterminate comparisons below go through `satisfaction_token`
+    // rather than a bare literal, so the guard and the value it is guarding
+    // against are provably the same string.  A hand-typed literal here that
+    // fell out of step with the emitted token would silently disable this
+    // entire re-check — no compile error, and the regression would surface only
+    // as a PD constraint that never upgrades off Indeterminate.
+    if surfaced_any
+        && constraints
+            .iter()
+            .any(|c| c.status == satisfaction_token(Satisfaction::Indeterminate))
+    {
         let merged: Option<ValueMap> = if cache_sourced.is_empty() {
             None
         } else {
@@ -5342,7 +5371,7 @@ fn surface_geometry_derived_cells(
 
         if let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values) {
             for c in constraints.iter_mut() {
-                if c.status != "Indeterminate" {
+                if c.status != satisfaction_token(Satisfaction::Indeterminate) {
                     continue;
                 }
                 let Some(new_sat) = recheck
@@ -5355,12 +5384,7 @@ fn surface_geometry_derived_cells(
                 if new_sat == Satisfaction::Indeterminate {
                     continue;
                 }
-                c.status = match new_sat {
-                    Satisfaction::Satisfied => "Satisfied",
-                    Satisfaction::Violated => "Violated",
-                    Satisfaction::Indeterminate => "Indeterminate",
-                }
-                .to_string();
+                c.status = satisfaction_token(new_sat).to_string();
             }
         }
     }

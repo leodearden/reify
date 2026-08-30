@@ -1329,7 +1329,7 @@ fn set_parameter_constraints_still_correct() {
     assert_eq!(state.constraints.len(), 3);
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied",
             c.node_id
         );
@@ -1411,7 +1411,7 @@ fn constraint_violation_roundtrip() {
         .set_parameter("Bracket.thickness", "1mm")
         .expect("set thickness should succeed");
 
-    let violated = state.constraints.iter().any(|c| c.status == "Violated");
+    let violated = state.constraints.iter().any(|c| c.status == "violated");
     assert!(
         violated,
         "should have at least one violated constraint when thickness=1mm"
@@ -1424,7 +1424,7 @@ fn constraint_violation_roundtrip() {
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied after restoring thickness",
             c.node_id
         );
@@ -7094,7 +7094,7 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
     let violated_constraints: Vec<_> = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .collect();
 
     assert!(
@@ -19451,7 +19451,7 @@ fn rigid_mass_props_surface_as_determined_on_load() {
 
     let pd = find_moi_principal_constraint(&state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "the `moi_principal[0] > 0` PD constraint must be Satisfied once \
          moi_principal resolves; got status={:?}",
         pd.status
@@ -19520,7 +19520,7 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
 
     let pd = find_moi_principal_constraint(&state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "the `moi_principal[0] > 0` PD constraint must stay Satisfied after the \
          warm edit; got status={:?}",
         pd.status
