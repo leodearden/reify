@@ -210,8 +210,9 @@ positive/negative lists are in the leaf bodies):
   strict via `validate_dimensionless_unit_axis_vec3`), joint `ratio` (already
   DIMENSIONLESS-checked by `ratio_input`), the buckling eigenvalue λ,
   `infill_gibson_ashby_c/n`, `read_location_index`, and **tensegrity `force_densities`**
-  (`tensegrity.ri:230/:345`) — nullity-invariant relative ratios, documented as such at
-  `tensegrity.ri:275-281`; genuinely dimensionless, not a gap.
+  (`tensegrity.ri:284/:403`) — nullity-invariant relative ratios, documented as such in
+  the "Dimensional bridge" paragraph of `tensegrity.ri`'s `FormFindResult` doc block;
+  genuinely dimensionless, not a gap.
 - **Angle-semantic positions** (`revolute` binds, planar/cylindrical θ, `ramp_profile`
   from/to on a revolute) route through `reify-stdlib`'s existing ANGLE-checked `trig_input`.
   This PRD changes **no angle policy** — it replaces ad-hoc `as_f64()` with the helper that
