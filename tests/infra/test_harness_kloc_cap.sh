@@ -2178,4 +2178,115 @@ assert "10: transitive-member scan emits a structured PASS line" \
 assert "10: transitive-member scan emits NO FAIL line at all" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_nested_out"
 
+# --- must-not-fire: NORMALIZATION — non-canonical but valid #[path] values (a
+# leading "./" and a "../"-round-trip) must resolve to the same member as
+# their canonical form, or a raw-vs-normalized comparison would false-fire. ---
+_s10_norm_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_norm_dir")
+mkdir -p "$_s10_norm_dir/harness_synth"
+{
+    printf '#[path = "./harness_synth/a.rs"]\n'
+    printf 'mod a;\n'
+    printf '#[path = "harness_synth/../harness_synth/b.rs"]\n'
+    printf 'mod b;\n'
+} > "$_s10_norm_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_norm_dir/harness_synth/a.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_norm_dir/harness_synth/b.rs"
+
+_s10_norm_out="$(mktemp)"; _TMPDIRS+=("$_s10_norm_out")
+_s10_norm_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_norm_dir" \
+    > "$_s10_norm_out" 2>/dev/null || _s10_norm_rc=$?
+
+assert "10: non-canonical #[path] forms (./ and ../-round-trip) are NOT flagged (rc 0)" \
+    test "$_s10_norm_rc" -eq 0
+assert "10: normalization scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_norm_out"
+
+# --- must-not-fire: MODDIR BOUNDARY + the live #[cfg] shape. A #[cfg]-gated
+# member (crates/reify-cli/tests/harness_cli.rs:184-186's #[cfg] -> #[path]
+# -> mod ordering) is DECLARED regardless of cfg state, and a bare `mod
+# common;` resolving to a retained tests/ sibling is not a member at all — it
+# resolves OUTSIDE the module dir. ---
+_s10_bound_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bound_dir")
+mkdir -p "$_s10_bound_dir/harness_synth" "$_s10_bound_dir/common"
+{
+    printf '#[cfg(target_os = "linux")]\n'
+    printf '#[path = "harness_synth/gated.rs"]\n'
+    printf 'mod gated;\n'
+    printf 'mod common;\n'
+} > "$_s10_bound_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bound_dir/harness_synth/gated.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bound_dir/common/mod.rs"
+
+_s10_bound_out="$(mktemp)"; _TMPDIRS+=("$_s10_bound_out")
+_s10_bound_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bound_dir" \
+    > "$_s10_bound_out" 2>/dev/null || _s10_bound_rc=$?
+
+assert "10: a #[cfg]-gated member (#[cfg] then #[path] then mod) is NOT flagged (rc 0)" \
+    test "$_s10_bound_rc" -eq 0
+assert "10: moddir-boundary scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_bound_out"
+
+# --- must-not-fire: SHAPE GUARDS. A single-file harness (no module dir) has
+# nothing to scan; and the Section 1c ORPHAN case (a module dir with no
+# sibling root) is re-driven through rule (d) to confirm it preserves that
+# pin rather than newly firing on it. ---
+_s10_single_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_single_dir")
+printf '#[test]\nfn t() {}\n' > "$_s10_single_dir/harness_synth.rs"
+
+_s10_single_out="$(mktemp)"; _TMPDIRS+=("$_s10_single_out")
+_s10_single_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_single_dir" \
+    > "$_s10_single_out" 2>/dev/null || _s10_single_rc=$?
+
+assert "10: a single-file harness (no module dir) is NOT flagged (rc 0)" \
+    test "$_s10_single_rc" -eq 0
+assert "10: single-file-harness scan emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate$' "$_s10_single_out"
+
+_s10_orphan_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_orphan_dir")
+mkdir -p "$_s10_orphan_dir/harness_orphan"
+awk 'BEGIN { for (i = 0; i < 3; i++) print "// x" }' > "$_s10_orphan_dir/harness_orphan/x.rs"
+
+_s10_orphan_out="$(mktemp)"; _TMPDIRS+=("$_s10_orphan_out")
+_s10_orphan_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_orphan_dir" \
+    > "$_s10_orphan_out" 2>/dev/null || _s10_orphan_rc=$?
+
+assert "10: an orphan module dir with no sibling root is NOT flagged, same pin as 1c (rc 0)" \
+    test "$_s10_orphan_rc" -eq 0
+assert "10: orphan-dir scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_orphan_out"
+
+# --- must-FIRE: SILENT-BIND RESIDUE — the case Section 6 deliberately
+# tolerates. root writes bare `mod x;`, and BOTH a retained tests/ sibling
+# ($dir/x.rs) AND a module-dir file of the same stem ($dir/harness_synth/x.rs)
+# exist. rustc's crate-root-relative resolution binds the SIBLING (Section
+# 6's principled exception, unchanged by this rule), which leaves the
+# module-dir file silently dead — the concrete witness for why rule (d)
+# exists at all. ---
+_s10_bind_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bind_dir")
+mkdir -p "$_s10_bind_dir/harness_synth"
+printf 'mod x;\n' > "$_s10_bind_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bind_dir/x.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bind_dir/harness_synth/x.rs"
+
+_s10_bind_attr_out="$(mktemp)"; _TMPDIRS+=("$_s10_bind_attr_out")
+_s10_bind_attr_rc=0
+harness_path_attr_violations synthcrate "$_s10_bind_dir" \
+    > "$_s10_bind_attr_out" 2>/dev/null || _s10_bind_attr_rc=$?
+assert "10: Section 6's principled sibling exception still holds unchanged (rc 0)" \
+    test "$_s10_bind_attr_rc" -eq 0
+
+_s10_bind_out="$(mktemp)"; _TMPDIRS+=("$_s10_bind_out")
+_s10_bind_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bind_dir" \
+    > "$_s10_bind_out" 2>/dev/null || _s10_bind_rc=$?
+
+assert "10: the silent-bind residue module-dir file DOES fire (returns 1)" \
+    test "$_s10_bind_rc" -eq 1
+assert "10: silent-bind residue reported as undeclared-member member=harness_synth/x.rs" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_synth\.rs reason=undeclared-member member=harness_synth/x\.rs$' "$_s10_bind_out"
+
 test_summary
