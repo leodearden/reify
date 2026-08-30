@@ -1592,6 +1592,62 @@ pub async fn set_fea_case_on_engine(
     run_on_engine(engine, move |session| session.set_active_fea_case(&case)).await
 }
 
+/// THE single write seam every `reify_*` AI write tool routes through (task
+/// 5097 δ, PRD `docs/prds/v0_6/ai-native-editing.md` §6.2): run `f` on the
+/// engine, then refresh the delta baseline — see the shared INV-GUI-2
+/// rationale above [`open_source_into_engine_and_refresh_baseline`] for
+/// why/how.
+///
+/// (a) **One seam, no exceptions.** All five write tools
+/// (`reify_set_parameter`, `reify_update_source`, `reify_open_file`,
+/// `reify_save_file`, `reify_export`) reach the baseline refresh through
+/// here, including the two that commit no new engine state — the uniformity
+/// is what makes §6.2 invariant (a) checkable structurally rather than tool
+/// by tool, and it is the anchor θ (task 5100) asserts against. A write tool
+/// that refreshes the baseline its own way is the defect that anchor exists
+/// to catch.
+///
+/// (b) **The `StateDelta` is deliberately DISCARDED.** `compute_delta` is
+/// called for its SIDE EFFECT — advancing `last_state` — only. The full
+/// `GuiState` reaches the frontend via the caller's synchronous
+/// `query_frontend` push, not `emit_delta` (§6.2 caveat (i) / D7). Do NOT add
+/// a second emit path here or in any caller: mechanism 1 of the §6.2 pair is
+/// already satisfied by construction, because every mutation routed through
+/// here (`update_source`, `load_file`, and `apply_param_to_source_str`
+/// transitively via `update_source`) reaches
+/// `EngineSession::post_engine_call_telemetry`, the one shared
+/// gui-state-sync choke-point. Reconcile any further divergence at
+/// `gui-state-sync`, which owns that seam.
+///
+/// (c) It inherits the SERIAL-DEBUG-OPS assumption its sibling wrappers
+/// document: the refresh lands BEFORE the caller's frontend push, so a
+/// normal command interleaved in that window would diff against S1 while the
+/// frontend is still at S0.
+///
+/// (d) **Why [`open_source_into_engine_and_refresh_baseline`] is NOT
+/// re-expressed through this.** That one must run
+/// `UnresolvedGuiState::resolve` — which does `std::fs::canonicalize` — AFTER
+/// the engine lock is released (#5193), and a closure that returns a
+/// `GuiState` from INSIDE the lock cannot express that ordering. Folding it
+/// in would either hold the mutex across N filesystem syscalls or drop the
+/// abs-path rewrite; both are worse than two call sites.
+///
+/// `f` runs via [`run_on_engine`], i.e. on a real OS thread, because
+/// `EngineSession` reaches OCCT's `blocking_send`, which panics inside any
+/// tokio runtime context.
+pub async fn write_on_engine_and_refresh_baseline<F>(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    f: F,
+) -> Result<crate::types::GuiState, String>
+where
+    F: FnOnce(&mut EngineSession) -> Result<crate::types::GuiState, String> + Send + 'static,
+{
+    let gs = run_on_engine(engine, f).await?;
+    crate::diff::compute_delta(last_state, &gs);
+    Ok(gs)
+}
+
 /// Wraps [`set_fea_case_on_engine`], then refreshes the delta baseline —
 /// see the shared INV-GUI-2 rationale above
 /// [`open_source_into_engine_and_refresh_baseline`] for why/how.
