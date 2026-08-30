@@ -4783,7 +4783,7 @@ fn profile_polygon(
     // The check is on `abs()`, so a clockwise (negative-area) ring is fine —
     // winding order is not this gate's business. Self-intersection is
     // deliberately NOT detected here (an O(n²) sweep with robust predicates is
-    // materially different engineering; tracked separately).
+    // materially different engineering; tracked separately as #5666).
     //
     // The shoelace formula is the SHARED one — `reify_solver_elastic`'s
     // crate-root `ring_signed_area_2d`, the very function `validate_boundary`
