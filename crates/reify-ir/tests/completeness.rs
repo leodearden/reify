@@ -232,3 +232,99 @@ fn all_partial_reasons() -> Vec<PartialReason> {
         PartialReason::NotAttempted,
     ]
 }
+
+// ── C1: `unique` is derived, never asserted (§3.2) ───────────────────────────
+
+/// C1 truth table. `derived_unique` must be true for **exactly one** cell of the
+/// grid {Exhaustive, Partial(each of the 7 reasons), Refuted} × {0, 1, 2, 5}:
+/// `Exhaustive` with a count of 1.
+///
+/// Enumerating the whole grid (rather than spot-checking) is the point: C1 says
+/// no producer may write `unique: true` from any other reasoning, so every other
+/// cell being false is the actual contract.
+#[test]
+fn derived_unique_is_true_for_exactly_one_grid_cell() {
+    let counts = [0usize, 1, 2, 5];
+
+    for &count in &counts {
+        assert_eq!(
+            Completeness::Exhaustive.derived_unique(count),
+            count == 1,
+            "Exhaustive with count {count} must be unique iff count == 1"
+        );
+
+        assert!(
+            !Completeness::Refuted {
+                narrowing: ConstraintNodeId::new("Bracket", 0)
+            }
+            .derived_unique(count),
+            "Refuted with count {count} must never be unique"
+        );
+
+        for reason in all_partial_reasons() {
+            assert!(
+                !Completeness::Partial {
+                    reason: reason.clone()
+                }
+                .derived_unique(count),
+                "Partial{{{reason:?}}} with count {count} must never be unique"
+            );
+        }
+    }
+}
+
+/// The four honesty cases the PRD §0.1 bool cannot express, called out by name so
+/// a regression names the wrong it reintroduces.
+#[test]
+fn derived_unique_rejects_the_four_dishonest_claims() {
+    // Proved two solutions exist — that is the opposite of unique.
+    assert!(
+        !Completeness::Exhaustive.derived_unique(2),
+        "Exhaustive + 2: proved two solutions, so not unique"
+    );
+
+    // Found one, proved nothing about how many exist. Today's false `unique: true`.
+    assert!(
+        !Completeness::Partial {
+            reason: PartialReason::ProbeOnly
+        }
+        .derived_unique(1),
+        "Partial{ProbeOnly} + 1: found one, established nothing"
+    );
+    assert!(
+        !Completeness::Partial {
+            reason: PartialReason::NotAttempted
+        }
+        .derived_unique(1),
+        "Partial{NotAttempted} + 1: no completeness reasoning was attempted"
+    );
+
+    // Refutation is not uniqueness — it proves none exist, not that one does.
+    assert!(
+        !Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0)
+        }
+        .derived_unique(0),
+        "Refuted + 0: proved none exist; refutation is not uniqueness"
+    );
+
+    // The one true cell, for contrast.
+    assert!(Completeness::Exhaustive.derived_unique(1));
+}
+
+#[test]
+fn is_exhaustive_is_true_only_for_exhaustive() {
+    assert!(Completeness::Exhaustive.is_exhaustive());
+    assert!(
+        !Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0)
+        }
+        .is_exhaustive()
+    );
+    for reason in all_partial_reasons() {
+        assert!(
+            !Completeness::Partial { reason: reason.clone() }.is_exhaustive(),
+            "Partial{{{reason:?}}} must not be exhaustive"
+        );
+    }
+}
