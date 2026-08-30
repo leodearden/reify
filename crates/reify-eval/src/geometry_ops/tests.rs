@@ -26164,7 +26164,8 @@
             K::Thicken => 5,
             K::ZoneSlab => 6,
             K::OffsetSolid => 7,
-            K::OffsetCurve => 8,
+            K::OffsetSurface => 8,
+            K::OffsetCurve => 9,
         }
     }
 
@@ -26296,8 +26297,8 @@
             assert!(lookup_primitive(k).is_some(), "no Primitive entry: {:?}", k);
         }
 
-        // Modify (9 variants) — VARIANT_COUNT cross-check (ALL is crate-private)
-        const ALL_MODIFY: [ModifyKind; 9] = [
+        // Modify (10 variants) — VARIANT_COUNT cross-check (ALL is crate-private)
+        const ALL_MODIFY: [ModifyKind; 10] = [
             ModifyKind::Fillet,
             ModifyKind::Chamfer,
             ModifyKind::ChamferAsymmetric,
@@ -26306,6 +26307,7 @@
             ModifyKind::Thicken,
             ModifyKind::ZoneSlab,
             ModifyKind::OffsetSolid,
+            ModifyKind::OffsetSurface,
             ModifyKind::OffsetCurve,
         ];
         const _: () = assert!(

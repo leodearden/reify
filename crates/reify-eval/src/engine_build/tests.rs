@@ -6355,6 +6355,14 @@ structure Assembly {
                 label: "OffsetSolid → [target]",
             },
             Case {
+                op: GeometryOp::OffsetSurface {
+                    target: GeometryHandleId(105),
+                    distance: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(105)],
+                label: "OffsetSurface → [target]",
+            },
+            Case {
                 op: GeometryOp::Shell {
                     target: GeometryHandleId(84),
                     thickness: Value::Real(0.002),
@@ -6475,7 +6483,7 @@ structure Assembly {
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",
             },
-            // ── Remaining primitives (task 4671 step-3: full 47-variant coverage) ─
+            // ── Remaining primitives (task 4671 step-3: full 48-variant coverage) ─
             Case {
                 op: GeometryOp::Sphere { radius: Value::Real(0.005) },
                 expected: vec![],
@@ -6776,7 +6784,7 @@ structure Assembly {
     // ── substitute_op_parents unit tests ─────────────────────────────────────
 
     /// Characterizes the per-variant-family parent-handle substitution semantics
-    /// of `substitute_op_parents`. For every non-Split variant (47 total):
+    /// of `substitute_op_parents`. For every non-Split variant (48 total):
     /// builds an op with known handle ids, applies `substitute_op_parents` with
     /// a mapping that remaps those ids, and asserts that only the PARENT fields
     /// are rewritten — non-parent fields (Pipe.path, Sweep.path, SweepGuided.path
@@ -6785,7 +6793,7 @@ structure Assembly {
     ///   from the map are left as-is (tested via Union left absent from map).
     ///
     /// All expected values are hardcoded independently of the L1 table, so
-    /// full 47-variant coverage gives full validation of the table's
+    /// full 48-variant coverage gives full validation of the table's
     /// `parent_role` column for this function.
     ///
     /// Stays GREEN against the current per-variant fn; the coverage-completeness
@@ -7047,6 +7055,10 @@ structure Assembly {
         check_single_target!(
             GeometryOp::OffsetSolid { target: h(10), distance: Value::Real(0.002) },
             10, 110, "OffsetSolid"
+        );
+        check_single_target!(
+            GeometryOp::OffsetSurface { target: h(10), distance: Value::Real(0.002) },
+            10, 110, "OffsetSurface"
         );
         check_single_target!(
             GeometryOp::Shell { target: h(10), thickness: Value::Real(0.002), faces_to_remove: vec![0], open_face_handles: vec![] },
@@ -7508,6 +7520,14 @@ structure Assembly {
                 },
                 expected: Operation::ModifyOffsetSolid,
                 label: "OffsetSolid → ModifyOffsetSolid",
+            },
+            Case {
+                op: GeometryOp::OffsetSurface {
+                    target: h(1),
+                    distance: r(0.002),
+                },
+                expected: Operation::ModifyOffsetSurface,
+                label: "OffsetSurface → ModifyOffsetSurface",
             },
             Case {
                 op: GeometryOp::OffsetCurve {

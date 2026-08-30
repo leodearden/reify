@@ -445,6 +445,37 @@ fn infer_traits_nurbs_surface_is_surface_nonplanar_nonclosed() {
     );
 }
 
+// ─── offset_surface name-based inference (task #4192, step-5 RED) ────────────
+
+/// `offset_surface(...)` must infer dimension==Surface, bounded==true,
+/// planar==false, closed==false, convex==false via the name-based
+/// `try_infer_traits_for_function_call_in_env` path — a DEDICATED arm, NOT
+/// the `combine_modify` arm (which hardcodes GeomDim::Solid, correct for
+/// `offset_solid` but wrong here since offset_surface produces a Surface).
+/// Mirrors the `nurbs_surface` case above (same `surface_freeform()` shape).
+///
+/// RED until step-6 adds the `"offset_surface"` arm to
+/// `try_infer_traits_for_function_call_in_env` (the name currently falls
+/// through to `InferredTraits::all()` → dimension==Solid, not Surface).
+#[test]
+fn infer_traits_offset_surface_is_surface_nonplanar_nonclosed() {
+    use reify_compiler::geometry_traits_inference::{GeomDim, infer_traits_for_expr};
+
+    let expr = make_fn_call_expr("offset_surface");
+    let traits = infer_traits_for_expr(&expr);
+
+    assert_eq!(
+        traits.dimension,
+        GeomDim::Surface,
+        "offset_surface must infer dimension==Surface (got {:?})",
+        traits.dimension
+    );
+    assert!(traits.bounded, "offset_surface must infer bounded==true");
+    assert!(!traits.planar, "offset_surface must infer planar==false");
+    assert!(!traits.closed, "offset_surface must infer closed==false");
+    assert!(!traits.convex, "offset_surface must infer convex==false");
+}
+
 // ─── §3.10 supertrait declarations (task #4171, step-7 RED) ──────────────────
 
 /// Verify that `trait Geometry {}` is declared in the stdlib prelude so that

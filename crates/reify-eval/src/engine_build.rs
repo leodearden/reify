@@ -1950,6 +1950,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::Thicken { target, .. }
             | GeometryOp::OffsetCurve { target, .. }
             | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::OffsetSurface { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
             // Surface (isosurface, task 4999): the sole parent is `grid`, not
@@ -2062,6 +2063,7 @@ fn substitute_op_parents(
             | GeometryOp::Thicken { target, .. }
             | GeometryOp::OffsetCurve { target, .. }
             | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::OffsetSurface { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => {
                 sub(target);
@@ -2185,7 +2187,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     // `operation`. Split's row has `operation: None`, which reproduces the
     // prior unreachable!() exactly — Split is a topology selector and must
     // never reach this function (it is never inserted into the realization
-    // graph). All other 47 variants have `operation: Some(_)`.
+    // graph). All other 48 variants have `operation: Some(_)`.
     descriptor_for(op.into())
         .and_then(|d| d.operation)
         .unwrap_or_else(|| {
@@ -2233,7 +2235,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Modify — BRep-only consumers
         ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
-        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
+        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid | ModifyOffsetSurface => {
+            Some(BREP_ONLY)
+        }
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -2353,6 +2357,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ModifyKind::Thicken => Operation::ModifyThicken,
             ModifyKind::ZoneSlab => Operation::ModifyZoneSlab,
             ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
+            ModifyKind::OffsetSurface => Operation::ModifyOffsetSurface,
             ModifyKind::OffsetCurve => Operation::ModifyOffsetCurve,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {

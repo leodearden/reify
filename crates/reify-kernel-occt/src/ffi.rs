@@ -700,6 +700,11 @@ pub mod ffi {
 
         // --- Thicken / Shell / Offset Solid ---
         fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a surface (open face/shell) by `distance` along its normal via
+        /// `BRepOffsetAPI_MakeOffsetShape` in Skin mode (offset_surface θ).
+        /// Positive `distance` offsets along the face's +normal. Errs when
+        /// `distance` is ~0 or the result is degenerate/invalid.
+        fn make_offset_surface(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
         fn zone_slab_shape(face: &OcctShape, width: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(

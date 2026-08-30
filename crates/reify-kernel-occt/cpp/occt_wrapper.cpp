@@ -2672,6 +2672,44 @@ std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double dis
     });
 }
 
+// Offset a surface (open face/shell) along its normal via BRepOffsetAPI_MakeOffsetShape
+// in Skin (surface) mode -- distinct from offset_solid_shape's PerformBySimple solid
+// mode above. Positive `distance` offsets along the face's +normal (e.g. a planar
+// rectangle face built with a +Z-normal wire lands at z = +distance).
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance) {
+    return wrap_occt_call("make_offset_surface", [&]() {
+        if (std::abs(distance) < Precision::Confusion()) {
+            throw std::runtime_error("make_offset_surface: zero distance");
+        }
+        // Floor the tolerance at Precision::Confusion() so sub-micron (but
+        // still valid, non-zero) offsets don't get an unusably tight
+        // tolerance from the 1e-3 scale factor -- matches the fixed-scale
+        // guard used just above for the zero-distance check.
+        const double tol = std::max(1e-3 * std::abs(distance), Precision::Confusion());
+        BRepOffsetAPI_MakeOffsetShape maker;
+        maker.PerformByJoin(shape.shape, distance, tol, BRepOffset_Skin,
+            Standard_False, Standard_False, GeomAbs_Intersection);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("make_offset_surface: BRepOffsetAPI_MakeOffsetShape failed");
+        }
+        TopoDS_Shape result = maker.Shape();
+        if (result.IsNull()) {
+            throw std::runtime_error("make_offset_surface: result shape is null");
+        }
+        if (!BRepCheck_Analyzer(result).IsValid()) {
+            throw std::runtime_error("make_offset_surface: result shape is invalid");
+        }
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(result, props);
+        if (props.Mass() <= Precision::Confusion()) {
+            throw std::runtime_error("make_offset_surface: result has degenerate (near-zero) area");
+        }
+        auto out = std::make_unique<OcctShape>();
+        out->shape = result;
+        return out;
+    });
+}
+
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) {
     return wrap_occt_call("thicken_shape", [&]() {
         BRepOffsetAPI_MakeOffsetShape maker;

@@ -3191,6 +3191,35 @@ fn modify_zone_slab(
     })
 }
 
+/// Shared shape for 2-arg modify ops of the form `op(target, distance)`:
+/// read the single `distance` argument through the R7 LENGTH chokepoint
+/// (task 5744, units-length γ) and hand it to `build` to construct the
+/// resulting `GeometryOp`. `modify_offset_solid` and `modify_offset_surface`
+/// are identical apart from the constructed variant, so they delegate here
+/// instead of duplicating the gated-read boilerplate.
+#[allow(clippy::too_many_arguments)]
+fn modify_offset_distance(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    build: fn(GeometryHandleId, reify_ir::Value) -> reify_ir::GeometryOp,
+) -> Result<reify_ir::GeometryOp, String> {
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(build(target_id, distance))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn modify_offset_solid(
     kind: &reify_compiler::ModifyKind,
@@ -3202,20 +3231,27 @@ fn modify_offset_solid(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // R7 LENGTH chokepoint (task 5744, units-length γ).
-    let distance = required_length_value(
-        "distance",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
-    Ok(reify_ir::GeometryOp::OffsetSolid {
-        target: target_id,
-        distance,
-    })
+    modify_offset_distance(
+        kind, target_id, args, values, functions, meta_map, diagnostics,
+        |target, distance| reify_ir::GeometryOp::OffsetSolid { target, distance },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_offset_surface(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    modify_offset_distance(
+        kind, target_id, args, values, functions, meta_map, diagnostics,
+        |target, distance| reify_ir::GeometryOp::OffsetSurface { target, distance },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4882,6 +4918,7 @@ static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::Thicken, modify_thicken),
     (reify_compiler::ModifyKind::ZoneSlab, modify_zone_slab),
     (reify_compiler::ModifyKind::OffsetSolid, modify_offset_solid),
+    (reify_compiler::ModifyKind::OffsetSurface, modify_offset_surface),
     (reify_compiler::ModifyKind::OffsetCurve, modify_offset_curve),
 ];
 

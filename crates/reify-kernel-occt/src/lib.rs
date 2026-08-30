@@ -256,8 +256,8 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 /// boundary. Neither subsumes the other, so this one keeps working if the
 /// first is bypassed or has a hole.
 ///
-/// `OcctKernel::execute`'s 46 numeric-extraction sites split 46 = 41 + 3 + 2:
-/// the 41 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
+/// `OcctKernel::execute`'s 47 numeric-extraction sites split 47 = 42 + 3 + 2:
+/// the 42 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
 /// (dimensionless unit-normal components) and `CircularPattern.angle` /
 /// `Draft.angle` (ANGLE — PRD 3's surface) stay on the context-free
 /// [`extract_f64`], each marked at its call site with a
@@ -3048,6 +3048,18 @@ impl OcctKernel {
                 let d = extract_length_f64(distance, op, "distance")?;
                 ffi::ffi::offset_solid_shape(shape, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::OffsetSurface { target, distance } => {
+                let shape = self.get_shape(*target)?;
+                let d = extract_length_f64(distance, op, "distance")?;
+                let out = ffi::ffi::make_offset_surface(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // `BRepKind::Face` assumes a single-face input/result, true
+                // for every current DSL surface producer. See
+                // `make_offset_surface`'s header doc comment (occt_wrapper.h)
+                // for the shell-input caveat this would need if that ever
+                // changes.
+                return Ok(self.store_with_repr(out, BRepKind::Face));
             }
             GeometryOp::Shell {
                 target,
@@ -8421,6 +8433,42 @@ mod tests {
         assert!(
             ffi::ffi::offset_solid_shape(&b, -100.0).is_err(),
             "inward offset >> inradius should fail (degenerate)"
+        );
+    }
+
+    #[test]
+    fn make_offset_surface_ffi_contract() {
+        // 20mm x 10mm rectangle face at z=0 (metres).
+        let face = ffi::ffi::make_rectangle_face(0.020, 0.010, 0.0)
+            .expect("make_rectangle_face(0.020, 0.010, 0.0) should succeed");
+        assert!(
+            ffi::ffi::make_offset_surface(&face, 0.002).is_ok(),
+            "2mm surface offset should succeed"
+        );
+        assert!(
+            ffi::ffi::make_offset_surface(&face, 0.0).is_err(),
+            "zero-distance surface offset should fail (degenerate)"
+        );
+
+        // Negative distance: offsets along the face's -normal, opposite the
+        // +0.002 case above. Previously uncovered (reviewer finding) — pin
+        // the *sign*, not just success, via query_bbox: the result must land
+        // at z ≈ -0.002m, catching a regression that mis-signs the normal
+        // or silently no-ops on inward/negative offsets.
+        let neg = ffi::ffi::make_offset_surface(&face, -0.002)
+            .expect("-2mm surface offset should succeed (-normal direction)");
+        let bb = ffi::ffi::query_bbox(&neg).expect("query_bbox should succeed");
+        let expected_z = -0.002_f64;
+        let tol = 0.0005_f64; // 0.5mm, matching offset_surface_e2e's bbox tolerance
+        assert!(
+            (bb.zmin - expected_z).abs() < tol,
+            "-2mm surface offset: bbox.zmin should be ≈-0.002m, got {}",
+            bb.zmin
+        );
+        assert!(
+            (bb.zmax - expected_z).abs() < tol,
+            "-2mm surface offset: bbox.zmax should be ≈-0.002m, got {}",
+            bb.zmax
         );
     }
 
@@ -14079,7 +14127,7 @@ mod tests {
 
     /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
     ///
-    /// The PRD's split is 46 = 41 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
+    /// The PRD's split is 47 = 42 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
     /// — dimensionless unit-normal components, not lengths. The 2 are
     /// `CircularPattern.angle` and `Draft.angle` — ANGLE, which is PRD 3's
     /// surface, not this one. All five must stay on the plain, context-free
@@ -14215,7 +14263,7 @@ mod tests {
 
     /// **Full 41-field enumeration (step-9B).**
     ///
-    /// The completeness check for the PRD's 46 = 41 + 3 + 2 split, proved by
+    /// The completeness check for the PRD's 47 = 42 + 3 + 2 split, proved by
     /// OBSERVATION rather than by asserting a table against itself: every one of
     /// the 41 LENGTH-semantic `(op, field)` pairs is driven through
     /// `OcctKernel::execute` with a bare `Value::Real` in the field under test
@@ -14621,7 +14669,7 @@ mod tests {
         assert_eq!(
             cases.len(),
             41,
-            "the PRD's 46 = 41 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
+            "the PRD's 47 = 42 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
         );
 
         for (op, op_kind, field) in cases {

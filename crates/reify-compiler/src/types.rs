@@ -1587,6 +1587,12 @@ pub enum ModifyKind {
     Thicken,
     ZoneSlab,
     OffsetSolid,
+    /// Offset a surface along its normal by a scalar distance
+    /// `offset_surface(surface, distance)` (θ, task 4192). Uses the Skin
+    /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape`, distinct from
+    /// `OffsetSolid`'s `PerformBySimple` solid mode. Produces a fresh Surface.
+    /// Collapses to `Operation::ModifyOffsetSurface` (BRep kernel capability).
+    OffsetSurface,
     /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
     /// (ι, task 4193). Produces a fresh Wire offset from the target curve by
     /// `distance`. The optional 3rd arg — a reference Surface or a direction
@@ -1609,7 +1615,7 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Fillet,
         Self::Chamfer,
         Self::ChamferAsymmetric,
@@ -1618,6 +1624,7 @@ impl ModifyKind {
         Self::Thicken,
         Self::ZoneSlab,
         Self::OffsetSolid,
+        Self::OffsetSurface,
         Self::OffsetCurve,
     ];
 
@@ -1640,6 +1647,7 @@ impl std::fmt::Display for ModifyKind {
             ModifyKind::Thicken => f.write_str("thicken"),
             ModifyKind::ZoneSlab => f.write_str("zone_slab"),
             ModifyKind::OffsetSolid => f.write_str("offset_solid"),
+            ModifyKind::OffsetSurface => f.write_str("offset_surface"),
             ModifyKind::OffsetCurve => f.write_str("offset_curve"),
         }
     }
@@ -2188,6 +2196,7 @@ mod kind_display_tests {
             (ModifyKind::Thicken, "thicken"),
             (ModifyKind::ZoneSlab, "zone_slab"),
             (ModifyKind::OffsetSolid, "offset_solid"),
+            (ModifyKind::OffsetSurface, "offset_surface"),
             (ModifyKind::OffsetCurve, "offset_curve"),
         ]);
     }
