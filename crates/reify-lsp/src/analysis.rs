@@ -942,6 +942,82 @@ mod tests {
         );
     }
 
+    /// AMENDMENT ROUND 2 (task #6798, reviewer_comprehensive / robustness) —
+    /// containment regression lock for the THIRD LSP production entry point,
+    /// `AnalysisContext::from_parsed`, which backs hover, completion,
+    /// goto-definition and document-symbols.
+    ///
+    /// A failed `auto:` type-parameter resolution leaves the `param seal : T`
+    /// member carrying `cell_type = Type::TypeParam("T")` into the evaluation
+    /// graph, where `reify-eval`'s `#[cfg(debug_assertions)]`
+    /// `assert_value_cell_types_representable` PANICS. Measured at HEAD before
+    /// the guard: `AnalysisContext::new` panicked at
+    /// `crates/reify-eval/src/engine_eval.rs:210` with "unrepresentable
+    /// cell_type: value cell `Assembly.b.seal` has cell_type TypeParam(\"T\")".
+    /// (Task #6798's amendment round 2 recorded `Bearing.seal` for this site;
+    /// re-measured here it reports `Assembly.b.seal`, the same id the
+    /// `diagnostics.rs` sites report. Which cell the assertion names first is
+    /// not load-bearing — a differing cell id is the same assertion on a
+    /// different graph entry point, NOT a different bug.) Root cause is owned
+    /// by task **#6851**; this is the LSP-side containment.
+    ///
+    /// Reuses [`crate::diagnostics::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]
+    /// rather than duplicating the source string, for the same anti-drift
+    /// reason `BT8_CONSTANT_CONSTRAINT_SRC` is shared across its two forward
+    /// tests.
+    ///
+    /// **Reaching the assertions AT ALL is half the contract** — without the
+    /// guard the constructor panics before it can return, so "the test ran to
+    /// completion" IS the no-panic assertion. Do not add `#[should_panic]` or
+    /// a `catch_unwind` wrapper; that would invert the contract.
+    #[test]
+    fn auto_resolution_failure_does_not_panic_analysis_context() {
+        // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
+        crate::diagnostics::assert_auto_fail_fixture_is_newly_reachable();
+
+        // --- AnalysisContext (the site under test) ---
+        let ctx = AnalysisContext::new(
+            crate::diagnostics::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+            &test_uri(),
+        );
+        let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.code, d.message.as_str()))
+            .collect();
+        assert!(
+            ctx.compiled.diagnostics.iter().any(|d| d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+            "containment (AnalysisContext::from_parsed): a failed `auto:` \
+             resolution must still surface the compile-stage \
+             AutoTypeParamNoCandidate error, so hover/completion/goto-def \
+             report the real problem. Reaching this assertion at all means \
+             the eval/check pass was correctly skipped rather than panicking \
+             on the unsubstituted TypeParam cell (task #6851). Observed \
+             (severity, code, message) triples: {:#?}",
+            observed
+        );
+
+        // Pin that the eval/check pass was SKIPPED, not run-and-recovered.
+        // Without this, a future change that "fixes" the panic by making eval
+        // tolerant of unrepresentable cells would silently satisfy the
+        // assertion above while re-introducing exactly the cell #6851 is about
+        // into the engine. This assertion is what keeps the test about
+        // CONTAINMENT rather than about absence-of-crash.
+        assert!(
+            ctx.check_result.constraint_results.is_empty()
+                && ctx.check_result.diagnostics.is_empty(),
+            "containment (AnalysisContext::from_parsed): the eval/check pass \
+             must be SKIPPED on a failed `auto:` resolution, leaving an empty \
+             CheckResult — a populated one means the unsubstituted TypeParam \
+             graph reached the engine after all (task #6851). Got \
+             constraint_results: {:#?}, diagnostics: {:#?}",
+            ctx.check_result.constraint_results,
+            ctx.check_result.diagnostics
+        );
+    }
+
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
     /// Shared across all task-2176 stdlib-resolution tests to avoid tripling the literal.
     // Post-GHR-α (task 3603): Physical is spec-shape (geometry : Solid +
