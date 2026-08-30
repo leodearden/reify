@@ -2981,7 +2981,18 @@ fn build_dirichlet_bcs(
     height: f64,
 ) -> Vec<DirichletBc> {
     let targets = support_targets(options);
-    let n_supports = targets.len();
+    // Only a support that can actually SELECT nodes participates in the count
+    // that decides another face's realization. A support whose target names no
+    // recognized face constrains nothing (`per_face_bcs` skips it through the
+    // same [`face_bound`] predicate), so letting it vote here would let a typo —
+    // or the stdlib's own `param target : String = ""` default — flip a
+    // `PinnedSupport` on a beam end from a clamp to a transverse-only pin, i.e.
+    // turn a well-posed cantilever into a mechanism. Pinned by
+    // `build_dirichlet_bcs_ignores_supports_that_name_no_face`.
+    let n_supports = targets
+        .iter()
+        .filter(|(_, t)| face_bound(t).is_some())
+        .count();
 
     // Resolve every support to (what it constrains, which face) up front, so the
     // two branches below share ONE realization policy.
@@ -3031,7 +3042,9 @@ fn build_dirichlet_bcs(
 /// did the opposite: a set like `[x_min, x_max, y_min]` silently DROPPED y_min
 /// and flipped the whole model to pin-pin, with no diagnostic. A target outside
 /// the six recognized face names still selects nothing — that gap is unchanged
-/// here — but it can no longer cause the rest of the model to be reinterpreted.)
+/// here — but it can no longer cause the rest of the model to be reinterpreted,
+/// nor, since it no longer counts as a support upstream, another face's
+/// realization to be flipped.)
 ///
 /// # Scope of that claim
 ///
@@ -3039,11 +3052,14 @@ fn build_dirichlet_bcs(
 /// selected and emitted independently of the others. It is NOT a whole-pipeline
 /// claim, because the upstream realization DECISION is still count-dependent:
 /// [`face_realization`] takes `n_supports`, so adding an unrelated second
-/// support can flip a `Pinned` beam-end face from a clamp to a transverse-only
-/// pin without that face being mentioned again. That is a deliberate, documented
-/// trade-off (see [`face_realization`]'s "Why `Pinned` is not Z-only, always"),
-/// not an oversight — but it means "adds rather than reinterprets" holds for
-/// face SELECTION and DOF emission, not for the choice of realization.
+/// support **that names a recognized face** can flip a `Pinned` beam-end face
+/// from a clamp to a transverse-only pin without that face being mentioned
+/// again. That is a deliberate, documented trade-off (see [`face_realization`]'s
+/// "Why `Pinned` is not Z-only, always"), not an oversight — but it means "adds
+/// rather than reinterprets" holds for face SELECTION and DOF emission, not for
+/// the choice of realization. A support that names NO recognized face is
+/// excluded from that count (see [`face_bound`]), so it can no longer vote on a
+/// realization it cannot itself contribute a single DOF to.
 ///
 /// The result is a raw union: repeats are possible when two faces share a corner
 /// node, so callers must pass it through [`normalize_bcs`].
@@ -3055,17 +3071,22 @@ fn per_face_bcs(
     height: f64,
 ) -> Vec<DirichletBc> {
     let eps = 1e-9_f64;
+    let extent = [length, width, height];
     let mut bcs = Vec::new();
     for (realization, target) in faces {
+        // Face-name vocabulary lives in ONE place ([`face_bound`]), shared with
+        // the support count in `build_dirichlet_bcs`, so the set of names that
+        // can select nodes and the set that can influence a realization cannot
+        // drift apart. An unrecognized name selects nothing, exactly as the
+        // former inline `_ => false` arm did.
+        let Some((axis, is_max)) = face_bound(target) else {
+            continue;
+        };
         for (n, coord) in nodes.iter().enumerate() {
-            let on_face = match *target {
-                "x_min" => coord[0] <= eps,
-                "x_max" => coord[0] >= length - eps,
-                "y_min" => coord[1] <= eps,
-                "y_max" => coord[1] >= width - eps,
-                "z_min" => coord[2] <= eps,
-                "z_max" => coord[2] >= height - eps,
-                _ => false,
+            let on_face = if is_max {
+                coord[axis] >= extent[axis] - eps
+            } else {
+                coord[axis] <= eps
             };
             if !on_face {
                 continue;
@@ -3093,9 +3114,10 @@ fn per_face_bcs(
                 // No such anchors belong here. `face_realization` scopes
                 // `PinTransverse` to a beam-axis end face of a multi-support
                 // model, which rules out the two mechanisms a lone/off-axis Z
-                // pin would create — but not every one: a degenerate set that
-                // Z-pins the SAME end face twice (or pairs it with a support
-                // whose target names no face at all) still leaves 3-4 rigid-body
+                // pin would create, and the count that scoping reads now ignores
+                // supports that name no recognized face (see `face_bound`), which
+                // rules out a third — but not every one: a degenerate set that
+                // Z-pins the SAME end face twice still leaves 3-4 rigid-body
                 // modes alive. Inventing anchors for those would return
                 // plausible-looking frequencies for a structure that has none,
                 // the exact silent-wrong-answer class task 6663 exists to close.
@@ -3297,12 +3319,42 @@ fn is_beam_axis_end_face(target: &str) -> bool {
     target == "x_min" || target == "x_max"
 }
 
-/// Decide what `kind` constrains on `target`, given how many supports the model
-/// carries in total.
+/// Which coordinate bound a target face name selects: the axis index
+/// (`0 = x`, `1 = y`, `2 = z`) and whether it is the MAX end of that axis'
+/// extent. `None` for any name outside the six recognized faces.
+///
+/// This is the SINGLE place the face-name vocabulary is written down. Two
+/// callers depend on it agreeing with itself:
+///   * [`per_face_bcs`] selects a face's nodes through it, and
+///   * [`build_dirichlet_bcs`] counts supports through it to decide whether a
+///     `PinnedSupport` on a beam end realizes as a transverse pin or a clamp.
+///
+/// Keeping both on one predicate is what stops a support that can select NO
+/// node from silently changing another face's realization: before task 6663's
+/// amendment the count was `targets.len()`, so `[Pinned("x_min"),
+/// Fixed("<typo>")]` — or the stdlib's own `param target : String = ""`
+/// default — counted as two supports and flipped `x_min` from a clamp
+/// (a well-posed cantilever) to a Z-only pin (a 4-rigid-body-mode mechanism).
+fn face_bound(target: &str) -> Option<(usize, bool)> {
+    match target {
+        "x_min" => Some((0, false)),
+        "x_max" => Some((0, true)),
+        "y_min" => Some((1, false)),
+        "y_max" => Some((1, true)),
+        "z_min" => Some((2, false)),
+        "z_max" => Some((2, true)),
+        _ => None,
+    }
+}
+
+/// Decide what `kind` constrains on `target`, given how many of the model's
+/// supports name a RECOGNIZED face (`n_supports` — see [`face_bound`]; a support
+/// that can select no node is not counted, because it must not be able to flip
+/// another face's realization).
 ///
 /// `Fixed` always clamps. `Pinned` realizes as a transverse (Z) pin ONLY on a
-/// beam-axis end face of a model that carries at least one other support;
-/// otherwise it clamps like every other pinned face in the system.
+/// beam-axis end face of a model that carries at least one other face-selecting
+/// support; otherwise it clamps like every other pinned face in the system.
 ///
 /// # Why `Pinned` is not "Z-only, always"
 ///
@@ -5361,6 +5413,86 @@ mod tests {
                     && side_pins.contains(&(3 * n + 1))
                     && side_pins.contains(&(3 * n + 2))),
             "every y_min node must carry all three DOFs",
+        );
+    }
+
+    /// Amendment (review suggestion 3): a support that names NO recognized face
+    /// must not vote on another face's realization.
+    ///
+    /// `support_targets` collects every `StructureInstance` carrying a *string*
+    /// `target`, including the stdlib's own `param target : String = ""` default
+    /// and any typo'd or static-path name (`"root"`). Before this amendment
+    /// `build_dirichlet_bcs` counted those into `n_supports`, so
+    /// `[Pinned("x_min"), Fixed("")]` reached `face_realization` as a
+    /// TWO-support model and flipped x_min from a full clamp (a well-posed
+    /// cantilever, the pre-6663 answer) to a transverse-only Z pin — four
+    /// surviving rigid-body modes, reported under a mere Warning. The count now
+    /// runs through [`face_bound`], the same predicate `per_face_bcs` selects
+    /// nodes with, so a support that can contribute no DOF cannot reinterpret
+    /// one either.
+    ///
+    /// Asserted as set EQUALITY against the lone-`Fixed("x_min")` spelling —
+    /// the strongest available statement, since the extra support contributes
+    /// nothing and must therefore change nothing.
+    #[test]
+    fn build_dirichlet_bcs_ignores_supports_that_name_no_face() {
+        use std::collections::HashSet;
+
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+
+        let dof_set = |supports: Vec<Value>| -> HashSet<usize> {
+            let opts = modal_options(vec![(
+                "boundary_conditions".to_string(),
+                Value::List(supports),
+            )]);
+            build_dirichlet_bcs(&opts, &mesh.nodes, length, width, height)
+                .iter()
+                .map(|b| b.dof)
+                .collect()
+        };
+
+        let cantilever = dof_set(vec![fixed_support("x_min")]);
+        assert!(
+            !cantilever.is_empty(),
+            "the reference cantilever clamp must constrain something",
+        );
+
+        // The stdlib default `target : String = ""` — the spelling an author
+        // gets by writing a bare `FixedSupport()`.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min"), fixed_support("")]),
+            cantilever,
+            "a support with the stdlib's empty default target selects no node, so it must \
+             not flip Pinned(x_min) from a clamp to a transverse-only pin",
+        );
+
+        // A typo / a static-path selector name that means nothing to the modal
+        // coordinate selector.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min"), fixed_support("root")]),
+            cantilever,
+            "a support whose target names no recognized face must not change another \
+             face's realization",
+        );
+
+        // Symmetric guard on the pinned spelling of the non-selecting support,
+        // so the rule is about the TARGET, not about the kind that carries it.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min"), pinned_support("nope")]),
+            cantilever,
+            "the exclusion is a property of the unrecognized target, not of the support kind",
+        );
+
+        // And the counterexample that keeps this from collapsing into "Pinned
+        // always clamps": a second support that DOES name a face still counts.
+        assert_ne!(
+            dof_set(vec![pinned_support("x_min"), fixed_support("x_max")]),
+            cantilever,
+            "a second support that names a RECOGNIZED face must still count toward the \
+             transverse-pin scoping",
         );
     }
 
