@@ -516,16 +516,30 @@ fn solve_reduced(
 /// calibration that keeps this in a known, auditable relationship to the
 /// catenoid integration golden's independent (un-normalised) check.
 ///
-/// `d_scale <= 0` (including NaN, via the `d_scale.is_nan() || d_scale <= 0.0`
-/// spelling) returns `f64::INFINITY` rather than dividing by zero: a free
-/// block touched by neither a member nor a triangle has every free row of
-/// `D` identically zero, so `resid` above is vacuously 0 — not because
-/// equilibrium was reached, but because nothing acts on the node at all.
+/// Degeneracy is rejected PER-ROW, not by an aggregate over the free block:
+/// any single free row that is identically zero (that node is touched by
+/// neither a member nor a triangle) or carries a NaN immediately returns
+/// `f64::INFINITY`, before that row is folded into `d_scale`'s max (task
+/// 6119 review). An aggregate `d_scale = max(rows)` check only fires when
+/// EVERY free row is degenerate: `f64::max` is NaN-transparent (it returns
+/// the non-NaN operand), so a NaN row coexisting with a healthy row leaves
+/// `d_scale` on the healthy row's value, and a zero row coexisting with a
+/// healthy row leaves `d_scale` positive — in both mixed cases the aggregate
+/// guard never fires even though one free node is genuinely disconnected /
+/// NaN-contaminated. A zero abs-row-sum unambiguously means that node's row
+/// of `D` is entirely zero (the row sums absolute values), so — regardless
+/// of any other row — `resid` above is vacuously 0 for that node, not
+/// because equilibrium was reached but because nothing acts on it at all.
 /// Returning `INFINITY` forces the fixed point to fall through to
-/// `solve_reduced`, which reports
-/// `SingularReducedStiffness` (no path to any anchor) instead of breaking out
-/// at iteration 0 and echoing the caller's unsolved initial guess back as a
-/// "converged" result (task 6119).
+/// `solve_reduced`, which reports `SingularReducedStiffness` (no path to any
+/// anchor) instead of breaking out at iteration 0 and echoing the caller's
+/// unsolved initial guess back as a "converged" result (task 6119).
+///
+/// The aggregate `d_scale.is_nan() || d_scale <= 0.0` check after the loop is
+/// kept as the EMPTY-`free_indices` backstop: with no free rows the loop body
+/// never runs, so no per-row check executes and `d_scale` would otherwise
+/// keep its `0.0` initialiser and divide-by-zero into NaN rather than
+/// rejecting.
 #[allow(clippy::needless_range_loop)]
 fn free_equilibrium_residual_relative(
     d: &Mat<f64>,
@@ -551,15 +565,26 @@ fn free_equilibrium_residual_relative(
     }
 
     // d_scale = ‖D‖∞ restricted to the FREE rows — see the guard-and-gauge
-    // rationale in the function doc above.
+    // rationale in the function doc above. Each row is checked for
+    // degeneracy BEFORE being folded into the max, so a single bad row
+    // rejects regardless of what any other free row looks like.
     let mut d_scale = 0.0_f64;
     for &i in free_indices {
         let mut row = 0.0_f64;
         for j in 0..n {
             row += d[(i, j)].abs();
         }
+        // Per-row rejection (task 6119 review) — see the function doc for
+        // why an aggregate-only check is insufficient. `is_nan() || <= 0.0`
+        // (not `!(row > 0.0)`) is deliberate: the negated spelling trips
+        // `clippy::neg_cmp_op_on_partial_ord`, fatal under
+        // `scripts/verify.sh`'s `-D warnings` (task 6119, step-6).
+        if row.is_nan() || row <= 0.0 {
+            return f64::INFINITY;
+        }
         d_scale = d_scale.max(row);
     }
+    // Empty-free-set backstop — see the function doc.
     if d_scale.is_nan() || d_scale <= 0.0 {
         return f64::INFINITY;
     }
