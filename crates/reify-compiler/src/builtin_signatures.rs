@@ -208,8 +208,11 @@
 //!    slot.** `Scalar<Q>` is what a dim-kinded generic PARAMETER
 //!    (`fn beam<Q: Dimension>(l: Scalar<Q>)`) resolves to. Its FAMILY is known
 //!    and only its DIMENSION is open, so at a dimension slot there is nothing to
-//!    compare until `Q` binds — judging the uninstantiated body under strict
-//!    `DimensionVector` equality could only ever REJECT correct code. At an
+//!    compare — judging the uninstantiated body under strict `DimensionVector`
+//!    equality could only ever REJECT correct code. The defer's COST is that
+//!    `beam(10kg)` is then undiagnosed at this layer; nothing rechecks a generic
+//!    body per instantiation. That cost, and the three MEASURED cases bounding
+//!    it, are stated once on the `ExpectedArg::Scalar` arm itself. At an
 //!    `Int` COUNT slot the asymmetry flips: `Scalar<Q>` is a dimensioned scalar
 //!    for EVERY binding of `Q`, so the family mismatch is decidable without
 //!    instantiating and rejecting is right. Precedents for the defer:
@@ -991,11 +994,34 @@ pub(crate) fn check_builtin_arg_types(
                 // `classify_dim_slot`), which displays as `Scalar<Q>`. Its
                 // FAMILY is known — it IS a scalar, so it belongs at a
                 // dimension slot — and only its DIMENSION is open. There is
-                // therefore nothing here to compare: `Q` is bound at
-                // instantiation, and whether THAT binding conforms is decided
-                // there. Judging the UNINSTANTIATED body under the strict
-                // `DimensionVector` equality the next arm applies can only ever
-                // REJECT, so every such site is a false positive.
+                // therefore nothing here to compare: judging the UNINSTANTIATED
+                // body under the strict `DimensionVector` equality the next arm
+                // applies can only ever REJECT, so every such site is a false
+                // positive.
+                //
+                // WHAT THE DEFER COSTS — MEASURED, not assumed (reviewer
+                // amendment). It does NOT hand the wrong-dimension case on to a
+                // per-instantiation recheck: no such recheck exists. A generic
+                // fn body is compiled ONCE, generically — which is precisely why
+                // the false positive existed — and the call-site unify arm
+                // accepts `ScalarParam(Q)` against any `Scalar { .. }`. So
+                // `beam(10kg)` emits NO compile Error at all. That silence is
+                // the gradualism trade this arm makes, and it is pinned as such
+                // by `wrong_dimension_through_a_dim_kinded_generic_is_undiagnosed_at_compile`
+                // in `tests/builtin_arg_signature_tests.rs`.
+                //
+                // What the cost does NOT extend to, each MEASURED and pinned in
+                // the same file:
+                //   - the same wrong dimension written INLINE
+                //     (`extrude(circle(10kg), 10kg)`) is rejected HERE at
+                //     compile (`ArgTypeMismatch`) and again at build by the
+                //     eval-layer LENGTH gate (`DimensionedArgRejected`) —
+                //     `wrong_dimension_written_inline_is_rejected_at_both_layers`;
+                //   - through a NON-generic fn (`fn beam(l: Length)`) it is
+                //     rejected by overload resolution at the call site —
+                //     `wrong_dimension_through_a_non_generic_fn_is_rejected_at_the_call_site`.
+                // Only the dim-kinded GENERIC form is undiagnosed, which is the
+                // narrowest shape this defer could have.
                 //
                 // Two precedents make the same call elsewhere in the compiler,
                 // and this arm aligns with both rather than inventing a rule:
@@ -2912,10 +2938,14 @@ mod tests {
     /// resolves `l` to `Type::ScalarParam("Q")` (`type_resolution.rs`'s
     /// `classify_dim_slot`), which displays as `Scalar<Q>`. Its FAMILY is known —
     /// it is a scalar — and only its DIMENSION is open, so at a dimension slot
-    /// there is nothing to compare: `Q` is bound at instantiation, and whether
-    /// that binding conforms is decided there. Judging the UNINSTANTIATED body
-    /// under strict `DimensionVector` equality can only ever REJECT, so every
-    /// such site is a false positive.
+    /// there is nothing to compare: judging the UNINSTANTIATED body under strict
+    /// `DimensionVector` equality can only ever REJECT, so every such site is a
+    /// false positive.
+    ///
+    /// The defer's COST — that `beam(10kg)` is then undiagnosed, because nothing
+    /// rechecks a generic body per instantiation — is stated on the
+    /// `ExpectedArg::Scalar` arm and pinned by the three MEASUREMENT tests named
+    /// there.
     ///
     /// Three names, so the fix cannot be accidentally index-specific: `circle`
     /// (slot 0), `extrude` (slot 1) and `box` (slots 0/1/2).

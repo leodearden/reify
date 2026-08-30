@@ -1090,3 +1090,170 @@ fn bare_int_at_generic_call_site_still_rejected() {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── Task 6862 (reviewer amendment): where the WRONG dimension is actually caught
+
+/// The fixture with its instantiation swapped to a MASS — `beam(10kg)`, i.e.
+/// `Q = MASS` reaching two LENGTH slots. Derived from the fixture by
+/// substitution rather than copied, so the two cannot drift apart.
+fn dim_kinded_wrong_dimension_source() -> String {
+    let swapped = DIM_KINDED_LENGTH_SLOT.replace("10mm", "10kg");
+    assert_ne!(
+        swapped, DIM_KINDED_LENGTH_SLOT,
+        "the fixture no longer instantiates `beam` at `10mm`, so this control \
+         silently stopped swapping the dimension — re-derive it"
+    );
+    swapped
+}
+
+/// Build `compiled` against a mock kernel and return the build-layer
+/// diagnostics.
+///
+/// The eval-layer LENGTH gate (`geometry_ops::required_length_value`, task
+/// 5743) runs on BUILD, not on `Engine::eval` — `engine_eval` mints symbolic
+/// handles and never reaches the kernel — so `BuildResult.diagnostics` is the
+/// only place its `DimensionedArgRejected` is observable. Same reasoning, same
+/// shape, as `crates/reify-eval/tests/harness_geometry/
+/// primitive_profile_length_units_e2e.rs`'s `build_compiled`.
+fn build_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<reify_core::Diagnostic> {
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        Some(Box::new(
+            reify_test_support::mocks::MockGeometryKernel::new(),
+        )),
+    );
+    engine
+        .build(compiled, reify_ir::ExportFormat::Step)
+        .diagnostics
+}
+
+/// WHAT THE DEFER COSTS, pinned as a MEASUREMENT rather than left unstated.
+///
+/// The `ScalarParam` defer added by task 6862 is a gradualism trade, and this
+/// is the side of the trade that is easy to misread. A generic fn body is
+/// compiled ONCE, generically — which is exactly why the false positive the
+/// task fixed existed — and NOTHING re-checks that body per instantiation; the
+/// call-site unify arm accepts `ScalarParam(Q)` against any `Scalar { .. }`.
+/// So instantiating the fixture's `beam` at a MASS produces NO compile Error at
+/// all.
+///
+/// This test exists so that a future reader cannot widen the defer believing an
+/// instantiation-time recheck backstops it. It does not: this hole is the cost,
+/// and its sibling `wrong_dimension_written_inline_is_rejected_at_both_layers`
+/// records what the cost does NOT extend to.
+///
+/// If this test ever turns RED because a diagnostic APPEARED, that is good news
+/// — some later leaf started checking instantiations. Delete the test and say
+/// so; do not re-pin the silence.
+#[test]
+fn wrong_dimension_through_a_dim_kinded_generic_is_undiagnosed_at_compile() {
+    let compiled = compile_source_with_stdlib(&dim_kinded_wrong_dimension_source());
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "MEASURED (task 6862 reviewer amendment): `beam(10kg)` through a \
+         dim-kinded generic emits no compile Error — the deliberate cost of the \
+         ScalarParam defer. A diagnostic appearing here means instantiations are \
+         now checked; update the arm's comment in `builtin_signatures.rs` and \
+         this test together.\nGot: {errors:#?}"
+    );
+}
+
+/// WHERE THE WRONG DIMENSION IS STILL CAUGHT, half 1 — written INLINE it is
+/// rejected at BOTH layers, so the defer is narrow rather than a blanket hole.
+///
+/// `extrude(circle(10kg), 10kg)` is the fixture's body with the generic
+/// parameter substituted away. Both halves are load-bearing and MEASURED:
+///
+/// (i)  compile layer — two `ArgTypeMismatch` Errors, `circle: radius …` and
+///      `extrude: distance …`, both naming `Scalar[kg]`. This is the same
+///      `Type::Scalar { dimension }` arm the unit test
+///      `wrong_dimension_scalar_at_length_slot_still_rejected` covers, seen
+///      end-to-end.
+///
+/// (ii) eval layer — a `DimensionedArgRejected` Error at BUILD, and the op is
+///      DROPPED. This is the "COMPLEMENTS, never replaces" relationship the
+///      module doc of `builtin_signatures.rs` describes, made observable.
+#[test]
+fn wrong_dimension_written_inline_is_rejected_at_both_layers() {
+    let compiled = compile_source_with_stdlib(
+        "module inline_wrong_dimension\n\
+         \n\
+         structure def InlineWrongDimension {\n\
+         \x20   let s = extrude(circle(10kg), 10kg)\n\
+         }\n",
+    );
+
+    let compile_errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        compile_errors.len(),
+        2,
+        "both LENGTH slots carry a CONCRETE wrong dimension, so both must be \
+         rejected at compile.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        compile_errors
+            .iter()
+            .all(|d| d.message.contains("Scalar[kg]")),
+        "each rejection must name the offending MASS scalar: {:#?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let build_errors = build_diagnostics(&compiled);
+    assert!(
+        build_errors.iter().any(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        }),
+        "the eval-layer LENGTH gate must reject it too, under its OWN code — \
+         that is what keeps the two layers independently observable (task \
+         5743 / 5750).\nBuild diagnostics: {build_errors:#?}"
+    );
+}
+
+/// WHERE THE WRONG DIMENSION IS STILL CAUGHT, half 2 — through a NON-generic
+/// fn, overload resolution rejects it at the call site.
+///
+/// This is what localises the hole pinned above: it is specific to a
+/// DIM-KINDED generic parameter, whose whole point is that its dimension is
+/// open. Give the same fn a concrete `Length` parameter and the call site is
+/// checked normally.
+#[test]
+fn wrong_dimension_through_a_non_generic_fn_is_rejected_at_the_call_site() {
+    let compiled = compile_source_with_stdlib(
+        "module non_generic_wrong_dimension\n\
+         \n\
+         fn beam(l: Length) -> Solid { extrude(circle(l), l) }\n\
+         \n\
+         structure def NonGenericWrongDimension {\n\
+         \x20   let s = beam(10kg)\n\
+         }\n",
+    );
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a MASS passed to a concrete `Length` parameter must still be rejected \
+         at the call site — the task-6862 defer is scoped to dim-kinded \
+         generics and must not have widened to concrete signatures.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("beam")),
+        "the rejection must name the call it rejected: {:#?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
