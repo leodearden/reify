@@ -24,7 +24,12 @@
 //!
 //! `m9_error_cases` and `m11_annotations_solver_hint_tests` are here BY SCOPE, not by
 //! subject: their prefixes fall inside leaf CMP-4 and no better in-scope home exists.
-//! Moving them to one that fits later is a correction, not a regression.
+//! Neither is a physical-modelling test — m9 is general type-mismatch diagnostics, m11
+//! is annotations / solver hints — so this root is a partial catch-all until they move.
+//! That move is TRACKED, not merely disclosed: follow-up ticket
+//! `tkt_0RT273RG27CPVNCQXPBHHJEQCA` (filed against #5694) relocates both to the
+//! diagnostics / annotations harness that leaf CMP-5 or CMP-6 creates, and deletes this
+//! paragraph with them. Landing that is a correction, not a regression.
 //!
 //! Routing vs. the three neighbours — the line is subsystem, not filename; do NOT fold
 //! any of these together:
