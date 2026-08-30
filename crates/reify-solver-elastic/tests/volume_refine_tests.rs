@@ -265,6 +265,128 @@ fn refine_marked_elements_errors_on_wedge_connectivity() {
     );
 }
 
+/// One-element P2 tet `VolumeMesh` (10 nodes, stride 10) — the only fixture in
+/// this crate's suites that exercises the non-P1 branch of
+/// `VolumeMesh::nodes_per_element()`.
+///
+/// Node positions are irrelevant to `element_count`, which reads only the
+/// index-buffer length and the order tag; they are laid out as the 4 corners
+/// followed by the 6 edge midpoints so the fixture reads as a real P2 tet.
+fn one_p2_tet_vm() -> VolumeMesh {
+    VolumeMesh {
+        #[rustfmt::skip]
+        vertices: vec![
+            // 4 corners
+            0.0_f32, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+            // 6 edge midpoints
+            0.5, 0.0, 0.0,
+            0.5, 0.5, 0.0,
+            0.0, 0.5, 0.0,
+            0.0, 0.0, 0.5,
+            0.5, 0.0, 0.5,
+            0.0, 0.5, 0.5,
+        ],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            order: ElementOrderTag::P2,
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Stride regression pin: `element_count` must divide a P2 tet index buffer by
+/// 10, not 4.
+///
+/// Every other fixture in this crate's suites is P1 (stride 4), so without
+/// this test the P2 branch of `VolumeMesh::nodes_per_element()` — adopted when
+/// the crate-local `nodes_per_element(order)` helper was deleted — is
+/// unexercised here, and a stride regression would surface only as a silently
+/// wrong element count. Asserting `expected: 1` (not `expected: 2`) on the
+/// length-mismatch report pins the divisor: 10 indices / 10 nodes = 1 element.
+#[test]
+fn element_count_divides_p2_tet_indices_by_ten() {
+    let surface = dummy_surface();
+    let vm = one_p2_tet_vm(); // 10 indices, P2 → exactly 1 element
+    let size_hints = vec![1.0_f64; 3]; // deliberately wrong length
+    let opts = MeshingOptions::default();
+
+    let result = refine_with_size_field(&surface, &vm, &size_hints, &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::SizeHintsLengthMismatch { got: 3, expected: 1 })
+        ),
+        "expected SizeHintsLengthMismatch {{got: 3, expected: 1}} (10 indices / \
+         10 nodes per P2 tet = 1 element; a stride-4 divisor would report 2), \
+         got: {result:?}",
+    );
+}
+
+/// Tet index buffer whose length is not a whole multiple of the per-element
+/// node count — 5 indices at P1 stride 4 — must be rejected at the
+/// `element_count` chokepoint.
+///
+/// Before the divisibility guard, the truncating division reported 1 element,
+/// so `size_hints` of length 1 cleared the length check and
+/// `project_per_element_sizes_to_vertices` then panicked with an
+/// index-out-of-bounds on the trailing remainder chunk emitted by
+/// `chunks(4)`. This pins the structured error in place of that panic.
+#[test]
+fn refine_with_size_field_errors_on_non_multiple_tet_indices() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 15], // 5 vertices × 3 coords
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4], // 5 indices, P1 stride 4 → not a multiple
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    // Length 1 is exactly what the old truncating count would have accepted.
+    let result = refine_with_size_field(&surface, &vm, &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "expected MalformedTetIndices {{len: 5, stride: 4}} rather than a \
+         downstream index-out-of-bounds panic, got: {result:?}",
+    );
+}
+
+/// The same malformed buffer must be rejected through the `adaptive` entry
+/// point too — both public entry points share the `element_count` chokepoint.
+#[test]
+fn refine_marked_elements_errors_on_non_multiple_tet_indices() {
+    let surface = dummy_surface();
+    let vm = VolumeMesh {
+        vertices: vec![0.0_f32; 15],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[0], &[0.5_f64], &opts);
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MalformedTetIndices { len: 5, stride: 4 })
+        ),
+        "expected MalformedTetIndices {{len: 5, stride: 4}}, got: {result:?}",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // step-7: localized refinement integration test (runtime-gated on GMSH_AVAILABLE)
 // ---------------------------------------------------------------------------

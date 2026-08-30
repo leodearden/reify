@@ -56,6 +56,18 @@ pub enum RefineError {
     /// hex/wedge meshes come from the sweep pipeline and have no refine path
     /// here).
     UnsupportedConnectivity,
+    /// `volume_mesh`'s tet index buffer length is not a whole multiple of the
+    /// per-element node count, so it does not describe a whole number of
+    /// elements. Sibling of [`RefineError::UnsupportedConnectivity`]: both
+    /// reject a mis-shaped `VolumeMesh` at the `element_count` chokepoint
+    /// rather than letting the truncated count panic downstream in
+    /// `project_per_element_sizes_to_vertices`'s remainder chunk.
+    MalformedTetIndices {
+        /// `tet_indices.len()`.
+        len: usize,
+        /// Per-element node count (4 for P1, 10 for P2).
+        stride: usize,
+    },
 }
 
 impl fmt::Display for RefineError {
@@ -88,6 +100,11 @@ impl fmt::Display for RefineError {
                 "volume refinement is tet-only: a Hex/Wedge VolumeMesh cannot be \
                  remeshed by the Gmsh size-field refiner"
             ),
+            RefineError::MalformedTetIndices { len, stride } => write!(
+                f,
+                "malformed tet connectivity: {len} indices is not a whole multiple \
+                 of the {stride}-node per-element stride"
+            ),
         }
     }
 }
@@ -108,20 +125,38 @@ impl std::error::Error for RefineError {
 /// Number of tetrahedral elements in `volume_mesh` (`tet_indices.len()` divided
 /// by the per-element node count for its [`ElementOrderTag`]).
 ///
-/// This is the shared connectivity gate for both public entry points
+/// This is the shared mesh-shape gate for both public entry points
 /// ([`refine_with_size_field`] and [`crate::adaptive::refine_marked_elements`],
-/// which both call this first) — a Hex/Wedge mesh is rejected here, before
-/// any panic-prone helper or gmsh call runs.
+/// which both call this first) — a Hex/Wedge mesh, or a tet mesh whose index
+/// buffer does not describe a whole number of elements, is rejected here,
+/// before any panic-prone helper or gmsh call runs.
+///
+/// The divisibility check is what makes the returned count exact rather than
+/// truncated: without it a 5-index P1 mesh would report 1 element, clear the
+/// `size_hints` length check, and then panic in
+/// [`project_per_element_sizes_to_vertices`], whose `chunks(stride)` walk
+/// emits a trailing remainder chunk and indexes `per_element_sizes[1]`.
 ///
 /// # Errors
 ///
 /// Returns [`RefineError::UnsupportedConnectivity`] if `volume_mesh`'s
-/// connectivity is `Hex` or `Wedge`.
+/// connectivity is `Hex` or `Wedge`, or
+/// [`RefineError::MalformedTetIndices`] if `tet_indices.len()` is not a whole
+/// multiple of the per-element node count.
 pub(crate) fn element_count(volume_mesh: &VolumeMesh) -> Result<usize, RefineError> {
     let tet_indices = volume_mesh
         .tet_indices()
         .ok_or(RefineError::UnsupportedConnectivity)?;
-    Ok(tet_indices.len() / volume_mesh.nodes_per_element())
+    // `nodes_per_element()` is 4 (P1) or 10 (P2) for `Tet` connectivity, which
+    // the guard above has established — never 0, so the `%`/`/` are safe.
+    let stride = volume_mesh.nodes_per_element();
+    if !tet_indices.len().is_multiple_of(stride) {
+        return Err(RefineError::MalformedTetIndices {
+            len: tet_indices.len(),
+            stride,
+        });
+    }
+    Ok(tet_indices.len() / stride)
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +186,10 @@ pub(crate) fn element_count(volume_mesh: &VolumeMesh) -> Result<usize, RefineErr
 /// BEFORE invoking. The implementation indexes `per_element_sizes[elem_idx]`
 /// without a bounds check; an out-of-bounds element will panic. The only
 /// safe caller is [`refine_with_size_field`], which performs this length
-/// validation up front (see lines 161-166).
+/// validation up front (see its `size_hints.len() != n_elements` check).
+/// [`element_count`], which supplies that expected length, also rejects a
+/// non-multiple-of-stride index buffer, so the `chunks(nodes_per_elem)` walk
+/// below cannot see a short remainder chunk.
 ///
 /// The panic contract is pinned by the regression test
 /// `project_panics_on_too_short_per_element_sizes` in the in-module `tests`
@@ -219,10 +257,12 @@ pub(crate) fn project_per_element_sizes_to_vertices(
 /// # Errors
 ///
 /// Returns [`RefineError::UnsupportedConnectivity`] if `volume_mesh`'s
-/// connectivity is `Hex` or `Wedge` — this refiner is tet-only. That gate is
-/// the shared `element_count` chokepoint and runs **first**, ahead of the
-/// size-hint validation below and before any gmsh work, so a mis-routed
-/// hex/wedge mesh fails fast and build-agnostically.
+/// connectivity is `Hex` or `Wedge` — this refiner is tet-only — or
+/// [`RefineError::MalformedTetIndices`] if its tet index buffer is not a
+/// whole multiple of the per-element node count. Both gates are the shared
+/// `element_count` chokepoint and run **first**, ahead of the size-hint
+/// validation below and before any gmsh work, so a mis-shaped mesh fails fast
+/// and build-agnostically.
 ///
 /// Otherwise returns `RefineError::SizeHintsLengthMismatch` if
 /// `size_hints.len() != element_count`, `RefineError::NonFiniteSize` on NaN
@@ -449,7 +489,7 @@ mod tests {
     ///
     /// This pin documents the projector's caller-validation contract: the
     /// only safe caller is `refine_with_size_field`, which validates
-    /// `size_hints.len() == n_elements` up front (see lines 161-166). Future
+    /// `size_hints.len() == n_elements` up front. Future
     /// authors who silently misbehave on short slices (e.g. via
     /// `get(elem_idx).copied().unwrap_or(...)`) will see this test fail and
     /// be forced to revisit the contract.
