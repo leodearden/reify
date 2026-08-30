@@ -1784,6 +1784,80 @@ mod tests {
         assert!(d3.is_empty(), "TypeParam args must be skipped, got: {d3:?}");
     }
 
+    /// `Type::ScalarParam` — a `Scalar<Q>` metric inside a generic fn signature
+    /// (`fn f<Q: Dimension>(..., theta: Scalar<Q>) ...`) has a KNOWN family (it is
+    /// a scalar) but an UNRESOLVED dimension, so the unit layer's dimension
+    /// comparison is undecidable until instantiation and must defer silently —
+    /// the same "known kind, unresolved detail" bucket `TypeParam` gradualism
+    /// already covers. Exercises the metric slot for all three metric-DRIVE
+    /// relation names.
+    #[test]
+    fn check_gradualism_scalar_param_metric_slot_passes_silently() {
+        // angle: Axis/Axis operands + Scalar<Q> metric.
+        let mut d1 = Vec::new();
+        check_relation_arg_types(
+            "angle",
+            &[
+                arg(Type::Axis),
+                arg(Type::Axis),
+                arg(Type::ScalarParam("Q".to_string())),
+            ],
+            span(),
+            &mut d1,
+        );
+        assert!(
+            d1.is_empty(),
+            "angle metric ScalarParam(Q) must be skipped, got: {d1:?}"
+        );
+
+        // distance: Point3<Length>/Point3<Length> operands + Scalar<Q> metric.
+        let pt = || arg(Type::point3(Type::length()));
+        let mut d2 = Vec::new();
+        check_relation_arg_types(
+            "distance",
+            &[pt(), pt(), arg(Type::ScalarParam("Q".to_string()))],
+            span(),
+            &mut d2,
+        );
+        assert!(
+            d2.is_empty(),
+            "distance metric ScalarParam(Q) must be skipped, got: {d2:?}"
+        );
+
+        // offset: Plane/Plane operands + Scalar<Q> metric.
+        let mut d3 = Vec::new();
+        check_relation_arg_types(
+            "offset",
+            &[
+                arg(Type::Plane),
+                arg(Type::Plane),
+                arg(Type::ScalarParam("Q".to_string())),
+            ],
+            span(),
+            &mut d3,
+        );
+        assert!(
+            d3.is_empty(),
+            "offset metric ScalarParam(Q) must be skipped, got: {d3:?}"
+        );
+    }
+
+    /// Anti-over-broadening negative guard: a CONCRETE wrong-dimension metric must
+    /// STILL emit `ArgTypeMismatch` even after `ScalarParam` joins the metric-slot
+    /// skip-set — the widened arm must not collapse into "skip all scalars".
+    #[test]
+    fn check_gradualism_scalar_param_metric_still_rejects_concrete_wrong_dimension_metric() {
+        let args = [arg(Type::Axis), arg(Type::Axis), arg(Type::length())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("angle", &args, span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+    }
+
     // Arity-gating + unknown-name no-ops — the checker must not fire spuriously.
 
     /// The shared verbs `angle`/`distance` are policed ONLY in their arity-3 DRIVE
