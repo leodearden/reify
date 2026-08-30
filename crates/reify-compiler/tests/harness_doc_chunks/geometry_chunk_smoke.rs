@@ -576,7 +576,12 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // elsewhere in the chunk (or an incidental mention that survives the
     // section's deletion) must not satisfy this. `section_body` panics if the
     // section is gone, so gutting it is RED rather than vacuously green.
-    let section = section_body(&markdown, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
+    let section = section_body(
+        &markdown,
+        ORACLE_SECTION_MARKER,
+        CHUNK_PATH,
+        ORACLE_SECTION_TITLE,
+    );
 
     // (a) COVERAGE. Each name must appear as a CALL form (`name(`) rather than a
     // bare word — geometry.md already contained the word "distance" before task
@@ -1070,7 +1075,12 @@ fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
 #[test]
 fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
     let markdown = read_chunk();
-    let section = section_body(&markdown, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
+    let section = section_body(
+        &markdown,
+        ORACLE_SECTION_MARKER,
+        CHUNK_PATH,
+        ORACLE_SECTION_TITLE,
+    );
     let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
 
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
@@ -1173,7 +1183,8 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
 
     for name in &names {
         assert!(
-            registry_family(name).is_some() || LENGTH_SECTION_NAME_ALLOWLIST.contains(&name.as_str()),
+            registry_family(name).is_some()
+                || LENGTH_SECTION_NAME_ALLOWLIST.contains(&name.as_str()),
             "{}",
             phantom_name_panic(
                 CHUNK_PATH,

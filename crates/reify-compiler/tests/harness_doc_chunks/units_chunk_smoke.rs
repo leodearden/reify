@@ -132,7 +132,9 @@ const BARE_ZERO_FORM: &str = "box(0, 0, 0)";
 /// AND keeps the assertion about the units gate. This contract is restated in
 /// the chunk's own SYNC note, so a row author knows `g` is available.
 fn wrap_form(form: &str) -> String {
-    format!("structure def RejectedForm {{\n    let g = box(10mm, 10mm, 10mm)\n    let subject = {form}\n}}")
+    format!(
+        "structure def RejectedForm {{\n    let g = box(10mm, 10mm, 10mm)\n    let subject = {form}\n}}"
+    )
 }
 
 /// The `(rejected, accepted)` rows of the ```` ```reify-rejected ```` block.
@@ -231,7 +233,9 @@ fn assert_rejected_as_documented(form: &str) {
 
 fn read_chunk() -> String {
     std::fs::read_to_string(UNITS_CHUNK_PATH).unwrap_or_else(|e| {
-        panic!("{UNITS_CHUNK_PATH} must be readable ({e}) — update UNITS_CHUNK_PATH if the chunk moved")
+        panic!(
+            "{UNITS_CHUNK_PATH} must be readable ({e}) — update UNITS_CHUNK_PATH if the chunk moved"
+        )
     })
 }
 
