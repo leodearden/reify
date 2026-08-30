@@ -26,17 +26,21 @@ Write fixtures to `/tmp/prd-gate-fixtures/<slug>-<n>.ri` or a directory the skil
 
 ### Step 2 — Parse each fixture
 
-**Preconditions** (both must hold — if either doesn't, `tree-sitter parse` fails with "No language found" / exit 1 regardless of whether the fixture's syntax is valid):
+**Preconditions** (all three must hold — the first two fail LOUDLY, with "No language found" / exit 1, regardless of whether the fixture's syntax is valid; the third fails SILENTLY, which is why it needs its own step):
 
 1. **CWD is `tree-sitter-reify/`** — the CLI reads `src/grammar.json` relative to CWD; no such file exists outside `tree-sitter-reify/`.
 2. **The generated grammar files exist**: `src/parser.c`, `src/grammar.json`, `src/node-types.json`. They're gitignored (see `tree-sitter-reify/.gitignore`) and therefore absent in a fresh warm-lane or task worktree even when CWD is already correct (`build.rs` regenerates them into `src/` on a cargo build — only the staleness stamp goes to `OUT_DIR`). If missing, regenerate once first, from anywhere: `bash "$(git rev-parse --show-toplevel)/scripts/tree-sitter-generate.sh"`.
+3. **The grammar cache is ISOLATED to this session.** `tree-sitter parse` compiles the grammar to `$XDG_CACHE_HOME/tree-sitter/lib/<language-name>.so`, an artifact keyed by *language name* — not by grammar path — and invalidated only on source mtime. Every linked worktree on this host therefore resolves to the same `reify.so`, so a patched build made in any other lane silently answers your parses. Unlike the two above, this failure is quiet: you get a plausible exit code and no diagnostic. It has happened — see `docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md` C2, where a mid-decompose reading returned exit 0 while a concurrent HYP-A build held the cache.
 
-Then, from `tree-sitter-reify/`, parse the fixture:
+Then, from `tree-sitter-reify/`, mint one session-scoped cache dir and parse the fixture:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/tree-sitter-reify"
-tree-sitter parse --quiet /tmp/prd-gate-fixtures/<slug>-<n>.ri
+TS_CACHE="${TS_CACHE:-$(mktemp -d /tmp/prd-gate-ts-cache-XXXXXX)}"
+XDG_CACHE_HOME="$TS_CACHE" tree-sitter parse --quiet /tmp/prd-gate-fixtures/<slug>-<n>.ri
 ```
+
+Reuse the same `$TS_CACHE` for every fixture in the session: the first parse pays a one-off grammar compile, and the rest are free (see **Performance note**).
 
 - **Exit 0** → fixture parses. Gate passes for that fragment.
 - **Exit 1** → fixture fails. Gate fails for that fragment — but only once both preconditions above hold (correct CWD, generated grammar present).
@@ -46,7 +50,7 @@ tree-sitter parse --quiet /tmp/prd-gate-fixtures/<slug>-<n>.ri
 To inspect a failure, drop `--quiet` and look for `(ERROR ...)` nodes in the CST:
 
 ```bash
-tree-sitter parse /tmp/prd-gate-fixtures/<slug>-<n>.ri 2>&1 | grep -E "ERROR|MISSING"
+XDG_CACHE_HOME="$TS_CACHE" tree-sitter parse /tmp/prd-gate-fixtures/<slug>-<n>.ri 2>&1 | grep -E "ERROR|MISSING"
 ```
 
 The ERROR-node line ranges tell you which token in the fixture confused the parser.
@@ -116,4 +120,8 @@ For PRDs that **introduce no novel syntax** (e.g. pure-infrastructure PRDs: a ne
 
 ## Performance note
 
-`tree-sitter parse` is fast (sub-millisecond per fixture). Even a PRD with 20 fixtures parses in under a second. The gate has no perceptible session-time cost.
+Against a **warm** `$TS_CACHE`, `tree-sitter parse` is sub-millisecond per fixture: even a PRD with 20 fixtures parses in well under a second.
+
+The **first** parse against a fresh `$TS_CACHE` is different — it compiles the grammar to `reify.so` before it can parse anything. Measured on this host: **~2s cold, ~0.01s warm** (task #5925). That one-off is why the setup block reuses a single `$TS_CACHE` for the whole session rather than minting one per fixture. Expect it, and don't read a slow first parse as a hang.
+
+The PRD gate itself needs no manual step: `scripts/prd-capability-check.py` isolates its grammar probes automatically — a per-repo-root, grammar-fingerprinted dir under `$TMPDIR` — and `REIFY_TS_CACHE_HOME` pins that dir if you need to inspect or share it. The manual idiom above and the gate's automatic one are the same mechanism.
