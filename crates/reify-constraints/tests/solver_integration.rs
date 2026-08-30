@@ -2421,7 +2421,7 @@ fn solve_ranked_override_objective_score_is_some() {
 
     let ranked = solver.solve_ranked(&problem);
     match &ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
             assert!(
                 candidates[0].objective_score.is_some(),
@@ -2477,7 +2477,7 @@ fn solve_ranked_override_no_objective_feasibility_only() {
 
     let ranked = solver.solve_ranked(&problem);
     match &ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
             assert!(
                 candidates[0].objective_score.is_none(),
@@ -2585,7 +2585,7 @@ fn solve_ranked_multistart_dim2_returns_k_ranked_candidates() {
 
     let ranked = solver.solve_ranked(&problem);
     match &ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             // K = 2*(dim+1) = 2*(2+1) = 6
             assert_eq!(
                 candidates.len(),
@@ -3217,7 +3217,7 @@ fn solve_ranked_gate_dim2_no_objective_feasibility_only() {
 
     let ranked = solver.solve_ranked(&problem);
     match ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(
                 candidates.len(),
                 1,
@@ -3300,7 +3300,7 @@ fn solve_ranked_gate_dim2_cost_robustness_tradeoff_single_candidate() {
 
     let ranked = solver.solve_ranked(&problem);
     match ranked {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(
                 candidates.len(),
                 1,

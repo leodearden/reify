@@ -1174,6 +1174,11 @@ impl CpSatSolver {
         RankedSolveResult::Ranked {
             candidates,
             optimality,
+            // CpSat's `SolveAllResult::Enumerated.complete` is the discrete-side
+            // precedent this axis generalises, but wiring it through to
+            // `Exhaustive` / `Partial{BoxBudgetExhausted}` is a later leaf's work;
+            // task α threads the field only.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }
@@ -1244,6 +1249,7 @@ fn lift_feasibility(solved: SolveResult) -> RankedSolveResult {
                 unique,
             }],
             optimality: OptimalityStatus::FeasibilityOnly,
+            completeness: reify_ir::Completeness::not_attempted(),
         },
         non_solved => non_solved
             .into_ranked_pass_through()

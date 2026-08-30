@@ -691,6 +691,7 @@ fn solve_ranked_registry_propagates_k_candidates_ordered_best_first() {
         RankedSolveResult::Ranked {
             candidates,
             optimality,
+            ..
         } => {
             // NOTE (reviewer_comprehensive amend, task δ #5016 review pass 2):
             // this `>= 2` assertion is load-bearing on the INTENTIONAL non-dedup
