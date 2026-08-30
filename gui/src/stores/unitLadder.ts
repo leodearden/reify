@@ -57,6 +57,19 @@ export function convertToUnit(siValue: number, siScale: number): number {
  * addendum L3): those format the MAGNITUDE, not the unit, and are explicitly
  * out of scope. This is a pure glyph substitution with no exceptions, so it
  * must only ever be handed a unit label.
+ *
+ * SOURCE OF TRUTH: this restates, in TypeScript, the mapping owned by
+ * `reify_core::display_units::ascii_label_spelling`
+ * (crates/reify-core/src/display_units.rs) — the CANONICAL statement of this
+ * same U+00B2/U+00B3 rule. The curated ladders it normalizes are the ones
+ * served to this file over the `get_unit_ladders` Tauri command, so this
+ * copy and the Rust rule describe the same tables from opposite sides of the
+ * IPC boundary. The duplication is unavoidable — TypeScript cannot call
+ * across the language boundary — but only the Rust site is coupled to the
+ * live curated tables by an executable test
+ * (`curated_labels_are_already_ascii_normalized`); this copy has no such
+ * gate, so an editor moving the curated alphabet (task κ's `·` separator
+ * half is still open) must start at the Rust site to keep the two in step.
  */
 export function normalizeUnitLabel(label: string): string {
   return label.replace(/²/g, '^2').replace(/³/g, '^3');
