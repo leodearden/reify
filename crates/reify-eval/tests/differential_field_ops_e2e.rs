@@ -562,6 +562,34 @@ fn differential_field_ops_integration_gate() {
         other => panic!("rot_probe must be a Scalar[ANGLE], got: {:?}", other),
     }
 
+    // ── (d5) The `orient_exp` composition — a forward reference ──────────────
+    //
+    // Three measured facts, recorded so the absence of an `orient_exp`
+    // assertion beside (d3)/(d4) reads as deliberate rather than as a hole in
+    // the crossing:
+    //
+    //   1. `rotation`'s `Vector3<Angle>` codomain is exactly the shape a
+    //      rotation-vector consumer wants.  Ruling #6080's second ruling (B)
+    //      narrows `orient_exp` to accept ANGLE canonically and ONLY ANGLE,
+    //      rejecting DIMENSIONLESS with a spanned diagnostic — so once that
+    //      lands, `orient_exp(sample(result.rotation, p))` becomes the
+    //      canonical spelling for turning the infinitesimal rotation vector
+    //      into an orientation.
+    //
+    //   2. It is not asserted here because on main that gate still rejects
+    //      ANGLE. `crates/reify-stdlib/src/orientation.rs:535` reads
+    //      `if dim != DimensionVector::DIMENSIONLESS { return Some(Value::Undef); }`
+    //      inside the `"orient_exp"` arm, so the composition evaluates to
+    //      `Value::Undef` today (read first-hand 2026-08-30, #6080 unlanded).
+    //      An assertion on it could not be made to pass from this channel's
+    //      file scope, and one written to tolerate `Undef` would pin nothing.
+    //
+    //   3. #6080 owns that gate — its own work item 2 names this exact line —
+    //      and this channel needs no edit when it lands.  The crossing is
+    //      already ANGLE-typed on both sides of the call boundary, which is
+    //      the whole point of ruling #6164: the radian enters once, here, and
+    //      every downstream ANGLE consumer inherits it unchanged.
+
     // ── (e) Phase 2 — exact polynomial fixture assertions ────────────────────
     //
     // laplacian_1d_quadratic_exact (sampled_fd.rs) proves max(laplacian(x²)) = 2.0
