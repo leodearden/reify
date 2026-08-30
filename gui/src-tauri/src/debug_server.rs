@@ -1823,6 +1823,93 @@ async fn handle_reify_set_parameter(
     }))
 }
 
+/// Engine-routing core of the `reify_update_source` write tool: recompile
+/// `content` as the whole buffer for `path`, then refresh the delta baseline.
+///
+/// **This tool writes NO disk.** PRD §6.3 routes it through the IN-MEMORY
+/// [`EngineSession::update_source`] — the same entry point the GUI editor's
+/// dirty-buffer path uses per keystroke. Durable structural edits are §11
+/// out of scope: Claude makes those with its own native Write/Edit tools and
+/// the FS-watcher reloads them. The one tool here that DOES write the user's
+/// canonical document is `reify_set_parameter`, and it writes exactly one
+/// default literal (INV-GUI-3), never the whole file.
+///
+/// `update_source` reaches `EngineSession::post_engine_call_telemetry` by
+/// construction, so mechanism 1 of the §6.2 pair needs no extra call here;
+/// the shared seam supplies mechanism 2. On a compile rejection
+/// `update_source` leaves the session completely unchanged and returns `Err`,
+/// which short-circuits the seam before the refresh — so there is no
+/// half-advanced baseline.
+///
+/// Extracted from [`handle_reify_update_source`] so the routing is
+/// unit-testable without a [`DebugServerState`]/`AppHandle`.
+pub async fn reify_update_source_on_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    path: &str,
+    content: &str,
+) -> Result<crate::types::GuiState, String> {
+    // Owned for the closure's `'static` bound (see the sibling tool).
+    let path = path.to_owned();
+    let content = content.to_owned();
+    write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        s.update_source(&path, &content)
+    })
+    .await
+}
+
+/// Recompile a file's whole buffer from AI-supplied text, push the rebuilt
+/// `GuiState` AND the new text to the frontend, and return the reify-mcp
+/// result envelope.
+///
+/// Flow:
+///  1. `reify_update_source_on_engine_and_refresh_baseline` — recompiles in
+///     memory and refreshes the delta baseline (§6.2 invariant (a)).
+///  2. `write_tool_frontend_payload(&gs, Some((path, content)))` — WITH the
+///     `file` member, because this tool writes no disk and so no FS-watcher
+///     re-fire will bring the editor buffer along (step-10). Without it the
+///     design would re-render while the editor still showed the old text.
+///  3. `query_frontend("apply_gui_state", ...)` — applies both, no view reset.
+///  4. Returns `{"success", "diagnostics_count", "diagnostics"}` filtered to
+///     `file_path` — the same envelope
+///     `crates/reify-mcp/src/tools/write.rs` returns for this tool name.
+///
+/// Inherits the serial-debug-ops caveat stated on
+/// [`handle_reify_set_parameter`]: the refresh lands before the push.
+async fn handle_reify_update_source(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let file_path = reify_write_str_param(&params, "file_path")?;
+    let content = reify_write_str_param(&params, "content")?;
+
+    let gs = reify_update_source_on_engine_and_refresh_baseline(
+        &state.engine,
+        &state.last_state,
+        &file_path,
+        &content,
+    )
+    .await?;
+
+    let diagnostics = run_on_engine(&state.engine, |s| Ok(s.get_diagnostics())).await?;
+    let filtered: Vec<_> = diagnostics
+        .into_iter()
+        .filter(|d| d.file_path == file_path)
+        .collect();
+
+    let payload = write_tool_frontend_payload(&gs, Some((&file_path, &content)))?;
+    state
+        .debug_bridge
+        .query_frontend("apply_gui_state", payload)
+        .await?;
+
+    Ok(json!({
+        "success": true,
+        "diagnostics_count": filtered.len(),
+        "diagnostics": filtered,
+    }))
+}
+
 // --- MCP Streamable HTTP handler ---
 
 async fn handle_mcp(
