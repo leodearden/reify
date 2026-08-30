@@ -103,7 +103,10 @@
 //! * **P6 explains why the suite is blind.** With a clamp wall inside the constraint
 //!   region the objective moves the answer 20mm (25mm seed → 5mm floor); without one it
 //!   moves it 0mm. Every in-tree progress-asserting fixture sets that wall, and
-//!   production never does.
+//!   production never does. P6 is a deliberate LOCAL RESTATEMENT of
+//!   `optimize_with_feasible_initial_point` (`solver_integration.rs:498`), kept here so
+//!   the contrast reads in one file — it is **not** independent evidence, and adds no new
+//!   solver coverage. See its own doc.
 //! * **P7** (`reify-eval/tests/harness_engine/objective_seed_parking_e2e.rs`) reproduces link 5 at the
 //!   `.ri` driver level and measures the silence: 24.000000 mm returned with **zero**
 //!   diagnostics of any kind.
@@ -165,6 +168,20 @@ const SEED_NUDGE_REL: f64 = 0.1;
 /// by `solver_integration.rs:1483`, `warm_start_fallback_returns_exact_initial_values`),
 /// so a loose tolerance would hide the whole point of these probes.
 const TOL_M: f64 = 1e-9;
+
+/// RELATIVE tolerance for the two P8 one-sided corner controls, applied as
+/// `TOL_REL × max(|expected|, 1.0)`.
+///
+/// [`TOL_M`] is the right instrument for every O(1e-2) m target in this file, but against
+/// the **10 m** `default_bounds_for(Length)` corner an absolute 1e-9 is a 1e-10 *relative*
+/// tolerance — far tighter than anything Nelder-Mead promises. That corner comes back
+/// bit-exact today only because the final `val.clamp(lo, hi)` in
+/// `solve_core_with_sd_tolerance` (`solver.rs:1971-1980`) snaps the penalty-method
+/// overshoot back onto the box, NOT because NM converged there to 1e-10. If NM ever
+/// terminated marginally INSIDE the bound (say 9.9999996 m), an absolute pin would go RED
+/// while the CHARACTERISED behaviour — "runs to the default-box corner instead of parking
+/// at the seed" — was unchanged, sending a future reader on a false re-measure.
+const TOL_REL: f64 = 1e-9;
 
 /// Build a probe problem in the PRODUCTION shape (`bounds: None`, `free: true`).
 ///
@@ -486,6 +503,18 @@ fn p5_optimality_status_is_not_iteration_limited() {
 ///
 /// This probe is the deliberate exception to the module-wide production shape.
 ///
+/// # Not independent evidence — a deliberate local restatement
+///
+/// P6 is a near-verbatim reconstruction of `optimize_with_feasible_initial_point`
+/// (`solver_integration.rs:498`): same `2mm < x < 50mm` constraints, the same explicit
+/// 5mm–100mm wall, the same 25mm seed, the same `Minimize` sense, the same ≈5mm outcome.
+/// It therefore adds **no new solver coverage** — a future reader must not count it as a
+/// second, independent observation. It is kept local anyway so the contrast that explains
+/// the suite's blindness reads in one file, immediately beside the probes it contrasts
+/// with. Candidate (c) got the other treatment for the same trade-off, cited by symbol
+/// (`robustness_floor.rs::non_money_objective_unchanged`) with no local restatement,
+/// because nothing there needed to be read side-by-side.
+///
 /// MEASURED at HEAD `9c1bed42a7`: `Solved { unique: false }`, `5.00000000000000010e-3` m
 /// = **5.000000 mm** (bits `0x3f747ae147ae147b`) — the clamp floor, i.e. the objective
 /// drove the answer 20mm from its 25mm seed. Contrast P1–P4/P7, which move 0mm.
@@ -504,17 +533,17 @@ fn p6_wall_inside_constraint_region_makes_real_progress() {
     );
     let got = solved_si(&problem);
 
+    // One assertion, not two: pinning `got` to the 5mm floor within TOL_M already
+    // *implies* it is 20mm from the 25mm seed, so a separate "must not park at the seed"
+    // check would be unreachable. The seed contrast lives in the message instead.
     assert!(
         (got - 0.005).abs() <= TOL_M,
         "P6 `minimize x` s.t. `2mm < x < 50mm` with a 5mm-100mm WALL and a 25mm seed: \
-         expected the objective to drive the answer to the 5mm clamp floor; got {got} m \
-         ({} mm). If this parks at the 25mm seed instead, the contrast that explains the \
-         suite's blindness is gone and the whole verdict must be re-derived.",
+         expected the objective to drive the answer to the 5mm clamp floor — i.e. 20mm \
+         away from its own seed, which IS the contrast against P1-P4/P7 (those move 0mm). \
+         Got {got} m ({} mm). If this parks at the 25mm seed instead, the contrast that \
+         explains the suite's blindness is gone and the whole verdict must be re-derived.",
         got * 1000.0
-    );
-    assert!(
-        (got - 0.025).abs() > TOL_M,
-        "P6 must NOT park at its 25mm seed — that is the contrast against P1-P4."
     );
 }
 
@@ -614,9 +643,12 @@ fn p8_objective_sense_has_no_effect_on_the_answer() {
     // `default_bounds_for(Length)` corner instead of parking at the seed.
     let (default_lo, default_hi) = DEFAULT_LENGTH_BOUNDS_M;
 
+    // Corner controls use TOL_REL, not TOL_M — see the `TOL_REL` doc: the bit-exactness
+    // here comes from the final clamp, not from NM convergence, so an absolute 1e-9
+    // against a 10 m target would be a false tripwire.
     let max_one_sided_lower = probe_si(vec![ge_8mm()], ObjectiveSense::Maximize, None);
     assert!(
-        (max_one_sided_lower - default_hi).abs() <= TOL_M,
+        (max_one_sided_lower - default_hi).abs() <= TOL_REL * default_hi.abs().max(1.0),
         "P8 control: `maximize x` s.t. `x >= 8mm` is unbounded above by the constraints, \
          so it runs to the default_bounds_for(Length) UPPER corner {default_hi} m \
          (solver.rs:1585-1594) — NOT to P1's 8.8mm seed. Got {max_one_sided_lower} m \
@@ -626,7 +658,7 @@ fn p8_objective_sense_has_no_effect_on_the_answer() {
 
     let min_one_sided_upper = probe_si(vec![le_40mm()], ObjectiveSense::Minimize, None);
     assert!(
-        (min_one_sided_upper - default_lo).abs() <= TOL_M,
+        (min_one_sided_upper - default_lo).abs() <= TOL_REL * default_lo.abs().max(1.0),
         "P8 control: `minimize x` s.t. `x <= 40mm` is unbounded below by the constraints, \
          so it runs to the default_bounds_for(Length) LOWER corner {default_lo} m \
          (solver.rs:1585-1594) — the mirror image of the 10 m corner, which PRD §10 \
