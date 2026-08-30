@@ -423,12 +423,37 @@ fi
 assert_exit "PRECISION: docs/notes/unregistered-example.md NOT in doc-sync-paths.txt -> fast-path-safe (exit 1)" 1 \
     run_guard_nofork requires-full-gate docs/notes/unregistered-example.md
 
-# (d) ANTI-DRIFT sweep: independently re-derive every doc-sync doc by
-# grepping tests/infra/*.sh for the $REPO_ROOT/docs/...\.md literal form each
-# doc-sync check uses to locate its target, and assert EACH one routes to the
-# full gate. This is the recurrence guard: a FUTURE doc-sync grep added on a
-# new doc that is not registered in doc-sync-paths.txt goes RED here until it
-# is registered.
+# (d) ANTI-DRIFT sweep: independently re-derive every doc a tests/infra check
+# cites by grepping tests/infra/*.sh for the $REPO_ROOT/docs/...\.md literal
+# form each such check uses to locate its target, and assert EACH one is
+# REGISTERED. This is the recurrence guard: a FUTURE doc-sync grep added on a
+# new doc that is registered in NEITHER registry goes RED here until it is.
+#
+# THE PREDICATE IS "REGISTERED IN EITHER REGISTRY", NOT "REQUIRES FULL GATE"
+# (task 6857, filed from esc-6758-2). It used to be the latter, which answers
+# only "is this doc in scripts/doc-sync-paths.txt?" — but reify registers a
+# load-bearing artifact at TWO deliberate cost points, and that tradeoff was
+# explicitly weighed and recorded by task 4955 (see the TRADEOFF BREADCRUMB in
+# scripts/doc-sync-paths.txt):
+#   - doc-sync-paths.txt      BLUNT: any edit routes the whole diff to the
+#                             full --scope all gate.
+#   - verify-pipeline-infra-tests.txt
+#                             SURGICAL: an edit SELECTS the doc's guarding
+#                             infra test at task scope, via verify.sh's
+#                             select_infra_tests().
+# A doc registered only surgically IS load-bearing, just at the cheaper point —
+# and the old predicate called that drift. The only remedy available to a task
+# without doc-sync-paths.txt in its lock charter was to stop matching the grep
+# above, which silently shrinks this population and teaches the next author the
+# same dodge. Asking `is-registered` instead removes the false positive without
+# touching the population heuristic, whose whole value is that it enrols docs by
+# TEXTUAL COINCIDENCE — i.e. without the author's cooperation.
+#
+# THE RECURRENCE GUARD IS UNCHANGED IN STRENGTH: membership in either registry
+# is always a deliberate registration, so a genuinely unregistered new doc still
+# goes RED here. And no full-gate coverage is lost by the switch — sub-block (b)
+# SELF-HEALING already asserts requires-full-gate exit 0 for EVERY
+# doc-sync-paths.txt entry, independently of this population.
 #
 # The regex is anchored to the literal "$REPO_ROOT/docs/" prefix, which
 # deliberately (i) excludes the bare-path negative fixtures used above and in
@@ -451,8 +476,8 @@ assert "NON-VACUITY: the ANTI-DRIFT sweep derived a NON-EMPTY doc population (a 
 
 while IFS= read -r _doc; do
     [ -n "$_doc" ] || continue
-    assert_exit "ANTI-DRIFT: $_doc (grepped from tests/infra/*.sh) is load-bearing (exit 0)" 0 \
-        run_guard requires-full-gate "$_doc"
+    assert_exit "ANTI-DRIFT: $_doc (grepped from tests/infra/*.sh) is registered — add it to scripts/doc-sync-paths.txt for the full gate, or scripts/verify-pipeline-infra-tests.txt for the citing-test subset (exit 0)" 0 \
+        run_guard is-registered "$_doc"
 done <<< "$_ANTI_DRIFT_DOCS"
 
 # (e) REGISTERED-IN-EITHER-REGISTRY predicate (task 6857, filed from esc-6758-2)
