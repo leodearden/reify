@@ -1459,11 +1459,20 @@ describe('Viewport FEA auto-enable determinism', () => {
 // Task 5669: the FEA toolbar channel dropdown must reflect whatever channel
 // pickDefaultScalarChannel auto-selects, even for shell FEA meshes whose
 // preferred channel ('vonMises_top') is not part of feaToolbarChannels' fixed
-// base list. Verifies Viewport widens availableChannels from two narrow
-// sources — the store's current channel (seed) and PREFERRED_FEA_CHANNELS
-// actually present in the mesh set (scan) — that the rendered <select>'s value
-// matches the store's channel (no desync), and that the widening stops there
-// (arbitrary non-FEA vertex scalars are not offered as FEA channels).
+// base list.
+//
+// The option-list POLICY itself — base list, errorIndicator extension, the
+// store's current channel (seed), the PREFERRED_FEA_CHANNELS scan, and the
+// ordering the three compose into — now lives in
+// gui/src/viewport/feaToolbarChannels.ts with pure unit coverage in
+// feaToolbarChannels.test.ts (task 5828). Three cases that asserted only that
+// content moved there, each having cost a full <Viewport> render to prove what
+// a ~10-line pure call proves.
+//
+// What remains here is what a pure helper test cannot reach: the store ↔
+// <select> WIRING and its reactivity — that select.value tracks
+// store.state.channel at mount, across a mesh-set prop change (where the
+// one-shot auto-enable leaves the channel stranded), and across a store write.
 describe('Viewport FEA channel dropdown sync (task 5669)', () => {
   it('shell mesh with {vonMises_top, vonMises_bottom} → dropdown offers both and value matches store.state.channel', () => {
     const store = createFeaModeStore();
@@ -1497,93 +1506,6 @@ describe('Viewport FEA channel dropdown sync (task 5669)', () => {
       'vonMises_top',
     ]);
     expect(select.value).toBe(store.state.channel);
-  });
-
-  it('solid mesh carrying a non-FEA scalar channel → dropdown stays the base list (widening is restricted to PREFERRED_FEA_CHANNELS)', () => {
-    const store = createFeaModeStore();
-    const meshes: Record<string, MeshData> = {
-      solid: {
-        entity_path: 'solid',
-        vertices: new Float32Array([0, 0, 0]),
-        indices: new Uint32Array([0]),
-        normals: null,
-        scalar_channels: {
-          vonMises: new Float32Array([1]),
-          displacement_magnitude: new Float32Array([2]),
-          // Non-empty, non-base, and NOT a member of PREFERRED_FEA_CHANNELS.
-          // A design may legitimately carry arbitrary vertex scalars; they are
-          // not FEA result surfaces and must not be listed as selectable "FEA"
-          // channels by the toolbar.
-          temperature: new Float32Array([300]),
-        },
-      },
-    };
-
-    render(() => <Viewport meshes={meshes} viewportId="test-5669-base" feaModeStore={store as any} />);
-
-    // 'vonMises' is present, so pickDefaultScalarChannel prefers it over the
-    // lexicographic fallback — 'temperature' is never the selected channel here,
-    // which is what makes this an actual test of the *scan* rather than the seed.
-    expect(store.state.channel).toBe('vonMises');
-
-    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
-    const options = Array.from(select.options).map((o) => o.value);
-    // Regression guard against an over-broad scan: admitting every non-empty
-    // channel would append 'temperature' here.
-    expect(options).toEqual(['vonMises', 'displacement_magnitude']);
-  });
-
-  it('mesh whose ONLY channel is non-FEA → that auto-selected channel is still offered (current-channel seed, not the scan)', () => {
-    const store = createFeaModeStore();
-    const meshes: Record<string, MeshData> = {
-      solid: {
-        entity_path: 'solid',
-        vertices: new Float32Array([0, 0, 0]),
-        indices: new Uint32Array([0]),
-        normals: null,
-        scalar_channels: {
-          temperature: new Float32Array([300]),
-        },
-      },
-    };
-
-    render(() => <Viewport meshes={meshes} viewportId="test-5669-seed" feaModeStore={store as any} />);
-
-    // pickDefaultScalarChannel's last-resort branch takes the lexicographically
-    // smallest non-empty channel, so the store lands on a name outside both the
-    // base list and PREFERRED_FEA_CHANNELS. The narrowed scan skips it, but the
-    // current-channel seed must still keep the <select> in sync with the store.
-    expect(store.state.channel).toBe('temperature');
-
-    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
-    const options = Array.from(select.options).map((o) => o.value);
-    expect(options).toEqual(['vonMises', 'displacement_magnitude', 'temperature']);
-    expect(select.value).toBe(store.state.channel);
-  });
-
-  it('mesh with a non-empty errorIndicator channel → no duplicate option (dedup vs. feaToolbarChannels\' own errorIndicator handling)', () => {
-    const store = createFeaModeStore();
-    const meshes: Record<string, MeshData> = {
-      solid: {
-        entity_path: 'solid',
-        vertices: new Float32Array([0, 0, 0]),
-        indices: new Uint32Array([0]),
-        normals: null,
-        scalar_channels: {
-          vonMises: new Float32Array([1]),
-          errorIndicator: new Float32Array([0.5]),
-        },
-      },
-    };
-
-    render(() => <Viewport meshes={meshes} viewportId="test-5669-dedup" feaModeStore={store as any} />);
-
-    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
-    const options = Array.from(select.options).map((o) => o.value);
-    // feaToolbarChannels() already appends 'errorIndicator' to its base list when
-    // present; the widening scan must not re-add it as an "extra" alongside.
-    expect(options).toEqual(['vonMises', 'displacement_magnitude', 'errorIndicator']);
-    expect(options.filter((o) => o === 'errorIndicator')).toHaveLength(1);
   });
 
   it('mesh set swapped from shell to solid-only → select.value still matches store.state.channel (one-shot auto-enable residual desync)', () => {
@@ -1629,6 +1551,51 @@ describe('Viewport FEA channel dropdown sync (task 5669)', () => {
     // 'vonMises_top' survives only via the current-channel seed — the new mesh
     // set carries no shell sub-channel at all, so the scan contributes nothing.
     expect(options).toEqual(['vonMises', 'displacement_magnitude', 'vonMises_top']);
+    expect(select.value).toBe(store.state.channel);
+  });
+
+  it('store channel switched to a channel outside the mesh set → seed sorts in with the scan extras, not appended last', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_top: new Float32Array([3]),
+          vonMises_mid: new Float32Array([2]),
+          vonMises_bottom: new Float32Array([1]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5828-order" feaModeStore={store as any} />);
+
+    expect(store.state.channel).toBe('vonMises_top');
+
+    // setChannel is unvalidated (setState('channel', c)), which is exactly what
+    // a programmatic / out-of-band selection does. This also drives the memo
+    // from a STORE write rather than a prop change — a reactive path neither
+    // case above exercises.
+    store.setChannel('temperature');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // The seed and the scan extras are ONE sorted set, so 'temperature' sorts
+    // BEFORE the shell sub-channels rather than trailing them. Delegating the
+    // whole policy to feaToolbarChannels is the only way to get this ordering:
+    // composing the (now-widened) helper with a Viewport-side seed strands the
+    // seed at the end of the list, after the scan extras the helper folded into
+    // its own base segment.
+    expect(options).toEqual([
+      'vonMises',
+      'displacement_magnitude',
+      'temperature',
+      'vonMises_bottom',
+      'vonMises_mid',
+      'vonMises_top',
+    ]);
     expect(select.value).toBe(store.state.channel);
   });
 });
