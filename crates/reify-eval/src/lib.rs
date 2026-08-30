@@ -1177,6 +1177,33 @@ pub struct Engine {
     /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
     /// bounds.
     achieved_repr_tol: BTreeMap<String, f64>,
+    /// Per-build static-relate consumption ledger — one row per ZERO-AUTO relate
+    /// scope processed by this build, in `solve_scopes` order (DIC α, task 5415).
+    ///
+    /// `build_with_geometry_output` drops `relate_solutions` after its consumption
+    /// loop, so without this field the `StaticRelateFacts` that
+    /// [`crate::relate_solve::verify_static_scope`] computes would exist only
+    /// inside that function and be unreachable from a completed
+    /// [`Engine::build`] — the surface ζ (#5420)'s `finish_check` ledger reads.
+    /// This task PRODUCES the rows; rendering them into the check summary is
+    /// #5420's leaf.
+    ///
+    /// A SATISFIED zero-auto scope raises no diagnostic, so its row here is the
+    /// ONLY evidence that its relate block was consumed. Dropping it would make
+    /// `verified: 2` and "there was no relate block" indistinguishable downstream —
+    /// the same conflation, one layer up, that the static-verification arm exists
+    /// to remove (`docs/legibility/design-invariants.md` INV-SF-3;
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.4 V3).
+    ///
+    /// AUTO-FUL scopes never appear: their `RelateSolution::static_facts` is `None`,
+    /// and a solved scope is a different ledger row from a statically-verified one.
+    ///
+    /// Reset on EVERY surface by `reset_per_build_state` (#5069, INV-BUILD-1) and
+    /// repopulated by `build_with_geometry_output`'s relate consumption loop, which
+    /// runs after that reset. Only that one build surface writes it: the other
+    /// surfaces do not run a relate-solve, so for them the field is clearing-only
+    /// and an empty ledger is the honest answer rather than a stale one.
+    relate_static_facts: Vec<(String, crate::relate_solve::StaticRelateFacts)>,
     // ── task #3428 step-6: persistent-cache plumbing ─────────────────────────
     /// On-disk persistent cache root. `None` (the default) disables the
     /// feature entirely — every existing test that does not call
