@@ -2513,7 +2513,11 @@ fn cmd_doc(args: &[String]) -> ExitCode {
             eprintln!("{}", DOC_USAGE);
             return ExitCode::FAILURE;
         }
-        if matches!(format.as_deref(), Some("json") | Some("markdown")) {
+        // Reject by exclusion, not enumeration: anything that is not the
+        // default or an explicit `html` is rejected here, so an unknown value
+        // (`--format xml`) cannot slip past into an HTML render.  The generic
+        // unknown-value arm below is unreachable in --stdlib mode.
+        if !matches!(format.as_deref(), None | Some("html")) {
             eprintln!("Error: --stdlib only supports --format html (the default)");
             eprintln!("{}", DOC_USAGE);
             return ExitCode::FAILURE;

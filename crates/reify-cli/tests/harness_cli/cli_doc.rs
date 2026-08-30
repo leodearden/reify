@@ -696,6 +696,30 @@ fn doc_unknown_flag_exits_one() {
     );
 }
 
+/// A second positional argument is a usage error: the flag walk accepts
+/// exactly one input path.  Pinned because, with usage errors and genuine
+/// failures now sharing exit 1, a regression here (returning SUCCESS, or
+/// dropping the banner) would otherwise be invisible to this suite.
+#[test]
+fn doc_extra_positional_exits_one() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, stdout, stderr) = run_doc(&[&path, &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "reify doc with two positionals must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Error: unexpected extra positional argument"),
+        "stderr should name the extra-positional guard, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
+    );
+}
+
 #[test]
 fn doc_listed_in_top_level_usage() {
     // Regression guard: invoking `reify` with no arguments prints a usage
@@ -828,5 +852,100 @@ fn doc_stdlib_rejects_json_format() {
     assert!(
         stderr.contains("Usage: reify doc"),
         "stderr must contain 'Usage: reify doc'; got: {stderr}"
+    );
+}
+
+/// `reify doc --stdlib --out <dir> <input.ri>` must exit 1: --stdlib renders
+/// the standard library, so an input positional is a usage error.
+#[test]
+fn doc_stdlib_with_input_positional_exits_one() {
+    let guard = stdlib_out_dir("with-input");
+    let dir_str = guard.path().to_string_lossy().into_owned();
+    let path = common::fixture_path("bracket.ri");
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str, &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "reify doc --stdlib with an input positional must exit 1.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Error: --stdlib does not accept an input file positional"),
+        "stderr should name the input-positional guard, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
+    );
+}
+
+/// `reify doc --stdlib --out <dir> --split` must exit 1: --stdlib already
+/// writes one page per symbol, so --split is a usage error.
+#[test]
+fn doc_stdlib_rejects_split() {
+    let guard = stdlib_out_dir("rejects-split");
+    let dir_str = guard.path().to_string_lossy().into_owned();
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str, "--split"]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "reify doc --stdlib --split must exit 1.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Error: --split is not valid with --stdlib"),
+        "stderr should name the --split/--stdlib guard, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
+    );
+}
+
+/// `reify doc --stdlib --out <dir> --compact` must exit 1: --compact is a
+/// json-only knob and --stdlib is HTML-only.
+#[test]
+fn doc_stdlib_rejects_compact() {
+    let guard = stdlib_out_dir("rejects-compact");
+    let dir_str = guard.path().to_string_lossy().into_owned();
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str, "--compact"]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "reify doc --stdlib --compact must exit 1.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Error: --compact is not valid with --stdlib"),
+        "stderr should name the --compact/--stdlib guard, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
+    );
+}
+
+/// `reify doc --stdlib --out <dir> --format xml` must exit 1.  The --stdlib
+/// format guard rejects by exclusion (anything that is not the default or
+/// `html`), not by enumerating the known-bad values; an unknown value must
+/// not fall through into a silent HTML render exiting 0.
+#[test]
+fn doc_stdlib_rejects_unknown_format() {
+    let guard = stdlib_out_dir("rejects-unknown-format");
+    let dir_str = guard.path().to_string_lossy().into_owned();
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str, "--format", "xml"]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "reify doc --stdlib --format xml must exit 1, not render html.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Error: --stdlib only supports --format html (the default)"),
+        "stderr should name the --stdlib format guard, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: reify doc"),
+        "a usage error must print the usage banner (the exit-1 discriminator), got: {stderr}"
     );
 }
