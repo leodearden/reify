@@ -54,7 +54,12 @@
 //!   `!is_fea_envelope_query("von_mises")` asserts the ABSENCE of a claim, the
 //!   exact opposite of dispatch. Flagging either would make the gate punish
 //!   test coverage. Test-gated blocks are therefore masked out before the scan
-//!   (see [`mask_cfg_test_blocks`]).
+//!   (see [`mask_cfg_test_blocks`]). "Test-gated" means `#[cfg(test)]`,
+//!   `#[cfg(any(test, …))]` and a `feature` whose name starts with `test`
+//!   (`test-support`, `test-fixtures`) — but NOT `#[cfg(not(test))]`, which is
+//!   a production-only guard and stays in the scan. That distinction is
+//!   [`attr_gates_test_code`]'s, and it is the one `reify-audit`'s
+//!   `p2_consumer_stub::is_test_cfg_attr` already makes for the same reason.
 //! - **Comments and raw strings.** Prose naming a builtin is not dispatch, and
 //!   an `r#"…"#` block in a `src/` file is embedded `.ri` fixture text, not
 //!   Rust pattern syntax.
@@ -348,8 +353,93 @@ fn strip_comments_and_collect_literals(src: &str) -> (Vec<u8>, Vec<StrLit>) {
     (bytes, lits)
 }
 
-/// Blank every `#[cfg(…test…)]`-gated item, so the scan sees production code
-/// only. See the module docs for why test code is out of remit.
+/// Does this `#[cfg(…)]` attribute gate **test-only** code — i.e. may the item
+/// it guards be masked out of the scan?
+///
+/// Mirrors the classification `crates/reify-audit/src/p2_consumer_stub.rs`'s
+/// `is_test_cfg_attr` already makes for the same reason, rather than the naive
+/// "does the token `test` appear anywhere" test this gate used to run. That
+/// test was wrong in the SILENT direction — it masked production code:
+///
+/// - `#[cfg(not(test))]` is a **production-only** guard (live in tree, e.g.
+///   `crates/reify-ir/src/sampled.rs`), so blanking it hid real production code
+///   from an I-REG-1 gate whose entire job is to see it. Negated predicates are
+///   therefore never test-gating here, tracked by paren depth so `not(...)`
+///   nested under `any`/`all` is handled too.
+/// - `#[cfg(feature = "test-support")]` / `"test-fixtures"` (live in
+///   `crates/reify-kernel-manifold`) matched only because `test-support` splits
+///   on `-` into `test` + `support`. They ARE test-support code and masking
+///   them is right, but it must be a DECISION, not an accident of tokenising —
+///   so a `feature` whose name starts with `test` is matched deliberately here,
+///   and `#[cfg(feature = "fastest")]` is not.
+///
+/// A predicate under `not(...)` returns `false` (do not mask), which is the
+/// fail-LOUD direction: the item stays in the scan, so a string-dispatch site
+/// hidden there is reported rather than silently certified clean.
+fn attr_gates_test_code(attr: &str) -> bool {
+    let Some(inner) = attr.strip_prefix("#[cfg(") else {
+        return false;
+    };
+    let b = inner.as_bytes();
+    // Paren depths at which a `not(` is still open. Non-empty ⇒ the predicate
+    // being read is negated, so it gates PRODUCTION code, not test code.
+    let mut not_depths: Vec<usize> = Vec::new();
+    let mut depth = 0usize;
+    // The last bare identifier, so a string literal can be attributed to the
+    // `feature` it belongs to (`feature = "test-support"`).
+    let mut last_ident = "";
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                while not_depths.last() == Some(&depth) {
+                    not_depths.pop();
+                }
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b'"' => {
+                let start = i + 1;
+                let mut k = start;
+                while k < b.len() && b[k] != b'"' {
+                    if b[k] == b'\\' {
+                        k += 1;
+                    }
+                    k += 1;
+                }
+                let content = &inner[start..k.min(inner.len())];
+                if last_ident == "feature" && content.starts_with("test") && not_depths.is_empty() {
+                    return true;
+                }
+                last_ident = "";
+                i = k + 1;
+            }
+            c if c.is_ascii_alphanumeric() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let ident = &inner[start..i];
+                if ident == "not" {
+                    // `not` negates everything inside the `(` that follows it.
+                    not_depths.push(depth + 1);
+                } else if ident == "test" && not_depths.is_empty() {
+                    return true;
+                }
+                last_ident = ident;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+/// Blank every test-gated item (see [`attr_gates_test_code`]), so the scan sees
+/// production code only. See the module docs for why test code is out of remit.
 ///
 /// Handles both shapes an attribute can gate: a braced item (`mod tests { … }`,
 /// `fn … { … }`) is blanked through its matching `}`, and a brace-less item
@@ -394,11 +484,7 @@ fn mask_cfg_test_blocks(code: &mut [u8], lits: &[StrLit]) {
             break;
         }
         let attr = String::from_utf8_lossy(&code[attr_start..=j]).into_owned();
-        let gates_test = attr.starts_with("#[cfg(")
-            && attr
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .any(|tok| tok == "test");
-        if !gates_test {
+        if !attr_gates_test_code(&attr) {
             i = j + 1;
             continue;
         }
@@ -1206,6 +1292,110 @@ mod tests {
         vec![("von_mises".to_string(), SiteKind::MatchArm)],
         "only the production match arm should be flagged — the comment and \
          everything under #[cfg(test)] must be excluded"
+    );
+}
+
+/// The cfg classification itself, pinned shape by shape — because the two ways
+/// it can be wrong fail in OPPOSITE directions and only one of them is loud.
+///
+/// Masking too little costs a false positive, which a reviewer sees. Masking
+/// too MUCH blanks production code out of the gate, which reports a clean
+/// workspace over a residue it never looked at — the silent failure this whole
+/// file exists to prevent. `#[cfg(not(test))]` is the case that bit: it is a
+/// production-only guard, live in tree (`crates/reify-ir/src/sampled.rs`), and
+/// the previous "does the token `test` appear anywhere" rule blanked it.
+#[test]
+fn cfg_attr_classification_masks_test_code_but_never_production_code() {
+    // Masked: genuinely test-only.
+    for attr in [
+        "#[cfg(test)]",
+        "#[cfg(any(test, feature = \"x\"))]",
+        "#[cfg(all(test, unix))]",
+        // Deliberate, not an accident of splitting "test-support" on `-`:
+        // a `test*` feature gates test-support code. Both are live in tree
+        // (reify-stdlib's `test-support`, reify-kernel-manifold's
+        // `test-fixtures`).
+        "#[cfg(feature = \"test-support\")]",
+        "#[cfg(feature=\"test-fixtures\")]",
+    ] {
+        assert!(
+            attr_gates_test_code(attr),
+            "{attr} gates test-only code and must be masked out of the scan"
+        );
+    }
+
+    // NOT masked: production code, or nothing to do with tests at all.
+    for attr in [
+        // The regression this test exists for — a production-only guard.
+        "#[cfg(not(test))]",
+        "#[cfg(all(not(test), unix))]",
+        "#[cfg(any(not(test), feature = \"y\"))]",
+        // Production when the test-support feature is OFF.
+        "#[cfg(not(feature = \"test-support\"))]",
+        // "test" only as a substring of a feature name.
+        "#[cfg(feature = \"fastest\")]",
+        // Not a `cfg` at all — `cfg_attr` adds attributes, it removes no code.
+        "#[cfg_attr(test, derive(Debug))]",
+        "#[derive(Debug)]",
+        "#[cfg(unix)]",
+    ] {
+        assert!(
+            !attr_gates_test_code(attr),
+            "{attr} does NOT gate test-only code — masking it would blank \
+             production code out of the I-REG-1 scan, which is the silent \
+             failure mode: a clean report over a residue never looked at"
+        );
+    }
+}
+
+/// The `#[cfg(not(test))]` hole, end to end rather than at the predicate:
+/// a dispatch site under a production-only guard must survive masking and be
+/// FOUND, exactly as if the attribute were not there.
+#[test]
+fn production_only_cfg_not_test_items_stay_in_the_scan() {
+    let src = r###"
+#[cfg(not(test))]
+fn production_dispatch(name: &str) -> u8 {
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+fn only_for_tests(name: &str) -> u8 {
+    match name {
+        "max_shear" => 1,
+        _ => 0,
+    }
+}
+"###;
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+
+    let names: BTreeSet<String> = ["von_mises", "max_shear"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    let found: Vec<(String, SiteKind)> = lits
+        .iter()
+        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
+        .filter_map(|l| {
+            if is_match_arm(&code, &lit_end_at, l.end) {
+                Some((l.content.clone(), SiteKind::MatchArm))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        found,
+        vec![("von_mises".to_string(), SiteKind::MatchArm)],
+        "the `#[cfg(not(test))]` arm is PRODUCTION code and must be flagged; \
+         only the `#[cfg(test)]` arm may be masked"
     );
 }
 
