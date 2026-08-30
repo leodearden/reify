@@ -197,3 +197,74 @@ impl Completeness {
         self.is_exhaustive() && solution_count == 1
     }
 }
+
+/// A solution set paired with the verdict on how much of it was established
+/// (PRD §3.1).
+///
+/// This is the carrier that makes invariants C1 and C4 mechanical rather than
+/// advisory: the only route to a *uniqueness* claim is [`Self::unique`], and the
+/// only route to a *total* is [`Self::proven_count`], which returns `None`
+/// precisely when the total was not proven.
+///
+/// Not `PartialEq`, because [`crate::ranked::RankedCandidate`] is not (it holds
+/// `f64` scores); compare the [`Self::completeness`] field directly when a test
+/// needs verdict equality.
+#[derive(Debug, Clone)]
+pub struct SolutionSet {
+    /// The solutions the producer actually found.
+    ///
+    /// This is "what I found", not "what exists" — reading a total off this
+    /// length is the C4 violation. Use [`Self::proven_count`] for a total.
+    pub solutions: Vec<crate::ranked::RankedCandidate>,
+    /// How much of the solution set the producer established.
+    ///
+    /// A well-formed [`Completeness::Refuted`] set carries an **empty**
+    /// `solutions`: a proof that no solution exists in the searched domain is
+    /// contradicted by holding one. [`Self::proven_count`] deliberately reports
+    /// `Some(0)` for `Refuted` from the *verdict*, so a producer that violates
+    /// this is visible in the mismatch against `solutions.len()` rather than
+    /// silently masked.
+    pub completeness: Completeness,
+}
+
+impl SolutionSet {
+    /// **Invariant C1** — whether this set is a uniqueness claim.
+    ///
+    /// Delegates to [`Completeness::derived_unique`] with this set's own length.
+    /// It deliberately does **not** re-derive the rule: C1 has exactly one
+    /// implementation site, and a second copy here is how the two would drift.
+    pub fn unique(&self) -> bool {
+        self.completeness.derived_unique(self.solutions.len())
+    }
+
+    /// **Invariant C4 — no unproven count.** The number of solutions that
+    /// **exist**, or `None` when that was never established.
+    ///
+    /// - [`Completeness::Exhaustive`] → `Some(solutions.len())`: the search covered
+    ///   the domain, so what was found is what exists.
+    /// - [`Completeness::Refuted`] → `Some(0)`: proven empty.
+    /// - [`Completeness::Partial`] → `None`: more may exist and how many is unknown.
+    ///
+    /// This is the **only sanctioned route to a solution TOTAL**. Returning `None`
+    /// for `Partial` is what makes C4 mechanical instead of advisory: a consumer
+    /// that wants to print "there are N solutions" is forced to handle the
+    /// not-established case, so no user-facing string can imply a total the
+    /// producer never proved.
+    ///
+    /// `solutions.len()` remains available as "how many were **found**", which C4
+    /// explicitly permits — a `Partial` verdict may report what the search
+    /// produced. The two are different questions and this method answers only the
+    /// second.
+    ///
+    /// Note the `Refuted` arm reads the verdict, not the vector: see the
+    /// [`Self::completeness`] field docs for why a well-formed `Refuted` carries an
+    /// empty `solutions` and why that requirement is stated rather than enforced by
+    /// silently returning `solutions.len()`.
+    pub fn proven_count(&self) -> Option<usize> {
+        match self.completeness {
+            Completeness::Exhaustive => Some(self.solutions.len()),
+            Completeness::Refuted { .. } => Some(0),
+            Completeness::Partial { .. } => None,
+        }
+    }
+}
