@@ -13,7 +13,7 @@
 // u-major grid of `point3(...)` poles (never bare `[x,y,z]` literals), with
 // nested per-row weights; a runnable, correctly-shaped probe lives at
 // tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri.  It is not the
-// subject here only because its numbers are tracked separately (see below) —
+// subject here only because its numbers are calibrated separately (see below) —
 // not because it fails to realize.
 //
 // Full mechanism history — including the superseded 2026-08-10
