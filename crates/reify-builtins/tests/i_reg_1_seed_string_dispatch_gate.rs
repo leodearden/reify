@@ -811,3 +811,195 @@ fn dispatch(name: &str, args: &[Value]) -> Value {
          must all be recognised"
     );
 }
+
+// ── the one-hop forwarder rule (step-22/23) ─────────────────────────────────
+
+/// A production source in the shape `crates/reify-expr/src/analysis.rs` has:
+/// one helper that launders a `&str` into `eval_builtin`, and two that take a
+/// seed name purely as a diagnostic label. The gate must tell them apart —
+/// flagging all four would inflate the ledger with entries that name no
+/// dispatch at all, and flagging none certifies a residue it cannot see.
+///
+/// Synthetic, deliberately: like
+/// [`cfg_test_blocks_and_comments_are_excluded_from_the_scan`], this pins the
+/// RULE against hand-written text, so it cannot rot when the tree changes.
+const FORWARDER_FIXTURE: &str = r###"
+fn wrap_tensor_field(field_val: &Value, op: &str, kind: FieldSourceKind) -> Value {
+    eprintln!("[reify-expr] {}: not a tensor field", op);
+    Value::Undef
+}
+
+fn validate_tensor_field(field_val: &Value, op: &str) -> Option<Triple> {
+    eprintln!("[reify-expr] {}: expected a Matrix3x3 field", op);
+    None
+}
+
+fn sample_unary_analysis_at_point(
+    inner_lambda: &Value,
+    point: &Value,
+    ctx: &EvalContext,
+    builtin_name: &str,
+) -> Value {
+    let tensor = apply_lambda_with_point_unpacking(inner_lambda, point, ctx);
+    if tensor.is_undef() {
+        return Value::Undef;
+    }
+    reify_stdlib::eval_builtin(builtin_name, &[tensor])
+}
+
+pub(crate) fn compute_von_mises(field_val: &Value) -> Value {
+    wrap_tensor_field(field_val, "von_mises", FieldSourceKind::VonMises)
+}
+
+pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
+    let triple = validate_tensor_field(field_val, "principal_stresses")?;
+    wrap(triple)
+}
+
+pub(crate) fn sample_von_mises_at_point(inner: &Value, point: &Value, ctx: &EvalContext) -> Value {
+    sample_unary_analysis_at_point(inner, point, ctx, "von_mises")
+}
+
+pub(crate) fn sample_max_shear_at_point(inner: &Value, point: &Value, ctx: &EvalContext) -> Value {
+    sample_unary_analysis_at_point(inner, point, ctx, "max_shear")
+}
+"###;
+
+fn fixture_names() -> BTreeSet<String> {
+    [
+        "von_mises",
+        "max_shear",
+        "principal_stresses",
+        "safety_factor",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+/// (a) POSITIVE — a fn with a `&str` parameter whose body calls
+/// `eval_builtin(<that same parameter>, …)` is a FORWARDER, and a seed-name
+/// literal passed at that parameter's position is a violation.
+///
+/// (b) NEGATIVE, load-bearing — `wrap_tensor_field`/`validate_tensor_field`
+/// take a `&str` they never pass to `eval_builtin`, so they are NOT
+/// forwarders and their literal call sites are NOT flagged. A naive "any
+/// `&str` param" rule would flag all four.
+#[test]
+fn only_a_str_param_that_reaches_eval_builtin_makes_a_forwarder() {
+    let found = find_forwarders_in(FORWARDER_FIXTURE);
+    assert_eq!(
+        found,
+        vec![Forwarder {
+            name: "sample_unary_analysis_at_point".to_string(),
+            param: 3,
+            param_name: "builtin_name".to_string(),
+        }],
+        "exactly one fn in the fixture launders a `&str` into eval_builtin; \
+         `wrap_tensor_field`/`validate_tensor_field` take a `&str` label they \
+         never dispatch on and must not be treated as forwarders"
+    );
+}
+
+/// The classification consequence of (a) + (b): the two forwarded call sites
+/// are flagged, the two label call sites are not.
+#[test]
+fn forwarded_seed_names_are_flagged_and_label_arguments_are_not() {
+    let forwarders = find_forwarders_in(FORWARDER_FIXTURE);
+    let sites = classify_text(
+        "fixture.rs",
+        FORWARDER_FIXTURE,
+        &forwarders,
+        &fixture_names(),
+    );
+
+    let got: Vec<(String, SiteKind)> = sites
+        .iter()
+        .map(|s| (s.name.clone(), s.kind))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("max_shear".to_string(), SiteKind::ForwardedEvalCall),
+            ("von_mises".to_string(), SiteKind::ForwardedEvalCall),
+        ],
+        "only the literals at the forwarder's laundered parameter position \
+         are dispatch; `wrap_tensor_field(field_val, \"von_mises\", …)` and \
+         `validate_tensor_field(field_val, \"principal_stresses\")` pass a \
+         diagnostic label and must stay unflagged.\nsites: {sites:#?}"
+    );
+}
+
+/// (c) The forwarder's OWN `eval_builtin(builtin_name, …)` line is not itself
+/// a site: its first argument is an identifier, not a literal. Pinned
+/// explicitly so a future scanner cannot start double-counting the hop it
+/// already counts at the call site.
+#[test]
+fn the_forwarders_own_eval_builtin_line_is_not_a_site() {
+    let forwarders = find_forwarders_in(FORWARDER_FIXTURE);
+    let sites = classify_text(
+        "fixture.rs",
+        FORWARDER_FIXTURE,
+        &forwarders,
+        &fixture_names(),
+    );
+
+    let hop_line = FORWARDER_FIXTURE
+        .lines()
+        .position(|l| l.contains("eval_builtin(builtin_name"))
+        .map(|i| i + 1)
+        .expect("fixture must contain the laundered eval_builtin call");
+
+    assert!(
+        sites.iter().all(|s| s.line != hop_line),
+        "the forwarder's own eval_builtin call takes an identifier, so it \
+         must produce no site; the string is counted once, at the call site \
+         that supplies it.\nsites: {sites:#?}"
+    );
+}
+
+/// (d) The forwarder set must be DERIVED, never a hand-maintained allowlist.
+/// Sweeps the real tree and re-verifies every fn the scan treats as a
+/// forwarder with an INDEPENDENT check — a whitespace-insensitive substring
+/// search for `eval_builtin(<param>` — so a scanner that started inventing
+/// forwarders fails here rather than silently inflating the ledger.
+#[test]
+fn every_discovered_forwarder_really_forwards_to_eval_builtin() {
+    let root = workspace_root();
+    let mut unverified: Vec<String> = Vec::new();
+
+    for path in production_sources(&root) {
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let forwarders = find_forwarders_in(&src);
+        if forwarders.is_empty() {
+            continue;
+        }
+        let squashed: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for f in forwarders {
+            let comma = format!("eval_builtin({},", f.param_name);
+            let only = format!("eval_builtin({})", f.param_name);
+            if !squashed.contains(&comma) && !squashed.contains(&only) {
+                unverified.push(format!(
+                    "  {}: fn {} (param #{} `{}`) is treated as a forwarder, \
+                     but the file contains no `eval_builtin({}…)` call",
+                    rel, f.name, f.param, f.param_name, f.param_name
+                ));
+            }
+        }
+    }
+
+    assert!(
+        unverified.is_empty(),
+        "the forwarder set must be derived from the source, not declared:\n{}",
+        unverified.join("\n")
+    );
+}
