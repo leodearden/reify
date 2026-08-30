@@ -672,7 +672,13 @@ pub(crate) fn check_relation_arg_types(
 /// with this arm its unsupported branch is unreachable from `.ri`.
 ///
 /// Gradualism (PRD decision-6): a `Type::Error` (poison) or `Type::TypeParam`
-/// (unresolved) operand passes silently, matching the other policing layers.
+/// (unresolved) OPERAND (slots 0/1) passes silently, matching the other
+/// policing layers. The trailing RADIUS slots additionally skip
+/// `Type::ScalarParam` (known-scalar, unresolved dimension) — a strictly wider
+/// set than the operand-pair guard, because a radius is a unit check (family
+/// already known to be scalar) while an operand is a datum-kind check (a
+/// scalar is never a legitimate datum); see the comment at the operand-pair
+/// guard below.
 fn check_tangent_operands(
     compiled_args: &[CompiledExpr],
     call_span: SourceSpan,
@@ -695,6 +701,14 @@ fn check_tangent_operands(
 
     // Gradualism: an already-poisoned or unresolved operand is skipped silently
     // (anti-cascade — the resolver has already diagnosed it).
+    //
+    // Deliberately narrower than the radius-slot skip-set below: this set does
+    // NOT include `Type::ScalarParam`. These slots feed `tangent_combo`, which
+    // classifies Axis/Plane/Point datum pairs — a scalar is never a legitimate
+    // operand here, so adding `ScalarParam` would suppress a REAL
+    // `TangentOperandsUnsupported`. Do not "fix" this asymmetry to match the
+    // radius loop; the two slots police different questions (datum kind vs.
+    // physical dimension).
     if matches!(ta, Type::Error | Type::TypeParam(_))
         || matches!(tb, Type::Error | Type::TypeParam(_))
     {
@@ -738,8 +752,12 @@ fn check_tangent_operands(
     // `tangent(a, b, 5mm, 30deg)` through.
     for radius in compiled_args.iter().skip(2) {
         match &radius.result_type {
-            // Gradualism: poison / unresolved pass silently.
-            Type::Error | Type::TypeParam(_) => {}
+            // Gradualism: poison / unresolved pass silently. `ScalarParam` is
+            // known-scalar-but-unresolved-dimension (dimension pending
+            // instantiation) — same bucket as the metric-slot arm in
+            // `check_relation_arg_types` above, not to be confused with the
+            // narrower operand-pair guard earlier in this function.
+            Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
             Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => {}
             other => emit_unit_mismatch("tangent", "Length", other, call_span, diagnostics),
         }
