@@ -1089,19 +1089,38 @@ fn static_verdict(
     }
 }
 
-/// Run the per-scope relate-solve for every scope in `module` that has at least
-/// one `at auto` sub AND at least one relation (ζ step-18 — the build-pass entry).
+/// Process every scope in `module` that declares at least one relation (ζ step-18 —
+/// the build-pass entry).
 ///
-/// For each qualifying scope this collects ([`collect_relate_scope`]) and runs the
-/// full partition → solve → verify pipeline ([`solve_relate_scope`]) over its
-/// realized operand datums; it returns one `(scope_name, RelateSolution)` per solved
-/// scope so the build pass can write each solved Frame back into the value map (keyed
-/// by [`auto_pose_cell`]) and surface the verification diagnostics (an `Error` fails
-/// the build).
+/// Each such scope is collected ([`collect_relate_scope`]) and then dispatched on
+/// whether it has anything to SOLVE for:
 ///
-/// Scopes with no `at auto` sub OR no relation are skipped before any realization
-/// — nothing to solve, and the skip keeps a kernel sub-build off the hot path for
-/// the overwhelmingly common non-relate scope.
+/// * **auto-ful** (≥1 `at auto` sub) → the full partition → solve → verify pipeline
+///   ([`solve_relate_scope`]), which determines each auto sub's Frame; or
+/// * **zero-auto** (every sub fixed) → static verification
+///   ([`verify_static_scope`]), which determines nothing and renders a verdict on
+///   the datums as they already sit.
+///
+/// One `(scope_name, RelateSolution)` is returned per processed scope, so the build
+/// pass can write each solved Frame back into the value map (keyed by
+/// [`auto_pose_cell`]) and surface the diagnostics (an `Error` fails the build). A
+/// zero-auto solution carries empty `poses`, so the consumption loop skips the
+/// writeback and forwards only the diagnostics — no caller change was needed to
+/// surface this arm.
+///
+/// # Only a scope with NO relations is skipped
+///
+/// This filter used to also require a non-empty auto set, which meant a `relate { }`
+/// block over fixed subs was dropped before any realization and never checked at
+/// all. That made a geometrically FALSE relate block a total silent no-op — `reify
+/// eval` said nothing and `reify check` printed "All constraints satisfied." A
+/// declared intent was neither consumed nor its non-consumption reported, which
+/// `docs/legibility/design-invariants.md` INV-SF-3 forbids (fixed by task #5415;
+/// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 1, §4.4).
+///
+/// Skipping a scope with no relations at all is kept, and still does the work the
+/// old filter was really there for: it keeps the kernel sub-build off the hot path
+/// for the overwhelmingly common non-relate scope.
 ///
 /// **One shared realization build.** Rather than clone + rebuild the module once per
 /// scope, the operand structures of ALL qualifying scopes are realized together in a
@@ -1112,21 +1131,25 @@ fn static_verdict(
 ///
 /// **Single-level recursion.** That sub-build realizes each referenced structure
 /// through `engine`. ζ's grounding model keeps those leaf structures free of
-/// `at auto` / relations, so the sub-build's own `solve_scopes` finds nothing and
-/// does not recurse further. The caller MUST invoke this BEFORE the outer build's
-/// own state resets so the transient sub-build state is re-established by the main
-/// `check()` that follows.
+/// relations, so the sub-build's own `solve_scopes` finds nothing and does not
+/// recurse further. Widening the filter to zero-auto scopes does not change that:
+/// the criterion was always "no relations", and a leaf structure that declared one
+/// would already have recursed under the old filter if it also had an auto sub. The
+/// caller MUST invoke this BEFORE the outer build's own state resets so the
+/// transient sub-build state is re-established by the main `check()` that follows.
 pub fn solve_scopes(
     module: &CompiledModule,
     engine: &mut Engine,
 ) -> Vec<(String, RelateSolution)> {
-    // Collect every qualifying scope (≥1 `at auto` sub AND ≥1 relation); scopes with
-    // neither are skipped before any realization — nothing to solve.
+    // Collect every scope that declares a relation. A scope with NO relations is
+    // skipped before any realization — there is nothing to solve and nothing to
+    // verify. A scope WITH relations is always processed, even with zero auto subs:
+    // dropping those was the silent no-op INV-SF-3 forbids (#5415).
     let scopes: Vec<(String, RelateScope)> = module
         .templates
         .iter()
         .map(|t| (t.name.clone(), collect_relate_scope(t)))
-        .filter(|(_, s)| !s.auto_unknowns.is_empty() && !s.relations.is_empty())
+        .filter(|(_, s)| !s.relations.is_empty())
         .collect();
     if scopes.is_empty() {
         return Vec::new();
@@ -1141,13 +1164,21 @@ pub fn solve_scopes(
     let all_refs: Vec<OperandRef> = scope_refs.iter().flatten().cloned().collect();
     let values = realize_structures(&all_refs, module, engine);
 
-    // Solve each scope against the shared realized datums.
+    // Process each scope against the shared realized datums. Zero-auto scopes join
+    // the SAME union sub-build rather than getting one of their own — which is what
+    // PRD §3 decision 1 / §4.4 require, and why the arm costs no extra kernel work.
     scopes
         .iter()
         .zip(scope_refs.iter())
         .map(|((name, scope), refs)| {
             let realized = resolve_operands(refs, &values);
-            (name.clone(), solve_relate_scope(scope, &realized))
+            let solution = if scope.auto_unknowns.is_empty() {
+                // Nothing to determine — render a verdict on the fixed placements.
+                verify_static_scope(scope, &realized)
+            } else {
+                solve_relate_scope(scope, &realized)
+            };
+            (name.clone(), solution)
         })
         .collect()
 }
