@@ -1006,6 +1006,126 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        // ── Task 5097 δ: the five `reify_*` AI write tools ──
+        //
+        // These carry the reify-mcp tool identities
+        // (`crates/reify-mcp/src/tools/write.rs`) onto the reify-debug
+        // surface the GUI's Claude sidecar actually reaches. Schemas mirror
+        // that registry — same property names, same `required` lists — so an
+        // AI client that learned a tool there can call it here unchanged. The
+        // one deliberate divergence is `reify_set_parameter`'s `value`, whose
+        // contract on THIS surface is a unit-bearing literal (§6.1 / §12 Q1).
+        //
+        // Each name has a named `dispatch_tool` arm, and every engine
+        // mutation routes through `write_on_engine_and_refresh_baseline`.
+        // Adding one here also requires: the dispatch arm, the
+        // `PURE_ENGINE_SIDE` entry in `gui/src/__tests__/debugParity.test.ts`,
+        // and the `KNOWN_DEBUG_TOOL_NAMES` entry in
+        // `gui/test/visual/assertions.ts` — see docs/debug-mcp-contract.md §1.
+        ToolDef {
+            name: "reify_set_parameter",
+            description: "Set a parameter's value by CELL ID, rewriting the parameter's default \
+                          literal in the `.ri` SOURCE ON DISK (the user's canonical document), \
+                          then recompiling. This is the durable counterpart of dragging the \
+                          property-panel slider, which only overrides engine state ephemerally. \
+                          Only the default literal's own span is rewritten — comments, \
+                          formatting and every other declaration are left byte-identical. \
+                          Returns { success, new_value, unit, diagnostics }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cell_id": {
+                        "type": "string",
+                        "description": "The value cell ID to set, e.g. 'Part.width'."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The new value as a unit-bearing literal — the same \
+spelling you would type in the source, e.g. '120mm', '0.5m', '45deg'. On a DIMENSIONED cell the \
+unit suffix is REQUIRED and is parsed exactly as the property-panel edit box parses it; a bare \
+number is refused rather than silently read as an SI magnitude. The value WRITTEN BACK preserves \
+the replaced literal's unit, so editing a cell declared as '80mm' with '0.5m' stores it in \
+millimetres. Dimensionless cells take a bare number. Call reify_get_parameters or engine_state to \
+learn a cell's dimension before choosing a unit."
+                    }
+                },
+                "required": ["cell_id", "value"]
+            }),
+        },
+        ToolDef {
+            name: "reify_update_source",
+            description: "Replace a file's source with new content IN MEMORY and re-evaluate. \
+                          This does NOT write disk — it is the live-buffer edit, for trying a \
+                          whole-file rewrite and reading back its diagnostics. Use your native \
+                          file-editing tools (and let the filesystem watcher re-fire) for a \
+                          durable structural edit, or reify_save_file to commit the in-memory \
+                          buffer. Returns { success, diagnostics_count, diagnostics } filtered \
+                          to the named file.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file to update."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The new source code content."
+                    }
+                },
+                "required": ["file_path", "content"]
+            }),
+        },
+        ToolDef {
+            name: "reify_open_file",
+            description: "Open a .ri file from disk into the editor and engine. The reify-mcp \
+                          name for the debug-native `open_file` tool — ONE funnel under two \
+                          names, so either spelling (and either param name, `file_path` or \
+                          `path`) reaches the same implementation.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the .ri file to open."
+                    }
+                },
+                "required": ["file_path"]
+            }),
+        },
+        ToolDef {
+            name: "reify_save_file",
+            description: "Write the session's current in-memory source to disk. Returns \
+                          { success: true }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to save to. If omitted, saves the active file."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "reify_export",
+            description: "Export the realized geometry to a file. Returns \
+                          { success: true, path }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "format": {
+                        "type": "string",
+                        "description": "Export format: 'step' (or 'stp') or 'stl'."
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Path to write the exported file."
+                    }
+                },
+                "required": ["format", "output_path"]
+            }),
+        },
     ]
 }
 
@@ -1181,12 +1301,22 @@ async fn dispatch_tool(
         "engine_state" => handle_engine_state(state).await,
         "demand_dispatch" => handle_demand_dispatch(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
-        "open_file" => handle_open_file(state, params).await,
+        // ONE funnel, two advertised names: the debug-native `open_file` and
+        // the reify-mcp identity `reify_open_file` (task 5097 δ). The shared
+        // `open_file_path_param` accepts either spelling of the path param.
+        "open_file" | "reify_open_file" => handle_open_file(state, params).await,
         "load_fixture" => handle_load_fixture(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         "wait_for" => handle_wait_for(state, params).await,
         "wait_for_selector" => handle_wait_for_selector(state, params).await,
         "set_fea_case" => handle_set_fea_case(state, params).await,
+        // Task 5097 δ: the AI write tools. Every engine mutation below routes
+        // through `write_on_engine_and_refresh_baseline` (§6.2 invariant (a));
+        // `reify_open_file` shares the `open_file` arm above.
+        "reify_set_parameter" => handle_reify_set_parameter(state, params).await,
+        "reify_update_source" => handle_reify_update_source(state, params).await,
+        "reify_save_file" => handle_reify_save_file(state, params).await,
+        "reify_export" => handle_reify_export(state, params).await,
         _ => {
             // Frontend-mediated: delegate to DebugBridge.
             // list_console_errors falls through here — it returns instantly so
@@ -1504,11 +1634,31 @@ pub async fn open_source_into_engine_and_refresh_baseline(
     Ok(gui_state)
 }
 
-async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let raw_path = params["path"]
+/// Extract the file path for the open funnel, accepting BOTH advertised
+/// spellings: `file_path` (the reify-mcp identity, `reify_open_file`) and
+/// `path` (the debug-native identity, `open_file`).
+///
+/// `reify_open_file` and `open_file` are ONE funnel under two names, not two
+/// implementations (task 5097 δ, §6.3) — this helper is what makes that
+/// literally true at the params boundary, so neither name can drift into its
+/// own path-resolution or its own refusal string.
+///
+/// `file_path` WINS when both are present: it is the more specific spelling,
+/// and a caller that supplied it asked for it by name. A wrong-TYPE field
+/// takes the same arm as an absent one (mirroring [`reify_write_str_param`]),
+/// and the refusal keeps the debug-native `"path is required"` wording so
+/// existing `open_file` callers' error strings do not shift.
+fn open_file_path_param(params: &Value) -> Result<String, String> {
+    params["file_path"]
         .as_str()
-        .ok_or_else(|| "path is required".to_string())?;
-    open_path_into_engine(state, raw_path).await
+        .or_else(|| params["path"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "path is required".to_string())
+}
+
+async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let raw_path = open_file_path_param(&params)?;
+    open_path_into_engine(state, &raw_path).await
 }
 
 async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<Value, String> {

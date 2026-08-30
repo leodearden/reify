@@ -504,6 +504,13 @@ export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   "load_fixture",
   "set_fea_case",
   "open_file",
+  // AI write tools (task 5097 δ) — reify-mcp identities on the reify-debug
+  // surface; reify_open_file shares the open_file dispatch arm.
+  "reify_set_parameter",
+  "reify_update_source",
+  "reify_open_file",
+  "reify_save_file",
+  "reify_export",
   // Frontend-mediated tools (bridge.ts buildHandlers)
   "wait_for_idle",
   "wait_for",

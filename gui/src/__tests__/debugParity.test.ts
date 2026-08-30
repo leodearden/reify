@@ -63,9 +63,24 @@ const PURE_ENGINE_SIDE = [
   'mesh_morph_stats',
   'load_fixture',
   // set_fea_case has a named dispatch_tool arm in Rust (handle_set_fea_case)
-  // that calls session.set_active_fea_case() — no query_frontend call, so no
-  // TS handler is needed (task 3026).
+  // that calls session.set_active_fea_case() (task 3026).  It DOES push to the
+  // frontend — but under the DIFFERENT command name 'apply_gui_state', which
+  // has its own REST_ONLY handler, so no handler keyed 'set_fea_case' exists
+  // or should.  (The wording here previously read "no query_frontend call",
+  // which went stale when the apply_gui_state push landed.)
   'set_fea_case',
+  // Task 5097 δ: the five reify-mcp AI write tools.  Same asymmetry as
+  // set_fea_case — each has a named Rust dispatch_tool arm, and the frontend
+  // pushes the mutating ones make use the DIFFERENT command names
+  // 'apply_gui_state' (reify_set_parameter, reify_update_source) and
+  // 'open_file' (reify_open_file, which shares the open_file funnel outright);
+  // reify_save_file and reify_export are pure I/O and push nothing at all.  So
+  // no handler keyed by any of these five names exists or should.
+  'reify_set_parameter',
+  'reify_update_source',
+  'reify_open_file',
+  'reify_save_file',
+  'reify_export',
 ];
 
 /**
