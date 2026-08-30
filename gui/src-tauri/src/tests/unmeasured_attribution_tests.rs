@@ -180,3 +180,166 @@ fn gui_surface_gdt_conforms_indeterminate_is_attributable() {
     // (d) The remedy, OCCT-conditionally.
     assert_names_a_terminal_remedy(message);
 }
+
+/// A module carrying one `DFMRule` conformer and no `Conforms` callout.
+///
+/// Modelled on `crates/reify-cli/tests/fixtures/dfm_with_repr_within.ri`, whose
+/// `OverhangRule` is already proven to be discovered by `measure_dfm_rules`
+/// source (A) — the template-level scan — on the CLI's build surface.
+const DFM_SOURCE: &str = r#"
+import std.process
+
+structure def FDM : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 0deg
+}
+
+structure def OverhangRule : DFMRule {
+    param rule_name  : String      = "overhang-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+
+/// Step-4 / the DFM half of the task's named signal.
+///
+/// # The DFM half is SILENCE, not a bare Indeterminate
+///
+/// Recorded here rather than papered over, because it diverges from the task
+/// description's wording. A `DFMRule` is a structure conforming to the `DFMRule`
+/// trait, not a `constraint` statement, so it produces no `ConstraintCheckEntry`
+/// and there is no verdict to be Indeterminate. What happens today on a
+/// non-realizing surface is that `measure_dfm_rules` skips every spec whose
+/// `subject_handle` is `None` and returns an EMPTY `Vec` — so a GUI user sees
+/// NOTHING for a declared DFM rule, indistinguishable from "checked and clean".
+/// That silence is strictly worse than a bare Indeterminate, and it is the real
+/// DFM half of this attribution gap.
+///
+/// The assertions are split into two blocks because the first settles a premise
+/// the second depends on.
+#[test]
+fn gui_surface_dfm_rule_is_attributably_unmeasured() {
+    use reify_core::DimensionVector;
+    use reify_core::identity::ValueCellId;
+    use reify_ir::Value;
+
+    let mut session = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+    session
+        .load_from_source(DFM_SOURCE, "dfm_surface")
+        .expect("the DFM rule module must compile on the GUI surface");
+
+    // ── Block (A): DISCOVERY PREMISE ─────────────────────────────────────────
+    //
+    // `dfm_rule_spec` requires only that a `subject` field be PRESENT, not
+    // resolvable, so discovery should not need a kernel. That is the one
+    // inference in this plan not directly observed on this surface, so it is
+    // pinned rather than assumed — and pinned against the values
+    // `measure_dfm_rules` source (A) actually reads (the template's value cells
+    // out of the check's value map), not against a re-implementation of the
+    // duck-typing decision.
+    assert_eq!(
+        session.core_state_for_test().engine().realization_handles_len(),
+        0,
+        "the GUI surface must not realize — the premise of this whole test"
+    );
+
+    let check = session
+        .core_state_for_test()
+        .last_check()
+        .expect("load_from_source must populate last_check");
+    let cell = |member: &str| check.values.get_or_undef(&ValueCellId::new("OverhangRule", member));
+
+    // Recognition gate 1: a DFMSeverity `severity`.
+    assert!(
+        matches!(cell("severity"), Value::Enum { type_name, .. } if type_name == "DFMSeverity"),
+        "premise: `severity` must resolve to a DFMSeverity enum on this surface \
+         (dfm_rule_spec's first gate); got {:?}",
+        cell("severity")
+    );
+
+    // Recognition gate 2: an `applies_to` StructureInstance carrying an ANGLE
+    // `max_overhang_angle` — the field that classifies the rule as Overhang.
+    let applies_to = cell("applies_to");
+    let Value::StructureInstance(process) = applies_to else {
+        panic!(
+            "premise: `applies_to` must resolve to a StructureInstance on this \
+             surface (dfm_rule_spec's second gate); got {applies_to:?}"
+        );
+    };
+    assert!(
+        matches!(
+            process.fields.get("max_overhang_angle"),
+            Some(Value::Scalar { dimension, .. }) if *dimension == DimensionVector::ANGLE
+        ),
+        "premise: `applies_to.max_overhang_angle` must be an ANGLE scalar, which \
+         is what classifies this rule as Overhang; got {:?}",
+        process.fields.get("max_overhang_angle")
+    );
+
+    // Recognition gate 3: `subject` is PRESENT but did NOT hydrate to a live
+    // handle. Both halves matter — presence is what lets discovery succeed
+    // without a kernel, and the absence of a live handle is exactly why the
+    // rule is dropped from the measurement path today.
+    let subject = cell("subject");
+    assert!(
+        !matches!(subject, Value::Undef),
+        "premise: `subject` must be PRESENT for dfm_rule_spec to recognise the \
+         shape; got {subject:?}"
+    );
+    assert!(
+        !matches!(
+            subject,
+            Value::GeometryHandle {
+                kernel_handle: Some(_),
+                ..
+            }
+        ),
+        "premise: `subject` must NOT carry a live kernel handle on this surface \
+         — that is precisely why measure_dfm_rules drops the rule today; got {subject:?}"
+    );
+
+    // `rule_name` is the stable user-facing identity the attribution is keyed
+    // on: a DFMRule has no ConstraintNodeId to name.
+    assert!(
+        matches!(cell("rule_name"), Value::String(s) if s == "overhang-check"),
+        "premise: `rule_name` is a declared trait param and is the subject the \
+         attribution names; got {:?}",
+        cell("rule_name")
+    );
+
+    // ── Block (B): ATTRIBUTION ───────────────────────────────────────────────
+    //
+    // Counted, not `find`-ed: a rule reachable from BOTH discovery sources must
+    // be attributed once, so a double-attribution must fail here rather than
+    // pass on the first match.
+    let attributions = attribution_messages(&session);
+    assert_eq!(
+        attributions.len(),
+        1,
+        "the declared DFM rule must be attributed exactly once. Today this list \
+         is EMPTY — measure_dfm_rules skips every subject_handle: None spec and \
+         returns an empty Vec, so a GUI user sees nothing at all for a declared \
+         rule, indistinguishable from 'checked and clean'. Got {attributions:?}"
+    );
+    let message = &attributions[0];
+    assert!(
+        message.contains("overhang-check"),
+        "the attribution must name the rule by its `rule_name`; got: {message}"
+    );
+    assert!(
+        message.contains("does not measure"),
+        "`does not measure` is ζ's stable cross-kind token — the reason must \
+         name the SURFACE, not the model; got: {message}"
+    );
+    assert!(
+        message.contains("DFM"),
+        "the reason must name THIS kind, so a module carrying several unmeasured \
+         kinds does not read as one repeated sentence; got: {message}"
+    );
+    assert_names_a_terminal_remedy(message);
+}
