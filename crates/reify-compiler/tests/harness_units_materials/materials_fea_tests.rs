@@ -829,19 +829,25 @@ fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() 
 
 /// Final regression covering the std/materials/fea module's overall shape.
 /// At this point the previous tests already check each entity in detail; this
-/// test exists to lock in the module's *cardinality* — exactly two traits
-/// (`ConstitutiveLaw` marker + `ElasticMaterial`), exactly five top-level
-/// structures (one provenance record + four materials), zero error diagnostics,
-/// every material carries the `ElasticMaterial` trait bound. Adding or removing
-/// a top-level entity from `materials_fea.ri` will fail this test, which is the
+/// test exists to lock in the module's *cardinality* — exactly four traits
+/// (`ConstitutiveLaw` marker + `ElasticMaterial` + `Damped` mixin +
+/// `DampedMaterial` named intersection), exactly five top-level structures
+/// (one provenance record + four materials), zero error diagnostics, every
+/// material carries the `ElasticMaterial` trait bound. Adding or removing a
+/// top-level entity from `materials_fea.ri` will fail this test, which is the
 /// intended behaviour: any future expansion should be expressed as a deliberate
 /// update here, not silently introduced.
 ///
 /// `ConstitutiveLaw` is declared here (task γ relocated it from constitutive.ri)
 /// so that `trait ElasticMaterial : ConstitutiveLaw` is not a forward-reference
 /// (materials_fea loads before constitutive in stdlib_loader.rs — PRD §4.2 γ).
+///
+/// `Damped` and `DampedMaterial` were added by task α (#6877). They live in
+/// THIS file, not `materials_mechanical.ri` — `materials_mechanical_tests.rs`
+/// pins that module at exactly 10 traits, so a misplacement reds there while
+/// this count would still pass.
 #[test]
-fn std_materials_fea_module_summary_has_two_traits_one_provenance_struct_and_four_materials() {
+fn std_materials_fea_module_summary_has_four_traits_one_provenance_struct_and_four_materials() {
     let module = load_stdlib_module();
 
     // Zero error diagnostics is also asserted in step-1; repeat here so this
@@ -858,32 +864,31 @@ fn std_materials_fea_module_summary_has_two_traits_one_provenance_struct_and_fou
         errors
     );
 
-    // Exactly two traits: `ConstitutiveLaw` (relocated marker, task γ) and
-    // `ElasticMaterial` (dimensioned FEA trait).
+    // Exactly four traits: `ConstitutiveLaw` (relocated marker, task γ),
+    // `ElasticMaterial` (dimensioned FEA trait), and — added by task α
+    // (#6877) — the `Damped` hysteretic-loss mixin plus the `DampedMaterial`
+    // named intersection `ElasticMaterial + Damped`.
     let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         module.trait_defs.len(),
-        2,
-        "std/materials/fea should declare exactly 2 traits \
-         (ConstitutiveLaw + ElasticMaterial), got: {:?}",
+        4,
+        "std/materials/fea should declare exactly 4 traits \
+         (ConstitutiveLaw + ElasticMaterial + Damped + DampedMaterial), got: {:?}",
         trait_names
     );
-    assert!(
-        module
-            .trait_defs
-            .iter()
-            .any(|t| t.name == "ConstitutiveLaw"),
-        "std/materials/fea should contain the 'ConstitutiveLaw' marker trait, got: {:?}",
-        trait_names
-    );
-    assert!(
-        module
-            .trait_defs
-            .iter()
-            .any(|t| t.name == "ElasticMaterial"),
-        "std/materials/fea should contain the 'ElasticMaterial' trait, got: {:?}",
-        trait_names
-    );
+    for expected_trait in &[
+        "ConstitutiveLaw",
+        "ElasticMaterial",
+        "Damped",
+        "DampedMaterial",
+    ] {
+        assert!(
+            module.trait_defs.iter().any(|t| t.name == *expected_trait),
+            "std/materials/fea should contain the '{}' trait, got: {:?}",
+            expected_trait,
+            trait_names
+        );
+    }
 
     // Exactly five top-level structures — one provenance record + four
     // starter materials. Filter on `EntityKind::Structure` so future

@@ -11,6 +11,8 @@
 // Module exports:
 //   - `MaterialPropertyProvenance` — citation record (source, reference, notes)
 //   - `ElasticMaterial`            — dimensioned FEA trait
+//   - `Damped`                     — free-standing hysteretic-loss mixin (η)
+//   - `DampedMaterial`             — named intersection `ElasticMaterial + Damped`
 //   - `Steel_AISI_1045`            — medium-carbon steel (general-purpose)
 //   - `Aluminium_6061_T6`          — precipitation-hardened aerospace aluminium
 //   - `Titanium_Ti6Al4V`           — alpha-beta titanium (aerospace, biomedical)
@@ -143,6 +145,83 @@ trait ElasticMaterial : ConstitutiveLaw {
     constraint poisson_ratio < 0.5
 }
 
+
+// ── Damped mixin + DampedMaterial named intersection ─────────────────────────
+//
+// PRD reference: docs/prds/v0_6/damped-modal-bonded-heterogeneous.md
+// §Contract C1, §Resolved decisions 1-2 (leaf α, task #6877).
+
+// `Damped` carries the single hysteretic-loss input the damped-modal solve
+// reads.
+//
+//   loss_factor — structural (hysteretic) loss factor η. Dimensionless ratio
+//                 of energy dissipated per radian to peak strain energy
+//                 stored, i.e. the imaginary part of the complex modulus
+//                 E* = E(1 + iη). At (or near) a resonance the equivalent
+//                 viscous damping ratio is ζ ≈ η/2, which is the conversion
+//                 the modal solve applies per mode.
+//
+// η ≥ 0 is normative and is pinned by the constraint below rather than by
+// this comment — a negative loss factor is energy generation, not damping.
+// The bound mirrors `ElasticMaterial`'s two Poisson constraints above; both
+// inject into every conformer through the same trait-constraint pass.
+//
+// `Damped` is a FREE-STANDING mixin: it deliberately does NOT refine
+// `ConstitutiveLaw`. Loss is orthogonal to the stiffness law, so keeping the
+// mixin parentless lets it compose with future non-isotropic damped laws
+// (Orthotropic / TransverseIsotropic) instead of being welded to the
+// linear-isotropic family (PRD decision 1).
+//
+// ── NAMING HAZARD — `Damped` (here) vs `Damping` (materials_mechanical.ri) ──
+//
+// These two are unrelated, and neither supersedes nor refines the other.
+// Picking one by name alone is the mistake this note exists to prevent:
+//
+//   - `Damped` (HERE, std/materials/fea) is the CONSTITUTIVE / FEA loss
+//     input. A free-standing mixin with a single `loss_factor`, consumed by
+//     the damped-modal solve, composed into `DampedMaterial` below alongside
+//     the `ConstitutiveLaw` family.
+//   - `trait Damping : MaterialSpec { damping_ratio; loss_factor }` in
+//     `crates/reify-compiler/stdlib/materials_mechanical.ri:183` is a
+//     DATASHEET-SPEC trait in the `MaterialSpec` family — the shape a
+//     supplier datasheet populates, carrying `damping_ratio` as well. Real
+//     conformer: `examples/drivebelt_trait_bounds.ri:48`.
+//
+// The interaction is benign: a structure conforming to BOTH gets exactly one
+// `loss_factor` requirement, because `collect_all_requirements` dedups by
+// (name, kind) and both traits spell it `Real`.
+// (Reciprocal note lives above `trait Damping` in materials_mechanical.ri.)
+trait Damped {
+    param loss_factor : Real // dimensionless
+
+    // Lower bound: η >= 0. A negative loss factor would mean the material
+    // adds energy over a cycle rather than dissipating it. Undamped (η = 0)
+    // is admissible and is the degenerate case the undamped modal solve
+    // already handles.
+    constraint loss_factor >= 0
+}
+
+// `DampedMaterial` is the ergonomic named intersection for the isotropic
+// damped case — the spelling a user writes as
+// `structure def MySteel : DampedMaterial + Visual { … }` (PRD §Goal).
+//
+// The body is EMPTY on purpose. Requirements and trait constraints are
+// collected transitively through the refinement chain
+// (`collect_all_requirements`, trait_requirements.rs:152), so a conformer
+// must declare BOTH parents' params — `youngs_modulus`, `poisson_ratio`,
+// `density`, `yield_stress` from `ElasticMaterial` plus `loss_factor` from
+// `Damped` — and inherits all three trait constraints (the two Poisson
+// bounds and η >= 0). Restating any member here would duplicate a contract
+// the compiler already derives.
+//
+// Multi-refinement idiom precedent: `trait Watertight : Closed + Manifold {}`
+// in `stdlib/geometry_traits.ri:84`.
+//
+// Conformance is transitive in the other direction too: a `DampedMaterial`
+// conformer still satisfies `ElasticMaterial`, `Damped` and (via
+// `ElasticMaterial`) `ConstitutiveLaw`, so every existing consumer of those
+// bounds keeps type-checking unchanged.
+trait DampedMaterial : ElasticMaterial + Damped {}
 // ── Starter material library ─────────────────────────────────────────────────
 //
 // Each concrete material below is a top-level structure conforming to
