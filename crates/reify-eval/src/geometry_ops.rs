@@ -1589,6 +1589,99 @@ fn validate_pattern_count(
     Ok(raw as usize)
 }
 
+/// Read a GROUP of PROFILE DIMENSION slots — a rectangle's `width`/`height`, a
+/// circle's `radius`, an ellipse's `semi_major`/`semi_minor` — and require each
+/// to be POSITIVE.
+///
+/// This is [`required_length_values`] with one extra judgement layered on top,
+/// and the division of labour between the two is the whole design:
+///
+/// * [`required_length_args`], which this delegates to, already settles that
+///   every slot is a FINITE LENGTH — Contract C1's three-state mapping (task
+///   5743 routed the profile slots through it). A bare `Real`/`Int` or a
+///   wrong-dimension `Scalar` is an `Error` carrying
+///   [`reify_core::DiagnosticCode::DimensionedArgRejected`]; a NaN/±inf LENGTH
+///   `Scalar` is a `Warning`; an `Undef` slot drops the op with the distinct
+///   `unresolved (Undef)` wording. NONE of those states can reach the sign loop
+///   below, so this helper deliberately has no non-finite arm and no `Undef`
+///   arm — either one would be dead code implying the LENGTH gate had not run.
+/// * What that gate leaves open, and what this closes, is the SIGN.
+///   `circle(0mm)` and `rectangle(-30mm, 50mm)` are finite LENGTHs, so Contract
+///   C accepts them, and nothing downstream rejects them either: the mesher's
+///   `validate_boundary` only rejects a ring whose |signed area| falls below
+///   [`DEGENERATE_RING_AREA_TOLERANCE`], and `w*h == -0.0015` clears that
+///   comfortably. A negative dimension therefore produced a geometrically
+///   meaningless (clockwise, inside-out) cross-section with no diagnostic
+///   anywhere, and a zero one a degenerate face.
+///
+/// The OCCT kernel does already reject these inputs BY NAME inside
+/// `kernel.execute()` — `"rectangle_profile width must be a finite positive
+/// value"` and its siblings in `reify-kernel-occt/src/lib.rs` — so the gain
+/// here is NOT better wording. It is WHEN the rejection fires and WHAT it
+/// arrives as: there, a `GeometryError::OperationFailed` raised only once the
+/// op has been compiled and dispatched, and only on the OCCT path; here, a
+/// build-time `Diagnostic` ahead of dispatch, on every path.
+///
+/// # `PROFILE` is in the name because it is in the MESSAGE
+///
+/// Unlike its family-agnostic [`required_length_args`] /
+/// [`required_length_values`] siblings, this helper hardcodes the noun
+/// `profile` in its diagnostic ("… profile dropped: …", "profile dimensions
+/// must be > 0"). The same defect class exists for PRIMITIVE dimensions
+/// (`box`/`cylinder`/`sphere` — all likewise LENGTH-gated but sign-open), and
+/// reusing this verbatim there would emit "box profile dropped: …", a wrong
+/// noun in user-facing output. The name says `profile` so that mismatch is
+/// caught at the call site rather than in a user's console. Extending to the
+/// primitive family means lifting the noun to a parameter, not calling this
+/// as-is.
+///
+/// # The FIRST bad dimension short-circuits
+///
+/// [`required_length_args`] deliberately reads its whole group before
+/// returning, so a wholly bare gesture is diagnosed in one build. The SIGN loop
+/// deliberately does not: it returns on the first failure, giving exactly one
+/// `Warning` here plus one `Error` at the caller, per the anti-cascade contract
+/// on [`eval_named_arg`]. The reasoning that makes all-at-once right for the
+/// LENGTH gate does not carry over — a group is bare in every member because
+/// dimensionlessness is a property of how the author wrote the whole gesture,
+/// whereas a sign error is per-slot.
+///
+/// # An accepted dimension is stored exactly as an ungated one would be
+///
+/// The `Ok` arm hands back `si.map(reify_ir::Value::length)` — byte-identical
+/// to what [`required_length_values`] stores — so gating a profile for SIGN
+/// changes nothing about the IR representation of an accepted dimension, and
+/// the golden characterization snapshots are untouched.
+fn required_positive_profile_dimensions<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[reify_ir::Value; N], String> {
+    let si = required_length_args(
+        names,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    for (value, name) in si.iter().zip(names) {
+        if *value <= 0.0 {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} profile dropped: {}={} is not positive (profile dimensions must be > 0)",
+                kind_label, name, value
+            )));
+            return Err(format!("non-positive {} dimension '{}'", kind_label, name));
+        }
+    }
+    Ok(si.map(reify_ir::Value::length))
+}
+
 /// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
 /// or [`reify_ir::Value::Vector`] with exactly 3 numeric, finite components.
 ///
@@ -4799,7 +4892,7 @@ fn profile_rectangle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [width, height] = required_length_values(
+    let [width, height] = required_positive_profile_dimensions(
         ["width", "height"],
         kind,
         args,
@@ -4819,16 +4912,52 @@ fn profile_circle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // One gated slot — see `prim_sphere`.
-    Ok(reify_ir::GeometryOp::CircleProfile {
-        radius: required_length_value(
-            "radius", kind, args, values, functions, meta_map, diagnostics,
-        )?,
-    })
+    // One gated slot, so the group form is called at `N == 1` — nothing to
+    // short-circuit past, exactly as in `prim_sphere`. It is the GROUP form
+    // rather than `required_length_value` because the positive-dimension
+    // judgement lives there.
+    let [radius] = required_positive_profile_dimensions(
+        ["radius"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(reify_ir::GeometryOp::CircleProfile { radius })
 }
 
+/// Degenerate-ring tolerance, in SI square metres.
+///
+/// NOT an independently-chosen tolerance: this is the same value
+/// `validate_boundary` already applies to the sampled outer ring (and to each
+/// hole) in `reify-solver-elastic/src/mesher.rs`, on the same SI-metre
+/// coordinates. Keeping the two equal is what makes the build-time check a
+/// strict pre-image of the existing downstream gate — a ring this check accepts
+/// can still fail later for other reasons, but a ring it rejects would
+/// certainly have failed there.
+///
+/// It is a local `const` only because the mesher's copy is still an INLINE
+/// `1e-14` literal inside a private `fn`, so there is nothing to import. Its
+/// companion [`reify_solver_elastic::ring_signed_area_2d`] no longer has that
+/// problem — task 5218 promoted it to `pub` and re-exported it at the crate
+/// root, which is why the shoelace formula itself is imported here rather than
+/// copied. Lifting the threshold to a `pub const` beside it would let this
+/// declaration go the same way.
+///
+/// That equality is load-bearing, so it is asserted in code rather than only in
+/// prose: `degenerate_ring_area_tolerance_matches_mesher_gate` (this module's
+/// tests) reads the mesher source and fails if the two values diverge.
+/// Complementary but NOT a substitute — they derive their rings from this
+/// constant and so move with it — are the two boundary tests
+/// `..._area_just_below_tolerance_returns_err` /
+/// `..._area_just_above_tolerance_returns_ok`, which pin that the gate honours
+/// whatever value this holds, with the correct sense and scale.
+const DEGENERATE_RING_AREA_TOLERANCE: f64 = 1e-14;
+
 fn profile_polygon(
-    _kind: &reify_compiler::ProfileKind,
+    kind: &reify_compiler::ProfileKind,
     args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -4857,10 +4986,13 @@ fn profile_polygon(
     //   position in one build, not just the first: the pre-5661 reader
     //   short-circuited via `collect::<Option<_>>()`.
     //
-    // The label stays the literal `"polygon"`, which here happens to equal
-    // `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
-    // which renders `interp_curve`. Spelling it out keeps today's label bytes
-    // and leaves `_kind` unused, as in `curve_interp_curve`.
+    // The Contract C label stays the literal `"polygon"`, which here happens to
+    // equal `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
+    // which renders `interp_curve`. Spelling it out keeps today's label bytes.
+    // (The parameter is now bound as `kind` rather than `_kind`, because task
+    // 5664's degenerate-ring diagnostic below renders it; the literal above is
+    // deliberately NOT switched over with it, so the Contract C wording stays
+    // byte-stable independently of `Display`.)
     let vals = eval_all_args_to_values(args, values, functions, meta_map);
     let coords = accept_variadic_length_args(
         "polygon",
@@ -4870,6 +5002,37 @@ fn profile_polygon(
         diagnostics,
     )?;
     let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+    // A well-formed-arity but ZERO-AREA ring (e.g. three collinear points)
+    // clears the compiler-side arity guard and used to survive all the way to
+    // a late, opaque `Mesh2dError::DegenerateBoundary`. Catch it here instead.
+    // The check is on `abs()`, so a clockwise (negative-area) ring is fine —
+    // winding order is not this gate's business. Self-intersection is
+    // deliberately NOT detected here (an O(n²) sweep with robust predicates is
+    // materially different engineering; tracked separately as #5666).
+    //
+    // The shoelace formula is the SHARED one — `reify_solver_elastic`'s
+    // crate-root `ring_signed_area_2d`, the very function `validate_boundary`
+    // calls — not a local re-derivation, so "pre-image" is a structural fact
+    // about one function rather than a claim about two copies staying in step.
+    // (`sweep_classifier.rs` already calls it, so this adds no new dependency
+    // edge.) Only the TOLERANCE is still duplicated; see the const's doc.
+    //
+    // No separate `points.len() < 3` arity guard: `ring_signed_area_2d` returns
+    // exactly 0.0 for any ring of fewer than 3 points, and `0.0 <` the
+    // tolerance, so an under-3-point ring is caught by this same area test.
+    // Adding the arity disjunct would be dead as a distinct branch and would
+    // imply the two conditions were independent.
+    let signed_area = reify_solver_elastic::ring_signed_area_2d(&points);
+    if signed_area.abs() < DEGENERATE_RING_AREA_TOLERANCE {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{} profile dropped: {} point(s) enclose a degenerate signed area of {} \
+             (the ring must enclose a non-zero area)",
+            kind,
+            points.len(),
+            signed_area
+        )));
+        return Err(format!("degenerate (zero-area) {} profile", kind));
+    }
     Ok(reify_ir::GeometryOp::PolygonProfile { points })
 }
 
@@ -4881,7 +5044,10 @@ fn profile_ellipse(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [semi_major, semi_minor] = required_length_values(
+    // Named in semi_major-then-semi_minor order: the LENGTH gate reports every
+    // bad member, then the sign check short-circuits on the first, so two
+    // negative semi-axes yield exactly one Warning naming `semi_major`.
+    let [semi_major, semi_minor] = required_positive_profile_dimensions(
         ["semi_major", "semi_minor"],
         kind,
         args,
