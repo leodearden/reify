@@ -56,11 +56,13 @@ Harness exit codes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -160,6 +162,35 @@ def _resolve_tree_sitter_bin() -> str:
         2. "tree-sitter"                        (from PATH)
     """
     return os.environ.get("TREE_SITTER_BIN", "tree-sitter")
+
+
+def _grammar_cache_home(repo_root: str) -> str:
+    """Return a private $XDG_CACHE_HOME for this repo's grammar probes.
+
+    Step-06 replaces this derivation with the fingerprinted form; for now it is
+    the simplest thing that isolates: a stable per-repo-root directory under
+    $TMPDIR.  Stable (not per-process) so the cold reify.so compile is paid once
+    per lane rather than once per prd-capability-check.py process.
+
+    The directory is created before returning, because tree-sitter does not
+    reliably create a missing cache root and a non-existent one degrades into a
+    grammar load failure.
+    """
+    key = hashlib.sha256(os.path.abspath(repo_root).encode("utf-8")).hexdigest()[:16]
+    path = os.path.join(tempfile.gettempdir(), f"reify-ts-cache-{key}")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _grammar_probe_env(repo_root: str) -> Dict[str, str]:
+    """The ambient environment with XDG_CACHE_HOME redirected to a private dir.
+
+    Everything else is inherited verbatim — PATH, TREE_SITTER_BIN and the rest
+    of the caller's environment must still reach the probe.
+    """
+    env = dict(os.environ)
+    env["XDG_CACHE_HOME"] = _grammar_cache_home(repo_root)
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +585,21 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     generated first).  build_command() uses the same repo_root so the
     recorded fixture path and the executed path are identical.
 
+    Grammar probes ALSO run under a private XDG_CACHE_HOME (see
+    _grammar_cache_home).  `tree-sitter parse` compiles the grammar to
+    $XDG_CACHE_HOME/tree-sitter/lib/<language-name>.so — keyed by LANGUAGE NAME,
+    not by grammar path, and invalidated only on source mtime — so without the
+    override every linked worktree of this store shares ONE reify.so and a
+    patched build made in any other lane silently answers this lane's parses.
+    That is a recorded false PASS, not a hypothetical: see
+    docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2.
+
+    check and ir probes deliberately inherit the ambient environment untouched
+    (env stays None, which is exactly subprocess's inherit-the-parent default).
+    They drive the tree-sitter Rust library linked into the reify binary, never
+    the CLI cache, so overriding their environment would be blast radius on the
+    gate's two highest-volume probe kinds for no correctness gain.
+
     Any OSError from the launch — missing binary (ENOENT), not executable
     (EACCES), bad path component in the command or the cwd (ENOENT/ENOTDIR) — is
     represented as a ProbeRun carrying _BINARY_NOT_FOUND_SENTINEL and
@@ -586,8 +632,11 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     # `tree-sitter parse` can resolve the reify grammar (the grammar dir
     # contains the package.json that points tree-sitter at the grammar).
     cwd: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
     if probe.probe_kind == "grammar":
         cwd = os.path.join(repo_root, "tree-sitter-reify")
+        # ONE expression feeds both launch arms below, so they cannot drift.
+        env = _grammar_probe_env(repo_root)
 
     try:
         if timeout is None:
@@ -596,6 +645,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
                 capture_output=True,
                 text=True,
                 cwd=cwd,
+                env=env,
                 timeout=None,
             )
             return ProbeRun(
