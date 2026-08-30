@@ -344,7 +344,7 @@ fn last_commit_for_path_real_repo() {
 ///     (a) a genuine delete commit queried for its deleted path
 ///     (b) a bogus sha (`git show` exits non-zero with `fatal: bad object`)
 ///     (c) a path present in the rename commit that is not its rename SOURCE
-///         (querying the rename TARGET must not match)
+///     (querying the rename TARGET must not match)
 #[test]
 fn rename_target_for_path_real_repo() {
     let dir: TempDir = tempfile::tempdir().expect("tempdir");
