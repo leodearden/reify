@@ -21207,6 +21207,87 @@ fn apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects(
     assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ — EngineSession::apply_param_to_source_str (string-typed front
+// door for the reify-debug `reify_set_parameter` write tool)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn apply_param_to_source_str_parses_a_unit_bearing_literal() {
+    // The δ front door must be a pure PARSE in front of γ's write-back — not a
+    // second write path. Pinned by byte-equality against what the landed
+    // `apply_param_to_source(&mm(120.0))` produces on the same fixture
+    // (`apply_param_to_source_rewrites_only_the_default_span`): only the
+    // `80mm` span moves, the non-ASCII header comment and the `0.5m` default
+    // survive byte for byte.
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .apply_param_to_source_str("Part.width", "120mm")
+        .expect("apply_param_to_source_str should succeed on a unit-bearing literal");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let expected = writeback_source().replace("80mm", "120mm");
+    assert_eq!(
+        disk_text, expected,
+        "the string front door must splice exactly the span the Value-typed \
+         entry point does — only the default, never a reformat"
+    );
+
+    // eval state ≡ source, exactly as the Value-typed entry point reports it.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!((width.value.as_str(), width.unit.as_str()), ("120", "mm"));
+}
+
+#[test]
+fn apply_param_to_source_str_refuses_a_bare_number_on_a_dimensioned_cell() {
+    // The parse is the SAME dimension-aware one the property-panel slider runs
+    // (task #5757): `parse_value_string_for_cell` owns the rule and the
+    // ladder-rung suggestion, so the AI path and the slider can never disagree
+    // about what a value string denotes. Asserted on the message this front
+    // door must NOT re-author, plus the full no-mutation ledger — a refused
+    // parse must not have touched disk, source_map, compile_failure or eval
+    // state.
+    let (_dir, path, mut session) = writeback_session();
+
+    let err = session
+        .apply_param_to_source_str("Part.width", "120")
+        .expect_err("a bare number on a Length cell must be REFUSED");
+    assert!(
+        err.contains("bare number '120'"),
+        "the refusal must be the one parse_value_string_for_cell owns, got: {err}"
+    );
+    assert!(
+        err.contains("120mm"),
+        "the refusal must carry the ladder-rung suggestion (#5757), got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_source());
+}
+
+#[test]
+fn apply_param_to_source_str_rejects_an_unknown_cell() {
+    // Cell resolution precedes the parse, so an unknown cell reads as
+    // "Unknown parameter" rather than as a parse diagnostic — the same
+    // ordering `set_parameter` documents, and the taxonomy δ maps into its
+    // tool result.
+    let (_dir, path, mut session) = writeback_session();
+
+    let err = session
+        .apply_param_to_source_str("Part.nope", "1mm")
+        .expect_err("an unknown cell must be REFUSED");
+    assert!(
+        err.contains("Unknown parameter"),
+        "expected the shared unknown-cell rejection, got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_source());
+}
+
 /// Task 5212 (GUI reload wiring): every whole-file reload entry
 /// (`load_from_source` / `load_file` / `update_source`) funnels through
 /// `EngineSession::check_with_solve_slot`, which must reset the geometry kernel
