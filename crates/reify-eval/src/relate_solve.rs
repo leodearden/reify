@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame, solve_frame,
+    partition_driving_set, pose_from_frame, solve_frame, static_relation_residuals,
 };
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
@@ -517,6 +517,43 @@ pub struct RelateSolution {
     /// `Infeasible` report; step-16 refines it into a minimal conflict set). An
     /// `Error` here fails the build.
     pub diagnostics: Vec<Diagnostic>,
+    /// The per-relation consumption ledger of a ZERO-AUTO scope's static
+    /// verification (DIC α, task 5415), or `None` when this solution came from the
+    /// auto-ful solve path.
+    ///
+    /// `None` vs `Some(StaticRelateFacts { verified: 0, .. })` is a real
+    /// distinction and the reason this is an `Option`: the first means "static
+    /// verification did not run here", the second "it ran and decided nothing".
+    /// `Default` leaves it `None`, so every existing `..Default::default()` site
+    /// and the whole auto-ful path are byte-identical (invariant V1).
+    pub static_facts: Option<StaticRelateFacts>,
+}
+
+/// The consumption ledger for one zero-auto relate scope's static verification
+/// (DIC α, task 5415) — how many of its declared relations were actually decided,
+/// and how.
+///
+/// Every relation in the scope lands in exactly one bucket, so
+/// `verified + violated + unverifiable` always equals the scope's relation count.
+/// That total is the point: it is what lets ζ's declared-intent ledger (#5420)
+/// report consumption without re-deriving it, and what makes a silently-skipped
+/// relation impossible to hide — a relation that fell through every arm would show
+/// up as a missing count rather than as nothing at all
+/// (`docs/legibility/design-invariants.md` INV-SF-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StaticRelateFacts {
+    /// Relations measured and found SATISFIED within the assertion tolerance.
+    /// Reported silently — a held assertion raises no diagnostic.
+    pub verified: usize,
+    /// Relations measured and found VIOLATED beyond the assertion tolerance.
+    /// Aggregated into one [`DiagnosticCode::RelateStaticViolated`] Error.
+    pub violated: usize,
+    /// Relations whose satisfaction could not be DECIDED — no residual model, an
+    /// operand that did not realize, or an operand on a concretely-posed sub whose
+    /// placement is not composed into the local datums. Aggregated into one
+    /// [`DiagnosticCode::RelateStaticUnverifiable`] Warning. Never counted as
+    /// verified: that is the false green this arm exists to kill.
+    pub unverifiable: usize,
 }
 
 // ── Trace-to-ground / global float (η, B6) ───────────────────────────────────
@@ -839,6 +876,219 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     solution
 }
 
+// ── Zero-auto static verification (DIC α, task 5415) ─────────────────────────
+
+/// One relation's static verdict.
+enum StaticVerdict {
+    /// Measured, and satisfied within the assertion tolerance — silent.
+    Verified,
+    /// Measured, and violated. Carries the largest residual magnitude (metres) so
+    /// the aggregate can say by how much.
+    Violated(f64),
+    /// Not DECIDED. Carries the reader-facing reason, which is the whole value of
+    /// this arm: an undecided relation must say why, not fall silent.
+    Unverifiable(String),
+}
+
+/// Statically verify a relate scope that has NO `at auto` subs.
+///
+/// # Why this exists
+///
+/// A `relate { }` block whose subs are all fixed has nothing to solve for, so
+/// [`solve_scopes`] used to skip it outright. The consequence was that a
+/// geometrically FALSE relate block was a total silent no-op — `reify eval` said
+/// nothing and `reify check` printed "All constraints satisfied." A declared
+/// intent was neither consumed nor its non-consumption reported, which
+/// `docs/legibility/design-invariants.md` INV-SF-3 forbids
+/// (`docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 1).
+///
+/// Nothing moves here: there is no pose to determine, only a verdict to render on
+/// the datums as they already sit. So no solver, no partition, no Jacobian — just
+/// [`static_relation_residuals`] per relation.
+///
+/// # Every relation lands in exactly one bucket
+///
+/// Walked in SOURCE order, each relation is tried against these arms in turn, and
+/// the FIRST that matches wins:
+///
+/// 1. not a relation call ⇒ unverifiable (never dropped — a member that vanished
+///    silently would be the same class of failure as the no-op itself);
+/// 2. an operand on a sub in [`RelateScope::posed`] ⇒ unverifiable. Realized datums
+///    are each structure's LOCAL datum in its own identity frame, and a declared
+///    `at <pose>` is never composed into them, so any residual measured here would
+///    be measured at the WRONG configuration. This arm runs BEFORE the measurement
+///    precisely so a coincidentally-zero residual cannot be mistaken for a pass;
+/// 3. an operand that did not realize (`Value::Undef` / absent) ⇒ unverifiable,
+///    naming the operand;
+/// 4. an EMPTY residual row vector ⇒ unverifiable — no residual model for this
+///    relation name / operand-kind combination. Never folded into "satisfied";
+/// 5. otherwise the measured `max |row|` against
+///    [`RelateTolerance::kernel_default`]'s assertion rung: within ⇒ verified
+///    (silent), beyond ⇒ violated.
+///
+/// The counts therefore always sum to the scope's relation count, which is what
+/// makes a silently-skipped relation impossible to hide.
+///
+/// # Rendering
+///
+/// At most ONE Error and at most ONE Warning per scope, each naming its full set.
+/// Aggregation is load-bearing rather than stylistic: `dedup_diagnostics`
+/// (`crates/reify-cli/src/main.rs`) short-circuits on `code.is_some()`, so a CODED
+/// per-relation diagnostic would reach the user uncollapsed, one line per relation
+/// (the #5014 collateral-observability shape).
+///
+/// A wholly satisfied scope is SILENT. The placement-relations belt's δ leaf would
+/// have warned on every zero-auto block regardless of the verdict; it was dropped
+/// at decompose and superseded by this task (ratified 2026-07-25). Satisfied
+/// relations are counted in [`StaticRelateFacts::verified`] for ζ's ledger instead.
+///
+/// Diagnostics speak geometry — magnitudes in mm via the same [`describe_demand`] /
+/// [`describe_operands`] / [`fmt_mm`] helpers the auto-ful conflict path uses —
+/// never solver internals. [`conflict_diagnostic`] is deliberately NOT reused: it
+/// needs an auto sub and a driving/redundant partition that a zero-auto scope does
+/// not have.
+pub fn verify_static_scope(scope: &RelateScope, realized: &RealizedDatums) -> RelateSolution {
+    let tol = RelateTolerance::kernel_default();
+    let mut solution = RelateSolution::default();
+    let mut facts = StaticRelateFacts::default();
+
+    // Both lists are built by walking `scope.relations` in order, so the rendering
+    // below is deterministic without sorting anything.
+    let mut violated: Vec<String> = Vec::new();
+    let mut unverifiable: Vec<String> = Vec::new();
+
+    for rel in &scope.relations {
+        let refs = operand_refs(rel);
+        match static_verdict(rel, &refs, scope, realized, tol.assertion()) {
+            StaticVerdict::Verified => facts.verified += 1,
+            StaticVerdict::Violated(magnitude) => {
+                facts.violated += 1;
+                let demand = relation_instance(rel, realized)
+                    .as_ref()
+                    .map(describe_demand)
+                    .unwrap_or_else(|| "satisfied".to_string());
+                violated.push(format!(
+                    "`{}` requires {} {} — off by {}",
+                    relation_name(rel),
+                    describe_operands(rel),
+                    demand,
+                    fmt_mm(magnitude)
+                ));
+            }
+            StaticVerdict::Unverifiable(reason) => {
+                facts.unverifiable += 1;
+                unverifiable.push(format!(
+                    "`{}` on {} could not be checked: {reason}",
+                    relation_name(rel),
+                    describe_operands(rel)
+                ));
+            }
+        }
+    }
+
+    if !violated.is_empty() {
+        solution.diagnostics.push(
+            Diagnostic::error(format!(
+                "relate: {} not satisfied by the subs' fixed placements: {}",
+                plural_relations(violated.len()),
+                violated.join("; ")
+            ))
+            .with_code(DiagnosticCode::RelateStaticViolated),
+        );
+    }
+    if !unverifiable.is_empty() {
+        solution.diagnostics.push(
+            Diagnostic::warning(format!(
+                "relate: {} could not be statically verified: {}",
+                plural_relations(unverifiable.len()),
+                unverifiable.join("; ")
+            ))
+            .with_code(DiagnosticCode::RelateStaticUnverifiable),
+        );
+    }
+
+    // Always `Some`, including the all-verified silent case: the ledger must be able
+    // to tell "2 relations verified" from "no relate block here".
+    solution.static_facts = Some(facts);
+    solution
+}
+
+/// `"2 relations are"` / `"1 relation is"` — the shared subject phrase of both
+/// aggregates, so the two cannot drift apart in grammatical agreement.
+fn plural_relations(n: usize) -> String {
+    if n == 1 {
+        "1 relation is".to_string()
+    } else {
+        format!("{n} relations are")
+    }
+}
+
+/// The relation's name as written, or a placeholder for a member that is not a
+/// relation call (which arm 1 of [`verify_static_scope`] reports as unverifiable).
+fn relation_name(rel: &CompiledExpr) -> String {
+    match &rel.kind {
+        CompiledExprKind::FunctionCall { function, .. } => function.name.clone(),
+        _ => "<non-relation member>".to_string(),
+    }
+}
+
+/// Decide ONE relation's static verdict. See [`verify_static_scope`] for the arm
+/// ordering and why each exists; this function is that list, in that order.
+fn static_verdict(
+    rel: &CompiledExpr,
+    refs: &[(String, String)],
+    scope: &RelateScope,
+    realized: &RealizedDatums,
+    assertion_tol: f64,
+) -> StaticVerdict {
+    // 1. Not a relation call. Counted, never dropped.
+    let Some(inst) = relation_instance(rel, realized) else {
+        return StaticVerdict::Unverifiable(
+            "this relate member is not a relation call, so it has no geometric \
+             residual to measure"
+                .to_string(),
+        );
+    };
+
+    // 2. An operand on a concretely-posed sub. BEFORE the measurement, so a
+    //    coincidentally-zero residual at the wrong configuration cannot pass.
+    if let Some((sub, _)) = refs.iter().find(|(sub, _)| scope.posed.contains(sub)) {
+        return StaticVerdict::Unverifiable(format!(
+            "sub `{sub}` is placed with a concrete `at <pose>`, which is not \
+             composed into the local datums this check compares, so any verdict \
+             would be measured at the wrong configuration"
+        ));
+    }
+
+    // 3. An operand that did not realize — absent from the map, or present as
+    //    `Undef`. Both mean the same thing to a reader, and both would otherwise
+    //    reach `static_relation_residuals` as a missing datum.
+    if let Some((sub, member)) = refs
+        .iter()
+        .find(|(sub, member)| !matches!(realized.get(sub, member), Some(v) if *v != Value::Undef))
+    {
+        return StaticVerdict::Unverifiable(format!(
+            "`{sub}.{member}` did not resolve to a geometric datum"
+        ));
+    }
+
+    // 4/5. Measure. An EMPTY row vector means "no residual model", which is
+    //      UNVERIFIABLE — never folded into satisfied.
+    let rows = static_relation_residuals(&inst);
+    if rows.is_empty() {
+        return StaticVerdict::Unverifiable(format!(
+            "there is no residual model for `{}` over these operand kinds",
+            inst.name
+        ));
+    }
+    let magnitude = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    if magnitude <= assertion_tol {
+        StaticVerdict::Verified
+    } else {
+        StaticVerdict::Violated(magnitude)
+    }
+}
+
 /// Run the per-scope relate-solve for every scope in `module` that has at least
 /// one `at auto` sub AND at least one relation (ζ step-18 — the build-pass entry).
 ///
@@ -920,35 +1170,47 @@ fn build_relation_instances(
     scope
         .relations
         .iter()
-        .filter_map(|rel| {
-            let CompiledExprKind::FunctionCall { function, args } = &rel.kind else {
-                return None;
-            };
-            let mut operands = Vec::new();
-            for arg in args {
-                if let Some(opref) = decode_operand(arg) {
-                    let datum = realized
-                        .get(&opref.sub, &opref.member)
-                        .cloned()
-                        .unwrap_or(Value::Undef);
-                    operands.push(Operand {
-                        sub: Some(opref.sub),
-                        datum,
-                    });
-                } else if let Some(scalar) = scalar_operand(arg) {
-                    operands.push(Operand {
-                        sub: None,
-                        datum: scalar,
-                    });
-                }
-            }
-            Some(RelationInstance {
-                name: function.name.clone(),
-                operands,
-                nominal_delta_dof: None,
-            })
-        })
+        .filter_map(|rel| relation_instance(rel, realized))
         .collect()
+}
+
+/// Build ONE relation's [`RelationInstance`] from its compiled expr + the realized
+/// datums, or `None` when the expr is not a relation call.
+///
+/// Extracted from [`build_relation_instances`] (behaviour-preserving) so the
+/// zero-auto static arm can walk `scope.relations` with `enumerate()` and keep each
+/// entry's SOURCE index. That matters: `build_relation_instances` `filter_map`s
+/// non-`FunctionCall` members away, so its output can be SHORTER than
+/// `scope.relations` and the two are not index-aligned in general. The auto-ful path
+/// indexes both by the same `i`; that is a latent bug there, filed separately, and
+/// deliberately not changed here.
+fn relation_instance(rel: &CompiledExpr, realized: &RealizedDatums) -> Option<RelationInstance> {
+    let CompiledExprKind::FunctionCall { function, args } = &rel.kind else {
+        return None;
+    };
+    let mut operands = Vec::new();
+    for arg in args {
+        if let Some(opref) = decode_operand(arg) {
+            let datum = realized
+                .get(&opref.sub, &opref.member)
+                .cloned()
+                .unwrap_or(Value::Undef);
+            operands.push(Operand {
+                sub: Some(opref.sub),
+                datum,
+            });
+        } else if let Some(scalar) = scalar_operand(arg) {
+            operands.push(Operand {
+                sub: None,
+                datum: scalar,
+            });
+        }
+    }
+    Some(RelationInstance {
+        name: function.name.clone(),
+        operands,
+        nominal_delta_dof: None,
+    })
 }
 
 /// The literal scalar magnitude an operand expr denotes (the trailing metric of a
