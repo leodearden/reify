@@ -2149,4 +2149,33 @@ assert "10: violation emitted as a structured FAIL line (undeclared-member, memb
 assert "10: the DECLARED member is not named in any FAIL line (precision)" \
     bash -c '! grep -q "member=harness_synth/declared.rs" "$1"' _ "$_s10_bad_out"
 
+# --- must-not-fire: a member declared TRANSITIVELY, from a nested mod.rs
+# inside the module dir rather than from the root itself. This is the case
+# that rules out a root-only, single-hop declared-members walk: it must not
+# contradict harness_layout_unit_lines, which explicitly counts members "at
+# ANY depth" (its own Section 1c fixture already builds
+# harness_nested/deep/b.rs). rustc resolves a bare `mod` declared in a
+# `mod.rs` against THAT FILE'S OWN directory, so `sub/mod.rs`'s `mod deep;`
+# reaches `sub/deep.rs` without the root ever naming it directly. ---
+_s10_nested_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_nested_dir")
+mkdir -p "$_s10_nested_dir/harness_synth/sub"
+{
+    printf '#[path = "harness_synth/sub/mod.rs"]\n'
+    printf 'mod sub;\n'
+} > "$_s10_nested_dir/harness_synth.rs"
+printf 'mod deep;\n' > "$_s10_nested_dir/harness_synth/sub/mod.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_nested_dir/harness_synth/sub/deep.rs"
+
+_s10_nested_out="$(mktemp)"; _TMPDIRS+=("$_s10_nested_out")
+_s10_nested_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_nested_dir" \
+    > "$_s10_nested_out" 2>/dev/null || _s10_nested_rc=$?
+
+assert "10: a member declared transitively via a nested mod.rs is NOT flagged (rc 0)" \
+    test "$_s10_nested_rc" -eq 0
+assert "10: transitive-member scan emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate$' "$_s10_nested_out"
+assert "10: transitive-member scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_nested_out"
+
 test_summary
