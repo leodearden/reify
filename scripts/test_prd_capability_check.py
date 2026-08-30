@@ -1296,6 +1296,206 @@ class TestGrammarCacheHome(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# task-5925 (RED): a cache-dir setup failure must be REPRESENTED, not raised
+# ---------------------------------------------------------------------------
+
+class TestGrammarCacheSetupFailure(unittest.TestCase):
+    """Pins that building the private grammar cache cannot raise out of run_probe.
+
+    THE CONTRACT BEING DEFENDED is run_probe()'s own: "Represent rather than
+    propagate: callers run this at import time in the test harness, where a raise
+    costs the whole suite instead of one skip."  _grammar_fingerprint() was
+    written to uphold the same rule ("Never raises").  But the env is built at
+    ``env = _grammar_probe_env(repo_root)`` OUTSIDE run_probe()'s ``try:``, so
+    the os.makedirs() inside _grammar_cache_home() escapes both arms.
+
+    NOT merely an operator typo.  /tmp is world-writable, so any other uid on
+    this host can pre-create ``reify-ts-cache-<key>`` as a plain file and wedge
+    this lane's gate — the derived-path trigger below is unprivileged-reachable.
+
+    The two triggers are deliberately given DIFFERENT dispositions, and both are
+    pinned here so a later change cannot quietly swap them:
+      * a bad OVERRIDE degrades to the derived per-lane dir — isolation is
+        preserved, only the operator's custom-dir intent is lost;
+      * an uncreatable DERIVED dir is represented as a launch failure (exit 127 +
+        _BINARY_NOT_FOUND_SENTINEL) — fail-closed and loud.
+    Neither may fall back to the ambient shared cache; see (c).
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_cache_setup_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _make_probe(self, kind="grammar",
+                    fixture="tests/prd-gate/fixtures/arrow_type.ri"):
+        return pcc.Probe(
+            capability="test",
+            probe_kind=kind,
+            fixture=fixture,
+            expected={"observation": "present", "match": {}},
+        )
+
+    def _unusable_override(self) -> str:
+        """A REIFY_TS_CACHE_HOME whose PARENT is a regular file.
+
+        os.makedirs() on it raises NotADirectoryError [Errno 20] — measured, not
+        assumed.  Models the operator typo and the unwritable-target case alike;
+        both arrive as an OSError subclass out of the same call.
+        """
+        blocker = os.path.join(self._tmpdir, "a_file_not_a_dir")
+        with open(blocker, "w") as f:
+            f.write("x")
+        return os.path.join(blocker, "cache")
+
+    def _wedge_derived_dir(self) -> str:
+        """Point $TMPDIR here and pre-create the DERIVED cache path as a FILE.
+
+        Returns the wedged path.  ``tempfile.tempdir`` is patched rather than the
+        TMPDIR env var because tempfile.gettempdir() caches its answer in that
+        module global, so an env-only patch would be silently ignored once any
+        earlier test had already called it.
+        """
+        derived = pcc._grammar_cache_home(pcc._find_repo_root())
+        shutil.rmtree(derived, ignore_errors=True)
+        with open(derived, "w") as f:
+            f.write("x")
+        self.assertTrue(
+            os.path.isfile(derived),
+            "precondition: the derived cache path must be a FILE, so that "
+            "os.makedirs(exist_ok=True) raises FileExistsError rather than "
+            "quietly succeeding",
+        )
+        return derived
+
+    # ── (a) a bad OVERRIDE must not break the gate, on either arm ─────────────
+
+    def test_bad_override_does_not_raise_unbounded(self):
+        """An unusable REIFY_TS_CACHE_HOME still yields a ProbeRun (unbounded).
+
+        An operator typo, or a REIFY_TS_CACHE_HOME that has become unwritable,
+        must degrade — it must not turn every grammar probe on the host into an
+        uncaught NotADirectoryError.  Measured at HEAD: raises [Errno 20].
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"TREE_SITTER_BIN": stub,
+             pcc._CACHE_HOME_OVERRIDE_ENV: self._unusable_override()},
+        ):
+            run = pcc.run_probe(probe)
+        self.assertIsInstance(
+            run, pcc.ProbeRun,
+            "an unusable cache override must be represented, not propagated",
+        )
+
+    def test_bad_override_does_not_raise_bounded(self):
+        """Same, through _run_bounded()'s Popen arm.
+
+        Asserted separately because the two launch arms are separate code paths
+        and grammar_substrate_usable() — the first real probe any gate runs —
+        takes THIS one.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"TREE_SITTER_BIN": stub,
+             pcc._CACHE_HOME_OVERRIDE_ENV: self._unusable_override()},
+        ):
+            run = pcc.run_probe(probe, timeout=10.0)
+        self.assertIsInstance(
+            run, pcc.ProbeRun,
+            "an unusable cache override must be represented, not propagated",
+        )
+
+    # ── (b) an uncreatable DERIVED dir is represented as a launch failure ─────
+
+    def test_uncreatable_derived_dir_represented_unbounded(self):
+        """A wedged derived cache path → exit 127 + the launch-failure sentinel.
+
+        Deliberately NOT a silent ambient fallback: observe() classifies the
+        sentinel as _HARNESS_ERROR, which is the loud, attributable outcome.
+        Measured at HEAD: raises FileExistsError [Errno 17] instead.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+                self._wedge_derived_dir()
+                run = pcc.run_probe(probe)
+        self.assertEqual(run.exit_code, 127, f"got {run!r}")
+        self.assertIn(pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr)
+
+    def test_uncreatable_derived_dir_represented_bounded(self):
+        """Same, through the bounded arm."""
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+                self._wedge_derived_dir()
+                run = pcc.run_probe(probe, timeout=10.0)
+        self.assertEqual(run.exit_code, 127, f"got {run!r}")
+        self.assertIn(pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr)
+
+    # ── (c) and it must never degrade onto the AMBIENT shared cache ───────────
+
+    def test_cache_setup_failure_never_falls_back_to_ambient(self):
+        """No child may be launched against the ambient XDG_CACHE_HOME.
+
+        THE ASSERTION THAT KEEPS THE FIX HONEST.  "does not raise" is satisfiable
+        by a one-line ``env = None`` — which would hand the probe straight back
+        to the host-global cache every lane shares, silently reintroducing the
+        recorded false PASS at
+        docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2.
+        The stub echoes the cache it was handed, so a fallback of that shape
+        shows up here as the sentinel dir appearing in stdout.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        sentinel = os.path.join(self._tmpdir, "ambient_cache")
+        os.makedirs(sentinel, exist_ok=True)
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"TREE_SITTER_BIN": stub, "XDG_CACHE_HOME": sentinel},
+            ):
+                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+                self._wedge_derived_dir()
+                run = pcc.run_probe(probe)
+        self.assertNotIn(
+            sentinel, run.stdout,
+            "a cache-setup failure must NOT be degraded into a run against the "
+            "ambient, host-global tree-sitter cache",
+        )
+
+    # ── (d) the load-bearing caller must survive it ───────────────────────────
+
+    def test_grammar_substrate_usable_survives_cache_setup_failure(self):
+        """grammar_substrate_usable() returns (False, reason), never raises.
+
+        THE LOAD-BEARING CASE.  The test harness calls this at IMPORT time to
+        decide whether to skip the grammar e2e; a raise there costs the whole
+        suite instead of one skip, which is precisely the outcome run_probe()'s
+        represent-don't-propagate contract exists to prevent.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+                self._wedge_derived_dir()
+                usable, reason = pcc.grammar_substrate_usable()
+        self.assertFalse(usable, "a wedged grammar cache is an unusable substrate")
+        self.assertTrue(reason, "an unusable substrate must explain itself")
+
+
+# ---------------------------------------------------------------------------
 # step-11 (RED): harness exit-code aggregation
 # ---------------------------------------------------------------------------
 
