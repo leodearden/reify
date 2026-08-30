@@ -24,6 +24,7 @@
 pub mod annotation;
 pub mod boundary_attachment;
 pub mod color;
+pub mod completeness;
 pub mod constraint;
 pub mod expr;
 pub mod geometry;
@@ -94,6 +95,7 @@ pub use kernel_validation::{
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
+pub use completeness::{Completeness, PartialReason};
 pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
