@@ -267,21 +267,20 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
 #[test]
 fn middot_shapes_no_other_layer_covers_match_their_star_twins() {
     // (·-spelled, its `*`-spelled twin)
-    for (dot, star) in [("5m^2·kg·s^-2·rad^-1", "5m^2*kg*s^-2*rad^-1")] {
-        let (dot_v, dot_d) = let_cell_si_value(dot);
-        let (star_v, star_d) = let_cell_si_value(star);
-        // Against the twin rather than a hard-coded number, so the assertion
-        // stays honest if the stdlib's unit factors move: the two spellings must
-        // agree whatever they denote.
-        assert_eq_rel(
-            dot_v,
-            star_v,
-            1e-12,
-            &format!("`{dot}` and `{star}` must have the same si_value"),
-        );
-        assert_eq!(
-            dot_d, star_d,
-            "`{dot}` and `{star}` must have the same dimension"
-        );
-    }
+    let (dot, star) = ("5m^2·kg·s^-2·rad^-1", "5m^2*kg*s^-2*rad^-1");
+    let (dot_v, dot_d) = let_cell_si_value(dot);
+    let (star_v, star_d) = let_cell_si_value(star);
+    // Against the twin rather than a hard-coded number, so the assertion stays
+    // honest if the stdlib's unit factors move: the two spellings must agree
+    // whatever they denote.
+    assert_eq_rel(
+        dot_v,
+        star_v,
+        1e-12,
+        &format!("`{dot}` and `{star}` must have the same si_value"),
+    );
+    assert_eq!(
+        dot_d, star_d,
+        "`{dot}` and `{star}` must have the same dimension"
+    );
 }
