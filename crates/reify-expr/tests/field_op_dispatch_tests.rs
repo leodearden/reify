@@ -25,10 +25,11 @@
 use std::sync::Arc;
 
 use reify_core::{ContentHash, Type, ValueCellId};
-use reify_expr::{ContainmentQuery, EvalContext, eval_expr};
+use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, Value, ValueMap,
 };
+use reify_test_support::mocks::MockContainmentQuery;
 
 use reify_core::DimensionVector;
 
@@ -300,18 +301,6 @@ fn sample_restricted_scaffold_returns_undef() {
 // RED today: `ContainmentQuery` trait and `EvalContext::with_containment` do
 // not exist in reify-expr → compile-fail.
 // GREEN after step-4: the trait and builder are added.
-
-/// A minimal test double for `ContainmentQuery` — returns a pre-programmed
-/// `Option<bool>` regardless of the region/point values passed.
-struct MockContainmentQuery {
-    result: Option<bool>,
-}
-
-impl ContainmentQuery for MockContainmentQuery {
-    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
-        self.result
-    }
-}
 
 /// Build a `Value::Field { source: Restricted, lambda: List[inner, region] }`
 /// suitable for mock-resolver tests.
