@@ -696,6 +696,19 @@ pub enum GeometryOp {
         dz: f64,
     },
     /// Rotate around axis by angle.
+    ///
+    /// **Angular unit contract** (INV-AD-4; #6184). `angle_rad` is SI RADIANS,
+    /// and positive is right-handed about `axis`. The `_rad` SUFFIX IS THE
+    /// CONTRACT — it is load-bearing, not decoration, and it is the same name
+    /// the value carries all the way down: IR -> the cxx bridge
+    /// (`reify-kernel-occt/src/ffi.rs`) -> the C++ wrapper, where OCCT's
+    /// `gp_Trsf::SetRotation` takes radians too. Nothing on that path converts,
+    /// because every layer is SI-coherent (rad = 1). Contrast lengths, which
+    /// also cross unscaled here but ARE rescaled x1000 by the STEP writer at
+    /// export.
+    ///
+    /// The sibling angular variants [`GeometryOp::RotateAround`] and
+    /// [`GeometryOp::Revolve`] carry the same contract.
     Rotate {
         target: GeometryHandleId,
         axis: [f64; 3],
@@ -707,6 +720,9 @@ pub enum GeometryOp {
         factor: f64,
     },
     /// Rotate around an arbitrary axis passing through a given point.
+    ///
+    /// `angle_rad` is SI RADIANS, positive right-handed about `axis` — see
+    /// [`GeometryOp::Rotate`] for the full angular unit contract (#6184).
     RotateAround {
         target: GeometryHandleId,
         point: [f64; 3],
@@ -820,6 +836,10 @@ pub enum GeometryOp {
         distance: Value,
     },
     /// Create a revolved solid by rotating a profile around an axis.
+    ///
+    /// `angle_rad` is SI RADIANS, positive right-handed about `axis_dir` — see
+    /// [`GeometryOp::Rotate`] for the full angular unit contract (#6184). A
+    /// full revolution is therefore `2.0 * PI`, not 360.
     Revolve {
         profile: GeometryHandleId,
         axis_origin: [f64; 3],
