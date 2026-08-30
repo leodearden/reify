@@ -483,8 +483,9 @@ pub fn relation_contract_for_call(
 //                    `DatumProjectionUnavailable`/`Ambiguous` codes).
 //   (c) CURATION   — only unconditionally-well-defined signatures exist; a
 //                    `distance` call on a `Plane` is redirected to `offset`.
-// PRD decision-6 gradualism: a `Type::Error` (poison) or `Type::TypeParam`
-// (unresolved) slot is skipped silently.
+// PRD decision-6 gradualism: a `Type::Error` (poison), `Type::TypeParam`
+// (unresolved), or `Type::ScalarParam` (known-scalar, unresolved dimension)
+// slot is skipped silently.
 
 /// The datum kind a relation's operands must project to (the §3.3 lift target).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -601,8 +602,12 @@ pub(crate) fn check_relation_arg_types(
         && let Some(metric) = compiled_args.get(idx)
     {
         match &metric.result_type {
-            // Gradualism: poison / unresolved pass silently.
-            Type::Error | Type::TypeParam(_) => {}
+            // Gradualism: poison / unresolved pass silently. `ScalarParam` is
+            // known-scalar-but-unresolved-dimension (dimension pending
+            // instantiation, per `Type::ScalarParam`'s own doc) — the same
+            // "known kind, unresolved detail" bucket as `TypeParam`, so the
+            // dimension comparison must defer rather than fire.
+            Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
             // Dimensioned scalar: mismatch only when the dimension differs.
             Type::Scalar { dimension } if *dimension == expected_dim => {}
             other => emit_unit_mismatch(name, type_name, other, call_span, diagnostics),
