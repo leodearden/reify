@@ -59,8 +59,14 @@ trait ElectricallyCharacterized : MaterialSpec {
 
 // A conductive material is an ElectricallyCharacterized material whose
 // resistivity is below 1e-4 Ω·m (the conventional metal/semiconductor boundary).
-// RHS dimensioned (Ω·m = ElectricResistivity) so runtime `eval_cmp` dim-equality
-// succeeds — bare-numeric RHS would yield Indeterminate (esc-3115-112).
+// RHS dimensioned (Ω·m = ElectricResistivity) because the bound is NON-ZERO, and
+// a non-zero literal is never coerced. `resistivity < 0.0001` is rejected at
+// COMPILE time with DiagnosticCode::DimensionMismatch (Scalar[Ω·m] vs Real) — it
+// never reaches eval, so it is not the runtime Indeterminate that the older
+// esc-3115-112 rationale described (task-4629 W5 removed the dimensionless
+// suppression that used to let it through). Pinned by
+// `nonzero_real_literal_rhs_emits_dimension_mismatch` in
+// crates/reify-compiler/tests/polymorphic_zero_tests.rs.
 trait Conductive : ElectricallyCharacterized {
     constraint resistivity < 0.0001ohm*m
 }
@@ -75,13 +81,13 @@ trait Conductive : ElectricallyCharacterized {
 // When an Insulating conformer omits `dielectric_strength` (now optional),
 // the `> 0.0V/m` constraint degrades to Satisfaction::Indeterminate + a
 // ConstraintIndeterminate Warning (Kleene, arch §2.5) rather than a hard error.
-// RHS values dimensioned to match LHS aliases (Ω·m, V/m) — see Conductive above
-// for rationale (esc-3115-112). That inherited rationale applies as written to
-// `resistivity > 1000000ohm*m` only: the RHS there is NON-ZERO, and a non-zero
-// is never coerced. `dielectric_strength > 0.0V/m` has a ZERO RHS, so a bare
-// `0.0` would compile too, coerced to `Scalar<DielectricStrength>` at compile
-// time; `0.0V/m` is kept for readability. DIMENSIONED-ZERO CONVENTION — see
-// the `StepForce.magnitude > 0N` note in modal_analysis.ri.
+//
+// The two RHS values are dimensioned for DIFFERENT reasons.
+// `resistivity > 1000000ohm*m` is NON-ZERO, so the dimension is REQUIRED — same
+// rule as Conductive above. `dielectric_strength > 0.0V/m` has a ZERO RHS, so a
+// bare `0.0` would compile too; `0.0V/m` is kept for readability only.
+// DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N` note in
+// modal_analysis.ri.
 trait Insulating : ElectricallyCharacterized {
     constraint resistivity > 1000000ohm*m
     constraint dielectric_strength > 0.0V/m

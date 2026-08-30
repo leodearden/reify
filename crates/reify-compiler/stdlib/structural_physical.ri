@@ -35,12 +35,11 @@
 //     in Phase 6). RHS is dimensioned (kg/m³) so `eval_cmp` dim-equality
 //     succeeds at runtime after task #3111 tightened Material.density from
 //     Real to Density; `0kg/m^3` is retained by convention, not required — a
-//     bare `0` compiles too, MEMBER-ACCESS operand included, because the
-//     rewrite keys on the sibling's compiled type rather than its expression
-//     shape. DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N`
-//     note in modal_analysis.ri. The `moi_principal[0]` IndexAccess note below
-//     is not in tension with this: it records a deliberate choice not to lean
-//     on the coercion for a different operand shape.
+//     bare `0` compiles too, MEMBER-ACCESS operand included. DIMENSIONED-ZERO
+//     CONVENTION — see the `StepForce.magnitude > 0N` note in
+//     modal_analysis.ri. The `moi_principal[0]` IndexAccess note below is not
+//     in tension with this: it records a deliberate choice not to lean on the
+//     coercion for a different operand shape.
 //
 // Historical note: prior to task 1876 this refined a trait named `Material`,
 // later renamed to `MaterialSpec`. PRD Phase 1 retires the trait edge

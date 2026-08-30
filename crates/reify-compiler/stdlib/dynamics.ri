@@ -49,9 +49,9 @@
 //      a bare `0` compiles too, and the rewrite covers `>=` as much as `>`.
 //      DIMENSIONED-ZERO CONVENTION — see the `StepForce.magnitude > 0N` note in
 //      modal_analysis.ri (cf. ZVShaper `> 0Hz` in trajectory.ri, same
-//      convention). The PSD
-//      inertia check (negative eigenvalue) is a Rust hook in reify-eval (see
-//      dynamics_psd.rs) because no DSL expression form can compute eigenvalues.
+//      convention). The PSD inertia check (negative eigenvalue) is a Rust hook
+//      in reify-eval (see dynamics_psd.rs) because no DSL expression form can
+//      compute eigenvalues.
 
 // ── MassProperties ────────────────────────────────────────────────────────
 
@@ -87,9 +87,8 @@ structure def MassProperties {
     // Non-negativity guard: mass must be physically valid at construction.
     // The RHS is `0kg` by the convention stated in header decision 4 above (an
     // explicit mass bound reads better; a bare `0` would compile too). PSD
-    // inertia is
-    // enforced by the reify-eval Rust hook (dynamics_psd.rs) since no DSL
-    // expression form can compute eigenvalues.
+    // inertia is enforced by the reify-eval Rust hook (dynamics_psd.rs) since
+    // no DSL expression form can compute eigenvalues.
     constraint mass >= 0kg
 }
 
