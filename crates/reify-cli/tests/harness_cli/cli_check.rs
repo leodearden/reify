@@ -666,12 +666,31 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
 ///     stdout: "  OK MirrorBareOrigin#constraint[0]" / "All constraints satisfied."
 ///     stderr: EMPTY
 ///     exit 0
-/// …while `reify eval` on the same file reports, on stderr:
-///     warning: mirror: ox argument expects Length, got Int; …   [TWICE]
-///     error: failed to compile geometry operation: missing or
+///
+/// WHY THE FIXTURE MOVED (task 5662).  It used to carry the 7-arg scalar form
+/// `mirror(arm, 0, 0, 0, 1, 0, 0)`.  Task 5662 gave that form's ox/oy/oz a
+/// COMPILE-layer LENGTH slot, and `cmd_check` returns FAILURE on any compile
+/// `Severity::Error`, short-circuiting before constraint checking and before
+/// `build()` — which would have destroyed every assertion below, including the
+/// dedup pin this test exists for.  The fixture therefore moved to the
+/// decoded-value form `mirror(arm, plane_yz(0))`, a STRUCTURAL exclusion from
+/// that slot table (a composite `Value` never passes through a positional
+/// argument index), so it stays a genuine build-only diagnostic for good.  It
+/// is still deliberately BARE — only the route changed, not the mistake.
+///
+/// Baseline RE-MEASURED at task 5662 on the retargeted fixture.  `reify check`
+/// is unchanged in shape (exit 0, both stdout lines above).  `reify eval` on the
+/// same file reports, on stderr:
+///     error: mirror: ox argument expects Length, got Int; …     [TWICE]
+///     error: mirror: oy/oz argument expects Length, got Real; … [TWICE]
+///     error: failed to compile geometry operation: mirror: missing or
 ///            non-Length argument 'ox' for mirror                [TWICE]
 ///     error: failed to compile geometry operation: unresolvable GeomRef::Step(1) …
 ///     exit 1
+/// The internal duplication — the whole reason for the dedup pin — is unchanged
+/// by the retarget; only the message gained the `mirror: ` builtin prefix that
+/// the decoded-value route carries, and oy/oz read `Real` rather than `Int`
+/// because only the offset argument is the bare literal.
 ///
 /// The `matches(...).count() == 1` assertion is the load-bearing one: it pins
 /// D2's ACCUMULATING dedup. `build()` emits that error twice for a single call
@@ -709,7 +728,7 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
         return;
     }
 
-    let needle = "failed to compile geometry operation: missing or non-Length argument 'ox' for mirror";
+    let needle = "failed to compile geometry operation: mirror: missing or non-Length argument 'ox' for mirror";
     assert!(
         stderr.contains(needle),
         "the geometry-compile error `build()` produces must reach `check`'s stderr \
@@ -853,6 +872,19 @@ fn check_constraint_results_come_from_authoritative_check_not_build() {
 ///     stderr: EMPTY
 ///     exit 0
 ///
+/// WHY THE FIXTURE MOVED (task 5662): identical to its non-purpose twin — see
+/// `check_surfaces_geometry_compile_error_from_discarded_build`.  The 7-arg
+/// scalar origin gained a compile-layer LENGTH slot, and a compile
+/// `Severity::Error` makes `cmd_check` short-circuit before `build()`; the
+/// decoded-value form `mirror(arm, plane_yz(0))` is structurally excluded from
+/// that slot table and so stays build-only.
+///
+/// Baseline RE-MEASURED at task 5662 on the retargeted fixture, `reify check
+/// --purpose mfg_ready=MirrorBareOriginPurpose`: exit 0, both stdout lines
+/// above unchanged, and on stderr the ox/oy/oz argument-type triple twice plus
+/// `failed to compile geometry operation: mirror: missing or non-Length
+/// argument 'ox' for mirror` exactly ONCE — the dedup pin below is unaffected.
+///
 /// The stdout assertions are the load-bearing half of D1 item 2: they prove the
 /// purpose activation + `check_constraints_with_values` path is unaffected by
 /// swapping `EvalResult` for `BuildResult` as the `.values` source (PRD
@@ -896,7 +928,7 @@ fn check_purpose_surfaces_geometry_compile_error() {
         return;
     }
 
-    let needle = "failed to compile geometry operation: missing or non-Length argument 'ox' for mirror";
+    let needle = "failed to compile geometry operation: mirror: missing or non-Length argument 'ox' for mirror";
     assert!(
         stderr.contains(needle),
         "with geometry routing, the --purpose branch realizes geometry and must \
