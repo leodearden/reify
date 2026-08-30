@@ -1587,3 +1587,300 @@ fn every_non_differentiable_variant_display_names_the_offending_construct() {
     fn assert_is_error<E: std::error::Error>(_: &E) {}
     assert_is_error(&NonDifferentiable::NonFiniteTangent { column: 0 });
 }
+
+// ===========================================================================
+// Step-21: the BOUNDED field reductions — max/min/argmax/argmin(field, bounds)
+// ===========================================================================
+//
+// `eval_expr` intercepts TWO arities of field reduction, not one.  Alongside
+// the 1-argument arms (reify-expr/src/lib.rs:459-484) it intercepts the
+// BOUNDED form `max/min/argmax/argmin(field, bounds: BoundingBox)` at
+// lib.rs:490-533 and routes it to `field_reductions::compute_*_bounded`.
+//
+// The dual path has to mirror BOTH, because the module's central invariant —
+// `eval_dual(e).value == eval_expr(e)` — is only true "by construction" while
+// the two interception tables agree.  When they do not, the failure is silent
+// and expensive: `max(field, bbox)` is claimed instead by the BINARY NUMERIC
+// `min`/`max` kink, handed to `reify_stdlib::eval_builtin`, and comes back
+// `Value::Undef` because `Value::Field` has no `as_f64` mapping.  η then
+// reports "residual evaluates to undef" for the canonical FEA-in-the-loop
+// constraint `max(von_mises_field, region_bbox) - limit <= 0`, which the
+// ordinary evaluator handles perfectly well.
+//
+// This block asserts the VALUE-semantics half of the contract; the branch
+// record half lives in `dual_branch_signature_tests.rs`.
+
+use std::sync::atomic::AtomicBool;
+
+use reify_expr::dual_eval::{DualEnv, jacobian_row_with_env};
+use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
+
+/// A 1-D sampled field over x ∈ {0, 1, 2, 3} with data {5, 9, 2, 7}.
+///
+/// Global max 9 at x = 1, global min 2 at x = 2.  Restricted to x ∈ [2, 3] the
+/// answers all MOVE: max 7 at x = 3, min 2 at x = 2.  The global maximiser is
+/// deliberately outside the box, so a bounded result is distinguishable from
+/// an unbounded one by value alone.
+fn bounded_probe_field() -> Value {
+    let sf = SampledField {
+        name: "probe".into(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        axis_grids: vec![vec![0.0, 1.0, 2.0, 3.0]],
+        interpolation: InterpolationKind::Linear,
+        data: vec![5.0, 9.0, 2.0, 7.0],
+        oob_emitted: AtomicBool::new(false),
+    };
+    Value::Field {
+        domain_type: dl(),
+        codomain_type: dl(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// The canonical `bounding_box(solid)` shape: two 3-component `Value::Point`
+/// corners.  The field above has one axis, so only the x span is consulted.
+fn bbox_x(lo: f64, hi: f64) -> Value {
+    Value::BoundingBox {
+        min: Box::new(Value::Point(vec![Value::Real(lo), Value::Real(0.0), Value::Real(0.0)])),
+        max: Box::new(Value::Point(vec![Value::Real(hi), Value::Real(0.0), Value::Real(0.0)])),
+    }
+}
+
+/// `(label, expected bounded answer)` for the four bounded reductions over
+/// `bounded_probe_field()` restricted to x ∈ [2, 3].
+const BOUNDED_CASES: [(&str, f64); 4] =
+    [("max", 7.0), ("min", 2.0), ("argmax", 3.0), ("argmin", 2.0)];
+
+/// Evaluate with an explicit cell map, returning `(primal, tangent)` and the
+/// `eval_expr` reference primal alongside it.
+fn dual_and_plain(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    seed_cells: &[ValueCellId],
+) -> (Value, Tangent, Value) {
+    let ctx = EvalContext::simple(values);
+    let seeds = Seeds::new(seed_cells);
+    let mut record = BranchRecord::new();
+    let dv = eval_dual(expr, &ctx, &seeds, &mut record);
+    let plain = eval_expr(expr, &ctx);
+    (dv.value, dv.tangent, plain)
+}
+
+// ---------------------------------------------------------------------------
+// (1) THE PRIMAL INVARIANT at arity 2
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bounded_field_reductions_keep_the_primal_invariant_and_are_not_undef() {
+    let (values, seed_cells) = probe(&[("x", 2.0)]);
+    for (name, expected) in BOUNDED_CASES {
+        let expr =
+            calln(name, vec![literal(bounded_probe_field()), literal(bbox_x(2.0, 3.0))]);
+        let (dual_v, _, plain) = dual_and_plain(&expr, &values, &seed_cells);
+
+        // The invariant itself.
+        assert_eq!(
+            dual_v, plain,
+            "{name}(field, bbox): eval_dual must reuse the existing value semantics verbatim"
+        );
+        // ...with teeth: `Undef == Undef` would satisfy the line above while
+        // both paths were broken.  The reference must be a real number.
+        assert_ne!(
+            plain,
+            Value::Undef,
+            "{name}(field, bbox): eval_expr must produce the bounded extremum, not Undef"
+        );
+        let got = plain
+            .as_f64()
+            .unwrap_or_else(|| panic!("{name}(field, bbox): expected a scalar, got {plain:?}"));
+        assert!(
+            (got - expected).abs() < 1e-12,
+            "{name}(field, bbox) over x ∈ [2,3] must be the BOUNDS-RESTRICTED answer \
+             {expected}, got {got} (the unbounded answer would be 9 / x=1)"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (2) Seed-independent ⇒ Zero, not a refusal
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_seed_independent_bounded_reduction_is_flat_rather_than_a_refusal() {
+    // Both operands are literals, so the reduction provably cannot move with
+    // the seeds.  `Tangent::Zero` is the honest answer; `Tangent::None` here
+    // would poison an otherwise perfectly differentiable Jacobian row.
+    let (values, seed_cells) = probe(&[("x", 2.0)]);
+    for (name, _) in BOUNDED_CASES {
+        let expr =
+            calln(name, vec![literal(bounded_probe_field()), literal(bbox_x(2.0, 3.0))]);
+        let (_, tangent, _) = dual_and_plain(&expr, &values, &seed_cells);
+        assert_eq!(
+            tangent,
+            Tangent::Zero,
+            "{name}(field, bbox): a frozen bounded reduction is flat, not undifferentiable"
+        );
+    }
+}
+
+#[test]
+fn a_bounded_reduction_inside_a_residual_contributes_a_zero_column_not_a_refusal() {
+    // The end-to-end shape η actually sees: `x - max(field, bbox)`.  The row
+    // must come back finite, with the reduction contributing nothing.
+    let (values, seed_cells) = probe(&[("x", 2.0)]);
+    let expr = binop(
+        BinOp::Sub,
+        pref("x"),
+        calln("max", vec![literal(bounded_probe_field()), literal(bbox_x(2.0, 3.0))]),
+    );
+    let (primal, row) =
+        jrow(&expr, &values, &seed_cells).expect("a frozen bounded reduction is differentiable");
+    assert!((primal - (2.0 - 7.0)).abs() < 1e-12, "primal must be 2 − 7 = −5, got {primal}");
+    assert_eq!(row, vec![1.0]);
+}
+
+// ---------------------------------------------------------------------------
+// (3) A seed-dependent FIELD refuses
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_bounded_reduction_over_a_seed_dependent_field_refuses_a_tangent() {
+    // This task does not differentiate THROUGH a field (PRD §7.7 makes field
+    // and geometry derivatives the ANALYTIC source, not the AD one), so the
+    // only honest answer is `Tangent::None` — matching the arity-1 rule.
+    for (name, _) in BOUNDED_CASES {
+        let mut values = ValueMap::new();
+        values.insert(cell("fld"), bounded_probe_field());
+        let seed_cells = vec![cell("fld")];
+        let expr = calln(name, vec![
+            value_ref_typed(ENT, "fld", dl()),
+            literal(bbox_x(2.0, 3.0)),
+        ]);
+        let (_, tangent, plain) = dual_and_plain(&expr, &values, &seed_cells);
+        assert_ne!(plain, Value::Undef, "{name}: the reference primal is still a real number");
+        assert_eq!(
+            tangent,
+            Tangent::None,
+            "{name}(seeded field, bbox): a zero row would claim the residual is flat \
+             in a variable it genuinely depends on"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (4) A seed-dependent BOUNDS operand refuses too
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_bounded_reduction_whose_bounds_move_with_the_seeds_refuses_a_tangent() {
+    // The bounding box is itself a seeded cell, so the box — and therefore
+    // WHICH grid node wins — genuinely moves with the solved variables.  A
+    // tangent decision taken from the field operand alone would report
+    // `Tangent::Zero` here, telling the solver the residual is flat in a
+    // variable that in fact selects its value.
+    for (name, _) in BOUNDED_CASES {
+        let mut values = ValueMap::new();
+        values.insert(cell("bb"), bbox_x(2.0, 3.0));
+        let seed_cells = vec![cell("bb")];
+        let expr = calln(name, vec![
+            literal(bounded_probe_field()),
+            value_ref_typed(ENT, "bb", Type::BoundingBox),
+        ]);
+        let (_, tangent, plain) = dual_and_plain(&expr, &values, &seed_cells);
+        assert_ne!(plain, Value::Undef, "{name}: the reference primal is still a real number");
+        assert_eq!(
+            tangent,
+            Tangent::None,
+            "{name}(field, seeded bbox): a seed-dependent box must refuse, never claim Zero"
+        );
+    }
+}
+
+#[test]
+fn the_refusal_from_a_moving_bounded_reduction_names_the_field_reduction_itself() {
+    // η copies this message into a tier-2 refusal, where the user reads it
+    // without the surrounding code, so it has to name the construct.
+    //
+    // The field is reached through a `DualEnv` overlay rather than a seed
+    // column — the shape the solver actually produces for a DERIVED cell — so
+    // the reduction node is the FIRST thing on the path with no derivative
+    // rule, and its own refusal is the one that survives `note_refusal`'s
+    // first-wins rule.  (Seeding the field cell directly instead refuses one
+    // level earlier, at "a seeded cell holding a non-scalar value"; that is
+    // the arity-1 behaviour too, and is asserted by the tangent tests above.)
+    let mut values = ValueMap::new();
+    values.insert(cell("fld"), bounded_probe_field());
+    let ctx = EvalContext::simple(&values);
+    let seeds = Seeds::new(&[cell("x")]);
+    let mut env = DualEnv::new();
+    env.bind(cell("fld"), Tangent::Scalar(vec![1.0]));
+    let expr =
+        calln("max", vec![value_ref_typed(ENT, "fld", dl()), literal(bbox_x(2.0, 3.0))]);
+    let mut record = BranchRecord::new();
+    match jacobian_row_with_env(&expr, &ctx, &seeds, &env, &mut record) {
+        Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
+            assert!(
+                kind.contains("field reduction"),
+                "the refusal must name the field reduction, got {kind:?}"
+            );
+        }
+        other => panic!("expected an UnsupportedKind refusal, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (5) NEGATIVE CONTROLS — the fix must stay narrow
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_binary_numeric_max_over_two_scalars_is_untouched_by_the_bounded_route() {
+    // `max(a, b)` over two ordinary scalars is the BINARY NUMERIC kink and must
+    // keep selecting an operand and adopting its tangent.
+    let (values, seed_cells) = probe(&[("a", 3.0), ("b", 5.0)]);
+    for (name, winner, col) in [("max", 5.0, 1usize), ("min", 3.0, 0usize)] {
+        let expr = calln(name, vec![pref("a"), pref("b")]);
+        let (primal, row) = jrow(&expr, &values, &seed_cells)
+            .unwrap_or_else(|e| panic!("{name}(a, b) must stay differentiable, got {e:?}"));
+        assert!((primal - winner).abs() < 1e-12, "{name}(3, 5) = {winner}, got {primal}");
+        let expected: Vec<f64> = (0..2).map(|j| if j == col { 1.0 } else { 0.0 }).collect();
+        assert_eq!(row, expected, "{name}: the selected operand's tangent, unchanged");
+    }
+}
+
+#[test]
+fn malformed_two_argument_reduction_shapes_still_agree_with_eval_expr_on_undef() {
+    // `eval_expr`'s arity-2 guard (lib.rs:490) requires a `BoundingBox` second
+    // argument and a `Field` first one; anything else deliberately falls
+    // through to `eval_builtin`, which returns `Undef` for these operand types
+    // (numeric.rs:67).  The dual path must fall through in exactly the same
+    // places — a widened intercept that swallowed these would be a SECOND
+    // divergence, in the opposite direction.
+    let (values, seed_cells) = probe(&[("x", 2.0)]);
+    let cases: [(&str, CompiledExpr); 4] = [
+        (
+            "max(field, 3.0)",
+            calln("max", vec![literal(bounded_probe_field()), literal(Value::Real(3.0))]),
+        ),
+        (
+            "min(field, 3.0)",
+            calln("min", vec![literal(bounded_probe_field()), literal(Value::Real(3.0))]),
+        ),
+        ("max(2.0, bbox)", calln("max", vec![
+            literal(Value::Real(2.0)),
+            literal(bbox_x(2.0, 3.0)),
+        ])),
+        ("argmax(2.0, bbox)", calln("argmax", vec![
+            literal(Value::Real(2.0)),
+            literal(bbox_x(2.0, 3.0)),
+        ])),
+    ];
+    for (label, expr) in cases {
+        let (dual_v, _, plain) = dual_and_plain(&expr, &values, &seed_cells);
+        assert_eq!(plain, Value::Undef, "{label}: eval_expr must still fall through to Undef");
+        assert_eq!(dual_v, plain, "{label}: the dual path must fall through in the same place");
+    }
+}
