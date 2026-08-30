@@ -202,6 +202,23 @@ pub fn __registry_result_type_for_test(
     builtin_registry::registry_result_type(name, args)
 }
 
+/// Test shim over `builtin_registry::registry_owns` — the seam's cheap
+/// name-only precheck, which `expr.rs`'s ladder arm uses to guard the
+/// `Vec<Type>` argument projection.
+///
+/// Exists SEPARATELY from [`__registry_result_type_for_test`] because the
+/// guard's safety is the implication `!registry_owns(n)` ⇒
+/// `registry_result_type(n, _) == None`, and a test can only observe that
+/// implication if it can call both halves. Same `__`-prefix stability caveat.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
+// consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the ladder
+// arm's cheap-miss guard pin).
+pub fn __registry_owns_for_test(name: &str) -> bool {
+    builtin_registry::registry_owns(name)
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.

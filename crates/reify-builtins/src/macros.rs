@@ -187,9 +187,25 @@ macro_rules! registry {
         /// workspace. [`name_group`] reads the same [`NAME_INDEX`] — it is a
         /// second ACCESSOR, never a second string map.
         ///
-        /// A linear scan is deliberate: the table is tiny (7 rows in α) and
-        /// this runs at compile time, not in an eval loop. A hash index is a
-        /// later optimisation if the ~358-row end state ever measures as hot.
+        /// # Where this runs — BOTH paths, including a per-sample loop
+        ///
+        /// Not compile-time-only. PRD §7.3(3) makes
+        /// `reify_stdlib::registry_dispatch::try_dispatch` the FIRST arm of
+        /// `reify_stdlib::eval_builtin`, and that arm's whole body is a
+        /// `lookup(name, args.len())` — so this scan is on the **eval** path
+        /// too. It is not merely on it once per call, either:
+        /// `reify_expr::analysis::sample_unary_analysis_at_point` calls
+        /// `eval_builtin` POINTWISE for `von_mises` / `max_shear` /
+        /// `principal_stresses`, so a field sampled at N points runs this scan
+        /// N times.
+        ///
+        /// A linear scan is still deliberate at α's 7 rows — that is a handful
+        /// of `&str` compares per sample, and, sitting at the head of the
+        /// chain, it is cheaper than the family dispatchers it displaced.
+        /// But the deferral is scoped, not open-ended: a hash/phf index becomes
+        /// worth MEASURING once τ grows `NAME_INDEX` past a few dozen rows,
+        /// because the per-sample caller above turns the ~358-row end state
+        /// into ~358 string comparisons per field sample.
         pub fn lookup(name: &str, argc: usize) -> Option<BuiltinId> {
             NAME_INDEX
                 .iter()

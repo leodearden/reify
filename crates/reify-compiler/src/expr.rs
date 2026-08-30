@@ -48,8 +48,9 @@ use super::*;
 // The compiler's single entry point into the builtin-signature registry
 // (task #6001 α). Named explicitly rather than reached via `super::*` because
 // `builtin_registry` is deliberately NOT glob-re-exported in `lib.rs` — one
-// module, one call site, one seam.
-use crate::builtin_registry::registry_result_type;
+// module, one call site, one seam. `registry_owns` is that same seam's cheap
+// name-only precheck — see the ladder arm below for why the call site needs it.
+use crate::builtin_registry::{registry_owns, registry_result_type};
 use crate::datum_projection::{
     datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
     DATUM_PROJECTION_MEMBERS,
@@ -3721,13 +3722,15 @@ fn compile_expr_guarded_with_expected_inner(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
-                    } else if let Some(t) = registry_result_type(
-                        name,
-                        &compiled_args
-                            .iter()
-                            .map(|a| a.result_type.clone())
-                            .collect::<Vec<_>>(),
-                    ) {
+                    } else if registry_owns(name)
+                        && let Some(t) = registry_result_type(
+                            name,
+                            &compiled_args
+                                .iter()
+                                .map(|a| a.result_type.clone())
+                                .collect::<Vec<_>>(),
+                        )
+                    {
                         // ── The builtin-signature registry (task #6001 α) ──────
                         //
                         // ONE arm replacing the two family arms this ladder used
@@ -3770,6 +3773,22 @@ fn compile_expr_guarded_with_expected_inner(
                         // decision 3) and cannot see `reify-ir`. The projection
                         // here is the same one the deleted
                         // `analysis_fn_result_type` did internally.
+                        //
+                        // **Why the `registry_owns` guard.** That projection
+                        // allocates a `Vec<Type>` and deep-clones every arg's
+                        // type (`Type` carries `Box<Type>`/`String` payloads).
+                        // This arm is mid-ladder, so it is reached by nearly
+                        // every call in a program while answering for only the
+                        // registered names — 7 in α — and the family arms it
+                        // replaced were allocation-free slice `contains`
+                        // checks. `registry_owns` is that same name-only test,
+                        // so the miss path stays cheap and the Vec is built
+                        // only once the registry has claimed the name. It is
+                        // exactly `registry_result_type`'s own precondition
+                        // (which calls it), so this is a cost change, not a
+                        // behaviour change — pinned row-derived by
+                        // `harness_builtin_registry`'s
+                        // `registry_owns_is_exactly_registry_result_type_s_precondition`.
                         //
                         // The call STAYS a `FunctionCall` (eval untouched,
                         // dispatched to the existing Rust kernels — via

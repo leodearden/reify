@@ -176,8 +176,12 @@ pub fn artifact_basis_rows() -> Vec<&'static str> {
 /// How many rows carry [`Basis::Artifact`](crate::row::Basis::Artifact) — the
 /// ratchet metric on its own, for callers that want the number without the
 /// names.
+///
+/// Defined AS [`artifact_basis_rows`]`().len()` rather than as a second
+/// independent scan of [`rows`], so the two can never disagree and no test has
+/// to pin that they do not.
 pub fn artifact_row_count() -> usize {
-    rows().iter().filter(|r| r.basis.is_artifact()).count()
+    artifact_basis_rows().len()
 }
 
 #[cfg(test)]
@@ -554,11 +558,8 @@ mod lint {
             actual.len(),
             EXPECTED_ARTIFACT_ROWS.len()
         );
-        assert_eq!(
-            artifact_row_count(),
-            actual.len(),
-            "artifact_row_count must agree with artifact_basis_rows"
-        );
+        // `artifact_row_count()` is DEFINED as `artifact_basis_rows().len()`,
+        // so their agreement is true by construction and needs no assertion.
     }
 
     /// The macro takes each row's variant ident and its name literal
@@ -567,19 +568,48 @@ mod lint {
     ///
     /// Iterates via `strum::IntoEnumIterator` so a new variant cannot escape by
     /// simply not being listed here.
+    ///
+    /// # Arity overloads are the deliberate exception
+    ///
+    /// Equality can only hold for a name owned by ONE row. A same-name arity
+    /// overload — the shape `lookup(name, argc)`, [`name_group`] and
+    /// [`Arity`] all exist to support (`floor`@1/@2, `offset`@2/@3; the
+    /// macro's own test table proves it with `FooOne`/`FooTwo`, both named
+    /// `"foo"`) — needs two DISTINCT idents for one name, so at most one of
+    /// them can snake_case back to it. Overloaded groups are therefore
+    /// skipped here and held to the weaker relation the shape admits: each
+    /// variant's snake_case form must START with its row name, so
+    /// `FloorOne`/`FloorTwo` still cannot drift onto some unrelated name.
+    ///
+    /// α seeds no overloads (`every_seed_name_group_holds_exactly_one_row`),
+    /// so the skip is unreachable today. It exists so the first τ to register
+    /// one gets a green test and a documented rule instead of a mystery
+    /// failure in a lint it had no reason to read.
     #[test]
     fn every_variant_ident_matches_its_row_name() {
         for id in BuiltinId::iter() {
             let variant = format!("{id:?}");
             let r = row(id);
+            let snake = to_snake_case(&variant);
+            if name_group(r.name).len() > 1 {
+                // Overloaded name: two idents, one name — see the doc above.
+                assert!(
+                    snake.starts_with(r.name),
+                    "BuiltinId::{variant} is one row of the overloaded name \
+                     group {:?}, so its snake_case form {snake:?} is not \
+                     required to EQUAL the name — but it must still start with \
+                     it, or the ident has drifted onto an unrelated builtin",
+                    r.name
+                );
+                continue;
+            }
             assert_eq!(
-                to_snake_case(&variant),
+                snake,
                 r.name,
                 "BuiltinId::{variant} declares name {:?}, but its snake_case \
-                 form is {:?} — the macro takes the two independently, so a \
-                 typo in either shows up only here",
-                r.name,
-                to_snake_case(&variant)
+                 form is {snake:?} — the macro takes the two independently, so \
+                 a typo in either shows up only here",
+                r.name
             );
         }
     }

@@ -280,3 +280,59 @@ fn registry_result_type_is_arity_insensitive_like_the_legacy_arms() {
          arg-independent"
     );
 }
+
+/// **The ladder arm's cheap-miss guard is behaviour-neutral.**
+///
+/// `expr.rs`'s registry arm projects `compiled_args` into a `Vec<Type>` (an
+/// allocation plus a deep `Type::clone` per argument) before it can ask
+/// `registry_result_type` anything, so it guards that projection on
+/// `registry_owns(name)` — a name-only test — and pays the projection only on
+/// a hit. That is safe for exactly one reason: `registry_owns` is
+/// `registry_result_type`'s OWN precondition, so a `false` there can never
+/// suppress an answer the registry would otherwise have given.
+///
+/// This pins that implication in both directions it admits:
+///
+/// - Row-derived, never a restated list: every registered name is `owns`,
+///   swept over `reify_builtins::rows()` so a name added by a later τ is
+///   covered without touching this test.
+/// - `!owns(n)` ⇒ `registry_result_type(n, args) == None`, checked over the
+///   unregistered names AND at several arities, since the guard drops the
+///   argument types entirely.
+///
+/// The converse is deliberately NOT asserted: an `ArgAware` row may own a name
+/// and still decline the arguments it is handed, which is a legal `None` on
+/// the hit path.
+#[test]
+fn registry_owns_is_exactly_registry_result_type_s_precondition() {
+    use reify_compiler::__registry_owns_for_test as registry_owns;
+
+    let t = pressure_tensor();
+    let arg_shapes: [&[Type]; 3] = [&[], std::slice::from_ref(&t), &[t.clone(), t.clone()]];
+
+    for r in reify_builtins::rows() {
+        assert!(
+            registry_owns(r.name),
+            "registry row {:?} must be claimed by registry_owns — otherwise \
+             expr.rs's guard skips the projection and the ladder falls through \
+             to the first-arg fallback, silently mis-typing every call to it",
+            r.name
+        );
+    }
+
+    for name in ["sqrt", "volume", "envelope_von_mises", "transform3", ""] {
+        assert!(
+            !registry_owns(name),
+            "{name:?} holds no registry row, so registry_owns must decline it"
+        );
+        for args in arg_shapes {
+            assert_eq!(
+                registry_result_type(name, args),
+                None,
+                "registry_owns({name:?}) is false, so registry_result_type must \
+                 be None at every arity — the guard drops the argument types, so \
+                 any answer here would be one expr.rs never asks for"
+            );
+        }
+    }
+}

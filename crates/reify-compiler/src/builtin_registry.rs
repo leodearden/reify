@@ -56,9 +56,47 @@ use reify_core::Type;
 /// argc-keyed [`lookup`](reify_builtins::lookup) plus the arity diagnostics
 /// that arrive with it in τ-numeric (PRD §3 decision 5).
 pub(crate) fn registry_result_type(name: &str, args: &[Type]) -> Option<Type> {
+    if !registry_owns(name) {
+        // Unregistered name (empty group) or a not-yet-possible overload.
+        return None;
+    }
     match reify_builtins::name_group(name) {
         [id] => reify_builtins::row(*id).result.resolve(args),
-        // Unregistered name (empty group) or a not-yet-possible overload.
         _ => None,
     }
+}
+
+/// Cheap **name-only** precheck: can the registry answer for `name` at all?
+///
+/// This is [`registry_result_type`]'s own precondition, hoisted so a caller can
+/// test it BEFORE paying to materialise the argument types. It allocates
+/// nothing and clones nothing — it is one [`name_group`](reify_builtins::name_group)
+/// call and a slice-shape match.
+///
+/// # Why `expr.rs` needs it
+///
+/// The registry arm sits mid-ladder in `NoUserFunctions`, so it is reached by
+/// nearly every `FunctionCall` in a compiled program, and answers `None` for
+/// all but the handful of registered names (7 in α, of a ~358-name eventual
+/// surface). Projecting `compiled_args` into a `Vec<Type>` for that arm means
+/// an allocation plus a deep `Type::clone` per argument — `Type` carries
+/// `Box<Type>` / `String` payloads — on the overwhelmingly common MISS path.
+/// The family arms this replaced (`is_parse_typed_fn` / `is_analysis_typed_fn`)
+/// were slice `contains` checks that allocated nothing, so the projection was a
+/// regression that grew with program size rather than with registry adoption.
+/// Guarding on this predicate restores the cheap miss and materialises the
+/// argument types only once the registry has claimed the name.
+///
+/// # It must stay exactly `registry_result_type`'s precondition
+///
+/// `false` here means `registry_result_type` would have returned `None`
+/// anyway, so guarding on it is behaviour-preserving; the converse does NOT
+/// hold, since an `ArgAware` resolver may still decline for the arguments it is
+/// handed. If the two ever drift, the guard would start swallowing real
+/// registry answers silently — which is why `registry_result_type` above is
+/// written to CALL this function rather than restate the test, and why
+/// `tests/harness_builtin_registry/registry_seed_result_types.rs` pins the
+/// implication row-derived over `rows()`.
+pub(crate) fn registry_owns(name: &str) -> bool {
+    matches!(reify_builtins::name_group(name), [_])
 }
