@@ -897,6 +897,89 @@ fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bui
     );
 }
 
+/// Pins the ordering half of the `edit_param` auto-invalidation contract
+/// that
+/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+/// above leaves unexercised: that test only drives the SUCCESS path
+/// (`.expect(...)`), so it cannot distinguish "the flush always fires" from
+/// "the flush fires whenever the edit happens to succeed". `Engine::edit_param`
+/// (engine_edit.rs) calls `self.clear_realization_cache()` unconditionally,
+/// before the `CellNotFound` guard on the cell lookup, so a REJECTED edit
+/// must still flush the cache. Without this pin, a refactor that moved the
+/// flush below the cell-existence / `validate_param_override` guards would
+/// keep every other assertion in this file green while silently letting a
+/// stale `GeometryHandleId` survive a rejected edit.
+///
+/// Sequence:
+///   (a) `engine.eval(&module)` → `engine.activate_purpose("manufacturing",
+///       "MyDesign")` → `engine.build(&module, ExportFormat::Step)` →
+///       assert cache populated (test premise, mirrors the sibling tests).
+///   (b) `engine.edit_param(ValueCellId::new("MyDesign", "no_such_param"),
+///       Value::Real(1.0))` against a cell absent from the graph — assert
+///       the result is `Err(EngineError::CellNotFound { .. })`.
+///   (c) Assert the cache was still cleared despite the rejected edit.
+#[test]
+fn edit_param_flushes_realization_cache_even_when_rejected_with_cell_not_found() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_edit_param_flushes_cache_even_when_rejected".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (a) Cold-start eval, activate purpose, build → cache populated.
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+    let _build = engine.build(&module, ExportFormat::Step);
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
+            .is_some(),
+        "test premise: expected RealizationCache to contain an entry at \
+         (\"MyDesign\", ReprKind::BRep, 1e-6) after build(). Without this \
+         premise the post-edit assertion is vacuous. Cache len={}, dump: \
+         {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+
+    // (b) Edit a cell that does not exist in the graph — must be rejected
+    // with CellNotFound rather than panicking or silently no-op'ing.
+    let bogus_id = ValueCellId::new("MyDesign", "no_such_param");
+    let result = engine.edit_param(bogus_id, Value::Real(1.0));
+    assert!(
+        matches!(result, Err(reify_eval::EngineError::CellNotFound { .. })),
+        "expected edit_param against a nonexistent cell to be rejected with \
+         EngineError::CellNotFound, got {:?}",
+        result,
+    );
+
+    // (c) Assert the cache was still cleared despite the rejected edit —
+    // pins that the flush in Engine::edit_param fires unconditionally,
+    // before the CellNotFound guard, so a rejected edit can never leave a
+    // stale GeometryHandleId behind.
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
+            .is_none(),
+        "expected edit_param to flush the RealizationCache even when the \
+         edit itself is rejected with CellNotFound. Lookup at \
+         (\"MyDesign\", ReprKind::BRep, 1e-6) returned Some(_) after the \
+         rejected edit_param call — the entry survived, breaking the \
+         edit_param ordering contract (the cache flush must precede the \
+         CellNotFound guard). Cache len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+}
+
 /// Build a `MyDesign`-shaped template carrying a single named realization
 /// producing one `Box` primitive with caller-specified dimensions (in mm).
 ///
