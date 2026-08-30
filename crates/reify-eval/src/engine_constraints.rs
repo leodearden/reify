@@ -42,6 +42,35 @@ enum UnmeasuredMeasurement {
     /// A geometric `Conforms` callout (explicit `actual:` binding) whose
     /// handles could not be resolved because nothing was realized.  Two arms.
     GdtConformance,
+    /// A `DFMRule` conformer that was DISCOVERED but skipped, because its
+    /// `subject` never hydrated to a live geometry handle.  Two arms.
+    DfmRule,
+}
+
+/// The user-facing identity of a discovered DFM rule.
+///
+/// A `DFMRule` is a structure conforming to the `DFMRule` trait, not a
+/// `constraint` statement, so there is no `ConstraintNodeId` to name it by —
+/// `measure_dfm_rules` returns only diagnostics.  `rule_name` is a DECLARED
+/// trait param (`crates/reify-compiler/stdlib/process.ri`), which makes it the
+/// stable identity a user can match against their own source.
+///
+/// Falls back to the instance's `type_name` when the field is absent or is not
+/// a string: an empty or missing subject would produce a diagnostic naming
+/// nothing, and a malformed model must never panic the check pass.
+fn dfm_rule_subject_name(spec: &DfmRuleSpec) -> String {
+    if let Value::StructureInstance(data) = &spec.rule_value {
+        if let Some(Value::String(name)) = data.fields.get("rule_name")
+            && !name.is_empty()
+        {
+            return name.clone();
+        }
+        return data.type_name.clone();
+    }
+    // Unreachable via `dfm_rule_spec`, which only matches a StructureInstance;
+    // stated as a value rather than an assertion so a future caller cannot turn
+    // a shape change into a panic on the check path.
+    "<unnamed DFM rule>".to_string()
 }
 
 // ── DFM auto-measurement types (task 4408 γ) ─────────────────────────────────
@@ -903,6 +932,17 @@ impl Engine {
                      callout"
                 }
             }
+            UnmeasuredMeasurement::DfmRule => {
+                if !self.has_repr_capable_kernel() {
+                    "this run does not measure DFM rules because no geometry kernel \
+                     able to tessellate the subject is registered; such a geometry \
+                     kernel is required — build with OCCT to evaluate this DFM rule"
+                } else {
+                    "this evaluation surface does not measure DFM rules (no \
+                     realization ran, so the rule's subject has no geometry to \
+                     measure); run `reify check` to evaluate this DFM rule"
+                }
+            }
         }
     }
 
@@ -1652,8 +1692,28 @@ impl Engine {
     /// When no geometry kernel is present (`default_kernel_name` is `None`)
     /// **or** the rule's `subject` did not re-hydrate to a live
     /// `Value::GeometryHandle` (e.g. the module was never `build()`-ed),
-    /// the pass emits **nothing** — it is a complete no-op.  This mirrors the
-    /// `RepresentationWithin` empty-`achieved_repr_tol` → Indeterminate path.
+    /// the pass emits **nothing** *measured* — no rule is ever measured against
+    /// geometry that does not exist.  This mirrors the `RepresentationWithin`
+    /// empty-`achieved_repr_tol` → Indeterminate path.
+    ///
+    /// # Surface attribution (task 6667) — the no-op is no longer SILENT
+    ///
+    /// The C1 no-op above used to be indistinguishable from "checked and
+    /// clean": a declared `DFMRule` on a non-realizing surface (the GUI,
+    /// `reify build`, `reify eval`) produced no output at all.  When
+    /// `realization_handles` is empty, the pass now emits one `Severity::Info`
+    /// [`DiagnosticCode::ConstraintIndeterminate`] diagnostic per DISCOVERED
+    /// but unmeasured rule, naming the surface and a terminal remedy — ζ's
+    /// channel (task 6169), reused rather than duplicated.  Which specs reach
+    /// the measurement path is unchanged; this is purely an additional
+    /// observation of what was skipped.
+    ///
+    /// The gate is MODULE-wide rather than per-rule, so a module that realized
+    /// at least one subject leaves an unrealizable sibling rule silent — the
+    /// identical limitation ζ documented and filed as
+    /// `tkt_0RSR81KF1TYDY8PDANNHQZCFV2`.  And `reify check` output is
+    /// UNCHANGED: `realize_for_check` populates `realization_handles` before
+    /// `check()` reaches this pass, so on an OCCT build the gate is false.
     ///
     /// # DFMRule discovery — two sources
     ///
@@ -1679,6 +1739,16 @@ impl Engine {
         values: &ValueMap,
     ) -> Vec<Diagnostic> {
         // C1 guard: no default kernel → nothing to measure.
+        //
+        // Task 6667 deliberately leaves this early return EXACTLY as it is, and
+        // does NOT hoist discovery above it.  It is not the GUI's case —
+        // `EngineSession::with_registered_kernel` always yields `Some`, and
+        // `reify-kernel-manifold`'s `inventory::submit!` is unconditional, so no
+        // shipped binary reaches it — and moving discovery above it would change
+        // `reify check` behaviour in configurations this task has no signal for.
+        // An accepted, documented limitation: a kernel-free engine (the
+        // `Engine::new(checker, None)` unit-test seam) still gets silence for a
+        // declared DFM rule.
         let kernel_name = match self.default_kernel_name.as_deref() {
             Some(n) => n.to_string(),
             None => return Vec::new(),
@@ -1686,6 +1756,11 @@ impl Engine {
 
         // Collect specs with live handles (skip None subject_handle entries).
         let mut specs: Vec<DfmRuleSpec> = Vec::new();
+        // Task 6667: the rules DISCOVERED but dropped — `dfm_rule_spec` matched
+        // the shape, but `subject_handle` is `None` so there is nothing to
+        // measure.  Purely an additional OBSERVATION of what was skipped; which
+        // specs reach the measurement path is unchanged.
+        let mut skipped_rule_names: Vec<String> = Vec::new();
         // Collect thickness specs (independent of overhang/draft, task ζ=4426).
         // Fired for ANY rule whose `applies_to` carries a LENGTH `min_feature_size`
         // field — so Adding gets both overhang/draft AND thickness checks while
@@ -1735,10 +1810,12 @@ impl Engine {
                     version: template.version(),
                     fields,
                 }));
-                if let Some(spec) = dfm_rule_spec(&si)
-                    && spec.subject_handle.is_some()
-                {
-                    specs.push(spec);
+                if let Some(spec) = dfm_rule_spec(&si) {
+                    if spec.subject_handle.is_some() {
+                        specs.push(spec);
+                    } else {
+                        skipped_rule_names.push(dfm_rule_subject_name(&spec));
+                    }
                 }
                 if let Some(tspec) = dfm_thickness_spec(&si) {
                     thickness_specs.push(tspec);
@@ -1748,10 +1825,12 @@ impl Engine {
 
         // (B) Sub-component StructureInstance values (task-3540 synthetic cells).
         for (_, v) in values.iter() {
-            if let Some(spec) = dfm_rule_spec(v)
-                && spec.subject_handle.is_some()
-            {
-                specs.push(spec);
+            if let Some(spec) = dfm_rule_spec(v) {
+                if spec.subject_handle.is_some() {
+                    specs.push(spec);
+                } else {
+                    skipped_rule_names.push(dfm_rule_subject_name(&spec));
+                }
             }
             if let Some(tspec) = dfm_thickness_spec(v) {
                 thickness_specs.push(tspec);
@@ -1781,12 +1860,61 @@ impl Engine {
             thickness_specs.retain(|tspec| seen.insert(tspec.subject_ref.realization_ref.clone()));
         }
 
-        // Early-return only when there is truly nothing to measure.
-        if specs.is_empty() && thickness_specs.is_empty() {
-            return Vec::new();
+        let mut diags = Vec::new();
+
+        // ── Task 6667: attribute the rules this surface could not measure ────
+        //
+        // A `DFMRule` produces no `ConstraintCheckEntry`, so the pre-6667
+        // behaviour here was not a bare Indeterminate but SILENCE: every
+        // `subject_handle: None` spec was dropped and this pass returned an
+        // empty `Vec`, leaving "not measured here" indistinguishable from
+        // "checked and clean".  That is what the attribution replaces.
+        //
+        // The gate is `realization_handles.is_empty()` — the one-for-one
+        // analogue of ζ's `achieved_repr_tol.is_empty()`, and the exact field
+        // the drop above reads (through `dfm_rule_spec`'s `subject_handle`).
+        //
+        // DEDUPE BY `rule_name`, NOT by the `(kind, subject_handle)` key used
+        // for the measurement path below: that key collapses to `(kind, None)`
+        // for every skipped rule, so one rule reachable from BOTH discovery
+        // source (A) (its template) and source (B) (an instantiated
+        // sub-component value) would otherwise be attributed twice.
+        //
+        // INHERITED LIMITATION, deliberately, exactly as in
+        // `measure_gdt_conformance`: the gate is MODULE-wide rather than
+        // per-rule, so a module that realized at least one subject leaves an
+        // unrealizable sibling rule silent.  Same limitation ζ documented and
+        // filed as tkt_0RSR81KF1TYDY8PDANNHQZCFV2.
+        //
+        // `reify check` OUTPUT IS UNCHANGED: `realize_for_check`
+        // (reify-cli/src/main.rs:919) populates `realization_handles` before
+        // `check()` reaches this pass, so on an OCCT build the gate is false and
+        // `diags` starts empty — byte-identical to the pre-6667 `Vec::new()`.
+        // The accepted exception is a stub-mode `reify check`, where nothing
+        // realizes and arm 1 fires naming OCCT: the same deliberate stub-mode
+        // change ζ's own arm 1 made.
+        if self.realization_handles.is_empty() && !skipped_rule_names.is_empty() {
+            let reason = self.unmeasured_reason_for(UnmeasuredMeasurement::DfmRule);
+            let mut attributed: HashSet<String> = HashSet::new();
+            for name in &skipped_rule_names {
+                if attributed.insert(name.clone()) {
+                    diags.push(
+                        Diagnostic::info(format!("DFM rule `{name}` indeterminate: {reason}"))
+                            .with_code(DiagnosticCode::ConstraintIndeterminate),
+                    );
+                }
+            }
         }
 
-        let mut diags = Vec::new();
+        // Early-return only when there is truly nothing to measure.
+        //
+        // Returns `diags` rather than a fresh `Vec::new()` so the attributions
+        // above survive it — this is the branch a non-realizing surface takes,
+        // since every spec was dropped.  When the gate above did not fire
+        // `diags` is empty and this is the original early return verbatim.
+        if specs.is_empty() && thickness_specs.is_empty() {
+            return diags;
+        }
 
         // ── Overhang / draft pass ─────────────────────────────────────────────
         // Scoped so the mutable geometry_kernels borrow ends before the thickness
