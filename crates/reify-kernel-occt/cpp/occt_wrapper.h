@@ -1628,6 +1628,11 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 ///                       entity itself in the model: the declaration is MISSING
 ///                       for that context while the file still contains a
 ///                       perfectly good `SI_UNIT($,.RADIAN.)` nothing points at.
+///   - `"angle_mode_deg"` — set the process-global `step.angleunit.mode`
+///                       static to the Deg regime for this export only,
+///                       restored by RAII (including on the throwing path).
+///                       Caught by the SEPARATE mode arm, not by the
+///                       declaration walk, which provably cannot see it.
 ///
 /// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) on
 /// an unrecognised `fault`, so a typo in a test reads as a rejected fault name

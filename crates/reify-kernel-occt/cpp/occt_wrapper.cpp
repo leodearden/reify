@@ -7084,6 +7084,56 @@ StepPlaneAngleAuditCounts enforce_step_plane_angle_radians(
     throw ContractViolation(oss.str());
 }
 
+/// The FIFTH arm, independent of the four declaration arms above: refuse the
+/// export when the process-global `step.angleunit.mode` static reads as the
+/// DEGREE regime.
+///
+/// WHY THIS CANNOT BE FOLDED INTO THE DECLARATION WALK. `step.angleunit.mode`
+/// is half-wired. `STEPControl_ActorWrite::Transfer` feeds it to
+/// `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`, but its
+/// only write-side consumer is `TopoDSToStep_MakeStepFace::Init` ->
+/// `GeomConvert_Units::RadianToDegree`, which rescales PCURVE PARAMETER space.
+/// The unit declaration ignores it completely: the #6184 measurement logged in
+/// `export_step_locked` below exported one cone under all three enum values and
+/// found the `PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.)` entity byte-identical in
+/// every one, the sole difference being a pcurve `CARTESIAN_POINT` moving from
+/// `(-6.28318530718,0.)` to `(-360.,0.)`. The payload moves; the declaration
+/// does not. So no amount of walking declarations can see this, and a guard
+/// that claimed otherwise would be claiming something its own evidence log
+/// contradicts.
+///
+/// OBSERVE ONLY, NEVER SET. The #6184 contract states reify "never sets this
+/// static, and MUST NOT" — setting it to Deg is what produces the
+/// self-inconsistent file in the first place. This arm reads it and refuses.
+void enforce_step_angle_mode_not_degrees() {
+    if (Interface_Static::IsPresent("step.angleunit.mode") != Standard_True) {
+        // Absent is OK, deliberately: an OCCT build that never registered the
+        // static cannot be in the degree regime, and refusing on absence would
+        // hard-block every export on such a build for no reason at all.
+        return;
+    }
+    const Standard_Integer mode = Interface_Static::IVal("step.angleunit.mode");
+    if (mode <= 1) {
+        // 0 = File, 1 = Rad — measured byte-identical, and the values
+        // `InitializeFactors` maps to a plane-angle factor of exactly 1.0.
+        return;
+    }
+    std::ostringstream oss;
+    oss << "refusing to write STEP: the process-global `step.angleunit.mode` "
+           "Interface_Static reads "
+        << mode
+        << ", the DEGREE regime (accepted values are 0=File and 1=Rad). Its "
+           "only write-side consumer is TopoDSToStep_MakeStepFace::Init -> "
+           "GeomConvert_Units::RadianToDegree, which rescales pcurve PARAMETER "
+           "space; the plane-angle unit declaration ignores it and stays at "
+           "radians. The result is a silently self-inconsistent file — degree "
+           "pcurves under a radian header — NOT a degrees file, which is why "
+           "this is refused rather than declared. reify never sets this static, "
+           "so an observed degree value was set by something else in this "
+           "process.";
+    throw ContractViolation(oss.str());
+}
+
 /// A fault `export_step_locked` injects into the transferred model at ONE
 /// documented point, immediately before the guard runs.
 ///
@@ -7108,6 +7158,11 @@ enum class StepGuardFault {
     /// The declaration is then MISSING for that context while the file still
     /// contains a perfectly good `SI_UNIT($,.RADIAN.)` that nothing points at.
     Missing,
+    /// Set `step.angleunit.mode` to the Deg regime for the duration of ONE
+    /// export. Unlike the four above this is applied BEFORE Transfer (the
+    /// static is consumed during Transfer) and is restored by RAII, so it
+    /// cannot escape into a sibling test — see `StepAngleModeOverride`.
+    AngleModeDeg,
 };
 
 /// Map the FFI fault name onto the enum.
@@ -7128,10 +7183,69 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
     if (name == "missing") {
         return StepGuardFault::Missing;
     }
+    if (name == "angle_mode_deg") {
+        return StepGuardFault::AngleModeDeg;
+    }
     throw ContractViolation(
         "unknown injected fault \"" + name +
-        "\"; accepted faults: none, non_radian, prefixed, missing");
+        "\"; accepted faults: none, non_radian, prefixed, missing, "
+        "angle_mode_deg");
 }
+
+/// RAII override of the `step.angleunit.mode` Interface_Static, used by the
+/// `angle_mode_deg` fault.
+///
+/// RESTORATION IS THE WHOLE DESIGN. The static is PROCESS-GLOBAL and the
+/// integration harness runs its tests as threads in one process, so a value
+/// left behind would make every later export in the binary refuse — turning
+/// one negative test into a cascade of unrelated failures. Restoring from a
+/// destructor covers the throwing path, which is the only path this fault ever
+/// takes: the export it enables is refused by
+/// `enforce_step_angle_mode_not_degrees` by construction.
+///
+/// Constructed while the caller already holds `g_step_export_mutex`, so the
+/// temporary value is never observable by a concurrent export either.
+///
+/// This is the ONE place reify writes this static, and it exists solely to
+/// prove the guard that refuses it works. Production code must never set it
+/// (#6184: reify "never sets this static, and MUST NOT").
+class StepAngleModeOverride {
+public:
+    explicit StepAngleModeOverride(bool active) {
+        if (!active) {
+            return;
+        }
+        if (Interface_Static::IsPresent("step.angleunit.mode") != Standard_True) {
+            throw ContractViolation(
+                "cannot inject the \"angle_mode_deg\" fault: this OCCT build has "
+                "not registered the `step.angleunit.mode` static, so the trap "
+                "this fault models is unreachable and the test would pass "
+                "vacuously");
+        }
+        saved_ = Interface_Static::IVal("step.angleunit.mode");
+        Interface_Static::SetIVal("step.angleunit.mode", 2);  // 2 = Deg
+        active_ = true;
+    }
+
+    ~StepAngleModeOverride() {
+        if (!active_) {
+            return;
+        }
+        // Swallow: this runs during stack unwinding on the throwing path, and
+        // letting anything escape a destructor there calls std::terminate.
+        try {
+            Interface_Static::SetIVal("step.angleunit.mode", saved_);
+        } catch (...) {
+        }
+    }
+
+    StepAngleModeOverride(const StepAngleModeOverride&) = delete;
+    StepAngleModeOverride& operator=(const StepAngleModeOverride&) = delete;
+
+private:
+    bool active_ = false;
+    Standard_Integer saved_ = 0;
+};
 
 /// Corrupt exactly ONE thing in `model`, per `fault`.
 ///
@@ -7146,7 +7260,10 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
 /// every negative test into a vacuous pass.
 void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
                             StepGuardFault fault) {
-    if (fault == StepGuardFault::None) {
+    if (fault == StepGuardFault::None || fault == StepGuardFault::AngleModeDeg) {
+        // AngleModeDeg is not a model mutation and is applied EARLIER, before
+        // Transfer, by `StepAngleModeOverride` — the static is consumed during
+        // Transfer, so injecting it here would be too late to change anything.
         return;
     }
     if (model.IsNull()) {
@@ -7236,7 +7353,8 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
                 break;
             case StepGuardFault::None:
             case StepGuardFault::Missing:
-                // Handled above; unreachable here.
+            case StepGuardFault::AngleModeDeg:
+                // Handled above or earlier; unreachable here.
                 break;
         }
         return;
@@ -7478,6 +7596,13 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4,
     // section 9 B7). Length regime above: #6186.
 
+    // The `angle_mode_deg` fault must be installed BEFORE Transfer, which is
+    // what consumes `step.angleunit.mode` (via STEPControl_ActorWrite::Transfer
+    // -> InitializeFactors). It restores itself on the way out, including when
+    // the guard below throws. Production callers pass StepGuardFault::None, so
+    // this constructs inert.
+    StepAngleModeOverride angle_mode_override(fault == StepGuardFault::AngleModeDeg);
+
     writer.Transfer(shape.shape, STEPControl_AsIs);
 
     // INV-AD-4 RUNTIME REFUSAL GUARD (#6344). Placed AFTER Transfer —
@@ -7489,6 +7614,11 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // (which builds the unit contexts) and the guard (which checks them).
     // Production callers pass StepGuardFault::None, so this is a no-op there.
     apply_step_guard_fault(step_model, fault);
+
+    // Mode arm FIRST: it is the cheaper check and by far the more actionable
+    // diagnostic, and it describes a defect the declaration walk provably
+    // cannot see, so reporting unit findings ahead of it would bury the lede.
+    enforce_step_angle_mode_not_degrees();
 
     StepPlaneAngleAuditCounts audit = enforce_step_plane_angle_radians(step_model);
 
