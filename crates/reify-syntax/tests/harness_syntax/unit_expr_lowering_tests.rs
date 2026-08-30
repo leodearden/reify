@@ -475,6 +475,15 @@ fn comment_between_unit_operands_lowers_like_its_comment_free_twin() {
         ("5N/*c*/*m/*d*/*s", "5N*m*s"),
         // The right operand may still be a `Pow`.
         ("5N/*c*/*m^2", "5N*m^2"),
+        // PARENS × COMMENT — the intersection of the two risks this file pins
+        // separately.  `middot_with_parenthesised_operand_lowers_like_star_twin`
+        // above explains that a paren moves the operand BOUNDARIES, which is
+        // where an exact-match read of the slice could go wrong; the excision
+        // path is what recovers a slice that is not just the operator.  Only
+        // together do they exercise both at once — and `5(m)/*c*/*(s)` is the
+        // MEASURED case `lower_unit_expr`'s own comment cites as motivating.
+        ("5(m)/*c*/*(s)", "5(m)*(s)"),
+        ("5W/*c*/*(m/K)", "5W*(m/K)"),
     ] {
         assert_eq!(
             unit_of(commented),

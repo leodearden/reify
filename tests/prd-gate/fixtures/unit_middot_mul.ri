@@ -24,10 +24,13 @@
 // ENFORCED, not merely asserted, on three axes: assertion (ii) pins each binding
 // against a `*`-spelled twin string held in the test AND pins the cell COUNT at 3
 // (so a fourth `let` cannot be silently ignored by a test that iterates its own
-// table), and `compile_fixture` pins the U+00B7 SPELLING — exactly 4 `·` across
-// the non-comment lines below. That last lock exists because `·` and `*` lower to
-// the SAME `UnitExpr::Mul`, which makes a `sed 's/·/*/g'` over this file
-// invisible to every value assertion — the one edit that would gut the fixture.
+// table), and `compile_fixture` pins the U+00B7 SPELLING of each `let` line below
+// — per line, against the `·` count implied by that binding's twin, so a comment
+// anywhere in this header (`//` or `/* … */`) can neither break the check nor
+// stand in for a `let` line that lost its `·`. That last lock exists because `·`
+// and `*` lower to the SAME `UnitExpr::Mul`, which makes a `sed 's/·/*/g'` over
+// this file invisible to every value assertion — the one edit that would gut the
+// fixture.
 //
 // Why it matters: `Display for DimensionVector` (reify-core/src/dimension.rs)
 // joins base-unit parts with U+00B7, so `reify eval` prints lines like

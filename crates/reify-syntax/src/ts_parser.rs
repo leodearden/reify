@@ -4063,9 +4063,8 @@ impl<'a> Lowering<'a> {
             // raw `Mul`/`Div` answer is the same answer the residue would give.
             //
             // Everything else falls through to the sweep.  Comments are `extras`,
-            // so one written between the operands lands INSIDE the slice, as a
-            // named child of THIS node — measured on a clean parse
-            // (`has_error() == false`):
+            // so one written between the operands lands INSIDE the slice —
+            // measured on a clean parse (`has_error() == false`):
             //
             //   5N/*c*/*m   →   unit_expr(left, block_comment, right)
             //
@@ -4074,8 +4073,10 @@ impl<'a> Lowering<'a> {
             // `Mul`/`Div` lowers to `Mul`/`Div`: the lowered tree must agree with
             // what the grammar ACCEPTED, and rejecting a clean parse would trade
             // one INV-SF-7 violation (wrong value) for a spurious error on valid
-            // source.  Children come back in source order, so the spans are
-            // already ascending and non-overlapping.
+            // source.  `collect_unit_op_comment_spans` sweeps the SUBTREE rather
+            // than this node's direct children — where an `extra` attaches is a
+            // property of the generated parser, not of the grammar rule; see its
+            // doc for the measured depth case.
             //
             // `op_residue` is bound in THIS scope, not inside the `else`, so the
             // `Unrecognized(&str)` borrow into it outlives the match below.
@@ -4084,13 +4085,7 @@ impl<'a> Lowering<'a> {
             let op = if matches!(raw_op, UnitOp::Mul | UnitOp::Div) {
                 raw_op
             } else {
-                let mut comment_cursor = node.walk();
-                let comment_spans: Vec<(usize, usize)> = node
-                    .named_children(&mut comment_cursor)
-                    .filter(|child| matches!(child.kind(), "line_comment" | "block_comment"))
-                    .map(|child| (child.start_byte(), child.end_byte()))
-                    .filter(|&(start, end)| start >= op_start && end <= op_end)
-                    .collect();
+                let comment_spans = collect_unit_op_comment_spans(node, op_start, op_end);
                 op_residue = strip_unit_op_comments(op_text, op_start, &comment_spans);
                 classify_unit_op(&op_residue)
             };
@@ -4707,6 +4702,17 @@ impl<'a> Lowering<'a> {
 ///   3. today, [`strip_unit_op_comments`] cuts the comment spans out first, so
 ///      the residue `*` classifies as the `Mul` the CST plainly shows.
 ///
+/// READ THAT AS A SEPARATE DEFECT FROM THE `·` WIDENING.  Contract (1) is
+/// PRE-EXISTING: `contains('/')` mis-read `/*c*/*` as `Div` for the whole life of
+/// `lower_unit_expr`, with or without U+00B7, so nothing about it is `·`-specific.
+/// #5784 is what made it observable — the exact match turned a silent wrong value
+/// into a loud spurious error — and so repaired it here rather than leaving a
+/// known INV-SF-7 wrong-value bug behind a task boundary.  The `·` change itself
+/// is two lines: one scanner guard, and the `"·"` arm of [`classify_unit_op`].
+/// Everything else on this path — this enum, [`strip_unit_op_comments`],
+/// [`collect_unit_op_comment_spans`] and
+/// [`Lowering::unit_expr_from_classified_op`] — is the comment-correctness fix.
+///
 /// After (3) the residue is always exactly the operator token, because the only
 /// `extras` are whitespace (trimmed), comments (excised), and a sentinel the
 /// scanner never emits.  So `Unrecognized` now guards against a FUTURE operator
@@ -4780,13 +4786,83 @@ fn classify_unit_op(op_text: &str) -> UnitOp<'_> {
     }
 }
 
+/// Collect the byte ranges of every comment lying inside a `unit_expr`'s raw
+/// operator slice `[op_start, op_end)` — the `cuts` argument
+/// [`strip_unit_op_comments`] expects, ascending and non-overlapping.
+///
+/// Sweeps the SUBTREE, not just `node`'s direct children, because WHERE
+/// tree-sitter attaches an `extra` is a property of the GENERATED parser, not of
+/// the grammar rule: it can move under a `grammar.js` edit that changes no
+/// accepted language (narrowing the paren arm to a hidden `_unit_atom`, which
+/// `grammar.js`'s own TODO contemplates, is the concrete candidate).  Comments
+/// already DO attach at depth — measured on a clean parse (task #5784 amendment
+/// pass):
+///
+/// ```text
+///   5(m/*c*/)*s  →  unit_expr(unit_expr(unit_expr(unit_name), block_comment),
+///                             unit_expr(unit_name))
+/// ```
+///
+/// i.e. a child of the INNER `unit_expr`, not the outer one.  That comment is
+/// outside the operator slice (`*`) and so is filtered out, but it shows the
+/// attachment point is not fixed at direct-child.  Were an IN-SLICE comment ever
+/// to move that way, a direct-children sweep would miss it, the residue would
+/// still carry the comment text, and [`Lowering::lower_unit_expr`] would emit a
+/// spurious `unrecognized unit operator` on source the grammar ACCEPTED — the
+/// exact failure the excision path exists to remove, and one no test would
+/// localise to attachment.  Widening costs nothing on the hot path: the caller
+/// only gets here when the RAW slice failed to classify.
+///
+/// An ANCESTOR attachment needs no handling: sibling ranges are disjoint and
+/// ordered, so a node lying strictly inside `node`'s range cannot be a child of
+/// any ancestor of `node`.  A descendant walk is complete for `[op_start,
+/// op_end)`.
+///
+/// Pre-order with children in source order, and a matched comment is never
+/// descended into (comments do not nest), so the spans come back ascending and
+/// non-overlapping.  The range filter is what keeps the wider walk safe, and
+/// [`strip_unit_op_comments`] re-validates every range regardless.
+fn collect_unit_op_comment_spans(
+    node: tree_sitter::Node,
+    op_start: usize,
+    op_end: usize,
+) -> Vec<(usize, usize)> {
+    fn walk(
+        node: tree_sitter::Node,
+        op_start: usize,
+        op_end: usize,
+        out: &mut Vec<(usize, usize)>,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let (start, end) = (child.start_byte(), child.end_byte());
+            // Siblings are ordered and non-overlapping, so a child disjoint from
+            // the operator slice cannot contain an in-slice comment either.
+            if end <= op_start || start >= op_end {
+                continue;
+            }
+            if matches!(child.kind(), "line_comment" | "block_comment") {
+                if start >= op_start && end <= op_end {
+                    out.push((start, end));
+                }
+                continue;
+            }
+            walk(child, op_start, op_end, out);
+        }
+    }
+    let mut spans = Vec::new();
+    walk(node, op_start, op_end, &mut spans);
+    spans
+}
+
 /// Cut the comment spans out of a `unit_expr`'s raw operator slice, returning
 /// what [`classify_unit_op`] should see.
 ///
 /// Comments are parser `extras`, so one written between the operands sits INSIDE
-/// the slice `lower_unit_expr` cuts from the source — as a named child of the
-/// `unit_expr` node, on a tree with no ERROR node anywhere.  Measured (task
-/// #5784 amendment pass):
+/// the slice `lower_unit_expr` cuts from the source — as a descendant of the
+/// `unit_expr` node (a DIRECT child in every shape probed so far, but
+/// [`collect_unit_op_comment_spans`] does not assume that), on a tree with no
+/// ERROR node anywhere.  Measured (task #5784 amendment pass):
 ///
 /// ```text
 ///   5N/*c*/*m        →  unit_expr(left, block_comment, right)   slice `/*c*/*`
@@ -7365,6 +7441,135 @@ mod tests {
         let residue = strip_unit_op_comments("/*c*/", 24, &[(24, 29)]);
         assert_eq!(residue.as_ref(), "");
         assert_eq!(classify_unit_op(&residue), UnitOp::Missing);
+    }
+
+    // ── `collect_unit_op_comment_spans` — WHICH comments feed the excision ────
+    //
+    // #5784 amendment pass.  `strip_unit_op_comments` above is pinned against
+    // hand-written ranges; these pin the step that PRODUCES those ranges from a
+    // real CST, which is where the excision path's correctness actually rests.
+    // The sweep walks the subtree rather than the node's direct children,
+    // because an `extra`'s attachment point belongs to the generated parser, not
+    // to the grammar rule — see the function's doc.
+
+    /// Parse `source`, find the outer `unit_expr`, and return its operator
+    /// slice's start offset, the slice itself, and the spans the sweep collects
+    /// from it.
+    fn unit_op_comment_spans_of(source: &str) -> (usize, &str, Vec<(usize, usize)>) {
+        let tree = unit_op_seam_tree(source);
+        assert!(
+            !tree.root_node().has_error(),
+            "`{source}` must parse CLEAN — a probe that errors would be \
+             measuring error recovery, not comment attachment"
+        );
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let left = unit_expr
+            .child_by_field_name("left")
+            .expect("expected a `left` operand");
+        let right = unit_expr
+            .child_by_field_name("right")
+            .expect("expected a `right` operand");
+        let (op_start, op_end) = (left.end_byte(), right.start_byte());
+        (
+            op_start,
+            &source[op_start..op_end],
+            collect_unit_op_comment_spans(unit_expr, op_start, op_end),
+        )
+    }
+
+    #[test]
+    fn collect_unit_op_comment_spans_finds_every_comment_in_the_slice_in_order() {
+        let source = "structure def S { let x = 5N/*c*/*m }";
+        let (op_start, slice, spans) = unit_op_comment_spans_of(source);
+        assert_eq!(slice, "/*c*/*");
+        assert_eq!(spans.len(), 1, "one comment, one span; got {spans:?}");
+        assert_eq!(&source[spans[0].0..spans[0].1], "/*c*/");
+        assert_eq!(
+            strip_unit_op_comments(slice, op_start, &spans).as_ref(),
+            "*",
+            "the collected spans must reduce the slice to the operator the CST \
+             plainly shows"
+        );
+
+        // Two comments: ascending and non-overlapping, which is what
+        // `strip_unit_op_comments` requires of `cuts`.
+        let source = "structure def S { let x = 5N/*a*//*b*/*m }";
+        let (op_start, slice, spans) = unit_op_comment_spans_of(source);
+        assert_eq!(slice, "/*a*//*b*/*");
+        assert_eq!(spans.len(), 2, "two comments, two spans; got {spans:?}");
+        assert!(
+            spans[0].1 <= spans[1].0,
+            "spans must come back in ascending, non-overlapping source order; \
+             got {spans:?}"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, op_start, &spans).as_ref(),
+            "*"
+        );
+    }
+
+    /// The source below is the one probed shape whose comment is attached BELOW
+    /// the outer `unit_expr` — measured on a clean parse:
+    ///
+    /// ```text
+    ///   5(m/*c*/)*s  →  unit_expr(unit_expr(unit_expr(unit_name), block_comment),
+    ///                             unit_expr(unit_name))
+    /// ```
+    const NESTED_COMMENT_SOURCE: &str = "structure def S { let x = 5(m/*c*/)*s }";
+
+    #[test]
+    fn collect_unit_op_comment_spans_ignores_a_comment_outside_the_slice() {
+        // Its comment sits inside the LEFT operand, so the operator slice is
+        // already exactly `*` and excising anything would corrupt it.  Two
+        // independent guards keep it out — the sibling prune skips a subtree
+        // disjoint from the slice, and the range filter rejects the comment
+        // itself — and this pins the OUTCOME, which must survive either being
+        // rewritten.
+        let (_op_start, slice, spans) = unit_op_comment_spans_of(NESTED_COMMENT_SOURCE);
+        assert_eq!(slice, "*");
+        assert!(
+            spans.is_empty(),
+            "a comment outside `[op_start, op_end)` must not be cut, however \
+             deep the walk goes; got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn collect_unit_op_comment_spans_reaches_a_comment_attached_below_the_node() {
+        // THE DEPTH CLAIM, and the only test that bites on it: this is the sole
+        // shape in which a real parse attaches a comment to a DESCENDANT of the
+        // `unit_expr` rather than to it directly, so a direct-children sweep
+        // returns nothing here while the subtree walk finds it.
+        //
+        // The range passed is the WHOLE node, not the operator slice — widened
+        // deliberately, because today no accepted source puts a depth-attached
+        // comment INSIDE a slice.  That is a fact about the generated parser's
+        // current `extras` placement, not about the grammar, which is exactly why
+        // the sweep must not assume it: if the attachment point moves, this
+        // function keeps working and no spurious `unrecognized unit operator`
+        // reaches a user.
+        let tree = unit_op_seam_tree(NESTED_COMMENT_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let comment = find_node_by_kind(unit_expr, "block_comment")
+            .expect("fixture drift: expected a block_comment somewhere under the unit_expr");
+        assert_ne!(
+            comment.parent().map(|p| p.id()),
+            Some(unit_expr.id()),
+            "fixture drift: this test means to observe a comment attached BELOW \
+             the outer `unit_expr`; it is now a direct child, so the source no \
+             longer exercises the depth the walk exists for"
+        );
+
+        let spans =
+            collect_unit_op_comment_spans(unit_expr, unit_expr.start_byte(), unit_expr.end_byte());
+
+        assert_eq!(
+            spans,
+            vec![(comment.start_byte(), comment.end_byte())],
+            "the sweep must reach a comment attached below the node it is given"
+        );
     }
     // ── The CALL SITE: `Lowering::unit_expr_from_classified_op` ───────────────
     //

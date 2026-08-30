@@ -86,6 +86,21 @@ fn let_cell_si_value(quantity: &str) -> (f64, DimensionVector) {
     expect_scalar(expr)
 }
 
+/// The fixture's three bindings: (member name, the `*`-spelled twin of the RHS
+/// committed on that `let` line).
+///
+/// ONE table, three jobs — it pins the U+00B7 SPELLING of each `let` line (via
+/// the twin's `*` count, in [`compile_fixture`]), the (si_value, dimension) each
+/// binding must evaluate to, and — through its own length — how many bindings the
+/// fixture may have.  Those three were separately hard-coded before this pass, so
+/// a legitimate fourth binding needed three coordinated edits and a count could
+/// drift from the strings it was counting.  Adding a row is now the whole change.
+const FIXTURE_BINDINGS: [(&str, &str); 3] = [
+    ("torque_like", "5N*m"),
+    ("with_div", "5N*m/rad"),
+    ("composed", "5m^2*kg*s^-2"),
+];
+
 /// The committed prd-gate fixture, compiled with the stdlib.
 ///
 /// Pins the U+00B7 SPELLING before compiling — the one property every assertion
@@ -97,9 +112,15 @@ fn let_cell_si_value(quantity: &str) -> (f64, DimensionVector) {
 /// fixture's entire reason to exist, so the spelling must be asserted directly
 /// rather than inferred.
 ///
-/// Counted over NON-COMMENT lines only: the fixture's header quotes `·` several
-/// times in prose, and a whole-file count would go RED on an unrelated comment
-/// edit while still saying nothing about the `let` lines.
+/// Asserted PER `let` LINE, and against a count DERIVED from
+/// [`FIXTURE_BINDINGS`]' `*`-spelled twin rather than a number written here.  A
+/// whole-file or whole-non-comment-region count cannot do this job: the fixture's
+/// header quotes `·` many times in prose, so such a count both goes RED on an
+/// unrelated comment edit and — because `//`-stripping does not understand `/* …
+/// */` — can be satisfied by a BLOCK comment while a `let` line quietly loses its
+/// `·`.  Reading the specific `let` line is immune to comment syntax entirely, and
+/// deriving the count from the twin means adding a fourth binding is one table
+/// edit rather than three.
 ///
 /// Returns the compiled module.  Asserts nothing about the COMPILE on its own, so
 /// each numbered assertion below reports its own failure — which is why this
@@ -116,20 +137,55 @@ fn compile_fixture() -> reify_compiler::CompiledModule {
         .join("../../tests/prd-gate/fixtures/unit_middot_mul.ri");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
-    let code_only = src
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_eq!(
-        code_only.matches('·').count(),
-        4,
-        "the fixture's `let` lines must still spell their unit-multiplies with \
-         U+00B7 MIDDLE DOT (torque_like x1, with_div x1, composed x2); found {} \
-         in:\n{code_only}",
-        code_only.matches('·').count()
-    );
+    for (member, star_twin) in FIXTURE_BINDINGS {
+        let line = fixture_let_line(&src, member);
+        assert_eq!(
+            line.matches('·').count(),
+            star_twin.matches('*').count(),
+            "the fixture's `let {member}` line must spell every unit-multiply of \
+             its twin `{star_twin}` with U+00B7 MIDDLE DOT; found {} in:\n{line}",
+            line.matches('·').count()
+        );
+    }
     compile_source_with_stdlib_allow_parse_errors(&src)
+}
+
+/// The fixture's `let <member> = …` line, located STRUCTURALLY (first word `let`,
+/// second the member) rather than by substring search over the whole file.
+///
+/// The fixture's header names the members and quotes their units in prose, so a
+/// `contains` search would match comment text; and a `//`-prefix filter would not
+/// see a `/* … */` block comment at all.  Keying off the first two words is
+/// therefore what makes this immune to comment SYNTAX: a `//` or `/* … */` line
+/// that merely MENTIONS `·` or a member name cannot be mistaken for the binding.
+///
+/// The one residual ambiguity — a comment line that literally BEGINS `let
+/// <member>` — is reported rather than resolved: the exactly-one assertion names
+/// both candidates and fails, instead of silently measuring whichever came first
+/// (measured: an added block comment starting `let composed = …` reds here with
+/// `found 2`).  Reword such a comment — indenting will not help, `split_whitespace`
+/// skips leading space — because this helper reads the file textually by design:
+/// parsing it to find the binding would make the check circular.
+fn fixture_let_line<'a>(src: &'a str, member: &str) -> &'a str {
+    let hits: Vec<&str> = src
+        .lines()
+        .filter(|line| {
+            let mut words = line.split_whitespace();
+            words.next() == Some("let")
+                // `=` may abut the name (`let x=1`), so cut at the first one.
+                && words.next().map(|name| name.split('=').next().unwrap_or(name)) == Some(member)
+        })
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected exactly one `let {member}` line in \
+         tests/prd-gate/fixtures/unit_middot_mul.ri; found {}: {hits:?} — if one \
+         of these is a COMMENT whose first two words are `let {member}`, reword \
+         it: this check reads the file textually",
+        hits.len()
+    );
+    hits[0]
 }
 
 /// (i) The fixture compiles with zero `Severity::Error` diagnostics — parse-layer
@@ -166,8 +222,8 @@ fn prd_gate_fixture_unit_middot_mul_compiles_clean() {
 /// the assertion that distinguishes "correct" from "silently wrong".
 ///
 /// The value half is what makes the fixture's own three `let` lines LOAD-BEARING
-/// rather than merely present.  Each `*`-spelled string in the table below is the
-/// pinned expectation; the `·` side is read from disk.  Editing a `let` line in
+/// rather than merely present.  Each `*`-spelled string in [`FIXTURE_BINDINGS`]
+/// is the pinned expectation; the `·` side is read from disk.  Editing a `let` line in
 /// `tests/prd-gate/fixtures/unit_middot_mul.ri` therefore goes RED here — which
 /// is the enforcement that fixture's header ("Editing the three `let` lines below
 /// therefore changes test inputs — don't") previously asserted with nothing
@@ -181,26 +237,21 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
         .iter()
         .find(|t| t.name == "UnitMiddotMul")
         .expect("UnitMiddotMul template not found in the compiled fixture");
-    // The loop below iterates the PINNED table, not the fixture's cells, so a
+    // The loop below iterates `FIXTURE_BINDINGS`, not the fixture's cells, so a
     // fourth `let` added to the fixture would be silently ignored.  Pin the count.
     assert_eq!(
         template.value_cells.len(),
-        3,
-        "UnitMiddotMul must have exactly the three value cells this test pins; \
+        FIXTURE_BINDINGS.len(),
+        "UnitMiddotMul must have exactly the value cells `FIXTURE_BINDINGS` pins; \
          got {:?} — a binding was added to or removed from the fixture without \
-         updating the table below",
+         updating `FIXTURE_BINDINGS`",
         template
             .value_cells
             .iter()
             .map(|c| c.id.member.as_str())
             .collect::<Vec<_>>()
     );
-    // (fixture member name, the `*`-spelled twin of the RHS committed on that line)
-    for (member, star_twin) in [
-        ("torque_like", "5N*m"),
-        ("with_div", "5N*m/rad"),
-        ("composed", "5m^2*kg*s^-2"),
-    ] {
+    for (member, star_twin) in FIXTURE_BINDINGS {
         let cell = template
             .value_cells
             .iter()
