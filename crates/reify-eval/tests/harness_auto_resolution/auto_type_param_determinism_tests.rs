@@ -51,7 +51,8 @@ const EXAMPLE_PATH: &str = concat!(
 );
 
 /// Absolute path to the workspace `examples/` directory.
-/// Mirrors `EXAMPLES_DIR` in `crates/reify-compiler/tests/examples_smoke.rs`.
+/// Mirrors `EXAMPLES_DIR` in
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`.
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
 /// Conservative absolute floor, chosen below current corpus size to leave
