@@ -341,3 +341,56 @@ fn guard_refuses_a_prefixed_radian_declaration() {
          plane_angle_units={plane_angle_units} in: {msg}"
     );
 }
+
+/// A context that declares NO plane-angle unit at all is REFUSED — a MISSING
+/// declaration, which is a different defect from a wrong one.
+///
+/// No "is the declared unit right?" check can see this: there is no declared
+/// unit to be right or wrong about. Only quantifying over contexts — does
+/// EVERY context reach an angular unit? — catches it, and only an association
+/// walk can ask that question, because the unit entity itself is still sitting
+/// in the model, still spelled `SI_UNIT($,.RADIAN.)`, merely unreferenced.
+#[test]
+fn guard_refuses_a_context_with_no_plane_angle_declaration() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, same attribution arms.
+    let msg = refusal_message(&kernel, union_id, "missing");
+
+    // (b) The offending context is named by entity index, and the units it DID
+    // reach are listed. When a context declares nothing, the diagnostic
+    // question is "then what did it reach?" — and the answer is what tells a
+    // reader whether the reference list was truncated or replaced.
+    assert_names_a_context_index(&msg);
+    assert!(
+        msg.contains("SiUnit") || msg.contains("NamedUnit") || msg.contains("Unit"),
+        "the refusal must list the units the context DID reach — an empty \
+         answer to \"then what did it reach?\" is useless; got: {msg}"
+    );
+
+    // (c) MISSING and WRONG are worded differently. They have different causes
+    // and different fixes, so collapsing them into one "bad plane angle unit"
+    // string would be a regression in the guard's only user-visible output.
+    assert!(
+        !msg.contains("is not the unprefixed SI radian"),
+        "a MISSING declaration must not be reported with the WRONG-unit \
+         phrasing steps 3 and 5 pinned — nothing here is a non-radian unit, \
+         and a reader sent looking for one will not find it; got: {msg}"
+    );
+
+    // (d) Again a PARTIAL defect: the surviving contexts still reach radians,
+    // so the file still contains `.RADIAN.` and a grep still passes.
+    let (contexts, _plane_angle_units, radian_ok) = parse_counts(&msg);
+    assert!(
+        radian_ok < contexts,
+        "one context lost its declaration, so the radian associations must no \
+         longer cover every context — equal counts would mean the walk never \
+         noticed the missing reference; got radian_ok={radian_ok} \
+         contexts={contexts} in: {msg}"
+    );
+    assert!(
+        radian_ok > 0,
+        "the OTHER contexts are untouched and must still reach radians; if \
+         radian_ok is 0 the fault did more than remove one reference; got: {msg}"
+    );
+}
