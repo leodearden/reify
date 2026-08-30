@@ -1159,6 +1159,23 @@ pub fn solve_scopes(
     // — no per-scope module.clone()/rebuild. Local datums are pose-independent, so the
     // seed estimate is empty and `solve_relate_scope` witnesses at identity (the
     // grounded anchor's datums encode the target).
+    //
+    // MIXING THE TWO SCOPE CLASSES IN THIS UNION IS SAFE, and safe for a specific
+    // reason worth stating: widening the filter above means `all_refs` now also
+    // carries zero-auto scopes' operand structures, so `realize_structures` retains
+    // MORE templates than it used to. That cannot perturb an auto-ful scope because
+    // each structure is realized STANDALONE in its own identity frame and
+    // `resolve_operands` looks datums up by `(structure, member)` — so adding
+    // structures adds map entries without altering any existing one.
+    //
+    // That is reasoning, not evidence, so it is also MEASURED: the V1 pins in
+    // `harness_engine/relate_static_verification_e2e.rs` solve the same auto-ful
+    // scope with and without a zero-auto companion sharing these leaf structures and
+    // compare the DOF partition exactly and the solved pose to the solver's
+    // convergence rung. If that ever reds, do NOT repair it by reverting to a
+    // per-scope `module.clone()`/rebuild — that discards the single-shared-build
+    // property PRD §3 decision 1 / §4.4 require. Split the retained-template set per
+    // scope class instead.
     let scope_refs: Vec<Vec<OperandRef>> =
         scopes.iter().map(|(_, s)| scope_operand_refs(s)).collect();
     let all_refs: Vec<OperandRef> = scope_refs.iter().flatten().cloned().collect();
