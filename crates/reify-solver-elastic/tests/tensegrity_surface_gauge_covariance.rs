@@ -62,14 +62,13 @@ fn jitter(a: usize, b: usize) -> f64 {
 /// cables around it (struts-then-cables order), so line members genuinely
 /// couple into `D_ff` alongside the membrane.
 ///
-/// Returns `(nodes, surfaces, anchors, free_indices, members, kinds)`.
+/// Returns `(nodes, surfaces, anchors, members, kinds)`.
 #[allow(clippy::type_complexity)]
 fn build_catenoid_tube_with_ring_members(
     perturb: f64,
 ) -> (
     Vec<[f64; 3]>,
     Vec<(usize, usize, usize)>,
-    Vec<usize>,
     Vec<usize>,
     Vec<(usize, usize)>,
     Vec<MemberKind>,
@@ -81,7 +80,6 @@ fn build_catenoid_tube_with_ring_members(
 
     let mut nodes = vec![[0.0_f64; 3]; n_rings * N_THETA];
     let mut anchors = Vec::new();
-    let mut free = Vec::new();
 
     for ring in 0..n_rings {
         let z = -H + 2.0 * H * (ring as f64) / (N_AXIAL as f64);
@@ -98,7 +96,6 @@ fn build_catenoid_tube_with_ring_members(
                 let r = r_true + perturb * jitter(ring, j);
                 let dz = 0.5 * perturb * jitter(j, ring);
                 nodes[id] = [r * theta.cos(), r * theta.sin(), z + dz];
-                free.push(id);
             }
         }
     }
@@ -131,7 +128,7 @@ fn build_catenoid_tube_with_ring_members(
         kinds.push(MemberKind::Cable);
     }
 
-    (nodes, surfaces, anchors, free, members, kinds)
+    (nodes, surfaces, anchors, members, kinds)
 }
 
 /// Force density magnitudes for the ring members: struts compressive, cables
@@ -232,14 +229,26 @@ fn assert_all_non_vacuous(label: &str, values: &[f64]) {
     }
 }
 
+/// Floor for "the base-gauge solve actually moved off the seed geometry",
+/// comparable to [`PERTURB`] but well below it (task 6119 review). Without
+/// this check, a regression that made the convergence criterion trivially
+/// satisfiable would have BOTH gauges break out of the fixed point at
+/// iteration 0 and echo the unperturbed seed back as `converged == true`;
+/// every covariance assertion below would then compare the (λ-scaled) seed
+/// to itself and pass vacuously — the same "echo the unsolved initial guess
+/// back as converged" failure mode [`assert_all_non_vacuous`] does not, by
+/// itself, catch.
+const MIN_SOLVE_DISPLACEMENT: f64 = 1e-3;
+
 // ---------------------------------------------------------------------------
 // Shared assertion body
 // ---------------------------------------------------------------------------
 
 /// Shared assertion body for a single gauge-covariance check: both solves
-/// converged, solved geometry agrees, and each `(label, base, scaled)`
-/// quantity in `extra_echoes` scales by exactly `lambda` — on top of the
-/// member-force and force-density echoes checked unconditionally. Factored
+/// converged, the base-gauge solve actually moved off the seed geometry,
+/// solved geometry agrees, and each `(label, base, scaled)` quantity in
+/// `extra_echoes` scales by exactly `lambda` — on top of the member-force
+/// and force-density echoes checked unconditionally. Factored
 /// out so the four covariance tests (iso/aniso × [`LAMBDA`]/[`LAMBDA_SMALL`])
 /// share one assertion body instead of duplicating it a third and fourth time
 /// (task 6119).
@@ -249,6 +258,7 @@ fn assert_gauge_covariant(
     lambda: f64,
     base_converged: bool,
     scaled_converged: bool,
+    seed_nodes: &[[f64; 3]],
     base_nodes: &[[f64; 3]],
     scaled_nodes: &[[f64; 3]],
     base_member_forces: &[f64],
@@ -268,6 +278,18 @@ fn assert_gauge_covariant(
     assert!(
         scaled_converged,
         "[{context}] λ={lambda:e}: λ-gauge solve must converge — the criterion must be gauge-invariant (task 6119)",
+    );
+
+    // Vacuity guard (task 6119 review): pin that the base-gauge solve
+    // actually moved off the seed geometry before trusting any agreement
+    // check below — see [`MIN_SOLVE_DISPLACEMENT`] for why.
+    let moved = max_coord_rel_diff(base_nodes, seed_nodes);
+    assert!(
+        moved > MIN_SOLVE_DISPLACEMENT,
+        "[{context}] λ={lambda:e}: base-gauge solve barely moved off the seed \
+         geometry (rel diff = {moved:e}, expected > {MIN_SOLVE_DISPLACEMENT:e}) \
+         — suspiciously close to the 'echoed the unsolved initial guess back \
+         as converged' failure mode (task 6119)",
     );
 
     let node_err = max_coord_rel_diff(base_nodes, scaled_nodes);
@@ -311,7 +333,7 @@ fn assert_gauge_covariant(
 /// premature-stop direction), so both halves of the pre-fix defect are
 /// covered without duplicating the solve-and-assert body (task 6119).
 fn check_iso_surfaces_gauge_covariance(lambda: f64) {
-    let (nodes, surfaces, anchors, _free, members, kinds) =
+    let (nodes, surfaces, anchors, members, kinds) =
         build_catenoid_tube_with_ring_members(PERTURB);
     let q = ring_member_q(&kinds);
     let sigma = 1.0_f64;
@@ -333,6 +355,7 @@ fn check_iso_surfaces_gauge_covariance(lambda: f64) {
         lambda,
         base.converged,
         scaled.converged,
+        &nodes,
         &base.nodes,
         &scaled.nodes,
         &base.member_forces,
@@ -363,7 +386,10 @@ fn iso_surfaces_form_find_is_gauge_covariant_small_lambda() {
 }
 
 // ---------------------------------------------------------------------------
-// Anisotropic surfaces path — shares the identical criterion (:708)
+// Anisotropic surfaces path — shares the identical criterion with
+// `form_find_anchored_surfaces` (`free_equilibrium_residual_relative` /
+// `SURFACE_EQUILIBRIUM_REL_TOL`), not restated here to avoid a bare line
+// citation rotting on the next edit to form_find.rs (task 6119 review).
 // ---------------------------------------------------------------------------
 
 /// Solve the catenoid+ring-members fixture at both the base gauge and the
@@ -372,7 +398,7 @@ fn iso_surfaces_form_find_is_gauge_covariant_small_lambda() {
 /// Called at both [`LAMBDA`] and [`LAMBDA_SMALL`] — see
 /// [`check_iso_surfaces_gauge_covariance`] for why both directions matter.
 fn check_aniso_surfaces_gauge_covariance(lambda: f64) {
-    let (nodes, surfaces, anchors, _free, members, kinds) =
+    let (nodes, surfaces, anchors, members, kinds) =
         build_catenoid_tube_with_ring_members(PERTURB);
     let q = ring_member_q(&kinds);
     let sigma_warp = 1.0_f64;
@@ -416,6 +442,7 @@ fn check_aniso_surfaces_gauge_covariance(lambda: f64) {
         lambda,
         base.converged,
         scaled.converged,
+        &nodes,
         &base.nodes,
         &scaled.nodes,
         &base.member_forces,
