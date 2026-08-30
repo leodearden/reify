@@ -13,10 +13,7 @@
 //! The shared harness is `#[path]`-included (NOT via `tests/common/mod.rs`) so
 //! this safety-gate lands with zero edits to existing shared test files.
 
-#[path = "common/differential.rs"]
-mod differential;
-
-use differential::{
+use crate::differential::{
     CROSS_LET_4275_SRC, CorpusCase, Divergence, GOLDEN_CORPUS, SEED_CORPUS, assert_cell_definite,
     assert_equivalent_or_allowed, assert_unified_byte_identical, build_case,
     build_case_keep_engine, build_under, build_under_keep_engine, build_with_kernel_stdlib,

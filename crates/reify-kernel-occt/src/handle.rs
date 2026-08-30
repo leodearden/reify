@@ -68,6 +68,13 @@ enum OcctRequest {
         state: OpaqueState,
         reply: oneshot::Sender<()>,
     },
+    /// Task 5212: evict every resident native shape (+ derived caches) on the
+    /// kernel thread while keeping `next_id` monotonic, bounding OCCT native
+    /// memory across GUI whole-file reloads. Routed here because `OcctKernel`
+    /// is `!Send`. Reply is `()` (fire-and-confirm), mirroring `WithWarmState`.
+    Reset {
+        reply: oneshot::Sender<()>,
+    },
     /// T7: assemble N placed product solids into a TopoDS_Compound.
     MakeCompound {
         handles: Vec<GeometryHandleId>,
@@ -1242,6 +1249,10 @@ impl OcctKernelHandle {
                         kernel.with_warm_state(state);
                         let _ = reply.send(());
                     }
+                    OcctRequest::Reset { reply } => {
+                        kernel.reset();
+                        let _ = reply.send(());
+                    }
                     OcctRequest::MakeCompound { handles, reply } => {
                         let result = kernel.make_compound(&handles);
                         let _ = reply.send(result);
@@ -1714,6 +1725,23 @@ impl OcctKernelHandle {
         }
     }
 
+    /// Reset the kernel thread's `OcctKernel`: evict every resident native
+    /// shape and clear the derived caches while keeping `next_id` monotonic
+    /// (see `OcctKernel::reset`), bounding OCCT native memory across GUI
+    /// whole-file reloads.
+    ///
+    /// Routed over the actor channel because `OcctKernel` is `!Send` and lives
+    /// on the dedicated OS thread. Blocks until the kernel thread confirms;
+    /// safe from both sync and async contexts (via `send_recv`). A dead kernel
+    /// thread is a silent no-op — there is nothing left to reset. Mirrors the
+    /// `with_warm_state` channel wiring (`&self` because the actor channel
+    /// sender only needs a shared borrow; the `GeometryKernel::reset` override
+    /// takes `&mut self` and delegates here).
+    pub fn reset(&self) {
+        let (reply_tx, reply_rx) = oneshot::channel::<()>();
+        send_recv(&self.tx, OcctRequest::Reset { reply: reply_tx }, reply_rx);
+    }
+
     /// Explicitly shut down the kernel thread from an async context.
     ///
     /// Drops the channel sender (closing the channel so the kernel thread exits
@@ -1802,6 +1830,16 @@ impl Drop for OcctKernelHandle {
                 // naturally when its recv loop sees the closed channel.
                 // OCCT resources are freed when the thread exits (just
                 // asynchronously). For deterministic cleanup, use shutdown().
+                //
+                // FORWARD-LOOKING HAZARD (task 5212, harmless today): skipping
+                // thread.join() here is safe ONLY because the OcctKernelHandle
+                // session is never dropped-and-rebuilt inside the tokio runtime
+                // today. If an 'open file' / session-swap flow is ever wired to
+                // recreate this handle inside the async runtime, the old kernel
+                // thread could still be draining while a new one spawns — two
+                // OS threads mutating OCCT's process-global state concurrently
+                // (UB). Such a flow must route teardown through shutdown()
+                // (which joins via spawn_blocking) rather than relying on Drop.
             } else {
                 // Outside async context: safe to block on join for
                 // deterministic cleanup.
@@ -1815,6 +1853,14 @@ impl GeometryKernel for OcctKernelHandle {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         // Delegate to inherent method (which only needs &self).
         OcctKernelHandle::execute(self, op)
+    }
+
+    /// Override the trait no-op default: `OcctKernel` owns a growing table of
+    /// native B-rep shapes that must be freed on whole-file reload. Delegates
+    /// to the channel-routed inherent `OcctKernelHandle::reset` (which only
+    /// needs `&self`).
+    fn reset(&mut self) {
+        OcctKernelHandle::reset(self)
     }
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
@@ -2010,6 +2056,67 @@ mod tests {
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
         }
+    }
+
+    /// Channel-routed `reset()` on `OcctKernelHandle`: evicts the underlying
+    /// shape on the dedicated kernel thread (old handle → error via the #5211
+    /// `get_shape` guard, never a panic or stale value) and a subsequent
+    /// execute mints a strictly-greater (monotonic) id. Also exercises the
+    /// polymorphic trait path (`&mut dyn GeometryKernel`) so the engine's
+    /// `Box<dyn GeometryKernel>` reset call is covered.
+    #[test]
+    fn reset_evicts_shape_and_keeps_next_id_monotonic() {
+        let mut handle = super::OcctKernelHandle::spawn();
+        let box_h = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        assert!(
+            handle.query(&GeometryQuery::Volume(box_h.id)).is_ok(),
+            "box should be queryable before reset"
+        );
+
+        // Reset over the actor channel — evicts the resident shape.
+        handle.reset();
+
+        // The old handle is now absent from the shape table, so `get_shape`
+        // surfaces InvalidHandle (a clean error, not a crash or a stale read).
+        let after = handle.query(&GeometryQuery::Volume(box_h.id));
+        assert!(
+            matches!(after, Err(reify_ir::QueryError::InvalidHandle(_))),
+            "old handle must surface as InvalidHandle after reset (shape \
+             evicted from the table), got {after:?}"
+        );
+
+        // A fresh execute gets a strictly-greater id — reset kept next_id
+        // monotonic on the kernel thread, so ids are never reused.
+        let box_h2 = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(1.0),
+                height: Value::Real(1.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        assert!(
+            box_h2.id.0 > box_h.id.0,
+            "next_id must stay monotonic across channel-routed reset: {} !> {}",
+            box_h2.id.0,
+            box_h.id.0
+        );
+
+        // Polymorphic path: reset() through &mut dyn GeometryKernel (the shape
+        // the engine's Box<dyn GeometryKernel> reset call takes) must evict too.
+        let dyn_kernel: &mut dyn reify_ir::GeometryKernel = &mut handle;
+        dyn_kernel.reset();
+        let after2 = handle.query(&GeometryQuery::Volume(box_h2.id));
+        assert!(
+            matches!(after2, Err(reify_ir::QueryError::InvalidHandle(_))),
+            "polymorphic reset() through &mut dyn GeometryKernel must also \
+             evict the shape, got {after2:?}"
+        );
     }
 
     #[test]

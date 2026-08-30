@@ -191,7 +191,7 @@ fn identity_fn(
 /// `run_compute_dispatch`.
 #[test]
 fn e2e_optimized_fn_eval_pins_pending_lifecycle_via_run_compute_dispatch() {
-    let source = include_str!("fixtures/compute_identity.ri");
+    let source = include_str!("../fixtures/compute_identity.ri");
     let compiled = parse_and_compile_with_stdlib(source);
 
     let mut engine = make_simple_engine();

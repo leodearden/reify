@@ -30,7 +30,8 @@ use std::collections::BTreeMap;
 /// `constraint RepresentationWithin(bracket.fea_subject, 1mm)`.
 ///
 /// Uses only built-in constructs (mm, Real, structures) — no stdlib-only types.
-const MEMBER_ACCESS_SOURCE: &str = include_str!("../../../examples/fea_bracket_member_access.ri");
+const MEMBER_ACCESS_SOURCE: &str =
+    include_str!("../../../../examples/fea_bracket_member_access.ri");
 
 // ── POSITIVE member-access tests ─────────────────────────────────────────────
 
