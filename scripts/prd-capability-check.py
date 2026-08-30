@@ -164,19 +164,87 @@ def _resolve_tree_sitter_bin() -> str:
     return os.environ.get("TREE_SITTER_BIN", "tree-sitter")
 
 
+# Operator/debug escape hatch: pin the grammar cache dir explicitly, e.g. to
+# inspect the compiled reify.so or to share one warm cache across a manual
+# session, without having to reverse the derived hash.
+_CACHE_HOME_OVERRIDE_ENV = "REIFY_TS_CACHE_HOME"
+
+
+def _grammar_fingerprint(repo_root: str) -> str:
+    """Return a short CONTENT fingerprint of the generated grammar, or "".
+
+    Prefers the .grammar_hash.stamp that scripts/tree-sitter-generate.sh already
+    writes (a sha256 of grammar.js) — reading it keeps the cache key consistent
+    with the repo's own notion of grammar staleness and costs one 64-byte read
+    instead of a re-hash.  Falls back to hashing the generated grammar.json, and
+    to "" when neither exists.
+
+    Never raises.  A lane that has not generated the grammar (parser.c is
+    gitignored and absent in a fresh warm lane) must still get a cache path:
+    grammar_substrate_usable() runs at test-harness import time, where an
+    exception costs the whole suite instead of one skip.  Only OSError is
+    swallowed, so a genuine programming error still surfaces.
+    """
+    src = os.path.join(repo_root, "tree-sitter-reify", "src")
+
+    try:
+        with open(os.path.join(src, ".grammar_hash.stamp")) as fh:
+            stamp = fh.read().strip()
+        if stamp:
+            return stamp
+    except OSError:
+        pass
+
+    try:
+        with open(os.path.join(src, "grammar.json"), "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return ""
+
+
 def _grammar_cache_home(repo_root: str) -> str:
     """Return a private $XDG_CACHE_HOME for this repo's grammar probes.
 
-    Step-06 replaces this derivation with the fingerprinted form; for now it is
-    the simplest thing that isolates: a stable per-repo-root directory under
-    $TMPDIR.  Stable (not per-process) so the cold reify.so compile is paid once
-    per lane rather than once per prd-capability-check.py process.
+    THE INVARIANT THIS BUYS.  `tree-sitter parse` compiles the grammar to
+    $XDG_CACHE_HOME/tree-sitter/lib/<language-name>.so.  That artifact is keyed
+    by LANGUAGE NAME — not by grammar path — and invalidated only on source
+    mtime.  Every linked worktree of this store therefore resolves to the SAME
+    reify.so, so a patched build made in any other lane silently answers this
+    lane's parses, with a plausible exit code and no diagnostic.  Recorded
+    precedent, not a hypothetical: a mid-decompose reading returned exit 0 while
+    a concurrent HYP-A build held the cache — see
+    docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2.
+
+    The key has two components and each closes a distinct hole:
+      * abspath(repo_root) — per-lane isolation, so ~235 worktrees of one .git
+        cannot collide on one compiled grammar.
+      * the grammar FINGERPRINT — survives warm-lane mtime stamping.  Seeding
+        stamps mtimes, so tree-sitter's own mtime-based invalidation is not
+        trustworthy in this pool; a content-derived key makes a changed grammar
+        a NEW directory by construction rather than a stale hit.
+
+    Stable rather than per-process, so the cold reify.so compile (~2s measured)
+    is amortised across every probe in a process and every process in a lane.
+    Under $TMPDIR, which reify's landlock grants wholesale, and which
+    systemd-tmpfiles age-cleaning garbage-collects.
+
+    Deliberately NOT memoized: the cost is one 64-byte read plus a sha256 of a
+    short string — microseconds against a subprocess launch — while an
+    lru_cache would go stale within a process if the grammar were regenerated.
 
     The directory is created before returning, because tree-sitter does not
     reliably create a missing cache root and a non-existent one degrades into a
     grammar load failure.
     """
-    key = hashlib.sha256(os.path.abspath(repo_root).encode("utf-8")).hexdigest()[:16]
+    override = os.environ.get(_CACHE_HOME_OVERRIDE_ENV)
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
+
+    key = hashlib.sha256(
+        "\0".join((os.path.abspath(repo_root), _grammar_fingerprint(repo_root)))
+        .encode("utf-8")
+    ).hexdigest()[:16]
     path = os.path.join(tempfile.gettempdir(), f"reify-ts-cache-{key}")
     os.makedirs(path, exist_ok=True)
     return path
