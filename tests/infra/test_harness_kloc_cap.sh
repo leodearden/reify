@@ -2316,4 +2316,64 @@ assert "10: the silent-bind residue module-dir file DOES fire (returns 1)" \
 assert "10: silent-bind residue reported as undeclared-member member=harness_synth/x.rs" \
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_synth\.rs reason=undeclared-member member=harness_synth/x\.rs$' "$_s10_bind_out"
 
+# --- LIVE scan: every crates/*/tests dir holding a harness root, on disk —
+# same posture and structure as Section 6's live block (not scoped to
+# CONSOLIDATABLE_CRATES). This is the WHOLE-TREE-LIVE landing precondition
+# prerequisite pre-1 measured before any code was written (31 roots, 585
+# module-dir member files, 0 undeclared, on 4a9f2d6d4c): a rule (d) that
+# visited every root but silently compared zero member files (a broken find
+# glob, a moddir guard that always `continue`s, a declared-set that
+# accidentally contains everything) would pass an rc-0 + roots-floor assert
+# VACUOUSLY — the exact silent-failure mode this whole task exists to close,
+# one level up. The member-count floor below guards the guard. ---
+_s10_live_out="$(mktemp)"; _TMPDIRS+=("$_s10_live_out")
+_s10_live_rc=0
+_s10_live_roots=0
+: > "$_s10_live_out"
+for _d in "$REPO_ROOT"/crates/*/tests; do
+    [ -d "$_d" ] || continue
+    compgen -G "$_d/harness_*.rs" > /dev/null || continue
+    _s10_live_roots=$((_s10_live_roots + $(compgen -G "$_d/harness_*.rs" | wc -l)))
+    _c="$(basename "$(dirname "$_d")")"
+    harness_undeclared_member_violations "$_c" "$_d" >> "$_s10_live_out" 2>/dev/null || _s10_live_rc=1
+done
+
+# Offender lines to the archived log on failure (the Section 5/6 idiom).
+if [ "$_s10_live_rc" -ne 0 ]; then
+    echo "  ---- Section 10: live undeclared-member scan output (printed on failure) ----"
+    cat "$_s10_live_out"
+    echo "  ---- Section 10: end live scan output ----"
+fi
+
+assert "10: live tree — every harness root declares every module-dir member (rc 0)" \
+    test "$_s10_live_rc" -eq 0
+# Non-vacuity (roots): the live scan must actually have visited harness
+# roots, or a future glob/layout change would silently turn the assert above
+# into a no-op (parity with Section 6's >= 13 floor).
+assert "10: live scan actually visited harness roots (>= 13 found, non-vacuity)" \
+    test "$_s10_live_roots" -ge 13
+
+# Non-vacuity (members): roots alone are not enough — see the block comment
+# above. harness_undeclared_member_violations emits one aggregate
+# `scan=undeclared-members roots=<n> members=<n>` PASS line PER CALL (i.e.
+# per crate — the same granularity Section 6 is called at), so the live loop
+# above accumulates one such line per clean crate into $_s10_live_out.
+# Summing their `members=` fields across every crate is the whole-tree member
+# count this rule actually ratchets (585 today, measured on 4a9f2d6d4c — the
+# count only grows as consolidation leaves land, so this is a floor, not a
+# pin, mirroring Sections 8/9's own declared-row floors).
+assert "10: live scan emits the new aggregate PASS grammar (scan=undeclared-members roots=N members=N)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=undeclared-members roots=[0-9]+ members=[0-9]+$' "$_s10_live_out"
+
+# `|| true` (the Section 4 idiom, tests/infra/test_harness_kloc_cap.sh:1315):
+# under `set -o pipefail` a legitimate zero-match grep exits 1, and awk's
+# unconditional `END { print sum + 0 }` never masks that — without `|| true`
+# this whole command substitution would abort the script here, before
+# test_summary ever runs (the same class of hazard test_helpers.sh's assert()
+# guards against at its own `rm -f`/`return 0`).
+_s10_live_members="$(grep -E '^HARNESS_KLOC_CAP PASS scan=undeclared-members roots=[0-9]+ members=[0-9]+$' "$_s10_live_out" \
+    | awk -F'members=' '{sum += $2} END {print sum + 0}' || true)"
+assert "10: live scan actually compared >= 300 module-dir member files across all crates (non-vacuity floor, 585 today)" \
+    test "$_s10_live_members" -ge 300
+
 test_summary
