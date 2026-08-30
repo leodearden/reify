@@ -225,7 +225,24 @@ trait DampedMaterial : ElasticMaterial + Damped {}
 // ── Starter material library ─────────────────────────────────────────────────
 //
 // Each concrete material below is a top-level structure conforming to
-// `ElasticMaterial`. Defaults bake in matweb-equivalent public-reference
+// `DampedMaterial` — the named intersection `ElasticMaterial + Damped`
+// declared above (α #6877, PRD §Goal / decision 2). The presets conform to
+// the intersection rather than spelling both parents out.
+//
+// Nothing downstream changes at compile time: `DampedMaterial` REFINES
+// `ElasticMaterial`, so the four elastic properties and both Poisson
+// constraints still arrive transitively (via `collect_all_requirements`),
+// and every `ElasticMaterial` / `ConstitutiveLaw` consumer — `solve_elastic_static`,
+// `solve_buckling`, `stdlib/fdm.ri:153` — still accepts a preset, because
+// `trait_satisfies` walks all parents of a multi-parent refinement.
+//
+// Note that `TopologyTemplate.trait_bounds` is DECLARED-only, so a preset's
+// bounds vec now reads `["DampedMaterial", "Visual"]`: "ElasticMaterial" is
+// legitimately absent there while remaining satisfied. Tests that need the
+// satisfies property must assert it at a trait-bounded slot, not by
+// inspecting that vec.
+//
+// Defaults bake in matweb-equivalent public-reference
 // values so a bare `Steel_AISI_1045()` instantiation populates every cell;
 // callers may override individual fields at construction (e.g.
 // `Steel_AISI_1045(yield_stress: some(550MPa))` for a tempered variant).
@@ -252,7 +269,7 @@ trait DampedMaterial : ElasticMaterial + Damped {}
 //
 // γ (#4762): conforms to Visual; appearance is EDITORIAL (mid-dark neutral
 // grey, slight satin sheen) — NOT physically derived (PRD §4.3 decision 5).
-structure def Steel_AISI_1045 : ElasticMaterial + Visual {
+structure def Steel_AISI_1045 : DampedMaterial + Visual {
     param youngs_modulus : Pressure = 205GPa
     param poisson_ratio : Real = 0.29 // dimensionless
     param density : Density = 7850kg/m^3
@@ -309,7 +326,7 @@ structure def Steel_AISI_1045 : ElasticMaterial + Visual {
 //
 // γ (#4762): conforms to Visual; appearance is EDITORIAL (lighter grey, satin)
 // — NOT physically derived (PRD §4.3 decision 5).
-structure def Aluminium_6061_T6 : ElasticMaterial + Visual {
+structure def Aluminium_6061_T6 : DampedMaterial + Visual {
     param youngs_modulus : Pressure = 68.9GPa
     param poisson_ratio : Real = 0.33 // dimensionless
     param density : Density = 2700kg/m^3
@@ -366,7 +383,7 @@ structure def Aluminium_6061_T6 : ElasticMaterial + Visual {
 //
 // γ (#4762): conforms to Visual; appearance is EDITORIAL (grey, satin)
 // — NOT physically derived (PRD §4.3 decision 5).
-structure def Titanium_Ti6Al4V : ElasticMaterial + Visual {
+structure def Titanium_Ti6Al4V : DampedMaterial + Visual {
     param youngs_modulus : Pressure = 113.8GPa
     param poisson_ratio : Real = 0.342 // dimensionless
     param density : Density = 4430kg/m^3
@@ -426,7 +443,7 @@ structure def Titanium_Ti6Al4V : ElasticMaterial + Visual {
 //
 // γ (#4762): conforms to Visual; appearance is EDITORIAL (matte off-white)
 // — NOT physically derived (PRD §4.3 decision 5).
-structure def ABS_Plastic : ElasticMaterial + Visual {
+structure def ABS_Plastic : DampedMaterial + Visual {
     param youngs_modulus : Pressure = 2.3GPa
     param poisson_ratio : Real = 0.35 // dimensionless
     param density : Density = 1050kg/m^3
