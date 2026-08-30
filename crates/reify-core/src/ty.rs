@@ -71,15 +71,14 @@
 //! expired and migrated stdlib plus the corpus.  Post-5848 that spelling asserts
 //! unit-lessness rather than working around the grammar, so a `Vector3<Length>`
 //! arg at a `Vector3<Dimensionless>` param is a real error, not a spelling
-//! artefact.  Pinned at BOTH severities:
+//! artefact.  Pinned at BOTH severities, one flagship per side:
 //! `dimensionless_quantity_param_rejects_dimensioned_vector_arg`
 //! (`conformance/mod.rs`, fn-call path, `Severity::Error`) and
 //! `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
 //! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, ctor
-//! path, `Severity::Warning`).  The other two arms sharing the rule are pinned
-//! to reach the STRICT param-side predicate as well, alongside the first:
-//! `dimensionless_quantity_point_param_rejects_dimensioned_point_arg` and
-//! `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`.
+//! path, `Severity::Warning`).  The `Point` and `Matrix` / `Tensor` arms are
+//! pinned to reach the strict param-side predicate too, by probes sitting
+//! beside those two in the same two modules; they are not re-listed here.
 //!
 //! **`Real` is the SAME CELL as `Dimensionless`; the ruling covers both.**  The
 //! two spellings are exact synonyms at every route into a quantity slot.
@@ -113,52 +112,28 @@
 //! `Dimensionless`-quantity param in `stdlib/` and `examples/` passes a
 //! dimensionless `vec3(…)`, and `no_example_emits_ctor_field_conformance_diagnostics`
 //! stayed green.  That gate discovers files under `EXAMPLES_DIR` only, so `prj/`
-//! and `designs/` are outside the measurement.  The nearest LATENT instance
-//! there is `prj/printer_v01/printer.ri`'s cardinal-axis `x_axis` / `y_axis` /
-//! `z_axis` `let`s — spelled `vec3(1m, 0mm, 0mm)` and siblings under a
-//! "unit-magnitude convention: 1 m" comment, i.e. genuinely
-//! `Length`-dimensioned direction vectors.  They are
-//! referenced nowhere today, so they trip nothing; they are exactly the shape
-//! this rule rejects if anyone ever wires one into a `Vec3<Dimensionless>` slot.
+//! and `designs/` are OUTSIDE the measurement and are evidence neither way; the
+//! nearest latent instance there is `prj/printer_v01/printer.ri`'s cardinal-axis
+//! direction `let`s, written under a unit-magnitude `1m` convention and so
+//! genuinely `Length`-dimensioned.  Inside the measured tree the nearest is that
+//! same `fdm_slice.ri` `Bead.centerline`, absent only because the measurement is
+//! over constructor-ARG sites and no `.ri` file constructs a `Bead` today.  If
+//! one ever did it would NOT stay silent, including from a literal `point3(…)`
+//! arg rather than merely a `List<Point3<Length>>`-typed REF — see the expired
+//! premise below for why a `point3(…)` call now carries a real quantity slot,
+//! recovered from its FIRST argument via the weakness task 5889 owns
+//! (`math_signatures.rs`).
 //!
-//! Inside the measured tree the nearest latent instance is that same
-//! `fdm_slice.ri` `Bead.centerline`.  It is absent from the measurement
-//! because the measurement is over constructor-ARG sites and this param has
-//! none: no `.ri` file constructs a `Bead` today (the `Toolpath` / `Bead` values
-//! are built Rust-side by `toolpath_to_value`, which no conformance walk sees).
-//! If one ever did, it would NOT stay silent — including from a literal
-//! `point3(…)` arg, not merely from a `List<Point3<Length>>`-typed value REF.
-//! Since task 5344 claimed `point3` / `point2` into the math construction
-//! family, `compile_expr_guarded_with_expected_inner` routes those calls through
-//! `math_fn_result_type`, whose collapsed `"vec3" | "vec2" | "point3" | "point2"`
-//! arm returns a real `Type::Point { n, quantity }` — the quantity recovered from
-//! the FIRST argument, i.e. via the same first-element weakness task 5889 owns
-//! (`math_signatures.rs`; see the note there).
-//!
-//! Three cells are MEASURED at the ctor path, every one at `Severity::Warning`,
-//! and each is PINNED by a `.ri` fixture in
-//! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs` rather
-//! than by a rendering quoted here — the diagnostic's exact wording is a
-//! `format!` in `conformance/mod.rs` and is pinned whole in exactly one place,
-//! `dimensionless_quantity_param_rejects_dimensioned_vector_arg`:
-//!
-//!   * `point3(1kg, 0kg, 0kg)` at `param origin : Point3<Length>` — exactly ONE
-//!     `ArgTypeMismatch`, naming both quantity slots (concrete×concrete, already
-//!     rejected under task 5766's symmetric rule);
-//!   * `point3(1m, 0m, 0m)` at `Point3<Dimensionless>` — and identically at
-//!     `Point3<Real>`, the `fdm_slice.ri` spelling — exactly ONE
-//!     `ArgTypeMismatch` requiring the dimensionless slot: a live `.ri`-level
-//!     instance of the param-side tightening ruled above, and the same-cell claim
-//!     for `Real` exercised end to end.  Pinned by
-//!     `point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch`
-//!     and `point3_dimensioned_at_real_point_param_warns_arg_type_mismatch`;
-//!   * `point3(0m, 0m, 0m)` at `Point3<Length>` — CLEAN.
-//!
-//! Those two fixtures drive the cell through the real `point3(…)` →
-//! `math_fn_result_type` → `Point` arm chain that the direct-`Type` probes in
-//! `conformance/mod.rs` deliberately bypass — the same reason the `Matrix` arm
-//! has a `matrix(…)` fixture alongside its own direct-`Type` probe.  Without them
-//! this section would document an end-to-end result no test could hold.
+//! The `.ri` fixtures in
+//! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs` drive
+//! this rule at the ctor path (`Severity::Warning`) through the real
+//! `point3(…)` / `matrix(…)` → `math_fn_result_type` → arm chain that the
+//! direct-`Type` probes in `conformance/mod.rs` deliberately bypass, the `Real`
+//! spelling of the dimensionless cell among them — so the same-cell claim above
+//! is exercised end to end rather than only asserted here.  They pin the cells
+//! by behaviour, not by a rendering quoted here: the diagnostic's exact wording
+//! is a `format!` in `conformance/mod.rs`, pinned whole in exactly one place,
+//! `dimensionless_quantity_param_rejects_dimensioned_vector_arg`.
 //!
 //! **A premise this section used to rest on has EXPIRED; the conclusion has
 //! not.**  The zero-new-diagnostics reach claim above holds (the corpus gate was
@@ -166,42 +141,28 @@
 //! produce a dimensioned `Type::Point` arg, because `point3(…)` carries no
 //! quantity slot" — does NOT, and must not be re-asserted: task 5344 claimed
 //! `point3` / `point2` into the math construction family, so those calls now
-//! return a real `Type::Point { n, quantity }`.  That claim is still written, and
-//! still false, at four other sites, ALL OWNED BY TASK 6436 (filed from
-//! esc-6159-3 for exactly this purpose) — flagged here so a reader arriving from
-//! this section is not misled by them, not fixed here:
+//! return a real `Type::Point { n, quantity }`.  That claim is still written,
+//! and still false, at further sites in `conformance/mod.rs` and
+//! `struct_ctor_field_conformance_tests.rs` — ALL OWNED BY TASK 6436, filed
+//! from esc-6159-3 for exactly this purpose, which enumerates them in its own
+//! description so the site list has ONE home and is not maintained here in
+//! lockstep.  Converting the pre-existing `Point`-arm probes to `.ri` fixtures,
+//! which the ctor-path fixtures above show is now possible for the first time,
+//! is 6436's as well.  Task 6159 corrected only what task 6159 itself authored.
 //!
-//!   * the "Why the ARG side is tolerant rather than strict" paragraph BELOW in
-//!     this file, which still leads with `point3(…)` as one of three erasure
-//!     routes.  Only that ONE route is retired; the other two — a
-//!     `Matrix<3,3,MomentOfInertia>` spelled `List<List<Real>>` at every corpus
-//!     site, and a `Field`'s slots erasing to `Field<Real, Real>` — are
-//!     untouched, so the arg-side tolerance RULING stands and only its stated
-//!     basis needs re-arguing;
-//!   * the "why this is an in-module unit test and not a `.ri` fixture"
-//!     rationales on task 5465's `point_param_rejects_cross_dimension_point_arg`
-//!     and `point_param_rejects_wrong_arity_point_arg` in `conformance/mod.rs`;
-//!   * the Point-family fixture notes in `struct_ctor_field_conformance_tests.rs`;
-//!   * `stdlib/modal_analysis.ri`'s three "`Vector3<Real>` is not valid .ri
-//!     syntax — the `Vector3<Q>` resolver requires `Q` to be a dimension name"
-//!     comments, on `Mode.shape`, `ModalOptions.reference_direction` and the
-//!     `ModalResult` participation-factor note.  That claim is stale independent
-//!     of this rule — `resolve_dimension_type` accepts BOTH names (see the
-//!     same-cell paragraph above) — but the ruling here is what makes it
-//!     actively contradictory, and `modal_analysis.ri` is a
-//!     `Vector3<Dimensionless>`-heavy file a reader of this rule will land in.
-//!
-//! Converting the pre-existing `Point`-arm probes to `.ri` fixtures, which the
-//! cells above show is now possible for the first time, is task 6436's as well.
-//! Task 6159 corrected only what task 6159 itself authored: this section, the
-//! rationale on its own
-//! `dimensionless_quantity_point_param_rejects_dimensioned_point_arg` probe, and
-//! the two `.ri` fixtures above.
+//! 6436's list also includes one site in THIS file, and that one IS flagged in
+//! place, because a reader of this section reaches it a few paragraphs down:
+//! "Why the ARG side is tolerant rather than strict" still leads with
+//! `point3(…)` as one of three erasure routes.  Only that ONE route is retired;
+//! the other two — a `Matrix<3,3,MomentOfInertia>` spelled `List<List<Real>>` at
+//! every corpus site, and a `Field`'s slots erasing to `Field<Real, Real>` — are
+//! untouched, so the arg-side tolerance RULING stands and only its stated basis
+//! needs re-arguing.
 //!
 //! The `Real` quantity slots on `stdlib/solver_elastic.ri`'s `ElasticResult`
-//! `gradient` / `frame` params are out of reach for a different and durable
-//! reason: they sit inside `Field<…>`, and the
-//! `Field` arm below does not recurse into its `domain` / `codomain`.
+//! `gradient` / `frame` params are out of the measurement's reach for a
+//! different and durable reason: they sit inside `Field<…>`, and the `Field`
+//! arm below does not recurse into its `domain` / `codomain`.
 //!
 //! **The asymmetry is a RULING, not an inconsistency — do not "fix" it by
 //! symmetry.**  It tracks a real difference in what the two sides know: erasure
