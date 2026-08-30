@@ -1710,8 +1710,8 @@ pub(crate) fn loads_supports_to_bc_node_sets(
 ) -> (Option<Vec<u32>>, Option<Vec<u32>>, Vec<Diagnostic>) {
     let boundary = realized.boundary();
     let mut diagnostics = Vec::new();
-    let clamp = target_node_set(supports, boundary, "FixedSupport", &mut diagnostics);
-    let load = target_node_set(loads, boundary, "PointLoad", &mut diagnostics);
+    let clamp = target_node_set(supports, boundary, &mut diagnostics);
+    let load = target_node_set(loads, boundary, &mut diagnostics);
     (clamp, load, diagnostics)
 }
 
@@ -1728,15 +1728,17 @@ pub(crate) fn loads_supports_to_bc_node_sets(
 ///
 /// The diagnostic names the offending item(s) by their own
 /// `StructureInstance.type_name`, so a `PinnedSupport` is reported as a
-/// `PinnedSupport` (task 6663 — it used to be reported as a `FixedSupport`, the
-/// hard-coded `kind` the caller threads in). `kind` (`"FixedSupport"` /
-/// `"PointLoad"`) remains the FALLBACK label for the case where no item carried
-/// a target-bearing type name, which keeps the message byte-identical for
-/// `FixedSupport` / `PointLoad` inputs.
+/// `PinnedSupport` (task 6663 — it used to be reported as a `FixedSupport`,
+/// hard-coded by the caller). That leaves the message byte-identical for
+/// `FixedSupport` / `PointLoad` inputs, which is why no caller-supplied fallback
+/// label is needed: `any_target` and the `target_bearing_types` push happen on
+/// the SAME iteration, and the `!any_target` early return above means the label
+/// is only ever read when at least one type name was collected. The old
+/// `kind: &str` parameter existed solely to fill an unreachable
+/// `target_bearing_types.is_empty()` arm and was dropped as dead code.
 fn target_node_set(
     list: &Value,
     boundary: Option<&reify_ir::BoundaryAssociation>,
-    kind: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<u32>> {
     let items = match list {
@@ -1783,15 +1785,17 @@ fn target_node_set(
         // debuggability; `nearest` stays None (no nearest-match heuristic here).
         //
         // The label comes from the offending item's OWN `type_name` so a
-        // `PinnedSupport` is not reported as a `FixedSupport` (task 6663);
-        // `kind` is the fallback when nothing target-bearing was seen, which
-        // leaves the `FixedSupport` / `PointLoad` messages byte-identical for
-        // `FixedSupport` / `PointLoad` inputs.
-        let label = if target_bearing_types.is_empty() {
-            kind.to_string()
-        } else {
-            target_bearing_types.join("/")
-        };
+        // `PinnedSupport` is not reported as a `FixedSupport` (task 6663).
+        //
+        // Non-empty by construction: `any_target` is set on the SAME iteration
+        // that pushes into `target_bearing_types`, and `!any_target` returned
+        // above — so there is no fallback branch to take here, only an invariant
+        // to state.
+        debug_assert!(
+            !target_bearing_types.is_empty(),
+            "any_target implies at least one collected type_name",
+        );
+        let label = target_bearing_types.join("/");
         let selector = format!(
             "{label} target resolved to {} face handle(s) {:?} but matched no boundary node \
              on the realized mesh",
@@ -6241,11 +6245,14 @@ mod tests {
     /// Task 6663: a `SelectorNoMatch` diagnostic must name the OFFENDING support
     /// type, not a hard-coded one.
     ///
-    /// `loads_supports_to_bc_node_sets` passes the literal `"FixedSupport"` as
-    /// `target_node_set`'s `kind`, so a `PinnedSupport` whose target resolves to
-    /// zero boundary nodes is reported as a `FixedSupport` — the wrong support
-    /// type in the only message the author sees. RED until `target_node_set`
-    /// derives the label from the item's own `StructureInstance.type_name`.
+    /// `loads_supports_to_bc_node_sets` used to pass the literal `"FixedSupport"`
+    /// as a hard-coded `kind` label, so a `PinnedSupport` whose target resolves
+    /// to zero boundary nodes was reported as a `FixedSupport` — the wrong
+    /// support type in the only message the author sees. RED until
+    /// `target_node_set` derived the label from the item's own
+    /// `StructureInstance.type_name`; that parameter has since been dropped
+    /// entirely (its only remaining use was an unreachable fallback arm), so
+    /// this test now guards the sole surviving label path.
     #[test]
     fn selector_no_match_diagnostic_names_the_offending_support_type() {
         let (handle, _, _) = task6663_two_face_handle();
