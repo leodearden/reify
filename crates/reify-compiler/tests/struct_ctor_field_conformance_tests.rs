@@ -2436,6 +2436,64 @@ fn vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch() {
     );
 }
 
+const SRC_VEC3_DIMENSIONED_OFF_FIRST_AT_DIMENSIONLESS: &str = r#"module test.vec3_dimensioned_off_first_at_dimensionless
+structure def Frame { param dir : Vector3<Dimensionless> }
+structure def Root {
+    let f = Frame(dir: vec3(0, 1m, 0))
+}
+"#;
+
+/// THE ACCEPTED RESIDUAL of the param-side ruling, pinned as an accepted state
+/// rather than left unnoticed: move the dimensioned component OFF index `[0]`
+/// and the very same rejection goes SILENT.
+///
+/// The one-token-different twin of
+/// [`vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`]
+/// directly above — same `Frame`, same `Vector3<Dimensionless>` param, same
+/// three components, only the ORDER differs. That twin is therefore this
+/// fixture's non-vacuity proof and no separate one is needed: the param
+/// spelling demonstrably resolves and rejects, so silence HERE can come only
+/// from `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" |
+/// "point2"` arm (`crates/reify-compiler/src/math_signatures.rs`) taking the
+/// whole vector's quantity from component `[0]` alone.
+///
+/// Worth pinning because the param-side tightening made this false negative
+/// USER-VISIBLE where it had been cosmetic: before the tightening no
+/// `Dimensionless` param could reject at all, so component order changed
+/// nothing. The two directions are now recorded together, which is what stops a
+/// one-sided change to task 5889's inference from moving one and not the other
+/// without a test noticing.
+///
+/// Task 5889 owns that inference (its scope covers this inline arm alongside
+/// `list_shape` / `matrix_shape`). When it lands, this fixture and the
+/// `matrix` sibling
+/// [`matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
+/// must be re-read as a PAIR in that same commit, because they move in opposite
+/// directions and which way depends on the fix chosen: degrading a
+/// heterogeneous literal to `Type::dimensionless_scalar()` flips the `matrix`
+/// sibling to CLEAN and leaves this one clean, whereas comparing EVERY
+/// component flips this one to a Warning and leaves the sibling warning.
+/// Neither is allowed to move silently.
+#[test]
+fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_OFF_FIRST_AT_DIMENSIONLESS);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "vec3(0, 1m, 0) at a Vector3<Dimensionless> param stays SILENT today. This is a \
+         KNOWN false negative owned by task 5889, NOT a design choice: the arg's quantity \
+         slot is taken from component [0] alone, so moving the `1m` to component [0] \
+         rejects (the twin directly above). If this now fires, 5889 (or an equivalent \
+         change) has landed — retarget BOTH this fixture and the matrix sibling together. \
+         Got: {diags:#?}"
+    );
+}
+
 const SRC_POINT3_DIMENSIONED_AT_DIMENSIONLESS: &str = r#"module test.point3_dimensioned_at_dimensionless
 structure def Origin { param origin : Point3<Dimensionless> }
 structure def Root {
