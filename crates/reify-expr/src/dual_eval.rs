@@ -17,6 +17,16 @@
 //!   [`crate::eval_ne`], [`crate::eval_cmp`]), from [`crate::kleene`], from
 //!   `reify_stdlib::eval_builtin`, or from `crate::field_reductions`.
 //!
+//! The corollary, and the one maintenance rule this module has: wherever
+//! [`crate::eval_expr`] INTERCEPTS a call before `reify_stdlib::eval_builtin`,
+//! this module must intercept it in the same place, on the same operand shapes.
+//! Today that is the field reductions, at both arities — the whole-field arms
+//! (lib.rs:459-484) and the bounded `max/min/argmax/argmin(field, bounds)` arms
+//! (lib.rs:490-533) — see [`field_reduction_kind`].  An interception added
+//! there and not mirrored here does not fail loudly; it silently routes the
+//! call to `eval_builtin`, which typically answers `Undef` for the very
+//! operand types the interception existed to handle.
+//!
 //! So reify's value semantics — dimension algebra, strict-`Undef` propagation,
 //! `sanitize`, the Invariant V `Scalar{DIMENSIONLESS} → Real` collapse,
 //! `Point + Point` rejection — have exactly ONE implementation, and
@@ -245,9 +255,29 @@ fn node_is_kink(e: &CompiledExpr) -> bool {
         ),
         CompiledExprKind::FunctionCall { function, args } => {
             is_kink_builtin(&function.name, args.len())
+                || is_bounded_reduction_shaped(&function.name, args.len())
         }
         _ => false,
     }
+}
+
+/// Statically — with no operand values in hand — could this call be a BOUNDED
+/// field reduction that [`is_kink_builtin`] does not already claim?
+///
+/// `is_kink_builtin` claims `("min" | "max", 2)` for the BINARY NUMERIC kink,
+/// which incidentally keeps `max(field, bounds)` off the fast path.  The
+/// arity-2 `argmax`/`argmin` form has no binary-numeric reading to claim it, so
+/// without this a seed-independent `argmax(field, bounds)` would be swallowed
+/// whole by the fast path and record NOTHING — while genuinely selecting an
+/// extremum grid node.  An empty [`BranchRecord`] has to mean "no kink here",
+/// never "we did not look".
+///
+/// Being a static walk, this answers CONSERVATIVELY: it only suppresses the
+/// fast path.  [`field_reduction_kind`] makes the real decision once the
+/// operand values exist, and a call that turns out not to be a field reduction
+/// falls through to the ordinary refusal path exactly as before.
+fn is_bounded_reduction_shaped(name: &str, arity: usize) -> bool {
+    matches!((name, arity), ("argmax" | "argmin", 2))
 }
 
 /// Forward-mode dual evaluation of `expr` at the point held in `ctx`.
@@ -995,14 +1025,42 @@ fn field_reduction_kind(name: &str, args: &[Value]) -> Option<(ReductionKind, Re
 }
 
 /// A field reduction: record which grid point won, and refuse a tangent when
-/// the field itself moves with the seeds.
+/// any operand moves with the seeds.
+///
+/// # Both arities, mirroring `eval_expr`
+///
+/// Field reductions are intercepted at BOTH arities, exactly mirroring
+/// `crate::eval_expr`'s whole-field arms (lib.rs:459-484) and its BOUNDED arms
+/// `max/min/argmax/argmin(field, bounds: BoundingBox)` (lib.rs:490-533).  That
+/// mirroring is the entire reason the module's headline invariant
+/// `eval_dual(e).value == eval_expr(e)` holds *by construction*: both paths
+/// call the same `crate::field_reductions` helpers on the same operands.
+///
+/// **A new interception in `eval_expr` MUST be mirrored here**, or the
+/// invariant silently breaks — which is precisely how the bounded form came to
+/// return `Undef` from the dual path while `eval_expr` returned a finite
+/// scalar (task #6672 review, steps 21-24).
+///
+/// # The recorded winner
+///
+/// The `BranchChoice::FieldArgExtremum` is taken from the argextremum helper
+/// *at the matching extent* — bounded reductions record the bounded winner, so
+/// the recorded grid node is always one the reduction actually considered.
+/// When the argextremum is not computable (an `Analytical` field the whole-field
+/// helpers do not handle; a bounded reduction whose box contains no usable
+/// node) the choice is `BranchChoice::Unresolved`, at both arities: the entry
+/// is still emitted, because λ (#6679) must be able to read an empty record as
+/// "no kink here" rather than "we did not look".
+///
+/// # The tangent
 ///
 /// This task does not differentiate *through* a field — PRD §7.7 splits
 /// derivatives three ways, and geometry/field derivatives are the ANALYTIC
-/// source, not the AD one.  A seed-independent field is genuinely flat
-/// (`Tangent::Zero`); a seed-dependent one gets `Tangent::None`, because a zero
-/// row would tell the solver the residual is flat in a variable it really does
-/// depend on.
+/// source, not the AD one.  Operands that are all seed-independent make the
+/// reduction genuinely flat (`Tangent::Zero`); anything else gets
+/// `Tangent::None`, because a zero row would tell the solver the residual is
+/// flat in a variable it really does depend on.  For the bounded form that
+/// includes the BOX, which chooses which grid node wins.
 #[allow(clippy::too_many_arguments)]
 fn eval_field_reduction(
     kind: ReductionKind,
@@ -1031,20 +1089,32 @@ fn eval_field_reduction(
         },
         // The bounded computes need the `EvalContext` (an Analytical/Composed
         // field is grid-sampled through it), unlike their whole-field siblings.
+        //
+        // The recorded winner comes from the BOUNDED argextremum, applied to
+        // the same field and the same box.  Reusing the whole-field
+        // `compute_argmax`/`compute_argmin` sibling here would name a grid node
+        // that may sit outside the box entirely, and λ (#6679) would then see a
+        // PHANTOM flip whenever the global extremum moved while the bounded
+        // winner did not — and MISS a real flip whenever the bounded winner
+        // moved while the global one did not.
         ReductionExtent::Bounded => {
             let bounds = &args[1];
             match kind {
-                ReductionKind::Max => {
-                    (fr::compute_max_bounded(field, bounds, ctx), fr::compute_argmax(field))
-                }
-                ReductionKind::Min => {
-                    (fr::compute_min_bounded(field, bounds, ctx), fr::compute_argmin(field))
-                }
+                ReductionKind::Max => (
+                    fr::compute_max_bounded(field, bounds, ctx),
+                    fr::compute_argmax_bounded(field, bounds, ctx),
+                ),
+                ReductionKind::Min => (
+                    fr::compute_min_bounded(field, bounds, ctx),
+                    fr::compute_argmin_bounded(field, bounds, ctx),
+                ),
                 ReductionKind::ArgMax => {
-                    (fr::compute_argmax_bounded(field, bounds, ctx), fr::compute_argmax(field))
+                    let a = fr::compute_argmax_bounded(field, bounds, ctx);
+                    (a.clone(), a)
                 }
                 ReductionKind::ArgMin => {
-                    (fr::compute_argmin_bounded(field, bounds, ctx), fr::compute_argmin(field))
+                    let a = fr::compute_argmin_bounded(field, bounds, ctx);
+                    (a.clone(), a)
                 }
             }
         }
