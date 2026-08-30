@@ -253,6 +253,14 @@ This matters beyond pedantry: the filing presumed the 24mm was *not* explained b
 seed-fallback and was therefore a second, separate effect. It is the same mechanism, arm 3
 of `extract_initial_point`, two-sided branch. There is one defect here, not two.
 
+**Where the verdict lives.** The PRD's §10 item-4 annotation deliberately carries only the
+*disposition* — is-it-a-bug, the wording correction, the three owners — plus a pointer
+here. **This note is the single source of truth** for the mechanism chain, the probe
+table, the severity call and the item-3 boundary. Keep it that way: a second copy of the
+verdict in the PRD would drift the moment #5711 or #6678 lands and one of the two copies
+is updated. When that happens, re-measure and update *this* file, and touch the PRD line
+only if the disposition itself changed.
+
 ## §6 — Why the suite was blind
 
 A real defect with fully green coverage, for a structural reason worth recording.
