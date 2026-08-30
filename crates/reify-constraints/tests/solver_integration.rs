@@ -3670,3 +3670,78 @@ fn solve_ranked_multistart_all_starts_infeasible_falls_back_to_infeasible() {
         ),
     }
 }
+
+// ---- BT13: producers that do not opt into the completeness axis (#6706) ----
+
+/// BT13 (solution-set-completeness): `DimensionalSolver` does not opt into the
+/// completeness axis at task α, so both its ranked entry points must report
+/// `Partial { NotAttempted }` — and `solve()` must be byte-identical to what it
+/// returned before, with candidate 0 carrying the same `values` and `unique`.
+///
+/// The optimality field is bound with `..` and asserted about nowhere: #6706 does
+/// not touch the optimality axis, and pinning a `BestFoundReason` here would
+/// couple this test to P2 μ #6680's landing.
+#[test]
+fn dimensional_solver_ranked_reports_not_attempted_and_preserves_solve() {
+    use reify_ir::{Completeness, PartialReason, RankedSolveResult};
+
+    let solver = DimensionalSolver;
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    // The single-auto feasibility problem this file already covers: 2mm < t < 20mm.
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.025)),
+            free: true,
+        }],
+        constraints: vec![
+            (cnid("Bracket", 0), gt(thickness_ref.clone(), literal(mm(2.0)))),
+            (cnid("Bracket", 1), lt(thickness_ref, literal(mm(20.0)))),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    // BT13 half 1 — the frozen `solve()` surface.
+    let (solved_values, solved_unique) = match solver.solve(&problem) {
+        SolveResult::Solved { values, unique } => (values, unique),
+        other => panic!("expected Solved, got {other:?}"),
+    };
+
+    // BT13 half 2 — both ranked entry points add the verdict and nothing else.
+    for (label, ranked) in [
+        ("solve_ranked", solver.solve_ranked(&problem)),
+        (
+            "solve_ranked_with_dispatch",
+            solver.solve_ranked_with_dispatch(&problem, None),
+        ),
+    ] {
+        match &ranked {
+            RankedSolveResult::Ranked { candidates, completeness, .. } => {
+                assert_eq!(
+                    *completeness,
+                    Completeness::Partial { reason: PartialReason::NotAttempted },
+                    "{label}: DimensionalSolver does not opt into the completeness axis at task α"
+                );
+                assert!(!completeness.derived_unique(candidates.len()), "{label}: C1");
+                assert!(!completeness.permits_proven_optimal(), "{label}: C2");
+
+                let c = &candidates[0];
+                assert_eq!(
+                    c.values, solved_values,
+                    "{label}: candidate 0 values must match solve() exactly"
+                );
+                assert_eq!(
+                    c.unique, solved_unique,
+                    "{label}: candidate 0 unique must match solve() exactly"
+                );
+            }
+            other => panic!("{label}: expected Ranked, got {other:?}"),
+        }
+    }
+}

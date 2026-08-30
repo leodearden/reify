@@ -3162,12 +3162,28 @@ mod solve_ranked_override_tests {
     }
 
     /// Unwrap `Ranked`, or panic naming the variant that came back.
+    ///
+    /// BT13 (#6706): every `Ranked` the CpSat path produces is checked here for
+    /// the completeness verdict, because CpSat does not opt into the axis at task
+    /// α — its `complete` flag becomes `Exhaustive` / `Partial{BoxBudgetExhausted}`
+    /// at a later leaf. Checking it in the shared unwrapper covers every CpSat
+    /// ranked test at once rather than one assertion per call site.
+    ///
+    /// `optimality` is passed through untouched; #6706 does not touch that axis.
     fn ranked(result: RankedSolveResult) -> (Vec<RankedCandidate>, OptimalityStatus) {
         match result {
             RankedSolveResult::Ranked {
                 candidates,
                 optimality,
-            } => (candidates, optimality),
+                completeness,
+            } => {
+                assert_eq!(
+                    completeness,
+                    reify_ir::Completeness::not_attempted(),
+                    "BT13: the CpSat ranked path does not opt into the completeness axis at task α"
+                );
+                (candidates, optimality)
+            }
             other => panic!("expected RankedSolveResult::Ranked; got {other:?}"),
         }
     }
