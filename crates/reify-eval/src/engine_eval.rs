@@ -6014,9 +6014,15 @@ impl Engine {
                 let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
                     if problem.objective.is_some() {
                         match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
+                            // `..` drops the `completeness` verdict deliberately:
+                            // the engine does not consume the completeness axis at
+                            // task α #6706. δ #6709 is the leaf that reads it (the
+                            // §3.4 verdict policy), so this is a known gap, not an
+                            // oversight.
                             RankedSolveResult::Ranked {
                                 mut candidates,
                                 optimality,
+                                ..
                             } => {
                                 assert!(
                                     !candidates.is_empty(),
@@ -7383,9 +7389,14 @@ impl Engine {
         let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
             if problem.objective.is_some() {
                 match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
+                    // `..` drops the `completeness` verdict deliberately: the engine
+                    // does not consume the completeness axis at task α #6706.
+                    // δ #6709 is the leaf that reads it (the §3.4 verdict policy),
+                    // so this is a known gap, not an oversight.
                     RankedSolveResult::Ranked {
                         mut candidates,
                         optimality,
+                        ..
                     } => {
                         assert!(
                             !candidates.is_empty(),
