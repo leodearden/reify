@@ -2567,6 +2567,35 @@ mod tests {
             ("//! Re-establishes the deliverable from task #479 that was lost when commit 00a86da53", 479),
             // crates/reify-expr/tests/field_eval_tests.rs:209
             ("/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient", 630),
+            // ---- the digit bound must be UNIFORM across all three families ----
+            // The one tracked line repo-wide that puts a REAL task id in
+            // family-2 register: `git grep -nE '(invariants?|rows?|boundary)
+            // #[0-9]{3,}'` over ALL tracked files returns exactly this hit, and
+            // #5238 is `done` — terminal — and owns that very file.  An
+            // unbounded family does not merely mute such a cite: on a marker
+            // line it DOWNGRADES a High `orphaned` hard-gate finding to the
+            // Medium advisory `malformed-cite`, and in the cite-anchored δ-B
+            // lane it ERASES the candidate outright.  §6.6's ratchet cannot see
+            // either — `live ⊆ baseline` catches a GAINED finding, never a LOST
+            // one — so the bound has to be pinned here.
+            // crates/reify-eval/tests/engine_eval_commit_migration.rs:1490
+            ("/// This is the invariant #5238 nearly lost: both let evaluators used to emit", 5238),
+            // Synthetic four-digit forms for every family that carried no bound
+            // of its own.  Family 1 has ZERO live four-digit exposure today
+            // (`git grep -nEi '(§[0-9.]*|\b(OQ|DD|Q|T))#[0-9]{3,}'` over all
+            // tracked files returns nothing), so pinning it here is what makes
+            // that shape a PROPERTY rather than luck.
+            ("//! superseded by §7#4553 in the ratchet", 4553),
+            ("//! superseded by T#4553 in the ratchet", 4553),
+            ("//! superseded by Q#4553 in the ratchet", 4553),
+            ("//! superseded by OQ#4553 in the ratchet", 4553),
+            ("//! superseded by DD#4553 in the ratchet", 4553),
+            // Family 2 — every spaced PRD-local noun, four-digit.
+            ("/// see row #4553 for the landed shape", 4553),
+            ("/// see rows #4553 for the landed shape", 4553),
+            ("/// see boundary #4553 for the landed shape", 4553),
+            ("/// see open-question #4553 for the landed shape", 4553),
+            ("/// see design decision #4553 for the landed shape", 4553),
         ];
         for (line, id) in cases {
             assert!(
@@ -2590,6 +2619,59 @@ mod tests {
         let provenance = "//! Provenance: task #2951 (PRD task #14).";
         assert!(has_canonical_cite(provenance));
         assert_eq!(extract_cites(provenance), vec![2951]);
+    }
+
+    /// The digit bound is a property of the PRD-relative REGISTER — a
+    /// document-local index is small — NOT of the `task` noun.  Whether a `#N`
+    /// resolves as a cite must therefore not depend on which PRD-local noun
+    /// happens to precede it.
+    ///
+    /// Pinned END TO END rather than only on the grammar, because what an
+    /// unbounded family actually costs is a DISPOSITION, and the disposition is
+    /// invisible at `has_canonical_cite` level.  All three lines carry the same
+    /// genuine cite, #5238 (`done` — terminal), so each would resolve to a High
+    /// `orphaned` finding through the unchanged β liveness lane.
+    #[test]
+    fn prd_relative_families_are_digit_bounded_end_to_end() {
+        // (i) Marker lane, arm (3).  A four-digit cite must anchor the line as
+        // `Cited` (→ β liveness → High `orphaned`, the hard gate), NOT be
+        // downgraded to the Medium advisory `malformed-cite` merely because
+        // `invariant` precedes it.  Asserted on both faces: `scan_file` shows
+        // the `Cited` anchor, `classify_file` shows the structural lane is
+        // silent (it discards `Cited`), which is what excludes `MalformedCite`.
+        let marker = "// TODO: the invariant #5238 nearly lost";
+        assert_eq!(
+            scan_file(marker, true),
+            vec![(1, LineClass::Cited(vec![5238]), marker.to_string())],
+            "family 2 must not swallow a four-digit cite on a marker line"
+        );
+        assert_eq!(
+            classify_file(marker, true),
+            vec![],
+            "a genuine cite must not degrade to Kind::MalformedCite: {marker}"
+        );
+
+        // (ii) Lane δ-B, arm (7).  δ-B is cite-ANCHORED, so an unbounded family
+        // does not downgrade the finding — it erases the candidate entirely.
+        // Routed through `scan_file`, NOT `classify_file`: the latter discards
+        // `Cited` entries and would report "nothing" either way, so only this
+        // assertion can actually fail.
+        let delta_b = "/// hydration is blocked on the invariant #5238 landing";
+        assert_eq!(
+            scan_file(delta_b, true),
+            vec![(1, LineClass::Cited(vec![5238]), delta_b.to_string())],
+            "cite-anchored δ-B must still see a four-digit cite in family-2 register"
+        );
+
+        // (iii) Control — family 3's own bound already saves this shape, so the
+        // disposition must be IDENTICAL whichever PRD-local noun precedes the
+        // cite.  That equality is the property under test.
+        let control = "// TODO: see task #5238 nearly lost";
+        assert_eq!(
+            scan_file(control, true),
+            vec![(1, LineClass::Cited(vec![5238]), control.to_string())],
+            "family 3's existing bound must keep this line's cite canonical"
+        );
     }
 
     // -------------------------------------------------------------------
