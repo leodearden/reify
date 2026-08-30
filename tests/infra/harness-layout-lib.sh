@@ -82,6 +82,21 @@
 #                                          <root_lines> + <module_lines> +
 #                                          <external_lines>. See the function's
 #                                          own header for the resolution rules.
+#   harness_layout_declared_members <root-harness-rs>
+#                                          print, one per line, the
+#                                          `_harness_layout_norm_path`-normalized
+#                                          path of every file DECLARED FROM
+#                                          <root-harness-rs> ITSELF (a
+#                                          single-hop walk over the root's own
+#                                          `mod` declarations only) that lands
+#                                          under <root-harness-rs>'s own module
+#                                          dir (${root%.rs}). "member" means "a
+#                                          file under the root's own
+#                                          harness_<subsystem>/ module
+#                                          directory". Consumed by rule (d) in
+#                                          test_harness_kloc_cap.sh to detect a
+#                                          module-dir file with no reachable
+#                                          `mod` declaration.
 #
 # Environment:
 #   REIFY_HARNESS_LAYOUT_BASELINE  Override the baseline manifest path. Defaults
