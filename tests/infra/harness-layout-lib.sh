@@ -724,3 +724,78 @@ harness_layout_unit_lines() {
         "$root_lines" "$module_lines" "$module_files" \
         "$external_lines" "$external_files"
 }
+
+# harness_layout_declared_members <root-harness-rs> — print, one per line, the
+# `_harness_layout_norm_path`-normalized path of every file DECLARED from
+# <root-harness-rs> that lands under its own module dir (${root%.rs}). See the
+# header block above for the full contract.
+#
+# task #7042 step 2: implemented as a SINGLE-HOP walk over
+# `_harness_layout_mod_decls "$root"` only — the root's OWN declarations, not
+# the transitive closure. task #7042 step 4 folds this into the same
+# transitive BFS harness_layout_unit_lines already runs (hoisted into a shared
+# `_harness_layout_walk_unit`), so the two can never disagree about which
+# files a harness unit declares; until then this is deliberately narrower than
+# that walk and does not see a member declared from a nested `mod.rs`.
+#
+# Resolution mirrors the `_cur == root` branch of harness_layout_unit_lines'
+# walk exactly — a harness root IS a crate root, so a bare `mod X;` resolves
+# against the root's OWN directory, never a stem subdirectory:
+#
+#   `#[path = "P"] mod X;`  in <root>  ->  dirname(root)/P
+#   bare `mod X;`           in <root>  ->  dirname(root)/X.rs,
+#                                           else dirname(root)/X/mod.rs
+#
+# Every resolved, existing target is normalized and filtered to those landing
+# under the root's own module dir — a bare `mod common;` resolving to a
+# retained `tests/` sibling (Section 6's principled exception in
+# test_harness_kloc_cap.sh) is correctly NOT a member, since it lands outside
+# the module dir. An unresolvable target contributes nothing: it would not
+# compile, and that same Section 6 is what flags that class of declaration.
+harness_layout_declared_members() {
+    local root="$1"
+    local moddir="${root%.rs}"
+    local _dir _cur _kind _ln _val _cand _target _moddir_prefix
+    local -A _seen=()
+
+    [ -f "$root" ] || return 0
+
+    _harness_layout_norm_path "$moddir"; _moddir_prefix="$_HL_NORM_OUT/"
+    case "$root" in
+        */*) _dir="${root%/*}" ;;
+        *)   _dir="." ;;
+    esac
+
+    # Process substitution (not a pipe) draining to completion — never an
+    # early-closing consumer, same esc-5172-1 SIGPIPE-141 posture as the BFS
+    # above.
+    while IFS='|' read -r _cur _kind _ln _val; do
+        [ -n "$_kind" ] || continue
+        _target=""
+        case "$_kind" in
+            path)
+                _harness_layout_norm_path "$_dir/$_val"
+                _cand="$_HL_NORM_OUT"
+                [ -f "$_cand" ] && _target="$_cand"
+                ;;
+            bare)
+                for _cand in "$_dir/$_val.rs" "$_dir/$_val/mod.rs"; do
+                    _harness_layout_norm_path "$_cand"
+                    _cand="$_HL_NORM_OUT"
+                    if [ -f "$_cand" ]; then _target="$_cand"; break; fi
+                done
+                ;;
+        esac
+        # Unresolvable target: contributes nothing (see header).
+        [ -n "$_target" ] || continue
+        # Not under the module dir (e.g. a retained `tests/` sibling): not a
+        # member.
+        case "$_target" in
+            "$_moddir_prefix"*) ;;
+            *) continue ;;
+        esac
+        [ -z "${_seen["$_target"]:-}" ] || continue
+        _seen["$_target"]=1
+        printf '%s\n' "$_target"
+    done < <(_harness_layout_mod_decls "$root")
+}

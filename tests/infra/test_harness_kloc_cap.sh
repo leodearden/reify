@@ -461,6 +461,69 @@ harness_path_attr_violations() {
 }
 
 # ---------------------------------------------------------------------------
+# harness_undeclared_member_violations <crate> <tests_dir>
+#
+# Rule (d) — NO UNDECLARED MEMBER. The CONVERSE of harness_path_attr_violations
+# above: that detector walks declaration -> file (does every bare `mod`
+# resolve correctly); this one walks file -> declaration (does every file
+# physically present under a harness root's own module dir have a reachable
+# `mod` declaration anywhere in the root's mod-graph at all). A `.rs` file
+# under `crates/<c>/tests/harness_<subsystem>/` with no reachable declaration
+# is never compiled by rustc, so its `#[test]` fns vanish silently — no
+# compile error, no link error, no test-count signal. Neither direction
+# subsumes the other.
+#
+# For every <tests_dir>/harness_<subsystem>.rs root that has a module dir
+# (${root%.rs}; a single-file harness with no module dir has nothing to
+# scan), compares every *.rs file found under that module dir at any depth
+# against harness-layout-lib.sh's harness_layout_declared_members, and flags
+# any file absent from that set.
+#
+# Prints one structured FAIL line per violation; returns 1 if <crate> has any.
+# Parameterized on <tests_dir> so hermetic fixtures drive it exactly as live.
+# ---------------------------------------------------------------------------
+harness_undeclared_member_violations() {
+    local crate="$1"
+    local tests_dir="$2"
+
+    local violations=0
+    local root moddir f member decl
+
+    if [ ! -d "$tests_dir" ]; then
+        _emit FAIL "crate=$crate" "dir=$tests_dir" "reason=missing-tests-dir"
+        return 1
+    fi
+
+    for root in "$tests_dir"/harness_*.rs; do
+        [ -f "$root" ] || continue          # skip a literal no-match glob
+        moddir="${root%.rs}"
+        [ -d "$moddir" ] || continue        # single-file harness: nothing to scan
+
+        # Rebuilt fresh per root: membership is root-scoped, not crate-scoped.
+        local -A _declared=()
+        while IFS= read -r decl; do
+            [ -n "$decl" ] || continue
+            _declared["$decl"]=1
+        done < <(harness_layout_declared_members "$root")
+
+        # Process substitution (not a pipe) draining to completion — the same
+        # esc-5172-1 SIGPIPE-141 posture harness_layout_unit_lines documents.
+        while IFS= read -r -d '' f; do
+            [ -n "${_declared["$f"]:-}" ] && continue
+            member="${f#"$tests_dir"/}"
+            _emit FAIL "crate=$crate" "file=$root" "reason=undeclared-member" "member=$member"
+            violations=$((violations + 1))
+        done < <(find "$moddir" -type f -name '*.rs' -print0)
+    done
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
+    _emit PASS "crate=$crate"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # harness_stale_selector_violations <root_dir> <scan_path>...
 #
 # PRD §6 BT-2 detector: no repo-resident selector names a PRE-consolidation
