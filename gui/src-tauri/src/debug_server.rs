@@ -4436,6 +4436,164 @@ structure def Part {
         );
     }
 
+    // ── Task 5097 δ step-13: RED — the two PURE-I/O write tools
+    // (`reify_save_file`, `reify_export`) ──
+    //
+    // Neither commits new engine state, but both still route through the
+    // shared seam so §6.2 invariant (a) holds UNIFORMLY across all five tools
+    // and θ's structural anchor has no exceptions to enumerate.
+    //
+    // FAILS TO COMPILE until step-14 adds the two seams and
+    // `crate::commands::parse_export_format`.
+
+    #[tokio::test]
+    async fn reify_save_file_writes_the_session_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        // (i) No target: saves the ACTIVE file — the canonical `.ri` this
+        // session was launched from.
+        std::fs::write(&canonical, "// clobbered, must be restored by the save")
+            .expect("the pre-save scribble must be writable");
+        let s1 = reify_save_file_on_engine_and_refresh_baseline(&engine, &last_state, None)
+            .await
+            .expect("reify_save_file with no target must save the active file");
+        assert_eq!(
+            std::fs::read_to_string(&canonical).expect("part.ri must be readable"),
+            ai_write_source(),
+            "the save must write the session's in-memory source to its canonical path"
+        );
+
+        // (ii) An explicit target writes THERE and leaves the original alone.
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = other_dir.path().join("copy.ri").to_string_lossy().into_owned();
+        reify_save_file_on_engine_and_refresh_baseline(&engine, &last_state, Some(other.clone()))
+            .await
+            .expect("reify_save_file with an explicit target must succeed");
+        assert_eq!(
+            std::fs::read_to_string(&other).expect("copy.ri must be readable"),
+            ai_write_source(),
+            "an explicit target must receive the session's in-memory source"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&canonical).expect("part.ri must be readable"),
+            ai_write_source(),
+            "an explicit target must leave the original file untouched"
+        );
+
+        // Uniform §6.2 routing: the baseline IS refreshed even though pure I/O
+        // changed no engine state — so the resulting delta is empty, which is
+        // exactly what makes the uniformity free.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1.clone()),
+            "the seam must refresh last_state even for a pure-I/O tool"
+        );
+        let redelta = crate::diff::compute_delta(&last_state, &s1);
+        let events: Vec<String> = crate::diff::delta_to_events(&redelta)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            events.is_empty(),
+            "a pure-I/O tool must produce an EMPTY delta; got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reify_save_file_errors_when_no_source_is_loaded() {
+        // A session that has never compiled anything has no buffer to save.
+        // The message is the one the reify-mcp surface already uses for this
+        // condition, so a client cannot meet two spellings of it.
+        let engine = Arc::new(Mutex::new(EngineSession::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            Some(Box::new(reify_test_support::MockGeometryKernel::new())),
+        )));
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        let err = reify_save_file_on_engine_and_refresh_baseline(&engine, &last_state, None)
+            .await
+            .expect_err("a session with nothing loaded must refuse to save");
+        assert!(
+            err.contains("No source loaded"),
+            "expected the reify-mcp 'No source loaded' refusal, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reify_export_writes_a_non_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, _canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0));
+
+        let out = dir.path().join("part.step").to_string_lossy().into_owned();
+        let s1 = reify_export_on_engine_and_refresh_baseline(&engine, &last_state, "step", &out)
+            .await
+            .expect("reify_export('step') must succeed");
+
+        let written = std::fs::metadata(&out).expect("the export target must exist");
+        assert!(written.len() > 0, "the exported file must not be empty");
+
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1),
+            "the seam must refresh last_state even for a pure-I/O tool"
+        );
+    }
+
+    #[tokio::test]
+    async fn reify_export_rejects_an_unknown_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, _canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        let out = dir.path().join("part.obj").to_string_lossy().into_owned();
+        let err = reify_export_on_engine_and_refresh_baseline(&engine, &last_state, "obj", &out)
+            .await
+            .expect_err("an unsupported format must be REFUSED");
+        assert!(
+            err.contains("obj"),
+            "the refusal must name the format it does not know, got: {err}"
+        );
+        assert!(
+            !std::path::Path::new(&out).exists(),
+            "a refused export must not leave a file behind"
+        );
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s0),
+            "a refused export must leave the baseline untouched"
+        );
+    }
+
+    #[test]
+    fn parse_export_format_maps_the_shipped_spellings() {
+        // ONE map, shared with `commands::export_impl`, so the AI write tool
+        // and the Tauri command cannot drift on which spellings are accepted.
+        use reify_ir::ExportFormat;
+        assert_eq!(crate::commands::parse_export_format("step"), Ok(ExportFormat::Step));
+        assert_eq!(crate::commands::parse_export_format("stp"), Ok(ExportFormat::Step));
+        assert_eq!(crate::commands::parse_export_format("stl"), Ok(ExportFormat::Stl));
+
+        let err = crate::commands::parse_export_format("obj")
+            .expect_err("an unshipped spelling must be refused");
+        assert!(
+            err.contains("obj"),
+            "the refusal must name the offending format, got: {err}"
+        );
+    }
+
     // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──
     //
