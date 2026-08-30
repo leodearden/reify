@@ -20,7 +20,7 @@ use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_w
 // ── Helper: load and compile the γ fixture ────────────────────────────────────
 
 fn op_contract_module() -> reify_compiler::CompiledModule {
-    let src = include_str!("fixtures/undef_cause_op_contract.ri");
+    let src = include_str!("../fixtures/undef_cause_op_contract.ri");
     let m = compile_source_with_stdlib(src);
     let errors = collect_errors(&m.diagnostics);
     assert!(

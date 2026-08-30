@@ -13,12 +13,9 @@
 //! also use it.  The test-local definition has been removed (see amendment amend: #4361).
 #![allow(dead_code, unused_imports)]
 
-#[path = "common/differential.rs"]
-mod differential;
-
 use std::sync::{Arc, Mutex};
 
-use differential::{
+use crate::differential::{
     MULTI_ENTITY_EXPORT_SRC, MULTI_REALIZATION_SRC, RecordingKernel, WARM_AUTO_CONST_LET_SRC,
     build_with_kernel, fresh_engine_with_solver, warm_eval_cached_with_solver,
 };

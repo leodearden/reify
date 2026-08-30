@@ -24,7 +24,7 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // The cantilever smoke fixture — loaded at compile time so the test binary is
 // always in sync with the user-facing example file (single-source-of-truth).
-static CANTILEVER_SRC: &str = include_str!("../../../examples/fea_cantilever_smoke.ri");
+static CANTILEVER_SRC: &str = include_str!("../../../../examples/fea_cantilever_smoke.ri");
 
 /// Eval the cantilever fixture through the @optimized lowering path, returning
 /// `(stored_cache_key, computed_cache_key)` for the `solver::elastic_static`
