@@ -113,11 +113,18 @@ fn completeness_debug_is_non_empty_and_clone_round_trips() {
 
     for value in &values {
         let rendered = format!("{value:?}");
-        assert!(!rendered.is_empty(), "Debug must be non-empty for {value:?}");
+        assert!(
+            !rendered.is_empty(),
+            "Debug must be non-empty for {value:?}"
+        );
 
         let cloned = value.clone();
         assert_eq!(&cloned, value, "Clone must round-trip equal");
-        assert_eq!(format!("{cloned:?}"), rendered, "Clone must Debug identically");
+        assert_eq!(
+            format!("{cloned:?}"),
+            rendered,
+            "Clone must Debug identically"
+        );
     }
 }
 
@@ -125,7 +132,10 @@ fn completeness_debug_is_non_empty_and_clone_round_trips() {
 fn partial_reason_debug_is_non_empty_and_clone_round_trips() {
     for reason in all_partial_reasons() {
         let rendered = format!("{reason:?}");
-        assert!(!rendered.is_empty(), "Debug must be non-empty for {reason:?}");
+        assert!(
+            !rendered.is_empty(),
+            "Debug must be non-empty for {reason:?}"
+        );
         assert_eq!(reason.clone(), reason, "Clone must round-trip equal");
     }
 }
@@ -324,7 +334,10 @@ fn is_exhaustive_is_true_only_for_exhaustive() {
     );
     for reason in all_partial_reasons() {
         assert!(
-            !Completeness::Partial { reason: reason.clone() }.is_exhaustive(),
+            !Completeness::Partial {
+                reason: reason.clone()
+            }
+            .is_exhaustive(),
             "Partial{{{reason:?}}} must not be exhaustive"
         );
     }
@@ -337,7 +350,11 @@ fn is_exhaustive_is_true_only_for_exhaustive() {
 fn make_candidate(x: f64) -> RankedCandidate {
     let mut values = HashMap::new();
     values.insert(ValueCellId::new("Part", "x"), Value::length(x));
-    RankedCandidate { values, objective_score: Some(x), unique: false }
+    RankedCandidate {
+        values,
+        objective_score: Some(x),
+        unique: false,
+    }
 }
 
 fn set_of(n: usize, completeness: Completeness) -> SolutionSet {
@@ -354,7 +371,9 @@ fn set_of(n: usize, completeness: Completeness) -> SolutionSet {
 fn solution_set_unique_agrees_with_derived_unique() {
     let mut completenesses = vec![
         Completeness::Exhaustive,
-        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) },
+        Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0),
+        },
     ];
     completenesses.extend(
         all_partial_reasons()
@@ -376,7 +395,13 @@ fn solution_set_unique_agrees_with_derived_unique() {
     // The three named cells, spelled out.
     assert!(set_of(1, Completeness::Exhaustive).unique());
     assert!(
-        !set_of(1, Completeness::Partial { reason: PartialReason::ProbeOnly }).unique(),
+        !set_of(
+            1,
+            Completeness::Partial {
+                reason: PartialReason::ProbeOnly
+            }
+        )
+        .unique(),
         "one candidate + ProbeOnly is not a uniqueness claim"
     );
     assert!(
@@ -396,14 +421,21 @@ fn proven_count_is_none_for_every_partial_reason() {
     // Refuted: proven zero.
     let refuted = set_of(
         0,
-        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) },
+        Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0),
+        },
     );
     assert_eq!(refuted.proven_count(), Some(0));
 
     // Partial: no total, for every reason and regardless of what was found.
     for reason in all_partial_reasons() {
         for n in [0usize, 1, 2] {
-            let set = set_of(n, Completeness::Partial { reason: reason.clone() });
+            let set = set_of(
+                n,
+                Completeness::Partial {
+                    reason: reason.clone(),
+                },
+            );
             assert_eq!(
                 set.proven_count(),
                 None,
@@ -419,8 +451,12 @@ fn proven_count_is_none_for_every_partial_reason() {
 /// One is a proof about the model; the other is a report about the search.
 #[test]
 fn empty_refuted_and_empty_partial_are_distinguishable() {
-    let refuted_c = Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) };
-    let partial_c = Completeness::Partial { reason: PartialReason::BoxBudgetExhausted };
+    let refuted_c = Completeness::Refuted {
+        narrowing: ConstraintNodeId::new("Bracket", 0),
+    };
+    let partial_c = Completeness::Partial {
+        reason: PartialReason::BoxBudgetExhausted,
+    };
 
     let refuted = set_of(0, refuted_c.clone());
     let partial = set_of(0, partial_c.clone());
@@ -430,8 +466,16 @@ fn empty_refuted_and_empty_partial_are_distinguishable() {
     assert_eq!(partial.solutions.len(), 0);
 
     // ...but only one of them proved anything.
-    assert_eq!(refuted.proven_count(), Some(0), "Refuted proves the set is empty");
-    assert_eq!(partial.proven_count(), None, "Partial proves nothing about the total");
+    assert_eq!(
+        refuted.proven_count(),
+        Some(0),
+        "Refuted proves the set is empty"
+    );
+    assert_eq!(
+        partial.proven_count(),
+        None,
+        "Partial proves nothing about the total"
+    );
     assert_ne!(refuted.proven_count(), partial.proven_count());
     assert_ne!(refuted_c, partial_c);
 
@@ -464,14 +508,19 @@ fn permits_proven_optimal_only_for_exhaustive() {
     assert!(Completeness::Exhaustive.permits_proven_optimal());
 
     assert!(
-        !Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) }
-            .permits_proven_optimal(),
+        !Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0)
+        }
+        .permits_proven_optimal(),
         "a refutation has no optimum to prove"
     );
 
     for reason in all_partial_reasons() {
         assert!(
-            !Completeness::Partial { reason: reason.clone() }.permits_proven_optimal(),
+            !Completeness::Partial {
+                reason: reason.clone()
+            }
+            .permits_proven_optimal(),
             "Partial{{{reason:?}}} must not permit ProvenOptimal"
         );
     }
@@ -510,17 +559,28 @@ fn partial_reason_describe_is_non_empty_and_pairwise_distinct() {
 /// a diagnostic built on `describe()` must not be able to confuse them.
 #[test]
 fn refuted_never_describes_like_exhaustive_or_partial() {
-    let refuted = Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) }
-        .describe();
+    let refuted = Completeness::Refuted {
+        narrowing: ConstraintNodeId::new("Bracket", 0),
+    }
+    .describe();
     let exhaustive = Completeness::Exhaustive.describe();
 
     assert!(!refuted.is_empty());
     assert!(!exhaustive.is_empty());
-    assert_ne!(refuted, exhaustive, "a refutation is not an exhaustive enumeration");
+    assert_ne!(
+        refuted, exhaustive,
+        "a refutation is not an exhaustive enumeration"
+    );
 
     for reason in all_partial_reasons() {
-        let partial = Completeness::Partial { reason: reason.clone() }.describe();
-        assert!(!partial.is_empty(), "Partial{{{reason:?}}}.describe() must be non-empty");
+        let partial = Completeness::Partial {
+            reason: reason.clone(),
+        }
+        .describe();
+        assert!(
+            !partial.is_empty(),
+            "Partial{{{reason:?}}}.describe() must be non-empty"
+        );
         assert_ne!(
             refuted, partial,
             "Refuted must not describe like Partial{{{reason:?}}} — that collapse is C3"
@@ -545,8 +605,14 @@ fn payload_carrying_reasons_interpolate_their_payload() {
     );
 
     assert_ne!(
-        PartialReason::DomainUnbounded { param: ValueCellId::new("Part", "x") }.describe(),
-        PartialReason::DomainUnbounded { param: ValueCellId::new("Part", "y") }.describe(),
+        PartialReason::DomainUnbounded {
+            param: ValueCellId::new("Part", "x")
+        }
+        .describe(),
+        PartialReason::DomainUnbounded {
+            param: ValueCellId::new("Part", "y")
+        }
+        .describe(),
         "the unbounded param must be attributable"
     );
 
@@ -581,11 +647,23 @@ fn payload_carrying_reasons_interpolate_their_payload() {
 #[test]
 fn refuted_describe_names_the_narrowing_constraint() {
     assert_ne!(
-        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) }.describe(),
-        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 1) }.describe(),
+        Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0)
+        }
+        .describe(),
+        Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 1)
+        }
+        .describe(),
     );
     assert_ne!(
-        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) }.describe(),
-        Completeness::Refuted { narrowing: ConstraintNodeId::new("Flange", 0) }.describe(),
+        Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0)
+        }
+        .describe(),
+        Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Flange", 0)
+        }
+        .describe(),
     );
 }

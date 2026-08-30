@@ -291,9 +291,9 @@ impl PartialReason {
             PartialReason::BoxBudgetExhausted => {
                 "subdivision budget exhausted with boxes still unresolved".to_string()
             }
-            PartialReason::DimensionAboveEnvelope { dims } => format!(
-                "component dimension {dims} exceeds the enumeration envelope"
-            ),
+            PartialReason::DimensionAboveEnvelope { dims } => {
+                format!("component dimension {dims} exceeds the enumeration envelope")
+            }
             PartialReason::DomainUnbounded { param } => {
                 format!("domain of {param} is unbounded, so no finite box could be searched")
             }
