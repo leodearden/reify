@@ -142,4 +142,33 @@ describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
       ).not.toContain(name);
     }
   });
+
+  /**
+   * (f) task 5097 (δ): the five reify-mcp AI write tools are advertised on the
+   * reify-debug surface AND classified pure-engine-side.
+   *
+   * They earn the PURE_ENGINE_SIDE classification the same way `set_fea_case`
+   * does: each has a named Rust `dispatch_tool` arm, and the frontend pushes
+   * some of them make use the DIFFERENT command names `apply_gui_state` /
+   * `open_file`, so no TS handler keyed by the tool's own name exists or
+   * should.  Listing them explicitly here (rather than leaning on (c)'s
+   * filter) means dropping a ToolDef reds this test by name instead of
+   * silently shrinking the set (c) checks.
+   */
+  it('(f) the five AI write tools are advertised and pure-engine-side', () => {
+    const AI_WRITE_TOOLS = [
+      'reify_set_parameter',
+      'reify_update_source',
+      'reify_open_file',
+      'reify_save_file',
+      'reify_export',
+    ];
+    for (const name of AI_WRITE_TOOLS) {
+      expect(toolDefNames, `'${name}' must be advertised in tool_defs()`).toContain(name);
+      expect(
+        PURE_ENGINE_SIDE,
+        `'${name}' must be classified PURE_ENGINE_SIDE (named Rust arm, no same-named TS handler)`,
+      ).toContain(name);
+    }
+  });
 });

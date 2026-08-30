@@ -4717,6 +4717,170 @@ structure def Part {
         );
     }
 
+    // ── Task 5097 (δ) step-15: RED — the AI write-tool SURFACE ──
+    //
+    // The five engine-side write handlers landed in steps 1-14; what is
+    // still missing is their advertisement. These two tests pin the surface:
+    // (a) all five names are in `tool_defs()` with the reify-mcp schemas, and
+    // (b) `reify_open_file` is a second NAME over the existing `open_file`
+    //     funnel, not a second implementation.
+    //
+    // Both FAIL until step-16 adds the ToolDefs, the dispatch arms, and the
+    // shared `open_file_path_param` helper.
+
+    /// Every one of the five reify-mcp write tools must be advertised exactly
+    /// once, with the reify-mcp property names and `required` lists — an AI
+    /// client that learned the tool on the `reify-mcp` surface must be able to
+    /// call it here with the identical arguments (§12 Q1: the `reify_` prefix
+    /// preserves that identity without clashing with the debug-native bare
+    /// names).
+    #[test]
+    fn tool_defs_registers_the_five_ai_write_tools() {
+        let defs = tool_defs();
+
+        // (name, [required...]) — mirrors `crates/reify-mcp/src/tools/write.rs`.
+        let expected: &[(&str, &[&str])] = &[
+            ("reify_set_parameter", &["cell_id", "value"]),
+            ("reify_update_source", &["file_path", "content"]),
+            ("reify_open_file", &["file_path"]),
+            ("reify_save_file", &[]),
+            ("reify_export", &["format", "output_path"]),
+        ];
+
+        for (name, required) in expected {
+            let matches: Vec<_> = defs.iter().filter(|t| t.name == *name).collect();
+            assert_eq!(
+                matches.len(),
+                1,
+                "{name} must be advertised EXACTLY once in tool_defs(), found {}",
+                matches.len()
+            );
+            let entry = matches[0];
+
+            assert!(
+                !entry.description.is_empty(),
+                "{name}: description must be non-empty"
+            );
+
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{name}: input_schema.type must be 'object'"
+            );
+
+            // Every required field must also be a declared string property —
+            // a `required` naming a property the schema never declares is the
+            // drift this catches.
+            for field in *required {
+                assert_eq!(
+                    schema["properties"][field]["type"].as_str(),
+                    Some("string"),
+                    "{name}: properties.{field}.type must be 'string'"
+                );
+            }
+
+            match schema.get("required") {
+                Some(v) => {
+                    let listed: Vec<&str> = v
+                        .as_array()
+                        .unwrap_or_else(|| panic!("{name}: input_schema.required must be an array"))
+                        .iter()
+                        .filter_map(|x| x.as_str())
+                        .collect();
+                    assert_eq!(
+                        listed, *required,
+                        "{name}: required list must match the reify-mcp schema"
+                    );
+                }
+                // reify_save_file's `file_path` is OPTIONAL ("save the active
+                // file"), so it ships no `required` key at all — an empty
+                // array would be equivalent, absent is what reify-mcp does.
+                None => assert!(
+                    required.is_empty(),
+                    "{name}: input_schema must declare required {required:?}"
+                ),
+            }
+        }
+
+        // reify_save_file's optional param must still be DECLARED, or an AI
+        // client has no way to learn the "save as" arm exists.
+        let save = defs
+            .iter()
+            .find(|t| t.name == "reify_save_file")
+            .expect("reify_save_file must be present");
+        assert_eq!(
+            save.input_schema["properties"]["file_path"]["type"].as_str(),
+            Some("string"),
+            "reify_save_file: properties.file_path.type must be 'string' even though it is optional"
+        );
+
+        // §6.1 / §12-Q1 unit contract: this surface takes a UNIT-BEARING
+        // literal ("120mm"), unlike the orphaned reify-mcp registry text which
+        // describes a bare SI number. Pin the CONTRACT, not the prose — one
+        // `contains` check, so rewording the description stays free.
+        let set_param = defs
+            .iter()
+            .find(|t| t.name == "reify_set_parameter")
+            .expect("reify_set_parameter must be present");
+        let value_desc = set_param.input_schema["properties"]["value"]["description"]
+            .as_str()
+            .expect("reify_set_parameter: properties.value.description must be a string");
+        assert!(
+            value_desc.contains("unit-bearing"),
+            "reify_set_parameter: the `value` description must state the \
+             unit-bearing-literal contract (§6.1), got: {value_desc}"
+        );
+    }
+
+    /// `reify_open_file` and `open_file` are ONE funnel under two names — the
+    /// reify-mcp identity and the debug-native identity — never two
+    /// implementations. This pins both halves of that: the bare `open_file`
+    /// def is not duplicated, and the pure param helper both arms share
+    /// accepts either spelling.
+    #[test]
+    fn reify_open_file_shares_the_open_file_funnel() {
+        let defs = tool_defs();
+        assert_eq!(
+            defs.iter().filter(|t| t.name == "open_file").count(),
+            1,
+            "the debug-native `open_file` def must not be duplicated when \
+             `reify_open_file` is added — one funnel, two names"
+        );
+
+        // reify-mcp spelling.
+        assert_eq!(
+            open_file_path_param(&json!({"file_path": "/tmp/a.ri"})),
+            Ok("/tmp/a.ri".to_string()),
+            "the reify-mcp spelling `file_path` must be accepted"
+        );
+        // debug-native spelling (what handle_open_file has always taken).
+        assert_eq!(
+            open_file_path_param(&json!({"path": "/tmp/b.ri"})),
+            Ok("/tmp/b.ri".to_string()),
+            "the debug-native spelling `path` must be accepted"
+        );
+        // Both present: the reify-mcp spelling wins, deterministically.
+        assert_eq!(
+            open_file_path_param(&json!({"file_path": "/tmp/a.ri", "path": "/tmp/b.ri"})),
+            Ok("/tmp/a.ri".to_string()),
+            "`file_path` must win when both spellings are supplied"
+        );
+        // Neither: the debug-native refusal, unchanged, so existing callers'
+        // error strings do not shift.
+        assert_eq!(
+            open_file_path_param(&json!({})),
+            Err("path is required".to_string()),
+            "neither spelling present must produce the existing refusal"
+        );
+        // Wrong type takes the same arm as absent (mirrors reify_write_str_param).
+        assert_eq!(
+            open_file_path_param(&json!({"file_path": 7})),
+            Err("path is required".to_string()),
+            "a non-string path must be refused like an absent one"
+        );
+    }
+
     // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──
     //
