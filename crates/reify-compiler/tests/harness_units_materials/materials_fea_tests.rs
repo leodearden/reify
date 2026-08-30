@@ -941,13 +941,19 @@ fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() 
 /// be root-caused rather than papered over.
 #[test]
 fn prd_gate_damped_material_fixtures_compile_clean() {
-    for name in [
-        "damped_material_mixin_conformance.ri",
-        "damped_material_preset_conformance.ri",
+    // Each path is spelled as a SINGLE `<dir>/<name>.ri` leaf literal, never
+    // as a `.join(dir).join(name)` pair. `tests/infra/test_verify_scope.sh`'s
+    // PG-DRIFT-DIR scenario fails on any *.rs that names the fixtures
+    // DIRECTORY without a reviewed marker — a directory reference could mean
+    // the target walks it, which would void verify.sh's "adding a fixture is
+    // inert" premise. The leaf form is also what PG-DRIFT greps for when it
+    // re-derives the coupled set, so this spelling is what makes the two
+    // fixtures visible to the drift guard at all.
+    for rel in [
+        "../../tests/prd-gate/fixtures/damped_material_mixin_conformance.ri",
+        "../../tests/prd-gate/fixtures/damped_material_preset_conformance.ri",
     ] {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/prd-gate/fixtures")
-            .join(name);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
 
