@@ -4,6 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, Type, ValueCellId};
+// `reify-expr` is an optional dependency enabled by `eval-helpers`; see the
+// rationale on its entry in Cargo.toml. Only the ContainmentQuery double below
+// needs it, so both the import and that double carry the same gate.
+#[cfg(feature = "eval-helpers")]
+use reify_expr::ContainmentQuery;
 use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -2197,6 +2202,49 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         self.captured.lock().unwrap().push(problem.clone());
         self.inner.solve(problem)
+    }
+}
+
+/// A [`ContainmentQuery`] that answers every query with a pre-programmed
+/// `Option<bool>`, ignoring the region and point it is handed.
+///
+/// Requires the `eval-helpers` feature (which is what supplies `reify-expr`).
+///
+/// The trivial stub for tests that do not exercise real `restrict`/`sample`
+/// containment resolution but must still supply the capability: constructing
+/// it needs no `Engine` and no geometry kernel.
+///
+/// One parameterized double rather than a family of zero-field ones (a struct
+/// per answer): the answers a `ContainmentQuery` can give are exactly the three
+/// inhabitants of `result`, so a test needing a different answer sets the field
+/// instead of adding another struct here.
+///
+/// Choose `result` by the semantics [`ContainmentQuery`] documents for its
+/// return value — the three are NOT interchangeable, even where two of them
+/// produce the same observable `Value`:
+/// - `Some(true)` — the point is inside the region.
+/// - `Some(false)` — the point is strictly outside.
+/// - `None` — containment is *indeterminate* (non-geometry region, malformed
+///   point, kernel error). This yields `Value::Undef`, the same value
+///   `Some(false)` yields, but for a different reason — so a test that means
+///   "outside" must say `Some(false)`, not `None`.
+///
+/// Name, field and body are deliberately identical to the hand-rolled double
+/// in `crates/reify-expr/tests/field_op_dispatch_tests.rs`, which cannot reach
+/// this one under the `eval-helpers` gate (see the `reify-expr` entry in this
+/// crate's Cargo.toml for the measured reason the gate stays). Re-pointing
+/// that file once the gate allows it is then an import swap, not a call-site
+/// rewrite.
+#[cfg(feature = "eval-helpers")]
+pub struct MockContainmentQuery {
+    /// The answer returned for every `(region, point)` pair.
+    pub result: Option<bool>,
+}
+
+#[cfg(feature = "eval-helpers")]
+impl ContainmentQuery for MockContainmentQuery {
+    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+        self.result
     }
 }
 
@@ -4654,4 +4702,16 @@ mod tests {
             "extract_vertices must not increment is_orientable"
         );
     }
+
+    // No unit test pins `MockContainmentQuery` here: one could only restate its
+    // own one-line body (`self.result`), and sampled argument pairs cannot
+    // establish the "for every (region, point)" claim anyway. The double is
+    // already load-bearing in the consuming tests, which fail loudly on any
+    // behaviour change — reify-eval's
+    // `cell_eval_ctx_containment_resolves_via_wired_query` only reaches
+    // `Value::Real(42.0)` because its `result: Some(true)` instance answers
+    // inside, and the determinacy assertions in the same module fail if a
+    // `result: None` instance ever starts resolving. Those tests also perform
+    // the `&dyn ContainmentQuery` coercion, so it needs no separate guard here
+    // either.
 }
