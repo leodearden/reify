@@ -1173,6 +1173,111 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         );
     }
 
+    /// AMENDMENT ROUND 2 (task #6798, reviewer_comprehensive / robustness) —
+    /// unit-pin the containment classifier
+    /// [`super::diagnostic_is_auto_type_param_error`] that gates the LSP's
+    /// eval/check pass.
+    ///
+    /// **Why the classifier needs its own unit test.** The predicate matches
+    /// on a *stringly-typed* serde prefix (`"AutoTypeParam"`), mirroring the
+    /// deliberate serde routing in `crate::convert::convert_diagnostic`. That
+    /// seam is invisible to the compiler: rename a `DiagnosticCode` variant in
+    /// this family and the guard would silently stop firing, re-opening the
+    /// `assert_value_cell_types_representable` panic (task #6851) with no
+    /// build error anywhere. This test is what converts that seam into a
+    /// CHECKED coupling — a rename makes it go RED.
+    ///
+    /// Hand-built `reify_core::Diagnostic` values, no compile needed, so the
+    /// classifier's contract is pinned independently of whether any current
+    /// fixture happens to produce each code.
+    #[test]
+    fn auto_type_param_resolution_failed_classifies_by_severity_and_code_family() {
+        use super::diagnostic_is_auto_type_param_error as classify;
+
+        // --- POSITIVE: the resolution-failure modes task #6851's addendum
+        // enumerates as leaving an unsubstituted `Type::TypeParam` value cell.
+        for code in [
+            DiagnosticCode::AutoTypeParamNoCandidate,
+            DiagnosticCode::AutoTypeParamAmbiguous,
+            DiagnosticCode::AutoTypeParamPoolOverflow,
+        ] {
+            assert!(
+                classify(&Diagnostic::error("boom").with_code(code)),
+                "an Error-severity {code:?} is an `auto:` RESOLUTION FAILURE — \
+                 no monomorph is synthesized, so a `param seal : T` cell keeps \
+                 cell_type TypeParam(\"T\") into the eval graph and \
+                 assert_value_cell_types_representable panics (task #6851). \
+                 The guard MUST fire on it."
+            );
+        }
+
+        // --- POSITIVE (forward-compat): same family, also resolution
+        // failures. Pinned so the prefix match is understood to cover the
+        // whole Error-severity family, not just the three above.
+        for code in [
+            DiagnosticCode::AutoTypeParamBoundedInfeasible,
+            DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+            DiagnosticCode::AutoTypeParamDepthBoundExceeded,
+            DiagnosticCode::AutoTypeParamCrossProductSizeExceeded,
+        ] {
+            assert!(
+                classify(&Diagnostic::error("boom").with_code(code)),
+                "an Error-severity {code:?} is also an `auto:` resolution \
+                 failure and must be covered by the containment guard"
+            );
+        }
+
+        // --- NEGATIVE, severity gate. LOAD-BEARING, not decorative: task
+        // #6851's addendum records that `auto(free):` with >=2 feasible
+        // candidates returns Selected(lex_first) alongside only this WARNING,
+        // so sigma is NON-empty, substitution proceeds normally, and there is
+        // no unrepresentable cell. Suppressing eval there would be a pure
+        // regression — the editor would lose keystroke-time eval diagnostics
+        // on a perfectly healthy graph.
+        assert!(
+            !classify(&Diagnostic::warning("free pick").with_code(DiagnosticCode::AutoTypeParamNonUnique)),
+            "AutoTypeParamNonUnique is WARNING severity and accompanies a \
+             SUCCESSFUL `auto(free):` substitution — the guard must not fire, \
+             or eval is suppressed on a healthy graph"
+        );
+        assert!(
+            !classify(
+                &Diagnostic::warning("honesty")
+                    .with_code(DiagnosticCode::AutoTypeParamConstraintUnevaluated)
+            ),
+            "AutoTypeParamConstraintUnevaluated is the WARNING-severity \
+             honesty diagnostic this leaf's checker swap newly surfaces in \
+             the editor; it accompanies a successful resolution, so the guard \
+             must not fire on it"
+        );
+
+        // --- NEGATIVE, family gate. Pins that this stays a NARROW guard and
+        // never drifts into the CLI's blanket `any(severity == Error)` shape:
+        // the LSP deliberately evaluates through non-fatal compile errors so
+        // keystroke-time eval diagnostics keep flowing.
+        assert!(
+            !classify(&Diagnostic::error("shadowed").with_code(DiagnosticCode::Shadowing)),
+            "an Error with a NON-AutoTypeParam code must not suppress eval — \
+             the LSP evaluates through non-fatal compile errors on purpose"
+        );
+
+        // --- NEGATIVE: no code at all.
+        assert!(
+            !classify(&Diagnostic::error("uncoded")),
+            "an Error with `code: None` carries no family signal and must not \
+             suppress eval"
+        );
+
+        // --- Sanity: severity and family are BOTH required, i.e. the
+        // predicate is a conjunction rather than either half alone.
+        assert!(
+            !classify(&Diagnostic::warning("warn").with_code(DiagnosticCode::AutoTypeParamNoCandidate)),
+            "severity is a required conjunct: a WARNING-severity \
+             AutoTypeParamNoCandidate (not emitted today, pinned so a future \
+             severity downgrade cannot silently widen the guard) must not fire"
+        );
+    }
+
     /// Regression guard for task 2525: `compute_diagnostics` must accept sources
     /// that reference stdlib enums (e.g. `CorrosionClass.C5`) WITHOUT inline
     /// redeclarations.
