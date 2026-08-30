@@ -21,7 +21,7 @@
 //! reaches, so the over-reach half of the contract is only testable here.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_eval::{CheckResult, Engine};
 use reify_ir::{ExportFormat, Satisfaction};
 use reify_test_support::{MockGeometryKernel, parse_and_compile, parse_and_compile_with_stdlib};
@@ -141,18 +141,28 @@ impl reify_ir::GeometryKernel for NoRealizationStubKernel {
     }
 }
 
-/// The surface-attribution diagnostics in a check result: ζ's channel, which
-/// task 6667 reuses rather than duplicating — `Severity::Info` +
+/// The surface-attribution diagnostics in an arbitrary diagnostic list: ζ's
+/// channel, which task 6667 reuses rather than duplicating — `Severity::Info` +
 /// [`DiagnosticCode::ConstraintIndeterminate`].
-fn attribution_messages(result: &CheckResult) -> Vec<&str> {
-    result
-        .diagnostics
+///
+/// Taken as a slice rather than a [`CheckResult`] so the step-8 pins can apply
+/// the IDENTICAL filter to a [`reify_eval::BuildResult`]'s diagnostics. The
+/// leak those pins exist to catch travels on the build surface, not the check
+/// surface, and a second hand-rolled filter there would be free to drift from
+/// this one.
+fn attributions_in(diagnostics: &[Diagnostic]) -> Vec<&str> {
+    diagnostics
         .iter()
         .filter(|d| {
             d.severity == Severity::Info && d.code == Some(DiagnosticCode::ConstraintIndeterminate)
         })
         .map(|d| d.message.as_str())
         .collect()
+}
+
+/// The surface-attribution diagnostics in a check result.
+fn attribution_messages(result: &CheckResult) -> Vec<&str> {
+    attributions_in(&result.diagnostics)
 }
 
 /// The reason clause of the single attribution naming `id`, with the shared
@@ -590,5 +600,162 @@ fn gdt_and_dfm_in_one_module_each_get_their_own_attribution() {
         dfm[0].contains("overhang-check"),
         "the DFM attribution must name the rule; got: {}",
         dfm[0]
+    );
+}
+
+// ── (e) Nested-check guard: a `check()` INSIDE a realization attributes nothing ─
+
+/// Task 6667 step-8. **RED on arrival** — unlike every other test in this file.
+///
+/// The step-7 CLI contract guard
+/// (`cli_dfm_overhang.rs::check_surface_emits_no_unmeasured_attribution_for_dfm_or_gdt`)
+/// found that both attributions leak into `reify check`. This is the cheap,
+/// kernel-free, non-OCCT-gated engine-level statement of the same defect, and
+/// it exists because **step-7's GD&T half is VACUOUS**: its fixture
+/// `crates/reify-cli/tests/fixtures/dfm_with_repr_within.ri` contains ZERO
+/// `Conforms` (measured: `grep -c` returns 0), so
+/// `!stderr.contains("does not measure geometric conformance")` passes there
+/// even if the GD&T leak persists. Only this test covers that half.
+///
+/// # The mechanism
+///
+/// `realize_for_check` delegates to `build_with_geometry_output`, which calls
+/// `self.check(module)` (engine_build.rs:4178) BEFORE the realization loop
+/// populates `realization_handles`. The module-wide
+/// `realization_handles.is_empty()` gate is therefore legitimately OPEN during
+/// that nested pass — the gate is keyed on the right field and is not the bug.
+/// `cmd_check` then folds the returned `BuildResult.diagnostics` into the
+/// reported set, so `reify check` measures a DFM rule AND tells the user to run
+/// `reify check` because nothing was measured.
+///
+/// The fix (step-9) is an engine-side build-phase marker that closes both gates
+/// for any `check()` nested inside a realization, leaving `cmd_check`'s
+/// AUTHORITATIVE `engine.check(&compiled)` — which runs outside any build, with
+/// the marker clear — as the only surface that can attribute.
+#[test]
+fn realize_for_check_emits_no_surface_attribution_for_either_kind() {
+    let compiled = parse_and_compile_with_stdlib(&gdt_and_dfm_source());
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+
+    let build = engine.realize_for_check(&compiled);
+
+    // Asserted UP FRONT: this is a statement about a REALIZING surface. If
+    // nothing realized, the gate legitimately stays open for the whole call and
+    // the assertions below would be measuring the wrong thing entirely.
+    let handles = engine.realization_handles_len();
+    assert!(
+        handles > 0,
+        "premise: `realize_for_check` must have realized something, otherwise \
+         this is the non-realizing surface (which SHOULD attribute) and this \
+         test is not about the leak it names; got len={handles}"
+    );
+
+    let attributions = attributions_in(&build.diagnostics);
+    let gdt: Vec<&&str> = attributions
+        .iter()
+        .filter(|m| m.contains("geometric conformance"))
+        .collect();
+    let dfm: Vec<&&str> = attributions
+        .iter()
+        .filter(|m| m.contains("does not measure DFM rules"))
+        .collect();
+
+    assert!(
+        gdt.is_empty(),
+        "a `check()` nested inside a realization must not attribute the GD&T \
+         kind to the surface: this surface DOES realize, and `cmd_check` folds \
+         these diagnostics straight through to the user. This is the half \
+         step-7's fixture cannot see. Got: {gdt:#?}"
+    );
+    assert!(
+        dfm.is_empty(),
+        "same for the DFM kind — `reify check` would otherwise measure the rule \
+         AND tell the user to run `reify check` because nothing was measured. \
+         Got: {dfm:#?}"
+    );
+}
+
+/// Task 6667 step-8. **RED on arrival.** The set-without-clear pin.
+///
+/// The step-9 marker is set immediately before and cleared immediately after
+/// each of the three `self.check(module)` calls in `engine_build.rs`. A marker
+/// that were set but never cleared would silence the attribution for the whole
+/// remaining life of the engine, which no other test in this file would catch:
+/// they all construct a fresh engine and call `check()` directly, never
+/// entering a build at all.
+///
+/// So this test drives the marker's full set/clear cycle on an engine that
+/// realizes NOTHING (`NoRealizationStubKernel`), then asks the same engine the
+/// question again through the standalone, AUTHORITATIVE `check()` seam:
+///
+///   * inside `realize_for_check` the marker is SET, so nothing is attributed
+///     even though `realization_handles` is empty;
+///   * afterwards the marker is CLEAR, so the standalone `check()` attributes
+///     both kinds exactly as it does on the GUI surface.
+///
+/// A leaked marker turns that second count from 2 into 0.
+///
+/// # A deliberate, PRE-CLEARED limitation is pinned here
+///
+/// The first half also pins the consequence the steward cleared in advance
+/// (esc-6667-2): a `reify build` on a module where NOTHING realizes now emits
+/// no attribution at all, because `build` runs no separate authoritative
+/// `check()` outside the marker's span. That is a not-yet-delivered
+/// improvement, not a regression — pre-6667 that surface emitted nothing
+/// either. It is NOT cause to re-escalate.
+#[test]
+fn the_build_phase_marker_is_cleared_on_the_way_out() {
+    let compiled = parse_and_compile_with_stdlib(&gdt_and_dfm_source());
+    let mut engine = non_realizing_engine_with_a_kernel();
+
+    let build = engine.realize_for_check(&compiled);
+
+    assert_eq!(
+        engine.realization_handles_len(),
+        0,
+        "premise: this engine must realize nothing, so the attribution gate is \
+         OPEN and only the build-phase marker can be closing it below"
+    );
+    let during_build = attributions_in(&build.diagnostics);
+    assert!(
+        during_build.is_empty(),
+        "a `check()` nested inside a realization attributes nothing, even when \
+         nothing realized: the build-phase marker, not the handle map, is what \
+         closes the gate here. (This is the steward's PRE-CLEARED limitation — \
+         a non-realizing `reify build` now says nothing. Do NOT re-escalate.) \
+         Got: {during_build:#?}"
+    );
+
+    // The AUTHORITATIVE seam: outside any build, marker clear. This is the
+    // assertion that catches a set-without-clear — a leaked marker makes it 0.
+    let result = engine.check(&compiled);
+    let attributions = attribution_messages(&result);
+    assert_eq!(
+        attributions.len(),
+        2,
+        "after `realize_for_check` returns, the marker must be CLEAR: a \
+         standalone `check()` on the same engine must still attribute both \
+         kinds. Zero here means the marker was set and never cleared, which \
+         would silence the attribution for the rest of the engine's life. \
+         Got: {attributions:#?}"
+    );
+    assert_eq!(
+        attributions
+            .iter()
+            .filter(|m| m.contains("geometric conformance"))
+            .count(),
+        1,
+        "one of the two must name the GD&T kind. Got: {attributions:#?}"
+    );
+    assert_eq!(
+        attributions
+            .iter()
+            .filter(|m| m.contains("does not measure DFM rules"))
+            .count(),
+        1,
+        "the other must name the DFM kind. Got: {attributions:#?}"
     );
 }
