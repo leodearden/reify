@@ -42,6 +42,7 @@ use reify_builtins::{BindingKind, BuiltinId, EvalBuiltinId, lookup, rows};
 use reify_core::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_stdlib::__registry_dispatch_for_test as dispatch;
+use reify_stdlib::__try_dispatch_for_test as try_dispatch;
 use reify_stdlib::{compute_eigenvalues_3x3, compute_max_shear_3x3, eval_builtin};
 
 /// The `StructureTypeId` sentinel `analysis::stress_invariants` mints for
@@ -353,5 +354,129 @@ fn eval_builtin_yields_undef_at_a_non_declared_arity() {
                 row.arity
             );
         }
+    }
+}
+
+// ── (e) the NAME path: consulted, authoritative, and declining ──────────────
+//
+// Sections (a)–(d) all route through `__registry_dispatch_for_test`, which
+// takes an `EvalBuiltinId`. That is exactly what makes them blind to name
+// resolution: they pin the enum→kernel arms and bypass both `try_dispatch`
+// and `reify_builtins::lookup`. This section observes the `&str` path the
+// public entry point actually takes, through the `test-support`-gated
+// `__try_dispatch_for_test` shim.
+//
+// What is pinned, and no more: the registry is CONSULTED for a name, is
+// AUTHORITATIVE for exactly the `BindingKind::EvalBuiltin` rows at exactly
+// their declared arities, and DECLINES every other name so a later member of
+// the chain keeps its own. An integration test cannot go further and prove
+// that no legacy string matcher would have answered identically —
+// `eval_parse`/`eval_analysis` were deleted, and their absence is a
+// build-time fact, not something a running test can observe.
+
+/// (a) Row-derived, never a restated list: the registry answers for exactly
+/// the `EvalBuiltin` rows, at exactly their declared arities.
+///
+/// This is the sweep `crates/reify-stdlib/src/lib.rs`'s registry-first comment
+/// points at: a name the registry does not own must yield `None` so the
+/// hoisted arm falls through instead of shadowing a later dispatcher.
+#[test]
+fn try_dispatch_answers_for_exactly_the_eval_rows_at_their_declared_arities() {
+    let filler = Value::Real(1.0);
+    for row in eval_rows() {
+        for argc in 0..=3usize {
+            let args = vec![filler.clone(); argc];
+            // Arg TYPES are irrelevant here — a kernel handed a filler may
+            // well answer `Undef`. What is under test is whether the registry
+            // CLAIMS the (name, argc) pair at all.
+            let answered = try_dispatch(row.name, &args).is_some();
+            assert_eq!(
+                answered,
+                row.arity.matches(argc),
+                "row '{}' declares {:?}, so try_dispatch(name, {argc} arg(s)) \
+                 must {} — the registry must claim exactly its declared \
+                 arities and decline the rest",
+                row.name,
+                row.arity,
+                if row.arity.matches(argc) {
+                    "answer"
+                } else {
+                    "decline"
+                }
+            );
+        }
+    }
+}
+
+/// (b) The decline is what keeps the hoist from shadowing: names owned by
+/// dispatchers LATER in `eval_builtin`'s chain must fall through untouched.
+///
+/// Both sibling names are real and still answered by the public entry point,
+/// so the assertion is not vacuous: the registry declines a name that IS a
+/// builtin, rather than a name nothing claims.
+#[test]
+fn try_dispatch_declines_every_name_the_registry_does_not_own() {
+    let registered: std::collections::BTreeSet<&str> = rows().iter().map(|r| r.name).collect();
+
+    // (name, args, owned by a later dispatcher?)
+    let cases: Vec<(&str, Vec<Value>, bool)> = vec![
+        ("abs", vec![Value::Real(-5.0)], true),
+        ("single", vec![Value::List(vec![Value::Real(7.0)])], true),
+        (
+            "definitely_not_a_builtin_6001",
+            vec![Value::Real(1.0)],
+            false,
+        ),
+    ];
+
+    for (name, args, owned_by_sibling) in cases {
+        assert!(
+            !registered.contains(name),
+            "fixture guard: '{name}' must not be a registered row, or this \
+             case would stop testing the fall-through"
+        );
+        assert_eq!(
+            try_dispatch(name, &args),
+            None,
+            "the registry must DECLINE '{name}' so the hoisted arm falls \
+             through to the dispatcher that owns it"
+        );
+        let public = eval_builtin(name, &args);
+        if owned_by_sibling {
+            assert!(
+                !public.is_undef(),
+                "'{name}' must still be answered by a later member of the \
+                 chain — otherwise this case pins nothing about shadowing"
+            );
+        } else {
+            assert!(
+                public.is_undef(),
+                "an unregistered, unowned name must reach eval_builtin's \
+                 terminal Undef, got {public:?}"
+            );
+        }
+    }
+}
+
+/// (c) The public entry point's answer for a seed name IS the registry's
+/// answer — not a coincidence of a parallel matcher that happens to agree.
+#[test]
+fn the_public_entry_point_returns_the_registrys_answer_for_every_probe() {
+    for probe in probes() {
+        let via_registry = try_dispatch(probe.name, &probe.args).unwrap_or_else(|| {
+            panic!(
+                "the registry must own '{}' at {} arg(s) — {}",
+                probe.name,
+                probe.args.len(),
+                probe.what
+            )
+        });
+        assert_eq!(
+            eval_builtin(probe.name, &probe.args),
+            via_registry,
+            "eval_builtin('{}') did not return the registry's answer for {}",
+            probe.name,
+            probe.what
+        );
     }
 }
