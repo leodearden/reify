@@ -528,7 +528,7 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "polygon",
-        signature: "polygon(x1, y1, x2, y2, ...) -> Surface",
+        signature: "polygon(x1: Length, y1: Length, x2: Length, y2: Length, ...) -> Surface",
         doc: "Creates a polygonal 2D profile from variadic flat coordinate pairs — at least 3 vertices (6 args), and an even number of args.",
         sort_group: "01-geometry",
     },
