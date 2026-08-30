@@ -47,6 +47,55 @@ param delta_t  : TemperatureDiff = 20degC      // Difference: 20 K
 - `Temperature - Temperature → TemperatureDiff` (valid)
 - `Temperature + Temperature` → type error
 
+## Dimensioned Geometry Arguments
+
+Geometry constructors take **dimensioned** lengths. At a length-semantic argument position — a box's
+width, a fillet radius, a `translate` component, a polygon vertex coordinate — a bare number is
+**rejected** with a diagnostic. It is not read as metres, and it is not read as millimetres.
+
+That rejection is the whole point. The alternative — silently reading a bare `20` as the SI base
+unit — would turn `box(20, 20, 10)` into a **20-metre** part where the author meant `20mm`: a
+**1000x scale error** that nothing downstream catches, because the model stays perfectly
+self-consistent at the wrong size. A rejected literal is the only place that mistake is cheap.
+
+**Bare `0` is not special-cased.** A zero length still has a dimension, so `box(0, 0, 0)` and
+`translate(g, 0, 0, 5)` are rejected exactly like any other bare number. This is the one an author
+expects to be exempt; it is not.
+
+```reify
+structure def Bracket {
+    param plate_h : Length = 10mm
+
+    // Every length-semantic argument carries a unit. A bare `20` is not
+    // "20 by default" — it is rejected outright.
+    let plate = box(20mm, 20mm, plate_h)
+
+    // `mirror` carries both halves of the rule in one call: the PIVOT POINT
+    // (ox, oy, oz) is length-semantic, so bare `0` is rejected there too —
+    // while the AXIS DIRECTION (1, 0, 0) is a unit vector and stays bare.
+    let mirrored = mirror(plate, 0mm, 0mm, 0mm, 1, 0, 0)
+
+    // Dividing a length by a bare number preserves the length, so the
+    // hand-centring idiom needs no extra unit on `-plate_h/2`.
+    let centred = translate(plate, 0mm, 0mm, -plate_h/2)
+}
+```
+
+**What legitimately stays bare.** Not every geometry argument is a length. Unit-vector and
+axis-direction components, repeat counts, NURBS weights, knot values, polynomial degrees, `scale`
+factors and indices are dimensionless by construction, and putting a unit on one of them says
+something the author does not mean.
+
+That half is an **authoring rule you uphold, not one the compiler enforces** — the gate runs in one
+direction only. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a dimensioned axis direction
+in `mirror` or `linear_pattern`. So a unit in a dimensionless slot will not be reported; write these
+bare because it is what you mean, not because you will be told.
+
+**Which argument of which constructor is length-semantic** is catalogued per position in the
+`geometry` chunk (`reify_language_reference("geometry")`), constructor by constructor. This section
+states the rule and the idiom; that one enumerates the positions — read it before dimensioning an
+unfamiliar signature.
+
 ## Angle as Base Dimension
 
 Angle is the 8th base dimension (not dimensionless). Catches `torque + energy` as a type error. Trig functions are typed: `sin : Angle → Dimensionless`.
