@@ -693,6 +693,23 @@ harness_layout_unit_lines() {
 # function's header). Each decl carries its own source file back, so batching
 # costs no fidelity: a decl is still resolved relative to the file that
 # declared it, not to the wave.
+#
+# KNOWN LIMITATION (task #7042 amendment; documented, not fixed — no live
+# harness root uses the shape below today, so this is a latent gap, not a
+# current miscount, and closing it would touch `_harness_layout_mod_decls`,
+# which Section 6 and rule (a) in test_harness_kloc_cap.sh also depend on —
+# out of this amendment's scope). Resolution below is purely FILE-based
+# (dirname of the declaring file), with no awareness of inline `mod outer {
+# ... }` block nesting WITHIN that file. A decl that textually appears INSIDE
+# such a block — e.g. `mod outer { #[path = "harness_s/inner.rs"] mod inner;
+# }` in harness_s.rs — is parsed by `_harness_layout_mod_decls` and resolved
+# here exactly as if it were top-level (against dirname(harness_s.rs)), never
+# against the dirname(harness_s.rs)/outer/ rustc would actually require. For
+# `harness_layout_declared_members` (rule (d) in test_harness_kloc_cap.sh)
+# this is a FAIL-OPEN: such a member can read as "declared" — and so pass
+# rule (d) — while rustc never compiles it, which is the exact
+# silent-coverage-loss class rule (d) exists to catch, just not for this one
+# shape.
 _harness_layout_walk_unit() {
     local root="$1"
     local moddir="${root%.rs}"
