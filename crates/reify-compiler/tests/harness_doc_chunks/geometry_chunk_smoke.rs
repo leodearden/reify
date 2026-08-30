@@ -377,6 +377,23 @@ const ORACLE_SECTION_MARKER: &str = "<!-- ORACLE-SECTION -->";
 /// A retitle may update this for legibility but need not — no test reads it.
 const ORACLE_SECTION_TITLE: &str = "## Interference & Clearance Queries";
 
+/// Marker that OPENS the section cataloguing WHICH ARGUMENT of which geometry
+/// constructor is length-semantic. Matched BYTE-EXACTLY on the trimmed line,
+/// exactly as [`ORACLE_SECTION_MARKER`] is, and for the identical reason: the
+/// scan must be anchored to something inert so the heading's wording stays free.
+///
+/// Scoping matters here for a second reason too. This chunk mentions geometry
+/// call forms everywhere — the primitives block, the anchoring table, the oracle
+/// fences — so an UNSCOPED name scan would be satisfied by any of them and would
+/// say nothing about whether the length-argument catalogue still exists. The
+/// catalogue is what an author consults before dimensioning an unfamiliar
+/// signature, so the catalogue is what gets scanned.
+const LENGTH_ARGS_SECTION_MARKER: &str = "<!-- LENGTH-ARGS-SECTION -->";
+
+/// Human-readable name of [`LENGTH_ARGS_SECTION_MARKER`]'s section. Panic text
+/// only; nothing matches on it.
+const LENGTH_ARGS_SECTION_TITLE: &str = "### Dimensioned arguments";
+
 fn read_chunk() -> String {
     std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
         panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
@@ -911,6 +928,115 @@ pub(crate) fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// Every DISTINCT identifier CALLED as `name(` in `text`, in document order.
+///
+/// `text` MUST already be comment-free — pass it through
+/// [`strip_reify_comments`] first.
+///
+/// Complements [`call_sites`], which answers "at what arities is THIS name
+/// called". This answers "which names are called AT ALL" — the direction a
+/// phantom-signature check needs, because a phantom name is by definition one
+/// nobody thought to ask about. `min_clearance(a, b)` was found by asking the
+/// first question; `rotate(geo, axis, angle)` and `translate(geo, vector)`
+/// (tasks #5347 / #5364) could only have been found by asking this one.
+///
+/// Each candidate is CONFIRMED through [`call_sites`] rather than trusted, so
+/// the two scanners cannot disagree about what a call is: a `name(` whose parens
+/// never balance (a call form wrapped across a markdown line) is skipped here by
+/// exactly the rule that skips it there. A run starting with a digit is a
+/// numeric literal juxtaposed with a paren, never a call.
+pub(crate) fn called_names(text: &str) -> Vec<String> {
+    fn is_ident(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+
+    for (i, &c) in chars.iter().enumerate() {
+        if c != '(' {
+            continue;
+        }
+        let mut start = i;
+        while start > 0 && is_ident(chars[start - 1]) {
+            start -= 1;
+        }
+        if start == i {
+            continue;
+        }
+        let name: String = chars[start..i].iter().collect();
+        if name.starts_with(|c: char| c.is_ascii_digit()) || out.contains(&name) {
+            continue;
+        }
+        if call_sites(text, &name).is_empty() {
+            continue;
+        }
+        out.push(name);
+    }
+    out
+}
+
+/// The compiler name registries a documented call form may legitimately belong
+/// to, each paired with the const name to quote in a panic so the reader is told
+/// WHERE to look rather than just that the lookup failed.
+///
+/// INCOMPLETE, AND KNOWABLY SO. `units::AFFINE_MAP_CONSTRUCTOR_NAMES` and
+/// `math_signatures::MATH_CONSTRUCTION_NAMES` (which carries the `point2` /
+/// `point3` / `vec2` / `vec3` prelude constructors geometry.md documents) are
+/// real registries but are NOT re-exported from `reify_compiler`'s crate root —
+/// `mod units` and `mod math_signatures` are both private, and lib.rs's
+/// `pub use units::{…}` omits the affine one. Reaching them needs an edit to
+/// `crates/reify-compiler/src/lib.rs`, outside task 5759's file scope. Callers
+/// therefore carry an explicit, justified allowlist for names in those two
+/// families; when the re-export lands, move those entries here and delete the
+/// allowlist rather than growing it.
+pub(crate) const CALLABLE_NAME_REGISTRIES: &[(&str, &[&str])] = &[
+    (
+        "GEOMETRY_FUNCTION_NAMES",
+        reify_compiler::GEOMETRY_FUNCTION_NAMES,
+    ),
+    (
+        "GEOMETRY_QUERY_HELPER_NAMES",
+        reify_compiler::GEOMETRY_QUERY_HELPER_NAMES,
+    ),
+    (
+        "GEOMETRY_KINEMATIC_QUERY_NAMES",
+        reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES,
+    ),
+    (
+        "GEOMETRY_TOPOLOGY_SELECTOR_NAMES",
+        reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES,
+    ),
+    ("GEOMETRY_QUERY_NAMES", reify_compiler::GEOMETRY_QUERY_NAMES),
+];
+
+/// The [`CALLABLE_NAME_REGISTRIES`] family `name` belongs to, or `None`.
+pub(crate) fn registry_family(name: &str) -> Option<&'static str> {
+    CALLABLE_NAME_REGISTRIES
+        .iter()
+        .find(|(_, names)| names.contains(&name))
+        .map(|(family, _)| *family)
+}
+
+/// Panic text shared by both chunks' registry checks, so the two cannot drift
+/// apart on what a reader is told to do about a phantom name.
+pub(crate) fn phantom_name_panic(chunk_path: &str, where_: &str, name: &str) -> String {
+    format!(
+        "{chunk_path} documents a call to `{name}(…)` in {where_}, but `{name}` is not a member \
+         of ANY compiler name registry ({:?}). Either the chunk teaches a PHANTOM signature the \
+         compiler was never shown — the failure mode that cost live probe cycles in the \
+         2026-07-24 language review (`rotate(geo, axis, angle)`, `translate(geo, vector)`; tasks \
+         #5347 / #5364) — or the name is a prelude/math constructor from one of the registries \
+         `CALLABLE_NAME_REGISTRIES` documents as unreachable, in which case add it to THIS \
+         call site's allowlist with a justification. Do not widen the allowlist to silence a \
+         name you have not looked up.",
+        CALLABLE_NAME_REGISTRIES
+            .iter()
+            .map(|(family, _)| *family)
+            .collect::<Vec<_>>()
+    )
+}
+
 /// The arities `name` is DOCUMENTED at in `section`, read off its
 /// `name(<args>) -> <Type>` signature forms.
 ///
@@ -983,6 +1109,91 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
         }
     }
 }
+
+/// Every geometry constructor the LENGTH-ARGUMENTS section names as taking a
+/// dimensioned argument must be a REAL registry entry.
+///
+/// Twin of `units_chunk_smoke.rs`'s
+/// `documented_call_names_in_units_chunk_are_real_registry_entries`: units.md
+/// owns the RULE and the migration idiom, this chunk owns the per-position
+/// CATALOGUE, and each is registry-verified on its own side rather than one
+/// restating the other.
+///
+/// This is the phantom-NAME direction, and it is the one that has actually
+/// failed in this repo: the 2026-07-24 language review found `rotate(geo, axis,
+/// angle)` and `translate(geo, vector)` documented at signatures the compiler
+/// had never been shown (tasks #5347 / #5364). A catalogue that names a
+/// constructor which does not exist sends an author to write a call that cannot
+/// compile, and — because a `structure def` body types an unresolved call from
+/// its first argument — often will not even say so.
+///
+/// SCOPE — this checks NAMES, not arities and not argument dimensions. Arity for
+/// the oracle names is cross-checked separately by
+/// `documented_oracle_arities_are_exercised_by_a_compiling_fence`; argument
+/// DIMENSION is pinned on the eval side by the tests the section's SYNC block
+/// cites, not here.
+#[test]
+fn documented_call_names_in_the_length_section_are_real_registry_entries() {
+    let markdown = read_chunk();
+    // `section_body` panics if the marker is gone, so gutting the catalogue is
+    // RED rather than vacuously green.
+    let section = section_body(
+        &markdown,
+        LENGTH_ARGS_SECTION_MARKER,
+        CHUNK_PATH,
+        LENGTH_ARGS_SECTION_TITLE,
+    );
+    let names = called_names(&strip_reify_comments(&section));
+
+    // Anti-vacuity, two independent halves. The COUNT floor catches a section
+    // rewritten into a shape the scan cannot read (prose without call forms);
+    // the SENTINELS catch a section that kept its shape but lost the specific
+    // positions the catalogue exists for. `translate` is the headline case
+    // (every component length-semantic, bare `0` included); `polygon` is the one
+    // with NO dimensionless position at all; `nurbs` is the one that mixes both
+    // in a single argument list, so it is where a catalogue is load-bearing.
+    assert!(
+        names.len() >= 5,
+        "only {} distinct call name(s) found in {CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` \
+         section — expected at least 5. The catalogue was rewritten into prose without call \
+         forms, so this check has nothing to verify and gives NO protection. Names seen: \
+         {names:?}",
+        names.len()
+    );
+    for sentinel in ["translate", "polygon", "nurbs"] {
+        assert!(
+            names.iter().any(|n| n == sentinel),
+            "{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` section no longer names `{sentinel}` \
+             as a call form. That position is one of the three the catalogue exists to \
+             distinguish — `translate` (every component length-semantic, bare `0` included), \
+             `polygon` (no dimensionless position at all) and `nurbs` (lengths and counts in one \
+             argument list). Names seen: {names:?}"
+        );
+    }
+
+    for name in &names {
+        assert!(
+            registry_family(name).is_some() || LENGTH_SECTION_NAME_ALLOWLIST.contains(&name.as_str()),
+            "{}",
+            phantom_name_panic(
+                CHUNK_PATH,
+                &format!("its `{LENGTH_ARGS_SECTION_TITLE}` section"),
+                name
+            )
+        );
+    }
+}
+
+/// Names the length-arguments section may call that are in none of
+/// [`CALLABLE_NAME_REGISTRIES`], each with its justification.
+///
+/// EMPTY, and kept empty on purpose — every constructor the catalogue names is a
+/// `GEOMETRY_FUNCTION_NAMES` entry. The hook exists because the prelude
+/// constructors this chunk documents elsewhere (`point3`, `vec3`, …) live in
+/// `math_signatures::MATH_CONSTRUCTION_NAMES`, which is not reachable from the
+/// crate root; see [`CALLABLE_NAME_REGISTRIES`]. Adding an entry here is a claim
+/// that a name is real-but-unreachable, so write the justification next to it.
+const LENGTH_SECTION_NAME_ALLOWLIST: &[&str] = &[];
 
 /// NEGATIVE CONTROL for the fence guard — pins the part of it that discriminates.
 ///
