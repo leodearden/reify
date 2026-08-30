@@ -1020,6 +1020,116 @@ class TestGrammarCacheIsolation(unittest.TestCase):
             f"grammar probe must run inside tree-sitter-reify/; got {cwd!r}",
         )
 
+    # ── (a) the BOUNDED arm is isolated too ───────────────────────────────────
+
+    def test_bounded_grammar_probe_sets_xdg_cache_home(self):
+        """run_probe(grammar, timeout=...) isolates the cache as well.
+
+        THE LOAD-BEARING HALF.  grammar_substrate_usable() calls
+        run_probe(probe, timeout=_SUBSTRATE_PROBE_TIMEOUT_S), which goes through
+        _run_bounded()'s subprocess.Popen — NOT the subprocess.run() the
+        unbounded cases above exercise.  The very first real `tree-sitter parse`
+        any gate runs takes THIS arm, so a fix applied only to subprocess.run
+        leaves the load-bearing path sharing the host-global cache.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        sentinel = os.path.join(self._tmpdir, "ambient_cache")
+        os.makedirs(sentinel, exist_ok=True)
+        with unittest.mock.patch.dict(
+            os.environ, {"TREE_SITTER_BIN": stub, "XDG_CACHE_HOME": sentinel},
+        ):
+            run = pcc.run_probe(probe, timeout=10.0)
+        self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
+        self._assert_isolated(self._reported_cache(run), sentinel)
+
+    # ── (b) and it is the SAME dir the unbounded arm uses ─────────────────────
+
+    def test_bounded_and_unbounded_agree(self):
+        """Both arms report the SAME cache dir for the same probe.
+
+        Fed from one expression in run_probe() precisely so a reader cannot
+        conclude the two paths drifted — and so the compile is amortised across
+        both rather than paid once per arm.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir)
+        probe = self._make_probe()
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            unbounded = self._reported_cache(pcc.run_probe(probe))
+            bounded = self._reported_cache(pcc.run_probe(probe, timeout=10.0))
+        self.assertEqual(
+            bounded, unbounded,
+            "the bounded and unbounded launch arms must share one cache dir",
+        )
+
+    # ── (c) non-grammar probes keep the ambient environment ───────────────────
+
+    def test_check_probe_env_not_overridden(self):
+        """A check probe inherits the AMBIENT XDG_CACHE_HOME verbatim.
+
+        `reify check` drives the tree-sitter Rust library linked into the binary,
+        never the CLI cache, so overriding its environment would be unjustified
+        blast radius on the gate's highest-volume probe kind.  env=None is
+        exactly subprocess's inherit-the-parent default; this pins that it stays
+        that way.
+        """
+        stub = _ts_stub_echo_cache(self._tmpdir, name="reify_stub_echo_cache")
+        probe = self._make_probe(kind="check")
+        sentinel = os.path.join(self._tmpdir, "ambient_cache_check")
+        os.makedirs(sentinel, exist_ok=True)
+        with unittest.mock.patch.dict(
+            os.environ, {"REIFY_BIN": stub, "XDG_CACHE_HOME": sentinel},
+        ):
+            run = pcc.run_probe(probe)
+        self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
+        self.assertEqual(
+            self._reported_cache(run), sentinel,
+            "check probes must inherit the ambient XDG_CACHE_HOME untouched",
+        )
+
+    # ── (d) env plumbing must not swallow or reshape a launch failure ─────────
+
+    def test_grammar_probe_launch_failure_still_sentinel(self):
+        """A missing tree-sitter still reaches observe() as exit 127 + sentinel.
+
+        Building the isolated environment happens BEFORE the launch, so a bug
+        there (an exception, or an env dict that makes Popen fail differently)
+        could plausibly reshape or swallow the OSError representation the
+        harness-error path depends on.  Asserted on BOTH arms.
+        """
+        missing = os.path.join(self._tmpdir, "definitely-not-here-xyz")
+        self.assertFalse(os.path.exists(missing), "precondition: path must not exist")
+        probe = self._make_probe()
+        for label, kwargs in (("unbounded", {}), ("bounded", {"timeout": 10.0})):
+            with self.subTest(arm=label):
+                with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": missing}):
+                    run = pcc.run_probe(probe, **kwargs)
+                self.assertEqual(run.exit_code, 127, f"{label}: {run.stderr!r}")
+                self.assertIn(
+                    pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr,
+                    f"{label} arm must still represent a launch failure via the "
+                    "sentinel channel observe() classifies as HARNESS_ERROR",
+                )
+
+    # ── (e) nor the bounded kill/drain + timeout sentinel contract ────────────
+
+    def test_bounded_grammar_probe_timeout_sentinel_intact(self):
+        """_run_bounded's kill/drain and timeout sentinel survive the env= param.
+
+        Reuses the existing _ts_stub_hangs factory rather than writing a new hang
+        stub: it already models a tree-sitter wedged on its grammar lock, which
+        is the case _SUBSTRATE_PROBE_TIMEOUT_S exists for.
+        """
+        stub = _ts_stub_hangs(self._tmpdir, seconds=30)
+        probe = self._make_probe()
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe, timeout=0.3)
+        self.assertEqual(run.exit_code, 124, f"expected timeout exit; got {run!r}")
+        self.assertIn(
+            pcc._PROBE_TIMEOUT_SENTINEL, run.stderr,
+            "a wedged probe must still be distinguishable from a missing one",
+        )
+
 
 
 # ---------------------------------------------------------------------------
