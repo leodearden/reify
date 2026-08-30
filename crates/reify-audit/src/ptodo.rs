@@ -189,7 +189,8 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 /// ("PRD-relative indices (`task-5`) … resolve to `malformed-cite`"); this is
 /// the recogniser that implements it for the `#N` spelling.
 ///
-/// Three families, all measured over the live corpus (task #6103):
+/// Three families, all measured over the live corpus (task #6103), governed by
+/// ONE shared digit bound:
 ///
 /// 1. **Glued PRD-artifact namespace** — the `#` is glued (no space) to a
 ///    section or artifact abbreviation: `§7#5`, `Open Q#4`, `OQ#1`, `PRD DD#4`,
@@ -198,24 +199,51 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 ///    not match.
 /// 2. **Spaced PRD-local noun** — exactly one space separates the `#` from a
 ///    preceding `invariant(s)` / `row(s)` / `boundary` / `open-question` /
-///    `design decision` token.  These need no digit bound: all 52 repo-wide
-///    `invariant #N` occurrences are single-digit PRD-local, and not one is a
-///    task id, so the noun alone is a zero-collision discriminator.
-/// 3. **`task(s)` + digit bound** — exactly one space separates the `#` from a
-///    `task`/`tasks` token AND `id <= 99`.
+///    `design decision` token.
+/// 3. **`task(s)`** — exactly one space separates the `#` from a `task`/`tasks`
+///    token.
 ///
-/// **Why family 3 keys on DIGIT COUNT, not on a `PRD` left-context window.**
-/// A form catalogue of the whole corpus showed left-context alone fails
-/// `task #N` in BOTH directions.  Poor recall: `crates/reify-core/src/
-/// diagnostics.rs:3304` reads ``(task #2992, PRD `docs/prds/v0_3/
-/// hex-wedge-meshing.md` task #11)`` — `task #11` is PRD-relative but a long
-/// path pushes `PRD` outside any sane window.  False suppression:
-/// `crates/reify-compiler/src/stdlib_loader.rs:257` reads `task #333 per PRD
-/// §Slice B`, where a symmetric window would kill a GENUINE cite.  The digit
-/// split is decisive and measured: **1721 four-digit genuine `task #N` cites
-/// vs ~281 one/two-digit PRD-relative ones; the max observed PRD-relative
-/// index is 21; and the only genuine three-digit legacy ids are #333, #479 and
-/// #630 — all ≥ 100.**  Pinned by `prd_relative_cite_negatives`.
+/// **The `id <= 99` bound is UNIFORM across all three families**, applied once
+/// as an early return rather than per family.  It is a property of the
+/// PRD-relative REGISTER — a document-local index is small — not of the `task`
+/// noun, so a fourth family added later inherits it instead of having to
+/// remember it.
+///
+/// **Zero recall cost, re-measured on this branch (2026-08-30).**  The maximum
+/// PRD-relative index is **11** for family 1 (`PRD T#11`; the glued-namespace
+/// histogram is 1–8 plus 11, and a three-or-more-digit sweep of those forms over
+/// all tracked files — `git grep -nEi '(§[0-9.]*|\b(OQ|DD|Q|T))#[0-9]{3,}'` —
+/// returns ZERO), **18** for family 2 (`boundary #18`; the histogram is 1–15
+/// plus 18, plus the single #5238 outlier below), and **27** for family 3.
+/// Every one is comfortably inside the bound.
+///
+/// **An UNBOUNDED family is fail-DANGEROUS, in the one direction §6.6's ratchet
+/// cannot see.**  Exactly one tracked line repo-wide puts a real task id in
+/// family-2 register — `crates/reify-eval/tests/engine_eval_commit_migration.rs`
+/// line 1490, ``/// This is the invariant #5238 nearly lost`` — where #5238 is a
+/// genuine task (`done` — terminal — and that file is in its own
+/// `metadata.files`).  Unbounded, that cite is either DOWNGRADED from a High
+/// `orphaned` hard-gate finding to the Medium advisory `malformed-cite` (marker
+/// lane) or ERASED outright (lane δ-B is cite-anchored, so with no canonical
+/// cite there is no candidate at all) — purely on which noun precedes the `#`.
+/// The ratchet asserts only `live ⊆ baseline`, which catches a GAINED finding
+/// and never a LOST one, so nothing downstream would have reported it.  Pinned
+/// by `prd_relative_cite_negatives` and
+/// `prd_relative_families_are_digit_bounded_end_to_end`.
+///
+/// **Why the bound keys on DIGIT COUNT, not on a `PRD` left-context window.**
+/// A form catalogue of the whole corpus showed left-context alone fails in BOTH
+/// directions.  Poor recall: `crates/reify-core/src/diagnostics.rs:3304` reads
+/// ``(task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11)`` —
+/// `task #11` is PRD-relative but a long path pushes `PRD` outside any sane
+/// window.  False suppression: `crates/reify-compiler/src/stdlib_loader.rs:257`
+/// reads `task #333 per PRD §Slice B`, where a symmetric window would kill a
+/// GENUINE cite.  The digit split is decisive and measured (re-measured
+/// 2026-08-30 over tracked `.rs`, pattern `\btasks? #[0-9]{4}\b` vs
+/// `\btasks? #[0-9]{1,2}\b`): **2039 four-digit genuine `task #N` cites vs 307
+/// one/two-digit PRD-relative ones, and the only genuine sub-four-digit ids are
+/// the legacy #333, #479 and #630 — all ≥ 100.**  Pinned by
+/// `prd_relative_cite_negatives`.
 ///
 /// **Classification is per-`#N`-OCCURRENCE, never per-line.**  Six live lines
 /// carry both idioms at once — `crates/reify-mesh-morph/src/eligibility.rs:61`
@@ -243,6 +271,13 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 /// [`extract_cites`] — so the duplication is contained and is pinned by the
 /// pre-existing `extract_g_allow_owner_cites_*` tests staying green.
 fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
+    // The shared digit bound, applied ONCE for all three families — see the
+    // "UNIFORM" and "fail-DANGEROUS" paragraphs above.  Placed here rather than
+    // inside a family arm so a family added later cannot forget it.
+    if id > 99 {
+        return false;
+    }
+
     /// The token alphabet for the spaced-noun families: [`is_word_byte`] plus
     /// `-`, so a hyphenated PRD noun (`open-question`) is read as ONE token.
     fn is_token_byte(b: u8) -> bool {
@@ -304,8 +339,10 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
                     .0
                     .eq_ignore_ascii_case(b"design")
         }
-        // Family 3 — the digit bound is what makes this arm safe; see above.
-        "task" | "tasks" => id <= 99,
+        // Family 3 — the digit bound that makes this arm safe is the hoisted
+        // `id > 99` early return at the top of this fn, shared with families 1
+        // and 2; it is not re-spelled here.
+        "task" | "tasks" => true,
         _ => false,
     }
 }
