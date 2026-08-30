@@ -1031,8 +1031,11 @@ mod tests {
             .map(|d| (d.severity, d.code, d.message.as_str()))
             .collect();
         assert!(
-            ctx.compiled.diagnostics.iter().any(|d| d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+            ctx.compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
             "containment (AnalysisContext::from_parsed): a failed `auto:` \
              resolution must still surface the compile-stage \
              AutoTypeParamNoCandidate error, so hover/completion/goto-def \

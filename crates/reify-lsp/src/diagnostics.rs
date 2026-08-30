@@ -191,6 +191,21 @@ pub(crate) fn auto_type_param_resolution_failed(compiled: &reify_compiler::Compi
 /// compile-time change (task #6798 amendment: folded from a separate
 /// near-duplicate test — see that test's doc for why).
 ///
+/// The checker swap is PAIRED with an eval-skip guard. Failing `auto:`
+/// candidate feasibility at compile time is exactly what leaves an
+/// unsubstituted `Type::TypeParam` value cell in the graph, which panics eval
+/// in debug builds (root cause owned by task **#6851**; mechanism in
+/// `diagnostic_is_auto_type_param_error`'s doc — private, so cited by name
+/// rather than as an intra-doc link from this public item). All three LSP
+/// production entry points therefore call `auto_type_param_resolution_failed`
+/// after
+/// collecting the compile-stage diagnostics and skip the eval/check pass when
+/// it returns true — the user still gets the `E_AUTO_TYPE_PARAM_*` error this
+/// section is about, and the server stays alive. The guard is deliberately
+/// narrow (Error severity, `AutoTypeParam*` code family only): it does NOT
+/// suppress eval for other compile errors, because the LSP evaluates through
+/// non-fatal ones on purpose.
+///
 /// ## Engine posture: deliberately NO compute trampolines
 ///
 /// `EvalState::new` builds a bare `Engine::new(SimpleConstraintChecker,
@@ -957,17 +972,44 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
 /// return cleanly and the AMBIGUOUS/NO_CANDIDATE divergence is preserved.
 /// Do not "simplify" this back to `param seal : T`.
 ///
-/// **Reachability note (task #6798 amendment).** The checker swap this leaf
-/// makes WIDENS when the `param seal : T` hazard above can fire: a
-/// single-candidate `auto:` bound with a constant-false constraint used to
-/// resolve cleanly under the stub (Indeterminate → feasible) and now yields
-/// zero feasible candidates → NoCandidate → the same unsubstituted
-/// `TypeParam` cell that trips `assert_value_cell_types_representable`. The
-/// hazard is pre-existing (already reachable today via the multi-candidate
-/// case on either checker) and lives entirely in `reify-eval` /
-/// `reify-compiler`, out of this file's scope to fix — filed as a follow-up
-/// task rather than fixed or newly test-pinned here, since a test that
-/// reaches it would itself panic in debug builds (including `cargo test`).
+/// **Reachability note (task #6798 amendment round 2 — supersedes round 1).**
+/// Round 1 called the `param seal : T` hazard "pre-existing, already
+/// reachable today via the multi-candidate case on either checker". Measured
+/// re-verification falsified that: it holds for the MULTI-candidate shape
+/// only. For the SINGLE-candidate + param-referencing-constraint shape
+/// ([`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]) the stub compiles to ZERO
+/// diagnostics AND evals cleanly, and only the real checker fails resolution.
+/// This leaf's checker swap therefore made a genuinely NEW panic path
+/// reachable from the LSP's own production entry points — not merely a wider
+/// window on an old one.
+///
+/// **Root cause: task #6851.** `phase_auto_type_param_resolution` gates all
+/// substitution behind `if !sigma.is_empty()`, so a failed resolution
+/// synthesizes no monomorph and a `param seal : T` member keeps
+/// `cell_type = Type::TypeParam("T")` into the evaluation graph. #6851 owns
+/// the compiler-side fix (its "fix-site 1": stop leaving the sub pointing at
+/// an un-substituted generic). What landed in this file is its **fix-site 2**,
+/// caller-side defence-in-depth, scoped to `reify-lsp`'s three production
+/// entry points only — [`auto_type_param_resolution_failed`] skips the
+/// eval/check pass when resolution failed.
+/// `crates/reify-cli/src/mcp_context.rs`'s three ungated `engine.eval` sites
+/// remain #6851's to fix.
+///
+/// **It IS test-pinned here**, contrary to round 1's claim that a test
+/// reaching the hazard would itself panic: the guard is exactly what makes
+/// such a test possible. See
+/// [`tests::auto_resolution_failure_does_not_panic_diagnostics_entry_points`]
+/// and `analysis::tests::auto_resolution_failure_does_not_panic_analysis_context`,
+/// both over [`AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`].
+///
+/// **Release-build asymmetry — this is not debug-only cosmetics.**
+/// `assert_value_cell_types_representable` is `#[cfg(debug_assertions)]` and
+/// fully elided in release, so release builds do not crash: they proceed with
+/// the unrepresentable cell live and yield a confusing `TypeKindMismatch` /
+/// `Undef` (#6851's release-side finding). The same guard contains both
+/// halves. Debug surfaces where the crash half is reachable:
+/// `scripts/run-gui-dev.sh`, a locally built `reify lsp`, `reify gui --debug`
+/// / `gui-debug`, and the per-worktree `reify-debug` MCP server.
 #[cfg(test)]
 pub(crate) const BT8_CONSTANT_CONSTRAINT_SRC: &str = r#"trait Seal {}
 structure def GasketSeal : Seal { param d : Real = 2.0 }
@@ -1059,8 +1101,10 @@ pub(crate) fn assert_auto_fail_fixture_is_newly_reachable() {
         stub.diagnostics
     );
     assert!(
-        real.diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
-            && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+        real.diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error
+                && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
         "anti-vacuity guard: the real SimpleConstraintChecker must fail \
          `auto:` resolution on AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC with an \
          Error-severity AutoTypeParamNoCandidate — that failed resolution is \
@@ -1447,7 +1491,9 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         // regression — the editor would lose keystroke-time eval diagnostics
         // on a perfectly healthy graph.
         assert!(
-            !classify(&Diagnostic::warning("free pick").with_code(DiagnosticCode::AutoTypeParamNonUnique)),
+            !classify(
+                &Diagnostic::warning("free pick").with_code(DiagnosticCode::AutoTypeParamNonUnique)
+            ),
             "AutoTypeParamNonUnique is WARNING severity and accompanies a \
              SUCCESSFUL `auto(free):` substitution — the guard must not fire, \
              or eval is suppressed on a healthy graph"
@@ -1483,7 +1529,9 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         // --- Sanity: severity and family are BOTH required, i.e. the
         // predicate is a conjunction rather than either half alone.
         assert!(
-            !classify(&Diagnostic::warning("warn").with_code(DiagnosticCode::AutoTypeParamNoCandidate)),
+            !classify(
+                &Diagnostic::warning("warn").with_code(DiagnosticCode::AutoTypeParamNoCandidate)
+            ),
             "severity is a required conjunct: a WARNING-severity \
              AutoTypeParamNoCandidate (not emitted today, pinned so a future \
              severity downgrade cannot silently widen the guard) must not fire"
