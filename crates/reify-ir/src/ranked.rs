@@ -60,6 +60,22 @@ impl BestFoundReason {
 #[derive(Debug, Clone)]
 pub enum OptimalityStatus {
     /// A proof of global optimality was obtained (e.g. branch-and-bound gap = 0).
+    ///
+    /// # Invariant C2 — this requires [`crate::Completeness::Exhaustive`]
+    ///
+    /// See [`crate::Completeness::permits_proven_optimal`]. `ProvenOptimal` asserts
+    /// two independent things: that this candidate is optimal, **and** that nothing
+    /// outside the set could beat it. The second is a completeness claim, and only
+    /// `Exhaustive` supplies it.
+    ///
+    /// **An optimality certificate is not a substitute for that.** A first-order
+    /// stationarity certificate — a vanishing projected-gradient norm — is *local*:
+    /// it says the gradient vanishes at this point and says nothing whatsoever
+    /// about other basins. A stationary point plus an unenumerated domain is
+    /// exactly the false-completeness claim the completeness axis exists to
+    /// prevent, so a stationarity certificate justifies at most
+    /// [`OptimalityStatus::BestFound`], never this variant. Promoting on
+    /// stationarity alone is the specific wrong refactor this note pre-empts.
     ProvenOptimal,
     /// The best result found within the given budget, without a proof of optimality.
     ///

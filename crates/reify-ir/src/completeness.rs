@@ -196,6 +196,87 @@ impl Completeness {
     pub const fn derived_unique(&self, solution_count: usize) -> bool {
         self.is_exhaustive() && solution_count == 1
     }
+
+    /// **Invariant C2 — `ProvenOptimal` requires `Exhaustive`.**
+    ///
+    /// Whether a producer holding this verdict may set
+    /// [`crate::ranked::OptimalityStatus::ProvenOptimal`]. Only
+    /// [`Completeness::Exhaustive`] does.
+    ///
+    /// C2 is a **conjunction, not an assertion**: an optimality certificate and a
+    /// completeness verdict are independent claims (D6), and `ProvenOptimal` asserts
+    /// *both* — that this point is optimal *and* that nothing outside the searched
+    /// set could beat it. A producer with an independent certificate (an exact MILP
+    /// duality gap) may still claim it, but it must then also justify `Exhaustive`
+    /// rather than treating the certificate as a substitute for the enumeration.
+    pub const fn permits_proven_optimal(&self) -> bool {
+        self.is_exhaustive()
+    }
+
+    /// Human-readable rendering of this verdict.
+    ///
+    /// **C3 at the rendering layer:** a [`Completeness::Refuted`] verdict must never
+    /// render like a [`Completeness::Partial`] one. One is a proof about the model,
+    /// the other is a report about the search, and collapsing them is exactly the
+    /// wrong this axis exists to correct.
+    ///
+    /// Returns `String` rather than the `&'static str` that
+    /// [`crate::ranked::BestFoundReason::describe`] returns — see
+    /// [`PartialReason::describe`] for why that divergence is deliberate.
+    pub fn describe(&self) -> String {
+        match self {
+            Completeness::Exhaustive => {
+                "every solution in the searched domain was enumerated".to_string()
+            }
+            Completeness::Partial { reason } => {
+                format!("solution set not established: {}", reason.describe())
+            }
+            Completeness::Refuted { narrowing } => format!(
+                "proven infeasible: no solution exists in the searched domain \
+                 (narrowed to empty by constraint {narrowing})"
+            ),
+        }
+    }
+}
+
+impl PartialReason {
+    /// Human-readable rendering of why the set was not established.
+    ///
+    /// # Why `String`, not `&'static str`
+    ///
+    /// [`crate::ranked::BestFoundReason::describe`] returns `&'static str`, and this
+    /// method deliberately diverges rather than drifting: three reasons carry
+    /// payloads (`dims`, `param`, `constraint`) that MUST be interpolated for the
+    /// decline to be attributable (INV-SF-3). A `&'static str` here would render two
+    /// different declines as one indistinguishable string, which is the silent-skip
+    /// shape that invariant forbids.
+    pub fn describe(&self) -> String {
+        match self {
+            PartialReason::BoxBudgetExhausted => {
+                "subdivision budget exhausted with boxes still unresolved".to_string()
+            }
+            PartialReason::DimensionAboveEnvelope { dims } => format!(
+                "component dimension {dims} exceeds the enumeration envelope"
+            ),
+            PartialReason::DomainUnbounded { param } => {
+                format!("domain of {param} is unbounded, so no finite box could be searched")
+            }
+            PartialReason::NotIntervalRepresentable { constraint } => format!(
+                "constraint {constraint} has no sound interval form, so no box verdict is trustworthy"
+            ),
+            PartialReason::InnerSolveUnproven => {
+                "the continuous sub-problem under this discrete choice was not enumerated"
+                    .to_string()
+            }
+            PartialReason::ProbeOnly => {
+                "only the legacy perturbation probe ran; nothing was established about the set"
+                    .to_string()
+            }
+            PartialReason::NotAttempted => {
+                "this solver does not reason about solution-set completeness".to_string()
+            }
+        }
+    }
 }
 
 /// A solution set paired with the verdict on how much of it was established
