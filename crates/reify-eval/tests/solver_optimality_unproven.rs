@@ -412,16 +412,48 @@ fn empty_ranked_candidates_trips_i2_assert_registry_seam() {
 
 // ── BT13: the engine consumes the carrier read-only at task α (#6706) ────────
 
-/// A solver that reports a NON-default completeness verdict on a well-formed
-/// (I2-satisfying) ranked result, so the engine's handling of the field is
-/// observable rather than vacuous.
-struct ExhaustiveRankedSolver {
+/// BT13 fixture: an objective-bearing model whose auto is `auto(free)`.
+///
+/// Two properties are load-bearing and neither is incidental:
+/// - `minimize x` makes `problem.objective.is_some()`, which is what routes the
+///   engine through `solve_ranked_with_dispatch` — the seam that binds
+///   `completeness` with `..`. Without an objective the engine takes the
+///   non-ranked `.solve()` path and never sees the axis at all.
+/// - `auto(free)` is what makes the candidate's `unique` flag OBSERVABLE: the
+///   engine emits "resolved via auto(free) -- result is not uniquely determined"
+///   for every free auto when `unique` is false (engine_eval.rs, per-template
+///   seam). Under strict `auto` that flag reaches no diagnostic on this path, so
+///   a test built on `S3_OBJECTIVE_SOURCE` would still pass if the engine started
+///   promoting `unique` from an `Exhaustive` verdict — verified by mutating the
+///   seam. This fixture is the one that reds.
+const BT13_FREE_OBJECTIVE_SOURCE: &str = r#"
+structure BT13Free {
+    param x: Length = auto(free)
+    constraint x > 1mm
+    constraint x < 50mm
+    minimize x
+}
+"#;
+
+/// A well-formed (I2-satisfying) solver whose ranked result carries a CHOSEN
+/// completeness verdict, so the engine's handling of the field is observable by
+/// running the same model twice under two different verdicts.
+///
+/// `unique: false` on the single candidate is the load-bearing part: a
+/// one-element set under `Exhaustive` is exactly the shape C1 permits
+/// `unique: true` for, so an engine that ever derived `unique` from the verdict
+/// would make the two runs disagree.
+struct FixedCompletenessSolver {
     values: HashMap<reify_core::identity::ValueCellId, reify_ir::Value>,
+    completeness: reify_ir::Completeness,
 }
 
-impl ConstraintSolver for ExhaustiveRankedSolver {
+impl ConstraintSolver for FixedCompletenessSolver {
     fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
-        SolveResult::Solved { values: self.values.clone(), unique: false }
+        SolveResult::Solved {
+            values: self.values.clone(),
+            unique: false,
+        }
     }
 
     fn solve_ranked(&self, _problem: &ResolutionProblem) -> RankedSolveResult {
@@ -432,63 +464,96 @@ impl ConstraintSolver for ExhaustiveRankedSolver {
                 unique: false,
             }],
             optimality: OptimalityStatus::FeasibilityOnly,
-            completeness: reify_ir::Completeness::Exhaustive,
+            completeness: self.completeness.clone(),
         }
     }
 }
 
-/// BT13: the value the engine reconstructs at the seam is still exactly
-/// `SolveResult::Solved { values: candidate.values, unique: candidate.unique }`.
+/// The resolved cell and the diagnostics of a REAL `Engine::eval` over
+/// [`BT13_FREE_OBJECTIVE_SOURCE`], driven by a solver reporting `completeness`.
 ///
-/// The engine consumes `completeness` read-only at task α and derives NOTHING new
-/// from it — not `unique`, not a diagnostic. Deriving from it is δ #6709 → #6901's
-/// work (verdict policy) and ζ #6711 → #6902's (basin identity). This test pins that: an
-/// `Exhaustive` verdict on a candidate whose `unique` is `false` must NOT be
-/// promoted to `unique: true`, even though C1 would permit it for a
-/// one-element set, because the engine has not been given the deduplicated
-/// count that C1 requires.
+/// Diagnostics are rendered and sorted rather than compared structurally:
+/// `Diagnostic` is not `PartialEq`, and sorting keeps the comparison about
+/// CONTENT rather than about an emission order no invariant pins.
+fn eval_under_completeness(completeness: reify_ir::Completeness) -> (Option<Value>, Vec<String>) {
+    let compiled = compile_source_with_stdlib(BT13_FREE_OBJECTIVE_SOURCE);
+    let x_id = ValueCellId::new("BT13Free", "x");
+
+    let mut values = HashMap::new();
+    values.insert(x_id.clone(), Value::length(0.01));
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(
+        Box::new(FixedCompletenessSolver {
+            values,
+            completeness,
+        }),
+    );
+    let result = engine.eval(&compiled);
+
+    let mut diagnostics: Vec<String> = result
+        .diagnostics
+        .iter()
+        .map(|d| format!("{:?}|{:?}|{}", d.severity, d.code, d.message))
+        .collect();
+    diagnostics.sort();
+
+    (result.values.get(&x_id).cloned(), diagnostics)
+}
+
+/// BT13: the completeness verdict changes NOTHING the engine produces at task α.
+///
+/// The engine consumes `completeness` read-only and derives nothing new from it —
+/// not `unique`, not a diagnostic. Deriving from it is δ #6709 → #6901's work
+/// (verdict policy) and ζ #6711 → #6902's (basin identity).
+///
+/// This drives a real `Engine::eval` twice over the same objective-bearing model,
+/// changing only the verdict the solver reports: `Exhaustive` (the strongest claim
+/// the axis can make, and one C1 would let a one-element set turn into
+/// `unique: true`) versus the `Partial { NotAttempted }` every in-tree producer
+/// reports today. Resolved cell and diagnostics must be identical. If a future
+/// edit made either engine seam promote `unique` from an `Exhaustive` verdict, or
+/// emit/suppress a diagnostic on it, this test reds.
 #[test]
 fn engine_does_not_derive_unique_from_completeness_at_alpha() {
-    let solver = ExhaustiveRankedSolver { values: HashMap::new() };
+    // Premise, at the carrier: this IS the shape C1 would call unique — one
+    // solution, proven exhaustive. The point of the test is that nothing at task
+    // α applies it.
+    assert!(
+        reify_ir::Completeness::Exhaustive.derived_unique(1),
+        "premise: a one-element Exhaustive set is exactly what C1 permits"
+    );
 
-    let problem = ResolutionProblem {
-        dependent_cells: Vec::new(),
-        auto_params: vec![],
-        constraints: vec![],
-        current_values: reify_ir::ValueMap::new(),
-        objective: None,
-        functions: vec![].into(),
-    };
+    let (exhaustive_x, exhaustive_diags) =
+        eval_under_completeness(reify_ir::Completeness::Exhaustive);
+    let (not_attempted_x, not_attempted_diags) =
+        eval_under_completeness(reify_ir::Completeness::not_attempted());
 
-    // The seam reconstruction, spelled out: candidate 0's values and unique,
-    // verbatim, regardless of what the completeness verdict says.
-    match solver.solve_ranked(&problem) {
-        RankedSolveResult::Ranked { candidates, completeness, .. } => {
-            assert_eq!(completeness, reify_ir::Completeness::Exhaustive);
-            let candidate = &candidates[0];
-            assert!(
-                !candidate.unique,
-                "the producer said unique: false and the carrier must not change it"
-            );
-            // C1 is available and would say 'unique' for this one-element
-            // Exhaustive set — the point is that NOTHING at task α applies it.
-            assert!(completeness.derived_unique(candidates.len()));
+    // Non-vacuity 1: the engine really reached the ranked seam and consumed the
+    // mock's candidate, rather than short-circuiting before the solver ran.
+    assert_eq!(
+        exhaustive_x.as_ref().and_then(|v| v.as_f64()),
+        Some(0.01),
+        "engine must resolve BT13Free.x from the mock candidate's values; got {exhaustive_x:?}"
+    );
 
-            let reconstructed = SolveResult::Solved {
-                values: candidate.values.clone(),
-                unique: candidate.unique,
-            };
-            match (reconstructed, solver.solve(&problem)) {
-                (
-                    SolveResult::Solved { values: a, unique: ua },
-                    SolveResult::Solved { values: b, unique: ub },
-                ) => {
-                    assert_eq!(a, b, "seam values must match solve() exactly");
-                    assert_eq!(ua, ub, "seam unique must match solve() exactly");
-                }
-                other => panic!("expected two Solved results, got {other:?}"),
-            }
-        }
-        other => panic!("expected Ranked, got {other:?}"),
-    }
+    // Non-vacuity 2: `unique: false` IS observable in these diagnostics, so the
+    // equality below has something to catch. If a refactor ever stops emitting
+    // this warning, this assertion reds rather than the test quietly going
+    // vacuous (which is what a strict-`auto` fixture would have done).
+    assert!(
+        exhaustive_diags
+            .iter()
+            .any(|d| d.contains("not uniquely determined")),
+        "fixture must make `unique: false` observable; got {exhaustive_diags:#?}"
+    );
+
+    // BT13 proper: the verdict is observable nowhere.
+    assert_eq!(
+        exhaustive_x, not_attempted_x,
+        "resolved BT13Free.x must not depend on the completeness verdict at task α"
+    );
+    assert_eq!(
+        exhaustive_diags, not_attempted_diags,
+        "diagnostics must not depend on the completeness verdict at task α"
+    );
 }
