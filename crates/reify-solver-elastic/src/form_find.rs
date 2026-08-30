@@ -234,6 +234,13 @@ pub fn form_find_anchored(
 /// could not be reached within any sane iteration cap on a fine membrane — yet
 /// the residual (what actually matters) is already tiny there. Judging on the
 /// residual directly converges finer meshes honestly.
+///
+/// SCOPE (task 6119 review): this bound, and the gauge-invariance claim
+/// above, govern the surfaces fixed point's STOP CRITERION only, via
+/// [`free_equilibrium_residual_relative`]. `solve_reduced`'s own post-solve
+/// singularity guard is a separate, pre-existing, mixed absolute/relative
+/// test that is not itself proven gauge-invariant — see that function's doc,
+/// which is shared by the (already gauge-covariant) line-only path too.
 const SURFACE_EQUILIBRIUM_REL_TOL: f64 = 1e-11;
 
 /// Iteration cap for the cotangent fixed point. The Picard iteration converges
@@ -445,6 +452,19 @@ fn assemble_d(
 /// the line and surface entries share it (the surface entry calls it once per
 /// fixed-point iteration). Returns [`FormFindError::SingularReducedStiffness`]
 /// when the reduced system is rank-deficient.
+///
+/// SCOPE NOTE (task 6119 review): the post-solve guard below —
+/// `residual_inf > 1e-6 * (1.0 + rhs_scale)` — is a MIXED absolute/relative
+/// test, unlike [`free_equilibrium_residual_relative`]'s stop criterion.
+/// `residual_inf` and `rhs_scale` both scale linearly with a uniform
+/// `(q, σ) → (λq, λσ)` gauge change, but the additive `1.0` does not, so this
+/// guard's effective strictness varies with `λ`: absolute-dominated and
+/// lenient as `λ → 0`, purely relative (and strictest) as `λ → ∞`. Task
+/// 6119's gauge-invariance fix covers the surfaces fixed point's stop
+/// criterion only; this guard runs on every call (the line-only path's
+/// single solve, and each surfaces fixed-point iteration), predates task
+/// 6119, and is left unchanged here — a marginal input could in principle
+/// still take a different branch at two gauges even after that fix.
 fn solve_reduced(
     d: &Mat<f64>,
     nodes: &[[f64; 3]],
@@ -515,6 +535,25 @@ fn solve_reduced(
 /// convergence signal. See [`SURFACE_EQUILIBRIUM_REL_TOL`]'s doc for the
 /// calibration that keeps this in a known, auditable relationship to the
 /// catenoid integration golden's independent (un-normalised) check.
+///
+/// This is a RATIO OF MAXES — `max_i |(D·x)_i| / max_i ‖D_row_i‖∞` — not a
+/// max of per-row ratios (task 6119 review), deliberately: it keeps the
+/// return value pinned to the exact quantity the calibration above was
+/// measured against. Both spellings are equally gauge-cancelling (`D` is
+/// linear in `q`/`σ`, so either form cancels a uniform gauge factor exactly),
+/// but a ratio of maxes is not scale-consistent across rows — on a graded
+/// mesh, or on a fixture where the line term dominates the membrane term
+/// (`|q| ≫ σ`, a different physical regime, NOT a gauge change), `d_scale`
+/// can be set by the largest free row while `resid` is limited by a node
+/// whose own row scale is orders of magnitude smaller, letting that node
+/// pass the stop test while badly out of equilibrium relative to its own
+/// stiffness. A per-row `max_i(|(D·x)_i| / ‖D_row_i‖∞)` would close that gap,
+/// but provably reports a LARGER-OR-EQUAL residual for the same input (each
+/// row's own denominator is ≤ the maximal row's, so its ratio is ≥ the
+/// ratio-of-maxes value) — reusing today's `SURFACE_EQUILIBRIUM_REL_TOL`
+/// unchanged would silently tighten the effective stop condition and could
+/// change iteration counts on the existing goldens, so the swap needs its
+/// own re-calibration rather than folding into this amendment.
 ///
 /// Degeneracy is rejected PER-ROW, not by an aggregate over the free block:
 /// any single free row that is identically zero (that node is touched by
