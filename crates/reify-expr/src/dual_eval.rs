@@ -853,9 +853,21 @@ fn eval_dual_builtin(
     }
 
     // Field reductions are intercepted by `eval_expr` BEFORE `eval_builtin`,
-    // so they must be intercepted here too or the primal invariant breaks.
-    if let Some(kind) = field_reduction_kind(name, args.len(), &primal_args[0]) {
-        return eval_field_reduction(kind, &primal_args[0], &duals[0], seeds, record, path);
+    // at BOTH arities, so they must be intercepted here too or the primal
+    // invariant breaks.  This sits ahead of the `is_kink_builtin` check below,
+    // which is what keeps the arity-2 `(Field, BoundingBox)` shape away from
+    // the BINARY NUMERIC `min`/`max` kink at its only value-carrying call site.
+    if let Some((kind, extent)) = field_reduction_kind(name, &primal_args) {
+        return eval_field_reduction(
+            kind,
+            extent,
+            &primal_args,
+            &duals,
+            ctx,
+            seeds,
+            record,
+            path,
+        );
     }
 
     let smooth = is_differentiable_builtin(name, args.len());
@@ -941,15 +953,43 @@ fn is_kink_builtin(name: &str, arity: usize) -> bool {
     )
 }
 
-fn field_reduction_kind(name: &str, arity: usize, first: &Value) -> Option<ReductionKind> {
-    if arity != 1 || !matches!(first, Value::Field { .. }) {
-        return None;
-    }
-    match name {
-        "max" => Some(ReductionKind::Max),
-        "min" => Some(ReductionKind::Min),
-        "argmax" => Some(ReductionKind::ArgMax),
-        "argmin" => Some(ReductionKind::ArgMin),
+/// Which of `eval_expr`'s TWO field-reduction interception tables a call
+/// matched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReductionExtent {
+    /// `max(field)` — the whole-field form (`crate::eval_expr`, lib.rs:459-484).
+    WholeField,
+    /// `max(field, bounds)` — restricted to grid nodes inside a
+    /// `Value::BoundingBox` (`crate::eval_expr`, lib.rs:490-533).
+    Bounded,
+}
+
+/// Recognise a field reduction, at either arity, from the ALREADY-EVALUATED
+/// argument values.
+///
+/// The shape tests here mirror `eval_expr`'s guards exactly — one `Value::Field`
+/// for the whole-field form, `(Value::Field, Value::BoundingBox)` for the
+/// bounded one — because any divergence between the two interception tables
+/// silently breaks the module's headline invariant.  In particular a *non*-
+/// `BoundingBox` second argument must return `None` here, exactly as it falls
+/// through to `eval_builtin` there (lib.rs:488).
+///
+/// Taking the whole slice rather than `(arity, &args[0])` also removes an
+/// unconditional index into the caller's argument vector, which was a latent
+/// panic on a zero-argument call.
+fn field_reduction_kind(name: &str, args: &[Value]) -> Option<(ReductionKind, ReductionExtent)> {
+    let kind = match name {
+        "max" => ReductionKind::Max,
+        "min" => ReductionKind::Min,
+        "argmax" => ReductionKind::ArgMax,
+        "argmin" => ReductionKind::ArgMin,
+        _ => return None,
+    };
+    match args {
+        [Value::Field { .. }] => Some((kind, ReductionExtent::WholeField)),
+        [Value::Field { .. }, Value::BoundingBox { .. }] => {
+            Some((kind, ReductionExtent::Bounded))
+        }
         _ => None,
     }
 }
@@ -963,28 +1003,50 @@ fn field_reduction_kind(name: &str, arity: usize, first: &Value) -> Option<Reduc
 /// (`Tangent::Zero`); a seed-dependent one gets `Tangent::None`, because a zero
 /// row would tell the solver the residual is flat in a variable it really does
 /// depend on.
+#[allow(clippy::too_many_arguments)]
 fn eval_field_reduction(
     kind: ReductionKind,
-    field: &Value,
-    field_dual: &DualValue,
+    extent: ReductionExtent,
+    args: &[Value],
+    duals: &[DualValue],
+    ctx: &EvalContext,
     seeds: &Seeds,
     record: &mut BranchRecord,
     path: &[u16],
 ) -> DualValue {
-    let (value, arg) = match kind {
-        ReductionKind::Max => {
-            (crate::field_reductions::compute_max(field), crate::field_reductions::compute_argmax(field))
-        }
-        ReductionKind::Min => {
-            (crate::field_reductions::compute_min(field), crate::field_reductions::compute_argmin(field))
-        }
-        ReductionKind::ArgMax => {
-            let a = crate::field_reductions::compute_argmax(field);
-            (a.clone(), a)
-        }
-        ReductionKind::ArgMin => {
-            let a = crate::field_reductions::compute_argmin(field);
-            (a.clone(), a)
+    use crate::field_reductions as fr;
+    let field = &args[0];
+    let (value, arg) = match extent {
+        ReductionExtent::WholeField => match kind {
+            ReductionKind::Max => (fr::compute_max(field), fr::compute_argmax(field)),
+            ReductionKind::Min => (fr::compute_min(field), fr::compute_argmin(field)),
+            ReductionKind::ArgMax => {
+                let a = fr::compute_argmax(field);
+                (a.clone(), a)
+            }
+            ReductionKind::ArgMin => {
+                let a = fr::compute_argmin(field);
+                (a.clone(), a)
+            }
+        },
+        // The bounded computes need the `EvalContext` (an Analytical/Composed
+        // field is grid-sampled through it), unlike their whole-field siblings.
+        ReductionExtent::Bounded => {
+            let bounds = &args[1];
+            match kind {
+                ReductionKind::Max => {
+                    (fr::compute_max_bounded(field, bounds, ctx), fr::compute_argmax(field))
+                }
+                ReductionKind::Min => {
+                    (fr::compute_min_bounded(field, bounds, ctx), fr::compute_argmin(field))
+                }
+                ReductionKind::ArgMax => {
+                    (fr::compute_argmax_bounded(field, bounds, ctx), fr::compute_argmax(field))
+                }
+                ReductionKind::ArgMin => {
+                    (fr::compute_argmin_bounded(field, bounds, ctx), fr::compute_argmin(field))
+                }
+            }
         }
     };
     // `Unresolved` when the argextremum is not computable — e.g. an unbounded
@@ -996,11 +1058,21 @@ fn eval_field_reduction(
     };
     note(record, path, KinkKind::FieldReduction(kind), choice);
 
-    if field_dual.tangent.is_zero() {
+    // The tangent decision takes EVERY operand into account, not just the
+    // field.  For the bounded form the box chooses WHICH grid node wins, so a
+    // box that moves with the seeds moves the result just as surely as a moving
+    // field does; deciding from the field alone would hand back a zero row for
+    // a residual whose value the solved variables genuinely select.
+    if duals.iter().all(|d| d.tangent.is_zero()) {
         DualValue::constant(value)
     } else {
         seeds.note_refusal(NonDifferentiable::UnsupportedKind {
-            kind: "a field reduction over a seed-dependent field",
+            kind: match extent {
+                ReductionExtent::WholeField => "a field reduction over a seed-dependent field",
+                ReductionExtent::Bounded => {
+                    "a bounded field reduction over a seed-dependent field or bounding box"
+                }
+            },
             site: KinkSite::new(path.to_vec()),
         });
         DualValue::opaque(value)
