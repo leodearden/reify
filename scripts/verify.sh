@@ -1221,7 +1221,14 @@ decide_scope() {
                 #     no later gate — a red-main class outage). That
                 #     no-directory-glob premise is not left to this comment:
                 #     PG-DRIFT fails if any *.rs names the directory itself
-                #     rather than a `<name>.ri` leaf.
+                #     rather than a `<name>.ri` leaf. That residual gate gap is not
+                #     hypothetical: an UNCOUPLED prd-gate fixture carrying a
+                #     phantom-tracking marker landed exactly this way on `main`
+                #     108d1d9226, reddening post-merge verification for every task
+                #     until 9ebebcec22 reworded it (task 6817).
+                #     select_cheap_ptodo_gate (below) now runs the PTODO ratchet on
+                #     this exact --scope staged hook path, closing that gap for
+                #     both the coupled- and uncoupled-fixture shapes.
                 #   • RENAMES reach this arm by BOTH names: --name-only shows
                 #     only a rename's destination, so the source side is
                 #     recovered up-front (see the rename-source block above) —
@@ -1230,11 +1237,14 @@ decide_scope() {
                 #     basename.
                 #   • The other consumers are the scripts/prd-capability-check.py
                 #     / prd-decompose-verify.mjs probes, which are not cargo poles.
-                #   • RESIDUAL: this affects only --scope staged/branch.
-                #     DF_VERIFY_ROLE=merge still forces --scope all (contract C2),
-                #     so the merge gate remains the wholesale authority — the same
-                #     accepted latency-not-coverage trade-off documented at the
-                #     task 5125 block below.
+                #   • RESIDUAL: --scope staged is now covered by
+                #     select_cheap_ptodo_gate (below), which runs the PTODO
+                #     ratchet on this exact hook path (task 6817). --scope branch
+                #     (per-task lanes) stays uncovered here: DF_VERIFY_ROLE=merge
+                #     still forces --scope all (contract C2), so the merge gate's
+                #     run_all.sh pool remains the wholesale authority there — the
+                #     same accepted latency-not-coverage trade-off documented at
+                #     the task 5125 block below.
                 #   • GOTCHA: a bash `case` glob's `*` matches `/`, so a future
                 #     nested path under fixtures/ also lands in this arm; the
                 #     ${f##*/} basename test still applies and the direction of
@@ -1291,6 +1301,19 @@ decide_scope
 # ---------------------------------------------------------------------------
 SELECTED_INFRA_GLOBS=""
 
+# add_selected_infra_glob <glob-or-path> — append into SELECTED_INFRA_GLOBS
+# with whole-token dedup via space sentinels (prevents false dedup when one
+# glob is a substring of another, e.g. a specific path vs a broader wildcard
+# pattern). Shared by every selector below (select_infra_tests,
+# select_harness_kloc_guard, select_cheap_ptodo_gate, ...) so the sentinel
+# trick is written once instead of hand-copied per selector.
+add_selected_infra_glob() {
+    case " $SELECTED_INFRA_GLOBS " in
+        *" $1 "*) : ;;
+        *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$1" ;;
+    esac
+}
+
 select_infra_tests() {
     local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
     # Graceful degradation: absent map or empty changed-file list -> empty.
@@ -1305,14 +1328,8 @@ select_infra_tests() {
         while IFS= read -r _f; do
             [ -z "$_f" ] && continue
             if [ "$_f" = "$_artifact" ]; then
-                # Append glob to selection if not already present (whole-token
-                # dedup via space sentinels — prevents false dedup when one
-                # glob is a substring of another, e.g. a specific path vs a
-                # broader wildcard pattern).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" $_glob "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
-                esac
+                # Append glob to selection if not already present.
+                add_selected_infra_glob "$_glob"
                 break
             fi
         done <<< "$CHANGED_FILES_RAW"
@@ -1421,17 +1438,116 @@ select_harness_kloc_guard() {
         esac
         case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
             *" $_crate "*)
-                # Whole-token dedup via space sentinels (mirrors select_infra_tests).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" tests/infra/test_harness_kloc_cap.sh "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }tests/infra/test_harness_kloc_cap.sh" ;;
-                esac
+                add_selected_infra_glob "tests/infra/test_harness_kloc_cap.sh"
                 return 0
                 ;;
         esac
     done <<< "$_changed"
 }
 select_harness_kloc_guard
+
+# ---------------------------------------------------------------------------
+# Cheap PTODO ratchet on the hook-gated --scope staged path (task 6817).
+#
+# hooks/pre-commit -> hooks/project-checks is the ONLY production caller of
+# `--scope staged` (grep -rn -- "--scope staged" over tracked files confirms
+# this); every per-task lane uses `--scope branch`, and merge/background force
+# `--scope all` (contract C2). A hook-gated main commit is therefore the one
+# and only landing path with NO later gate: task 5125 moved the PTODO ratchet
+# (tests/infra/test_reify_audit_ptodo.sh, scenario (a) — live ptodo-baseline-gen
+# fingerprints must be a subset of crates/reify-audit/ptodo-baseline.txt) to the
+# MERGE-tier run_all.sh pool only, so a docs-landing commit staging an
+# uncoupled tests/prd-gate/fixtures/*.ri (task 5536's no-heavy-checks carve-out
+# above) got neither the full pool nor a selective subset. 108d1d9226's
+# phantom-tracking marker landed on `main` through exactly this gap and
+# reddened post-merge verification for every task until 9ebebcec22 reworded it
+# (task 6817). Deliberately NOT extended to `--scope branch`: that would be
+# doing 5125's explicitly deferred follow-up ("a cheap per-task-only PTODO
+# precheck ... is a possible follow-up if per-task PTODO latency proves costly
+# in practice") and would add ~3.4s to every task lane for a signal the merge
+# gate already provides there.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
+# populates (mirrors select_harness_kloc_guard's precedent paragraph just
+# above), so it inherits for free: (a) merge/background suppression — the
+# selective emission block (add_tool site below) is suppressed when
+# DF_VERIFY_ROLE=merge|background, where run_all.sh already runs this exact
+# file wholesale (exactly-once, INV-5); (b) the REIFY_INFRA_SUITE_ACTIVE
+# re-entrancy guard; (c) fail-fast ordering before the cargo poles; (d)
+# add_tool's LD_LIBRARY_PATH scrub, so no new plain-`add` call site appears
+# for tests/infra/test_verify_ld_library_path_scope.sh to police. A plain path
+# is a degenerate glob, so no emission-side change is needed at all.
+#
+# Measured cost: tests/infra/test_reify_audit_ptodo.sh is 22 assertions,
+# 0m3.362s warm on 2026-08-28 (main checkout, target/release/{reify-audit,
+# ptodo-baseline-gen} already built) — a single cheap leaf, not a cargo pole.
+#
+# Extension arm landed at reify-audit's FULL swept-extension set
+# (crates/reify-audit/src/ptodo.rs::is_swept_ext) in one piece (task 6817
+# step-4), not built up path-by-path: keying on the whole extension set
+# rather than the .ri-only tests/prd-gate/fixtures/ path closes the
+# same-class docs/**/*.ri and gui/**/*.{ts,tsx,js} holes in one rule, instead
+# of enumerating decide_scope's no-heavy case arms one at a time. Kept honest
+# by a derive-from-source drift guard, test_verify_scope.sh's PT-DRIFT
+# scenario — see the case arm below for exactly what direction that guard
+# covers.
+#
+# ACCEPTED RESIDUAL: REIFY_AUDIT_NO_COLD_BUILD is deliberately NOT set on this
+# path (the merge tier sets it, paired with a pre-build and a positive
+# existence assertion). If target/release/reify-audit is stale here,
+# reify_audit_guard's rebuild-budget-safe path self-heals via `cargo build
+# --release -q -p reify-audit` inside the 10m selective-infra wall — setting
+# the knob would make the guard SKIP budget-safely instead, silently
+# reopening exactly the hole this selector closes. A cold build that blows
+# the wall fails the commit loudly, which is the correct direction of error
+# for a gate protecting a main landing.
+#
+# A THIRD outcome is accepted too, not just the two above: if
+# reify_audit_guard's rebuild attempt still leaves the binary judged stale
+# (rc=125 — e.g. a cargo no-op fingerprint match against an on-disk mtime
+# older than the last crates/reify-audit commit, such as a warm-lane target/
+# with stamped mtimes) while REIFY_AUDIT_BIN stays executable,
+# tests/infra/test_reify_audit_ptodo.sh sets RATCHET_SKIP=1 and skips exactly
+# scenario (a)+(b) — the gen-driven fingerprint ratchet this selector exists
+# to run — while still executing its (c)-(f) exit-code hard gate, which is
+# High-severity-only. phantom-tracking is MEDIUM, so that hard gate does not
+# catch it: this path can exit GREEN on a main landing without the ratchet
+# having run at all. Left accepted rather than closed here because closing it
+# needs a change to test_reify_audit_ptodo.sh, outside this task's scope
+# (scripts/verify.sh + tests/infra/test_verify_scope.sh) — e.g. an opt-in
+# REIFY_PTODO_RATCHET_REQUIRED that turns the rc=125-with-present-binary case
+# into a hard failure instead of RATCHET_SKIP=1. Filed as follow-up work
+# rather than done inline (task 6817 amendment pass).
+# ---------------------------------------------------------------------------
+select_cheap_ptodo_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    local _f
+    while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        # ${_f,,} (bash case-fold) mirrors is_swept_ext's path.to_lowercase().
+        # This extension list is a DERIVED COPY of is_swept_ext in
+        # crates/reify-audit/src/ptodo.rs (cited by FUNCTION NAME, not line
+        # number — a line cite rots on the next edit to that file). Its
+        # source of truth is BEHAVIOURAL, not this comment:
+        # tests/infra/test_verify_scope.sh's PT-DRIFT scenario re-derives the
+        # set from is_swept_ext's source on every infra run and goes RED if
+        # is_swept_ext GAINS an extension this list lacks. That check is
+        # ONE-DIRECTIONAL: nothing asserts the reverse (this list still
+        # carrying an extension is_swept_ext later drops), so the direction
+        # of error on THAT side is over-selection (one extra ~3.4s leaf),
+        # never a silent coverage hole. Note `*.ts` also matches `*.tsx`
+        # under a bash glob; both are listed anyway so this reads as a
+        # faithful mirror of the Rust function rather than a minimal set.
+        case "${_f,,}" in
+            *.rs|*.ri|*.sh|*.py|*.ts|*.tsx|*.js) : ;;
+            *) continue ;;
+        esac
+        add_selected_infra_glob "tests/infra/test_reify_audit_ptodo.sh"
+        return 0
+    done <<< "$CHANGED_FILES_RAW"
+}
+select_cheap_ptodo_gate
 
 # ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
