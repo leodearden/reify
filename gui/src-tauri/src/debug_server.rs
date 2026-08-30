@@ -4262,6 +4262,93 @@ structure def Part {
         );
     }
 
+    // ── Task 5097 δ step-11: RED — `reify_update_source`, the in-memory
+    // whole-buffer AI edit (PRD §6.3) ──
+    //
+    // FAILS TO COMPILE until step-12 adds
+    // `reify_update_source_on_engine_and_refresh_baseline`.
+
+    #[tokio::test]
+    async fn reify_update_source_recompiles_and_refreshes_the_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        let edited = ai_write_source().replace("param depth: Length = 40mm", "param depth: Length = 65mm");
+        let s1 = reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &canonical,
+            &edited,
+        )
+        .await
+        .expect("reify_update_source_on_engine_and_refresh_baseline must return Ok");
+
+        let depth = s1
+            .values
+            .iter()
+            .find(|v| v.cell_id == "Part.depth")
+            .expect("Part.depth must be present in the returned GuiState");
+        assert_eq!(
+            (depth.value.as_str(), depth.unit.as_str()),
+            ("65", "mm"),
+            "the recompiled GuiState must reflect the edited source"
+        );
+
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1),
+            "the tool must route through the shared seam, which refreshes last_state"
+        );
+
+        // §6.3 routes this tool through the IN-MEMORY `update_source`, so it
+        // writes NO disk — that is `reify_set_parameter`'s job, and durable
+        // structural edits are §11-out-of-scope (Claude uses its own
+        // Write/Edit tools plus the FS-watcher for those). Pinned here rather
+        // than left implicit, because a future "helpful" disk write would
+        // silently start clobbering the user's unsaved editor buffer.
+        assert_eq!(
+            std::fs::read_to_string(&canonical).expect("part.ri must be readable"),
+            ai_write_source(),
+            "reify_update_source must not write disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn reify_update_source_compile_failure_leaves_the_baseline_stale_and_reports_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        let err = reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &canonical,
+            "structure def Part { param width: Length = ",
+        )
+        .await
+        .expect_err("source that does not compile must be REFUSED");
+        assert!(
+            !err.is_empty(),
+            "the compile rejection must reach the AI client with a message"
+        );
+
+        // No HALF-advanced baseline: `update_source` leaves the session
+        // completely unchanged on a compile failure, so the frontend still
+        // holds S0 and the next normal command must diff against S0.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s0),
+            "a rejected recompile must leave the baseline at S0"
+        );
+    }
+
     // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──
     //
