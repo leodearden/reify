@@ -10,8 +10,9 @@
 //! The §6 boundary cases a plain legacy-vs-unified diff cannot surface live in
 //! the sibling binary `unified_dag_boundary_cases.rs`.
 //!
-//! The shared harness is `#[path]`-included (NOT via `tests/common/mod.rs`) so
-//! this safety-gate lands with zero edits to existing shared test files.
+//! The shared differential corpus helpers are declared once at the
+//! `harness_cache` root (`#[path = "common/differential.rs"] mod differential;`)
+//! and reached here via `use crate::differential::…`.
 
 use crate::differential::{
     CROSS_LET_4275_SRC, CorpusCase, Divergence, GOLDEN_CORPUS, SEED_CORPUS, assert_cell_definite,

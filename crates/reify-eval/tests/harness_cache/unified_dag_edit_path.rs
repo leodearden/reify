@@ -7,10 +7,11 @@
 //! hand-maintained second scheduler (solver wave-2 + Phase-3 flip dedup) ahead of
 //! the ι (#4362) Stage-4 cutover (now landed).
 //!
-//! The shared differential harness (`common/differential.rs`) is `#[path]`-included
-//! so this binary reuses the θ projection + parity helpers
-//! (`assert_edit_matches_cold`, `assert_edit_source_matches_cold`,
-//! `project_eval_values`) with zero edits to existing shared files.
+//! The shared differential corpus helpers are declared once at the
+//! `harness_cache` root (`#[path = "common/differential.rs"] mod differential;`)
+//! and reached here via `use crate::differential::…`, giving this module the θ
+//! projection + parity helpers (`assert_edit_matches_cold`,
+//! `assert_edit_source_matches_cold`, `project_eval_values`).
 //!
 //! Steps land RED tests here incrementally (guard flip via edit, solver autos via
 //! edit, collection grow → upstream edit, edit_source/edit_check mirror, P0 latency

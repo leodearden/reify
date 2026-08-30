@@ -14,8 +14,9 @@
 //! The corpus SWEEP (equivalence-or-reasoned, 2× byte-identical, residue==∅)
 //! lives in the sibling binary `unified_dag_differential_corpus.rs`.
 //!
-//! The shared harness is `#[path]`-included (NOT via `tests/common/mod.rs`) so
-//! this safety-gate lands with zero edits to existing shared test files.
+//! The shared differential corpus helpers are declared once at the
+//! `harness_cache` root (`#[path = "common/differential.rs"] mod differential;`)
+//! and reached here via `use crate::differential::…`.
 
 use crate::differential::{
     AUTO_GEOMETRY_CONSTRAINT_SRC, CROSS_LET_4275_SRC, CorpusCase, Divergence,
