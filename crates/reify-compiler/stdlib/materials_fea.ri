@@ -230,8 +230,9 @@ trait DampedMaterial : ElasticMaterial + Damped {}
 // callers may override individual fields at construction (e.g.
 // `Steel_AISI_1045(yield_stress: some(550MPa))` for a tempered variant).
 //
-// Per-property provenance is encoded as four parallel `..._provenance`
-// fields rather than a single `Map<String, ...>` so:
+// Per-property provenance is encoded as five parallel `..._provenance`
+// fields — one per property, including α's (#6877) `loss_factor` — rather
+// than a single `Map<String, ...>` so:
 //   - typos at the source level become missing-member errors
 //   - downstream FEA reports can pull each citation by name
 //   - refining traits that add properties (shear modulus, hardening, ...)
@@ -256,6 +257,7 @@ structure def Steel_AISI_1045 : ElasticMaterial + Visual {
     param poisson_ratio : Real = 0.29 // dimensionless
     param density : Density = 7850kg/m^3
     param yield_stress : Option<Pressure> = some(310MPa)
+    param loss_factor : Real = 0.0006 // dimensionless (eta) — class-level, see provenance
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
         MaterialPropertyProvenance(
@@ -280,6 +282,12 @@ structure def Steel_AISI_1045 : ElasticMaterial + Visual {
             source: "matweb",
             reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
             notes: "Tensile yield strength for hot-rolled condition; quenched-and-tempered variants reach higher values."
+        )
+    param loss_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "material-class range (engineering handbook / vibration-damping literature)",
+            reference: "Structural / plain-carbon steel — material-class hysteretic loss factor, not an AISI 1045 datasheet value",
+            notes: "CLASS-LEVEL structural / plain-carbon steel loss factor, NOT an AISI-1045-specific measurement: published values for structural steel span roughly 2e-4 to 1e-3 and 6e-4 is an order-of-magnitude representative. Eta is amplitude-dependent (pronounced in metals at low stress) and, at or near a resonance, converts as zeta ~= eta/2. Design-critical damping predictions need a measurement of the specific alloy, temper and joint condition, not this class value."
         )
 
     // Editorial appearance: mid-dark neutral grey, slight satin sheen.
@@ -306,6 +314,7 @@ structure def Aluminium_6061_T6 : ElasticMaterial + Visual {
     param poisson_ratio : Real = 0.33 // dimensionless
     param density : Density = 2700kg/m^3
     param yield_stress : Option<Pressure> = some(276MPa)
+    param loss_factor : Real = 0.0002 // dimensionless (eta) — class-level, see provenance
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
         MaterialPropertyProvenance(
@@ -330,6 +339,12 @@ structure def Aluminium_6061_T6 : ElasticMaterial + Visual {
             source: "matweb",
             reference: "Aluminum 6061-T6",
             notes: "Tensile yield strength for T6 temper; degrades on prolonged exposure above ~150 °C."
+        )
+    param loss_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "material-class range (engineering handbook / vibration-damping literature)",
+            reference: "Wrought aluminium alloys — material-class hysteretic loss factor, not a 6061-T6 datasheet value",
+            notes: "CLASS-LEVEL wrought-aluminium loss factor, NOT a 6061-T6-specific measurement: published values for wrought aluminium alloys span roughly 1e-4 to 4e-4 and 2e-4 is an order-of-magnitude representative. Eta is amplitude-dependent (pronounced in metals at low stress) and, at or near a resonance, converts as zeta ~= eta/2. Design-critical damping predictions need a measurement of the specific alloy, temper and joint condition, not this class value."
         )
 
     // Editorial appearance: lighter grey, satin.
@@ -356,6 +371,7 @@ structure def Titanium_Ti6Al4V : ElasticMaterial + Visual {
     param poisson_ratio : Real = 0.342 // dimensionless
     param density : Density = 4430kg/m^3
     param yield_stress : Option<Pressure> = some(880MPa)
+    param loss_factor : Real = 0.0004 // dimensionless (eta) — class-level, see provenance
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
         MaterialPropertyProvenance(
@@ -380,6 +396,12 @@ structure def Titanium_Ti6Al4V : ElasticMaterial + Visual {
             source: "matweb",
             reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
             notes: "Tensile yield for annealed condition; STA temper reaches higher values."
+        )
+    param loss_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "material-class range (engineering handbook / vibration-damping literature)",
+            reference: "Alpha-beta titanium alloys — material-class hysteretic loss factor, not a Ti-6Al-4V datasheet value",
+            notes: "CLASS-LEVEL alpha-beta titanium loss factor, NOT a Ti-6Al-4V-specific measurement: published values for alpha-beta titanium alloys span roughly 1e-4 to 1e-3 and 4e-4 is an order-of-magnitude representative. Eta is amplitude-dependent (pronounced in metals at low stress) and, at or near a resonance, converts as zeta ~= eta/2. Design-critical damping predictions need a measurement of the specific alloy, temper and joint condition, not this class value."
         )
 
     // Editorial appearance: grey, satin.
@@ -409,6 +431,7 @@ structure def ABS_Plastic : ElasticMaterial + Visual {
     param poisson_ratio : Real = 0.35 // dimensionless
     param density : Density = 1050kg/m^3
     param yield_stress : Option<Pressure> = some(40MPa)
+    param loss_factor : Real = 0.02 // dimensionless (eta) — class-level, see provenance
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
         MaterialPropertyProvenance(
@@ -433,6 +456,12 @@ structure def ABS_Plastic : ElasticMaterial + Visual {
             source: "matweb",
             reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
             notes: "Approximate yield: ABS exhibits a ductile-to-brittle transition sensitive to strain rate and temperature. Refer to supplier datasheet for limit-state work."
+        )
+    param loss_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "material-class range (engineering handbook / vibration-damping literature)",
+            reference: "Amorphous thermoplastics — material-class hysteretic loss factor, not an ABS resin-grade datasheet value",
+            notes: "CLASS-LEVEL amorphous-thermoplastic loss factor, NOT a resin-grade-specific measurement: published values for amorphous thermoplastics span roughly 1e-2 to 4e-2 and are STRONGLY frequency- and temperature-dependent (eta rises steeply approaching the glass transition); 2e-2 is an order-of-magnitude representative. Eta is amplitude-dependent (pronounced in metals at low stress) and, at or near a resonance, converts as zeta ~= eta/2. Design-critical damping predictions need a measurement of the specific alloy, temper and joint condition, not this class value."
         )
 
     // Editorial appearance: matte off-white.
