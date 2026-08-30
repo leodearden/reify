@@ -350,6 +350,16 @@ export type UnitLadderMap = Record<string, UnitOption[]>;
 export interface ConstraintData {
   node_id: string;
   expression: string;
+  /**
+   * Lower-case verdict token: `"satisfied"`, `"violated"`, or `"indeterminate"`.
+   * This is the canonical wire format — compare against lower-case strings.
+   * Produced solely by `satisfaction_token` in `gui/src-tauri/src/engine.rs`;
+   * pinned two-way by `./__tests__/constraintVerdictParity.test.ts`, which
+   * reads that function's match arms and drives the real components with them.
+   *
+   * Deliberately typed `string` rather than a union — see task 6723. The
+   * narrowing is a clean follow-up, not a wire-format concern.
+   */
   status: string;
   label: string | null;
   parameter_ids: string[];

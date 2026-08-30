@@ -1190,6 +1190,15 @@ pub struct ValueData {
 pub struct ConstraintData {
     pub node_id: String,
     pub expression: String,
+    /// Lower-case verdict token: `"satisfied"`, `"violated"` or
+    /// `"indeterminate"`. This is the canonical wire format — the TypeScript
+    /// consumers compare against these exact lower-case strings.
+    ///
+    /// `engine::satisfaction_token` is the only permitted producer; do not
+    /// hand-write the literal. Pinned by
+    /// `tests/types_tests.rs::constraint_data_status_wire_tokens_are_lowercase_and_closed`
+    /// and, from the consumer side, by
+    /// `gui/src/__tests__/constraintVerdictParity.test.ts`.
     pub status: String,
     pub label: Option<String>,
     pub parameter_ids: Vec<String>,
