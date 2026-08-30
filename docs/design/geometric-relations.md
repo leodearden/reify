@@ -244,9 +244,51 @@ The standard library is *user code*. Two definition shapes, only one needing new
 fn concentric(a: Axis, b: Axis)        -> Relation = coincident(a, b)              // removes 4
 fn flush(a: Plane, b: Plane)           -> Relation = coincident(a, b)              // removes 3
 fn offset(a: Plane, b: Plane, δ: Length) -> Relation = parallel(a,b) & on(a.point, b, δ)   // removes 3
+
+// Tangency is OPERAND-CONDITIONAL: four curated surface combos, not one signature.
 fn tangent(cyl: <HasAxis & HasRadius>, face: Plane) -> Relation =                  // removes 2
-    parallel(cyl.axis, face.normal) & distance(cyl.axis, face, cyl.radius)
+    perpendicular(cyl.axis, face.normal) & distance(cyl.axis, face, cyl.radius)
+fn tangent(a: <HasAxis & HasRadius>, b: <HasAxis & HasRadius>) -> Relation =       // removes 1
+    distance(a.axis, b.axis, a.radius + b.radius)
+fn tangent(sph: <HasCentre & HasRadius>, face: Plane) -> Relation =                // removes 1
+    distance(sph.centre, face, sph.radius)
+fn tangent(a: <HasCentre & HasRadius>, b: <HasCentre & HasRadius>) -> Relation =   // removes 1
+    distance(a.centre, b.centre, a.radius + b.radius)
 ```
+
+**No blanket codimension satisfies all four.** Cylinder/plane is the only combo at
+2 — it needs a ROTATIONAL row (the axis lies *in* the plane's directions, i.e.
+perpendicular to its normal) as well as the translational offset row; without the
+rotational row a cylinder can tilt out of tangency at exactly zero residual. The
+other three pin a single scalar separation and are codimension 1. §4's
+"ambiguous cross-orientation overloads are forbidden" rule is what forces the
+cylinder/plane row to be spelled `perpendicular(cyl.axis, face.normal)`: the
+shared-kind projection must commit to "line **in** plane" rather than "line ⊥
+plane", and a cylinder touching a face along a contact line is the former — the
+axis runs parallel to the face. (`parallel(cyl.axis, face.normal)` would stand the
+cylinder on end, where the axis pierces the plane and the offset row could never
+read the radius.)
+
+**The `<HasAxis & HasRadius>` surface above is INTENDED, not shipped.** Trait-bound
+call-site conformance is deferred (`crates/reify-core/src/ty.rs`'s
+`Type::TraitObject` "records the declaration only"), and, more decisively, the
+kernel's analytic-surface projection DISCARDS the radius: a cylindrical face
+projects to a bare `Axis` and a spherical one to a bare centre `Point`, so a radius
+cannot reach the solver off the geometry at all. Task #5540 therefore ships the
+**trailing-scalar** form instead — `tangent(a, b, r)` for the single-radius combos
+and `tangent(a, b, r1, r2)` for the two-radius ones — reusing the metric-operand
+plumbing `distance`/`offset`/`angle` already run. Operands are the projected datums
+(`Axis` for a cylinder, `Point` for a sphere centre, `Plane` for a face), in either
+order for the asymmetric combos. Raising the surface-carried form above is sibling
+task #5588, which is blocked on that deferred trait-bound conformance. Worked
+example: `examples/geometric_relations/tangent_roller.ri`.
+
+**Signed radii select internal tangency.** The centre-distance target is `|r1 + r2|`,
+so two positive radii give external tangency (`r1 + r2`) and a negative radius gives
+internal (`|r1 − |r2||`). On the plane combos the offset row is *signed* rather than
+absolute, so a negative radius selects which side of the plane the body sits on and
+the residual stays differentiable through zero. This is the whole user-visible
+contract for reaching internal tangency, and it is not inferable from the signatures.
 
 **Joint = a mate that exposes named residual DOF** (the only new definition syntax):
 

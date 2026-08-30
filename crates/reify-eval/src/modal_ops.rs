@@ -4049,14 +4049,110 @@ mod tests {
 
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
     /// `extract_damping` discriminates by `type_name`.
+    ///
+    /// Fields are DIMENSIONED (`Frequency`, `Time`) to match both the stdlib
+    /// declaration (task #6093) and what the migrated corpus evaluates to, so
+    /// these fixtures cannot pass on a shape real input no longer produces.
+    /// `read_scalar_si` stays deliberately tolerant of bare `Real`; gating it
+    /// belongs to docs/prds/v0_6/dimension-checked-readers.md.
     fn rayleigh_damping(alpha: f64, beta: f64) -> Value {
         struct_instance(
             "RayleighDamping",
             vec![
-                ("alpha".to_string(), Value::Real(alpha)),
-                ("beta".to_string(), Value::Real(beta)),
+                (
+                    "alpha".to_string(),
+                    Value::Scalar {
+                        si_value: alpha,
+                        dimension: DimensionVector::FREQUENCY,
+                    },
+                ),
+                (
+                    "beta".to_string(),
+                    Value::Scalar {
+                        si_value: beta,
+                        dimension: DimensionVector::TIME,
+                    },
+                ),
             ],
         )
+    }
+
+    /// ζ = (α + β·ω²)/(2·ω) is HOMOGENEOUS in ω with OPPOSITE exponents for the
+    /// two coefficients: rescaling ω by 2π divides the α term by 2π and
+    /// multiplies the β term by 2π.
+    ///
+    /// SCOPE — read before trusting this as the angular-rate guard. This is an
+    /// algebraic property of the closed form ALONE. It calls the pure
+    /// `reify_stdlib::modal::free_vibration::rayleigh_damping_ratio` twice with
+    /// two ω arguments of its own making; it never observes what scale
+    /// `modal_ops` actually FEEDS. Changing `run_modal_analysis`'s
+    /// `let omega = 2.0 * PI * f` to pass `f` leaves this test GREEN. It was
+    /// previously named `rayleigh_coefficients_are_consumed_on_the_angular_rate_scale`,
+    /// which overstated exactly that, and `modal_analysis.ri` cited it by that
+    /// name as the pin for its ANGULAR-RATE TRAP comment — so a reader was
+    /// being pointed at a guard that is not here. Renamed to what it pins, and
+    /// the `.ri` citation re-pointed at
+    /// [`trampoline_shapes_modal_result_with_rayleigh_damping`], which
+    /// independently recomputes ω = 2π·f from the emitted `Mode.frequency` and
+    /// compares `damping_ratio` against it at 1e-12 — the test that genuinely
+    /// observes the producer's scale.
+    ///
+    /// What it DOES buy: the two exponents move in opposite directions, which is
+    /// why `alpha` is declared `Frequency` and not `AngularVelocity` — the rad/s
+    /// convention lives in ω, and encoding it in ONE of two coupled
+    /// coefficients would be incoherent.
+    ///
+    /// The plain concrete-value anchor for the formula itself — α=2, β=0, ω=10
+    /// ⇒ ζ=0.1 — already lives one crate away in
+    /// `reify-stdlib::modal::free_vibration::tests::rayleigh_damping_ratio_mass_proportional`
+    /// and is deliberately NOT restated here.
+    ///
+    /// MODULE-BOUNDARY NOTE: this is a unit test of a `reify-stdlib` function
+    /// sitting in `reify-eval`'s `mod tests`, an inversion relative to the four
+    /// `rayleigh_damping_ratio_*` tests that live next to the function. Its home
+    /// is `crates/reify-stdlib/src/modal/free_vibration.rs`; that file is
+    /// outside task #6093's module locks, so the move is filed as follow-up
+    /// rather than done here (#6323's neighbourhood — see the amend commit).
+    ///
+    /// Deliberately carries NO corpus-derived constant. An earlier arm anchored
+    /// on the ζ₁ ≈ 0.042 quoted in the prose of
+    /// `examples/modal/transient_step_response.ri` for that example's
+    /// fundamental — but with ω computed HERE as 2π·f it only re-evaluated
+    /// β·ω/2, adding nothing to the arms below, while coupling this test to a
+    /// number that shifts whenever that example's mesh or element order changes
+    /// (red for an unrelated reason) and drifts silently the other way (prose
+    /// edited, constant not).
+    #[test]
+    fn rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega() {
+        // Reading ω as cycles/s instead of rad/s would inflate the α
+        // contribution by 2π and deflate the β contribution by 2π. Both
+        // coefficients carry the convention, which is what makes typing only
+        // α as `AngularVelocity` (leaving β : `Time`) an incoherent pair.
+        //
+        // Any positive rate exhibits it — the claim is a RATIO, so the
+        // particular value is immaterial and is chosen to be plainly arbitrary.
+        // Compared against 1e-12 rather than an engineering tolerance: the
+        // factor is exactly 2π, and a band wide enough to absorb a nearby-but-
+        // wrong scale would not be judging the convention at all.
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let f_cyc = 7.5_f64;
+        let omega_rad = two_pi * f_cyc;
+
+        let zeta_alpha_cyc = rayleigh_damping_ratio(2.0, 0.0, f_cyc);
+        let zeta_alpha_rad = rayleigh_damping_ratio(2.0, 0.0, omega_rad);
+        assert!(
+            (zeta_alpha_cyc / zeta_alpha_rad - two_pi).abs() < 1e-12,
+            "the α term must scale by 2π with the ω convention; got {}",
+            zeta_alpha_cyc / zeta_alpha_rad
+        );
+
+        let zeta_beta_cyc = rayleigh_damping_ratio(0.0, 0.0003, f_cyc);
+        let zeta_beta_rad = rayleigh_damping_ratio(0.0, 0.0003, omega_rad);
+        assert!(
+            (zeta_beta_cyc * two_pi / zeta_beta_rad - 1.0).abs() < 1e-12,
+            "the β term must scale by 1/2π with the ω convention; got {}",
+            zeta_beta_cyc / zeta_beta_rad
+        );
     }
 
     /// Assemble a `ModalOptions`-shaped instance from the given fields.
@@ -4138,6 +4234,16 @@ mod tests {
     /// Amendment (suggestion 2): `extract_damping` returns the Rayleigh
     /// coefficients only for a `RayleighDamping` instance; `NoDamping`, a missing
     /// field, and a non-struct all read as the undamped `(0, 0)`.
+    ///
+    /// The final arm pins `read_scalar_si`'s BARE-`Value::Real` tolerance
+    /// (task #6093 amendment). Once the `rayleigh_damping` builder above
+    /// migrated to dimensioned fields — correctly, since real input no longer
+    /// produces the bare shape — nothing else in this crate exercised that arm,
+    /// so an edit making `extract_damping` reject a bare `Real` would have
+    /// passed the whole in-crate suite while the builder's docstring still
+    /// claimed the tolerance was deliberate and preserved. Tightening it is a
+    /// decision owned by `docs/prds/v0_6/dimension-checked-readers.md`; until
+    /// that lands deliberately, this is the witness.
     #[test]
     fn extract_damping_discriminates_rayleigh_from_none() {
         let damped = modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
@@ -4151,6 +4257,27 @@ mod tests {
 
         assert_eq!(extract_damping(&modal_options(vec![])), (0.0, 0.0));
         assert_eq!(extract_damping(&Value::Undef), (0.0, 0.0));
+
+        // Legacy bare-`Real` damping fields still read identically to the
+        // dimensioned shape — the reader is dimension-blind by construction.
+        let bare = modal_options(vec![(
+            "damping".to_string(),
+            struct_instance(
+                "RayleighDamping",
+                vec![
+                    ("alpha".to_string(), Value::Real(0.5)),
+                    ("beta".to_string(), Value::Real(1e-6)),
+                ],
+            ),
+        )]);
+        assert_eq!(
+            extract_damping(&bare),
+            extract_damping(&damped),
+            "extract_damping must fold bare Value::Real fields to the same \
+             (alpha, beta) as the dimensioned Value::Scalar fields — \
+             read_scalar_si's tolerance is deliberate and is not this task's \
+             to tighten (docs/prds/v0_6/dimension-checked-readers.md)"
+        );
     }
 
     /// Amendment (suggestion 2): `build_dirichlet_bcs` selects the pin-pin

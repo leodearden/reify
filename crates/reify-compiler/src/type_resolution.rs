@@ -124,6 +124,67 @@ impl Drop for LocalEnumShadowScope {
     }
 }
 
+thread_local! {
+    /// Alias names currently being re-resolved by the DEFERRED use-site arm of
+    /// [`resolve_type_expr_with_aliases_kinded`] (task 6259). Membership means
+    /// "this alias is already on the resolution stack" — re-entering it is a
+    /// cycle, and the arm bails out instead of recursing.
+    ///
+    /// Why this is mandatory rather than defensive: `type C1 = C2` /
+    /// `type C2 = C1` leaves BOTH registry entries with `resolved_type: None`
+    /// AND `type_expr: Some(..)`, which is exactly the shape the deferred arm
+    /// fires on — a naive recursion would ping-pong between them until the
+    /// compiler's stack overflows.
+    ///
+    /// Why a thread-local rather than a `depth` argument (the mechanism
+    /// `resolve_parameterized_alias` uses): the deferral recurses back through
+    /// `resolve_type_expr_with_aliases_kinded` itself — once per link of a
+    /// chain like `A2 = A1 = Zq` — so a counter would have to be threaded
+    /// through that function's signature. That is precisely the signature that
+    /// must stay fixed, for the reason already documented on
+    /// [`RESOLUTION_ENUM_NAMES`] above (~100 transitive call sites across the
+    /// crate). An in-progress set is also cycle-EXACT rather than
+    /// depth-approximate, so a genuine cycle keeps its existing
+    /// `circular type alias 'C1'` diagnostic instead of being replaced by a
+    /// spurious depth-exceeded error.
+    ///
+    /// Termination needs no depth cap: each nested level consumes a distinct
+    /// name from the finite alias registry, and this set rejects repeats.
+    ///
+    /// Type resolution is single-threaded per module and every entry is
+    /// removed by its [`AliasDeferScope`] guard's `Drop`.
+    static ALIAS_DEFER_IN_PROGRESS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// RAII guard marking one alias name as in-progress in
+/// [`ALIAS_DEFER_IN_PROGRESS`] for its lifetime (task 6259).
+///
+/// [`AliasDeferScope::new`] returns `None` when `name` is ALREADY in progress —
+/// i.e. the deferred arm has looped back onto an alias it is still resolving.
+/// Callers must treat `None` as "cycle: do not recurse" and fall through to
+/// their existing unresolved handling, which preserves the pre-existing
+/// `circular type alias` + `unresolved type` output byte-for-byte.
+struct AliasDeferScope {
+    name: String,
+}
+
+impl AliasDeferScope {
+    fn new(name: &str) -> Option<Self> {
+        let inserted = ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(name.to_string()));
+        inserted.then(|| AliasDeferScope {
+            name: name.to_string(),
+        })
+    }
+}
+
+impl Drop for AliasDeferScope {
+    fn drop(&mut self) {
+        ALIAS_DEFER_IN_PROGRESS.with(|s| {
+            s.borrow_mut().remove(&self.name);
+        });
+    }
+}
+
 /// Internal type alias entry — stored in the registry during compilation.
 ///
 /// For non-parameterized aliases, `resolved_type` holds the fully-resolved `Type`.
@@ -166,19 +227,32 @@ impl TypeAliasEntry {
     /// across the module boundary.  This enables `resolve_parameterized_alias` to
     /// instantiate them at use sites via `resolve_type_alias_expr_with_subst`.
     ///
-    /// Non-parametric aliases (`type_params.is_empty()`) never reach
-    /// `resolve_parameterized_alias`, so their body is not carried across — this
-    /// avoids a wasted deep-clone of every non-parametric alias body in the per-
-    /// compile prelude-seed loop.
+    /// An UNRESOLVED non-parametric alias (`resolved_type: None`) also carries
+    /// its body across (task 6259). Such an entry is an alias whose body names
+    /// an entity — `pub type Fq = SomeEnum` / `= SomeStructureDef` /
+    /// `= SomeOccurrenceDef` / `= SomeTrait`; the alias DFS runs before those
+    /// name sets exist, so it legitimately leaves the entry unresolved, and the
+    /// deferred use-site arm in `resolve_type_expr_with_aliases_kinded` reads
+    /// `type_expr` to finish the job. Dropping the body here would leave the
+    /// seeded entry with BOTH `resolved_type: None` and `type_expr: None`, so
+    /// that arm could not fire and the use site would report a hard
+    /// `unresolved type` for the rest of the module.
+    ///
+    /// The allocation optimisation is retained for the overwhelmingly common
+    /// case: an already-resolved non-parametric alias still skips the deep
+    /// clone, because it resolves via `resolved_type` and no path reads its
+    /// body. Only the parametric and the still-unresolved entries pay for it.
     pub(crate) fn from_compiled_for_prelude(cta: &CompiledTypeAlias) -> TypeAliasEntry {
         TypeAliasEntry {
             name: cta.name.clone(),
             resolved_type: cta.resolved_type.clone(),
             type_params: cta.type_params.clone(),
-            // Only clone the body for parametric aliases — non-parametric ones resolve
-            // via resolved_type and never read type_expr, so skipping the clone avoids
-            // an unnecessary allocation in the per-compile prelude-seed loop.
-            type_expr: if cta.type_params.is_empty() {
+            // Skip the clone ONLY for an already-resolved non-parametric alias:
+            // it resolves via `resolved_type` and nothing reads its body. A
+            // parametric alias needs the body for `resolve_parameterized_alias`;
+            // an unresolved non-parametric one needs it for the deferred
+            // use-site arm (task 6259).
+            type_expr: if cta.type_params.is_empty() && cta.resolved_type.is_some() {
                 None
             } else {
                 cta.type_expr.clone()
@@ -721,6 +795,24 @@ pub(crate) fn resolve_type_with_params(
 /// that check into this body: it cannot see `type_args` here, and collapsing the
 /// applied `N<Args>` form to `Type::Enum` breaks the generic-enum `Applied` path
 /// (`tests::applied_form_is_not_shadowed`).
+///
+/// # Unresolved non-parametric aliases are deferred, not a dead end (task 6259)
+///
+/// The alias arm below matches only an entry that already carries a
+/// `resolved_type`. An alias whose body names an ENTITY (enum / structure def /
+/// occurrence def / trait) cannot be resolved by the alias DFS — that phase runs
+/// before those name sets exist — so it reaches this function with
+/// `resolved_type: None` and falls through to `None` here. That is NOT the end
+/// of the road: [`resolve_type_expr_with_aliases_kinded`] catches exactly that
+/// case afterwards and re-resolves the stored `type_expr` body at the use site,
+/// where all four namespaces are in scope. Callers that invoke this function
+/// DIRECTLY rather than through `_kinded` (e.g. `functions.rs`'s
+/// `resolve_field_type_name`) do not get that deferral.
+///
+/// Hygiene caveat: that deferral re-resolves the body in an EMPTY type/dim
+/// parameter scope, never the use site's. A type alias is always a top-level
+/// declaration, so a non-parametric one's body cannot name a type or dimension
+/// parameter; resolving it in the caller's scope would be capture.
 pub(crate) fn resolve_type_with_aliases(
     name: &str,
     type_param_names: &HashSet<String>,
@@ -1515,7 +1607,20 @@ pub(crate) fn resolve_type_alias_expr(
                 propagate_inner_diags_if_needed(inner_diag_policy, tmp_diags, diagnostics)?;
                 // Defer: silently return None — deferred to instantiation time
             }
-            // Simple name: check builtins, then alias registry
+            // Simple name: check builtins, then alias registry.
+            //
+            // The empty structure/trait sets are a deliberate DEFERRAL, not a
+            // limitation (task 6259). Structures, traits and enums are not
+            // compiled yet at this point in the phase order, so a body naming an
+            // entity — `type AL = SomeEnum` / `= SomeStructureDef` /
+            // `= SomeOccurrenceDef` / `= SomeTrait` — legitimately returns `None`
+            // here and the entry stays `resolved_type: None`. It is NOT dropped:
+            // the raw body is retained in `TypeAliasEntry::type_expr` (stored
+            // unconditionally by `resolve_alias_dfs` for every alias, parametric
+            // or not), and `resolve_type_expr_with_aliases_kinded` re-resolves it
+            // at each use site, where all four namespaces are finally in scope.
+            // So do NOT "fix" this by threading name sets in — that would require
+            // reordering `phase_aliases` against the names/enums phases.
             let empty = HashSet::new();
             let empty_structs = HashSet::new();
             let empty_traits = HashSet::new();
@@ -1955,6 +2060,91 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(Type::Enum(name.to_string()));
     }
 
+    // Deferred non-parametric alias body (task 6259): `type AL = <Body>` whose
+    // body names an ENTITY — an enum, a structure def, an occurrence def or a
+    // trait — cannot be resolved by the alias DFS, which runs in
+    // `phase_aliases` BEFORE the structure/trait/enum name sets exist. The DFS
+    // therefore leaves such an entry with `resolved_type: None`, and
+    // `resolve_type_with_aliases` above skips it (its alias arm requires
+    // `resolved_type`), so the name used to fall all the way through to the
+    // caller's hard `unresolved type: AL`.
+    //
+    // Resolve it HERE instead, at the use site, where all four namespaces are
+    // finally in scope: `structure_names` / `trait_names` as arguments, enums
+    // via the ambient `RESOLUTION_ENUM_NAMES` fallback just above. This is the
+    // same deferral the parametric-alias path already performs — and it needs
+    // no producer-side change, because `resolve_alias_dfs` stores
+    // `type_expr: Some(..)` unconditionally for EVERY alias, parametric or not.
+    //
+    // Placement: after the ambient-enum fallback (so a same-named enum still
+    // wins, matching `resolve_type_with_aliases`'s builtin-before-alias
+    // precedence) and before the E_BARE_SCALAR guard (so `type S = Scalar<Q>`
+    // used as `S` resolves rather than tripping the bare-`Scalar` error).
+    //
+    // Three non-obvious requirements, each pinned by a regression lock in
+    // `tests/harness_langcore/type_alias_compile_tests.rs`:
+    //
+    //   * `AliasDeferScope` is MANDATORY, not defensive. `type C1 = C2` /
+    //     `type C2 = C1` leaves both entries in exactly this shape, so without
+    //     the cycle guard this recurses until the stack overflows. On `None`
+    //     (cycle) we fall through, preserving the existing `circular type
+    //     alias` + `unresolved type` output.
+    //
+    //   * Inner diagnostics go to a SCRATCH vector and are committed only on
+    //     success. The definition-site DFS already reported an unresolvable
+    //     body (e.g. `type Bad = Scalar<NotADim>`, pinned by
+    //     `alias_dfs_diagnostic_tests.rs`); re-resolving that body at every use
+    //     site with the caller's real vector would duplicate the error once per
+    //     use. Same commit-on-success / discard-on-failure discipline as
+    //     `resolve_type_alias_expr`'s `tmp_diags`.
+    //
+    //   * The recursion runs in an EMPTY type/dim parameter scope, NOT the
+    //     caller's. `reify-ast/src/decl.rs:36` documents `Declaration` as "A
+    //     top-level declaration in a module" and `Declaration::TypeAlias` is
+    //     one of its variants — there is no nested-scope alias form anywhere in
+    //     the AST, so a type alias is ALWAYS declared where no type or
+    //     dimension parameter is in scope. Combined with the
+    //     `type_params.is_empty()` guard below, the body of a NON-parametric
+    //     alias can never legitimately name one. An empty set is therefore not
+    //     merely the safer choice — it IS the alias's own declaration-site
+    //     scope, i.e. the correct one. Threading the use site's scope in is
+    //     capture, never a feature: it made `type AL = T` used inside
+    //     `structure def D<T>` lower to `Type::TypeParam("T")` with no
+    //     diagnostic at all, and made `type AD = Q` used in
+    //     `fn k<Q: Dimension>(..)` report `Q`, a name the alias's declaration
+    //     scope never had. Do not "restore" the caller's scope believing it
+    //     usefully threads context through.
+    if type_args.is_empty()
+        && let Some(alias_entry) = alias_registry.lookup(name)
+        && alias_entry.resolved_type.is_none()
+        && alias_entry.type_params.is_empty()
+        // Clone the body to release the `&alias_registry` borrow before recursing.
+        && let Some(body) = alias_entry.type_expr.clone()
+        && let Some(_guard) = AliasDeferScope::new(name)
+    {
+        let mut tmp_diags = Vec::new();
+        // The alias's own declaration scope — a top-level decl has neither a
+        // type nor a dimension parameter in scope (see the third bullet above).
+        let no_params: HashSet<String> = HashSet::new();
+        if let Some(ty) = resolve_type_expr_with_aliases_kinded(
+            &body,
+            &no_params,
+            &no_params,
+            alias_registry,
+            &mut tmp_diags,
+            structure_names,
+            trait_names,
+        ) {
+            // Success: surface any diagnostics the body legitimately produced
+            // on the way to resolving (the def-site DFS could not have emitted
+            // these — it failed before reaching them).
+            diagnostics.extend(tmp_diags);
+            return Some(ty);
+        }
+        // Failure: DISCARD tmp_diags. The definition site already reported this
+        // body; the caller's `unresolved type: AL` remains the use-site error.
+    }
+
     // E_BARE_SCALAR guard: bare `Scalar` (no type arg) is not a valid type.
     //
     // Fires ONLY when name == "Scalar" AND type_args is empty — which means:
@@ -2000,6 +2190,109 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     }
 
     None
+}
+
+/// Walk a chain of UNRESOLVED, NON-PARAMETRIC type aliases to the name their
+/// bodies ultimately spell, e.g. `A2 = A1` / `A1 = Zq` yields `Some("Zq")`
+/// (task 6259).
+///
+/// # Why this exists — three positions that own a PRIVATE enum namespace
+///
+/// The deferred use-site arm in [`resolve_type_expr_with_aliases_kinded`]
+/// resolves an entity-bodied alias by RECURSING into that same function, so the
+/// body's ENUM-ness is only visible where the ambient [`RESOLUTION_ENUM_NAMES`]
+/// set is live. [`EnumNameScope`] installs it at exactly two places: struct-param
+/// resolution (`entity.rs`) and fn param/return resolution (`functions.rs`).
+///
+/// Three other declared-type positions install no such scope. Each instead owns
+/// a PRIVATE enum namespace, consulted by a post-hoc fallback AFTER
+/// `resolve_type_expr_with_aliases` has already returned `None`, and keyed on
+/// the OUTER name — which for `type AL = Zq` is `AL`, never `Zq`. The body's
+/// enum-ness is therefore structurally unreachable at:
+///
+///   * `compile_builder/enums_phase.rs` — enum variant payload field;
+///   * `traits.rs` — trait member `param`/`let` annotation;
+///   * `compile_builder/defs_phase.rs` — constraint-def param.
+///
+/// Each of those sites resolves its private namespace against
+/// `unresolved_alias_body_name(name, reg).unwrap_or_else(|| name.to_string())`,
+/// so the lookup sees `Zq` and matches the direct spelling exactly.
+///
+/// # Why NOT install `EnumNameScope` at those three sites instead
+///
+/// That uniform-looking alternative perturbs the DIRECT path, and at the
+/// constraint-def site the perturbation is a real semantic change outside this
+/// task's scope. Today `constraint def K { param g : Zq }` stores `ty: None`:
+/// `resolve_type_expr_with_aliases` returns `None` for a bare enum there and
+/// `defs_phase.rs`'s guard only SUPPRESSES the diagnostic via `resolve_enum_type`
+/// — it never populates `ty`. An ambient enum scope would make that same direct
+/// spelling start storing `Some(Type::Enum("Zq"))`, changing what
+/// `expand_constraint_inst` type-checks at every instantiation site.
+///
+/// This helper cannot do that: it is consulted ONLY on a branch the direct
+/// spelling never reaches (the `.or_else(..)` / `is_none()` fallback that runs
+/// after resolution has already failed), so the direct path is provably
+/// unperturbed. Do not "simplify" it back into an `EnumNameScope` install.
+///
+/// # Contract
+///
+/// * Walks only entries with `resolved_type.is_none() && type_params.is_empty()`
+///   — a RESOLVED alias needs no hop (`resolve_type_with_aliases` already
+///   handled it) and a PARAMETRIC one belongs to `resolve_parameterized_alias`.
+/// * Follows only a bare `Named { type_args: [] }` body. A non-bare body
+///   (`type A = Option<Zq>`, a `DimensionalOp`, …) yields `None`, leaving those
+///   cases at today's behaviour — which is also what the DIRECT spelling does
+///   there, so parity still holds (pinned by the direct-baseline assertions in
+///   `alias_to_entity_type_private_enum_namespaces`).
+/// * Carries a `visited` set so `type C1 = C2` / `type C2 = C1` terminates
+///   instead of looping. This is the SAME cycle hazard [`AliasDeferScope`]
+///   guards for the deferred arm, in a second place — mandatory, not defensive:
+///   a circular alias leaves BOTH entries in exactly the shape this walk
+///   follows. A local `HashSet` is used rather than the shared
+///   [`ALIAS_DEFER_IN_PROGRESS`] thread-local because this walk is a plain loop
+///   with no re-entrancy into the resolver, so it needs no ambient state and
+///   must not disturb an enclosing deferral in progress.
+/// * Returns the TERMINAL name — the first body name that is not itself an
+///   unresolved non-parametric alias. That name may still be unknown to the
+///   caller's namespace, in which case the caller's existing unresolved
+///   handling runs unchanged.
+pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) -> Option<String> {
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut current = name;
+    let mut hopped: Option<&str> = None;
+
+    loop {
+        if !visited.insert(current) {
+            // Cycle (`type C1 = C2` / `type C2 = C1`): the chain has no terminal
+            // body name, so yield `None`. The caller then keeps its raw name and
+            // runs its existing unresolved handling, which leaves the
+            // definition-site `circular type alias` diagnostic as the only report.
+            return None;
+        }
+        let Some(entry) = reg.lookup(current) else {
+            break;
+        };
+        if entry.resolved_type.is_some() || !entry.type_params.is_empty() {
+            break;
+        }
+        let Some(body) = entry.type_expr.as_ref() else {
+            break;
+        };
+        let reify_ast::TypeExprKind::Named {
+            name: body_name,
+            type_args,
+        } = &body.kind
+        else {
+            return None;
+        };
+        if !type_args.is_empty() {
+            return None;
+        }
+        hopped = Some(body_name.as_str());
+        current = body_name.as_str();
+    }
+
+    hopped.map(str::to_string)
 }
 
 /// Maximum recursion depth for parameterized alias instantiation.

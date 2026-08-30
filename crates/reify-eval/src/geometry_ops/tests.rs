@@ -13,6 +13,40 @@
         )
     }
 
+    /// Assert an unresolved-selector diagnostic carries none of the STAGING
+    /// wording task 5208 retired.
+    ///
+    /// Until task 5208, curated 3-arg `fillet`/`chamfer` (and curated
+    /// `shell_open`/`draft` face selection) could not be resolved through the
+    /// production `.ri` pipeline, so the "selector did not resolve" `Err` was
+    /// really a not-implemented-yet notice: it told the designer the capability
+    /// was "not yet available on the current build pipeline" and to "wait for"
+    /// engine-unified-build-dag tasks 4360/4358.
+    ///
+    /// That is now false, and actively harmful — the capability IS reachable, so
+    /// waiting would never help and the real mistake (a selector that picks
+    /// nothing, or reads a solid that is not realized here) goes unmentioned.
+    ///
+    /// Shared by every unresolved-selector test so the five call forms cannot
+    /// drift back to the staging wording one at a time.
+    fn assert_no_stale_staging_wording(msg: &str) {
+        for stale in [
+            "not yet available",
+            "wait for",
+            "4360",
+            "4358",
+            "current build pipeline",
+        ] {
+            assert!(
+                !msg.contains(stale),
+                "diagnostic must not carry the retired staging wording {stale:?} — \
+                 curated selection is reachable through the production pipeline \
+                 since task 5208, so this Err means THIS selector failed, not that \
+                 the feature is pending. got: {msg:?}"
+            );
+        }
+    }
+
     /// Helper: build a CompiledExpr literal from a Scalar with LENGTH dimension.
     fn literal_length(meters: f64) -> reify_ir::CompiledExpr {
         reify_ir::CompiledExpr::literal(
@@ -6645,9 +6679,15 @@
     /// That is NOT an empty selection, so the arm must NOT emit
     /// `EmptyEdgeSelection`; instead it returns a USER-ACTIONABLE `Err` (surfaced
     /// verbatim as `failed to compile geometry operation: <msg>`), not the old
-    /// internal "did not resolve to a List" string. This pins the staging UX
-    /// until engine-unified-build-dag η/ε (tasks 4360/4358) make curated
-    /// selection reachable end-to-end. (Reviewer test_coverage note, task 3205.)
+    /// internal "did not resolve to a List" string.
+    ///
+    /// Task 5208 retired the STAGING framing this test used to pin. Curated
+    /// 3-arg fillet is now reachable end-to-end through the production `.ri`
+    /// pipeline, so this `Err` no longer means "the feature has not landed yet";
+    /// it means THIS selector genuinely failed to resolve. The message must
+    /// therefore describe the actual failure and must NOT tell the designer the
+    /// capability is "not yet available" or to "wait for" tasks 4360/4358 —
+    /// waiting would never help. (Original reviewer test_coverage note, task 3205.)
     #[test]
     fn compile_geometry_op_fillet_legacy_selector_unresolved_is_user_actionable() {
         let step_handles = vec![GeometryHandleId(10)];
@@ -6703,6 +6743,22 @@
             !msg.contains("did not resolve to a List"),
             "diagnostic must not surface the raw internal 'did not resolve to a \
              List' string, got: {msg:?}"
+        );
+        // Task 5208: the capability IS available, so the message must not tell
+        // the designer to wait for it. Asserted as a shared helper so the
+        // fillet / chamfer / chamfer_asymmetric / shell_open / draft variants
+        // cannot drift back to the staging wording one at a time.
+        assert_no_stale_staging_wording(&msg);
+        // …and it must say what actually went wrong, in the designer's terms.
+        assert!(
+            msg.contains("did not resolve to a concrete edge list"),
+            "diagnostic must describe the genuine failure — the selector did not \
+             resolve to a concrete edge list — got: {msg:?}"
+        );
+        assert!(
+            msg.contains("realized solid"),
+            "diagnostic must tell the designer what to check (that the selector \
+             reads a realized solid in scope), got: {msg:?}"
         );
         // The deferral is preserved: an unresolved selector is NOT an empty
         // selection, so it must NEVER trip the anti-zero-edges guard.
@@ -7404,6 +7460,18 @@
             msg.contains("3-arg draft(solid, angle, neutral_plane)"),
             "diagnostic must point the user at the 3-arg all-faces fallback, \
              got: {msg:?}"
+        );
+        // Task 5208: same reword as the fillet/chamfer edge-selector variants.
+        assert_no_stale_staging_wording(&msg);
+        assert!(
+            msg.contains("did not resolve to a concrete face list"),
+            "diagnostic must describe the genuine failure — the selector did not \
+             resolve to a concrete face list — got: {msg:?}"
+        );
+        assert!(
+            msg.contains("realized solid"),
+            "diagnostic must tell the designer what to check (that the selector \
+             reads a realized solid in scope), got: {msg:?}"
         );
         // A non-List is NOT an empty selection — must never trip anti-zero
         // guard.
@@ -10912,14 +10980,30 @@
             ),
         };
         // User-actionable: names the 3-arg shell_open call form and points at
-        // the numeric fallback and the η/ε tasks.
+        // the numeric fallback.
         assert!(
             msg.contains("shell_open(solid, thickness, open_faces)"),
             "diagnostic must name the 3-arg call form, got: {msg:?}"
         );
         assert!(
-            msg.contains("4360") || msg.contains("4358"),
-            "diagnostic must point at η/ε tasks (4360/4358), got: {msg:?}"
+            msg.contains("shell(solid, thickness, face_N)"),
+            "diagnostic must point the user at the numeric face-index fallback, \
+             got: {msg:?}"
+        );
+        // Task 5208: this Err no longer means "the feature is pending", so it
+        // must no longer point at the η/ε tasks — it must describe the genuine
+        // failure instead. (This assertion is the INVERSE of the one it
+        // replaced, which required msg to cite 4360/4358.)
+        assert_no_stale_staging_wording(&msg);
+        assert!(
+            msg.contains("did not resolve to a concrete face list"),
+            "diagnostic must describe the genuine failure — the selector did not \
+             resolve to a concrete face list — got: {msg:?}"
+        );
+        assert!(
+            msg.contains("realized solid"),
+            "diagnostic must tell the designer what to check (that the selector \
+             reads a realized solid in scope), got: {msg:?}"
         );
         // A non-List value is NOT an empty selection — must NOT trip the
         // anti-zero guard or mislead callers into thinking zero faces resolved.
@@ -26080,7 +26164,8 @@
             K::Thicken => 5,
             K::ZoneSlab => 6,
             K::OffsetSolid => 7,
-            K::OffsetCurve => 8,
+            K::OffsetSurface => 8,
+            K::OffsetCurve => 9,
         }
     }
 
@@ -26212,8 +26297,8 @@
             assert!(lookup_primitive(k).is_some(), "no Primitive entry: {:?}", k);
         }
 
-        // Modify (9 variants) — VARIANT_COUNT cross-check (ALL is crate-private)
-        const ALL_MODIFY: [ModifyKind; 9] = [
+        // Modify (10 variants) — VARIANT_COUNT cross-check (ALL is crate-private)
+        const ALL_MODIFY: [ModifyKind; 10] = [
             ModifyKind::Fillet,
             ModifyKind::Chamfer,
             ModifyKind::ChamferAsymmetric,
@@ -26222,6 +26307,7 @@
             ModifyKind::Thicken,
             ModifyKind::ZoneSlab,
             ModifyKind::OffsetSolid,
+            ModifyKind::OffsetSurface,
             ModifyKind::OffsetCurve,
         ];
         const _: () = assert!(
@@ -30438,5 +30524,890 @@
              Undef, even though the chained target resolved first via the fallback path; \
              got {:?}",
             diagnostics
+        );
+    }
+
+    // ── Profile dimension validation (task 5664) ────────────────────────────
+    //
+    // WHAT IS LEFT AFTER CONTRACT C. Task 5743 routed `profile_rectangle` /
+    // `profile_circle` / `profile_ellipse` through `required_length_args`, and
+    // task 5661 routed `profile_polygon`'s vertex pairs through the variadic
+    // sibling, so a bare `Real`, a wrong-dimension `Scalar`, a NaN/±inf LENGTH
+    // and an `Undef` slot are all already judged — see
+    // `compile_geometry_op_profile_length_slots_follow_the_three_state_contract`
+    // and `compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf`, which
+    // own those states and are NOT restated here.
+    //
+    // What that leaves open is the SIGN. `rectangle(-30mm, 50mm)` and
+    // `circle(0mm)` are finite LENGTHs, so Contract C accepts them, and nothing
+    // downstream rejects them either: the mesher's `validate_boundary` only
+    // rejects a ring whose |signed area| falls below the degenerate tolerance,
+    // and `w*h == -0.0015` clears it comfortably. The result was a
+    // geometrically meaningless (clockwise, inside-out) cross-section, or a
+    // degenerate face, with no build diagnostic at all.
+    //
+    // The OCCT kernel does reject the same inputs by name — `"rectangle_profile
+    // width must be a finite positive value"` and its siblings in
+    // `reify-kernel-occt/src/lib.rs` — so what these tests buy is the TIMING
+    // and the CHANNEL, not better wording: that rejection runs inside
+    // `kernel.execute()`, only once the op has been compiled and dispatched,
+    // only on the OCCT path, and arrives as a `GeometryError::OperationFailed`
+    // rather than a build diagnostic. These drive `compile_geometry_op`
+    // end-to-end, modelled on
+    // `compile_geometry_op_scale_negative_factor_returns_none`.
+    //
+    // EVERY dimension below is minted with `literal_length`, never
+    // `literal_f64`. That is not incidental: a bare `Real` would be rejected by
+    // the LENGTH gate first, and the test would pass for the wrong reason
+    // without ever reaching the sign check. `..._is_accepted_by_contract_c`
+    // pins that distinction directly.
+
+    /// Helper: run `compile_geometry_op` on a bare `Profile` op and return its
+    /// result alongside the diagnostics it pushed. Profiles are leaf ops — no
+    /// target, no step handles, no named steps — so every context slice is
+    /// empty.
+    fn compile_profile_op(
+        kind: reify_compiler::ProfileKind,
+        args: Vec<(String, reify_ir::CompiledExpr)>,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &CompiledGeometryOp::Profile { kind, args },
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// Helper: assert `diagnostics` holds EXACTLY one `Severity::Warning` whose
+    /// message contains every needle.
+    ///
+    /// The `len() == 1` half carries two claims at once, which is why it is an
+    /// equality and not a `>= 1` search. It is the anti-cascade contract
+    /// documented on `eval_named_arg` — one Warning at the origin, one Error at
+    /// the caller — so it pins short-circuit-on-first-bad-dimension. And
+    /// because a Contract C rejection would add a `Severity::Error` carrying
+    /// `DiagnosticCode::DimensionedArgRejected`, the same equality proves the
+    /// value under test CLEARED the LENGTH gate and was rejected by the SIGN
+    /// check specifically — the distinction the whole block turns on.
+    fn assert_exactly_one_warning(diagnostics: &[Diagnostic], needles: &[&str]) {
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, got: {:?}",
+            diagnostics
+        );
+        let d = &diagnostics[0];
+        assert!(
+            matches!(d.severity, reify_core::Severity::Warning),
+            "expected Severity::Warning, got: {:?}",
+            d
+        );
+        assert_eq!(
+            d.code, None,
+            "a sign rejection is not an `ArgSpec` rejection, so it must NOT carry \
+             DiagnosticCode::DimensionedArgRejected — that code would mean the LENGTH \
+             gate rejected the value and the sign check never ran: {:?}",
+            d
+        );
+        for needle in needles {
+            assert!(
+                d.message.contains(needle),
+                "expected the warning to contain {:?}, got: {:?}",
+                needle,
+                d.message
+            );
+        }
+    }
+
+    /// Helper: an ellipse arg list with the given semi-axes.
+    fn ellipse_args(
+        semi_major: reify_ir::CompiledExpr,
+        semi_minor: reify_ir::CompiledExpr,
+    ) -> Vec<(String, reify_ir::CompiledExpr)> {
+        vec![
+            ("semi_major".into(), semi_major),
+            ("semi_minor".into(), semi_minor),
+        ]
+    }
+
+    /// THE PREMISE, asserted directly: a negative LENGTH is ACCEPTED by
+    /// Contract C, so this task's gate is not redundant with it.
+    ///
+    /// Every rejection test below asserts the negative space of this (exactly
+    /// one `Warning`, no `DimensionedArgRejected`), but only indirectly. If a
+    /// future tightening made `accept_arg` itself reject negative magnitudes,
+    /// those tests would keep passing on the Error path while this one fails —
+    /// which is the signal that the sign gate has become dead code, not that it
+    /// regressed. It is deliberately spelled with the SHARED reader
+    /// (`required_length_args`, via a builtin that is length-gated but NOT
+    /// sign-gated) rather than by calling `accept_arg` directly, so it measures
+    /// the surface the profile builders actually read through.
+    #[test]
+    fn compile_geometry_op_negative_length_is_accepted_by_contract_c() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        // `sphere` is LENGTH-gated (task 5743) and, unlike the profiles, is NOT
+        // sign-gated — the primitive family is this task's named follow-up.
+        let result = compile_geometry_op(
+            &CompiledGeometryOp::Primitive {
+                kind: reify_compiler::PrimitiveKind::Sphere,
+                args: vec![("radius".into(), literal_length(-0.01))],
+            },
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_ok(),
+            "PREMISE: Contract C judges DIMENSION, not sign, so a negative LENGTH must \
+             still clear it. If this now fails, the profile sign gate below has become \
+             redundant and should be re-derived, not merely re-pointed. Got: {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a negative LENGTH must clear the length gate silently, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_negative_width_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_length(-0.03)),
+                ("height".into(), literal_length(0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a negative rectangle width must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "width=-0.03"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_zero_width_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_length(0.0)),
+                ("height".into(), literal_length(0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a zero rectangle width must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "width=0"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_negative_height_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_length(0.03)),
+                ("height".into(), literal_length(-0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a negative rectangle height must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "height=-0.05"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_zero_height_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_length(0.03)),
+                ("height".into(), literal_length(0.0)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a zero rectangle height must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "height=0"]);
+    }
+
+    /// Both dimensions bad → still exactly ONE Warning, naming `width`.
+    ///
+    /// This is where the sign loop's contract DIVERGES from the LENGTH gate it
+    /// delegates to: `required_length_args` deliberately reports every failing
+    /// member in one build, the sign loop deliberately returns on the first.
+    #[test]
+    fn compile_geometry_op_rectangle_profile_both_dimensions_negative_warns_once() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_length(-0.03)),
+                ("height".into(), literal_length(-0.05)),
+            ],
+        );
+        assert!(result.is_err(), "got: {:?}", result);
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "width=-0.03"]);
+        assert!(
+            !diagnostics[0].message.contains("height"),
+            "the second bad dimension must not also be reported (no cascade), got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// NEGATIVE SPACE — an UNRESOLVED dimension must be diagnosed by the LENGTH
+    /// gate, and the sign check must add NOTHING.
+    ///
+    /// This replaces a pre-Contract-C constraint test that asserted an `Undef`
+    /// width still returned `Ok(RectangleProfile { width: Undef, .. })`. Task
+    /// 5743 deliberately reversed that: an unresolved profile slot now DROPS the
+    /// op with its own distinct wording (D10 / INV-SF-1), and
+    /// `..._profile_length_slots_follow_the_three_state_contract` owns that
+    /// claim. What survives, and is what this pins, is the half that is still
+    /// this gate's business: an `Undef` slot must never reach the sign loop and
+    /// be mislabelled "not positive" — `Value::Undef` is not a number, and
+    /// reporting it as a non-positive one would be actively misleading during
+    /// solver fixpoint iteration where Undef cells are expected transient state.
+    #[test]
+    fn compile_geometry_op_rectangle_profile_undef_width_is_unresolved_not_non_positive() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_undef()),
+                ("height".into(), literal_length(0.05)),
+            ],
+        );
+        let err = result.err().unwrap_or_else(|| {
+            panic!("an Undef width must drop the op (task 5743's three-state contract)")
+        });
+        assert!(
+            err.contains("unresolved (Undef)") && err.contains("'width'"),
+            "an Undef width must use the LENGTH gate's DISTINCT unresolved wording, \
+             got: {:?}",
+            err
+        );
+        assert!(
+            !err.contains("non-positive"),
+            "an Undef width is not a non-positive one — the sign loop must never see \
+             it, got: {:?}",
+            err
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("not positive")),
+            "the sign check must push NOTHING for an unresolved dimension, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// NEGATIVE SPACE, second half — a non-numeric (`Bool`) dimension is a TYPE
+    /// rejection, not a sign one.
+    ///
+    /// Like the `Undef` test above, this replaces a pre-Contract-C constraint
+    /// test that asserted a `Bool` width was forwarded to the IR verbatim. Task
+    /// 5743 made it an `ArgSpec` rejection carrying
+    /// `DiagnosticCode::DimensionedArgRejected`. The surviving claim is that the
+    /// sign loop does not also fire: pinning it here means a future tightening
+    /// of either gate cannot silently absorb the other's cases.
+    #[test]
+    fn compile_geometry_op_rectangle_profile_bool_width_is_a_dimension_rejection() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_bool(true)),
+                ("height".into(), literal_length(0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a non-numeric width must drop the op, got: {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.code
+                == Some(reify_core::DiagnosticCode::DimensionedArgRejected)),
+            "a Bool width must be rejected by the LENGTH gate, with its code, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("not positive")),
+            "the sign check must push NOTHING for a non-numeric dimension — it judges \
+             dimensions, not types, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// POSITIVE control — a well-formed rectangle is untouched, and its
+    /// dimensions reach the IR as LENGTH `Scalar`s, byte-identical to what an
+    /// ungated (`required_length_values`) slot would store. Gating for SIGN must
+    /// not move the golden characterization snapshots.
+    #[test]
+    fn compile_geometry_op_rectangle_profile_positive_dimensions_unchanged() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_length(0.02)),
+                ("height".into(), literal_length(0.03)),
+            ],
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::RectangleProfile { width, height }) => {
+                assert_eq!(
+                    width,
+                    reify_ir::Value::Scalar {
+                        si_value: 0.02,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    }
+                );
+                assert_eq!(
+                    height,
+                    reify_ir::Value::Scalar {
+                        si_value: 0.03,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    }
+                );
+            }
+            other => panic!("expected Ok(RectangleProfile), got: {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    #[test]
+    fn compile_geometry_op_circle_profile_negative_radius_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), literal_length(-0.01))],
+        );
+        assert!(
+            result.is_err(),
+            "a negative circle radius must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["circle", "radius=-0.01"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_circle_profile_zero_radius_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), literal_length(0.0))],
+        );
+        assert!(
+            result.is_err(),
+            "a zero circle radius must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["circle", "radius=0"]);
+    }
+
+    /// POSITIVE control — an accepted radius reaches the IR as a LENGTH
+    /// `Scalar`, unflattened.
+    #[test]
+    fn compile_geometry_op_circle_profile_positive_length_radius_unchanged() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), literal_length(0.01))],
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::CircleProfile { radius }) => {
+                assert_eq!(
+                    radius,
+                    reify_ir::Value::Scalar {
+                        si_value: 0.01,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    "a dimensioned radius must reach the IR untouched"
+                );
+            }
+            other => panic!("expected Ok(CircleProfile), got: {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    #[test]
+    fn compile_geometry_op_ellipse_profile_negative_semi_major_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_length(-0.02), literal_length(0.01)),
+        );
+        assert!(
+            result.is_err(),
+            "a negative semi_major must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_major=-0.02"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_ellipse_profile_zero_semi_major_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_length(0.0), literal_length(0.01)),
+        );
+        assert!(
+            result.is_err(),
+            "a zero semi_major must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_major=0"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_ellipse_profile_negative_semi_minor_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_length(0.02), literal_length(-0.01)),
+        );
+        assert!(
+            result.is_err(),
+            "a negative semi_minor must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_minor=-0.01"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_ellipse_profile_zero_semi_minor_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_length(0.02), literal_length(0.0)),
+        );
+        assert!(
+            result.is_err(),
+            "a zero semi_minor must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_minor=0"]);
+    }
+
+    /// Both semi-axes bad → still exactly ONE Warning, naming `semi_major`.
+    /// The `names` array order is what fixes which one is reported.
+    #[test]
+    fn compile_geometry_op_ellipse_profile_both_semi_axes_negative_warns_once() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_length(-0.02), literal_length(-0.01)),
+        );
+        assert!(result.is_err(), "got: {:?}", result);
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_major=-0.02"]);
+        assert!(
+            !diagnostics[0].message.contains("semi_minor"),
+            "the second bad semi-axis must not also be reported (no cascade), got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// POSITIVE control — a well-formed ellipse is untouched.
+    #[test]
+    fn compile_geometry_op_ellipse_profile_positive_semi_axes_unchanged() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_length(0.02), literal_length(0.01)),
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::EllipseProfile {
+                semi_major,
+                semi_minor,
+            }) => {
+                assert_eq!(
+                    semi_major,
+                    reify_ir::Value::Scalar {
+                        si_value: 0.02,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    }
+                );
+                assert_eq!(
+                    semi_minor,
+                    reify_ir::Value::Scalar {
+                        si_value: 0.01,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    }
+                );
+            }
+            other => panic!("expected Ok(EllipseProfile), got: {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// Helper: flat coordinate args for `polygon(x1,y1, x2,y2, ...)`, minted as
+    /// LENGTHs.
+    ///
+    /// `polygon` is variadic, so its args are positional cells named `c0`,
+    /// `c1`, … and `profile_polygon` re-pairs them via `chunks_exact(2)`. Every
+    /// position is a vertex coordinate in the XY plane and so is LENGTH-gated
+    /// (task 5661), which is why this mints dimensioned literals — the same
+    /// choice `coord_args` makes in
+    /// `tests/compile_geometry_op_characterization.rs`. Note that a coordinate,
+    /// unlike a profile DIMENSION, is not sign-gated: `0mm` and `-5mm` are
+    /// perfectly good vertex positions, and only the ring's enclosed AREA is
+    /// judged below.
+    fn degenerate_coord_args(coords: &[f64]) -> Vec<(String, reify_ir::CompiledExpr)> {
+        coords
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (format!("c{i}"), literal_length(v)))
+            .collect()
+    }
+
+    /// Three COLLINEAR points are arity-valid — the compiler-side guard
+    /// (`"polygon() expects coordinate pairs (at least 6 args for 3 points)"` in
+    /// `reify-compiler/src/geometry.rs`) only rejects an odd coordinate count or
+    /// fewer than 3 points — but enclose no area. Such a ring used to survive
+    /// all the way to a late `Mesh2dError::DegenerateBoundary`; it must be
+    /// caught at build time instead.
+    #[test]
+    fn compile_geometry_op_polygon_profile_collinear_points_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.0, 0.02, 0.0]),
+        );
+        assert!(
+            result.is_err(),
+            "a zero-area (collinear) polygon must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate", "area of 0"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_polygon_profile_identical_points_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.01, 0.02, 0.01, 0.02, 0.01, 0.02]),
+        );
+        assert!(
+            result.is_err(),
+            "a polygon of three identical points must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate", "area of 0"]);
+    }
+
+    /// Fewer than 3 points is not a ring at all. Unreachable from `.ri` source
+    /// (the compiler guard rejects it first), but `profile_polygon` is also
+    /// reachable from directly-constructed IR, and the shoelace sum of a 2-point
+    /// ring is exactly 0.0 — so this falls out of the same area check rather
+    /// than needing a separate arity guard.
+    #[test]
+    fn compile_geometry_op_polygon_profile_two_points_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.01]),
+        );
+        assert!(
+            result.is_err(),
+            "a 2-point polygon must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate"]);
+    }
+
+    /// POSITIVE control — a genuine triangle must still compile, with its
+    /// points untouched. These are the same coordinates the golden
+    /// characterization test uses, so this also guards against over-rejection
+    /// moving that snapshot.
+    #[test]
+    fn compile_geometry_op_polygon_profile_genuine_triangle_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.0, 0.005, 0.01]),
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::PolygonProfile { points }) => {
+                assert_eq!(points, vec![[0.0, 0.0], [0.01, 0.0], [0.005, 0.01]]);
+            }
+            other => panic!(
+                "a non-degenerate triangle must still compile, got: {:?}",
+                other
+            ),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// POSITIVE control — a CLOCKWISE ring has a NEGATIVE signed area and must
+    /// still compile. The check is on `abs()`, not on sign: winding order is
+    /// not this gate's business (task 5218 normalises it downstream).
+    #[test]
+    fn compile_geometry_op_polygon_profile_clockwise_triangle_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.005, 0.01, 0.01, 0.0]),
+        );
+        assert!(
+            result.is_ok(),
+            "a clockwise (negative signed area) ring must still compile, got: {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    // ── DEGENERATE_RING_AREA_TOLERANCE is load-bearing, so pin it ───────────
+    //
+    // Every degenerate case above has a signed area of EXACTLY 0.0 (collinear,
+    // identical, 2-point), and the smallest accepted ring above has area 5e-5.
+    // That leaves the whole open interval (0, 1e-4) passing the suite unchanged
+    // — so an accidental widening of the constant to, say, 1e-6, which would
+    // start silently rejecting legitimately small profiles, would ship green.
+    //
+    // Two DIFFERENT guards close that, and it is worth being precise about
+    // which does what, because the obvious reading is wrong. The two boundary
+    // tests below derive their rings FROM the constant (0.5x and 2x), so they
+    // MOVE WITH IT: they do NOT catch a retune on their own. What they pin is
+    // that the gate honours whatever value the constant holds, with the right
+    // sense and scale — verified by mutation: widening the comparison to
+    // `< TOLERANCE * 4.0` fails the 2x test, and halving the shoelace result
+    // fails the 0.5x test. The ABSOLUTE magnitude is pinned separately, by
+    // `degenerate_ring_area_tolerance_matches_mesher_gate`, which compares
+    // against the mesher's own literal — also verified by mutation: setting the
+    // constant to 1e-6 fails exactly that test and no other.
+
+    /// Helper: coordinate args for a right triangle with the requested shoelace
+    /// signed area, in SI m².
+    ///
+    /// The ring `[(0,0), (b,0), (0,h)]` has shoelace sum `b*h`, hence signed
+    /// area `0.5*b*h`. Fixing `h` and solving `b = 2*area/h` lets a caller ask
+    /// for an area expressed as a multiple of `DEGENERATE_RING_AREA_TOLERANCE`,
+    /// so these tests keep straddling the threshold if it is ever retuned —
+    /// which hardcoded coordinates would not.
+    fn triangle_args_with_area(area: f64) -> Vec<(String, reify_ir::CompiledExpr)> {
+        // 0.1 µm — a plausible-if-tiny modelling length, and far from f64
+        // subnormal territory, so `2.0 * area / h` stays exact to within an ulp.
+        let h = 1e-7_f64;
+        let b = 2.0 * area / h;
+        degenerate_coord_args(&[0.0, 0.0, b, 0.0, 0.0, h])
+    }
+
+    /// A ring with |signed area| BELOW the tolerance is degenerate and rejected.
+    /// Half the tolerance, not one ulp below it: the point is to pin the
+    /// constant's magnitude, and a 2x margin keeps the test itself immune to
+    /// float noise in the shoelace sum.
+    #[test]
+    fn compile_geometry_op_polygon_profile_area_just_below_tolerance_returns_err() {
+        let target = DEGENERATE_RING_AREA_TOLERANCE * 0.5;
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            triangle_args_with_area(target),
+        );
+        assert!(
+            result.is_err(),
+            "a ring of area {:e} (half of DEGENERATE_RING_AREA_TOLERANCE = {:e}) must be \
+             rejected as degenerate, got: {:?}",
+            target,
+            DEGENERATE_RING_AREA_TOLERANCE,
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate"]);
+    }
+
+    /// The mirror image: |signed area| ABOVE the tolerance must compile
+    /// untouched. This is the half that guards the OVER-rejection direction —
+    /// a gate that discards legitimate small geometry — which every other
+    /// polygon test here leaves unconstrained, since the next-smallest accepted
+    /// ring in the suite has an area nine orders of magnitude larger.
+    #[test]
+    fn compile_geometry_op_polygon_profile_area_just_above_tolerance_returns_ok() {
+        let target = DEGENERATE_RING_AREA_TOLERANCE * 2.0;
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            triangle_args_with_area(target),
+        );
+        assert!(
+            result.is_ok(),
+            "a ring of area {:e} (twice DEGENERATE_RING_AREA_TOLERANCE = {:e}) is small but \
+             valid and must still compile, got: {:?}",
+            target,
+            DEGENERATE_RING_AREA_TOLERANCE,
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an accepted ring must be silent, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Resolve this crate's manifest dir, preferring the RUNTIME
+    /// `CARGO_MANIFEST_DIR` over the compile-time `env!()` bake.
+    ///
+    /// The bake goes stale when a seeded warm-lane `target/` is reused from a
+    /// since-deleted worktree — `CARGO_MANIFEST_DIR` is not part of cargo's
+    /// fingerprint, so a content-identical rebuild is never triggered. Same
+    /// hazard and same fix as `resolve_manifest_dir` in
+    /// `crates/reify-ast/tests/dag_invariant.rs` (esc-4906-57).
+    fn eval_crate_manifest_dir() -> String {
+        std::env::var("CARGO_MANIFEST_DIR")
+            .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
+    }
+
+    /// STRUCTURAL PARITY GUARD — the local tolerance must equal the mesher's.
+    ///
+    /// `DEGENERATE_RING_AREA_TOLERANCE` is documented as a strict pre-image of
+    /// the threshold `validate_boundary` (`reify-solver-elastic/src/mesher.rs`)
+    /// applies to a sampled ring, and that relationship only holds while the two
+    /// values are equal.
+    ///
+    /// HALF of the original duplication is now gone: task 5218 promoted
+    /// `ring_signed_area_2d` to `pub` and re-exported it at that crate's root,
+    /// so `profile_polygon` calls the SHARED formula rather than a copy. The
+    /// THRESHOLD did not come with it — over there it is still an inline
+    /// `1e-14` literal inside the private `validate_boundary`, so there is
+    /// nothing to import and the local `const` remains.
+    ///
+    /// So that half of the parity is asserted from the outside: read the
+    /// mesher's source and compare the literals. That makes drift over there
+    /// fail HERE, loudly, instead of quietly dissolving the pre-image claim.
+    /// The proper fix is to promote the threshold to a `pub const` beside the
+    /// function and delete this one; that edits a crate this task holds no lock
+    /// on, and is filed as follow-up.
+    #[test]
+    fn degenerate_ring_area_tolerance_matches_mesher_gate() {
+        let mesher_path = std::path::Path::new(&eval_crate_manifest_dir())
+            .join("../reify-solver-elastic/src/mesher.rs");
+        let src = std::fs::read_to_string(&mesher_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read {} for the tolerance parity check: {}",
+                mesher_path.display(),
+                e
+            )
+        });
+
+        // `validate_boundary` gates both the outer ring and each hole with
+        // `ring_signed_area_2d(..).abs() < <literal>`. Collect every such
+        // literal; each must equal our copy. The `pub fn` DEFINITION line also
+        // contains `ring_signed_area_2d(` but no `.abs() < `, so `split_once`
+        // filters it out rather than mis-parsing it.
+        const NEEDLE: &str = ".abs() < ";
+        let thresholds: Vec<&str> = src
+            .lines()
+            .filter(|line| line.contains("ring_signed_area_2d("))
+            .filter_map(|line| line.split_once(NEEDLE))
+            .map(|(_, tail)| {
+                tail.trim_start()
+                    .split(|c: char| c.is_whitespace() || c == '{')
+                    .next()
+                    .unwrap_or("")
+            })
+            .collect();
+
+        assert!(
+            thresholds.len() >= 2,
+            "expected at least 2 `ring_signed_area_2d(..).abs() < <lit>` gates in {} (outer ring \
+             + holes), found {:?}. If `validate_boundary` was refactored — e.g. the threshold \
+             lifted to a named const, or the comparison reformatted across lines — this guard can \
+             no longer see it: re-point it, or better, make the const `pub` and import it here so \
+             the parity becomes structural.",
+            mesher_path.display(),
+            thresholds
+        );
+
+        for raw in &thresholds {
+            let parsed: f64 = raw.parse().unwrap_or_else(|e| {
+                panic!(
+                    "could not parse the mesher's degenerate-ring threshold {:?} as f64: {}",
+                    raw, e
+                )
+            });
+            assert_eq!(
+                parsed, DEGENERATE_RING_AREA_TOLERANCE,
+                "the mesher's degenerate-ring threshold ({:e}) no longer equals \
+                 DEGENERATE_RING_AREA_TOLERANCE ({:e}) in geometry_ops.rs. The build-time polygon \
+                 gate is only a strict PRE-IMAGE of `validate_boundary` while these are equal — \
+                 if they diverge, a ring this crate accepts can be rejected downstream (or vice \
+                 versa) with no diagnostic explaining why. Update both, together.",
+                parsed, DEGENERATE_RING_AREA_TOLERANCE
+            );
+        }
+    }
+
+    // ── Non-finite dimensions: owned by the LENGTH gate, pinned from here ───
+    //
+    // A NaN dimension is a strictly WORSE instance of the same defect class as
+    // a negative one, and it slips BOTH gates that would otherwise catch it:
+    // `NAN <= 0.0` is false, so the sign check would let it through, and
+    // `NAN.abs() < DEGENERATE_RING_AREA_TOLERANCE` is also false, so
+    // `validate_boundary` would let it through too — a NaN would reach the
+    // mesher with no diagnostic anywhere, whereas a negative dimension at least
+    // produces valid-but-inverted geometry.
+    //
+    // These three tests originally drove a dedicated non-finite arm on this
+    // task's helper. That arm is now DEAD CODE and was dropped: Contract C's
+    // `accept_length_value` classifies a non-finite LENGTH `Scalar` as
+    // `LengthArg::Invalid` with its own Warning, so `required_length_args`
+    // never returns one and the sign loop cannot see it. The tests are kept
+    // because the CLAIM they make is still exactly the claim that matters — a
+    // non-finite profile dimension is rejected at build time, distinctly from
+    // "not positive" — and keeping them means a future regression in either
+    // gate is caught here rather than in a mesher stack trace.
+    //
+    // Polygon is deliberately not covered: `accept_variadic_length_args` routes
+    // every vertex coordinate through the same `accept_length_value`.
+
+    #[test]
+    fn compile_geometry_op_rectangle_profile_nan_width_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Rectangle,
+            vec![
+                ("width".into(), literal_length(f64::NAN)),
+                ("height".into(), literal_length(0.05)),
+            ],
+        );
+        assert!(
+            result.is_err(),
+            "a NaN rectangle width must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["rectangle", "width", "non-finite"]);
+    }
+
+    #[test]
+    fn compile_geometry_op_circle_profile_infinite_radius_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Circle,
+            vec![("radius".into(), literal_length(f64::INFINITY))],
+        );
+        assert!(
+            result.is_err(),
+            "an infinite circle radius must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["circle", "radius", "non-finite"]);
+    }
+
+    /// NEGATIVE infinity is non-finite AND `<= 0.0`. The LENGTH gate runs
+    /// FIRST, so it must be reported as non-finite — the accurate description —
+    /// and NOT as merely non-positive. This is the ordering assertion that the
+    /// dropped non-finite arm used to make internally; it now pins the ordering
+    /// BETWEEN the two gates instead, which is the stronger claim.
+    #[test]
+    fn compile_geometry_op_ellipse_profile_neg_infinite_semi_minor_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Ellipse,
+            ellipse_args(literal_length(0.02), literal_length(f64::NEG_INFINITY)),
+        );
+        assert!(
+            result.is_err(),
+            "a -inf semi_minor must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["ellipse", "semi_minor", "non-finite"]);
+        assert!(
+            !diagnostics[0].message.contains("not positive"),
+            "-inf must be reported as non-finite, not mislabelled non-positive, got: {:?}",
+            diagnostics[0].message
         );
     }

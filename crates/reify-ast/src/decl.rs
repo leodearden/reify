@@ -553,6 +553,41 @@ pub fn find_named_member_span<'a>(
 /// Refusing hands the caller (the `set_parameter` path) a clean rejection to
 /// surface as a structured error, which is what PRD §7 B7 requires.
 pub fn find_param_default_span(members: &[MemberDecl], name: &str) -> Option<SourceSpan> {
+    find_param_default_expr(members, name).map(|e| e.span)
+}
+
+/// Resolve a param's DEFAULT EXPRESSION within a member list — the
+/// `&Expr`-returning primitive [`find_param_default_span`] is a thin
+/// `.map(|e| e.span)` over.
+///
+/// Same contract, same refusal rules, ONE traversal: a caller that needs the
+/// span gets it from here, and a caller that needs to inspect the
+/// [`ExprKind`](crate::ast::ExprKind) before acting on the span gets that from
+/// here too. Both readings therefore agree by construction, which is the point
+/// — the asymmetry note on [`walk_specialization_scope_members`] records that
+/// this module's member walkers drift when the same question is answered by two
+/// hand-rolled recursion sets, and a second walk that recovered the expression
+/// would be exactly that drift.
+///
+/// The caller that motivated it is `EngineSession::apply_param_to_source`
+/// (INV-GUI-3 source write-back, task 5096 γ): it may splice over a
+/// `NumberLiteral`/`QuantityLiteral`/`StringLiteral`/`BoolLiteral` default but
+/// must REFUSE a `BinOp`, an `Auto`, a call or an identifier, because
+/// overwriting one of those destroys a user-authored parametric relationship or
+/// a solver-determined value. That literal-ness gate lives with the splice, in
+/// the GUI engine — this helper only hands over the expression it needs to make
+/// the decision, and deliberately does not narrow its own contract to literals:
+/// a walker that answered "where is the default, if it is one of four kinds"
+/// would be a different question, and the kinds it admits are the GUI's policy
+/// rather than the AST's.
+///
+/// [`find_param_default_span`] is a `.map(|e| e.span)` wrapper over this and,
+/// as of γ, has no in-tree caller beyond the tests and the reify-ast API-surface
+/// guard: `apply_param_to_source` needs the expression, so it calls this. The
+/// wrapper stays because it is α's published span API (task #5094) for the
+/// consumers still to come — δ's MCP tools and η's re-homed slider, which want
+/// a span without borrowing the AST — not because anything calls it today.
+pub fn find_param_default_expr<'a>(members: &'a [MemberDecl], name: &str) -> Option<&'a Expr> {
     let mut candidates = ParamDefaultCandidates::default();
     collect_param_default_candidates(members, name, 0, &mut candidates);
     if candidates.count == 1 {
@@ -800,17 +835,23 @@ fn find_named_member_span_depth<'a>(
 /// Accumulator for [`collect_param_default_candidates`].
 ///
 /// `count` is how many matching `Param` members the traversal reached;
-/// `first_default` is the default span of the FIRST one (already `None` when
-/// that param has no default). [`find_param_default_span`] yields
+/// `first_default` is the default EXPRESSION of the FIRST one (already `None`
+/// when that param has no default). [`find_param_default_expr`] yields
 /// `first_default` only when `count == 1`, so a multiply-declared name is
 /// refused rather than resolved to whichever branch happened to come first.
+///
+/// Borrows the `&Expr` out of the walked member list rather than copying its
+/// `SourceSpan`, so the one traversal serves both the span-only caller
+/// ([`find_param_default_span`]) and the caller that must inspect the
+/// expression kind before splicing over the span.
 #[derive(Default)]
-struct ParamDefaultCandidates {
+struct ParamDefaultCandidates<'a> {
     count: usize,
-    first_default: Option<SourceSpan>,
+    first_default: Option<&'a Expr>,
 }
 
-/// Depth-bounded worker for [`find_param_default_span`].
+/// Depth-bounded worker for [`find_param_default_expr`] (and therefore, via its
+/// `.map(|e| e.span)` delegation, for [`find_param_default_span`]).
 ///
 /// A thin visitor over [`walk_members`] carrying
 /// [`MemberRecursionSet::PARAM_DEFAULT_LOOKUP`], so the recursion set is
@@ -858,11 +899,11 @@ struct ParamDefaultCandidates {
 /// overrides of a child instance, not the child's own param declarations, so a
 /// default span found there would belong to a different entity than the caller's
 /// cell_id names — splicing into it would rewrite the wrong declaration.
-fn collect_param_default_candidates(
-    members: &[MemberDecl],
+fn collect_param_default_candidates<'a>(
+    members: &'a [MemberDecl],
     name: &str,
     depth: usize,
-    out: &mut ParamDefaultCandidates,
+    out: &mut ParamDefaultCandidates<'a>,
 ) {
     // The depth bound lives in `walk_members`, which returns `Continue` at the
     // bound: a subtree cut off there contributes ZERO candidates, so a param
@@ -887,7 +928,7 @@ fn collect_param_default_candidates(
             {
                 out.count += 1;
                 if out.count == 1 {
-                    out.first_default = p.default.as_ref().map(|e| e.span);
+                    out.first_default = p.default.as_ref();
                 }
                 if out.count > 1 {
                     return ControlFlow::Break(());
@@ -1775,8 +1816,9 @@ mod member_test_fixtures {
 
 #[cfg(test)]
 mod find_param_default_span_tests {
-    use super::find_param_default_span;
     use super::member_test_fixtures::*;
+    use super::{find_param_default_expr, find_param_default_span};
+    use crate::ast::ExprKind;
     use reify_core::SourceSpan;
 
     #[test]
@@ -1799,6 +1841,31 @@ mod find_param_default_span_tests {
             found,
             SourceSpan::new(0, 30),
             "must return the default EXPRESSION range, never the whole param decl"
+        );
+    }
+
+    #[test]
+    fn param_with_default_returns_the_default_expression_itself() {
+        // The `&Expr`-returning primitive `find_param_default_span` delegates to
+        // (task 5096 γ, INV-GUI-3 write-back): `apply_param_to_source` must read
+        // the default's `ExprKind` — to refuse splicing over a `BinOp` or an
+        // `Auto` — from the SAME traversal that produced the span it would
+        // splice into, or the two readings could disagree about which
+        // declaration they describe.
+        let members = vec![param("width", (0, 30), Some((22, 27)))];
+        let expr = find_param_default_expr(&members, "width").expect("param has a default");
+        assert_eq!(
+            expr.kind,
+            ExprKind::NumberLiteral {
+                value: 80.0,
+                is_real: false,
+            },
+            "must hand back the default EXPRESSION, not merely locate its range"
+        );
+        assert_eq!(
+            expr.span,
+            SourceSpan::new(22, 27),
+            "the borrowed expression's own span is the default range"
         );
     }
 

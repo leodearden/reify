@@ -175,6 +175,18 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 }
 
 /// Format a dimension as a human-readable unit string.
+///
+/// UNIT CONTRACT (OUTBOUND). The string returned here is the SI-COHERENT unit
+/// of the cell's `DimensionVector` - metres, kilograms, and for angles RADIANS.
+/// It is therefore also the unit the paired INBOUND `set_parameter` will assume
+/// for a bare number, since that path installs the client's `f64` as the cell's
+/// SI magnitude with no conversion.
+///
+/// This field is the client's ONLY channel for that information: the
+/// `reify_set_parameter` schema tells a client that units are SI, and this
+/// tells it WHICH SI unit a given parameter takes.
+///
+/// Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4).
 fn dimension_unit(ty: &reify_core::ty::Type) -> String {
     match ty {
         reify_core::ty::Type::Scalar { dimension } => format!("{}", dimension),
@@ -520,7 +532,36 @@ impl ReifyToolContext for CliToolContext {
         let ty = cell_type
             .ok_or_else(|| ToolError::InvalidParams(format!("cell not found: {}", cell_id_obj)))?;
 
-        // Construct the appropriate Value based on the cell's type
+        // Construct the appropriate Value based on the cell's type.
+        //
+        // UNIT CONTRACT (INBOUND). The `f64` parsed above is installed VERBATIM
+        // as the cell's SI-coherent magnitude: no unit suffix is parsed, no
+        // conversion is applied, and the cell's own `dimension` is attached
+        // unchanged. For an Angle cell that means the client's number is SI
+        // RADIANS - the rad = 1 SI-coherence that is numerically right by
+        // construction, and that INV-AD-4 requires a boundary to DECLARE rather
+        // than merely rely on.
+        //
+        // The client-facing half of this declaration is the `reify_set_parameter`
+        // schema text in `crates/reify-mcp/src/tools/write.rs`, which is what an
+        // MCP client actually sees over `tools/list`.
+        //
+        // WHAT IS AND IS NOT MACHINE-CHECKED, stated plainly so nobody infers
+        // coverage that does not exist. The BEHAVIOUR above - verbatim SI
+        // install, the cell's own `DimensionVector` attached unchanged, and the
+        // paired `unit` on both `SetParamResult` and `get_parameters` - is
+        // pinned by `set_parameter_installs_a_bare_number_as_si_radians_on_an_angle_cell`
+        // in this file's own `mod tests`. The schema PROSE in `write.rs` is
+        // deliberately NOT pinned: an assertion over the wording of a string
+        // literal is a documentation meta-test, green for any sentence
+        // containing the right tokens and red for any semantically identical
+        // rewording. Keeping the schema text in step with this code is
+        // therefore a REVIEW-TIME obligation, not a machine-checked one.
+        //
+        // The paired OUTBOUND declaration is the `unit` field built by
+        // `dimension_unit` in `get_parameters` above.
+        //
+        // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4).
         let new_value = match &ty {
             reify_core::ty::Type::Scalar { dimension } if !dimension.is_dimensionless() => {
                 Value::Scalar { si_value: numeric_val, dimension: *dimension }
@@ -691,6 +732,41 @@ mod tests {
     /// test and the `update_source_invalid_content_does_not_construct_new_engine`
     /// regression test are guaranteed to exercise the exact same input string.
     const INVALID_PARSE_INPUT: &str = "{";
+
+    /// Path the inbound-unit pin below stages `ANGLE_PARAM_SOURCE` under.
+    ///
+    /// Deliberately NOT a real file: nothing exists at this path, and nothing
+    /// needs to.  `update_source` falls back to `PathBuf::from` when
+    /// `canonicalize` fails, so the un-canonicalized string becomes the
+    /// files-map key and the `angle_pin_inline` stem becomes the module name.
+    /// Keeping it synthetic means the `dirty` entry that pin stages can never
+    /// alias a tracked fixture on disk.
+    const ANGLE_PIN_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/angle_pin_inline.ri"
+    );
+
+    /// Minimal source carrying BOTH an `Angle` and a `Length` param, for the
+    /// inbound-unit pin below.  Both dimensions are present deliberately: the
+    /// `Length` half is the discriminating control, without which an
+    /// implementation that attached `ANGLE` to every dimensioned cell would
+    /// still be green.
+    ///
+    /// Kept inline rather than as a file on disk, and paired with
+    /// `ANGLE_PIN_PATH` rather than with `BRACKET_PATH`.  `update_source`'s own
+    /// semantics are what make that work: it canonicalizes its path argument
+    /// only to key the files map, derives the module name from the path's file
+    /// stem, and parses/compiles the CONTENT string — it never reads the path
+    /// off disk.  So a path that does not exist is sufficient, and is strictly
+    /// safer than borrowing a tracked fixture's: pointing at `bracket.ri` would
+    /// leave this content staged `dirty` under that key, one `save_file` call
+    /// away from overwriting the fixture every sibling test reads.
+    const ANGLE_PARAM_SOURCE: &str = r#"
+structure AnglePin {
+    param theta : Angle  = 30deg
+    param width : Length = 80mm
+}
+"#;
 
     /// Returns a fresh `CliToolContext` rooted at the default `tests/fixtures`
     /// directory.  Use this in unit tests that don't need a custom `project_dir`;
@@ -1825,6 +1901,178 @@ mod tests {
             diagnostics.is_empty(),
             "get_diagnostics() must be empty after opening a parse-failing .ri: \
              compiled must be cleared to prevent stale-span resolution; got {diagnostics:?}"
+        );
+    }
+
+    // === set_parameter: the INBOUND unit contract (task #6184) ===
+
+    /// Behavioural pin for `set_parameter`'s VERBATIM-SI install (#6184;
+    /// docs/prds/v0_6/angle-dimension-completion.md, INV-AD-4).
+    ///
+    /// WHAT IS PINNED — three properties, every one of them read back off real
+    /// engine state rather than off prose:
+    ///   1. the bare `f64` a client sends is installed UNCHANGED as the cell's
+    ///      SI-coherent magnitude, with the cell's own `DimensionVector`
+    ///      attached — so an `Angle` cell receives SI RADIANS;
+    ///   2. the paired OUTBOUND `unit` reads `rad` on both `SetParamResult`
+    ///      and `get_parameters` — that field is the client's only channel for
+    ///      *which* SI unit a given parameter takes, so the inbound contract is
+    ///      undiscoverable unless it says `rad`.  NOTE both surfaces are fed by
+    ///      the SAME `dimension_unit` helper, so their agreement is true by
+    ///      construction and the two assertions are NOT independent channels
+    ///      cross-checking each other.  What the pair buys is that the shared
+    ///      formatter's output for `DimensionVector::ANGLE` is fixed at both
+    ///      places a client can observe it — a rename there breaks the wire
+    ///      contract on both surfaces at once, and this catches it;
+    ///   3. a `Length` control, so the pin cannot pass on an implementation
+    ///      that hardcodes one dimension for everything — it is what proves
+    ///      `dimension_unit` is dimension-DRIVEN rather than returning a
+    ///      constant.
+    ///
+    /// POSTURE — a REGRESSION PIN, GREEN ON ARRIVAL, not a RED→GREEN cycle.
+    /// #6184 is declarations-only by charter and changes no behaviour, so the
+    /// verbatim-SI install already works; manufacturing a RED here would mean
+    /// introducing the very defect the task forbids.  This is the same posture
+    /// the two STEP unit pins in `reify-kernel-occt` document for themselves,
+    /// and that task 6186's export e2e documents for itself.  If this test ever
+    /// goes red the defect is REAL — someone applied a conversion in the
+    /// `Value::Scalar` arm of `set_parameter` above — and must be debugged, not
+    /// relaxed.
+    ///
+    /// WHY IT LIVES HERE and not beside the schema text it corresponds to: the
+    /// contract is implemented in `CliToolContext::set_parameter` in this file,
+    /// while the client-facing DECLARATION of it is a string literal in
+    /// `crates/reify-mcp/src/tools/write.rs`.  A test that reads that literal
+    /// back through the tool registry never reaches this code path at all (the
+    /// reify-mcp tests drive `MockToolContext`), so a degree conversion
+    /// introduced here would leave the schema text a lie while such a test
+    /// stayed green.  This one goes red instead.
+    #[test]
+    fn set_parameter_installs_a_bare_number_as_si_radians_on_an_angle_cell() {
+        use reify_core::dimension::DimensionVector;
+
+        let ctx = fresh_ctx();
+
+        // Drive the inline fixture through the real pipeline.  Assert the
+        // compile is clean FIRST: a fixture that stopped compiling would
+        // otherwise degrade every assertion below into a silent no-op.
+        let update = ctx
+            .update_source(ANGLE_PIN_PATH, ANGLE_PARAM_SOURCE)
+            .expect("update_source should return Ok for ANGLE_PARAM_SOURCE");
+        assert!(
+            update.success,
+            "ANGLE_PARAM_SOURCE must parse; got {update:?}"
+        );
+        assert_eq!(
+            update.diagnostics_count, 0,
+            "ANGLE_PARAM_SOURCE must compile cleanly — a fixture that started \
+             emitting diagnostics may no longer declare the cells this pin reads; \
+             got {update:?}"
+        );
+
+        // Snapshot reader, so the three reads below are one line each and the
+        // `lock_state` guard is dropped before the next `set_parameter` call
+        // rather than being held across an assertion block.
+        let read_cell = |member: &str| -> Value {
+            let state = ctx.lock_state();
+            let snapshot = state
+                .engine
+                .as_ref()
+                .and_then(|e| e.snapshot())
+                .expect("engine must hold a snapshot after update_source + set_parameter");
+            let (value, _) = snapshot
+                .values
+                .get(&reify_core::ValueCellId::new("AnglePin", member))
+                .unwrap_or_else(|| panic!("AnglePin.{member} must be present in the snapshot"));
+            value.clone()
+        };
+
+        // (1) VERBATIM SI INSTALL — the core claim.  A magnitude in radians,
+        // sent as a bare number with no unit suffix.  It is deliberately
+        // arbitrary and close to no notable constant, so a green result cannot
+        // come from a coincidence — and `clippy::approx_constant` stays quiet,
+        // which a π/2-shaped literal would not.
+        let set_theta = ctx
+            .set_parameter("AnglePin.theta", "1.2345")
+            .expect("set_parameter on an Angle cell should succeed");
+
+        match read_cell("theta") {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                // Exact equality, not an epsilon: the contract is that NO
+                // arithmetic is applied at all.  A rad→deg conversion would
+                // give 70.7316…, a deg→rad one 0.0215…; both are orders of
+                // magnitude away, so an epsilon here would only weaken the
+                // claim without buying any tolerance the contract allows.
+                assert_eq!(
+                    si_value, 1.2345_f64,
+                    "set_parameter must install the client's f64 verbatim as the \
+                     cell's SI magnitude — no conversion, no unit parsing"
+                );
+                assert_eq!(
+                    dimension,
+                    DimensionVector::ANGLE,
+                    "the cell's own dimension must be attached unchanged"
+                );
+            }
+            other => panic!(
+                "AnglePin.theta must be a dimensioned Value::Scalar after \
+                 set_parameter; got {other:?}"
+            ),
+        }
+
+        // (3a) DISCRIMINATION control: the Length cell must still carry
+        // LENGTH, not ANGLE.
+        let width_before = read_cell("width");
+        assert!(
+            matches!(
+                &width_before,
+                Value::Scalar { dimension, .. } if *dimension == DimensionVector::LENGTH
+            ),
+            "AnglePin.width must carry LENGTH, not the Angle cell's dimension; \
+             got {width_before:?}"
+        );
+
+        // (2) OUTBOUND `unit` — both surfaces the shared `dimension_unit`
+        // formatter reaches.
+        assert_eq!(
+            set_theta.unit, "rad",
+            "SetParamResult.unit must name the SI unit the inbound value was \
+             interpreted in; DimensionVector::ANGLE displays as `rad`"
+        );
+        let params = ctx
+            .get_parameters()
+            .expect("get_parameters should succeed after update_source");
+        let theta_info = params
+            .iter()
+            .find(|p| p.cell_id == "AnglePin.theta")
+            .expect("get_parameters must list AnglePin.theta");
+        assert_eq!(
+            theta_info.unit, "rad",
+            "get_parameters must report the same SI unit set_parameter assumed — \
+             this pairing is what makes the inbound contract discoverable"
+        );
+
+        // (3b) DISCRIMINATION, outbound half: the Length cell round-trips as
+        // metres, so neither surface can be passing by hardcoding one answer.
+        let set_width = ctx
+            .set_parameter("AnglePin.width", "0.12")
+            .expect("set_parameter on a Length cell should succeed");
+        assert_eq!(
+            set_width.unit, "m",
+            "a Length cell's SI unit is metres, not the Angle cell's radians"
+        );
+        let width_after = read_cell("width");
+        assert!(
+            matches!(
+                &width_after,
+                Value::Scalar { si_value, dimension }
+                    if *si_value == 0.12_f64 && *dimension == DimensionVector::LENGTH
+            ),
+            "a Length cell must take the same verbatim-SI install (0.12 m, \
+             LENGTH); got {width_after:?}"
         );
     }
 }

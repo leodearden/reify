@@ -24,6 +24,19 @@
 #   Add a row when a new verify-pipeline artifact gains infra drift-guards.
 #   The infra-test-glob is self-maintaining for additions: a future test_verify_*.sh
 #   is auto-covered without needing a map edit.
+#   A row here is a FIRST-CLASS registration, not a lesser one (task 6857):
+#   `bash scripts/verify-pipeline-guard.sh is-registered <path>` exits 0 for any
+#   active-row KEY below, and that is the predicate
+#   tests/infra/test_verify_pipeline_guard.sh's ANTI-DRIFT sweep asserts — so a
+#   row here satisfies the sweep on its own, with no scripts/doc-sync-paths.txt
+#   entry and no full --scope all gate. Prefer it whenever an edit should select
+#   the artifact's guarding test rather than route the whole diff to that gate.
+#   That query is NOT a registry-membership oracle, though: it also answers 0
+#   for the guard's static load-bearing set and for ANY tests/infra/*.sh path,
+#   so an exit 0 does not imply a row below. Matched sets: the is-registered
+#   entry in scripts/verify-pipeline-guard.sh's header.
+#   ACTIVE-ROW RULE, mirrored by both consumers: BOTH fields must be non-empty.
+#   A one-field row selects no test, so it registers nothing.
 #
 # Example (add future rows below):
 # scripts/land.sh    tests/infra/test_land_*.sh
@@ -367,3 +380,40 @@ docs/reify-language-spec.tombstones  tests/infra/test_spec_anchor_lint.sh
 docs/notes/spec-anchor-contract.md   tests/infra/test_spec_anchor_lint.sh
 scripts/spec-anchor-lint.sh          tests/infra/test_spec_anchor_lint.sh
 tests/infra/test_spec_anchor_lint.sh tests/infra/test_spec_anchor_lint.sh
+
+# Task 6427: tests/infra/govtest_slice_reaper_lib.sh (the private per-run
+# systemd-slice lifecycle lib, task 6386) had NO row here, so a task-scope
+# --scope branch edit to the lib alone selected zero infra tests and its
+# guards never ran on the branch -- coverage was recovered only incidentally
+# at merge, because 6386's own diff also touches test_cpu_governed_exec_hostexcl.sh
+# (itself full-gate load-bearing), not because of anything in this map. A
+# future task touching only the lib would land with its guards unrun. The
+# row below routes it to its own dedicated hermetic guard.
+#
+# Deliberately NOT also routed to test_cpu_load_governance.sh, its other
+# consumer: that test is host-exclusive (run-all-classification.manifest:60)
+# and burns real CPU BY DEFAULT, whereas this map's selective-infra emitter
+# (scripts/verify.sh:2908-2912) execs selected tests inline with no
+# serialization, no Lane-X flock and only a 10m timeout, concurrently with
+# every other lane on the shared host -- none of run_all.sh's host-exclusive
+# safeguards apply here. The lib's wiring into that consumer is already
+# proven hermetically and sub-second by Block F of
+# tests/infra/test_govtest_slice_reaper.sh (~line 714, driving it under
+# REIFY_GOVTEST_TEST_MODE=1 + REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1), which the
+# row below already selects.
+tests/infra/govtest_slice_reaper_lib.sh    tests/infra/test_govtest_slice_reaper.sh
+
+# Task 5870: the git rerere guard (shared .git/rr-cache is a COMMON path across
+# every warm lane, so one lane's resolution can be auto-applied and auto-staged
+# into another's merge). Mirrors the scripts/warm-lane-audit.sh row above — a
+# task-scope verify runs the guard's hermetic suite whenever the SUT changes.
+scripts/git-rerere-guard.sh    tests/infra/test_git_rerere_guard.sh
+# ...and setup-dev.sh, because the suite's (wiring) block asserts ON THAT FILE:
+# that it carries an uncommented call to the guard, and that the subcommand is
+# `arm` (a bare `check` would report the drift while leaving the fleet armed).
+# Without this row a task-scope verify that edits only setup-dev.sh — dropping or
+# commenting out the invocation, which is exactly how the guard becomes dead code
+# — never selects the suite that would catch it. Multiple rows per artifact are
+# the established pattern (scripts/warm-lane-audit.sh appears twice above, and
+# scripts/setup-dev.sh already has an OCCT row).
+scripts/setup-dev.sh           tests/infra/test_git_rerere_guard.sh

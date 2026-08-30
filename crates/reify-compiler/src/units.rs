@@ -36,6 +36,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "shell_open",
     "thicken",
     "offset_solid",
+    "offset_surface",
     "offset_curve",
     "draft",
     "chamfer",
@@ -606,6 +607,9 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// fn frame_at(o: Point, x: Direction, z: Direction)-> Frame(3)
 /// fn plane_xy(δ: Length)                           -> Plane   (also plane_xz/plane_yz)
 /// fn axis_x(o: Point3)                             -> Axis    (also axis_y/axis_z)
+/// fn bbox(min: Point3<Length>, max: Point3<Length>)-> BoundingBox
+/// fn bbox_size(bb: BoundingBox)                    -> Vector3<Length>
+/// fn bbox_center(bb: BoundingBox)                  -> Point3<Length>
 /// ```
 ///
 /// Each name resolves to its datum codomain:
@@ -615,6 +619,22 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// - `axis_x` / `axis_y` / `axis_z`        → `Type::Axis`
 /// - `frame_at`                            → `Type::Frame(3)`
 /// - `offset`                              → `Type::Plane` ONLY at arity 2 (see below)
+/// - `bbox`                                → `Type::BoundingBox`
+/// - `bbox_size`                           → `Vector3<Length>`
+/// - `bbox_center`                         → `Point3<Length>`
+///
+/// **BoundingBox is Length-valued (task 6081).** The three `bbox*` names are
+/// the BoundingBox constructor and its two accessors. Their quantity slot is
+/// fixed at LENGTH by the task-6081 ruling — a bounding box is spatial by
+/// construction — so unlike `point3`/`vec3` (whose quantity is
+/// argument-DEPENDENT and therefore lives in `math_signatures`) they fit this
+/// arity-blind table. The monomorphism is load-bearing in both directions:
+/// `reify_stdlib::geometry` rejects non-`Length` corners at `bbox` and emits
+/// `Length` components unconditionally from both accessors, so these rows
+/// agree with the runtime rather than over-claiming a quantity-polymorphic
+/// value. Before this task all three fell through to `expr.rs`'s SILENT
+/// first-arg fallback, which typed `bbox(p, p)` as its argument's
+/// `Point3<Length>` and both accessors as their `BoundingBox` argument.
 ///
 /// **Neighbour audit (task 5344).** The six axis-aligned constructors
 /// `plane_xy`/`plane_xz`/`plane_yz` and `axis_x`/`axis_y`/`axis_z` — which this
@@ -689,6 +709,15 @@ pub(crate) fn datum_constructor_result_type(
         // only; arity-3 `offset(Plane, Plane, Length)` is γ's relation, claimed
         // by the earlier relation arm.
         "offset" if args.len() == 2 => Some(reify_core::Type::Plane),
+        // BoundingBox constructor + accessors (task 6081). Same vocabulary,
+        // same eval home (`reify_stdlib::geometry::eval_geometry`); arity-blind
+        // like every sibling except `offset`. The quantity slot is fixed at
+        // LENGTH by the task-6081 ruling — a bounding box is spatial by
+        // construction, and the eval side emits Length components
+        // unconditionally, so these monomorphic rows agree with the runtime.
+        "bbox" => Some(reify_core::Type::bounding_box()),
+        "bbox_size" => Some(reify_core::Type::vec3(reify_core::Type::length())),
+        "bbox_center" => Some(reify_core::Type::point3(reify_core::Type::length())),
         _ => None,
     }
 }
@@ -880,6 +909,36 @@ pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
 
 pub(crate) fn is_geometry_query(name: &str) -> bool {
     GEOMETRY_QUERY_NAMES.contains(&name)
+}
+
+/// The **whole-handle** geometry-query names: the subset of
+/// [`GEOMETRY_QUERY_NAMES`] whose eval-time dispatch resolves arg[0] against a
+/// realized kernel handle in `named_steps`
+/// (`reify_eval::geometry_ops::resolve_geometry_handle_arg` +
+/// `dispatch_geometry_query_call`, gated by the eval `is_geometry_query_call`
+/// family — `volume`/`area`/`centroid`/`bounding_box` with exactly one arg).
+///
+/// This is the exact name-set targeted by the compile-time inline-arg hoist
+/// (task 5345): a 1-arg query `Q(<inline geometry call>)` sitting in a value
+/// cell is desugared into a synthetic geometry let so the query routes through
+/// the identical handle-dispatch path as the hand-written let-bound form.
+///
+/// **Deliberately excluded** (out of scope for the 1-arg inline-arg hoist):
+/// - the multi-arg queries `distance` / `contains` / `intersects` /
+///   `geo_equiv` / `angle` / `max_deviation` (two geometry/vector operands), and
+/// - the non-whole-handle 1-arg queries `length` / `perimeter` / `curvature` /
+///   `normal` / `feature` (topology-selector / at-point / projection queries
+///   that eval does NOT resolve via `resolve_geometry_handle_arg`).
+///
+/// **Parity contract**: this slice MUST equal the eval `is_geometry_query_call`
+/// name-set and remain a subset of [`GEOMETRY_QUERY_NAMES`]. Both directions
+/// are pinned by
+/// `tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs`.
+pub const WHOLE_HANDLE_GEOMETRY_QUERY_NAMES: &[&str] =
+    &["volume", "area", "centroid", "bounding_box"];
+
+pub(crate) fn is_whole_handle_geometry_query(name: &str) -> bool {
+    WHOLE_HANDLE_GEOMETRY_QUERY_NAMES.contains(&name)
 }
 
 /// The complete set of stdlib **dynamics-query** helper names recognised by
@@ -1795,6 +1854,18 @@ mod tests {
     #[test]
     fn compile_geometry_offset_solid_recognized() {
         assert!(is_geometry_function("offset_solid"));
+    }
+
+    /// `offset_surface` (θ, task 4192) offsets a face along its normal by a
+    /// scalar distance (Skin mode of `BRepOffsetAPI_MakeOffsetShape`, distinct
+    /// from `offset_solid`'s `PerformBySimple` solid mode), producing a fresh
+    /// Surface. It must be recognised as a geometry-handle producer so the
+    /// compiler dispatches it through `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-6 adds "offset_surface" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_offset_surface_recognized() {
+        assert!(is_geometry_function("offset_surface"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"offset_surface"));
     }
 
     #[test]
@@ -5402,6 +5473,13 @@ mod tests {
             "axis_x",
             "axis_y",
             "axis_z",
+            // BoundingBox constructor/accessors (task 6081). This fixture is
+            // the family's ONLY membership record — the resolver has no
+            // `*_NAMES` slice const — so listing them here is what proves the
+            // three new names collide with no sibling family.
+            "bbox",
+            "bbox_size",
+            "bbox_center",
         ];
         for name in DATUM_NAMES {
             // Premise guard: each fixture entry really is claimed by the datum
@@ -5540,6 +5618,83 @@ mod tests {
         // `offset` arity gate, both sides — the construction-datum form is
         // arity 2; arity 3 is γ's `offset(Plane, Plane, Length) -> Relation`,
         // claimed by the earlier relation arm and NOT by this resolver.
+        assert_eq!(
+            datum_constructor_result_type("offset", &[length_arg(), length_arg()]),
+            Some(reify_core::Type::Plane),
+            "arity-2 offset must still resolve to Type::Plane"
+        );
+        assert_eq!(
+            datum_constructor_result_type("offset", &[length_arg(), length_arg(), length_arg()]),
+            None,
+            "arity-3 offset must still fall through to γ's relation arm"
+        );
+    }
+
+    // ── BoundingBox constructor/accessors (task 6081) ────────────────────────
+    //
+    // `bbox` / `bbox_size` / `bbox_center` appeared NOWHERE in reify-compiler
+    // before this task: they fell through the whole `expr.rs` `NoUserFunctions`
+    // ladder to the SILENT first-arg fallback, so `bbox(point3(0m,..), ..)`
+    // typed as `Point3<Length>` — its argument's type, not `BoundingBox` — and
+    // both accessors mirrored their `BoundingBox` argument identically. They
+    // are claimed here because they are the same shape as their neighbours
+    // above: pure kernel-free value-algebra constructors living in the very
+    // same `reify_stdlib::geometry::eval_geometry` match statement.
+    //
+    // The quantity slot is fixed at LENGTH by the task-6081 ruling: a bounding
+    // box is spatial by construction. That monomorphism is what makes these
+    // rows sound — the eval side emits Length components unconditionally.
+
+    #[test]
+    fn datum_constructor_result_type_bbox_is_bounding_box() {
+        assert_eq!(
+            datum_constructor_result_type("bbox", &[]),
+            Some(reify_core::Type::bounding_box())
+        );
+    }
+
+    #[test]
+    fn datum_constructor_result_type_bbox_size_is_vec3_length() {
+        assert_eq!(
+            datum_constructor_result_type("bbox_size", &[]),
+            Some(reify_core::Type::vec3(reify_core::Type::length()))
+        );
+    }
+
+    #[test]
+    fn datum_constructor_result_type_bbox_center_is_point3_length() {
+        assert_eq!(
+            datum_constructor_result_type("bbox_center", &[]),
+            Some(reify_core::Type::point3(reify_core::Type::length()))
+        );
+    }
+
+    /// Regression lock, mirroring
+    /// `datum_constructor_vocabulary_survives_the_neighbour_extension`:
+    /// extending the resolver with the three BoundingBox names must not
+    /// perturb the vocabulary it already claimed, and in particular must leave
+    /// `offset`'s arity-2 gate exactly as-is.
+    #[test]
+    fn datum_constructor_vocabulary_survives_the_bbox_extension() {
+        for name in ["midplane", "plane_through", "plane_xy"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[]),
+                Some(reify_core::Type::Plane),
+                "{name} must still resolve to Type::Plane"
+            );
+        }
+        for name in ["axis_through", "axis_x"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[]),
+                Some(reify_core::Type::Axis),
+                "{name} must still resolve to Type::Axis"
+            );
+        }
+        assert_eq!(
+            datum_constructor_result_type("frame_at", &[]),
+            Some(reify_core::Type::Frame(3)),
+            "frame_at must still resolve to Type::Frame(3)"
+        );
         assert_eq!(
             datum_constructor_result_type("offset", &[length_arg(), length_arg()]),
             Some(reify_core::Type::Plane),

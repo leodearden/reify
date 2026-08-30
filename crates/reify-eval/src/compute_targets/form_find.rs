@@ -265,7 +265,8 @@ fn build_result(solve: &FormFindSolve) -> Value {
         .iter()
         .map(|&p| super::point3_length(p))
         .collect();
-    // member_forces Nᵢ = qᵢ·Lᵢ are forces (N/m · m), so FORCE-dimensioned.
+    // FORCE via the q_ref ≡ 1 N/m gauge — see the "Dimensional bridge" paragraph
+    // in crates/reify-compiler/stdlib/tensegrity.ri.
     let member_forces = super::scalar_list(&solve.member_forces, DimensionVector::FORCE);
     let force_densities: Vec<Value> = solve
         .force_densities
@@ -476,6 +477,8 @@ fn build_result_free(
     surface_stresses: &[f64],
 ) -> Value {
     let nodes_val: Vec<Value> = nodes.iter().map(|&p| super::point3_length(p)).collect();
+    // FORCE via the same q_ref ≡ 1 N/m gauge as `build_result` above — see the
+    // "Dimensional bridge" paragraph in crates/reify-compiler/stdlib/tensegrity.ri.
     let forces_val = super::scalar_list(member_forces, DimensionVector::FORCE);
     let fds_val: Vec<Value> = force_densities.iter().map(|&q| Value::Real(q)).collect();
     let ss_val: Vec<Value> = surface_stresses.iter().map(|&s| Value::Real(s)).collect();

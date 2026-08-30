@@ -61,7 +61,12 @@ pub fn register(registry: &mut ToolRegistry) {
                 },
                 "value": {
                     "type": "string",
-                    "description": "The new value as a string expression."
+                    "description": "The new value as a string expression. For a DIMENSIONED \
+cell the expression is parsed as a bare number and installed as that cell's SI-coherent \
+magnitude in the cell's own dimension - metres for Length, SI RADIANS for Angle, kilograms \
+for Mass, and so on. No unit suffix is parsed and no conversion is applied, so 1.5708 on an \
+Angle cell means 1.5708 rad, not 1.5708 degrees. Call reify_get_parameters to learn a \
+parameter's dimension from its `unit` field before choosing a number."
                 }
             },
             "required": ["cell_id", "value"]

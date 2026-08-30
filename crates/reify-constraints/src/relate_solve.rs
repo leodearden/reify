@@ -405,7 +405,7 @@ fn relation_jacobian(
 /// on the relation name. A zero residual means the relation is satisfied at `x`.
 fn relation_residual(rel: &RelationInstance, unknown: &FrameUnknown, x: &Pose) -> Vec<f64> {
     let mut datums: Vec<(Value, bool)> = Vec::new(); // (value, moving)
-    let mut scalar: Option<f64> = None;
+    let mut scalars: Vec<f64> = Vec::new(); // metric operands, in declaration order
     for op in &rel.operands {
         if is_datum(&op.datum) {
             let moving = op.sub.as_deref() == Some(unknown.sub.as_str());
@@ -416,17 +416,32 @@ fn relation_residual(rel: &RelationInstance, unknown: &FrameUnknown, x: &Pose) -
             };
             datums.push((val, moving));
         } else if let Some(s) = op.datum.as_f64() {
-            scalar = Some(s);
+            scalars.push(s);
         }
     }
-    residual_dispatch(&rel.name, &datums, scalar)
+    // `scalar` is the single-metric view every pre-tangent arm was written against.
+    // It is derived as `last()` so it reproduces the previous `scalar = Some(s)`
+    // overwrite byte-for-byte: those relations all carry exactly ONE metric operand,
+    // where first and last coincide. Only `tangent`'s two-radius combos need the
+    // full `scalars` slice, so widening the signature moves no existing behaviour.
+    let scalar = scalars.last().copied();
+    residual_dispatch(&rel.name, &datums, scalar, &scalars)
 }
 
 /// Dispatch a named relation to its residual vector over the (already
 /// pose-transformed) datum operands. `a` is the moving operand, `b` the anchor;
 /// tangent frames are always built from the anchor so they stay fixed under the
 /// Frame perturbation (the Jacobian would otherwise pick up spurious rotation).
-fn residual_dispatch(name: &str, datums: &[(Value, bool)], scalar: Option<f64>) -> Vec<f64> {
+///
+/// `scalar` is the single-metric view (the last metric operand) the one-radius
+/// arms read; `scalars` is the full metric list in declaration order, which only
+/// `tangent`'s two-radius combos need.
+fn residual_dispatch(
+    name: &str,
+    datums: &[(Value, bool)],
+    scalar: Option<f64>,
+    scalars: &[f64],
+) -> Vec<f64> {
     let Some((a, b)) = pick_ab(datums) else {
         return Vec::new();
     };
@@ -476,7 +491,10 @@ fn residual_dispatch(name: &str, datums: &[(Value, bool)], scalar: Option<f64>) 
         },
         "offset" => offset_residual(a, b, scalar),
         "on" => on_residual(datums),
-        // tangent (surface-conditional) and uncurated names contribute no rows.
+        // Operand-pair-conditional (four curated surface combos) and radius-carrying,
+        // so it reads `datums` positionally and takes the full metric list.
+        "tangent" => tangent_residual(datums, scalars),
+        // Uncurated names contribute no rows.
         _ => Vec::new(),
     }
 }
@@ -715,6 +733,145 @@ fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
             None => Vec::new(),
         },
         _ => Vec::new(),
+    }
+}
+
+// ── tangent ──────────────────────────────────────────────────────────────────
+
+/// The four curated tangency combos, classified over realized [`Value`] datums.
+///
+/// This is the constraints-side twin of the type-side `TangentCombo` in
+/// `reify_compiler::relation_signatures`, which publishes each combo's ΔDOF. The
+/// two cannot share code — `reify-constraints` is kernel- and compiler-free — so
+/// the binding check between them is end-to-end rather than a table comparison:
+/// `relate_solve_tests` asserts each combo's MEASURED Jacobian rank here equals
+/// the ΔDOF published there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TangentCombo {
+    /// Two cylinders, by their axes.
+    CylCyl,
+    /// A cylinder (axis) resting on a plane, in either operand order.
+    CylPlane,
+    /// A sphere (centre point) resting on a plane, in either operand order.
+    SpherePlane,
+    /// Two spheres, by their centre points.
+    SphereSphere,
+}
+
+/// Classify a `tangent` operand pair. `None` for any other shape — unreachable
+/// from `.ri` because `check_relation_arg_types` rejects it at compile time with
+/// `TangentOperandsUnsupported` (the residual layer cannot fail loudly: no rows
+/// reads as "satisfied", so the gate has to be upstream).
+fn tangent_combo(a: &Value, b: &Value) -> Option<TangentCombo> {
+    match (a, b) {
+        (Value::Axis { .. }, Value::Axis { .. }) => Some(TangentCombo::CylCyl),
+        (Value::Axis { .. }, Value::Plane { .. }) | (Value::Plane { .. }, Value::Axis { .. }) => {
+            Some(TangentCombo::CylPlane)
+        }
+        (Value::Point(_), Value::Plane { .. }) | (Value::Plane { .. }, Value::Point(_)) => {
+            Some(TangentCombo::SpherePlane)
+        }
+        (Value::Point(_), Value::Point(_)) => Some(TangentCombo::SphereSphere),
+        _ => None,
+    }
+}
+
+/// `tangent(a, b, r…)` — surface tangency over the four curated combos, with radii
+/// carried as trailing `Length` operands (`scalars`, in declaration order).
+///
+/// Operands are read POSITIONALLY (like [`on_residual`], not through [`pick_ab`]):
+/// the pair is asymmetric for the plane combos, so which slot is the curved surface
+/// has to come from the call, not from which operand happens to be moving.
+///
+/// Rows per combo:
+/// - **CylCyl** → 1: `line_line_distance(a, b) − |r1 + r2|`. Line distance (not
+///   origin-to-origin) keeps an axial slide along the cylinders out of the metric.
+/// - **CylPlane** → 2: `dot(û_axis, n̂_plane)` and
+///   `dot(o_axis − o_plane, n̂) − r`. The perpendicularity row is what makes this
+///   codimension 2: without it a cylinder could TILT out of tangency at exactly
+///   zero residual while its origin stayed the right distance off the plane.
+/// - **SpherePlane** → 1: `dot(c − o_plane, n̂) − r`.
+/// - **SphereSphere** → 1: `‖pa − pb‖ − |r1 + r2|`.
+///
+/// **Sign convention.** The target separation is `|r1 + r2|`, so two positive radii
+/// mean EXTERNAL tangency and a negative radius means INTERNAL — `|r1 + r2|`
+/// collapses to `|r1 − |r2||` — with no branch in the residual. The two plane rows
+/// are SIGNED (not `.abs()`, as `distance_residual` uses), so the radius sign picks
+/// which side of the plane the surface rests on and the residual stays
+/// differentiable through zero.
+///
+/// Direction operands are unit-normalized before the perpendicularity dot, so that
+/// row is scale-free for a non-unit axis direction or plane normal — the same
+/// reason [`direction_alignment_residual`] and the `angle` arm normalize.
+///
+/// Returns no rows when the combo is unsupported or a required radius is absent.
+/// Both are unreachable from `.ri`: `check_relation_arg_types` rejects the operand
+/// pair and polices the per-combo arity at compile time. The guard stays because a
+/// caller constructing a `RelationInstance` directly is not bound by that gate.
+fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<f64> {
+    if datums.len() < 2 {
+        return Vec::new();
+    }
+    let (a, b) = (&datums[0].0, &datums[1].0);
+    let Some(combo) = tangent_combo(a, b) else {
+        return Vec::new();
+    };
+    match combo {
+        TangentCombo::CylCyl => {
+            let (Some((oa, ua)), Some((ob, ub)), Some(&r1), Some(&r2)) = (
+                axis_parts(a),
+                axis_parts(b),
+                scalars.first(),
+                scalars.get(1),
+            ) else {
+                return Vec::new();
+            };
+            vec![line_line_distance(oa, ua, ob, ub) - (r1 + r2).abs()]
+        }
+        TangentCombo::CylPlane => {
+            // The combo admits either order, so resolve by kind rather than slot.
+            let (axis_v, plane_v) = if matches!(a, Value::Axis { .. }) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            let (Some((oa, ua)), Some((op, np)), Some(&r)) =
+                (axis_parts(axis_v), plane_parts(plane_v), scalars.first())
+            else {
+                return Vec::new();
+            };
+            let (Some(uhat), Some(nhat)) = (unit3(ua), unit3(np)) else {
+                return Vec::new(); // a degenerate direction has no defined tangency
+            };
+            vec![dot3(uhat, nhat), dot3(sub3(oa, op), nhat) - r]
+        }
+        TangentCombo::SpherePlane => {
+            let (centre_v, plane_v) = if matches!(a, Value::Point(_)) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            let (Some(c), Some((op, np)), Some(&r)) =
+                (origin_of(centre_v), plane_parts(plane_v), scalars.first())
+            else {
+                return Vec::new();
+            };
+            let Some(nhat) = unit3(np) else {
+                return Vec::new();
+            };
+            vec![dot3(sub3(c, op), nhat) - r]
+        }
+        TangentCombo::SphereSphere => {
+            let (Some(pa), Some(pb), Some(&r1), Some(&r2)) = (
+                origin_of(a),
+                origin_of(b),
+                scalars.first(),
+                scalars.get(1),
+            ) else {
+                return Vec::new();
+            };
+            vec![norm3(sub3(pa, pb)) - (r1 + r2).abs()]
+        }
     }
 }
 

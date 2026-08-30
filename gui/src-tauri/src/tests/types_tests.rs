@@ -3368,7 +3368,7 @@ fn value_data_dimension_and_si_value_serialize_and_round_trip() {
         cell_id: "Tank.capacity".to_string(),
         name: "capacity".to_string(),
         value: "7045002.24".to_string(),
-        unit: "mm\u{00B3}".to_string(),
+        unit: "mm^3".to_string(),
         determinacy: "determined".to_string(),
         entity_path: "Tank".to_string(),
         kind: "Let".to_string(),
