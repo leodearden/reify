@@ -31,8 +31,22 @@
 // 141.53 Hz, below the 620.7 Hz vertical propped mode, hence the fundamental.
 // The two symmetric configurations do not show this because the square section
 // makes their two directions near-degenerate. `modal_analysis_e2e.rs` therefore
-// asserts the mixed case on the Z-dominant family (signal (f)), exactly as the
-// simply-supported e2e in that file already does for the same reason.
+// asserts EVERY band on the Z-dominant family, exactly as the simply-supported
+// e2e in that file already does for the same reason.
+//
+// WHY `n_modes: 4` AND NOT 2 (task 6663 amendment): the section is SQUARE, so
+// each configuration's vertical (Z) and lateral (Y) bending families are nearly
+// degenerate — pinned reads 391.05 (lateral) / 395.22 (vertical), a 1.1% split;
+// fixed reads 887.55 (vertical) / 890.90 (lateral), 0.4%. At `n_modes: 2` the
+// Z-dominant selection in `modal_analysis_e2e.rs` had to pick its answer out of
+// a window holding exactly that one near-degenerate pair, so any solver or mesh
+// perturbation that reordered or mixed the pair would leave it returning the
+// wrong member — or an empty family. Four modes give the selection headroom:
+// MEASURED, every configuration's Z-dominant family then holds TWO members
+// (pinned [395.22, 1558.34], fixed [887.55, 2384.63], propped [616.92,
+// 1955.21]) instead of exactly one, and the low modes come back bit-identical
+// to the `n_modes: 2` run. The cost is nil, because the shift-invert Krylov
+// window is `max(2·n_modes, 32).max(64)` = 64 either way.
 //
 // AUTHORING TRAP — `ModalOptions` argument binding is POSITIONAL: the `name:`
 // labels are cosmetic and the parser binds by DECLARATION order (n_modes,
@@ -76,7 +90,7 @@ structure ClampedClampedBeamModes {
 
     // Three otherwise-identical ModalOptions differing ONLY in support kind.
     let opts_fixed = ModalOptions(
-        n_modes: 2,
+        n_modes: 4,
         boundary_conditions: [fix_min, fix_max],
         damping: NoDamping(),
         sigma: 0.0,
@@ -86,7 +100,7 @@ structure ClampedClampedBeamModes {
         element_order: ElementOrder.P2
     )
     let opts_pinned = ModalOptions(
-        n_modes: 2,
+        n_modes: 4,
         boundary_conditions: [pin_min, pin_max],
         damping: NoDamping(),
         sigma: 0.0,
@@ -99,7 +113,7 @@ structure ClampedClampedBeamModes {
     // `fix_min` and `pin_max` cells above, so the only thing separating this
     // configuration from the other two is which kind sits on which face.
     let opts_propped = ModalOptions(
-        n_modes: 2,
+        n_modes: 4,
         boundary_conditions: [fix_min, pin_max],
         damping: NoDamping(),
         sigma: 0.0,
