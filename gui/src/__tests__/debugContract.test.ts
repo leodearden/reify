@@ -178,6 +178,100 @@ describe('debug contract — error envelope + wiring (step-3)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ: apply_gui_state — AI write-tool editor sync
+//
+// `apply_gui_state` gained a second class of caller: the five `reify_*` AI
+// write tools on the reify-debug MCP server. `reify_update_source` routes
+// through the IN-MEMORY `EngineSession::update_source` and writes no disk, so
+// no FS-watcher re-fire will reconcile the editor buffer — the push carries
+// the new text in an OPTIONAL `file` member instead. The existing
+// `handle_set_fea_case` caller sends no `file` and must stay byte-identical.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('apply_gui_state — AI write-tool editor sync (task 5097)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  /** Minimal well-formed RawGuiState — `apply_gui_state` requires the key. */
+  const RAW_GUI_STATE = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  it('(a) with a file member, reopens the editor buffer and still does not reset the view', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 900, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'NEW' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    // The AI wrote the engine's in-memory buffer; nothing else will bring the
+    // editor along, so the push must.
+    expect(stores.editor.openFile).toHaveBeenCalledTimes(1);
+    expect(stores.editor.openFile).toHaveBeenCalledWith({
+      path: '/tmp/part.ri',
+      content: 'NEW',
+    });
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    // The camera-stability property handle_set_fea_case depends on covers the
+    // AI path too: a parameter tweak must not throw the user's view away.
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('(b) without a file member, behaves exactly as before (set_fea_case regression guard)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 901, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      case: 'overload',
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    expect(result.case).toBe('overload');
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('(c) a malformed file member is refused and mutates neither store', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 902, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri' },
+    })) as any;
+
+    expect(result.error).toBe('file requires path and content');
+    expect(result.ok).toBeUndefined();
+    // Refusing HALFWAY — applying the GuiState but not the buffer — is the
+    // desync this handler exists to prevent, so neither store may move.
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // step-5: Coordinate-convention boundary test (characterization)
 //
 // Pins: (a) get_window_state.devicePixelRatio is numeric; (b) get_layout_metrics
