@@ -445,6 +445,70 @@ is what makes the periodic-probe item below cheap.
 > than re-writing the whole `[rerere]` section. That narrows the *shape* of the write, **not** its
 > source; the writer is still unidentified and no candidate mechanism has been excluded.
 
+### 2026-08-30 — the re-armer is IDENTIFIED (task 6889, open item (a))
+
+**It is agent behaviour, not automation.** A bare `git config rerere.enabled true` run from inside a
+**linked worktree** is `--local`-scoped, and for a linked worktree `--local` resolves to the **SHARED
+common-dir** `.git/config` — not to worktree scope, which is what the operator intends. So a write
+believed to be lane-local silently re-arms rerere for the whole store.
+
+Proven hermetically rather than inferred, in a throwaway store built for the purpose (`git init` +
+`git worktree add`): a bare `git config zzz.probe hello` issued from the LINKED worktree landed in
+`main-checkout/.git/config` and **not** in `main-checkout/.git/worktrees/<name>/config`;
+`git config --show-scope --show-origin` reported it as `local  file:.../main-checkout/.git/config`.
+In that same lane `git rev-parse --absolute-git-dir` gives `.../worktrees/<name>` while
+`--git-common-dir` gives `.../main-checkout/.git` — the two paths whose conflation is the whole bug.
+
+The real store matches: `git -C /home/leo/src/reify-fix{12,13,14,15} rev-parse --git-common-dir` all
+return `/home/leo/src/reify/.git`, so a `git config` issued in any of those recovery checkouts writes
+the shared config. Full identification evidence, including the transcript counts that located the
+instruction (the literal string appears 27× in one session transcript and across 37 files under
+`~/.claude/projects/-home-leo-src-reify/`) and the hard negatives that cleared every mechanical
+suspect: mem0 `bdae6960-5a5e-4c73-838f-7919c08cead5`.
+
+This explains the SPLIT signature §7 hypothesised above and could not previously source: the
+instruction sets `enabled` **alone**, so the guard's earlier `autoupdate = false` survives untouched.
+Every armed sighting since has carried exactly that shape.
+
+**Measurements taken 2026-08-30 (read-only, from lane `_lane-31`).** Observations, stated as fact:
+
+| When | Measurement |
+|---|---|
+| 07:06:11 | `.git/config` mtime; size **2508**; SPLIT (`rerere.enabled=true` + `rerere.autoupdate=false`, both `--local`). |
+| 11:44:46 | Re-armed. Same size **2508**, same SPLIT shape. `rr-cache` **355** entries, **254** linked worktrees. |
+| 12:13:01 | Re-armed a **third** time the same day. Size **2508**, SPLIT. Measured first-hand at 12:29 BST: `rr-cache` **355** entries, **253** linked worktrees, 43 packs, 1638 refs, 65G `.git`. |
+
+The **one-byte size discriminator** tells a third-party write from the guard's own: `true` → `false`
+is one character longer, so an armed config is 2508 bytes and the guard's disarm write leaves 2509.
+Every sighting above is 2508 — none of them is the guard.
+
+`rr-cache` growth across the same window: **266** (2026-08-26) → **269** (2026-08-28) → **354**
+(2026-08-30, earlier) → **355** (2026-08-30, 12:29). Entries are still never pruned (§5).
+
+`check` from a lane against the live store: **exit 1** (`ARMED: rerere.enabled=true`), stdout empty,
+three consecutive runs at **0.180s / 0.082s / 0.120s** wall (an earlier cold run the same day measured
+0.249s). Read-only and sub-second, which is what makes lane-cadence arming free.
+
+**The re-arm interval is minutes, not hours.** esc-5870-14 measured a **~10-minute** window between a
+disarm and the next armed reading; the 11:44:46 → 12:13:01 pair above is ~28 minutes. The earlier
+"~17h" figure was an artefact of infrequent sampling, not the writer's actual rate.
+
+**Negative sweeps, re-run 2026-08-30 and still clean.** No `rerere` *writer* exists in reify's
+`scripts/` or `hooks/` beyond the guard itself — the only hits are `setup-dev.sh` *calling* the guard
+and a row in `scripts/verify-pipeline-infra-tests.txt`. A grep of dark-factory's code files
+(`*.py`, `*.sh`, `*.toml`, `*.yaml`, `*.yml`, excluding its worktrees, `data/`, `docs/` and `plans/`)
+returns **zero** matches for `rerere`; the only tree-wide hits are prose in archived escalations and
+confusion-codebook entries. The orchestrator side is now cleared, closing the gap §7 left open when
+the equivalent 2026-08-27 sweep was killed at a 45s timeout.
+
+**CONSEQUENCE — do not read the lane-cadence wiring (§8 item 3) as a cure.** No `arm` cadence outruns
+an agent that re-runs the shared write: an acquire pins the store, an agent re-arms it minutes later,
+and any resolution recorded in between still lands in the one shared cache. Lane cadence is a
+**mitigation** that narrows the exposure window from "since the last developer setup" to "since the
+last acquire". The only cure is stopping the practice: never run a bare `git config rerere.enabled
+true` (or any bare `git config rerere.*` write) in **any** reify worktree — use process-scoped
+`git -c rerere.enabled=true <cmd>` when the behaviour is genuinely wanted for one command.
+
 ## 8. Open items
 
 1. **`git fsck` on the shared store remains UNMEASURED.** The 2026-07-30 attempt was killed at a 900s
