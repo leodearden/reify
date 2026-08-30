@@ -26,19 +26,32 @@
 #     cause directly, rather than being left to fail as "the guard derived
 #     nothing".
 #
-# COST — MEASURED, not estimated (task 6426 review). 16s wall for 123
-# assertions on an idle tree, 35s for the same 123 under concurrent load —
-# quote the range, not a single number, since this suite runs inside the
-# concurrent tests/infra/run_all.sh pool at the merge gate, where the loaded
-# figure is the realistic one. Either way it is against a previously fork-free
-# suite. Know where the time goes before adding to it, because clause 4b is
-# LAZY and that makes the
-# cost model counter-intuitive: EVERY exit-1 assertion falls through all the
-# static clauses and so reaches the fork, while exit-0 and exit-2 assertions
-# return without one. The budget is roughly: two make_runnable_verify_fixture
-# tree copies, the --print-plan captures (each up to 3 capture_print_plan
-# attempts), the >=3s deliberate wait in the BOUNDED case, and one fork per
-# remaining forking assertion.
+# COST — MEASURED, not estimated (task 6426 review; re-measured task 6857).
+# 142 assertions in 13-24s wall, across three consecutive runs on a 32-core
+# host at 1-min loadavg 50-58, with a 70s outlier observed under a heavier
+# spike in the same session. Quote the RANGE, not a single number: this suite
+# runs inside the concurrent tests/infra/run_all.sh pool at the merge gate,
+# where the loaded figure is the realistic one and the spread between runs is
+# larger than any change a normal edit makes. No idle-tree figure is quoted
+# because none was measured here — do not read the 13s low end as one. For
+# reference the pre-6857 suite measured 26-37s for 123 assertions on the SAME
+# host in the SAME session, so the 19 assertions task 6857 added did not move
+# the wall clock out of its own run-to-run noise.
+#
+# Know where the time goes before adding to it, because clause 4b is LAZY and
+# that makes the cost model counter-intuitive: EVERY requires-full-gate exit-1
+# assertion falls through all the static clauses and so reaches the fork, while
+# exit-0 and exit-2 assertions return without one. The budget is roughly: two
+# make_runnable_verify_fixture tree copies, the --print-plan captures (each up
+# to 3 capture_print_plan attempts), the >=3s deliberate wait in the BOUNDED
+# case, and one fork per remaining forking assertion.
+#
+# `is-registered` sits OUTSIDE that model entirely and is the cheap way to add
+# a membership assertion: it never calls derive_plan_paths (see its arm in the
+# guard for why that forfeits no coverage), so it is fork-free on BOTH verdict
+# routes — unlike requires-full-gate, whose exit-1 route always forks. That is
+# also why switching Pair C clause (d) to it cost nothing: those assertions were
+# already exit-0 and so already fork-free.
 #
 # TO KEEP IT THERE, a new exit-1 assertion that is not specifically about
 # clause 4b should use run_guard_nofork rather than run_guard — same derived

@@ -24,6 +24,15 @@
 #   Add a row when a new verify-pipeline artifact gains infra drift-guards.
 #   The infra-test-glob is self-maintaining for additions: a future test_verify_*.sh
 #   is auto-covered without needing a map edit.
+#   A row here is a FIRST-CLASS registration, not a lesser one (task 6857):
+#   `bash scripts/verify-pipeline-guard.sh is-registered <path>` exits 0 for any
+#   active-row KEY below, and that is the predicate
+#   tests/infra/test_verify_pipeline_guard.sh's ANTI-DRIFT sweep asserts — so a
+#   row here satisfies the sweep on its own, with no scripts/doc-sync-paths.txt
+#   entry and no full --scope all gate. Prefer it whenever an edit should select
+#   the artifact's guarding test rather than route the whole diff to that gate.
+#   ACTIVE-ROW RULE, mirrored by both consumers: BOTH fields must be non-empty.
+#   A one-field row selects no test, so it registers nothing.
 #
 # Example (add future rows below):
 # scripts/land.sh    tests/infra/test_land_*.sh
