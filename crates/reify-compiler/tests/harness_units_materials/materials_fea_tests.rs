@@ -587,7 +587,7 @@ fn assert_property_si_value(
     );
 }
 
-/// Asserts the four numeric property defaults of a concrete material
+/// Asserts the five numeric property defaults of a concrete material
 /// evaluate to the expected SI magnitudes, plus that each provenance field
 /// carries a `MaterialPropertyProvenance(...)` constructor as its default
 /// (verified indirectly via `cell_type` + `default_expr.is_some()` in
@@ -597,12 +597,17 @@ fn assert_property_si_value(
 /// starter materials declare `some(...)` yields — but the parameter is
 /// `Option<f64>` to keep the door open for a future yield-less material
 /// without forcing a helper redesign.
+///
+/// `expected_loss_factor` is task α's (#6877) `Damped` member η. It is
+/// dimensionless, so it is checked against `DimensionVector::DIMENSIONLESS`
+/// exactly as `poisson_ratio` is.
 fn assert_fea_material_property_values(
     name: &str,
     expected_youngs_pa: f64,
     expected_poisson: f64,
     expected_density_kgm3: f64,
     expected_yield_pa: Option<f64>,
+    expected_loss_factor: f64,
 ) {
     let template = find_structure(name);
     assert_property_si_value(
@@ -631,13 +636,20 @@ fn assert_fea_material_property_values(
             yield_pa,
         );
     }
+    assert_property_si_value(
+        template,
+        "loss_factor",
+        DimensionVector::DIMENSIONLESS,
+        expected_loss_factor,
+    );
 }
 
-/// Asserts the four-property × four-provenance + one editorial appearance shape
+/// Asserts the five-property × five-provenance + one editorial appearance shape
 /// of a concrete material structure conforming to `ElasticMaterial + Visual`
-/// (task γ, #4762). Used by the per-material tests (Steel_AISI_1045,
-/// Aluminium_6061_T6, Titanium_Ti6Al4V, ABS_Plastic) to keep the
-/// nine-value-cell + dual-trait-bound + constraint-injection check uniform.
+/// (task γ, #4762) with the `Damped` member added by task α (#6877). Used by
+/// the per-material tests (Steel_AISI_1045, Aluminium_6061_T6,
+/// Titanium_Ti6Al4V, ABS_Plastic) to keep the eleven-value-cell +
+/// dual-trait-bound + constraint-injection check uniform.
 ///
 /// This helper covers structural shape only (cell names, types, default
 /// presence, trait bounds, constraint count). Numeric SI values for each
@@ -665,13 +677,15 @@ fn assert_fea_material_template_shape(name: &str) {
 
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
-    // γ adds one `appearance : Appearance` param → count is now 9
-    // (4 ElasticMaterial members + 4 per-property provenance + 1 appearance).
+    // γ added one `appearance : Appearance` param; α (#6877) adds
+    // `loss_factor` and its provenance → count is now 11 (4 ElasticMaterial
+    // members + 1 Damped member + 5 per-property provenance + 1 appearance).
     assert_eq!(
         params.len(),
-        9,
-        "{} should have exactly 9 param cells (4 ElasticMaterial members + 4 \
-         per-property provenance + 1 editorial appearance), got: {:?}",
+        11,
+        "{} should have exactly 11 param cells (4 ElasticMaterial members + 1 \
+         Damped member + 5 per-property provenance + 1 editorial appearance), \
+         got: {:?}",
         name,
         names
     );
@@ -700,10 +714,14 @@ fn assert_fea_material_template_shape(name: &str) {
                 dimension: DimensionVector::PRESSURE,
             })),
         ),
+        // α (#6877): the `Damped` member, dimensionless η.
+        ("loss_factor", Type::dimensionless_scalar()),
         ("youngs_modulus_provenance", provenance_ty.clone()),
         ("poisson_ratio_provenance", provenance_ty.clone()),
         ("density_provenance", provenance_ty.clone()),
-        ("yield_stress_provenance", provenance_ty),
+        ("yield_stress_provenance", provenance_ty.clone()),
+        // α (#6877): η keeps the one-provenance-per-property convention.
+        ("loss_factor_provenance", provenance_ty),
         // γ (#4762): editorial appearance member.
         ("appearance", Type::StructureRef("Appearance".to_string())),
     ];
@@ -752,22 +770,37 @@ fn assert_fea_material_template_shape(name: &str) {
 }
 
 /// `Steel_AISI_1045` is the medium-carbon hot-rolled-steel starter material.
-/// Asserts the structure's full shape: the eight expected value cells (four
-/// `ElasticMaterial` parameters + four per-property `MaterialPropertyProvenance`
-/// fields), the `ElasticMaterial` trait bound, that each cell carries a default
-/// expression, and that the two Poisson-ratio constraints inject in.
+/// Asserts the structure's full shape: every expected value cell (four
+/// `ElasticMaterial` parameters + the `Damped` η + one
+/// `MaterialPropertyProvenance` field per property), the `ElasticMaterial`
+/// trait bound, that each cell carries a default expression, and that the
+/// two Poisson-ratio constraints inject in.
 ///
 /// PRD task #1 cites public matweb-equivalent values:
 ///   youngs_modulus = 205 GPa, poisson_ratio = 0.29,
 ///   density = 7850 kg/m³, yield_stress = some(310 MPa).
+///
+/// α (#6877): loss_factor η = 6.0e-4. CLASS-LEVEL, not alloy-specific —
+/// structural / plain-carbon steel spans roughly 2e-4 … 1e-3, and η is
+/// amplitude-dependent (pronounced in metals at low stress). Design-critical
+/// damping work needs a measurement of the specific alloy, temper and joint
+/// condition, not this value.
 #[test]
 fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Steel_AISI_1045");
-    // matweb-equivalent SI values: 205 GPa, 0.29, 7850 kg/m³, 310 MPa.
+    // matweb-equivalent SI values: 205 GPa, 0.29, 7850 kg/m³, 310 MPa,
+    // plus α's class-level η = 6.0e-4.
     // The SI check guards against `kPa` vs `GPa` etc. unit-prefix typos
     // that the shape check (which only verifies dimension == PRESSURE)
     // cannot detect.
-    assert_fea_material_property_values("Steel_AISI_1045", 205.0e9, 0.29, 7850.0, Some(310.0e6));
+    assert_fea_material_property_values(
+        "Steel_AISI_1045",
+        205.0e9,
+        0.29,
+        7850.0,
+        Some(310.0e6),
+        6.0e-4,
+    );
 }
 
 // ─── step-11: Aluminium_6061_T6 starter material ─────────────────────────────
@@ -779,11 +812,24 @@ fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenanc
 /// PRD task #1 cites public matweb-equivalent values:
 ///   youngs_modulus = 68.9 GPa, poisson_ratio = 0.33,
 ///   density = 2700 kg/m³, yield_stress = some(276 MPa).
+///
+/// α (#6877): loss_factor η = 2.0e-4. CLASS-LEVEL, not temper-specific —
+/// wrought aluminium alloys span roughly 1e-4 … 4e-4, and η is
+/// amplitude-dependent. Design-critical damping work needs a measurement of
+/// the specific alloy, temper and joint condition.
 #[test]
 fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Aluminium_6061_T6");
-    // matweb-equivalent SI values: 68.9 GPa, 0.33, 2700 kg/m³, 276 MPa.
-    assert_fea_material_property_values("Aluminium_6061_T6", 68.9e9, 0.33, 2700.0, Some(276.0e6));
+    // matweb-equivalent SI values: 68.9 GPa, 0.33, 2700 kg/m³, 276 MPa,
+    // plus α's class-level η = 2.0e-4.
+    assert_fea_material_property_values(
+        "Aluminium_6061_T6",
+        68.9e9,
+        0.33,
+        2700.0,
+        Some(276.0e6),
+        2.0e-4,
+    );
 }
 
 // ─── step-13: Titanium_Ti6Al4V starter material ──────────────────────────────
@@ -797,11 +843,24 @@ fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provena
 /// PRD task #1 cites public matweb-equivalent values:
 ///   youngs_modulus = 113.8 GPa, poisson_ratio = 0.342,
 ///   density = 4430 kg/m³, yield_stress = some(880 MPa).
+///
+/// α (#6877): loss_factor η = 4.0e-4. CLASS-LEVEL, not condition-specific —
+/// alpha-beta titanium alloys span roughly 1e-4 … 1e-3, and η is
+/// amplitude-dependent. Design-critical damping work needs a measurement of
+/// the specific alloy, temper and joint condition.
 #[test]
 fn titanium_ti6al4v_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Titanium_Ti6Al4V");
-    // matweb / ASM Handbook SI values: 113.8 GPa, 0.342, 4430 kg/m³, 880 MPa.
-    assert_fea_material_property_values("Titanium_Ti6Al4V", 113.8e9, 0.342, 4430.0, Some(880.0e6));
+    // matweb / ASM Handbook SI values: 113.8 GPa, 0.342, 4430 kg/m³, 880 MPa,
+    // plus α's class-level η = 4.0e-4.
+    assert_fea_material_property_values(
+        "Titanium_Ti6Al4V",
+        113.8e9,
+        0.342,
+        4430.0,
+        Some(880.0e6),
+        4.0e-4,
+    );
 }
 
 // ─── step-15: ABS_Plastic starter material ───────────────────────────────────
@@ -817,12 +876,20 @@ fn titanium_ti6al4v_structure_conforms_with_correct_property_values_and_provenan
 /// PRD task #1 cites public matweb-equivalent values:
 ///   youngs_modulus = 2.3 GPa, poisson_ratio = 0.35,
 ///   density = 1050 kg/m³, yield_stress = some(40 MPa).
+///
+/// α (#6877): loss_factor η = 2.0e-2 — roughly two orders of magnitude above
+/// the metals, which is the physically meaningful ordering. CLASS-LEVEL, not
+/// grade-specific: amorphous thermoplastics span roughly 1e-2 … 4e-2 and are
+/// strongly frequency- and temperature-dependent. Design-critical damping
+/// work needs a measurement of the specific resin grade at the service
+/// frequency and temperature.
 #[test]
 fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("ABS_Plastic");
     // matweb SI values: 2.3 GPa, 0.35, 1050 kg/m³, ~40 MPa (approximate
-    // due to ABS's strain-rate-dependent ductile-to-brittle transition).
-    assert_fea_material_property_values("ABS_Plastic", 2.3e9, 0.35, 1050.0, Some(40.0e6));
+    // due to ABS's strain-rate-dependent ductile-to-brittle transition),
+    // plus α's class-level η = 2.0e-2.
+    assert_fea_material_property_values("ABS_Plastic", 2.3e9, 0.35, 1050.0, Some(40.0e6), 2.0e-2);
 }
 
 // ─── step-17: module summary regression test ─────────────────────────────────
