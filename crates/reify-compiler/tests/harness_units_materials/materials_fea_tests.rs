@@ -658,13 +658,24 @@ fn assert_fea_material_property_values(
 fn assert_fea_material_template_shape(name: &str) {
     let template = find_structure(name);
 
-    // γ (#4762): each FEA material now conforms to BOTH ElasticMaterial AND
-    // Visual (multi-trait `: ElasticMaterial + Visual`).
+    // γ (#4762) gave each FEA material a second bound, `Visual`; α (#6877)
+    // then replaced the first with the named intersection, so the header is
+    // now `: DampedMaterial + Visual`.
+    //
+    // `TopologyTemplate.trait_bounds` is DECLARED-ONLY ("Names of traits this
+    // structure declares conformance to", compiler/src/types.rs:688-689), so
+    // "ElasticMaterial" is legitimately absent from this vec even though the
+    // preset still satisfies that bound transitively. That transitive
+    // conformance — the property this literal pin can no longer witness — is
+    // asserted separately by
+    // `presets_still_satisfy_elastic_material_and_constitutive_law_transitively`.
     assert!(
         template
             .trait_bounds
-            .contains(&"ElasticMaterial".to_string()),
-        "{} should carry 'ElasticMaterial' trait bound, got: {:?}",
+            .contains(&"DampedMaterial".to_string()),
+        "{} should carry 'DampedMaterial' trait bound (α #6877 flipped the \
+         preset header from `: ElasticMaterial + Visual` to \
+         `: DampedMaterial + Visual`), got: {:?}",
         name,
         template.trait_bounds
     );
@@ -751,19 +762,22 @@ fn assert_fea_material_template_shape(name: &str) {
         );
     }
 
-    // Trait constraints inject into every conforming structure, so the two
-    // Poisson-ratio constraints declared on `ElasticMaterial` must appear
-    // here. Pinning to exactly 2 (rather than `>= 2`) catches the case of a
-    // structure-local constraint being added without an explicit test
-    // update; the four starter materials in `materials_fea.ri` deliberately
-    // declare zero structure-local constraints, so the trait-injected pair
-    // is the entire set.
+    // Trait constraints inject into every conforming structure, and they do
+    // so TRANSITIVELY: the preset declares only `DampedMaterial`, but the
+    // two-hop chain `preset → DampedMaterial → {ElasticMaterial, Damped}`
+    // delivers all three — `ElasticMaterial`'s two Poisson bounds plus
+    // `Damped`'s `loss_factor >= 0` (α #6877). Pinning to exactly 3 (rather
+    // than `>= 3`) catches the case of a structure-local constraint being
+    // added without an explicit test update; the four starter materials in
+    // `materials_fea.ri` deliberately declare zero structure-local
+    // constraints, so the trait-injected trio is the entire set.
     assert_eq!(
         template.constraints.len(),
-        2,
-        "{} should inherit exactly 2 constraints from ElasticMaterial \
-         (poisson_ratio >= 0 and poisson_ratio < 0.5) and declare no \
-         structure-local constraints, got {} constraints",
+        3,
+        "{} should inherit exactly 3 constraints through DampedMaterial \
+         (poisson_ratio >= 0 and poisson_ratio < 0.5 from ElasticMaterial, \
+         loss_factor >= 0 from Damped) and declare no structure-local \
+         constraints, got {} constraints",
         name,
         template.constraints.len()
     );
@@ -892,6 +906,132 @@ fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() 
     assert_fea_material_property_values("ABS_Plastic", 2.3e9, 0.35, 1050.0, Some(40.0e6), 2.0e-2);
 }
 
+// ─── task α (#6877): transitive conformance survives the DampedMaterial flip ──
+
+/// The four presets now DECLARE only `DampedMaterial + Visual`, and
+/// `TopologyTemplate.trait_bounds` records declared bounds only ("Names of
+/// traits this structure declares conformance to", compiler/src/types.rs:688).
+/// So the literal `contains("ElasticMaterial")` pins that the shape helper and
+/// the module-summary test used to carry could no longer be written — but the
+/// property they stood in for, that a preset is still usable wherever an
+/// `ElasticMaterial` / `ConstitutiveLaw` is expected, is exactly what must not
+/// regress. This test asserts that property directly, so the weakening of
+/// those literal pins cannot hide a real conformance loss.
+///
+/// NOTE on probe shape — this was measured, not assumed. A
+/// `param p : SomeTrait = SomePreset()` slot inside a plain `structure` block
+/// emits NO diagnostic even when the value is flagrantly non-conforming
+/// (verified: `param a : ElasticMaterial = MaterialPropertyProvenance(...)`
+/// compiles with zero errors), so that shape is toothless as a conformance
+/// probe and is deliberately NOT used here. The two shapes that ARE enforced:
+///
+///   - a trait-bounded FUNCTION PARAMETER, which emits
+///     `TypeNotConformingToTrait` (same code as
+///     `fea_supertrait_conformance_tests::box_at_material_slot_still_errors`);
+///   - a `structure def X : SomeTrait` body, which emits
+///     `MissingRequiredMember` for any unprovided requirement.
+///
+/// Both are exercised below, one per direction of the refinement chain.
+#[test]
+fn presets_still_satisfy_elastic_material_and_constitutive_law_transitively() {
+    // ── Direction 1: "satisfies" — a preset is accepted at a supertrait slot.
+    //
+    // `solve_elastic_static(material : ConstitutiveLaw, …)` is the two-hop
+    // case (`preset → DampedMaterial → ElasticMaterial → ConstitutiveLaw`) and
+    // `solve_buckling(material : ElasticMaterial, …)` the one-hop case. Both
+    // are real stdlib consumers of the bounds the α flip stopped declaring.
+    // `trait_satisfies` (entity.rs:6186-6215) walks ALL parents of a
+    // multi-parent refinement under a visited guard, which is what makes this
+    // hold.
+    let satisfies_source = r#"
+structure ProbeTransitiveConformance {
+    let a = solve_elastic_static(
+        ABS_Plastic(),
+        1000mm, 100mm, 100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+    let b = solve_buckling(
+        Steel_AISI_1045(),
+        1000mm, 100mm, 100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
+        BucklingOptions()
+    )
+}
+"#;
+    let compiled = compile_source_with_stdlib(satisfies_source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a preset declaring only `DampedMaterial + Visual` must still be \
+         accepted at a `ConstitutiveLaw` slot (solve_elastic_static, 2 hops) \
+         and at an `ElasticMaterial` slot (solve_buckling, 1 hop) — a \
+         TypeNotConformingToTrait here means the α flip broke a real consumer, \
+         not just a literal pin; got: {:?}",
+        errors
+    );
+
+    // ── Direction 2: "requires" — the contract still arrives transitively.
+    //
+    // A conformer declaring `: DampedMaterial` must supply BOTH parents'
+    // members. Omitting `loss_factor` (the `Damped` half, reached through the
+    // two-hop chain) must be a hard error, and supplying all five must compile
+    // clean. Without this arm, a `DampedMaterial` that had silently lost its
+    // parents would still pass direction 1 vacuously.
+    let missing_loss_factor = r#"
+structure def ProbeMissingLossFactor : DampedMaterial {
+    param youngs_modulus : Pressure = 30GPa
+    param poisson_ratio : Real = 0.25
+    param density : Density = 2300kg/m^3
+    param yield_stress : Option<Pressure> = none
+}
+"#;
+    let compiled = compile_source_with_stdlib(missing_loss_factor);
+    assert!(
+        compiled.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::MissingRequiredMember)
+                && d.message.contains("loss_factor")
+        }),
+        "a `: DampedMaterial` conformer omitting loss_factor must raise \
+         MissingRequiredMember — that is the proof the `Damped` half of the \
+         named intersection is still reached transitively; got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
+    );
+
+    let all_five = r#"
+structure def ProbeAllFive : DampedMaterial {
+    param youngs_modulus : Pressure = 30GPa
+    param poisson_ratio : Real = 0.25
+    param density : Density = 2300kg/m^3
+    param yield_stress : Option<Pressure> = none
+    param loss_factor : Real = 0.03
+}
+"#;
+    let compiled = compile_source_with_stdlib(all_five);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a `: DampedMaterial` conformer declaring all five members (four from \
+         ElasticMaterial + loss_factor from Damped) must compile cleanly, got: {:?}",
+        errors
+    );
+}
+
 // ─── step-17: module summary regression test ─────────────────────────────────
 
 /// Final regression covering the std/materials/fea module's overall shape.
@@ -990,7 +1130,9 @@ fn std_materials_fea_module_summary_has_four_traits_one_provenance_struct_and_fo
         );
     }
 
-    // Every starter material must carry the `ElasticMaterial` trait bound.
+    // Every starter material must carry the `DampedMaterial` trait bound —
+    // α (#6877) flipped the four headers from `: ElasticMaterial + Visual` to
+    // `: DampedMaterial + Visual`, and `trait_bounds` is declared-only.
     // `MaterialPropertyProvenance` is intentionally excluded — it is a plain
     // citation record with no trait bound.
     let material_names = [
@@ -1004,8 +1146,8 @@ fn std_materials_fea_module_summary_has_four_traits_one_provenance_struct_and_fo
         assert!(
             template
                 .trait_bounds
-                .contains(&"ElasticMaterial".to_string()),
-            "{} should carry 'ElasticMaterial' trait bound, got: {:?}",
+                .contains(&"DampedMaterial".to_string()),
+            "{} should carry 'DampedMaterial' trait bound, got: {:?}",
             material,
             template.trait_bounds
         );
