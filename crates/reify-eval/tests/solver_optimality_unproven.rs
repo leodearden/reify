@@ -441,8 +441,8 @@ impl ConstraintSolver for ExhaustiveRankedSolver {
 /// `SolveResult::Solved { values: candidate.values, unique: candidate.unique }`.
 ///
 /// The engine consumes `completeness` read-only at task α and derives NOTHING new
-/// from it — not `unique`, not a diagnostic. Deriving from it is δ #6709's work
-/// (verdict policy) and ζ #6711's (basin identity). This test pins that: an
+/// from it — not `unique`, not a diagnostic. Deriving from it is δ #6709 → #6901's
+/// work (verdict policy) and ζ #6711 → #6902's (basin identity). This test pins that: an
 /// `Exhaustive` verdict on a candidate whose `unique` is `false` must NOT be
 /// promoted to `unique: true`, even though C1 would permit it for a
 /// one-element set, because the engine has not been given the deduplicated

@@ -955,7 +955,7 @@ use reify_ir::completeness::SolutionSet as SolutionSetMod;
 /// PROVISIONAL (see the banner above). `SolutionSet` lands with the
 /// solution-set-completeness carrier at task α (#6706), but **nothing consumes it
 /// yet**: `RankedSolveResult::Ranked` carries a bare `completeness` field, not a
-/// `SolutionSet`, and the first real consumers are ζ #6711 (box-based basin
+/// `SolutionSet`, and the first real consumers are ζ #6711 → #6902 (box-based basin
 /// identity, which supplies the deduplicated `solutions` this struct's
 /// `proven_count`/`unique` presuppose) and PRD 2 θ #5474 (rendering the composed
 /// verdict).

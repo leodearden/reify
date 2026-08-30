@@ -6016,7 +6016,7 @@ impl Engine {
                         match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
                             // `..` drops the `completeness` verdict deliberately:
                             // the engine does not consume the completeness axis at
-                            // task α #6706. δ #6709 is the leaf that reads it (the
+                            // task α #6706. δ #6709 → #6901 is the leaf that reads it (the
                             // §3.4 verdict policy), so this is a known gap, not an
                             // oversight.
                             RankedSolveResult::Ranked {
@@ -7391,7 +7391,8 @@ impl Engine {
                 match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
                     // `..` drops the `completeness` verdict deliberately: the engine
                     // does not consume the completeness axis at task α #6706.
-                    // δ #6709 is the leaf that reads it (the §3.4 verdict policy),
+                    // δ #6709 → #6901 is the leaf that reads it (the §3.4 verdict
+                    // policy),
                     // so this is a known gap, not an oversight.
                     RankedSolveResult::Ranked {
                         mut candidates,

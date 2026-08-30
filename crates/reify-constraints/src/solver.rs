@@ -3953,7 +3953,7 @@ impl DimensionalSolver {
                     },
                     // Best-of-K multistart establishes nothing about the set: the
                     // K candidates are NOT deduplicated, so their count is not a
-                    // solution count (C5 basin identity arrives at ζ #6711).
+                    // solution count (C5 basin identity arrives at ζ #6711 → #6902).
                     completeness: reify_ir::Completeness::not_attempted(),
                 }
             }

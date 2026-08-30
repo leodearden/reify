@@ -123,7 +123,33 @@ pub struct RankedCandidate {
 /// is a solution SET, so there is nothing for the axis to describe. `Infeasible`
 /// is already the strongest emptiness claim the old vocabulary could make; the
 /// verdict that says *proven* empty and names the narrowing constraint is
-/// [`crate::Completeness::Refuted`], reachable through `Ranked`.
+/// [`crate::Completeness::Refuted`].
+///
+/// # OPEN SEAM — no arm of this enum can carry `Refuted` yet (α #6706)
+///
+/// A well-formed [`crate::Completeness::Refuted`] set carries an **empty**
+/// `solutions` (see [`crate::SolutionSet::completeness`]), while I2 requires
+/// `Ranked.candidates` to be NON-empty — enforced by always-on `assert!` at both
+/// consumption seams (reify-eval's `engine_eval.rs`, reify-constraints'
+/// `registry.rs`). So `Refuted` is representable in [`crate::SolutionSet`] but in
+/// no arm of this enum today: `Ranked { candidates: [], .. }` would violate I2,
+/// and `Infeasible`/`NoProgress` have no field to put it in.
+///
+/// That gap is deliberate at α, which ships the carrier and wires no producer.
+/// The leaf that first PRODUCES a refutation — ε #6710 → #6900, refutation by
+/// subdivision — owns the choice between the two resolutions, and must make it
+/// explicitly rather than smuggling a dummy candidate past I2 (which would be
+/// exactly the false-completeness claim this axis exists to prevent):
+///
+/// - declare `Ranked { candidates: [], completeness: Refuted { .. } }` the
+///   sanctioned I2 exemption and relax both asserts to admit precisely that
+///   shape, **or**
+/// - widen `Infeasible` to `{ diagnostics, completeness }` and route the
+///   refutation there, leaving I2 and both asserts untouched.
+///
+/// ε's charter emits the refutation BEFORE any solver iteration, which the second
+/// option fits without touching I2 — but the decision is ε's, made with its
+/// fixture in hand, not α's to pre-empt.
 #[derive(Debug, Clone)]
 pub enum RankedSolveResult {
     /// One or more ranked candidates were found.
@@ -146,7 +172,8 @@ pub enum RankedSolveResult {
         /// Producers that do not reason about the set report
         /// [`crate::Completeness::not_attempted`], which is behaviour-preserving
         /// (BT13). Note that `candidates.len()` is **not** a solution count — the
-        /// list is not deduplicated until ζ #6711 — so `completeness` must never be
+        /// list is not deduplicated until ζ #6711 → #6902 — so `completeness` must
+        /// never be
         /// combined with it to derive `unique`; see
         /// [`crate::Completeness::derived_unique`].
         completeness: crate::completeness::Completeness,

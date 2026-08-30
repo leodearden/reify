@@ -214,7 +214,7 @@ fn partial_reason_distinct_variants_compare_unequal() {
     );
 }
 
-/// `Eq` (not just `PartialEq`) is required: the composition law at ι #6715 keys
+/// `Eq` (not just `PartialEq`) is required: the composition law at ι #6715 → #6903 keys
 /// on completeness verdicts, so they must be usable as map keys / in `assert_eq!`
 /// without a partial-equivalence caveat.
 #[test]
@@ -666,4 +666,43 @@ fn refuted_describe_names_the_narrowing_constraint() {
         }
         .describe(),
     );
+}
+
+// ── SolutionSet well-formedness: a `Refuted` set holding candidates is loud ──
+
+/// (e) The `Refuted` well-formedness rule stated on `SolutionSet::completeness`
+/// is enforced, not merely advisory: `proven_count()` on a malformed `Refuted`
+/// set that still holds candidates trips a `debug_assert!` instead of silently
+/// reporting `Some(0)` beside a non-empty `solutions`.
+///
+/// `#[cfg(debug_assertions)]`-gated because `debug_assert!` compiles out in
+/// release, where the answer stays `Some(0)` read from the verdict (deliberately
+/// — see `proven_count`'s docs: returning `solutions.len()` there would re-render
+/// a refutation as a count).
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "a well-formed Refuted SolutionSet carries no solutions")]
+fn proven_count_on_malformed_refuted_trips_debug_assert() {
+    let malformed = set_of(
+        2,
+        Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0),
+        },
+    );
+    let _ = malformed.proven_count();
+}
+
+/// The well-formed `Refuted` set — the one every producer must build — is
+/// unaffected by that guard: empty `solutions`, `proven_count() == Some(0)`.
+/// Pinned separately so the guard cannot be "fixed" by making the good case panic.
+#[test]
+fn proven_count_on_well_formed_refuted_is_some_zero() {
+    let refuted = set_of(
+        0,
+        Completeness::Refuted {
+            narrowing: ConstraintNodeId::new("Bracket", 0),
+        },
+    );
+    assert!(refuted.solutions.is_empty());
+    assert_eq!(refuted.proven_count(), Some(0));
 }
