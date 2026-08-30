@@ -27,20 +27,16 @@
 //!
 //! # The hook-git-env trio
 //!
-//! The three hook-git-env tests below are one invariant in three parts. This
-//! paragraph is its ONLY home — each test points here instead of restating it,
-//! so the rule cannot drift between copies:
+//! The three hook-git-env tests below are one invariant in three parts, and
+//! this is its ONLY home — each points here instead of restating it:
 //!
-//! - `orphan_audit_survives_ambient_hook_git_env` pins that production
-//!   sanitizes.
+//! - `orphan_audit_survives_ambient_hook_git_env` — production sanitizes.
 //! - `hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat`
-//!   pins that sanitizing is what makes the difference — synthetically, with
-//!   no dependency on the production call site, so the hazard stays
-//!   demonstrable from a clean checkout.
-//! - `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` pins
-//!   that neither tightening may fire in an environment never shown able to
-//!   run the audit at all, so the first cannot buy its teeth by reddening
-//!   environments the audit could never have run in.
+//!   — sanitizing is what makes the difference, demonstrated synthetically so
+//!   the hazard stays visible from a clean checkout.
+//! - `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` —
+//!   neither tightening may fire where the audit was never shown able to run,
+//!   so the first cannot buy its teeth by reddening supported environments.
 //!
 //! None can notice another going vacuous. Retire them together or not at all.
 
@@ -58,19 +54,15 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
     // innocent reading; the graceful-skip path below is untouched everywhere
     // else, including in a child stamped with the plain mark.
     //
-    // What this catches that the replay's own child-exit-status assertion
-    // cannot: a skip is a `return`, and libtest has no skipped state, so a
-    // skipping child exits 0 reporting `1 passed`. From the parent that is
-    // indistinguishable from a real run — `replay_with_mark`'s status check,
-    // its `passed + ignored == listed` check and its floor check ALL hold on a
-    // replay that exercised nothing. Only the child can tell the two apart,
-    // and only by refusing to skip. That vacuous green is not hypothetical: it
-    // is what `run_orphan_audit` did on a wrong-tree redirect until task 5698
-    // made the case a panic ("Before task 5698 this returned `None` exactly
-    // like the excluded-crate case" — reify-test-support's own doc). Today the
-    // poison dies in that panic, earlier than here, so this branch is
-    // unreachable; it is kept because what makes it unreachable is one probe
-    // in another crate, not this function's contract.
+    // What this catches that the replay's child-exit-status assertion cannot:
+    // a skip is a `return`, and libtest has no skipped state, so a skipping
+    // child exits 0 reporting `1 passed` — indistinguishable from a real run,
+    // and `replay_with_mark`'s status, `passed + ignored == listed` and floor
+    // checks ALL hold on a replay that exercised nothing. Only the child can
+    // tell the two apart, by refusing to skip. Not hypothetical: it is what
+    // `run_orphan_audit` did on a wrong-tree redirect until task 5698 made
+    // that case a panic. That panic — one probe in another crate, not this
+    // function's contract — is the only thing making this branch unreachable.
     if audit.is_none() && common::git_env::replay_child_expects_envelope() {
         panic!(
             "run_orphan_audit returned None inside a replay child stamped with \
@@ -239,20 +231,14 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 ///
 /// # What is and is not covered
 ///
-/// One skip cause, the PATH-deprived one. `run_orphan_audit` has others — a
-/// `repo_root` outside any git work tree, the script absent from disk — and
-/// neither half induces them. That is a bounded claim rather than a hole: the
-/// tightening branches on the MARK and never on the cause, so any one cause
-/// exercises the whole discrimination.
-///
-/// The PATH-deprived cause is also the cheap one to induce from a child spawn.
-/// The work-tree cause is NOT reachable by pointing the child's `current_dir`
-/// at a non-git tempdir: `run_orphan_audit` resolves `repo_root` at compile
-/// time from `env!("CARGO_MANIFEST_DIR")` and runs its work-tree probe with
-/// `.current_dir(repo_root)`, so the child's own cwd never enters it. Inducing
-/// it would take a separate mechanism (a var outside
-/// `REPO_REDIRECT_VARS`, or a relocated checkout) for no added
-/// discrimination.
+/// One skip cause, the PATH-deprived one. `run_orphan_audit` has others (a
+/// `repo_root` outside any git work tree, the script absent from disk) and
+/// neither half induces them — a bounded claim rather than a hole, since the
+/// tightening branches on the MARK and never on the cause. The work-tree cause
+/// is in particular NOT reachable by pointing the child's `current_dir` at a
+/// non-git tempdir: `run_orphan_audit` resolves `repo_root` at compile time
+/// from `env!("CARGO_MANIFEST_DIR")` and probes with `.current_dir(repo_root)`,
+/// so the child's own cwd never enters it.
 ///
 /// # The two halves
 ///
@@ -276,10 +262,10 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// (`crates/reify-test-support/src/orphan_audit.rs`), so keying on it adds no
 /// cross-tool coupling, and it is what ATTRIBUTES each half to the deprived
 /// fixture: without it, half A could pass green-for-the-wrong-reason on a
-/// machine where the audit genuinely ran and succeeded. It is the suffix EVERY
-/// skip note shares, rather than the python3 probe's own wording, so
-/// reordering `run_orphan_audit_detailed`'s probes — the empty `PATH` hides
-/// `git` as well — would move this test onto a different skip cause instead of
+/// machine where the audit genuinely ran and succeeded. Keying on the suffix
+/// EVERY skip note shares, rather than on the python3 probe's own wording,
+/// means reordering `run_orphan_audit_detailed`'s probes (the empty `PATH`
+/// hides `git` too) moves this test onto another skip cause instead of
 /// reddening it on an assertion that is not the property under test.
 ///
 /// The counts come from libtest's summary rather than from the tightening
