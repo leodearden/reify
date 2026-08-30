@@ -1,8 +1,8 @@
 //! Cache-aware gating helpers for the `OnlyRunOnFinalInputs` scheduling policy.
 //!
 //! Provides stateless helpers that classify whether a candidate node's
-//! dependency inputs are all-Final, per arch §7.3 lines 762–767 and §3.5
-//! line 436 ("freshness propagation can unlock gated work").
+//! dependency inputs are all-Final, per arch §7.3 and §3.5 ("freshness
+//! propagation can unlock gated work").
 //!
 //! ## Layering
 //!
@@ -67,7 +67,8 @@ fn entry_has_non_final_inputs(cache: &CacheStore, entry: &NodeCache) -> bool {
 /// The integration-test witness is
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
-/// See arch §7.3 lines 762–767 and §3.5 line 436.
+/// See arch §7.3 and §3.5.
+// G-allow: no production consumer; scheduler deleted, see module doc above
 pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
     match cache.get(node) {
         Some(entry) => entry_has_non_final_inputs(cache, entry),
@@ -84,8 +85,7 @@ pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
 ///
 /// The "must have a cache entry" requirement distinguishes "newly unblocked
 /// because the freshness walk transitioned its inputs" from the cold-start
-/// case where the node simply has never been evaluated.  See arch §3.5 line
-/// 436.
+/// case where the node simply has never been evaluated.  See arch §3.5.
 ///
 /// Each candidate performs exactly one `cache.get` lookup (via the shared
 /// [`entry_has_non_final_inputs`] kernel), avoiding the redundant double-lookup
@@ -100,7 +100,8 @@ pub fn has_non_final_inputs(cache: &CacheStore, node: &NodeId) -> bool {
 /// The integration-test witness is
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 ///
-/// See arch §3.5 line 436 ("freshness propagation can unlock gated work").
+/// See arch §3.5 ("freshness propagation can unlock gated work").
+// G-allow: no production consumer; scheduler deleted, see module doc above
 pub fn unblocked_gated_nodes<'a, I>(cache: &CacheStore, gated: I) -> HashSet<NodeId>
 where
     I: IntoIterator<Item = &'a NodeId>,
