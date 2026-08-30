@@ -1133,6 +1133,169 @@ class TestGrammarCacheIsolation(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# task-5925 (RED): the cache-dir DERIVATION contract
+# ---------------------------------------------------------------------------
+
+class TestGrammarCacheHome(unittest.TestCase):
+    """Pins pcc._grammar_cache_home(repo_root).  Hermetic: no subprocess.
+
+    TestGrammarCacheIsolation proves "not the ambient dir".  That is necessary
+    and NOT sufficient: it says nothing about the two properties that actually
+    defeat the hazard.
+
+      * CROSS-LANE SEPARATION.  ~235 linked worktrees share one .git and one
+        host cache.  If every lane derived the same dir, every lane would still
+        share one reify.so and the relocation would buy nothing.
+      * FINGERPRINT SEPARATION.  tree-sitter invalidates its compiled grammar on
+        SOURCE MTIME, and warm-lane seeding stamps mtimes — so mtime is not a
+        trustworthy staleness signal here.  A content-derived key makes a
+        changed grammar a new directory by construction instead.
+
+    Asserted against the pure derivation, not through a subprocess, so a failure
+    names the derivation rather than the plumbing.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_test_")
+        self._made = []
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        for path in self._made:
+            shutil.rmtree(path, ignore_errors=True)
+
+    def _fake_repo(self, name: str, fingerprint: str = None) -> str:
+        """A synthetic repo root, optionally carrying a grammar-hash stamp."""
+        root = os.path.join(self._tmpdir, name)
+        src = os.path.join(root, "tree-sitter-reify", "src")
+        os.makedirs(src, exist_ok=True)
+        if fingerprint is not None:
+            with open(os.path.join(src, ".grammar_hash.stamp"), "w") as f:
+                f.write(fingerprint + "\n")
+        return root
+
+    def _cache_home(self, repo_root: str) -> str:
+        """Call the derivation with no REIFY_TS_CACHE_HOME override in effect."""
+        with unittest.mock.patch.dict(os.environ, {}):
+            os.environ.pop("REIFY_TS_CACHE_HOME", None)
+            path = pcc._grammar_cache_home(repo_root)
+        self._made.append(path)
+        return path
+
+    # ── (a) stable → the compile is amortised ─────────────────────────────────
+
+    def test_cache_home_stable_for_same_repo_root(self):
+        """Same repo_root + unchanged fingerprint → the SAME path.
+
+        The amortisation property: every probe in one process, and every process
+        in one lane, must share one compiled reify.so.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+        self.assertEqual(self._cache_home(root), self._cache_home(root))
+
+    # ── (b) THE core assertion: cross-lane collision is impossible ────────────
+
+    def test_cache_home_differs_across_repo_roots(self):
+        """Two DIFFERENT repo roots (same fingerprint) → DIFFERENT paths.
+
+        This is the collision the task exists to kill: without a path component
+        every lane on the host lands on one cache and a patched build in any
+        other lane silently answers this lane's parses.
+        """
+        fingerprint = "a" * 64
+        a = self._fake_repo("lane_a", fingerprint)
+        b = self._fake_repo("lane_b", fingerprint)
+        self.assertNotEqual(
+            self._cache_home(a), self._cache_home(b),
+            "two worktrees of the same store must not share a grammar cache",
+        )
+
+    # ── (c) closes the mtime-stamping hole ────────────────────────────────────
+
+    def test_cache_home_differs_on_grammar_change(self):
+        """Same repo_root, different grammar fingerprint → DIFFERENT paths.
+
+        tree-sitter's own invalidation is mtime-based and warm-lane seeding
+        stamps mtimes, so a content-derived key is what actually makes a changed
+        grammar a new cache rather than a stale hit.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+        before = self._cache_home(root)
+        with open(os.path.join(root, "tree-sitter-reify", "src",
+                               ".grammar_hash.stamp"), "w") as f:
+            f.write("b" * 64 + "\n")
+        after = self._cache_home(root)
+        self.assertNotEqual(
+            before, after,
+            "a changed grammar must land in a new cache dir; mtime-based "
+            "invalidation is unreliable under warm-lane mtime stamping",
+        )
+
+    # ── (d) it lives under $TMPDIR, never in the shared home cache ────────────
+
+    def test_cache_home_under_tmpdir_and_not_home_cache(self):
+        """The dir is under tempfile.gettempdir() and is not ~/.cache."""
+        root = self._fake_repo("lane_a", "a" * 64)
+        path = self._cache_home(root)
+        tmp = tempfile.gettempdir()
+        self.assertTrue(
+            os.path.abspath(path).startswith(os.path.abspath(tmp) + os.sep),
+            f"cache dir must live under {tmp!r}; got {path!r}",
+        )
+        home_cache = os.path.expanduser("~/.cache")
+        self.assertNotEqual(path, home_cache)
+        self.assertFalse(
+            path.startswith(home_cache),
+            f"cache dir must not be inside {home_cache!r}; got {path!r}",
+        )
+
+    # ── (e) a lane with no generated grammar must not crash the harness ───────
+
+    def test_cache_home_missing_fingerprint_sources_ok(self):
+        """A repo_root with NO tree-sitter-reify/src/ still yields a usable path.
+
+        A fresh warm lane has not generated the grammar yet (parser.c is
+        gitignored and absent). It must land in the empty-fingerprint bucket,
+        not raise — grammar_substrate_usable() is called at test-harness import
+        time, where a raise costs the whole suite instead of one skip.
+        """
+        root = os.path.join(self._tmpdir, "no_grammar_here")
+        os.makedirs(root, exist_ok=True)
+        self.assertFalse(os.path.exists(os.path.join(root, "tree-sitter-reify")))
+        path = self._cache_home(root)
+        self.assertTrue(path)
+        self.assertTrue(os.path.isdir(path))
+
+    # ── (f) the operator escape hatch ─────────────────────────────────────────
+
+    def test_cache_home_env_override_honoured(self):
+        """A non-empty REIFY_TS_CACHE_HOME is used verbatim, and created.
+
+        The debug seam: an operator inspecting or sharing a cache, and the pin an
+        interactive session can set, without having to reverse the hash.
+        """
+        root = self._fake_repo("lane_a", "a" * 64)
+        override = os.path.join(self._tmpdir, "operator_pinned_cache")
+        self.assertFalse(os.path.exists(override))
+        with unittest.mock.patch.dict(
+            os.environ, {"REIFY_TS_CACHE_HOME": override}
+        ):
+            path = pcc._grammar_cache_home(root)
+        self.assertEqual(path, override, "override must be used verbatim")
+        self.assertTrue(os.path.isdir(path), "override dir must be created")
+
+    # ── (g) the returned dir is real and writable ─────────────────────────────
+
+    def test_cache_home_creates_directory(self):
+        """The returned path exists and is writable after the call."""
+        root = self._fake_repo("lane_a", "a" * 64)
+        path = self._cache_home(root)
+        self.assertTrue(os.path.isdir(path), f"must exist; got {path!r}")
+        self.assertTrue(os.access(path, os.W_OK), f"must be writable; got {path!r}")
+
+
+
+# ---------------------------------------------------------------------------
 # step-11 (RED): harness exit-code aggregation
 # ---------------------------------------------------------------------------
 
