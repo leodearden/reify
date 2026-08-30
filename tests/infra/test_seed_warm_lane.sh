@@ -5567,10 +5567,13 @@ W1_OUT="$OUT"
 assert "W1: --fresh-checkout invokes git-rerere-guard.sh (--is-inside-work-tree seen)" \
     bash -c 'grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
 
-# W2 (b): NOT invoked on --reset-in-place. That arm is test-only (the B13
-# warmth-delta control); per D10 always-re-seed-at-acquire, production acquires
-# — task lanes AND merge-spec slots — ALWAYS use --fresh-checkout, so gating on
-# $FRESH_CHECKOUT covers 100% of the production path while keeping this arm inert.
+# W2 (b): NOT invoked on --reset-in-place, which pins the mode gate. That gate
+# covers every TASK-lane acquire (dark-factory drives those through
+# _seed_warm_lane(lane, '--fresh-checkout')), but NOT the merge-spec lane —
+# measured 2026-08-30, acquire_spec_lane always passes --reset-in-place. That is
+# harmless here because the pin is a property of the ONE shared .git/config, not
+# of a lane: any acquire that pins it pins it for every lane. See the mode-gate
+# comment in scripts/seed-warm-lane.sh for the full measurement.
 # Same fixture shape as Block E's --reset-in-place run.
 W_LANE2="$(make_isolated_lane W-reset)"
 mkdir -p "$W_LANE2/src"
@@ -5581,7 +5584,7 @@ RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
 
 assert "W2: --reset-in-place exits 0 (fixture sanity)" \
     test "$RC" -eq 0
-assert "W2: --reset-in-place does NOT invoke git-rerere-guard.sh (test-only arm)" \
+assert "W2: --reset-in-place does NOT invoke git-rerere-guard.sh (mode gate)" \
     bash -c '! grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
 
 # W3 (c): FAIL-OPEN. Under the stub `git` the guard exits 1 (measured above), so

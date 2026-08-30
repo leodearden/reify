@@ -1643,13 +1643,25 @@ fi
 # so once the store is pinned each acquire pays only a read-only sweep — measured
 # at 0.249s from a lane on the live 254-worktree store.
 #
-# MODE GATE — $FRESH_CHECKOUT, not a new flag. --reset-in-place is a TEST-ONLY
-# control arm (the B13 warmth-delta test) whose lane was built at its own path,
-# while per D10 always-re-seed-at-acquire production acquires — task lanes AND
-# merge-spec slots — ALWAYS use --fresh-checkout. So this gate covers 100% of
-# the production ACQUIRE path while keeping the test-only arm inert, reusing the
-# discriminator the script already switches on at the three sites above rather
-# than inventing a mode flag for it.
+# MODE GATE — $FRESH_CHECKOUT, not a new flag. It reuses the discriminator this
+# script already switches on at the three sites above rather than inventing a
+# mode flag, and it covers every TASK-lane acquire: dark-factory drives those
+# through _seed_warm_lane(lane, '--fresh-checkout') at seven call sites in
+# orchestrator/src/orchestrator/git_ops.py.
+#
+# It does NOT cover the merge-spec lane. MEASURED 2026-08-30, correcting the
+# claim in this script's own --reset-in-place block below (and in the PRD prose
+# it quotes) that production acquires "task lanes AND merge-spec slots" always
+# use --fresh-checkout: acquire_spec_lane (git_ops.py:5923) calls
+# _seed_warm_lane(lane, '--reset-in-place') at :6076, at an indent common to
+# BOTH its create and its reset branch — so the merge-spec acquire is
+# ALWAYS --reset-in-place and never reaches this block.
+#
+# That gap is harmless for THIS defence, which is why the gate stays as it is:
+# the pin is a property of the ONE shared .git/config, not of a lane, so any
+# acquire that pins it pins it for every lane including the spec lane — and
+# task-lane acquires dominate by volume. It would matter for a lane-scoped
+# write; it does not for a shared-store one.
 if [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ] \
         && [ -x "$_SCRIPT_DIR/git-rerere-guard.sh" ]; then
     _rerere_arm_rc=0
