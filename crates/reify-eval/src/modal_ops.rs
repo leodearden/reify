@@ -795,7 +795,10 @@ struct GeneralizedEigenOutcome {
 /// # Singular `K_free` is measured, not predicted
 ///
 /// Above the small regime this calls [`try_solve_eigen_shift_invert`], whose
-/// `None` means EXACTLY "`K` is not SPD". That is a direct measurement, so the
+/// `None` means EXACTLY "`K` is not SPD" — the non-positive-pivot arm of faer's
+/// Cholesky error, with a resource failure (out of memory / index overflow)
+/// panicking there rather than arriving here disguised as an under-constrained
+/// model. That is a direct measurement, so the
 /// ≥6-but-rank-deficient edge this function's doc previously deferred as a
 /// follow-up is now CLOSED — and closed at zero cost, because the `try_` variant
 /// factors `K` once and reuses that factorization on the healthy path. A
@@ -835,7 +838,9 @@ fn solve_generalized_eigen(
     }
 
     // Well-posed models: shift-invert Lanczos, exactly as before. `None` is the
-    // one non-contract outcome — K is not SPD.
+    // one non-contract outcome — K is not SPD. A resource failure inside the
+    // factorization panics there instead of returning `None`, so the
+    // under-constrained branch below is never reached by an allocation problem.
     if !force_dense
         && let Some(result) = try_solve_eigen_shift_invert(k_free, m_free, opts.clone())
     {

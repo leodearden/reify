@@ -15,8 +15,9 @@
 //!   `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back to
 //!   dense when the Krylov window would exceed the problem dimension.
 //! - [`try_solve_eigen_shift_invert`] — the same solve, returning `None`
-//!   instead of panicking when `K` is not SPD (task 6663; for callers that can
-//!   legitimately be handed an under-constrained system).
+//!   instead of panicking when `K` is not SPD, and ONLY then: a non-numeric
+//!   Cholesky failure (out of memory / index overflow) still panics (task 6663;
+//!   for callers that can legitimately be handed an under-constrained system).
 //! - [`lanczos_shift_invert`] — generic Lanczos core operating over arbitrary
 //!   [`StiffnessOp`] / [`MetricOp`] operator pairs; no dense fallback (caller
 //!   is responsible for small-problem dispatch).
@@ -87,6 +88,7 @@ use faer::matrix_free::LinOp;
 use faer::matrix_free::eigen::{
     PartialEigenParams, partial_self_adjoint_eigen, partial_self_adjoint_eigen_scratch,
 };
+use faer::sparse::linalg::LltError as SparseLltError;
 use faer::sparse::{SparseRowMat, SparseRowMatRef};
 use faer::sparse::linalg::solvers::Llt;
 use faer::reborrow::ReborrowMut;
@@ -646,8 +648,12 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 ///
 /// # Panics
 ///
-/// - K is not SPD (Cholesky failure → panic with descriptive message, matching
-///   Task-2544 panic-on-contract convention)
+/// - K is not SPD (numeric Cholesky failure → panic with descriptive message,
+///   matching Task-2544 panic-on-contract convention)
+/// - The sparse Cholesky fails for a NON-numeric reason (`LltError::Generic`:
+///   `OutOfMemory` / `IndexOverflow`). That panic is raised inside
+///   [`try_solve_eigen_shift_invert`] and names the resource failure, so it is
+///   never mistaken for the "K must be SPD" message below.
 /// - See also [`check_eigen_options_and_shapes`]
 ///
 /// A caller that can legitimately be handed a singular `K` — an
@@ -666,11 +672,17 @@ pub fn solve_eigen_shift_invert(
 /// the up-front sparse Cholesky of `K` fails.
 ///
 /// `None` means EXACTLY ONE thing — `K` is not SPD (`sp_cholesky` returned
-/// `Err`). Every other precondition is still a hard contract and still panics
-/// via [`check_eigen_options_and_shapes`] (bad `n_modes`, shape mismatch, …),
-/// so `None` is never ambiguous between "singular K" and "caller bug". That is
+/// `LltError::Numeric`, i.e. a non-positive pivot). Every other precondition is
+/// still a hard contract and still panics: the option/shape preconditions via
+/// [`check_eigen_options_and_shapes`] (bad `n_modes`, shape mismatch, …), and a
+/// `LltError::Generic` factorization failure (`FaerError::OutOfMemory` /
+/// `IndexOverflow`) via an explicit panic at the match. `None` is therefore never
+/// ambiguous between "singular K", "caller bug" and "out of memory", which is
 /// what makes it safe for a caller to treat `None` as the domain fact "this
-/// model is under-constrained" rather than as a generic failure.
+/// model is under-constrained" rather than as a generic failure. That
+/// enforcement matters most on the large-mesh path: mapping an allocation
+/// failure to `None` would surface it as
+/// `W_ModalRigidBodyMode: K_free is singular (the model is under-constrained)`.
 ///
 /// The factorization is performed exactly ONCE: on `Some` the very same `llt`
 /// feeds [`SparseStiffnessOp`], so the healthy path pays no extra cost relative
@@ -681,8 +693,11 @@ pub fn solve_eigen_shift_invert(
 ///
 /// # Panics
 ///
-/// - See [`check_eigen_options_and_shapes`]. A non-SPD `K` does NOT panic here;
-///   it is the `None` return.
+/// - See [`check_eigen_options_and_shapes`].
+/// - The sparse Cholesky fails with `LltError::Generic` (`OutOfMemory` /
+///   `IndexOverflow`) — a resource/index failure, not a property of the model.
+///
+/// A non-SPD `K` does NOT panic here; it is the `None` return.
 pub fn try_solve_eigen_shift_invert(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
@@ -691,9 +706,29 @@ pub fn try_solve_eigen_shift_invert(
     check_eigen_options_and_shapes(k, b, &opts);
     let n = k.nrows();
 
-    // Factor K via sparse Cholesky. A failure here means K is not SPD — the one
-    // condition this entry point reports rather than panics on.
-    let llt = k.sp_cholesky(Side::Lower).ok()?;
+    // Factor K via sparse Cholesky. A NUMERIC failure here means K is not SPD —
+    // the one condition this entry point reports rather than panics on.
+    //
+    // The error is MATCHED rather than `.ok()?`'d so that `None` really does
+    // mean only that. faer's sparse `LltError` also carries a `Generic` arm
+    // (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those to `None`
+    // would let a resource failure factorizing a large `K_free` surface to the
+    // user as `W_ModalRigidBodyMode: K_free is singular (the model is
+    // under-constrained)` — a confidently wrong diagnosis of an allocation
+    // problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
+    // serve. A `Generic` failure is not a domain fact about the model, so it
+    // keeps the panicking contract.
+    let llt = match k.sp_cholesky(Side::Lower) {
+        Ok(llt) => llt,
+        // K is not SPD (a non-positive pivot) — the documented `None`.
+        Err(SparseLltError::Numeric(_)) => return None,
+        Err(e @ SparseLltError::Generic(_)) => panic!(
+            "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
+             ({e:?}) — this is a resource/index failure (allocation or index \
+             overflow), NOT an under-constrained model; do not report it as a \
+             rigid-body mode"
+        ),
+    };
 
     // Dense-fallback dispatch (sparse-matrix-specific; not in the generic).
     // faer's partial_self_adjoint_eigen_imp requires max_dim < n strictly.

@@ -9,6 +9,15 @@
 //!   1. **`None` means EXACTLY "`K` is not SPD".** A stiffness matrix carrying a
 //!      free (zero-stiffness) DOF — the shape an under-constrained modal model
 //!      assembles — returns `None` instead of panicking in `sp_cholesky`.
+//!      "EXACTLY" is enforced by matching faer's error rather than `.ok()?`-ing
+//!      it: only `LltError::Numeric` (non-positive pivot) becomes `None`, while
+//!      `LltError::Generic` (`OutOfMemory` / `IndexOverflow`) still panics, so a
+//!      resource failure on a large mesh cannot be reported to the user as
+//!      `W_ModalRigidBodyMode: K_free is singular`. The `Generic` arm is NOT
+//!      pinned by a test here: faer offers no hook to inject an allocation or
+//!      index-overflow failure, and provoking a real OOM in a merge-gate test is
+//!      not a trade worth making. The arm is a one-line `panic!` immediately
+//!      beside the `None` it is distinguished from.
 //!   2. **`Some` is bit-identical to `solve_eigen_shift_invert`.** On SPD `K` the
 //!      two entry points stay numerically interchangeable, so the healthy path
 //!      returns the same numbers and callers can swap one for the other freely.
@@ -112,6 +121,10 @@ fn expected_5() -> [f64; 5] {
 // ---------------------------------------------------------------------------
 
 /// A singular `K` (one zero-stiffness DOF) must return `None`, not panic.
+///
+/// This is the `LltError::Numeric` (non-positive pivot) arm — the ONLY one that
+/// maps to `None`; see this file's module doc for why the `Generic` arm is
+/// unpinned.
 ///
 /// `solve_eigen_shift_invert` on this same pair panics — that is its documented
 /// contract ("K is not SPD → panic with descriptive message"), and it is what
