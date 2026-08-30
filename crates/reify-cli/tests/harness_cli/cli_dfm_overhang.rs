@@ -244,3 +244,94 @@ fn check_dfm_overhang_error_emits_e_dfm_overhang_under_occt() {
          Error, not Warning.\nstderr: {stderr}"
     );
 }
+
+/// OCCT-gated CONTRACT GUARD (task 6667): `reify check` output must be
+/// UNCHANGED by the surface-attribution emissions.
+///
+/// Task 6667 makes a non-measuring surface (the GUI, `reify build`, `reify
+/// eval`) say WHY a geometric `Conforms` is Indeterminate and why a declared
+/// `DFMRule` produced nothing, reusing task 6169 (ζ)'s `Severity::Info` +
+/// `ConstraintIndeterminate` channel. Both emissions are gated on
+/// `Engine::realization_handles` being EMPTY. `reify check` runs
+/// `realize_for_check` (`main.rs:919`) BEFORE `check()` reaches either pass, so
+/// on an OCCT build both gates are false and this surface gains nothing.
+///
+/// This is the direct mirror of ζ's own "`reify check` OUTPUT MUST BE
+/// UNCHANGED" contract (`cli_representation_within.rs`'s
+/// `check_surface_verdict_is_unchanged_for_build_surface_fixture`), and it is
+/// the ONE assertion that would catch a gate keyed on the wrong engine field —
+/// e.g. `achieved_repr_tol.is_empty()`, which is genuinely empty on a DFM-only
+/// `reify check` and would therefore fire here.
+///
+/// The fixture's own expectations are re-asserted alongside, so a regression in
+/// the MEASUREMENT path (not just the attribution) is caught here too: silently
+/// losing the `W_DFM_OVERHANG` would otherwise satisfy the absence assertions
+/// perfectly.
+///
+/// ## Stub mode is a DELIBERATE, ACCEPTED change — documented, not asserted
+///
+/// Without OCCT, `realize_for_check` produces no handles, so both gates DO
+/// fire and `reify check` gains an `info:` line naming OCCT as the remedy.
+/// That is intended: a stub-mode run genuinely cannot measure, and saying so is
+/// the whole point. It has direct ζ precedent — ζ's own arm 1 changed stub-mode
+/// `reify check` output the same way. The test is gated rather than asserting
+/// the stub-mode line because the contract being pinned is about the MEASURING
+/// surface.
+///
+/// Audited while here (task 6667 step-7): every stderr assertion in this file
+/// and in `cli_gdt_legality.rs` is `contains(...)` / `!contains(...)` /
+/// `matches(<specific needle>).count()`. None asserts an exact stderr body or a
+/// line count, and none uses a needle the new message contains, so all of them
+/// survive an added `info:` line unmodified. No widening was needed.
+#[test]
+fn check_surface_emits_no_unmeasured_attribution_for_dfm_or_gdt() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping check_surface_emits_no_unmeasured_attribution_for_dfm_or_gdt: \
+             OCCT unavailable (stub-mode build). Without a kernel nothing realizes, \
+             so the task-6667 gates DO fire and an `info:` line is expected — a \
+             deliberate change with direct ζ precedent, documented in this test's \
+             doc comment rather than asserted."
+        );
+        return;
+    }
+
+    let path = common::fixture_path("dfm_with_repr_within.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    assert!(
+        status.success(),
+        "`reify check` on the combined fixture must still exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // ── The task-6667 tokens must be ABSENT on the measuring surface ─────────
+    assert!(
+        !stderr.contains("does not measure DFM rules"),
+        "`reify check` realizes before this pass, so the DFM attribution gate \
+         must be closed. Its firing here means the gate is keyed on the wrong \
+         engine field.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("does not measure geometric conformance"),
+        "same for the GD&T attribution gate — `realize_for_check` populates \
+         `realization_handles` before `check()` reaches that pass.\nstderr: {stderr}"
+    );
+
+    // ── The fixture's existing expectations still hold ───────────────────────
+    //
+    // Without these, a regression that silently stopped measuring DFM rules
+    // altogether would satisfy the absence assertions above perfectly.
+    let dfm_count = stderr.matches("W_DFM_OVERHANG").count();
+    assert_eq!(
+        dfm_count, 1,
+        "OCCT mode: exactly one W_DFM_OVERHANG must still be measured — the \
+         absence assertions above are only meaningful if the measurement path \
+         is still alive.\ngot {dfm_count} occurrences.\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "the RepresentationWithin assertions must still be Satisfied.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
