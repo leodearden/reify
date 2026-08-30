@@ -375,3 +375,196 @@ fn ok_fixture_is_silent_and_reports_both_relations_verified() {
             .collect::<Vec<_>>()
     );
 }
+
+// ── Invariant V1: the auto-ful path is unperturbed ───────────────────────────
+//
+// Step-8 widened `solve_scopes`' filter, which changed WHICH structures join the
+// single shared `realize_structures` sub-build: `all_refs` now also carries every
+// zero-auto scope's operand structures, so `sub_module.templates.retain(...)`
+// retains more and the sub-build mutates more engine state than before.
+//
+// That is a real change to a shared input, so V1 ("auto-ful scopes behave exactly
+// as before") needs an explicit pin rather than an assumption. The argument that it
+// holds is that `realize_structures` builds each structure STANDALONE in its own
+// identity frame and `resolve_operands` looks datums up by `(structure, member)`,
+// so adding structures adds map entries without altering existing ones — but that
+// is reasoning, and this is the measurement.
+
+/// The §1 `Bolt`/`Plate` structures plus an auto-ful `BoltPlate` scope, built from
+/// the same self-contained primitives as `examples/geometric_relations/bolt_plate.ri`
+/// and `relate_solve_e2e.rs`'s fixture.
+const AUTOFUL_SOURCE: &str = r#"
+structure Bolt {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+    let seat = rectangle(12mm, 12mm)
+    let seat_plane : Plane = seat.plane
+}
+
+structure Plate {
+    let body = box(40mm, 40mm, 5mm)
+    let hole = cylinder(3.2mm, 5mm)
+    let hole_axis : Axis = hole.axis
+    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane
+}
+
+structure BoltPlate {
+    sub bolt : Bolt at auto
+    sub plate : Plate
+    relate {
+        concentric(bolt.shank_axis, plate.hole_axis)
+        flush(bolt.seat_plane, plate.top_plane)
+    }
+}
+"#;
+
+/// A zero-auto relate scope appended to [`AUTOFUL_SOURCE`], reusing the SAME two
+/// leaf structures — so the two scopes genuinely share the realization set and the
+/// test measures interference rather than two independent builds sitting side by
+/// side.
+const ZERO_AUTO_COMPANION: &str = r#"
+structure FixedPair {
+    sub a : Bolt
+    sub b : Plate
+    relate {
+        concentric(a.shank_axis, b.hole_axis)
+    }
+}
+"#;
+
+/// Run `solve_scopes` over `source` and return the named scope's solution.
+fn solution_for(source: &str, scope_name: &str) -> reify_eval::relate_solve::RelateSolution {
+    static_solution(source, scope_name)
+}
+
+/// **V1** — an auto-ful scope solves identically whether or not a zero-auto relate
+/// scope shares the module (and therefore the shared realization sub-build).
+///
+/// The comparison is against the SAME scope compiled in a module that contains no
+/// zero-auto scope at all, so the reference is the pre-step-8 behaviour rather than
+/// a hand-copied constant that could drift.
+///
+/// `static_facts == None` on the auto-ful entry is asserted too: that `Option` is
+/// the discriminator ζ (#5420) uses to tell a SOLVED scope from a
+/// STATICALLY-VERIFIED one, and the two render as different ledger rows.
+#[test]
+fn autoful_scope_is_unperturbed_by_a_zero_auto_scope_in_the_same_module() {
+    if skip_without_occt("autoful_scope_is_unperturbed_by_a_zero_auto_scope_in_the_same_module") {
+        return;
+    }
+
+    let alone = solution_for(AUTOFUL_SOURCE, "BoltPlate");
+    let with_companion = solution_for(
+        &format!("{AUTOFUL_SOURCE}{ZERO_AUTO_COMPANION}"),
+        "BoltPlate",
+    );
+
+    assert_eq!(
+        with_companion.static_facts, None,
+        "an auto-ful scope is SOLVED, not statically verified — `static_facts` must \
+         stay `None` so ζ can tell the two apart"
+    );
+    assert!(
+        with_companion.diagnostics.is_empty(),
+        "the auto-ful solve must stay silent; got {:?}",
+        with_companion
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.message.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    // DOF accounting is exact integer codimension, so these compare exactly.
+    assert_eq!(
+        (
+            with_companion.driving,
+            with_companion.redundant,
+            with_companion.spent,
+            with_companion.free
+        ),
+        (alone.driving, alone.redundant, alone.spent, alone.free),
+        "the DOF partition must not move when a zero-auto scope joins the shared \
+         realization build"
+    );
+    assert_eq!(
+        with_companion.driving, 2,
+        "fixture guard: concentric + flush must both drive, or this test is \
+         comparing two degenerate solves"
+    );
+
+    // And the solved placement itself.
+    let pose_alone = alone
+        .poses
+        .get("bolt")
+        .and_then(reify_constraints::relate_solve::pose_from_frame)
+        .expect("the lone auto-ful module must place `bolt`");
+    let pose_with = with_companion
+        .poses
+        .get("bolt")
+        .and_then(reify_constraints::relate_solve::pose_from_frame)
+        .expect("the auto-ful scope must still place `bolt` alongside a zero-auto scope");
+
+    // The bound is the solver's own convergence rung: two runs of the same solve
+    // agree to at least that, and anything coarser would not be a perturbation
+    // test at all.
+    let tol = reify_constraints::relate_solve::RelateTolerance::kernel_default()
+        .solver_convergence();
+    for axis in 0..3 {
+        assert!(
+            (pose_with.translation[axis] - pose_alone.translation[axis]).abs() <= tol,
+            "translation axis {axis} moved by {} (tol {tol}): {:?} vs {:?}",
+            (pose_with.translation[axis] - pose_alone.translation[axis]).abs(),
+            pose_with.translation,
+            pose_alone.translation
+        );
+        assert!(
+            (pose_with.rotation[axis] - pose_alone.rotation[axis]).abs() <= tol,
+            "rotation axis {axis} moved by {} (tol {tol}): {:?} vs {:?}",
+            (pose_with.rotation[axis] - pose_alone.rotation[axis]).abs(),
+            pose_with.rotation,
+            pose_alone.rotation
+        );
+    }
+}
+
+/// The companion half of the same measurement: the zero-auto scope in that shared
+/// module is itself verified correctly, so the co-presence is exercised in BOTH
+/// directions rather than only from the auto-ful side.
+///
+/// `FixedPair`'s two subs realize the SAME leaf structures the auto-ful scope uses,
+/// and their local datums are both at the origin (neither leaf translates), so the
+/// relation genuinely holds and the scope is silent.
+#[test]
+fn zero_auto_scope_is_verified_alongside_an_autoful_scope() {
+    if skip_without_occt("zero_auto_scope_is_verified_alongside_an_autoful_scope") {
+        return;
+    }
+
+    let solution = solution_for(
+        &format!("{AUTOFUL_SOURCE}{ZERO_AUTO_COMPANION}"),
+        "FixedPair",
+    );
+
+    assert_eq!(
+        solution.static_facts,
+        Some(reify_eval::relate_solve::StaticRelateFacts {
+            verified: 1,
+            violated: 0,
+            unverifiable: 0,
+        }),
+        "the zero-auto scope must be MEASURED (not skipped, not unverifiable) even \
+         when it shares a module and a realization build with an auto-ful scope; \
+         got diagnostics {:?}",
+        solution
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.message.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(solution.diagnostics.is_empty());
+    assert!(
+        solution.poses.is_empty(),
+        "a zero-auto scope determines no placement"
+    );
+}
