@@ -147,6 +147,23 @@
 #include <Interface_Static.hxx>
 #include <Standard_Failure.hxx>
 
+// OCCT STEP model introspection — the plane-angle unit refusal guard (#6344)
+// walks the transferred `Interface_InterfaceModel` entity by entity and
+// classifies every angular unit it finds. See `enforce_step_plane_angle_radians`
+// below for what each of these is used for; the two `…And…` composite classes
+// are the shapes an SI angular unit and a degree/grad unit actually take in an
+// emitted file (a plain `StepBasic_PlaneAngleUnit` downcast finds neither).
+#include <Interface_InterfaceModel.hxx>
+#include <StepRepr_GlobalUnitAssignedContext.hxx>
+#include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
+#include <StepBasic_NamedUnit.hxx>
+#include <StepBasic_SiUnit.hxx>
+#include <StepBasic_SiUnitName.hxx>
+#include <StepBasic_SiPrefix.hxx>
+#include <StepBasic_SiUnitAndPlaneAngleUnit.hxx>
+#include <StepBasic_ConversionBasedUnitAndPlaneAngleUnit.hxx>
+#include <StepBasic_HArray1OfNamedUnit.hxx>
+
 // OCCT local surface properties (curvature via GeomLProp_SLProps)
 #include <GeomLProp_SLProps.hxx>
 
