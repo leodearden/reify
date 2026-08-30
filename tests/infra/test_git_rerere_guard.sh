@@ -2037,4 +2037,39 @@ assert "(wiring) setup-dev.sh calls git-rerere-guard.sh (uncommented)" \
 assert "(wiring) setup-dev.sh invokes the 'arm' subcommand" \
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -E 'git-rerere-guard\.sh[\"'\''[:space:]]+arm'"
 
+# ==============================================================================
+# (wiring-lane) seed-warm-lane.sh must have an UNCOMMENTED call to the guard.
+#
+# WHY LANE CADENCE IS THE POINT: the (wiring) block above pins setup-dev.sh,
+# which runs at DEVELOPER-SETUP cadence — between two setup runs nothing re-pins
+# the shared config, so the store can sit armed for as long as a developer goes
+# without re-running setup. The re-arm rate measured on the live store makes that
+# window unacceptable: /home/leo/src/reify's shared .git/config was found ARMED
+# TWICE on a single day, 2026-08-30 07:06:11 and 11:44:46, both 2508 bytes (the
+# armed size; the guard's own disarm write leaves 2509, so the one-byte delta
+# discriminates a third-party write from the guard's).
+#
+# scripts/seed-warm-lane.sh --fresh-checkout runs on EVERY lane ACQUIRE, so
+# wiring the guard there narrows the exposure window from "since the last
+# developer setup" to "since the last acquire". Same BEHAVIOURAL-pin rationale as
+# the block above: without this assert, deleting or commenting out the seed-side
+# call silently reverts the lane-cadence defence to dead code.
+# ==============================================================================
+echo ""
+echo "--- (wiring-lane) seed-warm-lane.sh calls git-rerere-guard.sh ---"
+
+SEED_WARM_LANE="$REPO_ROOT/scripts/seed-warm-lane.sh"
+
+assert "(wiring-lane) scripts/seed-warm-lane.sh exists" \
+    test -f "$SEED_WARM_LANE"
+
+assert "(wiring-lane) seed-warm-lane.sh calls git-rerere-guard.sh (uncommented)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SEED_WARM_LANE' | grep -q 'git-rerere-guard.sh'"
+
+# The call must be `arm`, not `check`, for the same reason as setup-dev.sh above:
+# a bare `check` would report the drift while leaving the fleet armed, so only
+# `arm` makes the invariant self-healing at acquire cadence.
+assert "(wiring-lane) seed-warm-lane.sh invokes the 'arm' subcommand" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SEED_WARM_LANE' | grep -E 'git-rerere-guard\.sh[\"'\''[:space:]]+arm'"
+
 test_summary
