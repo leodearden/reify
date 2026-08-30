@@ -1,9 +1,8 @@
 /**
- * Unit suite for feaToolbarChannels — task 3001 step-9 RED.
- *
- * This file imports from ../../viewport/feaToolbarChannels, which does not
- * yet exist. The suite MUST fail (module absent → import error) in step-9 —
- * that is the RED state.
+ * Unit suite for feaToolbarChannels — the base list plus its 'errorIndicator'
+ * extension (task 3001), and the currentChannel-seed + PREFERRED_FEA_CHANNELS
+ * widening policy (tasks 5669/5828, which moved that policy out of Viewport.tsx
+ * so it could be pinned here instead of by a full <Viewport> render).
  */
 import { describe, it, expect } from 'vitest';
 import { feaToolbarChannels } from '../../viewport/feaToolbarChannels';

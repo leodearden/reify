@@ -1473,6 +1473,9 @@ describe('Viewport FEA auto-enable determinism', () => {
 // <select> WIRING and its reactivity — that select.value tracks
 // store.state.channel at mount, across a mesh-set prop change (where the
 // one-shot auto-enable leaves the channel stranded), and across a store write.
+// The swap case additionally spans pickDefaultScalarChannel's lexicographic
+// last-resort branch through to the rendered dropdown, since only a real
+// auto-enable can put a channel the scan would never admit into the store.
 describe('Viewport FEA channel dropdown sync (task 5669)', () => {
   it('shell mesh with {vonMises_top, vonMises_bottom} → dropdown offers both and value matches store.state.channel', () => {
     const store = createFeaModeStore();
@@ -1508,28 +1511,38 @@ describe('Viewport FEA channel dropdown sync (task 5669)', () => {
     expect(select.value).toBe(store.state.channel);
   });
 
-  it('mesh set swapped from shell to solid-only → select.value still matches store.state.channel (one-shot auto-enable residual desync)', () => {
+  it('mesh set swapped after a non-preferred auto-enable → select.value still matches store.state.channel (one-shot auto-enable residual desync)', () => {
     const store = createFeaModeStore();
     const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({
-      shell: {
-        entity_path: 'shell',
+      probe: {
+        entity_path: 'probe',
         vertices: new Float32Array([0, 0, 0]),
         indices: new Uint32Array([0]),
         normals: null,
         scalar_channels: {
-          vonMises_top: new Float32Array([3]),
-          vonMises_bottom: new Float32Array([1]),
+          // The only non-empty channel, and a member of neither the base list
+          // nor PREFERRED_FEA_CHANNELS, so pickDefaultScalarChannel reaches it
+          // through its lexicographic last-resort branch. Letting auto-enable
+          // choose the channel (rather than forcing it with setChannel) is what
+          // makes this case span pickDefaultScalarChannel → store → seed →
+          // rendered dropdown: a regression that seeded only
+          // PREFERRED_FEA_CHANNELS members would strand the <select> here.
+          temperature: new Float32Array([300]),
         },
       },
     });
 
     render(() => <Viewport meshes={meshes()} viewportId="test-5669-swap" feaModeStore={store as any} />);
 
-    // Auto-enable fires once, picking the shell's preferred channel.
-    expect(store.state.channel).toBe('vonMises_top');
+    // Auto-enable fires once, landing on the lexicographic fallback.
+    expect(store.state.channel).toBe('temperature');
+
+    const selectAtMount = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    expect(Array.from(selectAtMount.options).map((o) => o.value)).toContain('temperature');
+    expect(selectAtMount.value).toBe(store.state.channel);
 
     // Replace the mesh set with a solid-only rebuild whose channels don't
-    // include 'vonMises_top' at all. Auto-enable is one-shot (autoEnabledOnce),
+    // include 'temperature' at all. Auto-enable is one-shot (autoEnabledOnce),
     // so store.state.channel does NOT change — the dropdown must still offer
     // a matching option instead of silently falling back to the base list.
     setMeshes({
@@ -1544,17 +1557,19 @@ describe('Viewport FEA channel dropdown sync (task 5669)', () => {
       },
     });
 
-    expect(store.state.channel).toBe('vonMises_top');
+    expect(store.state.channel).toBe('temperature');
 
     const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
     const options = Array.from(select.options).map((o) => o.value);
-    // 'vonMises_top' survives only via the current-channel seed — the new mesh
-    // set carries no shell sub-channel at all, so the scan contributes nothing.
-    expect(options).toEqual(['vonMises', 'displacement_magnitude', 'vonMises_top']);
+    // 'temperature' survives only via the current-channel seed — the new mesh
+    // set carries nothing the scan would admit. Membership, not the full list:
+    // the option-list ordering is the helper's contract, pinned once in
+    // feaToolbarChannels.test.ts.
+    expect(options).toContain('temperature');
     expect(select.value).toBe(store.state.channel);
   });
 
-  it('store channel switched to a channel outside the mesh set → seed sorts in with the scan extras, not appended last', () => {
+  it('store channel switched to a channel outside the mesh set → an <option> appears for it and select.value stays in sync (store-write reactive path)', () => {
     const store = createFeaModeStore();
     const meshes: Record<string, MeshData> = {
       shell: {
@@ -1582,20 +1597,13 @@ describe('Viewport FEA channel dropdown sync (task 5669)', () => {
 
     const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
     const options = Array.from(select.options).map((o) => o.value);
-    // The seed and the scan extras are ONE sorted set, so 'temperature' sorts
-    // BEFORE the shell sub-channels rather than trailing them. Delegating the
-    // whole policy to feaToolbarChannels is the only way to get this ordering:
-    // composing the (now-widened) helper with a Viewport-side seed strands the
-    // seed at the end of the list, after the scan extras the helper folded into
-    // its own base segment.
-    expect(options).toEqual([
-      'vonMises',
-      'displacement_magnitude',
-      'temperature',
-      'vonMises_bottom',
-      'vonMises_mid',
-      'vonMises_top',
-    ]);
+    // Membership and value, deliberately not the full list: what this render
+    // buys is that the memo re-ran on a store WRITE and the <select> ended up
+    // offering the store's new channel. How the seed and the scan extras
+    // compose into one sorted list is the helper's contract, pinned once in
+    // feaToolbarChannels.test.ts case (q) — re-asserting it here would red two
+    // suites for one ordering change and prove nothing the pure call does not.
+    expect(options).toContain('temperature');
     expect(select.value).toBe(store.state.channel);
   });
 });
