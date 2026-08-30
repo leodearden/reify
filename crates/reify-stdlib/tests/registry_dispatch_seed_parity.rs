@@ -1,23 +1,44 @@
 //! The eval seam of the builtin-signature registry (task #6001 α,
 //! `docs/prds/v0_6/builtin-signature-registry.md` §7.3(3), invariant I-REG-2).
 //!
-//! Two layers, deliberately separated — the same split
+//! Three layers, deliberately separated — the first two are the same split
 //! `reify-compiler`'s `tests/harness_builtin_registry/registry_seed_result_types.rs`
 //! uses on the compiler side:
 //!
-//! **(a) The registry path itself.** Every probe below routes through
+//! **Layer 1 — the `EvalBuiltinId` → kernel wiring** (section (a)). The
+//! probes route through
 //! `reify_stdlib::__registry_dispatch_for_test`, the `test-support`-gated shim
-//! over `registry_dispatch::dispatch(EvalBuiltinId, &[Value])`. Taking an
-//! `EvalBuiltinId` — not a `&str` — is what makes this test observe that eval
-//! dispatch is genuinely KEYED ON THE REGISTRY, rather than merely observe
-//! that `eval_builtin` still works (which it would even if the string matchers
-//! survived untouched). This layer is the RED signal: neither the shim nor the
-//! `registry_dispatch` module exists yet, so the binary does not compile.
+//! over `registry_dispatch::dispatch(EvalBuiltinId, &[Value])`. It takes an
+//! ID, so it pins that each generated variant reaches the kernel it is
+//! supposed to and wraps the result identically — and observes NOTHING about
+//! name resolution, since it bypasses both `try_dispatch` and
+//! `reify_builtins::lookup` by construction.
 //!
-//! **(b) Observational inertness.** The same probes re-run through the public
-//! `reify_stdlib::eval_builtin(name, args)` must return the IDENTICAL `Value`,
+//! **Layer 2 — observational inertness** (section (c)). The same probes re-run
+//! through the public `reify_stdlib::eval_builtin(name, args)` must return the
+//! IDENTICAL `Value`,
 //! so hoisting the registry to the front of the 26-arm dispatch chain changes
 //! which layer resolves the name but nothing a `.ri` author can observe.
+//!
+//! **Layer 3 — the NAME path** (section (e)), through
+//! `__try_dispatch_for_test(name, args)`. This is where `lookup`-keyed
+//! resolution is actually observed: the registry is CONSULTED for a name, is
+//! AUTHORITATIVE for exactly the `BindingKind::EvalBuiltin` rows at exactly
+//! their declared arities, and DECLINES every other name so a later member of
+//! the chain keeps its own.
+//!
+//! # The boundary, recorded for the next author
+//!
+//! No layer here can distinguish "the registry answered" from "a deleted
+//! legacy matcher would have answered identically". `eval_parse` and
+//! `eval_analysis` no longer exist, and their absence is a BUILD-time fact —
+//! an integration test cannot observe a call it cannot make. So this file does
+//! not claim dispatch is keyed on the registry *rather than* on the old string
+//! matchers; it claims the three layer properties above, which is the honest
+//! ceiling for a test that links against the current tree. The exhaustiveness
+//! half of I-REG-2 is likewise not a test here: see the "Negative-test proof
+//! recipe" on `reify-stdlib`'s `registry_dispatch` module, where a drifting row
+//! fails the BUILD with E0004.
 //!
 //! # Why the expected values are spelled out rather than captured
 //!
@@ -247,7 +268,7 @@ fn eval_rows() -> Vec<&'static reify_builtins::BuiltinRow<BuiltinId>> {
         .collect()
 }
 
-// ── (a) value-for-value parity through the registry path ────────────────────
+// ── (a) value-for-value parity through the EvalBuiltinId path ───────────────
 
 #[test]
 fn registry_dispatch_reproduces_the_legacy_string_path_values() {
@@ -328,7 +349,7 @@ fn eval_builtin_returns_the_same_value_as_the_registry_path() {
     }
 }
 
-// ── (d) no shadowing: a non-declared arity still yields Undef ───────────────
+// ── (d) arity: a non-declared arity still yields Undef ──────────────────────
 
 #[test]
 fn eval_builtin_yields_undef_at_a_non_declared_arity() {

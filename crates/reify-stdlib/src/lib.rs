@@ -230,7 +230,11 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     // decline does — the same registry-first coexistence shape the compiler
     // ladder already uses. Hoisting cannot shadow a later arm: no other member
     // of this chain claims a registered name, pinned row-derived by
-    // `tests/registry_dispatch_seed_parity.rs`'s no-shadowing sweep.
+    // `tests/registry_dispatch_seed_parity.rs`'s no-shadowing sweep —
+    // `try_dispatch_answers_for_exactly_the_eval_rows_at_their_declared_arities`
+    // (the registry claims exactly its rows' declared arities) and
+    // `try_dispatch_declines_every_name_the_registry_does_not_own` (a name a
+    // later dispatcher owns falls through untouched).
     if let Some(v) = registry_dispatch::try_dispatch(name, args) {
         return v;
     }
@@ -328,6 +332,36 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 // dispatch-parity pin).
 pub fn __registry_dispatch_for_test(id: reify_builtins::EvalBuiltinId, args: &[Value]) -> Value {
     registry_dispatch::dispatch(id, args)
+}
+
+/// Expose the registry's NAME resolution to the registry seam test without
+/// widening reify-stdlib's public API.
+///
+/// Why this exists next to [`__registry_dispatch_for_test`]: that shim takes
+/// an `EvalBuiltinId`, so it structurally cannot observe how a `&str` becomes
+/// one — it bypasses both `try_dispatch` and `reify_builtins::lookup`. This
+/// one takes the name, so it is the only way a test can pin the `lookup`-keyed
+/// resolution the public `eval_builtin` actually performs: that the registry
+/// is consulted, is authoritative for exactly the `BindingKind::EvalBuiltin`
+/// rows at their declared arities, and DECLINES every other name so a later
+/// member of the dispatch chain keeps its own.
+///
+/// `registry_dispatch::try_dispatch` itself stays `pub(crate)`; this shim is
+/// what keeps the crate's real surface unchanged.
+///
+/// # Stability
+///
+/// Same contract as [`__registry_dispatch_for_test`]: `__`-prefixed internal
+/// test shim, **not part of the public API**, may be removed or changed at any
+/// time. Gated behind `feature = "test-support"` (or `cfg(test)` for in-crate
+/// tests).
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α) — test-support-gated eval-seam shim,
+// consumed by tests/registry_dispatch_seed_parity.rs (the §7.3(3) no-shadowing
+// sweep over the name path).
+pub fn __try_dispatch_for_test(name: &str, args: &[Value]) -> Option<Value> {
+    registry_dispatch::try_dispatch(name, args)
 }
 
 #[cfg(test)]
