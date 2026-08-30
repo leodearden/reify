@@ -416,6 +416,14 @@ fn classify_surfaces_over_decomposes_unit_cube() {
 
     // Replicate the classify+create_geometry prefix of run_meshing_with_entity_queries
     // (mesh_boundary.rs), stopping before surface-loop + volume + mesh_generate(3).
+    //
+    // This census block is a near-duplicate of `entity_census` in
+    // `tests/classify_feature_angle.rs` (same FFI call sequence and shared
+    // classify-angle constants, differing only in model name and input mesh).
+    // Hoisting both into `tests/common/mod.rs` is tracked as follow-up ticket
+    // tkt_0RSYCB825D7JNM0THB1TXRNHWB rather than done inline here, since it
+    // would require editing that sibling file, which is outside this task's
+    // locked scope.
     ffi::clear().expect("clear");
     ffi::option_set_number("General.Terminal", 0.0).expect("terminal off");
     ffi::model_add("reify_overdecomp_probe").expect("model_add");
@@ -454,10 +462,12 @@ fn classify_surfaces_over_decomposes_unit_cube() {
         (n0, n1, n2),
         (12, 20, 10),
         "gmsh over-decomposition counts changed from the pinned (12, 20, 10). \
-         Observed: ({n0}, {n1}, {n2}). Either gmsh was upgraded, or \
-         CLASSIFY_FEATURE_ANGLE/CLASSIFY_CURVE_ANGLE changed — confirm which \
-         before re-pinning, and re-verify NodeAttachment producer attribution \
-         (task 3763)."
+         Observed: ({n0}, {n1}, {n2}) at CLASSIFY_FEATURE_ANGLE={CLASSIFY_FEATURE_ANGLE}, \
+         CLASSIFY_CURVE_ANGLE={CLASSIFY_CURVE_ANGLE} (both pinned at π/4 ≈ \
+         0.7853981633974483). If both angles above still equal π/4, the cause is \
+         a gmsh upgrade; if either has moved, the cause is a change to the \
+         constants in kernel_real.rs — confirm which before re-pinning, and \
+         re-verify NodeAttachment producer attribution (task 3763)."
     );
 }
 
