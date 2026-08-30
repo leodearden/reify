@@ -535,6 +535,72 @@ assert "NO-LEAK: --list does NOT contain docs/notes/spec-anchor-contract.md (map
     bash -c '! bash "$1" --list | grep -qxF "docs/notes/spec-anchor-contract.md"' \
     _ "$GUARD_SH"
 
+# (e-bis) SYNTHETIC / PRECISION for the SURGICAL registry (task 6857).
+#
+# A direct transposition of the SYNTHETIC / DERIVATION PRECISION pair the
+# doc-sync manifest already has (just below), onto the second registry. Both
+# halves matter: SYNTHETIC proves the clause is SELF-HEALING — a future
+# verify-pipeline-infra-tests.txt row is auto-covered with no edit to this test
+# — and PRECISION proves it flags only the rows the map actually carries.
+#
+# The two ROW-SHAPE cases are the ones that could not be written against the
+# real map at all, because it carries no malformed row today: they pin that the
+# query point's notion of an ACTIVE ROW matches verify.sh's select_infra_tests(),
+# which is the consumer that decides what a row actually buys.
+_SYNTH_INFRA_MAP_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_SYNTH_INFRA_MAP_DIR")
+_SYNTH_INFRA_MAP="$_SYNTH_INFRA_MAP_DIR/verify-pipeline-infra-tests.txt"
+cat > "$_SYNTH_INFRA_MAP" <<'SYNTH_MAP_EOF'
+# synthetic map (task 6857) — comment rows must be skipped like the real one
+docs/zzz-synthetic-surgical.md    tests/infra/test_zzz_synthetic.sh
+docs/zzz-no-glob.md
+docs/zzz-key.md    scripts/zzz-not-a-key.sh
+SYNTH_MAP_EOF
+
+# SYNTHETIC — THE RED of this pair: the knob does not exist yet, so the
+# injection is ignored, the REAL map is read instead, and this exits 1.
+assert_exit "SYNTHETIC: docs/zzz-synthetic-surgical.md auto-covered after map injection (self-healing; exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered docs/zzz-synthetic-surgical.md' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# The remaining four are GREEN ON ARRIVAL — under the ignored knob they read the
+# real map, which carries none of these paths either, so they exit 1 (or 0 via
+# the glob clause) for the right-looking reason today. They become load-bearing
+# regression pins on the ROW PARSE the moment the knob lands in step-4.
+
+# PRECISION: a sibling not listed in the injected map stays unregistered —
+# the clause does not blanket-register every docs/zzz-*.md.
+assert_exit "PRECISION: docs/zzz-not-in-map.md absent from the injected map -> not registered (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered docs/zzz-not-in-map.md' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# MALFORMED-ROW: a ONE-FIELD row is NOT an active registration. verify.sh's
+# select_infra_tests() requires BOTH fields non-empty before it selects
+# anything, so such a row selects no test and buys nothing; calling it
+# "registered" would let the anti-drift sweep pass on a path that is in truth
+# unguarded. The query point must not disagree with the consumer.
+assert_exit "MALFORMED-ROW: docs/zzz-no-glob.md has no glob field -> selects no test -> not registered (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered docs/zzz-no-glob.md' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# GLOB-FIELD PRECISION: only the FIRST field is a KEY. The second field is a
+# test-selection glob, not a registered artifact, and must never be harvested as
+# one -- otherwise every guarding test in the map would silently register
+# itself and the map's second column would become an unreviewed registry.
+# Spelled with a non-infra glob (scripts/zzz-not-a-key.sh) precisely so the
+# tests/infra/*.sh clause cannot mask the answer.
+assert_exit "GLOB-FIELD PRECISION: scripts/zzz-not-a-key.sh is only a row's SECOND field -> not a key -> not registered (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered scripts/zzz-not-a-key.sh' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# ...and the companion that makes the case above legible: an infra-test path IS
+# registered, but via the OPEN-ENDED GLOB CLAUSE, never because some row happens
+# to name it. It answers 0 with the map injection in force and would answer 0
+# with no map at all.
+assert_exit "GLOB-CLAUSE: tests/infra/test_zzz_synthetic.sh is registered via the tests/infra/*.sh glob, not via the row that names it (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered tests/infra/test_zzz_synthetic.sh' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
 # SYNTHETIC self-healing: build a throwaway doc-sync manifest containing only
 # a synthetic path, prove the classifier auto-covers it via
 # REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS — no real-manifest edit needed.
