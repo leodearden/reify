@@ -125,3 +125,5 @@ Against a **warm** `$TS_CACHE`, `tree-sitter parse` is sub-millisecond per fixtu
 The **first** parse against a fresh `$TS_CACHE` is different — it compiles the grammar to `reify.so` before it can parse anything. Measured on this host: **~2s cold, ~0.01s warm** (task #5925). That one-off is why the setup block reuses a single `$TS_CACHE` for the whole session rather than minting one per fixture. Expect it, and don't read a slow first parse as a hang.
 
 The PRD gate itself needs no manual step: `scripts/prd-capability-check.py` isolates its grammar probes automatically — a per-repo-root, grammar-fingerprinted dir under `$TMPDIR` — and `REIFY_TS_CACHE_HOME` pins that dir if you need to inspect or share it. The manual idiom above and the gate's automatic one are the same mechanism.
+
+If the dir you point `REIFY_TS_CACHE_HOME` at cannot be created, the gate falls back to that per-lane default rather than failing — you lose your pinned dir, not the run, and the probes stay isolated either way.

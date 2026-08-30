@@ -235,6 +235,24 @@ def _grammar_cache_home(repo_root: str) -> str:
     The directory is created before returning, because tree-sitter does not
     reliably create a missing cache root and a non-existent one degrades into a
     grammar load failure.
+
+    THE TWO-TIER CONTRACT when that creation fails.  The two dispositions are
+    deliberately different:
+      * a bad OVERRIDE (REIFY_TS_CACHE_HOME unwritable, or a typo whose parent
+        is a file) DEGRADES to the derived dir.  Isolation — the property this
+        function exists to guarantee — is preserved; only the operator's
+        custom-dir intent is lost, which is the cheap half to lose.
+      * an uncreatable DERIVED dir RAISES, and run_probe() represents it as
+        exit 127 + _BINARY_NOT_FOUND_SENTINEL.  Fail-closed and loud.  This is
+        unprivileged-reachable rather than an operator mistake: /tmp is
+        world-writable, so any other uid on the host can pre-create
+        reify-ts-cache-<key> as a plain file and wedge this lane's gate.  A
+        silent degradation there would be indistinguishable from a healthy run.
+
+    NEITHER path ever falls back to the ambient shared cache.  A silent ambient
+    run is exactly the cross-lane false PASS this module exists to prevent —
+    see docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2
+    — and it is the worst outcome precisely because it is silent and plausible.
     """
     override = os.environ.get(_CACHE_HOME_OVERRIDE_ENV)
     if override:
@@ -688,6 +706,13 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     "the probe could not be launched"; the errno text is appended after the
     sentinel so a caller that must distinguish them can.
 
+    Building the grammar env sits INSIDE that try on purpose, not as an
+    accident of layout: _grammar_probe_env() CREATES the private cache dir, and
+    an uncreatable one (a world-writable /tmp lets any uid pre-create the path
+    as a file) is a setup failure that must be represented the same way — not
+    propagated, and emphatically not degraded into an ambient-cache run.  Do
+    not "tidy" it back out above the try.
+
     `timeout` defaults to None — unbounded, which is what a gate probe wants:
     `reify eval` on a heavy fixture may legitimately run long, and a bound there
     would manufacture a HARNESS_ERROR out of a slow machine.  An elapsed timeout
@@ -937,18 +962,21 @@ def grammar_substrate_usable() -> tuple:
 
     if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
         # Deliberately hedged.  run_probe() represents EVERY launch OSError with
-        # this one sentinel, and a missing cwd (<repo_root>/tree-sitter-reify was
-        # never generated) raises the same FileNotFoundError as a missing CLI —
-        # so naming the CLI here would confidently print the wrong subsystem.
-        # The errno text run_probe() appends names the offending path, which is
-        # what actually distinguishes the two.
+        # this one sentinel, and THREE distinct subsystems arrive through it: a
+        # missing cwd (<repo_root>/tree-sitter-reify was never generated) raises
+        # the same FileNotFoundError as a missing CLI, and an uncreatable private
+        # grammar cache dir raises its own OSError from the same try.  Naming any
+        # one of them here would confidently print the wrong subsystem.  The
+        # errno text run_probe() appends names the offending path, which is what
+        # actually distinguishes the three.
         detail = run.stderr.split(_BINARY_NOT_FOUND_SENTINEL, 1)[1].strip(": \n")
         return (
             False,
             "the tree-sitter grammar probe could not be launched "
             f"({detail or 'no further detail'}); either the tree-sitter CLI "
-            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, or "
-            "the grammar directory <repo_root>/tree-sitter-reify/ does not exist",
+            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, "
+            "the grammar directory <repo_root>/tree-sitter-reify/ does not "
+            "exist, or the private grammar cache directory could not be created",
         )
 
     if grammar_cache_denied(run):
