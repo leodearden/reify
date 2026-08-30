@@ -293,3 +293,51 @@ fn guard_refuses_a_non_radian_plane_angle_declaration() {
          claims to, and this test is no longer about a partial flip; got: {msg}"
     );
 }
+
+/// A PREFIXED radian — a MILLIRADIAN — is REFUSED, proving the guard is not a
+/// name-only check.
+///
+/// This is the case that separates a real unit check from a token grep.
+/// `Name() == StepBasic_sunRadian` is TRUE here: the only thing distinguishing
+/// a milliradian from a radian is `HasPrefix()`. So a guard written as
+/// `si->Name() == StepBasic_sunRadian` accepts this file, and
+/// `content.contains(".RADIAN.")` accepts it too, because the emitted
+/// `SI_UNIT(.MILLI.,.RADIAN.)` still contains the token. The declared unit
+/// would then be 1/1000 of the payload's — silent, and off by exactly the
+/// factor the #6186 length regime exists to prevent.
+#[test]
+fn guard_refuses_a_prefixed_radian_declaration() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, with the same Reify attribution as the non-radian arm.
+    let msg = refusal_message(&kernel, union_id, "prefixed");
+
+    // (b) The PREFIX is named. "wrong unit" is not enough here — the reader
+    // has to be told the unit is a MILLIradian, or the natural next move is to
+    // check the name, find RADIAN, and conclude the guard is broken.
+    assert!(
+        msg.contains(".MILLI.") || msg.contains("spMilli"),
+        "the refusal must name the SI PREFIX that makes this unit wrong; \
+         got: {msg}"
+    );
+
+    // (c) THE POINT OF THIS TEST. The name is still radian, and the message
+    // says so. If this assertion ever fails because the message stopped
+    // reporting the name, the diagnostic has lost the one detail that
+    // explains why a file full of `.RADIAN.` tokens was refused.
+    assert!(
+        msg.contains(".RADIAN."),
+        "the unit's NAME is still RADIAN — only the prefix is wrong — and the \
+         refusal must report that, otherwise a reader who greps the file for \
+         .RADIAN. and finds it cannot reconcile the refusal; got: {msg}"
+    );
+
+    // The counts still show a partial defect: only one unit was prefixed.
+    let (_contexts, plane_angle_units, radian_ok) = parse_counts(&msg);
+    assert!(
+        radian_ok < plane_angle_units,
+        "a prefixed radian must NOT count as radian_ok — that is exactly the \
+         name-only check this test exists to reject; got radian_ok={radian_ok} \
+         plane_angle_units={plane_angle_units} in: {msg}"
+    );
+}
