@@ -3831,6 +3831,134 @@ mod tests {
         );
     }
 
+    // ── Task 5097 δ step-5: RED — the ONE write seam every `reify_*` write
+    // tool routes through (PRD §6.2 pair) ──
+    //
+    // `write_on_engine_and_refresh_baseline` (added in step-6) runs an
+    // arbitrary engine mutation through `run_on_engine` and then refreshes
+    // `last_state` via `compute_delta`, exactly as the two landed 5035
+    // wrappers above do for their own fixed mutations. Uniformity is the
+    // point: with all five write tools on one seam, θ's structural test has a
+    // single anchor and no exceptions to enumerate.
+    //
+    // FAILS TO COMPILE until step-6 adds
+    // `write_on_engine_and_refresh_baseline`.
+
+    /// Fixture for the δ write-tool cluster: a `.ri` whose `width` default is
+    /// a plain quantity literal (so the INV-GUI-3 write-back can splice it)
+    /// beside a second declaration that must survive any splice byte for byte.
+    fn ai_write_source() -> &'static str {
+        r#"// task 5097 δ fixture
+structure def Part {
+    param width: Length = 80mm
+    param depth: Length = 40mm
+
+    let body = box(width, width, depth)
+}"#
+    }
+
+    /// A tempdir-backed engine LAUNCHED ON an on-disk `part.ri`, plus that
+    /// file's canonical path. The launch matters: `apply_param_to_source`
+    /// refuses a session with no canonical `.ri` to write back to, so a
+    /// `load_from_source` engine cannot exercise this cluster at all.
+    fn ai_write_engine(dir: &std::path::Path) -> (Arc<Mutex<EngineSession>>, String) {
+        let canonical = write_and_canonicalize(dir, "part.ri", ai_write_source());
+        let engine = crate::tests::make_test_engine();
+        launch_via_load_file(&engine, &canonical);
+        (engine, canonical)
+    }
+
+    /// The GuiState the frontend is currently holding — S0, the baseline a
+    /// later `compute_delta` must diff against.
+    fn current_gui_state(engine: &Arc<Mutex<EngineSession>>) -> crate::types::GuiState {
+        crate::engine_lock::with_engine_lock(engine, |s| s.build_gui_state())
+            .and_then(std::convert::identity)
+            .expect("build_gui_state must succeed")
+    }
+
+    #[tokio::test]
+    async fn write_helper_refreshes_the_delta_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, _canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        let s1 = write_on_engine_and_refresh_baseline(&engine, &last_state, |s| {
+            s.apply_param_to_source_str("Part.width", "120mm")
+        })
+        .await
+        .expect("write_on_engine_and_refresh_baseline must return Ok");
+
+        let width = s1
+            .values
+            .iter()
+            .find(|v| v.cell_id == "Part.width")
+            .expect("Part.width must be present in the returned GuiState");
+        assert_eq!(
+            (width.value.as_str(), width.unit.as_str()),
+            ("120", "mm"),
+            "the seam must return the POST-mutation GuiState"
+        );
+
+        // The bug-#7 stale-baseline guard: the baseline must now be S1, not
+        // the S0 it was seeded with. A debug mutation that advances the engine
+        // without advancing `last_state` makes the NEXT normal command diff
+        // against a state the frontend no longer has.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1.clone()),
+            "the seam must refresh last_state to S1 in the same call"
+        );
+        assert_ne!(
+            *last_state.lock().unwrap(),
+            Some(s0),
+            "the baseline must have MOVED — S0 and S1 differ by the width edit"
+        );
+
+        // …and advanced EXACTLY once (§6.2 invariant (a)): re-diffing the same
+        // state against the refreshed baseline yields nothing at all.
+        let redelta = crate::diff::compute_delta(&last_state, &s1);
+        let events: Vec<String> = crate::diff::delta_to_events(&redelta)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            events.is_empty(),
+            "the baseline must have advanced exactly once — a second diff \
+             against S1 must be empty; got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_helper_leaves_the_baseline_untouched_when_the_mutation_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, _canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        let err = write_on_engine_and_refresh_baseline(&engine, &last_state, |_s| {
+            Err("mutation refused".to_string())
+        })
+        .await
+        .expect_err("a failing mutation must propagate as Err");
+        assert!(
+            err.contains("mutation refused"),
+            "the mutation's own error must reach the caller verbatim, got: {err}"
+        );
+
+        // A refused mutation left the engine where it was, so advancing the
+        // baseline would desync it from the frontend in the OTHER direction.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s0),
+            "a failed mutation must leave the baseline at S0"
+        );
+    }
+
     // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──
     //
