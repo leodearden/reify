@@ -16,7 +16,23 @@
 //
 // Analytic Euler–Bernoulli fundamentals, fₙ = (βL)²/(2π) · √(E·I / (ρ·A·L⁴)):
 //   pinned-pinned  βL = π        → f₁ ≈ 397.33 Hz
+//   clamped-pinned βL = 3.926602 → f₁ ≈ 620.70 Hz
 //   clamped-clamped βL = 4.730041 → f₁ ≈ 900.70 Hz     (ratio 2.267)
+//
+// The MIXED pair `[FixedSupport("x_min"), PinnedSupport("x_max")]` is the third
+// solve here (task 6663's scope extension): honoring the kind PER FACE must make
+// it a genuine propped cantilever landing on its OWN analytic (λ² = 15.4182),
+// strictly between the pinned-pinned (9.8696) and clamped-clamped (22.3733)
+// answers — not collapsed onto either.
+//
+// NOTE for whoever reads `f1_propped` expecting ≈ 620 Hz: it reads ≈ 141.7 Hz,
+// and that is correct. `PinnedSupport` pins the TRANSVERSE (Z) DOF across x_max,
+// so the LATERAL (Y) direction there is a clamped-free cantilever — analytic
+// 141.53 Hz, below the 620.7 Hz vertical propped mode, hence the fundamental.
+// The two symmetric configurations do not show this because the square section
+// makes their two directions near-degenerate. `modal_analysis_e2e.rs` therefore
+// asserts the mixed case on the Z-dominant family (signal (f)), exactly as the
+// simply-supported e2e in that file already does for the same reason.
 //
 // AUTHORING TRAP — `ModalOptions` argument binding is POSITIONAL: the `name:`
 // labels are cosmetic and the parser binds by DECLARATION order (n_modes,
@@ -58,7 +74,7 @@ structure ClampedClampedBeamModes {
     let pin_min = PinnedSupport(target: "x_min")
     let pin_max = PinnedSupport(target: "x_max")
 
-    // Two otherwise-identical ModalOptions differing ONLY in support kind.
+    // Three otherwise-identical ModalOptions differing ONLY in support kind.
     let opts_fixed = ModalOptions(
         n_modes: 2,
         boundary_conditions: [fix_min, fix_max],
@@ -79,16 +95,32 @@ structure ClampedClampedBeamModes {
         reference_direction: vec3(0.0, 0.0, 1.0),
         element_order: ElementOrder.P2
     )
+    // The MIXED pair: clamp x_min, prop x_max. Reuses the ALREADY-DECLARED
+    // `fix_min` and `pin_max` cells above, so the only thing separating this
+    // configuration from the other two is which kind sits on which face.
+    let opts_propped = ModalOptions(
+        n_modes: 2,
+        boundary_conditions: [fix_min, pin_max],
+        damping: NoDamping(),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
+    )
 
     // Distinct length cells per call, mirroring the validated dogfood probe
     // spelling (/home/leo/.claude/fleet/sessions/dogfood-reify-1519747/probes/
-    // modal_bc_probe.ri) so the two @optimized calls stay distinct ComputeNodes.
+    // modal_bc_probe.ri) so the three @optimized calls stay distinct ComputeNodes.
     let span_f = span * 1.0
     let span_p = span * 1.0
+    let span_x = span * 1.0
 
-    let result_fixed  = modal_analysis(mi.material, span_f, h, h2, opts_fixed)
-    let result_pinned = modal_analysis(mi.material, span_p, h, h2, opts_pinned)
+    let result_fixed   = modal_analysis(mi.material, span_f, h, h2, opts_fixed)
+    let result_pinned  = modal_analysis(mi.material, span_p, h, h2, opts_pinned)
+    let result_propped = modal_analysis(mi.material, span_x, h, h2, opts_propped)
 
-    let f1_fixed  = first_frequency(result_fixed)
-    let f1_pinned = first_frequency(result_pinned)
+    let f1_fixed   = first_frequency(result_fixed)
+    let f1_pinned  = first_frequency(result_pinned)
+    let f1_propped = first_frequency(result_propped)
 }

@@ -93,6 +93,7 @@ const SS_P2_REL_TOL: f64 = 0.02;
 //
 // Analytic Euler–Bernoulli fundamentals fₙ = (βL)²/(2π)·√(E·I/(ρ·A·L⁴)):
 //   pinned-pinned   βL = π         → 397.33 Hz
+//   clamped-pinned  βL = 3.926602  → 620.702 Hz
 //   clamped-clamped βL = 4.730041  → 900.699 Hz
 
 /// Analytic pinned-pinned (simply-supported) fundamental, Hz, for the fixture
@@ -101,6 +102,18 @@ const CC_FIXTURE_PINNED_ANALYTIC_HZ: f64 = 397.33;
 
 /// Analytic clamped-clamped fundamental, Hz, for the fixture section above.
 const CC_FIXTURE_FIXED_ANALYTIC_HZ: f64 = 900.699;
+
+/// Analytic clamped-pinned (propped-cantilever) fundamental, Hz, for the fixture
+/// section above — the MIXED pair `[FixedSupport("x_min"),
+/// PinnedSupport("x_max")]`, task 6663's scope extension.
+///
+/// βL = 3.926602 (λ² = 15.4182), i.e. strictly between the pinned-pinned 9.8696
+/// and the clamped-clamped 22.3733. The closed form used here is the SAME one
+/// that reproduces this file's other two references on this exact section
+/// (βL = π → 397.328 vs the 397.33 above; βL = 4.730041 → 900.6985 vs the
+/// 900.699 above), and its CP/PP ratio 1.562191 matches 15.4182/9.8696 to six
+/// digits — so 620.702 Hz is a checked reference, not a transcribed one.
+const CC_FIXTURE_PROPPED_ANALYTIC_HZ: f64 = 620.702;
 
 /// Pinned-pinned band. The dogfood round MEASURED 391.049 Hz on exactly this
 /// section and mesh (−1.58% vs analytic), and task 6663 leaves the pin-pin
@@ -143,6 +156,38 @@ const CC_FIXTURE_PINNED_REL_TOL: f64 = 0.03;
 /// is ~1.5% at this mesh rather than the several percent the derivation guarded
 /// against.
 const CC_FIXTURE_FIXED_REL_TOL: f64 = 0.03;
+
+/// Clamped-pinned (propped-cantilever) band. **MEASURED at this exact mesh**, in
+/// release:
+///
+/// ```text
+/// [modal bc-kind]   result_propped mode 0: f=141.6988 Hz, participation_z=1.436489e-6
+/// [modal bc-kind]   result_propped mode 1: f=616.9229 Hz, participation_z=8.143401e-1
+/// [modal bc-kind] f1z_propped=616.9229 Hz (analytic 620.702, err -0.61%)
+/// ```
+///
+/// (`cargo test --release -p reify-eval-fea-tests
+/// e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported -- --nocapture`)
+///
+/// Deliberately the SAME 3% construction as the two headline bands above, so all
+/// three are read the same way, and anchored the same way: on a first-hand
+/// release measurement of THIS fixture at THIS mesh, not on a prediction. The
+/// measured −0.61% leaves 2.39% of margin — MORE than either headline band
+/// (1.42% and 1.54%), because the propped mode is the best-resolved of the three
+/// at this discretization, not because the band was loosened.
+///
+/// What this band is for: under the pre-6663 defect all three configurations
+/// returned the bit-identical pinned answer, so a band that merely excluded
+/// 391.05 Hz would already be satisfied by the clamped-clamped 887.55 Hz. This
+/// one is two-sided and narrow enough to exclude BOTH siblings — the pinned
+/// vertical 395.22 Hz is −36% from the analytic and the clamped 887.55 Hz is
+/// +43%, i.e. each is more than 12 band-widths away — so it pins the propped
+/// cantilever on its OWN analytic rather than on "not the one wrong answer we
+/// happened to name".
+///
+/// Read against the VERTICAL (Z-dominant) fundamental, not `first_frequency`;
+/// the test's signal (f) documents the measurement that forces that choice.
+const CC_FIXTURE_PROPPED_REL_TOL: f64 = 0.03;
 
 /// The headline acceptance signal: clamping both end faces must be a genuinely
 /// DIFFERENT structure from pinning both. The analytic ratio is a pure BC ratio,
@@ -905,10 +950,11 @@ fn e2e_printer_gantry_prints_five_modes() {
 // ── task 6663: support KIND must drive the BC realization ────────────────────
 //
 // The headline acceptance test. One fixture
-// (tests/fixtures/clamped_clamped_beam_modes.ri), one eval, two modal solves over
-// the SAME 800 × 44.588 × 44.588 mm section differing ONLY in support kind:
+// (tests/fixtures/clamped_clamped_beam_modes.ri), one eval, three modal solves
+// over the SAME 800 × 44.588 × 44.588 mm section differing ONLY in support kind:
 //   • `[FixedSupport("x_min"), FixedSupport("x_max")]`   → clamped-clamped
 //   • `[PinnedSupport("x_min"), PinnedSupport("x_max")]` → pinned-pinned
+//   • `[FixedSupport("x_min"), PinnedSupport("x_max")]`  → propped cantilever
 //
 // Signals asserted:
 //   (a) no Error-severity diagnostics after parse + eval
@@ -918,15 +964,32 @@ fn e2e_printer_gantry_prints_five_modes() {
 //   (d) f1_fixed within CC_FIXTURE_FIXED_REL_TOL of the CC analytic 900.699 Hz
 //   (e) f1_fixed / f1_pinned ≥ CC_FIXTURE_MIN_FIXED_PINNED_RATIO — the task's
 //       literal "they must DIFFER" acceptance
+//   (f) the mixed pair's VERTICAL (Z-dominant) fundamental within
+//       CC_FIXTURE_PROPPED_REL_TOL of the CP analytic 620.702 Hz — the task's
+//       SCOPE EXTENSION, that honoring the kind PER FACE makes the mixed pair a
+//       genuine propped cantilever on its OWN analytic
+//   (g) the same ordering within the vertical family: pinned < propped < fixed,
+//       strictly — the BC-stiffness ordering λ²: 9.8696 < 15.4182 < 22.3733,
+//       which no single band can express
+//   (h) the mixed pair's RAW fundamental sits strictly below its vertical one —
+//       the measurable form of "a lateral mode intrudes here", which is what
+//       forces (f)/(g) to select the vertical family
+//
+// Why (f)–(h) live in THIS test rather than a sibling: all three solves come
+// from one eval of one fixture, so a sibling test would re-run the two heavy
+// solves (c)/(d) already cover just to reach the third. The name still describes
+// the headline clause; (f)–(h) are the mixed-pair extension riding the same eval.
 //
 // RED before the fix: `build_dirichlet_bcs` discriminated on target face NAMES
-// only and never read the support kind, so both solves returned the bit-identical
-// pinned answer (391.049 Hz measured). (d) missed its band by 2.3×; (e) read 1.0.
+// only and never read the support kind, so ALL THREE solves returned the
+// bit-identical pinned answer (391.049 Hz measured). (d) missed its band by 2.3×;
+// (e) read 1.0; (f) missed its band by 36%; (g) read pinned == propped.
 //
 // Release-gated like every other heavy modal e2e in this file.
 
 /// Two `FixedSupport`s must give the clamped-clamped answer, not the
-/// pinned-pinned one (task 6663).
+/// pinned-pinned one — and a mixed `[Fixed, Pinned]` pair must give the
+/// propped-cantilever answer, distinct from both (task 6663).
 #[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
 #[test]
 fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
@@ -972,8 +1035,8 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
             .collect::<Vec<_>>()
     );
 
-    // Both `result` cells must hold a non-Undef StructureInstance/Map.
-    for name in ["result_fixed", "result_pinned"] {
+    // Every `result` cell must hold a non-Undef StructureInstance/Map.
+    for name in ["result_fixed", "result_pinned", "result_propped"] {
         let val = eval_result
             .values
             .get(&ValueCellId::new("ClampedClampedBeamModes", name))
@@ -998,6 +1061,36 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
     };
     let f1_fixed = read_cell("f1_fixed");
     let f1_pinned = read_cell("f1_pinned");
+    let f1_propped = read_cell("f1_propped");
+
+    // The VERTICAL (Z-dominant) bending family of each configuration, selected by
+    // eigenvector dominant-axis classification — the same selection the
+    // simply-supported e2e above and the kernel benchmark already use, and for
+    // the same reason: the raw frequency-sorted spectrum interleaves LATERAL
+    // (Y-bending) modes, so a raw mode index does not map onto the (βL)² family
+    // the analytic references describe. Here the square section makes the two
+    // directions near-degenerate for the two symmetric configurations, but NOT
+    // for the mixed one — see the (f)/(g) commentary below.
+    let vertical_family = |name: &str| -> Vec<f64> {
+        let val = eval_result
+            .values
+            .get(&ValueCellId::new("ClampedClampedBeamModes", name))
+            .unwrap_or_else(|| {
+                panic!("cell ClampedClampedBeamModes.{name} not found in eval result")
+            });
+        for (i, (f, p)) in modes_freq_participation(val).iter().enumerate() {
+            eprintln!("[modal bc-kind]   {name} mode {i}: f={f:.4} Hz, participation_z={p:.6e}");
+        }
+        let vertical = z_dominant_frequencies(val);
+        eprintln!("[modal bc-kind]   {name} vertical (Z-dominant) family: {vertical:?}");
+        assert!(
+            !vertical.is_empty(),
+            "{name} has no Z-dominant (vertical bending) mode in its {}-mode spectrum: {:?}",
+            modes_freq_participation(val).len(),
+            modes_freq_participation(val)
+        );
+        vertical
+    };
 
     eprintln!(
         "[modal bc-kind] f1_pinned={:.4} Hz (analytic {:.3}, err {:+.2}%)",
@@ -1011,12 +1104,19 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
         CC_FIXTURE_FIXED_ANALYTIC_HZ,
         (f1_fixed - CC_FIXTURE_FIXED_ANALYTIC_HZ) / CC_FIXTURE_FIXED_ANALYTIC_HZ * 100.0
     );
+    // NOT compared to an analytic here: the mixed configuration's RAW fundamental
+    // is a lateral mode, not the propped bending mode — see (f).
+    eprintln!("[modal bc-kind] f1_propped (raw fundamental) = {f1_propped:.4} Hz");
     eprintln!(
         "[modal bc-kind] ratio f1_fixed/f1_pinned = {:.4} (analytic 2.267)",
         f1_fixed / f1_pinned
     );
 
-    for (name, f) in [("f1_fixed", f1_fixed), ("f1_pinned", f1_pinned)] {
+    for (name, f) in [
+        ("f1_fixed", f1_fixed),
+        ("f1_pinned", f1_pinned),
+        ("f1_propped", f1_propped),
+    ] {
         assert!(
             f.is_finite() && f > 0.0,
             "{name} must be finite and positive, got: {f}"
@@ -1061,5 +1161,82 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
         f1_fixed,
         f1_pinned,
         CC_FIXTURE_MIN_FIXED_PINNED_RATIO
+    );
+
+    // (f) The MIXED pair lands on the clamped-pinned analytic — the scope
+    // extension. Honoring the kind PER FACE means x_min clamps all three
+    // translational DOFs while x_max pins Z only, i.e. a propped cantilever with
+    // its own (βL)² = 15.4182, not a collapse onto either sibling.
+    //
+    // Asserted on the VERTICAL (Z-dominant) family, not on `first_frequency`,
+    // and MEASUREMENT says why: the mixed configuration's raw fundamental is
+    // 141.6988 Hz with participation_z = 1.4e-6 — a LATERAL (Y-bending)
+    // cantilever mode, matching the analytic Y-cantilever 141.53 Hz to +0.12%.
+    // It is a real mode of a correctly realized structure: `PinTransverse` pins
+    // Z across x_max (the beam idealization `simply_supported_pin_pin_bcs`
+    // documents), so the lateral direction sees a clamped root and a free tip and
+    // is genuinely soft. The two symmetric configurations hide this because a
+    // square section makes their two directions near-degenerate (pinned: 391.05
+    // lateral / 395.22 vertical; fixed: 887.55 vertical / 890.90 lateral), while
+    // the mixed one splits them 4.4×. Selecting the vertical family is the same
+    // move — and the same helper — the simply-supported e2e above already makes
+    // for the same reason.
+    let vertical_propped = vertical_family("result_propped");
+    let f1z_propped = vertical_propped[0];
+    eprintln!(
+        "[modal bc-kind] f1z_propped={:.4} Hz (analytic {:.3}, err {:+.2}%)",
+        f1z_propped,
+        CC_FIXTURE_PROPPED_ANALYTIC_HZ,
+        (f1z_propped - CC_FIXTURE_PROPPED_ANALYTIC_HZ) / CC_FIXTURE_PROPPED_ANALYTIC_HZ * 100.0
+    );
+    let propped_err =
+        (f1z_propped - CC_FIXTURE_PROPPED_ANALYTIC_HZ).abs() / CC_FIXTURE_PROPPED_ANALYTIC_HZ;
+    assert!(
+        propped_err < CC_FIXTURE_PROPPED_REL_TOL,
+        "f1z_propped = {:.4} Hz, analytic clamped-pinned = {:.3} Hz, rel_err = {:.2}% > {:.2}% \
+         — [FixedSupport(x_min), PinnedSupport(x_max)] must be a genuine propped cantilever, \
+         not the pinned-pinned ({:.3} Hz) or clamped-clamped ({:.3} Hz) answer",
+        f1z_propped,
+        CC_FIXTURE_PROPPED_ANALYTIC_HZ,
+        propped_err * 100.0,
+        CC_FIXTURE_PROPPED_REL_TOL * 100.0,
+        CC_FIXTURE_PINNED_ANALYTIC_HZ,
+        CC_FIXTURE_FIXED_ANALYTIC_HZ
+    );
+
+    // (g) BC stiffness must ORDER strictly: pin-pin < propped < clamp-clamp,
+    // mirroring λ² = 9.8696 < 15.4182 < 22.3733. Compared WITHIN the vertical
+    // family, so the three numbers are the same physical quantity under three
+    // BC sets; the solves share one section, one mesh and one material, so
+    // everything but the Dirichlet realization cancels. A tie anywhere means two
+    // configurations realized the same set — the defect, reached through
+    // whichever pair happens to collide. (MEASURED: 395.22 < 616.92 < 887.55.)
+    let f1z_pinned = vertical_family("result_pinned")[0];
+    let f1z_fixed = vertical_family("result_fixed")[0];
+    assert!(
+        f1z_pinned < f1z_propped && f1z_propped < f1z_fixed,
+        "expected strict BC-stiffness ordering pinned < propped < fixed within the vertical \
+         family, got f1z_pinned={:.4} Hz, f1z_propped={:.4} Hz, f1z_fixed={:.4} Hz — clamping \
+         one end of a simply-supported beam must stiffen it, and replacing the far clamp with \
+         a prop must soften it",
+        f1z_pinned,
+        f1z_propped,
+        f1z_fixed
+    );
+
+    // (h) Guard the selection itself: the mixed configuration's raw fundamental
+    // must be STRICTLY below its vertical fundamental. That is the measurable
+    // form of "the lateral mode intrudes here", so a future reader who reverts
+    // (f) to `first_frequency` gets a failure that explains itself rather than a
+    // band that quietly stops meaning what it says. No magic number — the two
+    // are read from the same solve.
+    assert!(
+        f1_propped < f1z_propped,
+        "expected the mixed configuration's raw fundamental ({:.4} Hz) to sit strictly below \
+         its vertical fundamental ({:.4} Hz) — the lateral cantilever mode is why (f) selects \
+         the Z-dominant family instead of first_frequency; if these have converged, re-derive \
+         the selection rather than assuming first_frequency is now the bending mode",
+        f1_propped,
+        f1z_propped
     );
 }
