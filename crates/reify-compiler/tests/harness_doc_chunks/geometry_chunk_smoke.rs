@@ -79,6 +79,16 @@
 //! `chunk_io` needs edits to `tests/harness_doc_chunks.rs` and to both siblings,
 //! none of which is in task 5389's locked file set.
 //!
+//! STILL THREE, not four: task 5759 added `units_chunk_smoke.rs` and pointed it
+//! at THIS module's scanners (`reify_tagged_fences`, `assert_module_compiles`,
+//! `strip_reify_comments`, `call_sites`, `section_body`, `cited_source_paths`,
+//! `resolve_cited_path`, `source_files_by_basename`, all raised to
+//! `pub(crate)`) rather than copying them. That is why those helpers now take
+//! `chunk_path` / `tag` / `section_title` parameters instead of reading this
+//! module's consts — a sibling's failure must name the sibling's chunk. The
+//! extraction below is still owed; this is reuse inside the existing binary, not
+//! the shared module.
+//!
 //! Task **#5924** (filed as ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`) owns the
 //! extraction AND the axis-by-axis reconciliation contract — which heading /
 //! fence-delimiter / info-string / section-end / chunk-read behaviour the shared
@@ -102,13 +112,20 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 /// is needed because the clearance examples are multi-let `structure def`s (both
 /// the query call and its operands must be separate let bindings), which the
 /// `structure def Smoke { let g = … }` wrapper cannot express.
-fn assert_module_compiles(label: &str, module_src: &str) {
+///
+/// `chunk_path` NAMES THE CHUNK THE SOURCE CAME FROM and is threaded rather than
+/// read off this module's `CHUNK_PATH` const, because sibling chunk modules in
+/// this same harness binary call this helper for THEIR chunk (task 5759 raised
+/// it to `pub(crate)` for `units_chunk_smoke.rs`). A hardcoded const would name
+/// geometry.md in a units.md failure — a panic that sends the reader to the
+/// wrong file.
+pub(crate) fn assert_module_compiles(chunk_path: &str, label: &str, module_src: &str) {
     let compiled = compile_source_with_stdlib(module_src);
     let errors = errors_only(&compiled);
     assert!(
         errors.is_empty(),
-        "{label}: expected this module to compile with zero Error diagnostics, got: {:#?}\n\
-         --- module source ---\n{module_src}\n--- end module source ---",
+        "{chunk_path} — {label}: expected this module to compile with zero Error diagnostics, \
+         got: {:#?}\n--- module source ---\n{module_src}\n--- end module source ---",
         errors
     );
 }
@@ -120,6 +137,7 @@ fn assert_module_compiles(label: &str, module_src: &str) {
 /// immediately identifiable.
 fn assert_compiles(label: &str, geometry_expr: &str) {
     assert_module_compiles(
+        CHUNK_PATH,
         &format!("{label} (expression `{geometry_expr}`)"),
         &format!("structure def Smoke {{ let g = {} }}", geometry_expr),
     );
@@ -397,7 +415,18 @@ fn leading_backtick_run(line: &str) -> usize {
 /// blamed), and an absent marker — the anti-vacuity guard, and the failure a
 /// reader of a gutted section should see, rather than an empty slice that makes
 /// every downstream assertion pass trivially.
-fn section_body(markdown: &str, marker: &str) -> String {
+/// `chunk_path` and `section_title` are THREADED rather than read off this
+/// module's consts, for the same reason [`assert_module_compiles`] threads its
+/// path (task 5759): this helper now scopes more than one marked section — the
+/// oracle section AND the length-arguments section — and a sibling chunk module
+/// may scope its own. A hardcoded `ORACLE_SECTION_TITLE` would make a
+/// length-section failure panic about interference queries.
+pub(crate) fn section_body(
+    markdown: &str,
+    marker: &str,
+    chunk_path: &str,
+    section_title: &str,
+) -> String {
     let mut body: Vec<&str> = Vec::new();
     let mut in_section = false;
     // `Some(n)` while inside a fence opened by a column-0 run of `n` backticks.
@@ -441,7 +470,7 @@ fn section_body(markdown: &str, marker: &str) -> String {
     // with a cause that is not the real one.
     assert!(
         fence.is_none(),
-        "{CHUNK_PATH} has an unterminated code fence: a column-0 run of {} backtick(s) is never \
+        "{chunk_path} has an unterminated code fence: a column-0 run of {} backtick(s) is never \
          closed by a bare run of at least that many. Everything after it is being read as fence \
          content, so the `{marker}` scan cannot reach the section even when the marker line is \
          present and intact. Close the fence — do not touch the marker.",
@@ -450,13 +479,13 @@ fn section_body(markdown: &str, marker: &str) -> String {
 
     assert!(
         in_section,
-        "{CHUNK_PATH} carries no `{marker}` marker — the line that opens the \
-         `{ORACLE_SECTION_TITLE}` section was removed along with (or independently of) the \
+        "{chunk_path} carries no `{marker}` marker — the line that opens the \
+         `{section_title}` section was removed along with (or independently of) the \
          section itself. That section is what the in-GUI assistant retrieves when a designer \
-         asks about interference or clearance; without it the assistant reads the oracle as a \
-         MISSING CAPABILITY and hand-rolls bbox arithmetic instead (task 5389). Restore the \
-         section WITH its marker line directly under the heading. Retitling the heading is \
-         free and needs no change here — only the marker is matched."
+         asks about the topic it covers; without it the assistant reads the capability as \
+         MISSING and hand-rolls a substitute instead (task 5389, for the oracle section). \
+         Restore the section WITH its marker line directly under the heading. Retitling the \
+         heading is free and needs no change here — only the marker is matched."
     );
     body.join("\n")
 }
@@ -530,7 +559,7 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // elsewhere in the chunk (or an incidental mention that survives the
     // section's deletion) must not satisfy this. `section_body` panics if the
     // section is gone, so gutting it is RED rather than vacuously green.
-    let section = section_body(&markdown, ORACLE_SECTION_MARKER);
+    let section = section_body(&markdown, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
 
     // (a) COVERAGE. Each name must appear as a CALL form (`name(`) rather than a
     // bare word — geometry.md already contained the word "distance" before task
@@ -605,7 +634,21 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
 ///
 /// Callers must anti-vacuity-check the result: a dropped tag or a renamed
 /// section would otherwise empty the scan and pass trivially.
-fn reify_tagged_fences(markdown: &str) -> Vec<String> {
+///
+/// `tag` IS A PARAMETER, not the hardcoded `reify` this scanner started with
+/// (task 5759). units.md carries a deliberately-INVALID rejected-forms block
+/// tagged ```` ```reify-rejected ````, which a rejection-truth negative control
+/// must scrape and a zero-Error compile gate must never sweep in. Parameterising
+/// the tag lets both gates share this one scanner instead of the harness growing
+/// its FIFTH near-identical scraper (see "Known duplication" above). Matching
+/// stays BYTE-EXACT on the whole info string, so `reify` still excludes
+/// `reify-rejected` in both directions.
+///
+/// `chunk_path` is threaded for the same reason [`assert_module_compiles`]
+/// threads its own: a sibling chunk module's unterminated fence must be blamed
+/// on ITS chunk, not on geometry.md.
+pub(crate) fn reify_tagged_fences(markdown: &str, tag: &str, chunk_path: &str) -> Vec<String> {
+    let opener = format!("```{tag}");
     let mut fences: Vec<String> = Vec::new();
     let mut body: Vec<&str> = Vec::new();
     let mut open = false;
@@ -614,7 +657,7 @@ fn reify_tagged_fences(markdown: &str) -> Vec<String> {
         if !open {
             // Exact tag match: `reify-something` is a different language and
             // must not be swept in.
-            if line.trim_end() == "```reify" {
+            if line.trim_end() == opener {
                 open = true;
                 body.clear();
             }
@@ -630,7 +673,7 @@ fn reify_tagged_fences(markdown: &str) -> Vec<String> {
 
     assert!(
         !open,
-        "{CHUNK_PATH} has an unterminated ```reify fence — the scrape cannot be trusted"
+        "{chunk_path} has an unterminated ```{tag} fence — the scrape cannot be trusted"
     );
     fences
 }
@@ -649,7 +692,7 @@ fn reify_tagged_fences(markdown: &str) -> Vec<String> {
 #[test]
 fn reify_tagged_fences_in_geometry_chunk_compile() {
     let markdown = read_chunk();
-    let fences = reify_tagged_fences(&markdown);
+    let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
 
     // Anti-vacuity. Without these, dropping the ```reify tags (or
     // rewriting the fences as plain prose) would leave the scan empty and the
@@ -700,10 +743,7 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
     }
 
     for (index, fence) in fences.iter().enumerate() {
-        assert_module_compiles(
-            &format!("{CHUNK_PATH} ```reify fence #{}", index + 1),
-            fence,
-        );
+        assert_module_compiles(CHUNK_PATH, &format!("```reify fence #{}", index + 1), fence);
     }
 }
 
@@ -740,7 +780,7 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
 /// on the chunk's markdown prose, where a URL would otherwise truncate its line.
 /// A mis-tracked string can only cause a comment to survive, never content to be
 /// dropped — i.e. it degrades to the un-stripped behaviour, never past it.
-fn strip_reify_comments(src: &str) -> String {
+pub(crate) fn strip_reify_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
     let mut in_string = false;
@@ -808,7 +848,7 @@ fn strip_reify_comments(src: &str) -> String {
 /// parens never balance (a call form wrapped across a markdown line), and a match
 /// preceded by an identifier character, so `min_clearance(` is not harvested out
 /// of a hypothetical `xmin_clearance(`.
-fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
+pub(crate) fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
     let needle = format!("{name}(");
     let mut out = Vec::new();
     let mut cursor = 0usize;
@@ -904,8 +944,8 @@ fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
 #[test]
 fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
     let markdown = read_chunk();
-    let section = section_body(&markdown, ORACLE_SECTION_MARKER);
-    let fences = reify_tagged_fences(&markdown);
+    let section = section_body(&markdown, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
+    let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
 
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
         let documented = documented_signature_arities(&section, name);
@@ -1031,7 +1071,8 @@ fn repo_root() -> std::path::PathBuf {
 /// Build artifacts are skipped by directory name rather than by path prefix, so a
 /// nested `target/` cannot smuggle a stale duplicate into the index and make an
 /// otherwise-unique basename ambiguous.
-fn source_files_by_basename() -> std::collections::BTreeMap<String, Vec<std::path::PathBuf>> {
+pub(crate) fn source_files_by_basename()
+-> std::collections::BTreeMap<String, Vec<std::path::PathBuf>> {
     fn walk(
         dir: &std::path::Path,
         out: &mut std::collections::BTreeMap<String, Vec<std::path::PathBuf>>,
@@ -1079,7 +1120,7 @@ fn source_files_by_basename() -> std::collections::BTreeMap<String, Vec<std::pat
 /// the two SYNC blocks is written in one of the two accepted forms, and
 /// `cited_test_paths_in_the_chunk_resolve`'s floors keep it that way, so nothing
 /// the check exists for is lost by ignoring bare basenames.
-fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
+pub(crate) fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
     let mut out: Vec<(String, Option<String>)> = Vec::new();
 
     for run in markdown
@@ -1113,7 +1154,7 @@ fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
 }
 
 /// Resolve one cited path token to a real file, or explain why it did not.
-fn resolve_cited_path(
+pub(crate) fn resolve_cited_path(
     token: &str,
     index: &std::collections::BTreeMap<String, Vec<std::path::PathBuf>>,
 ) -> Result<std::path::PathBuf, String> {
@@ -1392,7 +1433,7 @@ fn section_body_reads_a_shorter_fence_run_as_content_of_a_longer_one() {
               not in the body\n";
 
     assert_eq!(
-        section_body(md, ORACLE_SECTION_MARKER),
+        section_body(md, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE),
         "body line",
         "the inner ``` run is shorter than the ```` that opened the fence, so it is CONTENT — \
          only a bare run of >= 4 closes"
@@ -1411,7 +1452,7 @@ fn section_body_keeps_a_fenced_heading_out_of_the_section_boundary() {
               ## Real heading\n\
               gone\n";
 
-    let body = section_body(md, ORACLE_SECTION_MARKER);
+    let body = section_body(md, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
     assert!(body.contains("// ## not a heading"), "got {body:?}");
     assert!(body.contains("tail"), "got {body:?}");
     assert!(!body.contains("gone"), "got {body:?}");
@@ -1427,7 +1468,7 @@ fn section_body_blames_an_unterminated_fence_rather_than_the_marker() {
               let g = box(1mm, 1mm, 1mm)\n\
               <!-- ORACLE-SECTION -->\n\
               body\n";
-    let _ = section_body(md, ORACLE_SECTION_MARKER);
+    let _ = section_body(md, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
 }
 
 #[test]
