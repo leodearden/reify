@@ -5526,4 +5526,73 @@ assert "R8d: ... and PASSES once that entry is gone (a detector, not a constant 
 _SHARED_TRASH_DIR="$_SHARED_TRASH_DIR_SAVED_R8"
 : > "$_TRASH_HITS_FILE"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block W — rerere disarm at lane cadence (task 6889, open item (c))
+#
+# scripts/seed-warm-lane.sh delegates to scripts/git-rerere-guard.sh arm at the
+# tail of every --fresh-checkout seed, so the shared .git/config is re-pinned at
+# ACQUIRE cadence rather than only at developer-setup cadence. This block pins
+# WHEN that call happens, and that it can never break an acquire.
+#
+# THE DISCRIMINATOR, established by experiment rather than assumed: the guard's
+# first two git calls are `rev-parse --is-inside-work-tree` and `rev-parse
+# --git-common-dir`, while seed's OWN git use is only `diff --name-only` and
+# `rev-parse HEAD`. So `--is-inside-work-tree` in CALLS_FILE is a precise "the
+# guard ran" probe that no existing seed call can forge. Deliberately NOT
+# `git config`: under this suite's stub `git` the guard bails at
+# git-rerere-guard.sh:177 (`cd: abc1234`) and never reaches a config call.
+#
+# THE GUARD IS DELIBERATELY NOT STUBBED OUT. It runs for real against the stub
+# `git`, where it exits 1 (measured: empty stdout, one stderr line, exactly the
+# two rev-parse calls above). That is what makes W3 a genuine hostile-environment
+# test of the fail-open path rather than a vacuous one.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block W: rerere disarm at lane cadence (task 6889) ---"
+
+W_BASE_PARENT="$(mktemp -d /tmp/test-seed-W-parent-XXXXXX)"
+W_BASE="$W_BASE_PARENT/target"
+_TMPDIRS+=("$W_BASE_PARENT")
+mkdir -p "$W_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$W_BASE_PARENT/.warm-base-meta"
+
+# W1 (a): INVOKED on the --fresh-checkout path — the production ACQUIRE mode.
+W_LANE1="$(make_isolated_lane W-fresh)"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$W_BASE" "$W_LANE1" --fresh-checkout
+W1_RC="$RC"
+W1_OUT="$OUT"
+
+assert "W1: --fresh-checkout invokes git-rerere-guard.sh (--is-inside-work-tree seen)" \
+    bash -c 'grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W2 (b): NOT invoked on --reset-in-place. That arm is test-only (the B13
+# warmth-delta control); per D10 always-re-seed-at-acquire, production acquires
+# — task lanes AND merge-spec slots — ALWAYS use --fresh-checkout, so gating on
+# $FRESH_CHECKOUT covers 100% of the production path while keeping this arm inert.
+# Same fixture shape as Block E's --reset-in-place run.
+W_LANE2="$(make_isolated_lane W-reset)"
+mkdir -p "$W_LANE2/src"
+echo 'fn main() {}' > "$W_LANE2/src/main.rs"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$W_BASE" "$W_LANE2" --reset-in-place
+
+assert "W2: --reset-in-place exits 0 (fixture sanity)" \
+    test "$RC" -eq 0
+assert "W2: --reset-in-place does NOT invoke git-rerere-guard.sh (test-only arm)" \
+    bash -c '! grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W3 (c): FAIL-OPEN. Under the stub `git` the guard exits 1 (measured above), so
+# this assert has teeth: without the `|| _rc=$?` shielding, seed would inherit
+# that status under `set -euo pipefail` and the acquire would fail.
+assert "W3: seed still exits 0 even though the guard exits 1 under the stub git" \
+    test "$W1_RC" -eq 0
+
+# W4 (d): STDOUT UNPOLLUTED. seed's stdout is a single-use machine-readable
+# channel; the guard's diagnostics must never reach it. Same shape as C6/E3.
+assert "W4: STDOUT is exactly <lane_dir>/target with the guard call in place" \
+    bash -c '[ "$1" = "'"$W_LANE1/target"'" ]' _ "$W1_OUT"
+
 test_summary
