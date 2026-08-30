@@ -6798,6 +6798,30 @@ Handle(StepRepr_GlobalUnitAssignedContext) step_unit_assigned_context(
     return Handle(StepRepr_GlobalUnitAssignedContext)();
 }
 
+/// Part-21 token for a `StepBasic_SiUnitName`, for the refusal diagnostic.
+///
+/// Only the enumerators that can plausibly appear in a plane-angle slot are
+/// spelled out; everything else degrades to `SiUnitName(<n>)`. The fallback is
+/// deliberately NOT a guessed token: a future OCCT release that appends an
+/// enumerator would otherwise shift the numbering under a hardcoded table and
+/// make this print a confidently WRONG unit name, which is worse than printing
+/// a number the reader can look up.
+std::string si_unit_name_token(StepBasic_SiUnitName name) {
+    switch (name) {
+        case StepBasic_sunRadian:
+            return ".RADIAN.";
+        case StepBasic_sunSteradian:
+            return ".STERADIAN.";
+        case StepBasic_sunMetre:
+            return ".METRE.";
+        default: {
+            std::ostringstream oss;
+            oss << "SiUnitName(" << static_cast<int>(name) << ")";
+            return oss.str();
+        }
+    }
+}
+
 /// How a single unit entity classifies for INV-AD-4's purposes.
 enum class StepAngleUnitKind {
     /// Not an angular unit at all (a length, a solid angle carrier, …).
@@ -6838,11 +6862,11 @@ StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& ent
         }
         if (detail != nullptr) {
             std::ostringstream oss;
-            oss << "SI plane-angle unit with name=" << static_cast<int>(si->Name());
+            oss << "SI plane-angle unit declared as " << si_unit_name_token(si->Name());
             if (si->HasPrefix()) {
-                oss << " prefix=" << static_cast<int>(si->Prefix());
+                oss << " with SI prefix " << static_cast<int>(si->Prefix());
             } else {
-                oss << " prefix=none";
+                oss << " with no SI prefix";
             }
             *detail = oss.str();
         }
@@ -7032,6 +7056,80 @@ StepPlaneAngleAuditCounts enforce_step_plane_angle_radians(
     throw ContractViolation(oss.str());
 }
 
+/// A fault `export_step_locked` injects into the transferred model at ONE
+/// documented point, immediately before the guard runs.
+///
+/// The seam is an explicit parameter rather than a flag read from the
+/// environment or a static, so `export_step`'s `StepGuardFault::None` argument
+/// makes the production path provably fault-free BY CONSTRUCTION. The fault is
+/// deliberately never threaded into the guard itself — the guard cannot be
+/// taught which corruption to expect, so it has to detect it the same way it
+/// would detect a real one.
+enum class StepGuardFault {
+    /// No injection. The only value any production caller passes.
+    None,
+    /// Rename the first SI plane-angle unit to STERADIAN.
+    NonRadian,
+};
+
+/// Map the FFI fault name onto the enum.
+///
+/// An unrecognised name is a `ContractViolation`, not a silent no-op: a typo
+/// in a test must read as a rejected fault rather than as a skipped injection
+/// whose assertions then pass vacuously against a perfectly good export.
+StepGuardFault parse_step_guard_fault(const std::string& name) {
+    if (name == "none") {
+        return StepGuardFault::None;
+    }
+    if (name == "non_radian") {
+        return StepGuardFault::NonRadian;
+    }
+    throw ContractViolation("unknown injected fault \"" + name +
+                            "\"; accepted faults: none, non_radian");
+}
+
+/// Corrupt exactly ONE thing in `model`, per `fault`.
+///
+/// EXACTLY ONE, deliberately. A partial flip — one context wrong, the rest
+/// still radian — is the strongest signal available, because it is invisible
+/// to any file-wide substring check (the `.RADIAN.` token is still there, in
+/// the contexts that were left alone) and can only be caught by resolving each
+/// context's own unit references.
+///
+/// Throws if the fault could not be applied, rather than returning quietly: a
+/// fixture that no longer contains anything to corrupt would otherwise turn
+/// every negative test into a vacuous pass.
+void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
+                            StepGuardFault fault) {
+    if (fault == StepGuardFault::None) {
+        return;
+    }
+    if (model.IsNull()) {
+        throw ContractViolation(
+            "cannot inject a fault: the STEP model is null");
+    }
+    const Standard_Integer n = model->NbEntities();
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        Handle(StepBasic_SiUnitAndPlaneAngleUnit) si =
+            Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(model->Value(i));
+        if (si.IsNull()) {
+            continue;
+        }
+        switch (fault) {
+            case StepGuardFault::NonRadian:
+                si->SetName(StepBasic_sunSteradian);
+                break;
+            case StepGuardFault::None:
+                break;
+        }
+        return;
+    }
+    throw ContractViolation(
+        "cannot inject a fault: the transferred model carries no SI "
+        "plane-angle unit to corrupt, so this negative test would pass "
+        "vacuously");
+}
+
 /// Everything one STEP export produces, before it is narrowed to the FFI
 /// shape the caller asked for.
 struct StepExportLockedResult {
@@ -7050,7 +7148,9 @@ struct StepExportLockedResult {
 /// function does not take it (a non-recursive std::mutex would deadlock) and
 /// it does not install `wrap_occt_call` either — both stay with the callers,
 /// so the exception taxonomy the user sees is identical on both paths.
-static StepExportLockedResult export_step_locked(const OcctShape& shape, rust::Str schema) {
+static StepExportLockedResult export_step_locked(const OcctShape& shape,
+                                                 rust::Str schema,
+                                                 StepGuardFault fault) {
     // Register the STEP statics BEFORE setting them. STEPControl_Controller
     // ::Init() is the idempotent call that REGISTERS the
     // `write.step.schema` Interface_Static; calling SetCVal before any
@@ -7268,6 +7368,11 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape, rust::S
     // nothing to walk before it — and BEFORE Write, so a violation
     // refuses the export instead of diagnosing a file that already
     // exists. See the guard's own contract block above `export_step_locked`.
+    // THE ONE AND ONLY fault-injection point, and it sits between Transfer
+    // (which builds the unit contexts) and the guard (which checks them).
+    // Production callers pass StepGuardFault::None, so this is a no-op there.
+    apply_step_guard_fault(step_model, fault);
+
     StepPlaneAngleAuditCounts audit = enforce_step_plane_angle_radians(step_model);
 
     // Write to a temporary file, then read back
@@ -7300,7 +7405,8 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape, rust::S
 ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
     return wrap_occt_call("export_step", [&]() {
-        StepExportLockedResult locked = export_step_locked(shape, schema);
+        StepExportLockedResult locked =
+            export_step_locked(shape, schema, StepGuardFault::None);
         // The audit counts are deliberately dropped here: the production
         // signature is unchanged by #6344, and a violation has already been
         // turned into a refusal by the time control reaches this line.
@@ -7322,12 +7428,8 @@ StepGuardProbeResult export_step_with_injected_fault_for_test(const OcctShape& s
     // refusal produces — a hook that stamped its own label would let the
     // production diagnostic drift without reddening anything.
     return wrap_occt_call("export_step", [&]() {
-        std::string fault_name(fault);
-        if (fault_name != "none") {
-            throw ContractViolation("unknown injected fault \"" + fault_name +
-                                    "\"; accepted faults: none");
-        }
-        StepExportLockedResult locked = export_step_locked(shape, schema);
+        StepGuardFault injected = parse_step_guard_fault(std::string(fault));
+        StepExportLockedResult locked = export_step_locked(shape, schema, injected);
         StepGuardProbeResult out;
         out.content = rust::String(locked.content);
         out.contexts = locked.audit.contexts;

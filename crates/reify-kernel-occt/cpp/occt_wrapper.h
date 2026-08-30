@@ -1614,8 +1614,12 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 ///
 /// `fault` selects the corruption, applied inside the export mutex and after
 /// the shape has been transferred:
-///   - `"none"`  — no fault; asserts the guard ACCEPTS a legitimate export and
-///                 reports counts proving it saw the whole model.
+///   - `"none"`        — no fault; asserts the guard ACCEPTS a legitimate
+///                       export and reports counts proving it saw the model.
+///   - `"non_radian"`  — rename the FIRST SI plane-angle unit to STERADIAN.
+///                       Exactly one, so the other contexts stay radian: that
+///                       partial flip is invisible to a file-wide `.RADIAN.`
+///                       grep and can only be caught by the association walk.
 ///
 /// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) on
 /// an unrecognised `fault`, so a typo in a test reads as a rejected fault name
