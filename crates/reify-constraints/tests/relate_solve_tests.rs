@@ -27,7 +27,7 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame, solve_frame,
+    partition_driving_set, pose_from_frame, solve_frame, static_relation_residuals,
 };
 use reify_ir::{SolveResult, Value};
 
@@ -1456,4 +1456,281 @@ fn tangent_measured_rank_matches_the_published_delta_dof_table() {
             "{label}: spent DOF must be the combo's codimension {want}"
         );
     }
+}
+
+// ── static (ZERO-AUTO) relation residuals — DIC α (task 5415), step-1 ────────
+//
+// `static_relation_residuals` is the witness primitive for relate scopes with NO
+// `at auto` sub: nothing moves, so there is no pose to solve for, only a verdict
+// to render on the datums as they already sit.
+//
+// ## Why this cannot be `max_relation_residual(rels, &sentinel, &identity)`
+//
+// THE degeneracy these tests exist to pin. `relation_residual` marks an operand
+// "moving" iff `op.sub == unknown.sub`, and `pick_ab` then resolves
+//
+//     a = first MOVING operand, else datums.first()
+//     b = first NON-MOVING operand, else datums.last()
+//
+// With a sentinel unknown naming no real sub, NOTHING is moving — so `a` falls
+// through to `datums[0]` and `b` resolves to the first non-moving operand, which
+// is ALSO `datums[0]`. The relation is compared against ITSELF, and the damage
+// runs in both directions:
+//
+//   * `concentric`/`flush`/`coincident`/`fasten`/`parallel` → identically 0.0,
+//     i.e. exactly the false green this task exists to kill; and
+//   * `perpendicular` → `d·d` = 1.0, `antiparallel` → 2.0, `distance`/`offset` →
+//     `|d|`, `angle` → `1 − cos θ` — false VIOLATIONS on correct models.
+//
+// Only `on`/`tangent`, which read `datums` positionally, survive it. So the
+// tests below deliberately cover one relation from each degeneracy direction:
+// (a)/(b)/(e) would read as satisfied under the naive form, (c)/(c') would read
+// as violated.
+//
+// ## Why the return type is a row VECTOR, not a collapsed `f64`
+//
+// (d) is the reason. An EMPTY row vector ("no residual model for this
+// name/operand-kind combination") and an all-zero row vector ("measured, and
+// satisfied") are different facts, and the caller must be able to tell them
+// apart: the first is UNVERIFIABLE and must be said out loud, the second is
+// silent. A `-> f64` signature can only render both as 0.0, which would trade the
+// false green for a quieter one (INV-SF-3).
+
+/// The `dic_relate_static_violated` offset, in metres — the plate's datums sit
+/// here while the bushing's sit at the origin. Taken from the committed fixture
+/// `docs/prds/v0_6/fixtures/dic_relate_static_violated.ri` (`30mm, 20mm, 5mm`),
+/// not invented for the test.
+const VIOLATED_OFFSET: (f64, f64, f64) = (0.030, 0.020, 0.005);
+
+/// (a) The B1 shape: `concentric` over two axes separated by the fixture's
+/// (30, 20, 5) mm split must measure a residual of **0.03 m**, not zero.
+///
+/// This is the anti-`pick_ab` test in the false-GREEN direction. The naive
+/// sentinel-unknown implementation returns exactly 0.0 here and would report the
+/// PRD's deliberately-violated fixture as satisfied.
+///
+/// The expected 0.03 is DERIVED, not observed. `axis_coincidence_residual`
+/// returns `[ûa·e1, ûa·e2, off·e1, off·e2]` in the ANCHOR's tangent frame; for
+/// the anchor direction `+z` that frame is exactly `e1 = (0,−1,0)`,
+/// `e2 = (1,0,0)`. With `off = oa − ob = (−0.03, −0.02, −0.005)` the four rows
+/// are `[0, 0, 0.02, −0.03]`, so the max magnitude is the x-split, 0.03 m. The
+/// z-split does not appear: an axis constrains only the two components
+/// PERPENDICULAR to itself, and sliding along `+z` is not a coincidence error.
+///
+/// Against `RelateTolerance::kernel_default().assertion()` = 1e-5 m that is a
+/// 3000× margin — the verdict is not sensitive to the tolerance's exact value.
+#[test]
+fn static_residuals_measure_the_gap_between_two_offset_axes() {
+    let rel = relation(
+        "concentric",
+        vec![
+            datum("bush", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", axis(VIOLATED_OFFSET, (0.0, 0.0, 1.0))),
+        ],
+        4,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(
+        !rows.is_empty(),
+        "concentric over two Axis operands has a residual model; an empty row \
+         vector would mean UNVERIFIABLE, which is a different (and here wrong) \
+         verdict from violated"
+    );
+
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    assert!(
+        (max - 0.03).abs() < 1e-9,
+        "the measured residual must be the 30 mm x-split of the fixture's \
+         datums, 0.03 m; got {max} from rows {rows:?}. A measured 0.0 means the \
+         relation was compared against ITSELF — the `pick_ab` degeneracy that \
+         makes a zero-auto relate block a silent no-op."
+    );
+}
+
+/// (b) The B2 shape: `concentric` over two BIT-IDENTICAL axes measures exactly
+/// zero on every row.
+///
+/// This mirrors `dic_relate_static_ok.ri`, whose two structures are built from
+/// the identical `translate(...)` expression — so `resolve_operands`, which keys
+/// realized datums by `(structure, member)`, hands both operands bit-identical
+/// f64s.
+///
+/// The exactness is asserted rather than an epsilon because it is derivable, and
+/// derivable in two separate ways: the two POSITION rows are `off = oa − ob` with
+/// `oa` and `ob` bitwise equal, so they are exactly `±0.0`; and for the `+z`
+/// direction the anchor tangent frame is exactly `(0,−1,0)`/`(1,0,0)`, both of
+/// which have a zero z-component, so the two TILT rows are exact zeros too.
+///
+/// The operative bound for the caller is of course the far looser assertion
+/// tolerance (1e-5 m); this test pins the stronger true statement, so that a
+/// future change which introduces float noise here surfaces as a question rather
+/// than silently eating margin.
+#[test]
+fn static_residuals_are_exactly_zero_for_bit_identical_axes() {
+    let colocated = axis(VIOLATED_OFFSET, (0.0, 0.0, 1.0));
+    let rel = relation(
+        "concentric",
+        vec![
+            datum("bush", colocated.clone()),
+            datum("plate", colocated),
+        ],
+        4,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(
+        !rows.is_empty(),
+        "a satisfied relation must still MEASURE — an empty row vector means \
+         unverifiable, not satisfied"
+    );
+    for (i, r) in rows.iter().enumerate() {
+        assert_eq!(
+            *r, 0.0,
+            "row {i} of {rows:?} must be exactly zero for bit-identical operands"
+        );
+    }
+}
+
+/// (c) The anti-`pick_ab` test in the false-VIOLATION direction:
+/// `perpendicular` over two genuinely perpendicular unit `Direction`s on
+/// DISTINCT subs must measure ~0.
+///
+/// `perpendicular`'s residual is `dot(a, b)`, so the naive sentinel-unknown form
+/// — which collapses `a` and `b` onto the same operand — returns `d·d` = **1.0**,
+/// a confident violation of a correct model. The bound is 1e-12 rather than exact
+/// only because the operands need not be axis-aligned in general; for these two
+/// the dot is exactly 0.
+#[test]
+fn static_residuals_do_not_self_compare_perpendicular_directions() {
+    let rel = relation(
+        "perpendicular",
+        vec![
+            datum("m", dir(0.0, 0.0, 1.0)),
+            datum("a", dir(1.0, 0.0, 0.0)),
+        ],
+        1,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(
+        !rows.is_empty(),
+        "perpendicular over two Directions has a residual model"
+    );
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    assert!(
+        max <= 1e-12,
+        "two genuinely perpendicular directions must measure as SATISFIED; got \
+         {max} from rows {rows:?}. A measured 1.0 is the `pick_ab` self-compare \
+         (`d·d`), i.e. a false violation on a correct model."
+    );
+}
+
+/// (c′) The same false-violation direction for `antiparallel`, whose residual is
+/// the unit difference `â − sign·b̂`. Self-comparing yields `â + â`, norm **2.0**.
+#[test]
+fn static_residuals_do_not_self_compare_antiparallel_directions() {
+    let rel = relation(
+        "antiparallel",
+        vec![
+            datum("m", dir(0.0, 0.0, 1.0)),
+            datum("a", dir(0.0, 0.0, -1.0)),
+        ],
+        2,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(
+        !rows.is_empty(),
+        "antiparallel over two Directions has a residual model"
+    );
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    assert!(
+        max <= 1e-12,
+        "two genuinely antiparallel directions must measure as SATISFIED; got \
+         {max} from rows {rows:?}. A measured 2.0 is the `pick_ab` self-compare."
+    );
+}
+
+/// (d1) UNVERIFIABLE, source 1: an uncurated relation name contributes no
+/// residual rows, and that must surface as an EMPTY vector rather than as a
+/// zero-valued one.
+///
+/// `residual_dispatch`'s catch-all arm returns no rows for a name it does not
+/// model. Collapsing that to `0.0` would report an unmodelled relation as
+/// satisfied — the same class of silent failure the compile-time
+/// `E_TANGENT_OPERANDS_UNSUPPORTED` gate exists to prevent one layer up.
+#[test]
+fn static_residuals_are_empty_for_an_uncurated_relation_name() {
+    let rel = relation(
+        "wibbly",
+        vec![
+            datum("bush", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", axis(VIOLATED_OFFSET, (0.0, 0.0, 1.0))),
+        ],
+        1,
+    );
+
+    assert!(
+        static_relation_residuals(&rel).is_empty(),
+        "an uncurated relation name has no residual model, so the row vector must \
+         be EMPTY (⇒ unverifiable). Any zero-valued row would read as satisfied."
+    );
+}
+
+/// (d2) UNVERIFIABLE, source 2: an operand that did not realize to a datum
+/// (`Value::Undef`) leaves the relation with fewer than two datums to compare.
+///
+/// This case is sharper than it looks, and is why the implementation cannot
+/// simply nominate a witness and call through. With ONE datum operand surviving,
+/// `pick_ab` resolves `a` and `b` to that same lone datum and `concentric`
+/// returns four exact zeros — a *fully confident* "satisfied" verdict derived
+/// from a relation half of whose inputs are missing. Requiring two datum operands
+/// is what makes this honest.
+#[test]
+fn static_residuals_are_empty_when_an_operand_did_not_realize() {
+    let rel = relation(
+        "concentric",
+        vec![
+            datum("bush", Value::Undef),
+            datum("plate", axis(VIOLATED_OFFSET, (0.0, 0.0, 1.0))),
+        ],
+        4,
+    );
+
+    assert!(
+        static_relation_residuals(&rel).is_empty(),
+        "a relation with only ONE realized datum cannot be verified, so the row \
+         vector must be EMPTY. Comparing the lone datum against itself yields \
+         four exact zeros — a confident false green built from missing input."
+    );
+}
+
+/// (e) Both operands on ONE sub (`concentric(a.x, a.y)`) still measures the two
+/// DISTINCT datums rather than self-comparing.
+///
+/// This is the case where nominating "the first datum operand's sub" as the
+/// witness makes EVERY operand moving, so `pick_ab` finds no non-moving operand
+/// and falls back to `datums.last()`. That fallback is correct here — last is a
+/// genuinely different operand from first — which is why the guard is on the
+/// datum COUNT (≥ 2) and not on the subs being distinct.
+#[test]
+fn static_residuals_compare_two_datums_of_the_same_sub() {
+    let rel = relation(
+        "concentric",
+        vec![
+            datum("a", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("a", axis((0.030, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        4,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    assert!(
+        (max - 0.03).abs() < 1e-9,
+        "two datums of the SAME sub must still be compared against each other; \
+         got {max} from rows {rows:?} (0.0 means the first datum was compared \
+         against itself)"
+    );
 }
