@@ -1863,6 +1863,81 @@ mod tests {
         assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
     }
 
+    /// `Type::ScalarParam` in `tangent`'s radius slots — driven through the
+    /// public `check_relation_arg_types("tangent", ...)` entry point so the test
+    /// exercises the real call path into `check_tangent_operands`. Covers every
+    /// radius arity `tangent_combo` allows, including a MIXED concrete/ScalarParam
+    /// pair (the case the radius loop's `.skip(2)` iteration exists to catch — a
+    /// checker that looked only at slot 2 would miss a ScalarParam at slot 3).
+    #[test]
+    fn check_gradualism_scalar_param_tangent_radius_passes_silently() {
+        let sp = || arg(Type::ScalarParam("Q".to_string()));
+
+        // cylinder/plane: one radius.
+        let mut d1 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Plane), sp()],
+            span(),
+            &mut d1,
+        );
+        assert!(
+            d1.is_empty(),
+            "tangent(Axis, Plane, ScalarParam) must be skipped, got: {d1:?}"
+        );
+
+        // cylinder/cylinder: two radii, both ScalarParam.
+        let mut d2 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Axis), sp(), sp()],
+            span(),
+            &mut d2,
+        );
+        assert!(
+            d2.is_empty(),
+            "tangent(Axis, Axis, ScalarParam, ScalarParam) must be skipped, got: {d2:?}"
+        );
+
+        // cylinder/cylinder: MIXED radii — one concrete Length, one ScalarParam.
+        let mut d3 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Axis), arg(Type::length()), sp()],
+            span(),
+            &mut d3,
+        );
+        assert!(
+            d3.is_empty(),
+            "tangent(Axis, Axis, Length, ScalarParam) must be skipped, got: {d3:?}"
+        );
+
+        // sphere/plane: one radius.
+        let pt = || arg(Type::point3(Type::length()));
+        let mut d4 = Vec::new();
+        check_relation_arg_types("tangent", &[pt(), arg(Type::Plane), sp()], span(), &mut d4);
+        assert!(
+            d4.is_empty(),
+            "tangent(Point, Plane, ScalarParam) must be skipped, got: {d4:?}"
+        );
+    }
+
+    /// Anti-over-broadening negative guard: a CONCRETE wrong-dimension radius must
+    /// STILL emit `ArgTypeMismatch` even after `ScalarParam` joins the tangent
+    /// radius-slot skip-set.
+    #[test]
+    fn check_gradualism_scalar_param_tangent_radius_still_rejects_concrete_wrong_dimension() {
+        let args = [arg(Type::Axis), arg(Type::Plane), arg(Type::angle())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("tangent", &args, span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+    }
+
     // Arity-gating + unknown-name no-ops — the checker must not fire spuriously.
 
     /// The shared verbs `angle`/`distance` are policed ONLY in their arity-3 DRIVE

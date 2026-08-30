@@ -231,3 +231,57 @@ fn drive_offset<Q: Dimension>(pa: Plane, pb: Plane, d: Scalar<Q>) -> Relation { 
         );
     }
 }
+
+/// A `Scalar<Q>` radius on `tangent` (cylinder/plane one-radius form and
+/// cylinder/cylinder two-radii form) must not draw a unit-layer
+/// `ArgTypeMismatch`, mirroring the metric-slot gradualism above —
+/// `check_tangent_operands` has its own separate radius-slot match, so this is
+/// a distinct code path from `scalar_param_metric_in_generic_fn_emits_no_arg_type_mismatch`.
+/// Also asserts zero `TangentOperandsUnsupported`, so the widened skip cannot
+/// be credited to an unrelated suppression.
+///
+/// VERIFIED RED against the base-commit binary: `target/debug/reify check` on
+/// `fn drive_tangent<Q: Dimension>(a: Axis, p: Plane, r: Scalar<Q>) -> Relation
+/// { tangent(a, p, r) }` emits `tangent: metric argument expects Length, got
+/// Scalar<Q>`.
+#[test]
+fn scalar_param_tangent_radius_in_generic_fn_emits_no_arg_type_mismatch() {
+    let source = r#"
+fn drive_tangent_cyl_plane<Q: Dimension>(a: Axis, p: Plane, r: Scalar<Q>) -> Relation { tangent(a, p, r) }
+fn drive_tangent_cyl_cyl<Q: Dimension>(a: Axis, b: Axis, r1: Scalar<Q>, r2: Scalar<Q>) -> Relation { tangent(a, b, r1, r2) }
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let bad: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && matches!(
+                    d.code,
+                    Some(DiagnosticCode::ArgTypeMismatch)
+                        | Some(DiagnosticCode::TangentOperandsUnsupported)
+                )
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "a Scalar<Q> radius on tangent must NOT emit ArgTypeMismatch or \
+         TangentOperandsUnsupported (gradualism skip on ScalarParam); got: {:#?}",
+        bad
+    );
+
+    for fn_name in ["drive_tangent_cyl_plane", "drive_tangent_cyl_cyl"] {
+        let f = module
+            .functions
+            .iter()
+            .find(|f| f.name == fn_name)
+            .unwrap_or_else(|| panic!("{fn_name} function should be compiled"));
+        assert_eq!(
+            f.body.result_expr.result_type,
+            Type::Relation,
+            "{fn_name}'s body must type as Type::Relation, not poison; got: {:?}",
+            f.body.result_expr.result_type
+        );
+    }
+}
