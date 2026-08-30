@@ -11,7 +11,8 @@
 //! completeness axis only.
 
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
-use reify_ir::{Completeness, PartialReason};
+use reify_ir::{Completeness, PartialReason, RankedCandidate, SolutionSet, Value};
+use std::collections::HashMap;
 
 // ── Completeness variant shape (§3.1) ────────────────────────────────────────
 
@@ -327,4 +328,129 @@ fn is_exhaustive_is_true_only_for_exhaustive() {
             "Partial{{{reason:?}}} must not be exhaustive"
         );
     }
+}
+
+// ── SolutionSet (§3.1) and C4 — no unproven count ────────────────────────────
+
+/// Local candidate fixture, modelled on `tests/ranked_solve_result.rs`'s
+/// `make_candidate`. The optimality axis is deliberately not involved.
+fn make_candidate(x: f64) -> RankedCandidate {
+    let mut values = HashMap::new();
+    values.insert(ValueCellId::new("Part", "x"), Value::length(x));
+    RankedCandidate { values, objective_score: Some(x), unique: false }
+}
+
+fn set_of(n: usize, completeness: Completeness) -> SolutionSet {
+    SolutionSet {
+        solutions: (0..n).map(|i| make_candidate(i as f64 / 100.0)).collect(),
+        completeness,
+    }
+}
+
+/// (a) `SolutionSet::unique()` must agree with
+/// `Completeness::derived_unique(solutions.len())` across the same grid as the
+/// C1 truth table — it delegates, it does not re-derive.
+#[test]
+fn solution_set_unique_agrees_with_derived_unique() {
+    let mut completenesses = vec![
+        Completeness::Exhaustive,
+        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) },
+    ];
+    completenesses.extend(
+        all_partial_reasons()
+            .into_iter()
+            .map(|reason| Completeness::Partial { reason }),
+    );
+
+    for completeness in &completenesses {
+        for n in [0usize, 1, 2, 5] {
+            let set = set_of(n, completeness.clone());
+            assert_eq!(
+                set.unique(),
+                completeness.derived_unique(n),
+                "SolutionSet::unique must delegate to derived_unique for {completeness:?} with {n} solutions"
+            );
+        }
+    }
+
+    // The three named cells, spelled out.
+    assert!(set_of(1, Completeness::Exhaustive).unique());
+    assert!(
+        !set_of(1, Completeness::Partial { reason: PartialReason::ProbeOnly }).unique(),
+        "one candidate + ProbeOnly is not a uniqueness claim"
+    );
+    assert!(
+        !set_of(2, Completeness::Exhaustive).unique(),
+        "two proven solutions is the opposite of unique"
+    );
+}
+
+/// (b) C4 — a `Partial` verdict may never report a total.
+#[test]
+fn proven_count_is_none_for_every_partial_reason() {
+    // Exhaustive: the count IS proven, and it is the set's own length.
+    for n in [0usize, 1, 2, 5] {
+        assert_eq!(set_of(n, Completeness::Exhaustive).proven_count(), Some(n));
+    }
+
+    // Refuted: proven zero.
+    let refuted = set_of(
+        0,
+        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) },
+    );
+    assert_eq!(refuted.proven_count(), Some(0));
+
+    // Partial: no total, for every reason and regardless of what was found.
+    for reason in all_partial_reasons() {
+        for n in [0usize, 1, 2] {
+            let set = set_of(n, Completeness::Partial { reason: reason.clone() });
+            assert_eq!(
+                set.proven_count(),
+                None,
+                "Partial{{{reason:?}}} holding {n} candidates must not report a total"
+            );
+            // C4 permits reporting what was found — that stays available.
+            assert_eq!(set.solutions.len(), n);
+        }
+    }
+}
+
+/// (c) C3 — an empty `Refuted` and an empty `Partial` must be distinguishable.
+/// One is a proof about the model; the other is a report about the search.
+#[test]
+fn empty_refuted_and_empty_partial_are_distinguishable() {
+    let refuted_c = Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) };
+    let partial_c = Completeness::Partial { reason: PartialReason::BoxBudgetExhausted };
+
+    let refuted = set_of(0, refuted_c.clone());
+    let partial = set_of(0, partial_c.clone());
+
+    // Both found nothing...
+    assert_eq!(refuted.solutions.len(), 0);
+    assert_eq!(partial.solutions.len(), 0);
+
+    // ...but only one of them proved anything.
+    assert_eq!(refuted.proven_count(), Some(0), "Refuted proves the set is empty");
+    assert_eq!(partial.proven_count(), None, "Partial proves nothing about the total");
+    assert_ne!(refuted.proven_count(), partial.proven_count());
+    assert_ne!(refuted_c, partial_c);
+
+    // Neither is a uniqueness claim.
+    assert!(!refuted.unique());
+    assert!(!partial.unique());
+}
+
+/// (d) Debug / Clone smoke. `SolutionSet` is not `PartialEq` because
+/// `RankedCandidate` is not, so the round-trip is asserted through `Debug`.
+#[test]
+fn solution_set_debug_and_clone_smoke() {
+    let set = set_of(2, Completeness::Exhaustive);
+    let cloned = set.clone();
+
+    let d1 = format!("{set:?}");
+    let d2 = format!("{cloned:?}");
+    assert!(d1.contains("SolutionSet"));
+    assert_eq!(d1, d2);
+    assert_eq!(cloned.proven_count(), set.proven_count());
+    assert_eq!(cloned.unique(), set.unique());
 }
