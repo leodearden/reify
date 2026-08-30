@@ -1663,6 +1663,49 @@ fn export_refusal_does_not_overwrite_an_existing_file() {
     );
 }
 
+/// The C2 negative that bounds the η refusal's blast radius (PRD C2 / §3.1(f)).
+///
+/// Mirrors `build_dash_o_still_exports_a_module_without_a_bound`
+/// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:589`), which the
+/// CLI's own η work landed for the same reason. It is DELIBERATELY green both before
+/// and after the gate, and that is exactly its job: PRD §4.6's closing rationale —
+/// "a module with no `RepresentationWithin` never enters any of this — the required
+/// negative signal" — makes the shared helper's `None` case the load-bearing one, and
+/// an over-broad gate that refused unbounded designs would break every existing GUI
+/// export.
+///
+/// The payload equality (not merely `!is_empty()`) is what also catches a regression
+/// that silently emptied the artifact instead of refusing it.
+#[test]
+fn export_still_succeeds_for_a_module_without_a_representation_bound() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Plain `bracket_source()` — NO checker structure, so no declared bound. This is
+    // `bounded_bracket_source()` minus its one appended `RepresentationWithin`.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bracket.step");
+
+    let result = session.export(ExportFormat::Step, &path);
+    assert!(
+        result.is_ok(),
+        "an UNBOUNDED design must still export exactly as before — the η refusal must \
+         not fire for a design that declares no bound: {:?}",
+        result.err()
+    );
+    assert!(path.exists(), "an unbounded design must still write its target");
+    assert_eq!(
+        std::fs::read(&path).expect("exported file should be readable"),
+        b"MOCK_EXPORT_DATA",
+        "the unbounded export must still carry the mock kernel's payload byte-for-byte"
+    );
+}
+
 // --- Source-map consistency after load/update ---
 
 /// Review bug #2: source_map key inconsistency.
