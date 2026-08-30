@@ -61,7 +61,7 @@ crates/reify-eval/src/compute_targets/multi_case.rs 8
 crates/reify-eval/src/compute_targets/tensegrity_load.rs 1
 crates/reify-eval/src/dynamics_ops.rs 4
 crates/reify-eval/src/engine_admin.rs 3
-crates/reify-eval/src/engine_build.rs 47
+crates/reify-eval/src/engine_build.rs 48
 crates/reify-eval/src/engine_compute.rs 2
 crates/reify-eval/src/engine_constraints.rs 1
 crates/reify-eval/src/engine_edit.rs 6
@@ -77,6 +77,6 @@ crates/reify-eval/src/tolerance_combine.rs 1
 crates/reify-eval/src/unfold.rs 10
 crates/reify-shell-extract/src/result.rs 2
 crates/reify-stdlib/src/dfm.rs 12
-crates/reify-stdlib/src/geometry.rs 2
+crates/reify-stdlib/src/geometry.rs 4
 crates/reify-stdlib/src/tolerancing.rs 2
 gui/src-tauri/src/engine.rs 1
