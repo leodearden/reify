@@ -469,7 +469,8 @@ directions: it is invisible to canonical-cite recognition AND it is a `malformed
 trigger (§8.3) — the disposition `CLAUDE.md`'s TODO-citation convention already mandates and
 which the `#N` spelling previously escaped. Without the second half, a marker line whose only
 cite is PRD-relative would lose its canonical anchor and collapse into `untracked` (High,
-hard gate) where §8.4 rates a malformed cite Medium/advisory. Three measured families:
+hard gate) where §8.4 rates a malformed cite Medium/advisory. Three measured families, all
+governed by one shared digit bound:
 
 1. **Glued PRD-artifact namespace** — `§<section>#N` (`§7#5`; the section number is scanned
    back over digits and dots), or an uppercase artifact abbreviation with a left word
@@ -479,13 +480,31 @@ hard gate) where §8.4 rates a malformed cite Medium/advisory. Three measured fa
    immediately qualifies it. "Exactly one space" is the conservative reading: a wider
    separator rule would classify MORE cites as PRD-relative, and every such classification
    *suppresses* a cite, so the narrow form is the fail-safe direction.
-3. **`task(s) #N` with N ≤ 99.** This family keys on DIGIT COUNT rather than on a `PRD`
-   left-context window, because a window fails in both directions: a long path can push `PRD`
-   outside any sane window, and `task #333 per PRD §Slice B` would have a symmetric window
-   kill a GENUINE cite. The digit bound is safe **by construction** against the legacy short
-   task ids: every three-digit-and-up id falls outside it, so no `#NNN` cite can be
-   suppressed (the corpus's legacy ids include `#333`, `#479`, `#630`) — while the
-   PRD-relative population is one- and two-digit, at a max observed index of **21**.
+3. **`task(s) #N`**, exactly one space to the left of a `task`/`tasks` token.
+
+**The `N ≤ 99` bound governs all three families** — applied once, as a single early return,
+not per family. It is a property of the PRD-relative *register* (a document-local index is
+small), not of the `task` noun, so a fourth family added later inherits it instead of having
+to remember it. It keys on DIGIT COUNT rather than on a `PRD` left-context window, because a
+window fails in both directions: a long path can push `PRD` outside any sane window
+(`crates/reify-core/src/diagnostics.rs:3304`), while `task #333 per PRD §Slice B`
+(`crates/reify-compiler/src/stdlib_loader.rs:257`) would have a symmetric window kill a
+GENUINE cite. The bound is safe **by construction** against the legacy short task ids: every
+three-digit-and-up id falls outside it, so no `#NNN` cite can be suppressed (the corpus's
+legacy ids include `#333`, `#479`, `#630`). Re-measured per-family maxima (2026-08-30):
+family 1 **11** (`PRD T#11`), family 2 **18** (`boundary #18`), family 3 one- and two-digit
+throughout (max **27**) — every one comfortably inside the bound, so the bound costs no
+recall.
+
+An **unbounded** family is fail-dangerous, in the one direction §6.6's ratchet cannot see.
+Exactly one tracked line repo-wide puts a real task id in family-2 register:
+`crates/reify-eval/tests/engine_eval_commit_migration.rs:1490`, `invariant #5238`, where
+#5238 is a genuine task (`done`). Unbounded, that terminal cite is either **downgraded** from
+a High `orphaned` hard-gate finding to the Medium advisory `malformed-cite` (marker lane) or
+**erased** outright (δ-B is cite-anchored, so with no canonical cite there is no candidate at
+all) — purely on which noun precedes the `#`. §6.6's ratchet asserts only `live ⊆ baseline`,
+which catches a GAINED finding and never a LOST one, so nothing downstream would have
+reported it. Evidence: §16 Row 2's 2026-08-30 line.
 
 Consulted **per-occurrence, never per-line**: six live lines carry both idioms at once, so a
 per-line verdict would either lose a real cite or resurrect a PRD-relative one. The G-allow
@@ -1018,6 +1037,19 @@ over-read the `0`:
 are gone.* Anchoring on a bare cite is still not intrinsically low-FP (the falsified claim in
 the next block stands); it became acceptable only once the cite grammar stopped mis-reading a
 337→341-line PRD-relative idiom as task citations.
+
+**2026-08-30 — post-review correction (task #6103).** The §8.2 `N ≤ 99` bound was hoisted to
+govern **all three** families; it had been spelled only inside family 3, leaving families 1
+and 2 unbounded. The motivating counterexample is the one tracked line repo-wide that puts a
+real task id in family-2 register — `invariant #5238` (#5238 `done`) at line 1490 of
+`crates/reify-eval/tests/engine_eval_commit_migration.rs` — where an unbounded family
+downgraded a High `orphaned` finding to Medium `malformed-cite` on a marker line, or erased
+it outright in the cite-anchored δ-B lane, purely on which noun preceded the `#`. Zero recall
+cost: the re-measured per-family maxima are 11 / 18 / 27, all inside the bound. The live
+fingerprint set was verified **unchanged at 11** by an exact-set diff in BOTH directions —
+deliberately not the one-way `comm -23` subset oracle, which by construction cannot see a
+LOST finding and is exactly what let this defect through — so the §6.6 baseline is untouched
+and no re-seed was needed.
 
 ### The claim this evidence supports — and the one it does not
 
