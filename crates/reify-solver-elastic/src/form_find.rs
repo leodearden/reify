@@ -1694,6 +1694,45 @@ mod tests {
         );
     }
 
+    // (e2) TASK 6119 REVIEW — the `d_scale` guard exercised by (e)/(g) is a
+    // MAX over free rows, so it only fires when EVERY free row of D is zero.
+    // A free node that IS connected (its own row keeps `d_scale > 0`)
+    // coexisting with an UNRELATED isolated free node must still be
+    // rejected — the aggregate max hides exactly this mixed case. Fixture: a
+    // flat symmetric tent — free node 0 sits at the exact centroid of 4
+    // anchors placed at (±1,0,0)/(0,±1,0), already at equilibrium by
+    // symmetry (the net cotangent force on node 0 is exactly 0) — plus an
+    // unrelated free node 5 touched by neither a member nor a triangle.
+    // REPRODUCED FIRST-HAND against the pre-fix (aggregate) guard: this
+    // returns `Ok(converged=true)` with `nodes[5] == [7.0, 7.0, 7.0]` — the
+    // caller's unsolved initial guess echoed straight back.
+    #[test]
+    fn surfaces_solve_rejects_isolated_free_node_alongside_a_connected_one() {
+        let nodes = vec![
+            [0.0, 0.0, 0.0],  // 0: free — connected, already at equilibrium
+            [1.0, 0.0, 0.0],  // 1: anchor
+            [0.0, 1.0, 0.0],  // 2: anchor
+            [-1.0, 0.0, 0.0], // 3: anchor
+            [0.0, -1.0, 0.0], // 4: anchor
+            [7.0, 7.0, 7.0],  // 5: free — isolated: no member, no triangle
+        ];
+        let surfaces = vec![(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
+        let surface_stresses = vec![2.0; surfaces.len()];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        let anchors = vec![1, 2, 3, 4];
+
+        assert_eq!(
+            form_find_anchored_surfaces(
+                &nodes, &members, &kinds, &q, &surfaces, &surface_stresses, &anchors
+            )
+            .unwrap_err(),
+            FormFindError::SingularReducedStiffness,
+            "an isolated free node must reject even when another free node is connected",
+        );
+    }
+
     // (f) TASK 6119 — the criterion itself must be EXACTLY invariant under a
     // uniform gauge change q → λ·q, σ → λ·σ at a FIXED geometry. `D` is exactly
     // linear in q and σ, so D_λ = λ·D entrywise; λ = 2^20 is a power of two, so
@@ -1772,6 +1811,30 @@ mod tests {
         d_nan[(1, 0)] = f64::NAN;
         let r_nan = free_equilibrium_residual_relative(&d_nan, &nodes, &free_indices);
         assert_eq!(r_nan, f64::INFINITY, "NaN-carrying free row must reject, got {r_nan}");
+
+        // (c) TASK 6119 REVIEW — MIXED case: two free rows, one healthy
+        // (row-sum > 0), one NaN-carrying. The pre-fix AGGREGATE guard tracks
+        // only `d_scale = max(rows)`, and `f64::max` is NaN-transparent (it
+        // returns the non-NaN operand when the other is NaN), so `d_scale`
+        // lands on the healthy row's 8.5 and the guard never fires. This is
+        // NOT redundant with case (b) above: there, the NaN row is the ONLY
+        // free row, so `d_scale` stays at its `0.0` initialiser and it is the
+        // ZERO branch — not the NaN branch — that actually fires. Node 0's
+        // coordinates are deliberately non-zero (unlike cases (a)/(b)'s
+        // origin stub) so the healthy row's net force is a clean non-zero
+        // finite number rather than a coincidental 0 — the pre-fix failure is
+        // "got some finite value" (any value), not "got exactly 0".
+        let nodes_mixed = vec![[1.0, 1.0, 1.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let free_mixed = [1usize, 2usize];
+        let mut d_mixed = Mat::<f64>::zeros(3, 3);
+        d_mixed[(1, 0)] = 8.5; // healthy free row: row-sum = 8.5 > 0
+        d_mixed[(2, 0)] = f64::NAN; // NaN-carrying free row
+        let r_mixed = free_equilibrium_residual_relative(&d_mixed, &nodes_mixed, &free_mixed);
+        assert_eq!(
+            r_mixed,
+            f64::INFINITY,
+            "a NaN-carrying free row must reject even when another free row is healthy, got {r_mixed}",
+        );
     }
 
     // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────
