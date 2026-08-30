@@ -114,6 +114,50 @@ impl AnalysisContext {
         // byte-identical whether or not capture is on — all existing tests
         // continue to pass.
         engine.set_capture_undef_causes(true);
+
+        // Containment (task #6798 amendment round 2; root cause owned by task
+        // **#6851**): a FAILED `auto:` type-parameter resolution leaves an
+        // unsubstituted `Type::TypeParam` value cell that panics
+        // `engine.check` in debug builds — see
+        // `crate::diagnostics::diagnostic_is_auto_type_param_error`'s doc
+        // comment for the mechanism. Skip the eval/check pass and hand back an
+        // empty `CheckResult`; `compiled.diagnostics` already carries the
+        // user-visible `E_AUTO_TYPE_PARAM_*` error, so hover / completion /
+        // goto-def / symbols still surface the real problem. Path-qualified
+        // deliberately, so the cross-module borrow of the predicate is visible
+        // at the call site.
+        //
+        // BEHAVIOUR: hover and completion over such a file show no computed
+        // values, because `check_result.values` is empty. That is the correct
+        // degradation — today's alternative is a debug-build crash of the whole
+        // LSP process, and in release builds (where
+        // `assert_value_cell_types_representable` is elided) a silently wrong
+        // `TypeKindMismatch`/`Undef`. The compile-stage
+        // `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error is still delivered, and it is
+        // the actionable signal.
+        //
+        // The five-field literal is spelled out rather than reaching for a
+        // `Default` derive on `reify_eval::CheckResult` (which it does not
+        // have): adding one would widen this leaf's file set beyond the PRD's
+        // "Modules: `reify-lsp`" scope into a hot shared crate, whereas the
+        // explicit literal turns any future `CheckResult` field addition into a
+        // loud compile error in exactly the place that must then decide what
+        // the skipped-eval value should be.
+        if crate::diagnostics::auto_type_param_resolution_failed(&compiled) {
+            return Self {
+                parsed,
+                compiled,
+                check_result: CheckResult {
+                    values: Default::default(),
+                    constraint_results: Vec::new(),
+                    diagnostics: Vec::new(),
+                    resolved_params: Default::default(),
+                    structured_detail: Vec::new(),
+                },
+                engine,
+            };
+        }
+
         let check_result = engine.check(&compiled);
 
         Self {
