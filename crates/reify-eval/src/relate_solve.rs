@@ -73,6 +73,36 @@ pub struct RelateScope {
     pub relations: Vec<CompiledExpr>,
     /// The grounded anchor subs (non-auto), by instance name.
     pub ground: Vec<String>,
+    /// The subs declared with a CONCRETE `at <pose>`, by instance name, in
+    /// sub-declaration order (DIC α, task 5415).
+    ///
+    /// An ADDITIONAL classification, not a partition of [`ground`](Self::ground):
+    /// a concretely-posed sub is genuinely a fixed non-auto anchor and appears in
+    /// BOTH lists. An `at auto` sub never appears here —
+    /// [`SubComponentDecl`](reify_compiler::SubComponentDecl) guarantees
+    /// structurally that `auto_pose.is_some()` implies `pose.is_none()`.
+    ///
+    /// # Why this has to be known
+    ///
+    /// [`resolve_operands`] keys realized datums by `(structure, member)` — each
+    /// structure's LOCAL datum in its OWN identity frame — and a declared
+    /// `SubComponentDecl.pose` is never composed into them. So a verdict computed
+    /// over a posed sub's datums would be evaluated at the WRONG configuration,
+    /// and would be confidently wrong in EITHER direction: it could report a
+    /// correctly-placed assembly as violated, or a misplaced one as satisfied.
+    ///
+    /// The zero-auto static-verification arm therefore uses this list to classify
+    /// such a scope's relations UNVERIFIABLE and say why, rather than emit a
+    /// confident wrong answer (`docs/prds/v0_6/declared-intent-consumption-\
+    /// accounting.md` §10 open question 5; honest non-consumption over a false
+    /// verdict, `docs/legibility/design-invariants.md` INV-SF-3). Composing
+    /// declared poses into the operand frames — which would make these scopes
+    /// genuinely verifiable — is a clean follow-up seam, deliberately not taken
+    /// here.
+    ///
+    /// The auto-FUL path ignores this field entirely: [`solve_relate_scope`]
+    /// never reads it, so the solve is byte-identical with and without it.
+    pub posed: Vec<String>,
 }
 
 /// Collect a compiled scope [`TopologyTemplate`] into the relate-solve's three
@@ -87,10 +117,16 @@ pub struct RelateScope {
 /// member" for ζ's conflict attribution) is preserved by
 /// [`TopologyTemplate::relations`] itself.
 ///
+/// The same single walk also records the subs carrying a CONCRETE `at <pose>`
+/// into [`posed`](RelateScope::posed) — an additional classification layered over
+/// `ground`, not a partition of it; see that field for why the zero-auto arm
+/// needs it.
+///
 /// No solve is performed here — this is pure structural classification.
 pub fn collect_relate_scope(template: &TopologyTemplate) -> RelateScope {
     let mut auto_unknowns = Vec::new();
     let mut ground = Vec::new();
+    let mut posed = Vec::new();
 
     for sub in &template.sub_components {
         match &sub.auto_pose {
@@ -101,12 +137,19 @@ pub fn collect_relate_scope(template: &TopologyTemplate) -> RelateScope {
             }),
             None => ground.push(sub.name.clone()),
         }
+        // Layered over the auto/ground split rather than folded into it: a
+        // concretely-posed sub is a ground anchor AND posed. `auto_pose.is_some()`
+        // implies `pose.is_none()`, so this can never fire for an auto sub.
+        if sub.pose.is_some() {
+            posed.push(sub.name.clone());
+        }
     }
 
     RelateScope {
         auto_unknowns,
         relations: template.relations.clone(),
         ground,
+        posed,
     }
 }
 
