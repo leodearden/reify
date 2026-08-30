@@ -237,6 +237,161 @@ fn elastic_material_trait_has_four_dimensioned_members() {
     }
 }
 
+// ─── task α (#6877): Damped mixin + DampedMaterial named intersection ─────────
+
+/// `Damped` is the free-standing hysteretic-loss mixin the damped-modal solve
+/// consumes, and `DampedMaterial` is the ergonomic named intersection
+/// `ElasticMaterial + Damped` (PRD `docs/prds/v0_6/damped-modal-bonded-heterogeneous.md`
+/// §Contract C1, §Resolved decisions 1-2).
+///
+/// Shape pinned here:
+///
+///   - `Damped` has NO refinements. It is deliberately *not* a `ConstitutiveLaw`
+///     refinement so it composes with future non-isotropic damped laws
+///     (orthotropic / transverse-isotropic) rather than being welded to the
+///     isotropic family (PRD decision 1).
+///   - `Damped` declares exactly one required member, `loss_factor : Real`
+///     (dimensionless η — ratio of dissipated to stored energy per cycle).
+///   - `Damped` carries exactly one trait-level constraint (`loss_factor >= 0`).
+///     The normative η ≥ 0 half of PRD C1 is pinned in a *constraint*, not a
+///     comment, mirroring `ElasticMaterial`'s two Poisson bounds.
+///   - `DampedMaterial` has an EMPTY body — `CompiledTrait.required_members` is
+///     own-members-only (proven by `Damping : MaterialSpec` asserting exactly 2
+///     at `materials_mechanical_tests.rs:626` while `MaterialSpec` contributes
+///     more), so the four `ElasticMaterial` members arrive transitively via
+///     `collect_all_requirements` (`trait_requirements.rs:152`) rather than
+///     being restated here.
+///   - `DampedMaterial.refinements == ["ElasticMaterial", "Damped"]` in
+///     declaration order, pinning the named-intersection shape. Multi-parent
+///     precedent: `trait Watertight : Closed + Manifold {}`
+///     (`stdlib/geometry_traits.ri:84`).
+#[test]
+fn damped_mixin_and_damped_material_named_intersection_shape() {
+    let module = load_stdlib_module();
+
+    let trait_names = || {
+        module
+            .trait_defs
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    };
+
+    // ── Damped: free-standing single-member mixin ────────────────────────────
+    let damped = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Damped")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected 'Damped' trait in std/materials/fea, got traits: {:?}",
+                trait_names()
+            )
+        });
+
+    assert!(
+        damped.refinements.is_empty(),
+        "Damped must be a free-standing mixin with NO parent traits (PRD decision 1 \
+         — it must compose with future non-isotropic damped laws, so it is \
+         deliberately not a ConstitutiveLaw refinement), got refinements: {:?}",
+        damped.refinements
+    );
+
+    assert_eq!(
+        damped.required_members.len(),
+        1,
+        "Damped should declare exactly 1 required member (loss_factor), got: {:?}",
+        damped
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+
+    // Mirrors the `expected_members` tuple-table idiom used for
+    // `ElasticMaterial` above.
+    let expected_members: &[(&str, Type)] =
+        &[("loss_factor", Type::dimensionless_scalar())];
+    for (name, expected_ty) in expected_members {
+        let req = damped
+            .required_members
+            .iter()
+            .find(|r| r.name == *name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Damped missing required member '{}'; got: {:?}",
+                    name,
+                    damped
+                        .required_members
+                        .iter()
+                        .map(|r| &r.name)
+                        .collect::<Vec<_>>()
+                )
+            });
+        match &req.kind {
+            RequirementKind::Param(ty) => assert_eq!(
+                ty, expected_ty,
+                "Damped.{} should be {:?}, got {:?}",
+                name, expected_ty, ty
+            ),
+            other => panic!(
+                "Damped.{} should be a Param requirement, got {:?}",
+                name, other
+            ),
+        }
+    }
+
+    // The η ≥ 0 half of PRD C1 lives in a trait-level constraint, which the
+    // compiler carries as a `DefaultKind::Constraint` entry in `defaults`
+    // and injects into every conformer.
+    let constraint_defaults: Vec<_> = damped
+        .defaults
+        .iter()
+        .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
+        .collect();
+    assert_eq!(
+        constraint_defaults.len(),
+        1,
+        "Damped should declare exactly 1 trait-level constraint (loss_factor >= 0 \
+         — the normative η ≥ 0 half of PRD C1, pinned in a constraint rather than \
+         a comment), got {} constraint defaults",
+        constraint_defaults.len()
+    );
+
+    // ── DampedMaterial: empty-bodied named intersection ──────────────────────
+    let damped_material = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "DampedMaterial")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected 'DampedMaterial' trait in std/materials/fea, got traits: {:?}",
+                trait_names()
+            )
+        });
+
+    assert!(
+        damped_material.required_members.is_empty(),
+        "DampedMaterial has an empty body — `required_members` is own-members-only, \
+         so the ElasticMaterial + Damped members arrive transitively via \
+         collect_all_requirements, not by restatement here; got: {:?}",
+        damped_material
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        damped_material.refinements,
+        vec!["ElasticMaterial".to_string(), "Damped".to_string()],
+        "DampedMaterial should be the named intersection `ElasticMaterial + Damped` \
+         in declaration order (multi-parent precedent: \
+         `trait Watertight : Closed + Manifold {{}}` at geometry_traits.ri:84), got: {:?}",
+        damped_material.refinements
+    );
+}
+
 // ─── step-7: Poisson-ratio constraints injected from trait ────────────────────
 
 /// `ElasticMaterial` constrains `poisson_ratio` to the half-open interval
