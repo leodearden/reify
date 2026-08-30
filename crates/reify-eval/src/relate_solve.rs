@@ -1476,9 +1476,16 @@ mod tests_static_verification {
     //! read structure off the resulting templates; no geometry kernel is
     //! involved.
 
+    use std::collections::HashMap;
+
+    use reify_core::{DiagnosticCode, Severity};
+    use reify_ir::Value;
     use reify_test_support::compile_source_with_stdlib;
 
-    use super::{RelateScope, collect_relate_scope};
+    use super::{
+        RealizedDatums, RelateScope, StaticRelateFacts, collect_relate_scope,
+        verify_static_scope,
+    };
 
     /// Three scopes covering the whole `posed` classification:
     ///
@@ -1512,6 +1519,48 @@ structure PoseFreeScope {
 structure AutoScope {
     sub a : Bushing at auto
     sub b : Plate
+}
+
+structure BushingS {
+    let bore = cylinder(4mm, 12mm)
+    let bore_axis : Axis = bore.axis
+    let seat = rectangle(10mm, 10mm)
+    let seat_plane : Plane = seat.plane
+}
+
+structure PlateS {
+    let boss = cylinder(4mm, 12mm)
+    let boss_axis : Axis = boss.axis
+    let top = rectangle(10mm, 10mm)
+    let top_plane : Plane = top.plane
+}
+
+structure StaticScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        concentric(bush.bore_axis, plate.boss_axis)
+        flush(bush.seat_plane, plate.top_plane)
+    }
+}
+
+structure SingleRelationScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        concentric(bush.bore_axis, plate.boss_axis)
+    }
+}
+
+structure PosedOperandScope {
+    sub bush : BushingS
+    sub plate : PlateS at transform3(orient_identity(), vec3(30mm, 20mm, 5mm))
+
+    relate {
+        concentric(bush.bore_axis, plate.boss_axis)
+    }
 }
 "#;
 
@@ -1606,5 +1655,345 @@ structure AutoScope {
             "the `at auto` sub must still be collected as a Frame unknown"
         );
         assert_eq!(s.auto_unknowns[0].sub, "a");
+    }
+
+    // ── static verification (`verify_static_scope`) — DIC α steps 5/6 ────────
+    //
+    // These build `RealizedDatums` BY HAND rather than through a kernel build, so
+    // the whole verdict surface — satisfied, violated, and both flavours of
+    // unverifiable — is reachable without OCCT and without contriving `.ri`
+    // geometry that lands on each one. The datum magnitudes are the measured
+    // `dic_relate_static_violated` split (30, 20, 5 mm), so the kernel-free unit
+    // and the OCCT e2e are pinning the same numbers.
+
+    fn point3v(x: f64, y: f64, z: f64) -> Value {
+        Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
+    }
+
+    fn vec3v(x: f64, y: f64, z: f64) -> Value {
+        Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+    }
+
+    fn axis_v(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
+        Value::Axis {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            direction: Box::new(vec3v(d.0, d.1, d.2)),
+        }
+    }
+
+    fn plane_v(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
+        Value::Plane {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            normal: Box::new(vec3v(n.0, n.1, n.2)),
+        }
+    }
+
+    /// Hand-build a [`RealizedDatums`] — its map is crate-private, which is the
+    /// reason this module lives in-file rather than in `tests/`.
+    fn realized(entries: &[(&str, &str, Value)]) -> RealizedDatums {
+        let mut operands = HashMap::new();
+        for (sub, member, v) in entries {
+            operands.insert(((*sub).to_string(), (*member).to_string()), v.clone());
+        }
+        RealizedDatums { operands }
+    }
+
+    /// The `dic_relate_static_violated` split, in metres.
+    const SPLIT: (f64, f64, f64) = (0.030, 0.020, 0.005);
+
+    /// Both subs' datums colocated at `SPLIT` — every relation TRUE.
+    fn colocated_datums() -> RealizedDatums {
+        realized(&[
+            ("bush", "bore_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+        ])
+    }
+
+    /// The bushing at the origin, the plate at `SPLIT` — every relation FALSE.
+    ///
+    /// The resulting magnitudes are derived, not tuned: `concentric` measures the
+    /// 30 mm in-plane split (an axis constrains only the two components
+    /// perpendicular to itself), `flush` the 5 mm along-normal offset. Both are
+    /// 500×–3000× the 1e-5 m assertion tolerance, so no verdict here is sensitive
+    /// to that constant's exact value.
+    fn split_datums() -> RealizedDatums {
+        realized(&[
+            ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+        ])
+    }
+
+    /// (a) A zero-auto scope whose relations all HOLD is completely silent, and
+    /// reports both as verified.
+    ///
+    /// The silence is the contract, not an accident of implementation. The
+    /// placement-relations belt's δ leaf would have emitted a `W_RELATE_NO_AUTO`
+    /// warning on every zero-auto relate block regardless of whether the assertion
+    /// held; that leaf was DROPPED at decompose and superseded by this task
+    /// (ratified 2026-07-25). So this asserts the diagnostic list is empty
+    /// outright — not merely free of Errors — which is what would fail if
+    /// `W_RELATE_NO_AUTO` were ever reintroduced.
+    ///
+    /// `static_facts` is `Some` even here, so ζ's ledger can tell "2 relations
+    /// verified" from "no relate block at all" — the difference between consumed
+    /// and absent.
+    #[test]
+    fn verify_static_scope_is_silent_when_every_relation_holds() {
+        let s = scope("StaticScope");
+        let solution = verify_static_scope(&s, &colocated_datums());
+
+        assert!(
+            solution.diagnostics.is_empty(),
+            "a satisfied zero-auto relate block must be SILENT — no error, no \
+             warning, no info. Got {:?}. A warning here would be the dropped \
+             `W_RELATE_NO_AUTO` resurfacing.",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| (d.severity, d.code, d.message.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 2,
+                violated: 0,
+                unverifiable: 0,
+            }),
+            "facts must be reported even when the scope is silent, so the ledger \
+             can distinguish `verified: 2` from the absence of a relate block"
+        );
+    }
+
+    /// (b) A zero-auto scope with two VIOLATED relations emits EXACTLY ONE
+    /// aggregated Error naming both.
+    ///
+    /// The count is load-bearing, not stylistic. `dedup_diagnostics`
+    /// (`crates/reify-cli/src/main.rs`) short-circuits on `d.code.is_some()`, so a
+    /// CODED diagnostic is never collapsed at the CLI — a per-relation diagnostic
+    /// would reach the user unfiltered, one line per relation. Hence the #5014
+    /// collateral-observability shape: one Error per relate block naming the full
+    /// violated set.
+    #[test]
+    fn verify_static_scope_aggregates_violations_into_one_error() {
+        let s = scope("StaticScope");
+        let solution = verify_static_scope(&s, &split_datums());
+
+        assert_eq!(
+            solution.diagnostics.len(),
+            1,
+            "two violated relations must produce ONE aggregated Error, never one \
+             each — coded diagnostics bypass the CLI's dedup. Got {:?}",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        );
+        let d = &solution.diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateStaticViolated));
+        // Content, not wording: WHICH relations were reported is the aggregation
+        // contract. The phrasing is deliberately not pinned.
+        assert!(
+            d.message.contains("concentric") && d.message.contains("flush"),
+            "the aggregate must name BOTH violated relations; got {:?}",
+            d.message
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 2,
+                unverifiable: 0,
+            })
+        );
+    }
+
+    /// (c) UNVERIFIABLE, source 1 — an operand that did not realize.
+    ///
+    /// A Warning, not an Error: an unverifiable relation is *not consumed*, which
+    /// is a different claim from *proven violated*. Erroring would fail builds
+    /// that are green today on the strength of a measurement never taken — the
+    /// never-false-Error hygiene mirroring R2's never-false-Inert. Whether the
+    /// ledger escalates it is ζ (#5420)'s call, not this arm's.
+    #[test]
+    fn verify_static_scope_warns_when_an_operand_did_not_realize() {
+        let s = scope("SingleRelationScope");
+        let datums = realized(&[
+            ("bush", "bore_axis", Value::Undef),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(solution.diagnostics.len(), 1);
+        let d = &solution.diagnostics[0];
+        assert_eq!(
+            d.severity,
+            Severity::Warning,
+            "unverifiable is `not consumed`, not `proven violated`"
+        );
+        assert_eq!(d.code, Some(DiagnosticCode::RelateStaticUnverifiable));
+        assert!(
+            d.message.contains("concentric") && d.message.contains("bush.bore_axis"),
+            "the warning must name the relation AND the operand that did not \
+             resolve, or the reader cannot act on it; got {:?}",
+            d.message
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 0,
+                unverifiable: 1,
+            })
+        );
+    }
+
+    /// (d) UNVERIFIABLE, source 2 — an operand belonging to a concretely-posed
+    /// sub, even when the raw local-datum residual reads as SATISFIED.
+    ///
+    /// This is the sharpest test in the module, and the reason `RelateScope.posed`
+    /// exists. The datums here are bit-identical, so a naive arm would measure
+    /// zero and report the scope verified. But realized datums are each
+    /// structure's LOCAL datum in its OWN identity frame, and `plate`'s declared
+    /// `at transform3(…)` is never composed into them — so that zero was measured
+    /// at the wrong configuration and means nothing. Reporting it as verified
+    /// would be a confidently wrong verdict.
+    ///
+    /// Honest non-consumption beats a false verdict (INV-SF-3): say it is
+    /// unverifiable, and say why (PRD §10 open question 5). Composing declared
+    /// poses is the follow-up that would make this genuinely decidable.
+    #[test]
+    fn verify_static_scope_will_not_judge_a_posed_sub_even_when_it_would_pass() {
+        let s = scope("PosedOperandScope");
+        assert_eq!(
+            s.posed,
+            vec!["plate".to_string()],
+            "fixture guard: this scope must actually carry a posed sub"
+        );
+
+        // Bit-identical operands: the RAW residual is exactly zero here.
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(solution.diagnostics.len(), 1);
+        let d = &solution.diagnostics[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateStaticUnverifiable));
+        assert!(
+            d.message.contains("plate"),
+            "the warning must name the posed sub whose placement is not composed \
+             into the datums; got {:?}",
+            d.message
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 0,
+                unverifiable: 1,
+            }),
+            "a posed-sub relation is neither verified nor violated — the residual \
+             that would have read as satisfied was measured at the wrong \
+             configuration and must not be counted"
+        );
+    }
+
+    /// (e) A scope carrying BOTH a violation and an unverifiable relation emits
+    /// exactly TWO diagnostics — one Error aggregate and one Warning aggregate —
+    /// never one per relation.
+    #[test]
+    fn verify_static_scope_emits_one_aggregate_per_severity() {
+        let s = scope("StaticScope");
+        // concentric: violated by the 30 mm split. flush: bush's plane never
+        // realized ⇒ unverifiable.
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", Value::Undef),
+            ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(
+            solution.diagnostics.len(),
+            2,
+            "one Error aggregate + one Warning aggregate; got {:?}",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| (d.severity, d.message.clone()))
+                .collect::<Vec<_>>()
+        );
+        let errors: Vec<_> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        let warnings: Vec<_> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(errors[0].code, Some(DiagnosticCode::RelateStaticViolated));
+        assert_eq!(
+            warnings[0].code,
+            Some(DiagnosticCode::RelateStaticUnverifiable)
+        );
+        assert!(errors[0].message.contains("concentric"));
+        assert!(warnings[0].message.contains("flush"));
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 1,
+                unverifiable: 1,
+            })
+        );
+    }
+
+    /// (f) The rendering is deterministic and follows SOURCE order.
+    ///
+    /// Two invocations over the same inputs must produce byte-identical messages
+    /// — the aggregate is built by walking `scope.relations` in order, never by
+    /// iterating a `HashMap`. Source order also decides the listing order within
+    /// an aggregate, so `concentric` (declared first) precedes `flush`.
+    #[test]
+    fn verify_static_scope_renders_deterministically_in_source_order() {
+        let s = scope("StaticScope");
+        let first = verify_static_scope(&s, &split_datums());
+        let second = verify_static_scope(&s, &split_datums());
+
+        let msgs = |sol: &super::RelateSolution| {
+            sol.diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            msgs(&first),
+            msgs(&second),
+            "two invocations over identical inputs must render identically — any \
+             difference means a HashMap iteration order leaked into the message"
+        );
+
+        let m = &first.diagnostics[0].message;
+        let c = m.find("concentric").expect("concentric must be named");
+        let f = m.find("flush").expect("flush must be named");
+        assert!(
+            c < f,
+            "relations must be listed in SOURCE order (concentric is declared \
+             first); got {m:?}"
+        );
     }
 }
