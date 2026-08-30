@@ -22,7 +22,7 @@
 //!
 //! # What counts as a violation
 //!
-//! Two shapes, both observed in the tree:
+//! Three shapes, all observed in the tree:
 //!
 //! 1. [`SiteKind::MatchArm`] — a string literal equal to a seed name in
 //!    PATTERN position, i.e. followed by `=>` (possibly through `|`
@@ -31,6 +31,20 @@
 //! 2. [`SiteKind::EvalCall`] — a seed name passed as the first argument of an
 //!    `eval_builtin(…)` call. Not a match arm, but the same defect: a builtin
 //!    identified by a hard-coded string rather than by its `BuiltinId`.
+//! 3. [`SiteKind::ForwardedEvalCall`] — a seed name passed to a helper that
+//!    itself calls `eval_builtin(<that very parameter>, …)`. Shape 2 one hop
+//!    later, and a real hole: `reify-expr`'s
+//!    `sample_unary_analysis_at_point(…, builtin_name: &str)` launders three
+//!    of the four analysis names this way, so a lexical "literal adjacent to
+//!    `eval_builtin(`" rule certifies a residue it cannot see.
+//!
+//!    The forwarder set is DERIVED, never declared (see [`Forwarder`]): a fn
+//!    qualifies only if its own body dispatches on the parameter. That
+//!    distinction is load-bearing rather than pedantic — `wrap_tensor_field(…,
+//!    op: &str, …)` and `validate_tensor_field(…, op: &str)` sit in the same
+//!    file and take a seed name purely as a diagnostic label, so an "any
+//!    `&str` param" rule would inflate the ledger with entries that name no
+//!    dispatch at all.
 //!
 //! # What deliberately does NOT count
 //!
@@ -52,7 +66,7 @@
 mod common;
 use common::workspace_root;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 // ── the ledger ──────────────────────────────────────────────────────────────
@@ -122,6 +136,27 @@ const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
         name: "safety_factor",
         why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
     },
+    // The other three arrive at `eval_builtin` ONE HOP LATER, through
+    // `sample_unary_analysis_at_point(…, builtin_name: &str)`, which passes
+    // the name straight through. Same root cause, same fix, same owning leaf:
+    // once `CompiledExpr` carries a `BuiltinId`, the forwarder takes an id and
+    // all four go together. Splitting them across leaves would misdirect the
+    // leaf that has to do the work.
+    LedgerEntry {
+        file: "crates/reify-expr/src/analysis.rs",
+        name: "von_mises",
+        why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
+    },
+    LedgerEntry {
+        file: "crates/reify-expr/src/analysis.rs",
+        name: "principal_stresses",
+        why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
+    },
+    LedgerEntry {
+        file: "crates/reify-expr/src/analysis.rs",
+        name: "max_shear",
+        why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
+    },
 ];
 
 fn is_ledgered(file: &str, name: &str) -> bool {
@@ -139,6 +174,10 @@ enum SiteKind {
     MatchArm,
     /// `eval_builtin("name", …)`.
     EvalCall,
+    /// A seed name handed to a helper that itself calls
+    /// `eval_builtin(<that parameter>, …)` — the same defect as
+    /// [`SiteKind::EvalCall`], one hop later. See [`Forwarder`].
+    ForwardedEvalCall,
 }
 
 impl SiteKind {
@@ -146,6 +185,9 @@ impl SiteKind {
         match self {
             SiteKind::MatchArm => "match-arm string dispatch",
             SiteKind::EvalCall => "eval_builtin call keyed by name string",
+            SiteKind::ForwardedEvalCall => {
+                "name string forwarded one hop into an eval_builtin call"
+            }
         }
     }
 }
@@ -520,6 +562,433 @@ fn is_eval_call(code: &[u8], lit_start: usize) -> bool {
     &code[start..paren] == b"eval_builtin"
 }
 
+// ── one-hop `&str` forwarding ───────────────────────────────────────────────
+
+/// A production fn that launders a `&str` parameter into `eval_builtin` — the
+/// one hop [`is_eval_call`] is lexically blind to.
+///
+/// Discovered from the source, never declared: a fn qualifies only if its own
+/// body calls `eval_builtin(<that very parameter>, …)`. That is what keeps the
+/// rule from degrading into a hand-maintained allowlist, and what keeps a
+/// `&str` taken purely as a diagnostic label (`wrap_tensor_field(…, op: &str,
+/// …)`) from being mistaken for dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Forwarder {
+    /// The fn's name, as written at its definition.
+    name: String,
+    /// Zero-based position of the laundered parameter **as callers write it**
+    /// — a `self` receiver is not an argument, so it is excluded from the
+    /// count.
+    param: usize,
+    /// That parameter's identifier, carried so the rule can be re-verified
+    /// independently of the walk that produced it (see
+    /// `every_discovered_forwarder_really_forwards_to_eval_builtin`).
+    param_name: String,
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn skip_ws(code: &[u8], mut i: usize) -> usize {
+    while i < code.len() && code[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Read the identifier starting at `i`, returning it and the offset one past
+/// its end. `None` when `i` is not on an identifier byte.
+fn read_ident(code: &[u8], i: usize) -> Option<(String, usize)> {
+    let mut j = i;
+    while j < code.len() && is_ident_byte(code[j]) {
+        j += 1;
+    }
+    (j > i).then(|| (String::from_utf8_lossy(&code[i..j]).into_owned(), j))
+}
+
+/// Offset of the delimiter matching the opener at `open`, skipping string
+/// literals so a brace inside one cannot unbalance the count.
+fn match_delim(code: &[u8], lit_end_at: &[Option<usize>], open: usize) -> Option<usize> {
+    let (o, c) = match code.get(open)? {
+        b'(' => (b'(', b')'),
+        b'[' => (b'[', b']'),
+        b'{' => (b'{', b'}'),
+        _ => return None,
+    };
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < code.len() {
+        if let Some(end) = lit_end_at[i] {
+            i = end;
+            continue;
+        }
+        if code[i] == o {
+            depth += 1;
+        } else if code[i] == c {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Split `code[open+1..close]` at depth-0 commas, returning one `(start, end)`
+/// span per parameter/argument. An empty trailing segment (trailing comma) is
+/// dropped.
+///
+/// `generic_types` distinguishes the two callers: a PARAMETER list may contain
+/// `Option<&str>`, so `<` … `>` must nest, while an ARGUMENT list may contain
+/// `a < b`, so it must not — there, only a turbofish `::<` opens a nesting
+/// level. A stray `>` is ignored rather than driving the depth negative.
+fn split_delimited(
+    code: &[u8],
+    lit_end_at: &[Option<usize>],
+    open: usize,
+    close: usize,
+    generic_types: bool,
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut angle = 0i32;
+    let mut start = open + 1;
+    let mut i = start;
+    while i < close {
+        if let Some(end) = lit_end_at[i] {
+            i = end.min(close);
+            continue;
+        }
+        match code[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'<' if generic_types || (i > 0 && code[i - 1] == b':') => angle += 1,
+            b'>' if angle > 0 && !(i > 0 && code[i - 1] == b'-') => angle -= 1,
+            b',' if depth == 0 && angle == 0 => {
+                out.push((start, i));
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if code[start.min(close)..close]
+        .iter()
+        .any(|b| !b.is_ascii_whitespace())
+    {
+        out.push((start, close));
+    }
+    out
+}
+
+/// Is `ty` a shared string slice — `&str`, `& str`, `&'a str`, `&'static str`?
+fn is_str_ref(ty: &str) -> bool {
+    let t = ty.trim();
+    let Some(rest) = t.strip_prefix('&') else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let rest = if let Some(lt) = rest.strip_prefix('\'') {
+        let end = lt
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(lt.len());
+        lt[end..].trim_start()
+    } else {
+        rest
+    };
+    rest == "str"
+}
+
+/// The binding name of a parameter, from the text before its `:` — `mut name`
+/// yields `name`. `None` for a wildcard or anything that is not a plain ident
+/// (a destructuring pattern cannot be forwarded by name).
+fn param_ident(pat: &str) -> Option<String> {
+    let last = pat.split_whitespace().next_back()?;
+    if last == "_" || !last.bytes().all(is_ident_byte) {
+        return None;
+    }
+    Some(last.to_string())
+}
+
+/// Is the first parameter a `self` receiver? Callers do not write it, so it
+/// must not be counted when converting a signature position into an argument
+/// position.
+fn is_self_receiver(seg: &str) -> bool {
+    let t = seg.trim().trim_start_matches('&').trim_start();
+    let t = t
+        .strip_prefix('\'')
+        .map(|lt| {
+            let end = lt
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(lt.len());
+            lt[end..].trim_start()
+        })
+        .unwrap_or(t);
+    let t = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+    t == "self" || t.starts_with("self:")
+}
+
+/// The `(start, end)` span of a fn body, given the offset just past its
+/// parameter list. `None` for a brace-less declaration (a trait method
+/// signature), which has no body to forward from.
+fn fn_body_span(code: &[u8], lit_end_at: &[Option<usize>], from: usize) -> Option<(usize, usize)> {
+    let mut depth = 0i32;
+    let mut i = from;
+    while i < code.len() {
+        if let Some(end) = lit_end_at[i] {
+            i = end;
+            continue;
+        }
+        match code[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b';' if depth <= 0 => return None,
+            b'{' if depth <= 0 => {
+                let close = match_delim(code, lit_end_at, i)?;
+                return Some((i + 1, close));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Does `code[body]` call `eval_builtin(<param>, …)` — the identifier itself,
+/// not a literal?
+fn body_forwards(
+    code: &[u8],
+    lit_end_at: &[Option<usize>],
+    body: (usize, usize),
+    param: &str,
+) -> bool {
+    const CALLEE: &[u8] = b"eval_builtin";
+    let (start, end) = body;
+    let mut i = start;
+    while i < end {
+        if let Some(lit) = lit_end_at[i] {
+            i = lit;
+            continue;
+        }
+        if code[i] != CALLEE[0] || i + CALLEE.len() > end || &code[i..i + CALLEE.len()] != CALLEE {
+            i += 1;
+            continue;
+        }
+        let is_token = i == 0 || !is_ident_byte(code[i - 1]);
+        let after = skip_ws(code, i + CALLEE.len());
+        if is_token && after < end && code[after] == b'(' {
+            let arg = skip_ws(code, after + 1);
+            if let Some((id, arg_end)) = read_ident(code, arg) {
+                let delim = skip_ws(code, arg_end);
+                if id == param && delim < end && (code[delim] == b',' || code[delim] == b')') {
+                    return true;
+                }
+            }
+        }
+        i += CALLEE.len();
+    }
+    false
+}
+
+/// Every fn in `code` that launders a `&str` parameter into `eval_builtin`.
+fn find_forwarders(code: &[u8], lit_end_at: &[Option<usize>]) -> Vec<Forwarder> {
+    let n = code.len();
+    let mut out: Vec<Forwarder> = Vec::new();
+    let mut i = 0usize;
+    while i + 2 <= n {
+        if code[i] != b'f' || code[i + 1] != b'n' {
+            i += 1;
+            continue;
+        }
+        let prev_ok = i == 0 || !is_ident_byte(code[i - 1]);
+        let next = i + 2;
+        if !prev_ok || (next < n && is_ident_byte(code[next])) {
+            i += 1;
+            continue;
+        }
+        // Past `fn`: every `continue` below has already made progress.
+        i = next;
+        let Some((fname, name_end)) = read_ident(code, skip_ws(code, i)) else {
+            continue;
+        };
+        i = name_end;
+
+        // Optional generics, then the parameter list.
+        let mut k = skip_ws(code, name_end);
+        if k < n && code[k] == b'<' {
+            let mut d = 0i32;
+            while k < n {
+                match code[k] {
+                    b'<' => d += 1,
+                    b'>' if !(k > 0 && code[k - 1] == b'-') => {
+                        d -= 1;
+                        if d == 0 {
+                            k += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            k = skip_ws(code, k);
+        }
+        if k >= n || code[k] != b'(' {
+            continue;
+        }
+        let Some(close) = match_delim(code, lit_end_at, k) else {
+            continue;
+        };
+        let params = split_delimited(code, lit_end_at, k, close, true);
+        let Some(body) = fn_body_span(code, lit_end_at, close + 1) else {
+            continue;
+        };
+
+        let receiver = params
+            .first()
+            .map(|&(s, e)| is_self_receiver(&String::from_utf8_lossy(&code[s..e])))
+            .unwrap_or(false);
+
+        for (idx, &(ps, pe)) in params.iter().enumerate() {
+            if receiver && idx == 0 {
+                continue;
+            }
+            let seg = String::from_utf8_lossy(&code[ps..pe]).into_owned();
+            let Some((pat, ty)) = seg.split_once(':') else {
+                continue;
+            };
+            if !is_str_ref(ty) {
+                continue;
+            }
+            let Some(pname) = param_ident(pat) else {
+                continue;
+            };
+            if body_forwards(code, lit_end_at, body, &pname) {
+                out.push(Forwarder {
+                    name: fname.clone(),
+                    param: if receiver { idx - 1 } else { idx },
+                    param_name: pname,
+                });
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// [`find_forwarders`] over raw source text, applying the same comment and
+/// `#[cfg(test)]` masking the classification pass uses — which is what keeps
+/// test helpers such as `crates/reify-stdlib/src/complex.rs`'s
+/// `assert_complex_builtin_undef(builtin: &str, …)` out of the forwarder set.
+fn find_forwarders_in(src: &str) -> Vec<Forwarder> {
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    find_forwarders(&code, &lit_end_at)
+}
+
+/// Byte offsets of the string literals sitting at a forwarder's laundered
+/// argument position — i.e. the names that reach `eval_builtin` one hop later.
+fn forwarded_literal_starts(
+    code: &[u8],
+    lit_end_at: &[Option<usize>],
+    forwarders: &[Forwarder],
+) -> BTreeSet<usize> {
+    let mut out = BTreeSet::new();
+    if forwarders.is_empty() {
+        return out;
+    }
+    let mut by_name: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+    for f in forwarders {
+        by_name.entry(f.name.as_str()).or_default().insert(f.param);
+    }
+
+    let n = code.len();
+    let mut i = 0usize;
+    while i < n {
+        if let Some(end) = lit_end_at[i] {
+            i = end;
+            continue;
+        }
+        if !is_ident_byte(code[i]) || (i > 0 && is_ident_byte(code[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let Some((id, ident_end)) = read_ident(code, i) else {
+            i += 1;
+            continue;
+        };
+        i = ident_end;
+        let Some(params) = by_name.get(id.as_str()) else {
+            continue;
+        };
+        let k = skip_ws(code, ident_end);
+        if k >= n || code[k] != b'(' {
+            continue;
+        }
+        let Some(close) = match_delim(code, lit_end_at, k) else {
+            continue;
+        };
+        let args = split_delimited(code, lit_end_at, k, close, false);
+        for &p in params {
+            let Some(&(s, e)) = args.get(p) else {
+                continue;
+            };
+            let s = skip_ws(code, s);
+            // A literal here, and not one blanked out by the test mask.
+            if s < e && lit_end_at[s].is_some() && code[s] == b'"' {
+                out.insert(s);
+            }
+        }
+    }
+    out
+}
+
+/// Classify ONE source text: the single classification path, shared by the
+/// real sweep in [`scan`] and by the synthetic fixtures, so a fixture cannot
+/// pin a rule the workspace sweep does not actually apply.
+fn classify_text(
+    rel: &str,
+    src: &str,
+    forwarders: &[Forwarder],
+    seed_names: &BTreeSet<String>,
+) -> Vec<Site> {
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    let forwarded = forwarded_literal_starts(&code, &lit_end_at, forwarders);
+
+    let mut sites = Vec::new();
+    for lit in lits.iter() {
+        if !seed_names.contains(&lit.content) {
+            continue;
+        }
+        // A literal inside a masked (test-gated) region is gone from `code`.
+        if code[lit.start] != b'"' {
+            continue;
+        }
+        let kind = if is_match_arm(&code, &lit_end_at, lit.end) {
+            SiteKind::MatchArm
+        } else if is_eval_call(&code, lit.start) {
+            SiteKind::EvalCall
+        } else if forwarded.contains(&lit.start) {
+            SiteKind::ForwardedEvalCall
+        } else {
+            continue;
+        };
+        sites.push(Site {
+            file: rel.to_string(),
+            line: line_of(&code, lit.start),
+            name: lit.content.clone(),
+            kind,
+        });
+    }
+    sites
+}
+
 fn line_of(code: &[u8], offset: usize) -> usize {
     code[..offset].iter().filter(|&&b| b == b'\n').count() + 1
 }
@@ -557,44 +1026,34 @@ fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Scan the workspace for seed-name string dispatch.
+///
+/// Two passes over `crates/*/src/`, because a forwarder may be called from
+/// another file in its crate: pass one discovers every fn that launders a
+/// `&str` into `eval_builtin`, pass two classifies with that table in hand.
 fn scan(root: &Path, seed_names: &BTreeSet<String>) -> Vec<Site> {
+    let sources = production_sources(root);
+
+    let mut forwarders: Vec<Forwarder> = Vec::new();
+    for path in &sources {
+        let Ok(src) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        forwarders.extend(find_forwarders_in(&src));
+    }
+    forwarders.sort();
+    forwarders.dedup();
+
     let mut sites = Vec::new();
-    for path in production_sources(root) {
-        let Ok(src) = std::fs::read_to_string(&path) else {
+    for path in &sources {
+        let Ok(src) = std::fs::read_to_string(path) else {
             continue;
         };
         let rel = path
             .strip_prefix(root)
-            .unwrap_or(&path)
+            .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-
-        let (mut code, lits) = strip_comments_and_collect_literals(&src);
-        mask_cfg_test_blocks(&mut code, &lits);
-        let lit_end_at = literal_start_index(code.len(), &lits);
-
-        for lit in lits.iter() {
-            if !seed_names.contains(&lit.content) {
-                continue;
-            }
-            // A literal inside a masked (test-gated) region is gone from `code`.
-            if code[lit.start] != b'"' {
-                continue;
-            }
-            let kind = if is_match_arm(&code, &lit_end_at, lit.end) {
-                SiteKind::MatchArm
-            } else if is_eval_call(&code, lit.start) {
-                SiteKind::EvalCall
-            } else {
-                continue;
-            };
-            sites.push(Site {
-                file: rel.clone(),
-                line: line_of(&code, lit.start),
-                name: lit.content.clone(),
-                kind,
-            });
-        }
+        sites.extend(classify_text(&rel, &src, &forwarders, seed_names));
     }
     sites.sort();
     sites

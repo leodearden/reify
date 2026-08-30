@@ -22,16 +22,18 @@
 //!
 //! - **I-REG-1**: [`lookup`] is the only string→builtin resolution in the
 //!   workspace. No `"name" =>` string dispatch on a builtin name — and no
-//!   `eval_builtin("name", …)` call — may live outside this crate.
+//!   `eval_builtin("name", …)` call, direct or one hop through a
+//!   `&str`-forwarding helper — may live outside this crate.
 //!   Enforced by `tests/i_reg_1_seed_string_dispatch_gate.rs`, which is
 //!   **seed-scoped and ledgered**: it sweeps the names [`rows`] actually
 //!   registers (so each later τ migration is covered automatically, never a
 //!   restated list) across `crates/*/src/`, and the residue α cannot re-home
 //!   is COUNTED entry-by-entry in that file's `SEED_STRING_DISPATCH_LEDGER`,
-//!   each entry naming the leaf that owns it — five today, all in
+//!   each entry naming the leaf that owns it — eight today, all in
 //!   `reify-expr` (four `Value::Field` intercepts awaiting
-//!   [`BindingKind::ExprIntercept`] in τ-fea/analysis, one re-entrant call
-//!   awaiting `CompiledExpr` carrying a `BuiltinId` in leaf β). An
+//!   [`BindingKind::ExprIntercept`] in τ-fea/analysis, and four re-entrant
+//!   calls awaiting `CompiledExpr` carrying a `BuiltinId` in leaf β, three of
+//!   which reach eval one hop later through a `&str`-forwarding helper). An
 //!   UNLEDGERED site fails. The **workspace-wide** grep gate — every builtin
 //!   name, not just the seeds — arrives at task ω.
 //! - **I-REG-2**: every `BuiltinId` is bound exactly once in its
