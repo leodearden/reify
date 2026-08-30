@@ -1695,6 +1695,134 @@ async fn handle_set_fea_case(
     Ok(json!({ "ok": true, "case": case }))
 }
 
+// ── Task 5097 δ: the five `reify_*` AI write tools (PRD
+// `docs/prds/v0_6/ai-native-editing.md` §6.3, INV-GUI-2 AI path) ──
+//
+// These carry the reify-mcp tool identities (`crates/reify-mcp/src/tools/
+// write.rs`) onto the reify-debug MCP server, which is the surface the GUI's
+// Claude sidecar actually reaches (`gui/sidecar/src/session.ts`'s
+// `mcp__reify-debug__*` allowlist). The `reify_` prefix is deliberate (§12
+// Q1): it preserves those identities without clashing with the debug-native
+// bare names (`open_file`, `engine_state`, …).
+//
+// Every one of them routes its engine mutation through
+// `write_on_engine_and_refresh_baseline` — see that function for why the
+// uniformity is load-bearing and why there is no second emit path.
+
+/// Extract a REQUIRED string field from a write tool's params, refusing with
+/// the reify-mcp message verbatim (`"<field> is required"`).
+///
+/// One helper rather than a per-field `ok_or_else`, so the five tools cannot
+/// drift into five spellings of the same refusal. A field of the WRONG TYPE
+/// takes the same arm as an ABSENT one on purpose: `as_str()` cannot tell
+/// them apart without a second probe, and reify-mcp — the surface an AI
+/// client may have learned these messages on — does not make the
+/// distinction either.
+fn reify_write_str_param(params: &Value, field: &str) -> Result<String, String> {
+    params[field]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{field} is required"))
+}
+
+/// Engine-routing core of the `reify_set_parameter` write tool: apply
+/// `value` to `cell_id`'s default literal IN THE `.ri` SOURCE (INV-GUI-3,
+/// via γ's [`EngineSession::apply_param_to_source_str`]), then refresh the
+/// delta baseline.
+///
+/// This is the AI counterpart of the property-panel slider, and it is
+/// deliberately NOT the slider's mechanism: the slider's
+/// `EngineSession::set_parameter` is an EPHEMERAL engine-state override,
+/// while this writes the user's canonical document. Both share one
+/// dimension-aware parse (#5757), so `value` is a UNIT-BEARING literal
+/// (`"120mm"`) on any dimensioned cell — see `apply_param_to_source_str`
+/// for the full unit contract.
+///
+/// Extracted from [`handle_reify_set_parameter`] so the routing is
+/// unit-testable without a [`DebugServerState`]/`AppHandle` (mirrors
+/// [`set_fea_case_on_engine`]).
+pub async fn reify_set_parameter_on_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    cell_id: &str,
+    value: &str,
+) -> Result<crate::types::GuiState, String> {
+    // Owned for the closure's `'static` bound — `run_on_engine` moves it to
+    // another thread.
+    let cell_id = cell_id.to_owned();
+    let value = value.to_owned();
+    write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        s.apply_param_to_source_str(&cell_id, &value)
+    })
+    .await
+}
+
+/// Set a parameter by writing the `.ri` source, push the rebuilt `GuiState`
+/// to the frontend, and return the reify-mcp result envelope.
+///
+/// Flow (mirrors [`handle_set_fea_case`]):
+///  1. `reify_set_parameter_on_engine_and_refresh_baseline` — splices the
+///     default literal, recompiles, writes disk, AND refreshes the delta
+///     baseline (§6.2 invariant (a)).
+///  2. `write_tool_frontend_payload(&gs, None)` — no `file` member: this tool
+///     DOES write disk, so the FS-watcher re-fire reconciles the editor
+///     buffer on its own (and reloads identical content for an empty delta,
+///     D7 / §7 B5).
+///  3. `query_frontend("apply_gui_state", ...)` — applies the GuiState
+///     WITHOUT a view reset, so an AI parameter tweak leaves the camera
+///     where the user put it.
+///  4. Returns `{"success", "new_value", "unit", "diagnostics"}` — the same
+///     envelope `crates/reify-mcp/src/tools/write.rs` returns for this tool
+///     name, so an AI client sees one shape across both surfaces.
+///
+/// NOTE: as on `handle_set_fea_case`, step 1 refreshes `last_state` BEFORE
+/// step 3's push lands S1 on the frontend, so a normal command interleaved in
+/// that window would diff against S1 while the frontend is still at S0. Safe
+/// only under the serial-debug-ops assumption (PRD §4 D7).
+///
+/// A refusal propagates as `Err(String)`, which `handle_mcp` already maps to
+/// the `isError` MCP envelope and `handle_rest` to a 500 `{"error"}` — the
+/// structured γ rejection taxonomy reaches the AI client through the existing
+/// error path, with no new one added here.
+async fn handle_reify_set_parameter(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let cell_id = reify_write_str_param(&params, "cell_id")?;
+    let value = reify_write_str_param(&params, "value")?;
+
+    let gs = reify_set_parameter_on_engine_and_refresh_baseline(
+        &state.engine,
+        &state.last_state,
+        &cell_id,
+        &value,
+    )
+    .await?;
+
+    // Read the committed value back off the GuiState the write returned,
+    // rather than echoing the caller's input: what the engine stored is what
+    // the client needs to see (the unit is the REPLACED literal's, which need
+    // not be the one the caller wrote).
+    let committed = gs.values.iter().find(|v| v.cell_id == cell_id);
+    let new_value = committed.map(|v| v.value.clone());
+    let unit = committed.map(|v| v.unit.clone());
+
+    let diagnostics = run_on_engine(&state.engine, |s| Ok(s.get_diagnostics())).await?;
+
+    let payload = write_tool_frontend_payload(&gs, None)?;
+    state
+        .debug_bridge
+        .query_frontend("apply_gui_state", payload)
+        .await?;
+
+    Ok(json!({
+        "success": true,
+        "new_value": new_value,
+        "unit": unit,
+        "diagnostics": diagnostics,
+    }))
+}
+
 // --- MCP Streamable HTTP handler ---
 
 async fn handle_mcp(
