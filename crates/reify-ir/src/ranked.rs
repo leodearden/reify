@@ -118,6 +118,12 @@ pub struct RankedCandidate {
 /// - `candidates` are ordered **best-first by ascending `objective_score`**;
 ///   index 0 is the selected optimum.
 /// - Feasibility-only rankings are size-1 with no ordering claim.
+///
+/// The `Infeasible` and `NoProgress` arms carry no `completeness` field: neither
+/// is a solution SET, so there is nothing for the axis to describe. `Infeasible`
+/// is already the strongest emptiness claim the old vocabulary could make; the
+/// verdict that says *proven* empty and names the narrowing constraint is
+/// [`crate::Completeness::Refuted`], reachable through `Ranked`.
 #[derive(Debug, Clone)]
 pub enum RankedSolveResult {
     /// One or more ranked candidates were found.
@@ -128,6 +134,22 @@ pub enum RankedSolveResult {
         candidates: Vec<RankedCandidate>,
         /// Quality of the solution set.
         optimality: OptimalityStatus,
+        /// How much of the solution set was actually established
+        /// (solution-set-completeness PRD §3.1, task α #6706).
+        ///
+        /// Additive and **orthogonal** to `optimality` (D6): `optimality` says how
+        /// good the best candidate is, `completeness` says how many solutions there
+        /// are and whether that count was proven. A solver can hold a tight
+        /// optimality certificate for a point while having established nothing
+        /// about how many other solutions exist.
+        ///
+        /// Producers that do not reason about the set report
+        /// [`crate::Completeness::not_attempted`], which is behaviour-preserving
+        /// (BT13). Note that `candidates.len()` is **not** a solution count — the
+        /// list is not deduplicated until ζ #6711 — so `completeness` must never be
+        /// combined with it to derive `unique`; see
+        /// [`crate::Completeness::derived_unique`].
+        completeness: crate::completeness::Completeness,
     },
     /// The constraint system has no feasible solution.
     Infeasible {

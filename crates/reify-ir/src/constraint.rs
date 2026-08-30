@@ -549,6 +549,10 @@ pub trait ConstraintSolver: Send + Sync {
     ///   `Ranked { candidates: [RankedCandidate { values, objective_score: None, unique }],
     ///             optimality: BestFound { "solver does not report optimality" } }`
     ///   when `problem.objective.is_some()`, or `FeasibilityOnly` when `objective` is `None`.
+    ///   The `completeness` field is always
+    ///   [`crate::Completeness::not_attempted`] (`Partial { NotAttempted }`) in the
+    ///   default lift: a solver that only implements `solve` did not reason about
+    ///   the solution set, so it may claim nothing about its size (BT13).
     /// - `Infeasible { diagnostics }` → `RankedSolveResult::Infeasible { diagnostics }`
     /// - `NoProgress { reason }` → `RankedSolveResult::NoProgress { reason }`
     ///
@@ -579,6 +583,10 @@ pub trait ConstraintSolver: Send + Sync {
                         unique,
                     }],
                     optimality,
+                    // A solver that only implements `solve` has established nothing
+                    // about the solution set, so `NotAttempted` is the honest
+                    // verdict here rather than a placeholder — see its doc.
+                    completeness: crate::completeness::Completeness::not_attempted(),
                 }
             }
             // Infeasible and NoProgress are structurally identical in both the
@@ -1035,7 +1043,7 @@ mod tests {
 
         let ranked = solver.solve_ranked(&problem);
         match &ranked {
-            RankedSolveResult::Ranked { candidates, optimality } => {
+            RankedSolveResult::Ranked { candidates, optimality, .. } => {
                 assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
                 let c = &candidates[0];
                 assert!(c.objective_score.is_none(), "FeasibilityOnly → score must be None");
@@ -1071,7 +1079,7 @@ mod tests {
 
         let ranked = solver.solve_ranked(&problem);
         match &ranked {
-            RankedSolveResult::Ranked { candidates, optimality } => {
+            RankedSolveResult::Ranked { candidates, optimality, .. } => {
                 assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
                 let c = &candidates[0];
                 assert!(c.objective_score.is_none(), "default lift → objective_score always None");

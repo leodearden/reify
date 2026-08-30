@@ -148,10 +148,11 @@ fn ranked_solve_result_ranked_variant() {
     let result = RankedSolveResult::Ranked {
         candidates: vec![make_candidate()],
         optimality: OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit },
+        completeness: Completeness::not_attempted(),
     };
 
     match result {
-        RankedSolveResult::Ranked { candidates, optimality } => {
+        RankedSolveResult::Ranked { candidates, optimality, .. } => {
             assert_eq!(candidates.len(), 1);
             assert!(matches!(optimality, OptimalityStatus::BestFound { .. }));
         }
@@ -192,6 +193,7 @@ fn ranked_solve_result_debug_and_clone_smoke() {
     let result = RankedSolveResult::Ranked {
         candidates: vec![make_candidate()],
         optimality: OptimalityStatus::ProvenOptimal,
+        completeness: Completeness::not_attempted(),
     };
     let cloned = result.clone();
     let d1 = format!("{:?}", result);

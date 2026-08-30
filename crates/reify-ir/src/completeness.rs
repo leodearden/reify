@@ -213,6 +213,42 @@ impl Completeness {
         self.is_exhaustive()
     }
 
+    /// The verdict for a producer that does no completeness reasoning at all:
+    /// `Partial { NotAttempted }`.
+    ///
+    /// # This is a MIGRATION STATE ONLY (INV-SF-4 / INV-SF-5)
+    ///
+    /// Every other [`PartialReason`] names a runtime condition that **can clear** —
+    /// raise the budget, bound the domain, land an interval form. `NotAttempted`
+    /// names none: nothing at runtime clears it, so it is *permanently*
+    /// unattributable, which is exactly the structural-indeterminacy shape
+    /// INV-SF-4 `indeterminate-attributable-transient` forbids.
+    ///
+    /// The resolution recorded in PRD §8.1 is that it is a migration state and
+    /// nothing more. It is retired from every in-tree producer by the conformance
+    /// sweep, after which it survives **solely** for the defaulted
+    /// [`crate::constraint::ConstraintSolver::solve_ranked`] lift — where it is not
+    /// a placeholder at all but the honest verdict "this solver was never asked".
+    ///
+    /// There is deliberately **no** `Default` impl for [`Completeness`]: a
+    /// `..Default::default()` shorthand would let this sentinel be acquired
+    /// silently, and the sweep that retires it depends on every site that reports
+    /// it being spelled out and greppable.
+    ///
+    /// Being a sentinel default, INV-SF-5 `placeholders-owned-and-loud` requires it
+    /// to carry an owner for as long as any in-tree producer still reports it; that
+    /// owner is the cite below.
+    // TODO(#6903): retire Partial{NotAttempted} from every in-tree producer.
+    // Every call site of `Completeness::not_attempted()` outside the default
+    // `solve_ranked` lift is one of that sweep's targets — grep the constructor
+    // to enumerate them. #6903 also carries the assertion that no in-tree
+    // ConstraintSolver impl reports this verdict.
+    pub const fn not_attempted() -> Completeness {
+        Completeness::Partial {
+            reason: PartialReason::NotAttempted,
+        }
+    }
+
     /// Human-readable rendering of this verdict.
     ///
     /// **C3 at the rendering layer:** a [`Completeness::Refuted`] verdict must never
