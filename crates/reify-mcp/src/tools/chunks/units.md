@@ -122,6 +122,65 @@ The `pass a dimensioned length such as `5mm`` tail is `reify-core::units::LENGTH
 rendered by both the compile-time and the run-time check, so one authoring mistake reads identically
 whichever layer catches it.
 
+**Which command catches it.** `reify eval` and `reify build` reject every form above — exit 1,
+every time. `reify check` is **not** equivalent. It prints the same `error:` lines, but its EXIT
+CODE depends on which layer owns the constructor's argument slots.
+
+`box`, `translate`, `fillet` and `rotate_around` are checked by the **compiler**, and `reify check`
+exits 1 on a bare argument. `mirror`, `helix`, `polygon`, `arc`, `line_segment`, `interp`, `bezier`
+and `nurbs` have no compile-time length slot at all: their bare arguments are caught only at
+build/eval time, so `reify check` prints the rejection, adds
+`failed to compile geometry operation: missing or non-Length argument '<arg>' for <op>`, and then
+**exits 0**.
+
+<!-- These rows are the SAME rule as the block above; they differ only in which layer sees them.
+     The ```reify-rejected-at-eval tag is matched BYTE-EXACTLY and carries the OPPOSITE
+     compile-layer assertion to the ```reify-rejected block:
+     units_chunk_smoke.rs::documented_eval_only_rejections_are_invisible_to_the_compile_layer
+     requires each left column here to compile with ZERO errors. If a compile-layer slot is ever
+     added for one of these, that test goes RED and the row must move to the other block in the
+     same commit — so this note cannot outlive the gap it warns about. Same row format. -->
+
+```reify-rejected-at-eval
+mirror(g, 0, 0, 0, 1, 0, 0)  -->  mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)         // trailing axis stays bare
+helix(10, 2, 50)             -->  helix(10mm, 2mm, 50mm)
+polygon(0, 0, 10, 0, 5, 10)  -->  polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
+```
+
+The `mirror` row is the one to read twice: the pivot `0, 0, 0` becomes `0mm, 0mm, 0mm` while the
+axis direction `1, 0, 0` stays exactly as it was. One call, both halves of the rule.
+
+**So gate a design on `reify eval` or `reify build`, never on `reify check`'s exit status alone.**
+The exit-code gap is a known residual, tracked in
+`docs/prds/v0_6/check-diagnostic-truthfulness.md`.
+
+<!-- SYNC: which claim in this section is pinned by an executable test, and which is prose — so the
+     unpinned ones are visibly unpinned rather than looking equally guarded.
+
+     FORMAT IS LOAD-BEARING. Every cite is written WHOLE on ONE line as `<path>::<fn_name>`, never
+     wrapped and never tabulated into a two-column layout.
+     units_chunk_smoke.rs::cited_test_paths_in_the_units_chunk_resolve resolves each one against
+     the tree — the file must exist and must declare that fn — so a renamed or deleted test is RED
+     there rather than silently turning a PINNED row into a false claim.
+
+  bare dimensions rejected, with the migration hint — PINNED by
+    units_chunk_smoke.rs::documented_rejected_forms_are_actually_rejected
+    crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs::bare_box_dimensions_drop_the_op_with_a_coded_error
+  bare `0` is not special-cased (D1) — PINNED by
+    units_chunk_smoke.rs::bare_zero_is_not_special_cased
+    crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs::bare_zero_box_dimensions_are_not_special_cased
+  one authoring mistake reported by BOTH layers, with distinct codes — PINNED by
+    crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs::bare_fillet_source_carries_both_layers_with_distinct_codes
+  the eval-only constructors are invisible to the COMPILER — PINNED by
+    units_chunk_smoke.rs::documented_eval_only_rejections_are_invisible_to_the_compile_layer
+  `reify check`'s EXIT CODE (1 for box/translate/fillet, 0 for mirror/helix/polygon) — UNPINNED,
+    prose only. Measured 2026-08-30 against a debug `reify` binary; the guards above compile
+    in-process and never run the CLI, so nothing here observes an exit status. Re-verify before
+    relying on it. Residual tracked in docs/prds/v0_6/check-diagnostic-truthfulness.md.
+  a unit in a DIMENSIONLESS slot is not reported — UNPINNED, prose only. Measured 2026-08-30:
+    scale(g, 2mm) accepted, dimensioned axis direction in mirror and linear_pattern accepted.
+    Re-verify before relying on it. -->
+
 **What legitimately stays bare.** Not every geometry argument is a length. Unit-vector and
 axis-direction components, repeat counts, NURBS weights, knot values, polynomial degrees, `scale`
 factors and indices are dimensionless by construction, and putting a unit on one of them says

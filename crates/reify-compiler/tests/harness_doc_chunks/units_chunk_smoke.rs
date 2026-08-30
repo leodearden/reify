@@ -94,6 +94,20 @@ const REJECTED_TAG: &str = "reify-rejected";
 /// inside a form, whereas `-->` cannot occur in either column.
 const ROW_SEPARATOR: &str = "-->";
 
+/// Info string of the block listing forms the COMPILE layer does not see.
+///
+/// A separate block, not a column of the first one, because the two carry
+/// OPPOSITE compile-layer assertions: the forms in `REJECTED_TAG` must produce
+/// an Error, and the forms here must produce NONE. Merging them would need a
+/// per-row marker the scraper reads, which is a wording pin on the chunk; two
+/// byte-exact tags cost the same and stay inert.
+const EVAL_ONLY_TAG: &str = "reify-rejected-at-eval";
+
+/// Minimum rows the eval-only block must carry. The exact live set: `mirror`,
+/// `helix` and `polygon`, the three constructors with no compile-layer LENGTH
+/// slot that the chunk names by hand.
+const MINIMUM_EVAL_ONLY_ROWS: usize = 3;
+
 /// Minimum rows the rejected-forms block must carry, and the anti-vacuity floor.
 ///
 /// The EXACT set the chunk is required to document, not a round number under it:
@@ -126,10 +140,10 @@ fn wrap_form(form: &str) -> String {
 /// PANICS on a non-empty row that is not a pair, rather than skipping it. A
 /// scraper that silently drops what it cannot parse is how a gate goes vacuous
 /// while still looking like it is doing work.
-fn rejected_form_rows(markdown: &str) -> Vec<(String, String)> {
+fn rejected_form_rows(markdown: &str, tag: &str) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
 
-    for fence in reify_tagged_fences(markdown, REJECTED_TAG, UNITS_CHUNK_PATH) {
+    for fence in reify_tagged_fences(markdown, tag, UNITS_CHUNK_PATH) {
         for line in strip_reify_comments(&fence).lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -137,7 +151,7 @@ fn rejected_form_rows(markdown: &str) -> Vec<(String, String)> {
             }
             let Some((rejected, accepted)) = line.split_once(ROW_SEPARATOR) else {
                 panic!(
-                    "{UNITS_CHUNK_PATH}'s ```{REJECTED_TAG} block has a row this scan cannot \
+                    "{UNITS_CHUNK_PATH}'s ```{tag} block has a row this scan cannot \
                      read: {line:?}. Every non-blank row must pair a rejected form with its \
                      accepted migration, separated by `{ROW_SEPARATOR}`, WHOLE ON ONE LINE — a \
                      wrapped row is invisible here. Annotate with `//` if a row needs prose."
@@ -382,7 +396,7 @@ fn documented_call_names_in_units_chunk_are_real_registry_entries() {
 #[test]
 fn documented_rejected_forms_are_actually_rejected() {
     let markdown = read_chunk();
-    let rows = rejected_form_rows(&markdown);
+    let rows = rejected_form_rows(&markdown, REJECTED_TAG);
 
     // Anti-vacuity #1: the floor. Without it, deleting the block (or retagging
     // it) empties the scan and the loop below iterates zero times — GREEN,
@@ -407,6 +421,11 @@ fn documented_rejected_forms_are_actually_rejected() {
     );
 
     for (rejected, accepted) in &rows {
+        assert_ne!(
+            rejected, accepted,
+            "{UNITS_CHUNK_PATH} has a rejected-forms row whose two columns are IDENTICAL, so it \
+             teaches no migration and would pass any assertion trivially"
+        );
         assert_rejected_as_documented(rejected);
         assert_module_compiles(
             UNITS_CHUNK_PATH,
@@ -429,7 +448,7 @@ fn documented_rejected_forms_are_actually_rejected() {
 #[test]
 fn bare_zero_is_not_special_cased() {
     let markdown = read_chunk();
-    let rows = rejected_form_rows(&markdown);
+    let rows = rejected_form_rows(&markdown, REJECTED_TAG);
 
     let normalize = |form: &str| form.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
@@ -549,4 +568,77 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
          so losing the cite orphans that deferral. Cites seen: {cites:?}",
         ri_paths.len()
     );
+}
+
+/// The constructors units.md names as caught only at build/eval time really are
+/// INVISIBLE to the compile layer.
+///
+/// The complement of `documented_rejected_forms_are_actually_rejected`, and the
+/// executable half of the chunk's check-visibility note. `mirror`, `helix` and
+/// `polygon` have no `CheckableArg` LENGTH slot — `polygon` deliberately so, per
+/// `builtin_signatures.rs`'s own
+/// `polygon_stays_slot_free_because_its_positions_are_arity_open` — so a bare
+/// number in one of them compiles CLEAN and is rejected later, which is why
+/// `reify check` prints `error:` for these and still exits 0.
+///
+/// WHY PIN THE NEGATIVE. The chunk tells an author to gate on `reify eval`
+/// rather than `reify check`, and that advice is only worth following while the
+/// gap is real. If a compile-layer slot is later added for one of these, this
+/// test goes RED and the row must move to the ```` ```reify-rejected ```` block
+/// — so the doc is corrected by the same commit that closes the gap, instead of
+/// warning about a hazard that no longer exists.
+///
+/// SCOPE — this pins the COMPILE-layer half only. That these forms are rejected
+/// at eval time is pinned on the eval side by the tests the chunk cites; that
+/// `reify check` EXITS 0 on them is a CLI-level property this harness never
+/// observes, and the chunk marks it UNPINNED for exactly that reason.
+#[test]
+fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
+    let markdown = read_chunk();
+    let rows = rejected_form_rows(&markdown, EVAL_ONLY_TAG);
+
+    assert!(
+        rows.len() >= MINIMUM_EVAL_ONLY_ROWS,
+        "only {} eval-only row(s) scraped from {UNITS_CHUNK_PATH} — expected at least \
+         {MINIMUM_EVAL_ONLY_ROWS} (`mirror`, `helix`, `polygon`). Either the \
+         ```{EVAL_ONLY_TAG} block was deleted or retagged, or a row was removed while the \
+         check-visibility note still names the constructor. Rows seen: {rows:?}",
+        rows.len()
+    );
+
+    // NEGATIVE CONTROL. "Invisible to the compile layer" is trivially true of
+    // everything if `error_messages` has stopped seeing rejections at all — a
+    // broken wrapper, a helper that swallows diagnostics. Prove it still sees
+    // one, using a form the OTHER block documents as compile-layer rejected.
+    assert!(
+        !error_messages(BARE_ZERO_FORM).is_empty(),
+        "negative control failed: `{BARE_ZERO_FORM}` should be REJECTED by the compile layer, \
+         but this helper reports no Error diagnostics for it. Every assertion below would then \
+         pass vacuously, since it only checks that a form compiles clean."
+    );
+
+    for (rejected, accepted) in &rows {
+        assert_ne!(
+            rejected, accepted,
+            "{UNITS_CHUNK_PATH} has an eval-only row whose two columns are IDENTICAL. Both sides \
+             compile clean here by construction, so such a row passes trivially while teaching \
+             no migration."
+        );
+
+        let messages = error_messages(rejected);
+        assert!(
+            messages.is_empty(),
+            "{UNITS_CHUNK_PATH} lists `{rejected}` as caught only at build/eval time, but the \
+             COMPILE layer now rejects it: {messages:?}. That is good news — a slot was added — \
+             but the chunk is now wrong twice over: the form belongs in the ```{REJECTED_TAG} \
+             block, and the check-visibility note must stop naming this constructor as one \
+             `reify check` does not gate. Move the row and update the note in the same commit."
+        );
+
+        assert_module_compiles(
+            UNITS_CHUNK_PATH,
+            &format!("accepted migration for `{rejected}`"),
+            &wrap_form(accepted),
+        );
+    }
 }
