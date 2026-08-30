@@ -1623,6 +1623,11 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 ///   - `"prefixed"`    — give the FIRST SI plane-angle unit the MILLI prefix,
 ///                       leaving its name at RADIAN: a MILLIRADIAN, which a
 ///                       name-only check and a `.RADIAN.` grep both accept.
+///   - `"missing"`     — rebuild the FIRST unit-assigned context's `Units()`
+///                       list without any angular unit, leaving the unit
+///                       entity itself in the model: the declaration is MISSING
+///                       for that context while the file still contains a
+///                       perfectly good `SI_UNIT($,.RADIAN.)` nothing points at.
 ///
 /// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) on
 /// an unrecognised `fault`, so a typo in a test reads as a rejected fault name

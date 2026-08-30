@@ -7103,6 +7103,11 @@ enum class StepGuardFault {
     /// milliradian — which a name-only check and a `.RADIAN.` grep both
     /// accept, and which is off from the payload by exactly 1000x.
     Prefixed,
+    /// Rebuild the FIRST unit-assigned context's `Units()` list without any
+    /// angular unit, leaving the unit ENTITY itself untouched in the model.
+    /// The declaration is then MISSING for that context while the file still
+    /// contains a perfectly good `SI_UNIT($,.RADIAN.)` that nothing points at.
+    Missing,
 };
 
 /// Map the FFI fault name onto the enum.
@@ -7120,8 +7125,12 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
     if (name == "prefixed") {
         return StepGuardFault::Prefixed;
     }
-    throw ContractViolation("unknown injected fault \"" + name +
-                            "\"; accepted faults: none, non_radian, prefixed");
+    if (name == "missing") {
+        return StepGuardFault::Missing;
+    }
+    throw ContractViolation(
+        "unknown injected fault \"" + name +
+        "\"; accepted faults: none, non_radian, prefixed, missing");
 }
 
 /// Corrupt exactly ONE thing in `model`, per `fault`.
@@ -7145,6 +7154,70 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             "cannot inject a fault: the STEP model is null");
     }
     const Standard_Integer n = model->NbEntities();
+
+    if (fault == StepGuardFault::Missing) {
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+                step_unit_assigned_context(model->Value(i));
+            if (ctx.IsNull()) {
+                continue;
+            }
+            Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+            if (units.IsNull()) {
+                throw ContractViolation(
+                    "cannot inject the \"missing\" fault: the first unit-assigned "
+                    "context already has a null Units() array");
+            }
+            // Keep the non-angular entries; drop the angular ones. The dropped
+            // unit ENTITIES stay in the model — that is the whole point: the
+            // file still contains a valid SI_UNIT($,.RADIAN.), it is simply no
+            // longer reachable from this context, which is exactly the defect
+            // a model-wide entity tally cannot see.
+            std::vector<Handle(StepBasic_NamedUnit)> keep;
+            size_t angular = 0;
+            for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+                Handle(StepBasic_NamedUnit) unit = units->Value(k);
+                if (unit.IsNull()) {
+                    continue;
+                }
+                if (classify_step_angle_unit(unit, nullptr) ==
+                    StepAngleUnitKind::NotAngular) {
+                    keep.push_back(unit);
+                } else {
+                    angular += 1;
+                }
+            }
+            if (angular == 0) {
+                throw ContractViolation(
+                    "cannot inject the \"missing\" fault: the first unit-assigned "
+                    "context already reaches no angular unit, so this negative "
+                    "test would pass without the fault doing anything");
+            }
+            if (keep.empty()) {
+                // An HArray1 with lower > upper is not constructible, so there
+                // is no way to express "this context reaches nothing at all"
+                // here. Refuse loudly rather than silently leaving the context
+                // untouched and letting the test pass vacuously.
+                throw ContractViolation(
+                    "cannot inject the \"missing\" fault: every unit the first "
+                    "context reaches is angular, so no non-empty Units() array "
+                    "survives the strip — the fixture no longer exercises this "
+                    "arm and needs revisiting");
+            }
+            Handle(StepBasic_HArray1OfNamedUnit) rebuilt =
+                new StepBasic_HArray1OfNamedUnit(
+                    1, static_cast<Standard_Integer>(keep.size()));
+            for (size_t j = 0; j < keep.size(); ++j) {
+                rebuilt->SetValue(static_cast<Standard_Integer>(j) + 1, keep[j]);
+            }
+            ctx->SetUnits(rebuilt);
+            return;
+        }
+        throw ContractViolation(
+            "cannot inject the \"missing\" fault: the transferred model carries "
+            "no unit-assigned context to strip");
+    }
+
     for (Standard_Integer i = 1; i <= n; ++i) {
         Handle(StepBasic_SiUnitAndPlaneAngleUnit) si =
             Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(model->Value(i));
@@ -7162,6 +7235,8 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
                 si->SetPrefix(StepBasic_spMilli);
                 break;
             case StepGuardFault::None:
+            case StepGuardFault::Missing:
+                // Handled above; unreachable here.
                 break;
         }
         return;
