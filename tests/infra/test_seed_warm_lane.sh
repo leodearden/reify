@@ -5595,4 +5595,60 @@ assert "W3: seed still exits 0 even though the guard exits 1 under the stub git"
 assert "W4: STDOUT is exactly <lane_dir>/target with the guard call in place" \
     bash -c '[ "$1" = "'"$W_LANE1/target"'" ]' _ "$W1_OUT"
 
+# ── W5-W8: the REIFY_WARM_LANE_RERERE_ARM operator escape hatch ──────────────
+#
+# This call now runs on EVERY acquire across 254 linked worktrees that share ONE
+# .git/config, so an off-switch that needs no code change and no merge is prudent
+# for that blast radius. The control must be strictly opt-IN-to-skip: the failure
+# direction has to be "still protected", never "silently off". Same
+# truncate-then-run_helper shape and the same --is-inside-work-tree discriminator
+# as W1/W2.
+
+# W5 (e): the exact value 0 suppresses ONLY the rerere call — the seed still
+# succeeds and its stdout contract is untouched.
+W_LANE3="$(make_isolated_lane W-optout)"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RERERE_ARM=0 \
+    run_helper "$W_BASE" "$W_LANE3" --fresh-checkout
+
+assert "W5: REIFY_WARM_LANE_RERERE_ARM=0 suppresses the guard call" \
+    bash -c '! grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+assert "W5: ...and the seed still exits 0" \
+    test "$RC" -eq 0
+assert "W5: ...and STDOUT is still exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$W_LANE3/target"'" ]' _ "$OUT"
+
+# W6 (f): UNSET keeps the defence armed — the default must be protected.
+W_LANE4="$(make_isolated_lane W-unset)"
+reset_calls
+unset REIFY_WARM_LANE_RERERE_ARM
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$W_BASE" "$W_LANE4" --fresh-checkout
+
+assert "W6: REIFY_WARM_LANE_RERERE_ARM unset still invokes the guard (default armed)" \
+    bash -c 'grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W7 (g): an explicit 1 keeps it armed too, so no stray value can silently
+# disable the fleet-wide defence — only a literal 0 does.
+W_LANE5="$(make_isolated_lane W-explicit-1)"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RERERE_ARM=1 \
+    run_helper "$W_BASE" "$W_LANE5" --fresh-checkout
+
+assert "W7: REIFY_WARM_LANE_RERERE_ARM=1 invokes the guard (only a literal 0 skips)" \
+    bash -c 'grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W8 (h): the control surface is DISCOVERABLE — --help still exits 0 and names
+# the variable, alongside the existing REIFY_WARM_LANE_RESEED_TRASH_SYNC /
+# REIFY_WARM_LANE_MOUNT entries. An existence check on the documented control
+# surface, not a prose pin. Usage goes to stderr (see A1).
+reset_calls
+run_helper --help
+assert "W8: --help still exits 0" test "$RC" -eq 0
+assert "W8: --help documents REIFY_WARM_LANE_RERERE_ARM" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_WARM_LANE_RERERE_ARM"' _ "$ERR_OUT"
+
+# Do not let the knob leak into any later block of this long-lived suite.
+unset REIFY_WARM_LANE_RERERE_ARM
+
 test_summary
