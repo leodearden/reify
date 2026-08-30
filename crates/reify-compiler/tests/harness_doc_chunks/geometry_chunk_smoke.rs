@@ -1407,29 +1407,46 @@ pub(crate) fn resolve_cited_path(
     }
 }
 
-/// Every test the chunk cites as PINNING a runtime claim must still exist.
+/// Assert every `<path>::<fn>` cite in `markdown` resolves, and that the chunk
+/// still carries at least `min_fn` / `min_rs` / `min_ri` of them.
 ///
-/// Both halves are checked: the file resolves, and it declares the cited `fn`.
-/// A rename or deletion of a pinning test is therefore RED here rather than
-/// silently downgrading a "PINNED" row in the traps SYNC block to a false claim.
+/// SHARED BY BOTH CHUNK MODULES — this file's traps SYNC block and
+/// `units_chunk_smoke.rs`'s PINNED/UNPINNED inventory. It exists because the
+/// second copy of this loop was a ~55-line near-verbatim duplicate of the first,
+/// differing only in the chunk path, three numeric floors and the panic wording;
+/// a fix to the resolution or existence rule (a `#[cfg]`-gated fn, a `fn foo<T>(`
+/// with a generic parameter) then had to be applied twice or drift. Growing that
+/// kind of copy is exactly the tracked defect
+/// (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924) this harness binary is trying
+/// to shrink.
 ///
-/// SCOPE — this is an EXISTENCE check, not a semantic one. It cannot tell that a
-/// still-named test stopped asserting the behaviour the row claims it pins, and
-/// it deliberately says nothing about the rows marked UNPINNED. It also does not
-/// verify the fn is a `#[test]`. What it buys is that every `path::fn` cite in
-/// the chunk resolves to something real, which is precisely the rot mode the
-/// hand-maintained inventory has.
-#[test]
-fn cited_test_paths_in_the_chunk_resolve() {
-    let markdown = read_chunk();
+/// The CHUNK-SPECIFIC "why this matters" prose lives in each caller's docstring,
+/// not in the panic text here, so the shared message stays true for both. What
+/// the panics do carry is the chunk path, the floor that was missed and the full
+/// cite list, which is what a reader needs to act.
+///
+/// Floors are `>=`, so ADDING a cite is always safe; raise them WITH the chunk
+/// when one is added, and never lower one to go green — a lowered floor is a
+/// SYNC row that has quietly stopped claiming anything.
+///
+/// SCOPE — an EXISTENCE check, not a semantic one. It cannot tell that a
+/// still-named test stopped asserting what the row claims, it says nothing about
+/// rows marked UNPINNED, and it does not verify the fn is a `#[test]`.
+pub(crate) fn assert_cited_paths_resolve(
+    chunk_path: &str,
+    markdown: &str,
+    min_fn: usize,
+    min_rs: usize,
+    min_ri: usize,
+) {
     let index = source_files_by_basename();
-    let cites = cited_source_paths(&markdown);
+    let cites = cited_source_paths(markdown);
 
-    // Keyed by the RESOLVED path, not the cite token: the chunk cites several
+    // Keyed by the RESOLVED path, not the cite token: both chunks cite some
     // files two ways (bare basename with a `::fn` half, and again by full
-    // repo-relative path), so token-counting would let one of the four worked
-    // `.ri` examples the panic names disappear while the floor stays satisfied by
-    // its own duplicate — exactly the regression these floors claim to catch.
+    // repo-relative path), so token-counting would let one real reference
+    // disappear while the floor stayed satisfied by its own duplicate — exactly
+    // the regression these floors claim to catch.
     let mut rs_paths: std::collections::BTreeSet<std::path::PathBuf> =
         std::collections::BTreeSet::new();
     let mut ri_paths: std::collections::BTreeSet<std::path::PathBuf> =
@@ -1439,10 +1456,10 @@ fn cited_test_paths_in_the_chunk_resolve() {
     for (path_token, fn_name) in &cites {
         let resolved = resolve_cited_path(path_token, &index).unwrap_or_else(|why| {
             panic!(
-                "{CHUNK_PATH} cites `{path_token}`, which does not resolve: {why}. The chunk is \
-                 served verbatim to the in-GUI assistant and its SYNC blocks are written to be \
-                 read as the authority on which clearance traps are pinned by a real test — a \
-                 dangling cite is a false claim. Update the cite, or mark the row UNPINNED."
+                "{chunk_path} cites `{path_token}`, which does not resolve: {why}. The chunk is \
+                 served verbatim to the in-GUI assistant and its SYNC rows are written to be read \
+                 as the authority on which claims a real test pins — a dangling cite is a false \
+                 claim. Update the cite, or mark the row UNPINNED."
             )
         });
 
@@ -1458,46 +1475,78 @@ fn cited_test_paths_in_the_chunk_resolve() {
             .unwrap_or_else(|e| panic!("{resolved:?} must be readable ({e})"));
         assert!(
             body.contains(&format!("fn {fn_name}(")),
-            "{CHUNK_PATH} cites `{path_token}::{fn_name}` as pinning one of the \
-             clearance-query traps, but {resolved:?} declares no `fn {fn_name}(`. The test was \
-             renamed or deleted, so that SYNC row now claims a pin that does not exist. \
-             Re-point the cite, or downgrade the row to UNPINNED."
+            "{chunk_path} cites `{path_token}::{fn_name}` as pinning one of its claims, but \
+             {resolved:?} declares no `fn {fn_name}(`. The test was renamed or deleted, so that \
+             row now claims a pin that does not exist. Re-point the cite, or downgrade the row \
+             to UNPINNED."
         );
     }
 
-    // Anti-vacuity. Reformatting the SYNC block into a shape this scan cannot
-    // read (the two-column layout it replaced wrapped paths across lines, which
-    // is exactly invisible here) would otherwise empty the loop above and pass.
-    // The floor is the EXACT live count, not a round number under it. At >= 8
-    // (with 9 actually present) one whole cite could be deleted and this still
-    // passed: dropping trap 5's `single_body_self_pair_excluded` row left
-    // fn_cites=8, rs_paths=5 and ri_paths=4 all green while that row still read
-    // "PINNED by" — a SYNC row silently claiming a pin it had lost. The ninth
-    // cite is this file's own self-cite from the SYNC block, which the old
-    // enumeration below omitted; it is counted here like any other.
+    // Anti-vacuity. Reformatting a SYNC block into a shape this scan cannot read
+    // — a path wrapped across two lines, or tabulated into two columns — would
+    // otherwise empty the loop above and pass.
     assert!(
-        fn_cites >= 9,
-        "only {fn_cites} `<path>::<fn>` cite(s) were found in {CHUNK_PATH} — expected at least \
-         9 (traps 1, 2, 5 and 6, FORM A's posed/swept pair, and the SYNC block's self-cite). \
-         Either the traps SYNC block was reformatted into a shape this scan cannot read (cites \
-         must be written WHOLE on ONE line, never wrapped), or a SYNC row lost a cite while \
-         still claiming to pin it. Cites seen: {cites:?}"
+        fn_cites >= min_fn,
+        "only {fn_cites} `<path>::<fn>` cite(s) found in {chunk_path} — expected at least \
+         {min_fn}. CITES MUST BE WRITTEN WHOLE ON ONE LINE, never wrapped and never tabulated; a \
+         wrapped path is invisible to this scan. Either the chunk was reformatted into a shape it \
+         cannot read, or a row lost its cite while still claiming to pin something. Cites seen: \
+         {cites:?}"
     );
     assert!(
-        rs_paths.len() >= 5,
-        "only {} distinct `.rs` FILE(s) cited in {CHUNK_PATH} (distinct after resolution — the \
-         same file cited two ways counts once), expected at least 5 — the SYNC inventory lost \
-         its file references. Cites seen: {cites:?}",
+        rs_paths.len() >= min_rs,
+        "only {} distinct `.rs` FILE(s) cited in {chunk_path} (distinct after resolution — the \
+         same file cited two ways counts once), expected at least {min_rs}. Losing one turns a \
+         PINNED row into prose. Cites seen: {cites:?}",
         rs_paths.len()
     );
     assert!(
-        ri_paths.len() >= 4,
-        "only {} distinct `.ri` example FILE(s) cited in {CHUNK_PATH} (distinct after resolution \
-         — the same example cited both bare and by full path counts once), expected at least 4 \
-         — the worked-reference examples (clearance_oracle, vc_bolt_pattern_clearance, \
-         dock_pickup, intersects_smoke) are what a designer is sent to next, so losing them is \
-         the same discoverability regression task 5389 closed. Cites seen: {cites:?}",
+        ri_paths.len() >= min_ri,
+        "only {} distinct `.ri` example FILE(s) cited in {chunk_path} (distinct after resolution \
+         — the same example cited both bare and by full path counts once), expected at least \
+         {min_ri}. The worked examples are what a designer is sent to next, so losing a cite is a \
+         discoverability regression. Cites seen: {cites:?}",
         ri_paths.len()
+    );
+}
+
+/// Cite floors for [`cited_test_paths_in_the_chunk_resolve`].
+///
+/// The EXACT live counts, not round numbers under them. At `MINIMUM_FN_CITES`
+/// >= 8 (with 9 actually present) one whole cite could be deleted and this still
+/// passed: dropping trap 5's `single_body_self_pair_excluded` row left
+/// fn_cites=8, rs_paths=5 and ri_paths=4 all green while that row still read
+/// "PINNED by" — a SYNC row silently claiming a pin it had lost. The ninth cite
+/// is this file's own self-cite from the SYNC block.
+///
+/// The `.ri` floor covers the four worked references (clearance_oracle,
+/// vc_bolt_pattern_clearance, dock_pickup, intersects_smoke) a designer is sent
+/// to next; losing one is the same discoverability regression task 5389 closed.
+const MINIMUM_FN_CITES: usize = 9;
+const MINIMUM_RS_FILES: usize = 5;
+const MINIMUM_RI_FILES: usize = 4;
+
+/// Every test the chunk cites as PINNING a runtime claim must still exist.
+///
+/// WHY THIS CHUNK NEEDS IT. geometry.md's two `<!-- SYNC ... -->` blocks
+/// hand-inventory the eval/CLI tests that pin each clearance-query trap, and
+/// that inventory is explicitly written to be read as the AUTHORITY on which
+/// traps are safe to rely on. Nothing else in this file looks at it — the guards
+/// above cover names, arities and fence compilation only — so a renamed or
+/// deleted test would silently turn a PINNED row into a false claim, a rot mode
+/// strictly worse than plain prose because the row still LOOKS load-bearing.
+///
+/// The mechanism is shared with `units_chunk_smoke.rs`'s twin; see
+/// [`assert_cited_paths_resolve`] for what it checks and, importantly, what it
+/// does NOT (an existence check, never a semantic one).
+#[test]
+fn cited_test_paths_in_the_chunk_resolve() {
+    assert_cited_paths_resolve(
+        CHUNK_PATH,
+        &read_chunk(),
+        MINIMUM_FN_CITES,
+        MINIMUM_RS_FILES,
+        MINIMUM_RI_FILES,
     );
 }
 
