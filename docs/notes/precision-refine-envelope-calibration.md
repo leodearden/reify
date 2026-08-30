@@ -456,7 +456,8 @@ expected values are continuous measurements that drift with OCCT and machine):
 | `tests/prd-gate/fixtures/pnrg_envelope_fillet_blend.ri` | fillet blend |
 | `tests/prd-gate/fixtures/pnrg_envelope_sweep.ri` | sweep |
 | `tests/prd-gate/fixtures/pnrg_envelope_pipe.ri` | pipe |
-| `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline (+ a commented, measurable `nurbs_surface` alternative) |
+| `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline |
+| `tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` | nurbs surface |
 | `tests/prd-gate/fixtures/pnrg_envelope_loft.ri` | loft — **evidence only**, does not realize |
 | `tests/prd-gate/fixtures/pnrg_cost_split_sphere.ri` | cost split |
 
