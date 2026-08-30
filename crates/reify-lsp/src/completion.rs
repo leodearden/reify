@@ -1209,6 +1209,16 @@ mod tests {
             detail.contains("x1") && detail.contains("y1"),
             "polygon signature must advertise the compiling variadic flat coordinate-pair form (x1, y1, ...), got: {detail}"
         );
+        // task 6450: polygon's vertex coordinates are Contract-C-gated
+        // (task 5661 routed them through the variadic route —
+        // crates/reify-eval/src/arg_acceptance.rs:38) but the signature
+        // carries no types at all, so it slips past
+        // geometry_completion_signatures_type_gated_slots_as_length's
+        // `!detail.contains(": Real")` guard. Pin it here instead.
+        assert!(
+            detail.contains("x1: Length") && detail.contains("y1: Length"),
+            "polygon signature must type its vertex coordinates as Length, got: {detail}"
+        );
     }
 
     // --- task 6450: gated-length builtins advertise their dimension requirement ---
