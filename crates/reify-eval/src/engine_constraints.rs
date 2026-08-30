@@ -21,6 +21,29 @@ use reify_ir::{
 use crate::topology_selectors;
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
+// ── Unmeasured-surface attribution (task 6169 ζ, extended by task 6667) ──────
+
+/// Which kind of measurement a surface failed to make, selecting the reason
+/// clause [`Engine::unmeasured_reason_for`] hands back.
+///
+/// Task 6169 (ζ) established the attribution channel for
+/// `RepresentationWithin`; task 6667 extends the SAME channel, by analogy, to
+/// the two other kinds a non-measuring surface (the GUI, `reify build`,
+/// `reify eval`) leaves unmeasured.  One taxonomy rather than three ad-hoc
+/// string sites is what keeps the wording, the arm ORDERING, and the
+/// stable-token contract (`"does not measure"`) shared across the kinds — and
+/// it is what "reuse ζ's channel, do not invent a parallel one" means
+/// concretely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnmeasuredMeasurement {
+    /// A `RepresentationWithin` bound with an empty `achieved_repr_tol` — ζ's
+    /// original case.  Three arms; see [`Engine::unmeasured_reason_for`].
+    RepresentationWithin,
+    /// A geometric `Conforms` callout (explicit `actual:` binding) whose
+    /// handles could not be resolved because nothing was realized.  Two arms.
+    GdtConformance,
+}
+
 // ── DFM auto-measurement types (task 4408 γ) ─────────────────────────────────
 
 /// The process-category kind of a recognized DFM rule, together with the
@@ -737,8 +760,22 @@ impl Engine {
             .collect();
         (constraint_results, dispatch_diagnostics)
     }
-    /// The reason clause for a `RepresentationWithin` Indeterminate on a run
-    /// whose `achieved_repr_tol` is empty (task-6169 ζ, C-SURFACE 1).
+    /// ζ's `RepresentationWithin` reason clause — [`Self::unmeasured_reason_for`]
+    /// specialised to [`UnmeasuredMeasurement::RepresentationWithin`].
+    ///
+    /// Kept as a named method so ζ's single emission site (the
+    /// `RepresentationWithin` peel in [`Self::dispatch_constraints`]) reads
+    /// unchanged, and so the three strings it returns stay demonstrably
+    /// byte-identical across task 6667's generalization — pinned by
+    /// `zeta_representation_within_reasons_are_byte_identical_after_the_refactor`.
+    fn unmeasured_reason(&self) -> &'static str {
+        self.unmeasured_reason_for(UnmeasuredMeasurement::RepresentationWithin)
+    }
+
+    /// The reason clause for an Indeterminate that a surface could not measure
+    /// (task-6169 ζ, C-SURFACE 1; extended per-kind by task 6667).
+    ///
+    /// # `RepresentationWithin` — the original three-arm taxonomy
     ///
     /// A pure function of two engine properties, because an empty map has THREE
     /// distinct causes and each has a different fix:
@@ -808,22 +845,64 @@ impl Engine {
     /// type-name scan key could not be resolved, so it states the observable
     /// fact and points at the actionable check rather than asserting a cause it
     /// has not established.
-    fn unmeasured_reason(&self) -> &'static str {
-        if !self.has_repr_capable_kernel() {
-            "this run does not measure representation tolerance because no \
-             geometry kernel able to tessellate the subject is registered; \
-             such a geometry kernel is required — build with OCCT to evaluate \
-             this RepresentationWithin bound"
-        } else if !self.capture_repr_tol {
-            "this evaluation surface does not measure representation tolerance \
-             (no tessellation ran, so no achieved deviation exists for the \
-             subject); run `reify check` to evaluate this RepresentationWithin \
-             bound"
-        } else {
-            "no realization of the subject was tessellated on this run, so no \
-             achieved deviation exists for it and this run does not measure \
-             representation tolerance; check that the subject declares a \
-             realization"
+    ///
+    /// # The task-6667 kinds — TWO arms, and why the asymmetry is correct
+    ///
+    /// [`UnmeasuredMeasurement::GdtConformance`] gets arms 1 and 2 only.  ζ's
+    /// arm 3 exists because `capture_repr_tol` can be ON while a PARTICULAR
+    /// subject still yielded no measurement — "measurement was requested, this
+    /// subject produced none".  The 6667 callers gate on
+    /// `self.realization_handles.is_empty()`, i.e. NOTHING was realized at all,
+    /// so the state arm 3 describes is unreachable from them and a third arm
+    /// would be dead code.  That is the same defect the ζ review round found
+    /// when arm 1 keyed on `default_kernel_name.is_none()` — a branch written
+    /// for surfaces it could never fire on — so it is deliberately not
+    /// reproduced here.
+    ///
+    /// Capability stays FIRST for ζ's stated reason: a stub-mode binary told to
+    /// "run `reify check`" gets a two-hop dead end, because `reify check`
+    /// cannot answer on that binary either.  [`Self::has_repr_capable_kernel`]
+    /// is the right discriminator for the new kinds too — a geometric
+    /// `Conforms` needs `GeometryQuery::MaxDeviation` over B-rep handles, which
+    /// only an OCCT-linked binary can produce.
+    ///
+    /// Every arm of every kind carries the stable token `"does not measure"`.
+    /// That is the one string the pins match on across all kinds; the rest of
+    /// each sentence is deliberately NOT pinned (ζ's pinning contract,
+    /// `representation_within_assertion.rs:185`).
+    fn unmeasured_reason_for(&self, kind: UnmeasuredMeasurement) -> &'static str {
+        match kind {
+            UnmeasuredMeasurement::RepresentationWithin => {
+                if !self.has_repr_capable_kernel() {
+                    "this run does not measure representation tolerance because no \
+                     geometry kernel able to tessellate the subject is registered; \
+                     such a geometry kernel is required — build with OCCT to evaluate \
+                     this RepresentationWithin bound"
+                } else if !self.capture_repr_tol {
+                    "this evaluation surface does not measure representation tolerance \
+                     (no tessellation ran, so no achieved deviation exists for the \
+                     subject); run `reify check` to evaluate this RepresentationWithin \
+                     bound"
+                } else {
+                    "no realization of the subject was tessellated on this run, so no \
+                     achieved deviation exists for it and this run does not measure \
+                     representation tolerance; check that the subject declares a \
+                     realization"
+                }
+            }
+            UnmeasuredMeasurement::GdtConformance => {
+                if !self.has_repr_capable_kernel() {
+                    "this run does not measure geometric conformance because no \
+                     geometry kernel able to tessellate the subject is registered; \
+                     such a geometry kernel is required — build with OCCT to evaluate \
+                     this Conforms callout"
+                } else {
+                    "this evaluation surface does not measure geometric conformance \
+                     (no realization ran, so there is no geometry to compare against \
+                     the nominal feature); run `reify check` to evaluate this Conforms \
+                     callout"
+                }
+            }
         }
     }
 
@@ -2077,6 +2156,37 @@ impl Engine {
             .as_deref()
             .and_then(|n| self.geometry_kernels.get(n));
 
+        // ── Task 6667: surface attribution, hoisted out of the weave loop ────
+        //
+        // Both values are pure functions of engine fields with no loop-local
+        // input, so they are read ONCE — the same argument ζ makes at its own
+        // emission site.  Hoisting also keeps the `&self` reads clear of the
+        // `kernel` borrow held across the loop.
+        //
+        // `realization_handles.is_empty()` is the one-for-one analogue of ζ's
+        // `achieved_repr_tol.is_empty()` gate: it is the exact field the
+        // degraded path reads (phase 1's `resolve_handle` looks handles up in
+        // it), and an ENGINE-STATE gate is what makes this robust — pattern
+        // matching phase 1's handle-blame wordings would break the moment
+        // either string is reworded.
+        //
+        // INHERITED LIMITATION, deliberately: the gate is MODULE-wide rather
+        // than per-callout, so a module that realized at least one subject
+        // leaves an unrealizable sibling with only the pre-existing bare
+        // Warning.  That is the identical limitation ζ documented and filed as
+        // follow-up ticket tkt_0RSR81KF1TYDY8PDANNHQZCFV2; narrowing it needs a
+        // new signal out of the resolution path and would invert ζ's own
+        // regression guard, so it stays out of scope here.
+        //
+        // `reify check` OUTPUT IS UNCHANGED: `realize_for_check`
+        // (reify-cli/src/main.rs:919) populates `realization_handles` BEFORE
+        // `check()` reaches this pass, so on an OCCT build the gate is false.
+        // The accepted exception is a stub-mode `reify check`, where nothing
+        // realizes and arm 1 fires naming OCCT — the same deliberate stub-mode
+        // change ζ's own arm 1 made.
+        let attribute_unmeasured = self.realization_handles.is_empty();
+        let unmeasured_reason = self.unmeasured_reason_for(UnmeasuredMeasurement::GdtConformance);
+
         for w in work {
             let (satisfaction, diag): (Satisfaction, Option<Diagnostic>) = match w.resolution {
                 GdtConformanceResolution::Indeterminate(reason) => (
@@ -2127,6 +2237,36 @@ impl Engine {
                     }
                 },
             };
+
+            // Task 6667: attribute the Indeterminate to the SURFACE, ADDITIVELY.
+            //
+            // The existing `gdt_indeterminate_diag` Warning is deliberately NOT
+            // replaced, unlike ζ's one-for-one swap of the language checker's
+            // Warning.  ζ replaced a statement that was FALSE (`operator
+            // undefined for these operand kinds` — the operands were fine);
+            // "could not resolve the nominal `feature` geometry handle" is TRUE
+            // on a non-realizing surface, merely incomplete: it states the
+            // observation but names neither the surface nor a remedy.  Two hard
+            // constraints also forbid replacement — `reify-cli`'s
+            // `indeterminacy_subject` parses the literal `Conforms
+            // INDETERMINATE: {reason}` form (main.rs:3253) and both
+            // `merge_post_build_verdicts` and
+            // `drop_falsified_indeterminate_diagnostics` key off it, and
+            // `check_weaves_geometric_conforms_override_only` asserts that exact
+            // prefix.  Adding the attribution alongside closes the INV-SF-4 gap
+            // without discarding a true observation or its span label.
+            //
+            // `w.id` is embedded in the text so `labeled_diagnostics` can
+            // substitute a user-facing label, exactly as ζ's message does.
+            if matches!(satisfaction, Satisfaction::Indeterminate) && attribute_unmeasured {
+                diagnostics.push(
+                    Diagnostic::info(format!(
+                        "constraint {} indeterminate: {unmeasured_reason}",
+                        w.id
+                    ))
+                    .with_code(DiagnosticCode::ConstraintIndeterminate),
+                );
+            }
 
             // Weave: OVERRIDE the matching entry in caller order; push if absent
             // (defensive — the scalar path normally pre-populates it).
