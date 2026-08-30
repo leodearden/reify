@@ -442,6 +442,99 @@ while IFS= read -r _doc; do
 done < <(grep -hoE '\$REPO_ROOT/docs/[A-Za-z0-9._/-]*\.md' "$SCRIPT_DIR"/*.sh \
          | sed 's#^\$REPO_ROOT/##' | sort -u)
 
+# (e) REGISTERED-IN-EITHER-REGISTRY predicate (task 6857, filed from esc-6758-2)
+#
+# THE DEFECT THIS BLOCK PINS THE FIX FOR. Clause (d) above asserted
+# `requires-full-gate`, a predicate that answers only "is this doc listed in
+# scripts/doc-sync-paths.txt?". But reify registers a load-bearing artifact at
+# TWO deliberate cost points: doc-sync-paths.txt (BLUNT -- any edit routes the
+# whole diff to the full --scope all gate) and scripts/verify-pipeline-infra-tests.txt
+# (SURGICAL -- an edit SELECTS the guarding infra test at task scope, via
+# verify.sh's select_infra_tests()). A doc registered only surgically IS
+# load-bearing, just at the cheaper point -- and the sweep called that drift.
+# The only remedy available to a task without doc-sync-paths.txt in its lock
+# charter was to stop matching the sweep's grep, which silently shrinks the
+# swept population and teaches the next author the same dodge (esc-6758-2 did
+# exactly that; step-5 of this task undoes it). The repair is a new read-only
+# `is-registered <path>` subcommand asserting membership in EITHER registry.
+#
+# EXIT-0 HERE MEANS "REGISTERED", NOT "FULL GATE REQUIRED". The two
+# subcommands share an exit-0 spelling and answer different questions; the
+# NO-LEAK pins at the end of this block are what keep them from converging.
+
+# POSITIVE (doc-sync registry): the blunt cost point still answers 0.
+assert_exit "IS-REGISTERED: docs/notes/verify-pipeline-knobs.md is registered (doc-sync-paths.txt; exit 0)" 0 \
+    run_guard is-registered docs/notes/verify-pipeline-knobs.md
+
+# POSITIVE (surgical registry ONLY) -- THE observed instance from esc-6758-2.
+# It is a key in scripts/verify-pipeline-infra-tests.txt (row ->
+# tests/infra/test_spec_anchor_lint.sh) and is deliberately NOT in
+# doc-sync-paths.txt: a prose note whose only coupling is one link-rot grep
+# must not route every edit of itself to a global gate.
+assert_exit "IS-REGISTERED: docs/notes/spec-anchor-contract.md is registered SURGICALLY ONLY (verify-pipeline-infra-tests.txt row; exit 0)" 0 \
+    run_guard is-registered docs/notes/spec-anchor-contract.md
+
+# POSITIVE (path-kind agnostic): the predicate is not docs/-only. This map key
+# is a .py script that requires-full-gate reports 1 for (measured), so it is a
+# genuine RED against a docs-only or full-gate-only reading of the predicate.
+assert_exit "IS-REGISTERED: scripts/prd-capability-check.py is registered (map key, non-doc; exit 0)" 0 \
+    run_guard is-registered scripts/prd-capability-check.py
+
+# NEGATIVE -- the recurrence guard's teeth. A path in NEITHER registry (nor any
+# other static clause) is unregistered, so a genuinely new unregistered doc-sync
+# grep still reds clause (d). Same fixture path Pair C (c) PRECISION uses.
+assert_exit "IS-REGISTERED: docs/notes/unregistered-example.md in NEITHER registry -> not registered (exit 1)" 1 \
+    run_guard is-registered docs/notes/unregistered-example.md
+
+# NEGATIVE -- the widened set is still BOUNDED: unioning _SORTED_SET and the
+# map keys did not blanket-register docs/.
+assert_exit "IS-REGISTERED: docs/note.md is not registered (widened set is still bounded; exit 1)" 1 \
+    run_guard is-registered docs/note.md
+
+# ARITY -- a membership query takes EXACTLY one path. requires-full-gate uses
+# ANY-semantics over many paths because "does this DIFF need the gate" is
+# genuinely a disjunction; "is this path registered" reads as a conjunction, so
+# a multi-arg form would silently pick one of two plausible meanings. Refusing
+# it makes the surface state the question instead of guessing.
+assert_exit "ARITY: is-registered with ZERO args is a usage error (exit 2; no stdin mode)" 2 \
+    bash -c 'bash "$1" is-registered < /dev/null' _ "$GUARD_SH"
+
+assert_exit "ARITY: is-registered with TWO paths is a usage error (ANY/ALL ambiguity refused, not guessed; exit 2)" 2 \
+    run_guard is-registered docs/notes/verify-pipeline-knobs.md docs/note.md
+
+# CONTRACT PIN (green on arrival) -- adding a subcommand must not loosen the
+# documented 0/1/2 exit contract for a genuinely unknown flag. Mirrors Pair E's
+# same-named pin for --list-plan-derived.
+assert_exit "CONTRACT: an unknown flag still exits 2 (0/1/2 contract not loosened by is-registered)" 2 \
+    run_guard --bogus-registered
+
+# STDOUT PIN -- the merge worker parses the guard's stdout as `result=$(...)`.
+# is-registered must write NOTHING there on EITHER route, so a future caller
+# cannot come to depend on output this subcommand does not promise. stderr is
+# left UNREDIRECTED on purpose: a diagnostic written to stderr is permitted,
+# one written to stdout is not, and only leaving stderr alone tells them apart.
+assert "STDOUT CONTRACT: is-registered prints NOTHING on stdout on the MATCH route (exit 0)" \
+    bash -c '_o=$(bash "$1" is-registered docs/notes/spec-anchor-contract.md); [ -z "$_o" ]' \
+    _ "$GUARD_SH"
+
+assert "STDOUT CONTRACT: is-registered prints NOTHING on stdout on the NO-MATCH route (exit 1)" \
+    bash -c '_o=$(bash "$1" is-registered docs/note.md) || true; [ -z "$_o" ]' \
+    _ "$GUARD_SH"
+
+# NO-LEAK PINS (green on arrival; load-bearing from step-2 onward). These are
+# the mechanical encoding of task 6857's RULED-SEPARATELY decision: the
+# surgical registry is read LAZILY inside the is-registered branch and is never
+# folded into _SET. Folding it in would route every edit of every surgically
+# registered artifact to the full global gate -- spending exactly the
+# throughput Pair C (c) PRECISION exists to protect, and silently rewriting the
+# cross-repo merge-worker contract that consumes exit 0.
+assert_exit "NO-LEAK: docs/notes/spec-anchor-contract.md stays fast-path-safe for requires-full-gate (surgical != full gate; exit 1)" 1 \
+    run_guard_nofork requires-full-gate docs/notes/spec-anchor-contract.md
+
+assert "NO-LEAK: --list does NOT contain docs/notes/spec-anchor-contract.md (map keys never enter _SET)" \
+    bash -c '! bash "$1" --list | grep -qxF "docs/notes/spec-anchor-contract.md"' \
+    _ "$GUARD_SH"
+
 # SYNTHETIC self-healing: build a throwaway doc-sync manifest containing only
 # a synthetic path, prove the classifier auto-covers it via
 # REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS — no real-manifest edit needed.
