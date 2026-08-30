@@ -2052,4 +2052,38 @@ assert "9: live baseline has no malformed rows (every data row is a well-formed 
 assert "9: live row-shape scan emits a structured PASS line carrying the data-row count" \
     grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=[0-9]+$' "$_s9_live_out"
 
+# ===========================================================================
+# Section 10: rule (d) — undeclared member (a file physically present under a
+# harness root's own module dir with NO reachable `mod` declaration anywhere
+# in the root's transitive mod-graph). rustc never compiles such a file, so
+# its `#[test]` fns vanish with no compile error, no link error, and no
+# test-count signal — this is the converse of Section 6, which walks
+# declaration -> file; this walks file -> declaration, and neither subsumes
+# the other.
+# ===========================================================================
+echo ""
+echo "--- Section 10: rule (d) — undeclared member (file present, never declared) ---"
+
+# --- must-fire: a module-dir file with no reachable `mod` declaration ---
+_s10_bad_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bad_dir")
+mkdir -p "$_s10_bad_dir/harness_synth"
+{
+    printf '#[path = "harness_synth/declared.rs"]\n'
+    printf 'mod declared;\n'
+} > "$_s10_bad_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bad_dir/harness_synth/declared.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bad_dir/harness_synth/orphan.rs"
+
+_s10_bad_out="$(mktemp)"; _TMPDIRS+=("$_s10_bad_out")
+_s10_bad_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bad_dir" \
+    > "$_s10_bad_out" 2>/dev/null || _s10_bad_rc=$?
+
+assert "10: a module-dir file with no reachable \`mod\` declaration fires (returns 1)" \
+    test "$_s10_bad_rc" -eq 1
+assert "10: violation emitted as a structured FAIL line (undeclared-member, member named)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_synth\.rs reason=undeclared-member member=harness_synth/orphan\.rs$' "$_s10_bad_out"
+assert "10: the DECLARED member is not named in any FAIL line (precision)" \
+    bash -c '! grep -q "member=harness_synth/declared.rs" "$1"' _ "$_s10_bad_out"
+
 test_summary
