@@ -3674,9 +3674,24 @@ fn solve_ranked_multistart_all_starts_infeasible_falls_back_to_infeasible() {
 // ---- BT13: producers that do not opt into the completeness axis (#6706) ----
 
 /// BT13 (solution-set-completeness): `DimensionalSolver` does not opt into the
-/// completeness axis at task α, so both its ranked entry points must report
-/// `Partial { NotAttempted }` — and `solve()` must be byte-identical to what it
-/// returned before, with candidate 0 carrying the same `values` and `unique`.
+/// completeness axis at task α, so every ranked construction site it owns must
+/// report `Partial { NotAttempted }` — and `solve()` must be byte-identical to
+/// what it returned before, with candidate 0 carrying the same `values` and
+/// `unique`.
+///
+/// # Two fixtures, because `solve_ranked_impl` has TWO construction sites
+///
+/// The entry points are NOT the axis of variation: `solve_ranked` is
+/// `solve_ranked_impl(problem, None)` and `solve_ranked_with_dispatch(p, None)`
+/// is the same call, so asserting both against one fixture tests one path twice.
+/// What genuinely differs is which arm of `solve_ranked_impl` constructs the
+/// result:
+///
+/// - the single-candidate lift, reached by a feasibility (objective-less)
+///   problem — exercised below via `solve_ranked`;
+/// - the best-of-K multistart arm, reached only by an objective-bearing problem
+///   of dim >= 2 — exercised via `solve_ranked_with_dispatch`, so each entry
+///   point still runs once while the two PRODUCER arms are both covered.
 ///
 /// The optimality field is bound with `..` and asserted about nowhere: #6706 does
 /// not touch the optimality axis, and pinning a `BestFoundReason` here would
@@ -3713,35 +3728,84 @@ fn dimensional_solver_ranked_reports_not_attempted_and_preserves_solve() {
         other => panic!("expected Solved, got {other:?}"),
     };
 
-    // BT13 half 2 — both ranked entry points add the verdict and nothing else.
-    for (label, ranked) in [
-        ("solve_ranked", solver.solve_ranked(&problem)),
-        (
-            "solve_ranked_with_dispatch",
-            solver.solve_ranked_with_dispatch(&problem, None),
-        ),
-    ] {
-        match &ranked {
-            RankedSolveResult::Ranked { candidates, completeness, .. } => {
-                assert_eq!(
-                    *completeness,
-                    Completeness::Partial { reason: PartialReason::NotAttempted },
-                    "{label}: DimensionalSolver does not opt into the completeness axis at task α"
-                );
-                assert!(!completeness.derived_unique(candidates.len()), "{label}: C1");
-                assert!(!completeness.permits_proven_optimal(), "{label}: C2");
+    // BT13 half 2a — the single-candidate lift adds the verdict and nothing else.
+    match &solver.solve_ranked(&problem) {
+        RankedSolveResult::Ranked { candidates, completeness, .. } => {
+            assert_eq!(
+                *completeness,
+                Completeness::Partial { reason: PartialReason::NotAttempted },
+                "single-candidate lift: DimensionalSolver does not opt into the \
+                 completeness axis at task α"
+            );
+            assert!(
+                !completeness.derived_unique(candidates.len()),
+                "single-candidate lift: C1"
+            );
+            assert!(
+                !completeness.permits_proven_optimal(),
+                "single-candidate lift: C2"
+            );
 
-                let c = &candidates[0];
-                assert_eq!(
-                    c.values, solved_values,
-                    "{label}: candidate 0 values must match solve() exactly"
-                );
-                assert_eq!(
-                    c.unique, solved_unique,
-                    "{label}: candidate 0 unique must match solve() exactly"
-                );
-            }
-            other => panic!("{label}: expected Ranked, got {other:?}"),
+            let c = &candidates[0];
+            assert_eq!(
+                c.values, solved_values,
+                "single-candidate lift: candidate 0 values must match solve() exactly"
+            );
+            assert_eq!(
+                c.unique, solved_unique,
+                "single-candidate lift: candidate 0 unique must match solve() exactly"
+            );
         }
+        other => panic!("single-candidate lift: expected Ranked, got {other:?}"),
+    }
+
+    // BT13 half 2b — the best-of-K multistart arm, the OTHER construction site in
+    // `solve_ranked_impl`. The feasibility problem above never enters it (no
+    // objective, dim 1), and the registry BT13 test reads the registry's own
+    // construction site, so without this fixture this arm carries no BT13
+    // assertion at all.
+    //
+    // Deliberately NOT compared against `solve()`: this arm's candidate 0 comes
+    // from the K-start winner after `finalise_uniqueness`, which is a different
+    // path from `solve_with_meta`. BT13's claim here is only that the arm reports
+    // the honest verdict.
+    let (multistart_problem, _x_id, _y_id) = two_param_interior_quadratic_problem();
+    match &solver.solve_ranked_with_dispatch(&multistart_problem, None) {
+        RankedSolveResult::Ranked { candidates, completeness, .. } => {
+            // K = 2*(dim+1) = 6 — pinned so the fixture cannot silently stop
+            // reaching the multistart arm and leave this test asserting the
+            // single-candidate lift twice.
+            assert_eq!(
+                candidates.len(),
+                6,
+                "multistart arm: expected K = 2*(2+1) = 6 candidates, got {}",
+                candidates.len()
+            );
+            assert_eq!(
+                *completeness,
+                Completeness::Partial { reason: PartialReason::NotAttempted },
+                "multistart arm: best-of-K establishes nothing about the solution set"
+            );
+            // That arm's own comment: the K candidates are NOT deduplicated, so
+            // `candidates.len()` is not a solution count (C5 basin identity
+            // arrives at ζ #6711 → #6902). `NotAttempted` is what makes that
+            // mechanical rather than conventional — C1 is false for EVERY count
+            // under it, including the K=6 length a careless consumer would reach
+            // for and the 1 it would collapse to after a dedup that has not
+            // happened.
+            assert!(
+                !completeness.derived_unique(candidates.len()),
+                "multistart arm: C1 must not turn 6 undeduplicated candidates into a claim"
+            );
+            assert!(
+                !completeness.derived_unique(1),
+                "multistart arm: C1 is false under NotAttempted for any count"
+            );
+            assert!(
+                !completeness.permits_proven_optimal(),
+                "multistart arm: C2"
+            );
+        }
+        other => panic!("multistart arm: expected Ranked, got {other:?}"),
     }
 }
