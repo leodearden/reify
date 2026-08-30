@@ -24,7 +24,9 @@
 //! - [`spawn_replay_child_lacking_audit_prereqs`] — the inverse fixture: one
 //!   replay child in an environment that genuinely cannot run the audit, so a
 //!   test can pin which mark may tighten a skip into a failure and which may
-//!   not.
+//!   not. It and the real replay build their children from one shared
+//!   `replay_child_command` body, so the fixture cannot drift into pinning a
+//!   process shape the replay no longer uses.
 //! - [`audit_script_stdout_poisoned_and_sanitized`] — spawn the orphan-audit
 //!   script exactly twice (poisoned, then stripped), so the hazard's potency
 //!   stays demonstrable independently of any production call site. It borrows
@@ -94,16 +96,14 @@ const REPLAY_ENVELOPE_MARK: &str = "envelope";
 /// its parent verified.
 ///
 /// NOT the predicate for tightening a graceful skip into a hard failure — use
-/// [`replay_child_expects_envelope`]. This doc used to claim that inside the
-/// child "the tool was missing" is not a plausible explanation for a skip,
-/// because the parent just ran the same test successfully before spawning it.
-/// That premise was false: the replay only `--list`s the selection in the
-/// parent, so it never runs the target and never learns whether the parent's
-/// own run produced an envelope, and libtest guarantees no ordering between
-/// the two tests. Keyed on mere presence, the tightening turned a supported
-/// environment's clean skip (no `python3`, or a repo root outside any git work
-/// tree) into a red build carrying a diagnosis the child's own stderr
-/// contradicted — measured, and now pinned by
+/// [`replay_child_expects_envelope`]. Mere child-ness carries no claim about
+/// the environment: the replay only `--list`s the selection in the parent, so
+/// it never runs the target and never learns whether the parent's own run
+/// produced an envelope, and a child INHERITS environments where `python3`,
+/// `git` or the script is genuinely absent rather than escaping them. Keyed on
+/// this predicate, a tightening turns such an environment's clean skip into a
+/// red build carrying a diagnosis the child's own stderr contradicts —
+/// measured, and pinned by
 /// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
 ///
 /// The predicate is exposed rather than [`REPLAY_GUARD`] itself, and this
@@ -476,6 +476,26 @@ pub fn replay_self_under_hook_git_env_expecting_envelope(filters: &[&str], expec
     replay_with_mark(filters, expected_min, REPLAY_ENVELOPE_MARK);
 }
 
+/// The `Command` shape EVERY replay child is spawned with: this test binary,
+/// the caller's `filters`, `--test-threads=1 --nocapture` so the child's
+/// libtest summary and its stderr notes both reach the parent intact, and
+/// `mark` stamped into [`REPLAY_GUARD`].
+///
+/// One body with two callers — [`replay_with_mark`], which adds the decoy
+/// poison, and [`spawn_replay_child_lacking_audit_prereqs`], which adds a
+/// deprived `PATH` — so the fixture cannot drift from the real replay whose
+/// behaviour it claims to pin. An argument or a second guard variable added
+/// here reaches both; added at one call site it would silently make the two
+/// children different processes while the test that compares them kept
+/// passing.
+fn replay_child_command(filters: &[&str], mark: &str) -> Command {
+    let mut cmd = Command::new(std::env::current_exe().expect("current_exe"));
+    cmd.args(filters)
+        .args(["--test-threads=1", "--nocapture"])
+        .env(REPLAY_GUARD, mark);
+    cmd
+}
+
 /// The shared body of both replay variants; `mark` is the value stamped into
 /// [`REPLAY_GUARD`] for the child, and the ONLY difference between them.
 fn replay_with_mark(filters: &[&str], expected_min: usize, mark: &str) {
@@ -504,10 +524,7 @@ fn replay_with_mark(filters: &[&str], expected_min: usize, mark: &str) {
 
     let decoy = decoy_repo();
 
-    let mut cmd = Command::new(&exe);
-    cmd.args(filters)
-        .args(["--test-threads=1", "--nocapture"])
-        .env(REPLAY_GUARD, mark);
+    let mut cmd = replay_child_command(filters, mark);
     poison_with_hook_git_env(&mut cmd, &decoy);
 
     let out = cmd
@@ -575,7 +592,9 @@ fn replay_with_mark(filters: &[&str], expected_min: usize, mark: &str) {
 /// two children differ only in what the mark claims — one body, so the two
 /// spawns cannot drift, the same discipline
 /// [`audit_script_stdout_poisoned_and_sanitized`] uses for its
-/// poisoned-vs-sanitized pair.
+/// poisoned-vs-sanitized pair. That body is [`replay_child_command`], shared
+/// with [`replay_with_mark`], so the child this fixture reasons about stays
+/// the same process shape the real replay spawns.
 ///
 /// `PATH` is an EMPTY [`tempfile::tempdir`], which makes
 /// `reify_test_support::run_orphan_audit`'s FIRST probe —
@@ -610,16 +629,13 @@ pub fn spawn_replay_child_lacking_audit_prereqs(
          exercises neither branch of the tightening"
     );
 
-    let exe = std::env::current_exe().expect("current_exe");
-
     // Held until after `output()` returns, so the child sees a PATH that
     // exists and is empty rather than one pointing at a deleted directory.
     let empty_path = tempfile::tempdir().expect("create empty PATH dir for the deprived child");
 
-    Command::new(&exe)
-        .args(filters)
-        .args(["--test-threads=1", "--nocapture"])
-        .env(REPLAY_GUARD, mark)
+    // The deprived `PATH` is the ONLY thing this fixture adds to the shape
+    // every replay child is spawned with — see [`replay_child_command`].
+    replay_child_command(filters, mark)
         .env("PATH", empty_path.path())
         .output()
         .expect("re-exec self with the orphan audit's prerequisites removed")
