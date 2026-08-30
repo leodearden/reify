@@ -1075,8 +1075,10 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
 /// mutator is public so the docstring's promised mitigation is actually
 /// reachable.
 ///
-/// Setup mirrors step-7 / step-15: STEPOutput(1e-6) + MyDesign with one
-/// Box-primitive realization + manufacturing(1e-6). Sequence:
+/// Setup mirrors
+/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+/// above: STEPOutput(1e-6) + MyDesign with one Box-primitive realization +
+/// manufacturing(1e-6). Sequence:
 ///   (a) `eval` → `activate_purpose` → `build` → assert cache populated.
 ///   (b) Call `engine.clear_realization_cache()` directly (no cfg-gated
 ///       accessor; this is a production-surface mutator).
@@ -1112,20 +1114,23 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
         engine.realization_cache(),
     );
 
-    // (b) Call the public escape hatch added in step-22. This is the
-    // critical line — it compiles iff `Engine::clear_realization_cache` is
-    // a public method on the un-gated production surface. A `pub(crate)`
-    // or cfg-gated method would still pass type-checking inside this test
-    // crate (since `cfg(test)` is on for integration tests too), so the
-    // step-22 docstring should reinforce that the gate-LESS shape is
-    // intentional and that test-only callers should NOT be the only
-    // consumers.
+    // (b) Call the public escape hatch `Engine::clear_realization_cache`.
+    // This is the critical line — it compiles iff
+    // `Engine::clear_realization_cache` is a public method on the un-gated
+    // production surface. A `pub(crate)` or cfg-gated method would still
+    // pass type-checking inside this test crate (since `cfg(test)` is on
+    // for integration tests too), so the docstring above reinforces that
+    // the gate-LESS shape is intentional and that test-only callers should
+    // NOT be the only consumers.
     engine.clear_realization_cache();
 
     // (c) Assert the cache was cleared by the public mutator. Mirrors the
-    // post-edit assertions in step-17 / step-19 — the cache is keyed on
-    // `(entity_id, repr_kind, demanded_tol)` and a cleared cache returns
-    // `None` for every lookup, including exact-key ones.
+    // post-edit assertions in
+    // edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot
+    // / edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build
+    // — the cache is keyed on `(entity_id, repr_kind, demanded_tol)` and a
+    // cleared cache returns `None` for every lookup, including exact-key
+    // ones.
     assert!(
         engine
             .realization_cache()
@@ -1135,8 +1140,8 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
          every (entity_id, repr_kind, demanded_tol) lookup returns None. \
          Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) returned Some(_) \
          after clear_realization_cache() — the entry survived the clear, \
-         breaking the public-mutator contract step-22 establishes. Cache \
-         len={}, dump: {:?}",
+         breaking the Engine::clear_realization_cache public-mutator \
+         contract. Cache len={}, dump: {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
     );
