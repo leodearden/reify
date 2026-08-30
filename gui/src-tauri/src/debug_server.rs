@@ -1910,6 +1910,110 @@ async fn handle_reify_update_source(
     }))
 }
 
+/// Engine-routing core of the `reify_save_file` write tool: write the
+/// session's in-memory source to disk, then refresh the delta baseline.
+///
+/// `file_path` is the reify-mcp "save as" arm; `None` means "save the ACTIVE
+/// file", resolved from [`EngineSession::canonical_file_path`] — NOT from
+/// `GuiState.files[0].path`, which is a stem-only `source_map` key
+/// (`"part.ri"`) and would send an ordinary `reify_save_file` call writing a
+/// stray relative file into the process CWD. `files[0]` remains the source of
+/// the CONTENT, and its absence remains the "No source loaded" refusal, so
+/// the reify-mcp semantics are otherwise unchanged.
+///
+/// **Pure I/O: this commits no new engine state.** It still routes through
+/// [`write_on_engine_and_refresh_baseline`] anyway, so §6.2 invariant (a)
+/// holds UNIFORMLY for all five write tools and θ's structural anchor has no
+/// exceptions to enumerate. The refresh is free here — nothing changed, so
+/// the delta it computes is empty.
+pub async fn reify_save_file_on_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    file_path: Option<String>,
+) -> Result<crate::types::GuiState, String> {
+    write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        let active = s.canonical_file_path().map(|p| p.to_string_lossy().into_owned());
+        let gs = s.build_gui_state()?;
+        // Single-file model, exactly as the reify-mcp surface reads it.
+        let file = gs
+            .files
+            .first()
+            .ok_or_else(|| "No source loaded".to_string())?;
+        let target = match (&file_path, &active) {
+            (Some(explicit), _) => explicit.clone(),
+            (None, Some(active)) => active.clone(),
+            (None, None) => file.path.clone(),
+        };
+        crate::commands::save_file_impl(&target, &file.content)?;
+        Ok(gs)
+    })
+    .await
+}
+
+/// Save the session's in-memory source to disk and return the reify-mcp
+/// result envelope `{"success": true}`.
+///
+/// Pushes NOTHING to the frontend: this tool commits no new engine state, so
+/// there is nothing for `apply_gui_state` to apply. It still refreshes the
+/// baseline — see the seam above for why that uniformity is deliberate.
+async fn handle_reify_save_file(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    // OPTIONAL, unlike every other write-tool param: reify-mcp's schema lists
+    // no `required` for this tool, and omitting it means "the active file".
+    let file_path = params["file_path"].as_str().map(str::to_owned);
+    reify_save_file_on_engine_and_refresh_baseline(&state.engine, &state.last_state, file_path)
+        .await?;
+    Ok(json!({ "success": true }))
+}
+
+/// Engine-routing core of the `reify_export` write tool: export the realized
+/// geometry to `output_path`, then refresh the delta baseline.
+///
+/// The format spelling is resolved by [`crate::commands::parse_export_format`],
+/// the SAME map `commands::export_impl` uses, so the AI surface and the GUI
+/// command cannot drift on which formats exist.
+///
+/// **Pure I/O: this commits no new engine state** — see
+/// [`reify_save_file_on_engine_and_refresh_baseline`] for why it routes
+/// through the shared seam regardless.
+pub async fn reify_export_on_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    format: &str,
+    output_path: &str,
+) -> Result<crate::types::GuiState, String> {
+    let format = format.to_owned();
+    let output_path = output_path.to_owned();
+    write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        // Resolved BEFORE the export so an unknown spelling is refused without
+        // the kernel ever being asked to write anything.
+        let fmt = crate::commands::parse_export_format(&format)?;
+        s.export(fmt, std::path::Path::new(&output_path))?;
+        s.build_gui_state()
+    })
+    .await
+}
+
+/// Export the realized geometry and return the reify-mcp result envelope
+/// `{"success": true, "path": <output_path>}`.
+///
+/// Pushes NOTHING to the frontend, for the same reason as
+/// [`handle_reify_save_file`].
+async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let format = reify_write_str_param(&params, "format")?;
+    let output_path = reify_write_str_param(&params, "output_path")?;
+    reify_export_on_engine_and_refresh_baseline(
+        &state.engine,
+        &state.last_state,
+        &format,
+        &output_path,
+    )
+    .await?;
+    Ok(json!({ "success": true, "path": output_path }))
+}
+
 // --- MCP Streamable HTTP handler ---
 
 async fn handle_mcp(
@@ -4468,12 +4572,33 @@ structure def Part {
             "the save must write the session's in-memory source to its canonical path"
         );
 
+        // Uniform §6.2 routing: the baseline IS refreshed even though pure I/O
+        // changed no engine state.
+        //
+        // Asserted after EACH call rather than once at the end, because a
+        // rebuild is not bit-identical under `MockGeometryKernel`: its
+        // per-tessellation `GeometryHandleId(N)` counter advances, so call
+        // (ii)'s `tessellation_diagnostics` differ from call (i)'s by that
+        // artifact alone (the same mock-only artifact
+        // `apply_param_to_source_reload_of_the_written_file_is_an_empty_delta`
+        // accounts for). Comparing the FINAL baseline against `s1` would fail
+        // on that artifact and say nothing about the refresh.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1),
+            "the seam must refresh last_state even for a pure-I/O tool"
+        );
+
         // (ii) An explicit target writes THERE and leaves the original alone.
         let other_dir = tempfile::tempdir().unwrap();
         let other = other_dir.path().join("copy.ri").to_string_lossy().into_owned();
-        reify_save_file_on_engine_and_refresh_baseline(&engine, &last_state, Some(other.clone()))
-            .await
-            .expect("reify_save_file with an explicit target must succeed");
+        let s2 = reify_save_file_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            Some(other.clone()),
+        )
+        .await
+        .expect("reify_save_file with an explicit target must succeed");
         assert_eq!(
             std::fs::read_to_string(&other).expect("copy.ri must be readable"),
             ai_write_source(),
@@ -4484,16 +4609,14 @@ structure def Part {
             ai_write_source(),
             "an explicit target must leave the original file untouched"
         );
-
-        // Uniform §6.2 routing: the baseline IS refreshed even though pure I/O
-        // changed no engine state — so the resulting delta is empty, which is
-        // exactly what makes the uniformity free.
         assert_eq!(
             *last_state.lock().unwrap(),
-            Some(s1.clone()),
-            "the seam must refresh last_state even for a pure-I/O tool"
+            Some(s2.clone()),
+            "the second save must refresh the baseline too"
         );
-        let redelta = crate::diff::compute_delta(&last_state, &s1);
+
+        // …and the refresh is FREE: nothing changed, so the delta is empty.
+        let redelta = crate::diff::compute_delta(&last_state, &s2);
         let events: Vec<String> = crate::diff::delta_to_events(&redelta)
             .into_iter()
             .map(|(name, _)| name)

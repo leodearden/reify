@@ -2511,6 +2511,20 @@ impl EngineSession {
         Ok(state)
     }
 
+    /// The canonical on-disk `.ri` this session was launched from, or `None`
+    /// for a `load_from_source`-only session.
+    ///
+    /// Exposed because `GuiState.files[].path` is NOT this: those are
+    /// `source_map` keys, i.e. stem-only module keys (`"part.ri"`), and the
+    /// abs-path rewrite lives in `commands::UnresolvedGuiState::resolve`,
+    /// which only the open-file funnel runs. A caller that needs the file to
+    /// WRITE — the reify-debug `reify_save_file` tool (task 5097 δ), whose
+    /// "save the active file" arm would otherwise write a stray relative path
+    /// into the process CWD — must ask for it here.
+    pub fn canonical_file_path(&self) -> Option<&Path> {
+        self.core.file_path()
+    }
+
     /// The STRING-typed front door to [`Self::apply_param_to_source`]: parse
     /// `value_str` against the cell's declared type, then write it back into
     /// the canonical `.ri` source.
