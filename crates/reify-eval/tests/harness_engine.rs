@@ -144,3 +144,7 @@ mod instance_scope_param_default_order;
 // reason as #5196's and #5360's above.
 #[path = "harness_engine/objective_consumption_e2e.rs"]
 mod objective_consumption_e2e;
+// Task #5415's zero-auto relate static-verification e2e lands here for the same
+// anti-re-accretion reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/relate_static_verification_e2e.rs"]
+mod relate_static_verification_e2e;
