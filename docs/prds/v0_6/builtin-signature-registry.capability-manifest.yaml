@@ -7,9 +7,16 @@ tasks:
     (parse, analysis)
   capabilities:
   - name: seed-families-registered-today
-    binding: wired — grep:crates/reify-compiler/src/parse_signatures.rs:22 PARSE_FN_NAMES
-      + crates/reify-stdlib/src/parse.rs:17 eval arm + crates/reify-compiler/src/analysis_signatures.rs:38
-      ANALYSIS_FN_NAMES; regression fixture tests/prd-gate/fixtures/parse_length_match_resolves.ri
+    binding: wired — grep:crates/reify-builtins/src/registry.rs:14 registry! seven
+      seed rows (Family::Parse + Family::Analysis) + compiler seam crates/reify-compiler/src/builtin_registry.rs:58
+      registry_result_type + exhaustive eval arms crates/reify-stdlib/src/registry_dispatch.rs:79
+      dispatch (no wildcard arm, I-REG-2). SUPERSEDED 2026-08-30 by this leaf
+      itself; the pre-α evidence was crates/reify-compiler/src/parse_signatures.rs:22
+      PARSE_FN_NAMES + crates/reify-stdlib/src/parse.rs:17 eval arm + crates/reify-compiler/src/analysis_signatures.rs:38
+      ANALYSIS_FN_NAMES, all verified 2026-08-04 against main 5fb3959fbb. α deleted
+      the two *_signatures.rs files outright and removed parse.rs's eval_parse
+      string matcher (parse.rs survives holding kernels only), so those three
+      anchors are historical, not live. Regression fixture tests/prd-gate/fixtures/parse_length_match_resolves.ri
       is NON-probative for registration (D3 adversary vacuity finding 2026-08-04 —
       check exits 0 on unregistered names)
     verdict: PASS

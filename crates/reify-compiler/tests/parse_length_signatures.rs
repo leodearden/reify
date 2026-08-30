@@ -8,9 +8,14 @@
 //! `Result<T,E>` (dependency task #4035, `stdlib/result.ri`) — a plain
 //! `compile_source` leaves `Type::Enum("Result")` unresolved and errors.
 //!
-//! RED: the compiler has no `parse_signatures` ladder arm yet, so both
-//! `parse_length(...)` and `parse_length_r(...)` type via the first-arg
-//! fallback as `Type::string()`.
+//! Typing source, since registry α (task #6001): the `NoUserFunctions` ladder
+//! consults `crates/reify-compiler/src/builtin_registry.rs`
+//! `registry_result_type`, which resolves both names off their
+//! `crates/reify-builtins/src/registry.rs` rows (`ParseLength` /
+//! `ParseLengthR`). These tests were first written RED against the pre-registry
+//! state, where the compiler had no `parse_signatures` ladder arm and both
+//! calls typed via the first-arg fallback as `Type::string()`; they pass GREEN
+//! through the registry path today.
 
 use reify_core::Type;
 use reify_test_support::compile_source_with_stdlib;
