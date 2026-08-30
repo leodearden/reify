@@ -120,7 +120,60 @@ const MINIMUM_REJECTED_ROWS: usize = 4;
 /// The bare-zero form PRD decision D1 refuses to special-case. Pinned by name so
 /// deleting that row from the chunk is RED at the doc surface, not merely
 /// untested.
+///
+/// Compared WHITESPACE-INSENSITIVELY (see [`squash_whitespace`]) — the claim is
+/// "the D1 row is still there", never "it is spelled with this spacing".
 const BARE_ZERO_FORM: &str = "box(0, 0, 0)";
+
+/// `s` with EVERY whitespace character removed, so two spellings of the same
+/// call form compare equal.
+///
+/// Not `split_whitespace().join(" ")`, which only collapses RUNS and so still
+/// distinguishes `box(0, 0, 0)` from the equally-valid `box(0,0,0)`. A doc edit
+/// to the tighter spelling would then fail with "the chunk no longer documents
+/// `box(0, 0, 0)`", sending the reader hunting for a row that is in fact still
+/// there — a false negative dressed as a deletion.
+fn squash_whitespace(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// The compile layer's marker phrase for a LENGTH-slot rejection, as emitted by
+/// `reify_compiler::builtin_signatures` (see its
+/// `"box: width argument expects Length, got Int; …"` template).
+///
+/// A LOCAL CONST, NOT AN IMPORTED ONE, and knowably second-best: the sibling
+/// migration-hint assertion is made BY REFERENCE to
+/// `reify_core::units::LENGTH_MIGRATION_HINT`, so a D9 rewording moves the
+/// constant and every consumer together. This phrase has no such constant behind
+/// it, so a rewording to an equally-valid shape — e.g. the eval layer's own
+/// `missing or non-Length argument '<arg>' for <op>` — would make
+/// [`assert_rejected_as_documented`] fail with "no Error message contains …"
+/// while the gate and the chunk were both perfectly correct.
+///
+/// Exporting a const from `builtin_signatures.rs` is the real fix and is left
+/// UNDONE ON PURPOSE: that file is outside task 5759's locked scope. What is
+/// done here instead is to name the phrase once and unit-test the extraction
+/// that reads it ([`named_length_argument_reads_the_argument_out_of_a_message`]),
+/// so the brittleness is at least visible and localised to one line.
+const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
+
+/// The ARGUMENT NAME a LENGTH-slot rejection blames, or `None` if `message` is
+/// not one.
+///
+/// The token immediately before [`LENGTH_SLOT_DIAGNOSTIC_MARKER`]: in
+/// `"box: width argument expects Length, got Int; …"` that is `width`. Split out
+/// of [`assert_rejected_as_documented`] so it can be pinned directly by a unit
+/// test over a synthetic message rather than only through the live compiler,
+/// which is this file's convention for every hand-rolled text scan (see
+/// `geometry_chunk_smoke.rs`'s "Scanner unit tests" block).
+fn named_length_argument(message: &str) -> Option<&str> {
+    let before = message.split(LENGTH_SLOT_DIAGNOSTIC_MARKER).next()?;
+    if before.len() == message.len() {
+        // No marker present — `split` yielded the whole string unchanged.
+        return None;
+    }
+    before.split_whitespace().next_back()
+}
 
 /// Wrap one documented FORM in the minimal compilable module the rejected-forms
 /// block is written against.
@@ -136,6 +189,7 @@ fn wrap_form(form: &str) -> String {
         "structure def RejectedForm {{\n    let g = box(10mm, 10mm, 10mm)\n    let subject = {form}\n}}"
     )
 }
+
 
 /// The `(rejected, accepted)` rows of the ```` ```reify-rejected ```` block.
 ///
@@ -193,23 +247,23 @@ fn assert_rejected_as_documented(form: &str) {
     //     before ` argument expects Length`. A diagnostic that said only "wrong
     //     type somewhere" would satisfy a naive non-empty check while leaving an
     //     author with no idea which of six coordinates to fix.
-    let named: Vec<&String> = messages
+    //
+    //     THIS IS THE ONE DIAGNOSTIC-WORDING PIN IN THIS FILE, and it is a
+    //     second-best: see `LENGTH_SLOT_DIAGNOSTIC_MARKER` for why the phrase is
+    //     a local const rather than one imported from the compile layer, and for
+    //     the failure mode a rewording produces here.
+    let named: Vec<(&String, &str)> = messages
         .iter()
-        .filter(|m| m.contains(" argument expects Length"))
+        .filter_map(|m| named_length_argument(m).map(|arg| (m, arg)))
         .collect();
     assert!(
         !named.is_empty(),
         "{UNITS_CHUNK_PATH} documents `{form}` as rejected at a LENGTH argument slot, but no \
-         Error message contains ` argument expects Length`. Diagnostics seen: {messages:?}"
+         Error message contains `{LENGTH_SLOT_DIAGNOSTIC_MARKER}`. If the gate is working and \
+         only the WORDING moved, this test is what has to follow it — update \
+         LENGTH_SLOT_DIAGNOSTIC_MARKER, do not delete the row. Diagnostics seen: {messages:?}"
     );
-    for message in &named {
-        let arg = message
-            .split(" argument expects Length")
-            .next()
-            .unwrap_or_default()
-            .split_whitespace()
-            .next_back()
-            .unwrap_or_default();
+    for (message, arg) in &named {
         assert!(
             !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "the rejection for `{form}` does not NAME the offending argument — read \
@@ -454,11 +508,13 @@ fn bare_zero_is_not_special_cased() {
     let markdown = read_chunk();
     let rows = rejected_form_rows(&markdown, REJECTED_TAG);
 
-    let normalize = |form: &str| form.split_whitespace().collect::<Vec<_>>().join(" ");
+    // WHITESPACE-INSENSITIVE on both sides: `box(0,0,0)` and `box( 0, 0, 0 )` are
+    // the same row, and what is pinned is the row's PRESENCE, not its spacing.
     assert!(
         rows.iter()
-            .any(|(rejected, _)| normalize(rejected) == normalize(BARE_ZERO_FORM)),
-        "{UNITS_CHUNK_PATH}'s ```{REJECTED_TAG} block no longer documents `{BARE_ZERO_FORM}`. \
+            .any(|(rejected, _)| squash_whitespace(rejected) == squash_whitespace(BARE_ZERO_FORM)),
+        "{UNITS_CHUNK_PATH}'s ```{REJECTED_TAG} block no longer documents `{BARE_ZERO_FORM}` \
+         (compared ignoring all whitespace, so this is a real deletion and not a respacing). \
          PRD decision D1 is that bare `0` gets NO special case, and it is the one an author \
          assumes is exempt, so it is the row the table most needs. Rows seen: {rows:?}"
     );
@@ -645,4 +701,127 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
             &wrap_form(accepted),
         );
     }
+}
+
+// --- Scanner unit tests ------------------------------------------------------
+//
+// `rejected_form_rows`, `named_length_argument`, `squash_whitespace` and
+// `wrap_form` are this module's own hand-rolled text helpers, and every
+// rejection assertion above is downstream of one of them. They are pinned
+// DIRECTLY here rather than only through the chunk, which is the posture
+// `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block establishes for the
+// scanners this file imports. The failure these guard against is
+// self-concealing: a helper that quietly stopped extracting anything would leave
+// every floor and sentinel above satisfied, because those are drawn from the
+// same helpers' output.
+
+/// The argument-name extraction reads the blamed argument out of a SYNTHETIC
+/// message, so it is pinned independently of whatever the compiler emits today.
+///
+/// The input is the byte-exact template `builtin_signatures.rs` documents. If
+/// the live diagnostic ever diverges from it, `documented_rejected_forms_are_
+/// actually_rejected` goes red while THIS stays green — which is the signal that
+/// the wording moved rather than the gate breaking. See
+/// [`LENGTH_SLOT_DIAGNOSTIC_MARKER`].
+#[test]
+fn named_length_argument_reads_the_argument_out_of_a_message() {
+    assert_eq!(
+        named_length_argument(
+            "box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"
+        ),
+        Some("width")
+    );
+    // A multi-word prefix must still yield the LAST token, not the first.
+    assert_eq!(
+        named_length_argument("linear_pattern: spacing argument expects Length, got Int"),
+        Some("spacing")
+    );
+}
+
+/// A message that is not a LENGTH-slot rejection yields `None` rather than a
+/// bogus name.
+///
+/// The regression this catches is the one the marker const's doc names: if the
+/// compile layer reworded to the eval layer's shape, a scanner that "recovered"
+/// some token anyway would let `assert_rejected_as_documented`'s per-message
+/// identifier assertion pass on a message it never actually parsed.
+#[test]
+fn named_length_argument_rejects_a_message_without_the_marker() {
+    assert_eq!(
+        named_length_argument("missing or non-Length argument 'ox' for mirror"),
+        None
+    );
+    assert_eq!(named_length_argument(""), None);
+}
+
+/// A row missing its `-->` separator PANICS rather than being skipped.
+///
+/// The documented safety property of [`rejected_form_rows`] — "a scraper that
+/// silently drops what it cannot parse is how a gate goes vacuous while still
+/// looking like it is doing work" — asserted directly. Without this control that
+/// property is only prose: a `continue` in place of the `panic!` would make a
+/// malformed row invisible, and every floor above would still be satisfied by
+/// the well-formed rows around it.
+#[test]
+#[should_panic(expected = "has a row this scan cannot read")]
+fn rejected_form_rows_panics_on_a_row_missing_its_separator() {
+    let markdown = format!("```{REJECTED_TAG}\nbox(0, 0, 0)\n```\n");
+    let _ = rejected_form_rows(&markdown, REJECTED_TAG);
+}
+
+/// A well-formed synthetic block scrapes to trimmed `(rejected, accepted)`
+/// pairs, and `//` annotations are not mistaken for rows.
+///
+/// The POSITIVE half of the control above: `#[should_panic]` alone would still
+/// pass if the scraper panicked on everything.
+#[test]
+fn rejected_form_rows_pairs_the_two_columns_and_ignores_annotations() {
+    let markdown = format!(
+        "```{REJECTED_TAG}\n// an annotation, not a row\nbox(0, 0, 0)  {ROW_SEPARATOR}  box(0mm, 0mm, 0mm)\n```\n"
+    );
+    assert_eq!(
+        rejected_form_rows(&markdown, REJECTED_TAG),
+        vec![(
+            "box(0, 0, 0)".to_string(),
+            "box(0mm, 0mm, 0mm)".to_string()
+        )]
+    );
+}
+
+/// `squash_whitespace` equates the spellings a doc author may legitimately
+/// choose, and still distinguishes different forms.
+///
+/// The second assertion is what stops the fix for the over-strict comparison
+/// from over-correcting into a check that passes on any row at all.
+#[test]
+fn squash_whitespace_equates_respacings_but_not_different_forms() {
+    for spelling in ["box(0,0,0)", "box( 0, 0, 0 )", "box(0,\n0,\t0)"] {
+        assert_eq!(
+            squash_whitespace(spelling),
+            squash_whitespace(BARE_ZERO_FORM),
+            "`{spelling}` is the same row as `{BARE_ZERO_FORM}`, respaced"
+        );
+    }
+    assert_ne!(
+        squash_whitespace("box(0mm, 0mm, 0mm)"),
+        squash_whitespace(BARE_ZERO_FORM)
+    );
+}
+
+/// `wrap_form` really BINDS `g`, which is the precondition every documented row
+/// naming `g` depends on.
+///
+/// Asserted through the compiler, not by string match: a wrapper that emitted a
+/// module where `g` was undefined would make `mirror(g, …)` "reject" for name
+/// resolution rather than for the units gate, and
+/// `documented_rejected_forms_are_actually_rejected` would pass for entirely the
+/// wrong reason. The dimensioned form must compile CLEAN for that to be ruled
+/// out.
+#[test]
+fn wrap_form_binds_g_so_a_row_naming_it_compiles_clean() {
+    assert_module_compiles(
+        UNITS_CHUNK_PATH,
+        "wrap_form unit test: a dimensioned form referencing `g`",
+        &wrap_form("mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)"),
+    );
 }
