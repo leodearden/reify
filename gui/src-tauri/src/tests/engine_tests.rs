@@ -19958,3 +19958,76 @@ fn build_gui_state_clean_source_has_no_error_compile_diagnostics() {
     );
 }
 
+/// Task 5212 (GUI reload wiring): every whole-file reload entry
+/// (`load_from_source` / `load_file` / `update_source`) funnels through
+/// `EngineSession::check_with_solve_slot`, which must reset the geometry kernel
+/// — freeing the prior design's resident native shapes — and clear the
+/// realization cache exactly once per reload (via
+/// `Engine::reset_geometry_for_reload`). The slider path (`set_parameter` →
+/// `edit_check`) deliberately BYPASSES that funnel, so a parameter edit must
+/// NOT reset the kernel (otherwise every slider tick would wipe the warm
+/// shapes). Together these two facts bound OCCT native-shape memory across a
+/// long dogfooding session: reset frees the shapes AND fires exactly once per
+/// reload, never on a slider drag.
+///
+/// A reset-counting `MockGeometryKernel` observes the count across the engine
+/// ownership boundary via a shared `Arc<Mutex<usize>>` handle cloned before the
+/// mock is boxed (mirrors the reify-eval
+/// `reset_geometry_for_reload_resets_kernels_and_clears_realization_cache`
+/// test). This keeps the reload-boundedness proof off the heavy real-OCCT path:
+/// the real-OCCT mechanism test pins that `reset()` bounds `shape_count`, and
+/// this wiring test pins that `reset()` fires once per reload and never on a
+/// slider edit.
+#[test]
+fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Clone the shared reset counter BEFORE the mock is boxed into the session —
+    // `reset_count()` needs `&MockGeometryKernel`, which the boxed
+    // `dyn GeometryKernel` inside the engine no longer exposes.
+    let reset_calls = kernel.reset_calls_ref();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        0,
+        "precondition: no reset before any load",
+    );
+
+    // First whole-file load — funnels through check_with_solve_slot, resets once
+    // (idempotent no-op on the cold engine, but still invokes reset()).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial whole-file load");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        1,
+        "the first whole-file load must reset the geometry kernel exactly once",
+    );
+
+    // Second whole-file reload via update_source — the primary dirty-buffer
+    // reload path; also funnels through check_with_solve_slot. Resets once more.
+    session
+        .update_source("bracket.ri", bracket_source())
+        .expect("whole-file reload via update_source");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        2,
+        "each whole-file reload must reset the geometry kernel exactly once \
+         (== 2 after two reloads)",
+    );
+
+    // Slider path — set_parameter → edit_check BYPASSES check_with_solve_slot,
+    // so it must NOT reset (a reset here would wipe warm shapes on every tick).
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("slider edit should succeed");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        2,
+        "a slider (set_parameter) edit must NOT reset the geometry kernel — the \
+         reload wiring lives on the check_with_solve_slot funnel, which the \
+         slider path bypasses",
+    );
+}
+
