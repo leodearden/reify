@@ -1420,3 +1420,148 @@ structure MechFixed {
         }
     }
 }
+
+#[cfg(test)]
+mod tests_static_verification {
+    //! Kernel-free unit tests for the ZERO-AUTO static-verification arm — DIC α
+    //! (task 5415).
+    //!
+    //! In-file rather than an integration test (mirroring
+    //! [`super::tests_mounted_joint_cell`]) because these reach crate-private
+    //! internals — `resolve_operands`, `RealizedDatums`' inner map — that an
+    //! external test crate cannot see. They compile `.ri` source strings and
+    //! read structure off the resulting templates; no geometry kernel is
+    //! involved.
+
+    use reify_test_support::compile_source_with_stdlib;
+
+    use super::{RelateScope, collect_relate_scope};
+
+    /// Three scopes covering the whole `posed` classification:
+    ///
+    /// * `PosedScope` — one sub with a concrete `at <pose>`, one with no `at`
+    ///   clause at all;
+    /// * `PoseFreeScope` — the shape both DIC fixtures use: no `at` anywhere;
+    /// * `AutoScope` — an `at auto` sub, whose placement is solver-determined.
+    ///
+    /// Kernel-free: the leaf structures carry only `point3`, a plain
+    /// multi-component constructor the compiler types without geometry (the same
+    /// restriction `tests_mounted_joint_cell`'s fixture works under).
+    const SOURCE: &str = r#"
+structure Bushing {
+    let p = point3(0mm, 0mm, 0mm)
+}
+
+structure Plate {
+    let p = point3(0mm, 0mm, 0mm)
+}
+
+structure PosedScope {
+    sub a : Bushing at transform3(orient_identity(), vec3(30mm, 20mm, 5mm))
+    sub b : Plate
+}
+
+structure PoseFreeScope {
+    sub a : Bushing
+    sub b : Plate
+}
+
+structure AutoScope {
+    sub a : Bushing at auto
+    sub b : Plate
+}
+"#;
+
+    /// Collect the named scope, panicking with the available template names on a
+    /// miss so a fixture rename fails legibly rather than as `unwrap` on `None`.
+    fn scope(name: &str) -> RelateScope {
+        let module = compile_source_with_stdlib(SOURCE);
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture template `{name}` must compile; got {:?}",
+                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            });
+        collect_relate_scope(template)
+    }
+
+    /// A sub declared with a concrete `at <pose>` is recorded in `posed`, in
+    /// sub-declaration order — AND still appears in `ground`.
+    ///
+    /// `posed` is an ADDITIONAL classification, not a partition of `ground`: a
+    /// posed sub is genuinely a fixed (non-auto) anchor, so removing it from
+    /// `ground` would change the auto-ful solve path's inputs and break V1. The
+    /// two lists overlap on purpose.
+    ///
+    /// # Why the classification is needed at all
+    ///
+    /// `resolve_operands` keys realized datums by `(structure, member)` — each
+    /// structure's LOCAL datum in its OWN identity frame — and a declared
+    /// `SubComponentDecl.pose` is never composed into them. A static verdict
+    /// computed over a posed sub's datums would therefore be evaluated at the
+    /// WRONG configuration, producing a confidently wrong answer in either
+    /// direction. The zero-auto arm uses this list to classify such a scope's
+    /// relations UNVERIFIABLE instead (PRD §10 open question 5).
+    #[test]
+    fn collect_relate_scope_records_concretely_posed_subs() {
+        let s = scope("PosedScope");
+        assert_eq!(
+            s.posed,
+            vec!["a".to_string()],
+            "only the sub carrying a concrete `at <pose>` belongs in `posed`"
+        );
+        assert_eq!(
+            s.ground,
+            vec!["a".to_string(), "b".to_string()],
+            "a posed sub is STILL a non-auto ground anchor — `posed` is an \
+             additional classification, not a partition of `ground`"
+        );
+        assert!(
+            s.auto_unknowns.is_empty(),
+            "no sub in this scope is `at auto`"
+        );
+    }
+
+    /// A scope whose subs carry no `at` clause has an EMPTY `posed` list.
+    ///
+    /// This is the shape of both DIC fixtures
+    /// (`dic_relate_static_{violated,ok}.ri`), so it is the shape that must be
+    /// statically VERIFIABLE — an over-eager `posed` would classify them
+    /// unverifiable and leave the false green in place under a new name.
+    #[test]
+    fn collect_relate_scope_leaves_posed_empty_without_at_clauses() {
+        let s = scope("PoseFreeScope");
+        assert!(
+            s.posed.is_empty(),
+            "no sub carries an `at` clause, so `posed` must be empty; got {:?}",
+            s.posed
+        );
+        assert_eq!(s.ground, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// An `at auto` sub never appears in `posed`.
+    ///
+    /// Guaranteed structurally, not incidentally: `SubComponentDecl` documents
+    /// that `auto_pose.is_some()` implies `pose.is_none()` — the placement is
+    /// solver-determined, not a compiled pose expression — so the two
+    /// classifications cannot both fire for one sub.
+    #[test]
+    fn collect_relate_scope_never_files_an_auto_sub_as_posed() {
+        let s = scope("AutoScope");
+        assert!(
+            s.posed.is_empty(),
+            "`at auto` is solver-determined, not a concrete pose; got {:?}",
+            s.posed
+        );
+        assert_eq!(
+            s.auto_unknowns.len(),
+            1,
+            "the `at auto` sub must still be collected as a Frame unknown"
+        );
+        assert_eq!(s.auto_unknowns[0].sub, "a");
+    }
+}
