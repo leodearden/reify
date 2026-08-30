@@ -24,7 +24,7 @@
 //
 // First measured 2026-08-24 at HEAD=2306e029ec via a /tmp scratch probe with
 // this same control net; reproduced in this committed fixture at
-// HEAD=77b28ffb0e64.  EXCERPT of a longer transcript (elides the leading
+// HEAD=7d92605bc83b.  EXCERPT of a longer transcript (elides the leading
 // `warning: constraint expression has type PnrgNurbsSurface, expected Bool`
 // line):
 //

@@ -214,7 +214,7 @@ PnrgSplineCheck` suffix):
 
 The corrected call is now committed as its own runnable fixture,
 `tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` — reproduces the same
-transcript, reconfirmed at HEAD=`77b28ffb0e64` — rather than living only as a comment,
+transcript, reconfirmed at HEAD=`7d92605bc83b` — rather than living only as a comment,
 so a future measurer does not have to reconstruct it from prose.
 
 `Operation::SurfaceNurbs` remains genuinely absent from `occt_capability_descriptor()`
