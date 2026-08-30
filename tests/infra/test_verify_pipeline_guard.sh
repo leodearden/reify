@@ -436,11 +436,24 @@ assert_exit "PRECISION: docs/notes/unregistered-example.md NOT in doc-sync-paths
 # the $REPO_ROOT/ prefix), and (ii) does not self-match this grep's own
 # pattern text below -- the character class [A-Za-z0-9._/-] excludes '[', so
 # the match breaks immediately after ".../docs/" at the literal '[' character.
+#
+# NON-VACUITY FIRST. The population is derived, so a silently-broken derivation
+# regex would make this entire clause a no-op that reds NOTHING: the loop body
+# would never execute, the suite's assertion count would quietly drop, and the
+# recurrence guard would be dead while looking perfectly healthy. Capture the
+# population and assert it is non-empty BEFORE looping over it — the same
+# anti-vacuity net Pair E (c-bis)(a) gives the plan-derived clause.
+_ANTI_DRIFT_DOCS="$(grep -hoE '\$REPO_ROOT/docs/[A-Za-z0-9._/-]*\.md' "$SCRIPT_DIR"/*.sh \
+                    | sed 's#^\$REPO_ROOT/##' | sort -u)"
+
+assert "NON-VACUITY: the ANTI-DRIFT sweep derived a NON-EMPTY doc population (a broken regex would silently make every assertion below vanish)" \
+    bash -c '[ -n "$1" ]' _ "$_ANTI_DRIFT_DOCS"
+
 while IFS= read -r _doc; do
+    [ -n "$_doc" ] || continue
     assert_exit "ANTI-DRIFT: $_doc (grepped from tests/infra/*.sh) is load-bearing (exit 0)" 0 \
         run_guard requires-full-gate "$_doc"
-done < <(grep -hoE '\$REPO_ROOT/docs/[A-Za-z0-9._/-]*\.md' "$SCRIPT_DIR"/*.sh \
-         | sed 's#^\$REPO_ROOT/##' | sort -u)
+done <<< "$_ANTI_DRIFT_DOCS"
 
 # (e) REGISTERED-IN-EITHER-REGISTRY predicate (task 6857, filed from esc-6758-2)
 #
