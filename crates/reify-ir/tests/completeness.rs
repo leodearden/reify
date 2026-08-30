@@ -454,3 +454,138 @@ fn solution_set_debug_and_clone_smoke() {
     assert_eq!(cloned.proven_count(), set.proven_count());
     assert_eq!(cloned.unique(), set.unique());
 }
+
+// ── C2: ProvenOptimal requires Exhaustive (§3.2) ─────────────────────────────
+
+/// C2 over the full 9-value variant set, so a later variant addition cannot
+/// quietly widen the set of verdicts that permit a `ProvenOptimal` claim.
+#[test]
+fn permits_proven_optimal_only_for_exhaustive() {
+    assert!(Completeness::Exhaustive.permits_proven_optimal());
+
+    assert!(
+        !Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) }
+            .permits_proven_optimal(),
+        "a refutation has no optimum to prove"
+    );
+
+    for reason in all_partial_reasons() {
+        assert!(
+            !Completeness::Partial { reason: reason.clone() }.permits_proven_optimal(),
+            "Partial{{{reason:?}}} must not permit ProvenOptimal"
+        );
+    }
+}
+
+// ── C3 rendering: a refutation can never read as a partial result ────────────
+
+/// Follows the `best_found_reason_variants_describe` precedent in
+/// `tests/ranked_solve_result.rs`: assert non-emptiness and pairwise distinctness
+/// ONLY, never exact wording — pinning wording relocates the rewording-fragility
+/// that `describe()` exists to remove.
+#[test]
+fn partial_reason_describe_is_non_empty_and_pairwise_distinct() {
+    let reasons = all_partial_reasons();
+    let described: Vec<String> = reasons.iter().map(|r| r.describe()).collect();
+
+    for (reason, text) in reasons.iter().zip(&described) {
+        assert!(!text.is_empty(), "{reason:?}.describe() must be non-empty");
+    }
+
+    for (i, left) in described.iter().enumerate() {
+        for (j, right) in described.iter().enumerate() {
+            if i != j {
+                assert_ne!(
+                    left, right,
+                    "{:?} and {:?} must describe() differently",
+                    reasons[i], reasons[j]
+                );
+            }
+        }
+    }
+}
+
+/// C3 at the rendering layer: `Refuted` must never render as `Exhaustive` or as
+/// any `Partial`. A proof and a report about the search are different claims and
+/// a diagnostic built on `describe()` must not be able to confuse them.
+#[test]
+fn refuted_never_describes_like_exhaustive_or_partial() {
+    let refuted = Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) }
+        .describe();
+    let exhaustive = Completeness::Exhaustive.describe();
+
+    assert!(!refuted.is_empty());
+    assert!(!exhaustive.is_empty());
+    assert_ne!(refuted, exhaustive, "a refutation is not an exhaustive enumeration");
+
+    for reason in all_partial_reasons() {
+        let partial = Completeness::Partial { reason: reason.clone() }.describe();
+        assert!(!partial.is_empty(), "Partial{{{reason:?}}}.describe() must be non-empty");
+        assert_ne!(
+            refuted, partial,
+            "Refuted must not describe like Partial{{{reason:?}}} — that collapse is C3"
+        );
+        assert_ne!(
+            exhaustive, partial,
+            "Exhaustive must not describe like Partial{{{reason:?}}}"
+        );
+    }
+}
+
+/// INV-SF-3: a decline must be attributable, so the payload-carrying reasons
+/// interpolate their payload into `describe()` — otherwise two different
+/// declines render as one indistinguishable string and the diagnostic cannot
+/// name what actually stopped the producer.
+#[test]
+fn payload_carrying_reasons_interpolate_their_payload() {
+    assert_ne!(
+        PartialReason::DimensionAboveEnvelope { dims: 7 }.describe(),
+        PartialReason::DimensionAboveEnvelope { dims: 8 }.describe(),
+        "dims must be attributable in the rendered decline"
+    );
+
+    assert_ne!(
+        PartialReason::DomainUnbounded { param: ValueCellId::new("Part", "x") }.describe(),
+        PartialReason::DomainUnbounded { param: ValueCellId::new("Part", "y") }.describe(),
+        "the unbounded param must be attributable"
+    );
+
+    assert_ne!(
+        PartialReason::NotIntervalRepresentable {
+            constraint: ConstraintNodeId::new("Part", 0)
+        }
+        .describe(),
+        PartialReason::NotIntervalRepresentable {
+            constraint: ConstraintNodeId::new("Part", 1)
+        }
+        .describe(),
+        "the non-representable constraint must be attributable"
+    );
+
+    // The same must hold once wrapped in Completeness::Partial, since that is
+    // what a producer actually returns.
+    assert_ne!(
+        Completeness::Partial {
+            reason: PartialReason::DimensionAboveEnvelope { dims: 7 }
+        }
+        .describe(),
+        Completeness::Partial {
+            reason: PartialReason::DimensionAboveEnvelope { dims: 8 }
+        }
+        .describe()
+    );
+}
+
+/// `Refuted` names the narrowing constraint, so a refutation diagnostic can point
+/// at the constraint that emptied the domain rather than at the model in general.
+#[test]
+fn refuted_describe_names_the_narrowing_constraint() {
+    assert_ne!(
+        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) }.describe(),
+        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 1) }.describe(),
+    );
+    assert_ne!(
+        Completeness::Refuted { narrowing: ConstraintNodeId::new("Bracket", 0) }.describe(),
+        Completeness::Refuted { narrowing: ConstraintNodeId::new("Flange", 0) }.describe(),
+    );
+}
