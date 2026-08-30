@@ -276,6 +276,31 @@ pub fn compute_diagnostics_with_state(
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
     }
 
+    // Containment (task #6851; task #6798 amendment round 2): a FAILED `auto:`
+    // resolution leaves an unsubstituted `Type::TypeParam` value cell that
+    // panics eval in debug builds — see
+    // `diagnostic_is_auto_type_param_error`'s doc comment for the mechanism.
+    // The compile-stage diagnostics, which are the user-visible signal task
+    // #6798 is about, are already collected in the loop above, so the editor
+    // still reports NoCandidate/Ambiguous; we simply never feed such a graph to
+    // the engine. Same containment idiom and same reasoning as the parse-error
+    // early return ~10 lines above: a graph we know is malformed produces
+    // misleading (here: fatal) secondary results.
+    //
+    // Placement before the state mutations is LOAD-BEARING. `state.version_counter`
+    // and `state.last_content_hash` both stay unadvanced, leaving `EvalState`
+    // exactly as it was, so the next keystroke evaluates `content_unchanged` to
+    // false and takes the cold-start branch. Advancing `last_content_hash` here
+    // would create precisely the stale-cache bug the comment below warns about:
+    // `eval_cached` returns empty diagnostics by construction, so a module that
+    // was never evaluated would silently report none.
+    if auto_type_param_resolution_failed(&compiled) {
+        return DiagnosticsResult {
+            diagnostics,
+            geometry_output: None,
+        };
+    }
+
     // Eval: use incremental eval_cached when structure unchanged, else cold-start.
     state.version_counter += 1;
 
@@ -880,6 +905,15 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     // Convert compiler diagnostics
     for diag in &compiled.diagnostics {
         result.push(convert::convert_diagnostic(diag, source, uri));
+    }
+
+    // Containment for the failed-`auto:` unsubstituted-TypeParam panic — see
+    // `compute_diagnostics_with_state`'s equivalent guard for the full
+    // rationale (task #6851; task #6798 amendment round 2). This stateless
+    // surface panics identically and is guarded identically; it has no
+    // `EvalState` to leave untouched.
+    if auto_type_param_resolution_failed(&compiled) {
+        return result;
     }
 
     // Check (eval with constraint checker, no geometry kernel)
