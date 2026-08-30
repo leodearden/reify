@@ -144,6 +144,22 @@
 #             manifest (testability / synthetic-injection + operator override;
 #             mirrors REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH above). Defaults to
 #             scripts/doc-sync-paths.txt.
+#   REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP — override path to the
+#             citing-test map read by `is-registered` clause (iii)
+#             (testability / synthetic-injection + operator override; the exact
+#             sibling of the doc-sync knob above, same
+#             ${VAR:-$SCRIPT_DIR/...} default shape and same graceful
+#             degradation to "no keys" when the file is absent). Defaults to
+#             scripts/verify-pipeline-infra-tests.txt.
+#             UNLIKE REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH, this one is
+#             READ-ONLY: the map is parsed, never executed, and nothing named
+#             in it is run. Pointing it somewhere chooses what the guard
+#             PARSES, not what it RUNS — so it does not carry that knob's
+#             "you are choosing what code the guard executes" caveat.
+#             It affects `is-registered` ONLY. requires-full-gate, --list and
+#             --list-plan-derived never read this map, by design (see the
+#             is-registered arm's note (1)), so setting this knob cannot change
+#             any diff verdict.
 #
 # Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
 # separately; reify ships the oracle, dark-factory does the wiring):
@@ -598,7 +614,12 @@ _SORTED_SET="$(printf '%s\n' "$_SET" | sort -u)"
 # READ LAZILY, by the is-registered arm ONLY. These keys are never appended to
 # _SET: see that arm's note (1) for why folding them in would be a throughput
 # regression and a silent rewrite of the cross-repo merge-worker contract.
-_infra_tests_map="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
+#
+# REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP overrides the map path for
+# testability (synthetic-row injection) and operator use — the exact sibling of
+# the REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS idiom at clause 5, and READ-ONLY
+# (see the header entry).
+_infra_tests_map="${REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP:-$SCRIPT_DIR/verify-pipeline-infra-tests.txt}"
 
 # registry_keys — print one active-row KEY per line (unsorted, possibly empty).
 #
