@@ -126,20 +126,89 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 When in doubt, prefer the `_centered` variant over a manual
 `translate(primitive(...), 0mm, 0mm, -h/2)` workaround.
 
-**Units:** every `translate` component is length-semantic, so all three must be dimensioned —
-`0mm`, not `0`. A bare number would be read as SI **metres** (1000× a plausible mm value), so it is
-rejected outright with a diagnostic. `-h/2` is fine as-is: dividing a length by a bare number
-preserves the length. The same rule applies to `rotate_around`'s pivot, `revolve`'s axis origin,
-`line_segment` / `arc` / `helix` coordinates and radii, the `interp` / `bezier` coordinate triples
-(every argument), `nurbs`' control-point coordinates, and `polygon`'s vertex coordinates — every
-argument, at every arity, since a polygon vertex is a point in the XY plane:
-`polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)`, never `polygon(0, 0, 10, 0, 5, 10)`. `polygon` has NO
-dimensionless position at all, which is what distinguishes it from `nurbs` below and from
-`arc` / `rotate_around`, whose direction components and angles stay bare. Direction vectors, counts
-and angles stay dimensionless — and so does `nurbs`' dimensionless tail: its `degree` and `n_points`
-are counts, its weights are rational blending factors and its knots are parameter-space values, so
-those must NOT be dimensioned. Only the control-point coordinates in the middle are lengths:
-`nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)`.
+### Dimensioned arguments
+<!-- LENGTH-ARGS-SECTION -->
+
+<!-- SYNC: this section is the per-position CATALOGUE — which argument of which constructor is
+     length-semantic. The RULE it applies (bare numbers rejected, bare `0` included, what stays
+     dimensionless) belongs to the `units` chunk; neither restates the other, and each points at
+     the other, so read the two together.
+
+     Two chunk guards run over this section:
+     geometry_chunk_smoke.rs::documented_call_names_in_the_length_section_are_real_registry_entries
+     extracts every call name below and asserts each is a real compiler registry entry, so a
+     constructor named here that does not exist is RED rather than a phantom an author copies.
+     geometry_chunk_smoke.rs::reify_tagged_fences_in_geometry_chunk_compile compiles the ```reify
+     fence below as a whole module, so the migration forms are verified rather than asserted. Both
+     scans are scoped BYTE-EXACTLY by the `<!-- LENGTH-ARGS-SECTION -->` marker on the line above,
+     NOT by this heading's wording, which is free to change — keep the marker directly under the
+     heading it opens.
+
+     What those guards do NOT establish: they check NAMES and compile-acceptance, never that a
+     documented argument really carries the DIMENSION claimed for it. That half is pinned on the
+     eval side; see the PINNED/UNPINNED inventory in the `units` chunk. -->
+
+Geometry constructors take **dimensioned** lengths. At a length-semantic argument position a bare
+number is rejected outright with a diagnostic — it is not read as metres, and **bare `0` is not
+special-cased**: `0mm`, never `0`. Dividing a length by a bare number preserves the length, so
+`-h/2` stays as it is. The `units` chunk — topic `units` of `reify_language_reference` — states the
+rule and why it is a rejection rather than a default; this section says which positions it lands on.
+
+| Constructor | Length-semantic arguments | Stays dimensionless |
+|---|---|---|
+| `translate` | all three components | — |
+| `rotate_around` | the pivot point | axis direction, angle |
+| `revolve` | the axis origin | axis direction, angle |
+| `line_segment` | both endpoints, every coordinate | — |
+| `arc` | centre coordinates and radius | axis direction, start/end angles |
+| `helix` | **all three arguments** — `helix(radius, pitch, height)` | — |
+| `interp` / `bezier` | **every argument**: variadic coordinate triples, at least 6 and always a multiple of 3 | — |
+| `nurbs` | the control-point coordinates in the middle only | leading `degree` and `n_points` counts; trailing weights and knots |
+| `polygon` | **every argument, at every arity** | — |
+
+Two rows are worth reading twice. `helix` has **no coordinates at all** — it is three lengths and
+nothing else, so there is no bare tail to get right. `polygon` has **no dimensionless position at
+all**, since a polygon vertex is a point in the XY plane; that is what distinguishes it from
+`nurbs`, whose argument list mixes both.
+
+```reify
+structure def LengthArguments {
+    param h : Length = 40mm
+
+    // Every component of a `translate` is length-semantic — bare `0` included.
+    // `-h/2` needs no unit of its own: a Length over a bare number is a Length.
+    let centred = translate(cylinder(10mm, h), 0mm, 0mm, -h/2)
+
+    // `rotate_around`: the PIVOT is length-semantic, the AXIS (0, 0, 1) is a
+    // unit vector, and the angle carries its own unit.
+    let turned = rotate_around(centred, 0mm, 0mm, 0mm, 0, 0, 1, 45deg)
+
+    // `polygon` has NO dimensionless position — every vertex coordinate is a
+    // length, at every arity.
+    let profile = polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
+
+    // `helix` takes exactly three arguments and NO coordinates:
+    // helix(radius, pitch, height), all three lengths.
+    let spring = helix(10mm, 2mm, 50mm)
+
+    // `interp` / `bezier` are variadic COORDINATE TRIPLES: every argument a
+    // length, at least 6 of them, always a multiple of 3.
+    let spine = interp(0mm, 0mm, 0mm, 10mm, 5mm, 0mm)
+
+    // `nurbs` mixes both in one argument list: `degree` and `n_points` are
+    // counts, the control-point coordinates in the middle are lengths, and the
+    // trailing weights and knots are dimensionless.
+    let rail = nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
+}
+```
+
+**The dimensionless column is an authoring rule you uphold, not one the compiler enforces.** The
+gate runs in one direction only: a bare number in a length slot is rejected, but a unit in a
+dimensionless slot generally is not. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a
+dimensioned axis direction in `mirror` or `linear_pattern`. Write those bare because it is what you
+mean — nothing will tell you otherwise. The rejected forms and their migrations are tabulated once,
+in the `units` chunk.
+
 
 ## Interference & Clearance Queries
 <!-- ORACLE-SECTION -->

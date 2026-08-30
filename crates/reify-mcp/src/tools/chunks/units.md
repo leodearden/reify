@@ -92,9 +92,9 @@ in `mirror` or `linear_pattern`. So a unit in a dimensionless slot will not be r
 bare because it is what you mean, not because you will be told.
 
 **Which argument of which constructor is length-semantic** is catalogued per position in the
-`geometry` chunk (`reify_language_reference("geometry")`), constructor by constructor. This section
-states the rule and the idiom; that one enumerates the positions — read it before dimensioning an
-unfamiliar signature.
+`geometry` chunk — topic `geometry` of `reify_language_reference` — constructor by constructor,
+under "Dimensioned arguments". This section states the rule and the idiom; that one enumerates the
+positions — read it before dimensioning an unfamiliar signature.
 
 ## Angle as Base Dimension
 
