@@ -114,6 +114,24 @@ and writes no disk, so nothing reconciles the editor buffer on its own —
 which is why its `apply_gui_state` push carries the optional
 `file: {path, content}` member (see `write_tool_frontend_payload`).
 
+**`reify_update_source` is ACTIVE-FILE ONLY.** `EngineSession::update_source`
+deliberately ignores the caller's path once a `load_file` has set
+`self.file_path` — it derives `module_name` from the session's own entry path
+and commits with `FilePathUpdate::Preserve` (task 3370). That is right for the
+editor, which only ever edits the active buffer, but this surface takes
+`file_path` from an AI client, so on a multi-file project a
+`reify_update_source(file_path = "…/lib.ri")` would overwrite the ACTIVE
+buffer with lib.ri's text and still answer `success: true` — after which the
+diagnostics filter matches nothing, the pushed `file` member opens a tab whose
+content the engine does not hold, and a later `reify_save_file` writes that
+text to the active path ON DISK. So the mismatch is **refused**, not
+redirected: `update_source_target_matches_active` accepts the active path
+verbatim, its stem-only `"<stem>.ri"` module key, or any on-disk spelling that
+`canonicalize`s to it, and anything else returns `"reify_update_source can only
+update the active file <path>"` having mutated nothing (no engine state, no
+baseline advance, no disk). Editing a NON-active file is §11 out of scope:
+Claude uses its own native Write/Edit tools and the FS-watcher reloads them.
+
 **Diagnostics filtering.** `reify_update_source` returns diagnostics filtered
 to the named file via `filter_diagnostics_for_file`, which matches BOTH the
 caller's path spelling AND the stem-only `"<stem>.ri"` module key the engine

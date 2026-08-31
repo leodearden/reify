@@ -1997,6 +1997,26 @@ async fn handle_reify_set_parameter(
 ///
 /// Extracted from [`handle_reify_update_source`] so the routing is
 /// unit-testable without a [`DebugServerState`]/`AppHandle`.
+///
+/// # The active-file guard
+///
+/// [`EngineSession::update_source`] DELIBERATELY IGNORES the caller's `path`
+/// whenever a prior `load_file` set `self.file_path`: it derives
+/// `module_name` from the session's own entry path and commits with
+/// `FilePathUpdate::Preserve` (engine.rs, task 3370). That is right for the
+/// editor, which only ever edits the active buffer — but this surface takes
+/// `file_path` from an AI client, and on a multi-file project
+/// (`compile_entry_with_imports` is live) `reify_update_source(file_path =
+/// "…/lib.ri")` would silently overwrite the ACTIVE buffer with lib.ri's text
+/// and answer `success: true`. The damage compounds: the diagnostics filter
+/// then matches nothing, the pushed `file` member opens a tab whose content
+/// the engine does not hold, and a later `reify_save_file` writes that text
+/// to the ACTIVE path on disk — destroying the user's canonical document.
+///
+/// So the mismatch is REFUSED here rather than redirected, keeping the
+/// single-file model the tool actually implements honest. Multi-file editing
+/// is §11 out of scope: Claude edits a non-active file with its own native
+/// Write/Edit tools and the FS-watcher reloads it.
 pub async fn reify_update_source_on_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
@@ -2007,9 +2027,63 @@ pub async fn reify_update_source_on_engine_and_refresh_baseline(
     let path = path.to_owned();
     let content = content.to_owned();
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        // Refuse BEFORE `update_source`, so a mismatched call mutates
+        // nothing and short-circuits the seam ahead of the baseline refresh
+        // — the same no-half-advance shape a compile rejection already has.
+        let active = s.canonical_file_path().map(|p| p.to_path_buf());
+        if !update_source_target_matches_active(active.as_deref(), &path) {
+            let active = active
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            return Err(format!(
+                "reify_update_source can only update the active file {active}"
+            ));
+        }
         s.update_source(&path, &content)
     })
     .await
+}
+
+/// Does the caller's `requested` path name the session's `active` file?
+///
+/// Pure (bar the `canonicalize` probe): the same headless-testability
+/// contract as [`filter_diagnostics_for_file`], so the discrimination is
+/// pinned directly over path literals.
+///
+/// Accepts three spellings of the SAME file and nothing else:
+///  * the active path verbatim;
+///  * the stem-only `"<stem>.ri"` module key — the spelling
+///    `EngineSession::get_diagnostics` stamps and therefore the one an AI
+///    client is most likely to echo back — via
+///    [`crate::engine::source_key_matches_path`], which lives beside the
+///    `module_key` that MINTS it so the two can never drift;
+///  * any other on-disk spelling (relative, `..`, symlink) that
+///    `canonicalize`s to the active file.
+///
+/// `active == None` means no prior `load_file`, i.e. the `load_from_source`
+/// single-file flow where `update_source` DOES honour the caller's path.
+/// There is nothing to redirect, so anything is accepted.
+pub(crate) fn update_source_target_matches_active(
+    active: Option<&std::path::Path>,
+    requested: &str,
+) -> bool {
+    let Some(active) = active else {
+        return true;
+    };
+    let active_str = active.to_string_lossy();
+    if crate::engine::source_key_matches_path(requested, &active_str) {
+        return true;
+    }
+    // Fall back to the filesystem only for the spellings the string
+    // comparison cannot see through. Both sides must resolve, or this is a
+    // `false` — never an accidental accept.
+    match (
+        std::fs::canonicalize(requested),
+        std::fs::canonicalize(active),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Keep only the diagnostics that belong to the file the caller named.
@@ -4719,6 +4793,121 @@ structure def Part {
             Some(s0),
             "a rejected recompile must leave the baseline at S0"
         );
+    }
+
+    // ── Task 5097 δ: `reify_update_source` must REFUSE a non-active
+    // `file_path` rather than silently redirect the write (review finding) ──
+
+    #[tokio::test]
+    async fn reify_update_source_refuses_a_non_active_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, canonical) = ai_write_engine(dir.path());
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0.clone()));
+
+        // A sibling module in the SAME project — the shape a multi-file
+        // caller actually produces. `update_source` would ignore this path
+        // and overwrite part.ri's buffer with this text while answering
+        // `success: true`; a later `reify_save_file` would then write it to
+        // part.ri ON DISK.
+        let sibling = write_and_canonicalize(dir.path(), "lib.ri", ai_write_source());
+
+        let err = reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &sibling,
+            "structure def Other { param q: Length = 1mm }",
+        )
+        .await
+        .expect_err("a file_path that is not the active file must be REFUSED");
+        assert!(
+            err.contains("reify_update_source can only update the active file")
+                && err.contains(&canonical),
+            "the refusal must name the active file so the client can correct \
+             itself; got {err:?}"
+        );
+
+        // Nothing moved: not the baseline, not the session, not the disk.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s0.clone()),
+            "a refused call must leave the baseline at S0"
+        );
+        // The session still holds part.ri's buffer, not the sibling's text.
+        // Compared field-wise rather than whole-`GuiState`: rebuilding state
+        // mints fresh `GeometryHandleId`s, so the tessellation-diagnostic
+        // message carries a monotonic counter that differs on every build and
+        // says nothing about whether the session moved.
+        let after = current_gui_state(&engine);
+        assert_eq!(
+            after.files, s0.files,
+            "a refused call must not replace the active buffer's content"
+        );
+        assert_eq!(
+            after.values, s0.values,
+            "a refused call must not recompile the session"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&canonical).expect("part.ri must be readable"),
+            ai_write_source(),
+            "a refused call must not touch the active file on disk"
+        );
+    }
+
+    #[test]
+    fn update_source_target_matches_active_accepts_only_the_active_file() {
+        let active = std::path::Path::new("/proj/main.ri");
+
+        // The active path verbatim.
+        assert!(update_source_target_matches_active(
+            Some(active),
+            "/proj/main.ri"
+        ));
+        // The stem-only module key `get_diagnostics` stamps — the spelling an
+        // AI client is most likely to echo back.
+        assert!(update_source_target_matches_active(Some(active), "main.ri"));
+
+        // A DIFFERENT file, in either spelling, is refused — this is the whole
+        // point of the guard.
+        assert!(!update_source_target_matches_active(
+            Some(active),
+            "/proj/lib.ri"
+        ));
+        assert!(!update_source_target_matches_active(Some(active), "lib.ri"));
+        // A same-stem file in another project is NOT the active file.
+        assert!(!update_source_target_matches_active(
+            Some(active),
+            "/elsewhere/main.ri"
+        ));
+
+        // No prior `load_file`: `update_source` honours the caller's path in
+        // that flow, so there is no redirect to guard against.
+        assert!(update_source_target_matches_active(None, "/anything.ri"));
+    }
+
+    #[test]
+    fn update_source_target_matches_active_sees_through_on_disk_spellings() {
+        // The `canonicalize` arm: a relative spelling of the active file
+        // resolves to it, so it must be ACCEPTED rather than refused for
+        // failing the string comparison.
+        let dir = tempfile::tempdir().unwrap();
+        let active = write_and_canonicalize(dir.path(), "part.ri", ai_write_source());
+        let indirect = format!("{}/./sub/../part.ri", dir.path().display());
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+
+        assert!(
+            update_source_target_matches_active(Some(std::path::Path::new(&active)), &indirect),
+            "a spelling that canonicalizes to the active file must be accepted"
+        );
+
+        // A path that does not exist cannot be proven equal, so it stays a
+        // refusal — the fallback never accepts on ambiguity.
+        assert!(!update_source_target_matches_active(
+            Some(std::path::Path::new(&active)),
+            &format!("{}/absent-elsewhere.txt", dir.path().display()),
+        ));
     }
 
     // ── Task 5097 δ step-18: RED — `reify_update_source`'s diagnostics filter
