@@ -2674,6 +2674,64 @@ fn point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch() {
     );
 }
 
+const SRC_POINT3_DIMENSIONLESS_AT_DIMENSIONED: &str = r#"module test.point3_dimensionless_at_dimensioned
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: point3(0, 0, 1))
+}
+"#;
+
+/// THE TOLERANT LEG of the quantity rule at the `Point` arm, `.ri`/ctor seam —
+/// the third cell of this arm's `.ri` seam, completing the set the `Vector` arm
+/// has had since task 5766.
+///
+/// The `.ri` twin of `conformance/mod.rs`'s
+/// `point_param_accepts_dimensionless_point_arg`, exactly as
+/// [`vec3_dimensionless_at_dimensioned_vector_param_stays_clean`] twins the
+/// `Vector` arm's equivalent. (That probe's doc carries no erasure premise and
+/// is therefore NOT rewritten by task 6436 — only cross-referenced from here.)
+///
+/// `point3(0, 0, 1)` types with a quantity slot that names no dimension, so the
+/// dimensionless-tolerant half of the rule applies and the cell is silent even
+/// though the param declares `Length`. This is the ARG-side tolerance
+/// `crates/reify-core/src/ty.rs` rules on, and it is what a future tightening at
+/// this arm would break first.
+///
+/// MEASURED at HEAD `2c449f5d6e`: CLEAN, zero compile errors.
+///
+/// **Non-vacuity, structurally.** A CLEAN fixture is otherwise indistinguishable
+/// from one that never compiled, so beyond the `errors_only` guard below this
+/// cell has a stronger proof available and uses it:
+/// [`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`]
+/// above is the same `Anchor`, the same `Point3<Length>` param and the same
+/// `point3(…)` call shape, differing ONLY in whether the components carry a
+/// dimension — and it demonstrably RESOLVES and REJECTS. Silence here can
+/// therefore come only from the arg-side tolerance rule, never from a param
+/// spelling that failed to resolve or a call that failed to compile. This is the
+/// same argument
+/// [`vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean`]
+/// makes from its own one-token-different twin.
+#[test]
+fn point3_dimensionless_at_dimensioned_point_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONLESS_AT_DIMENSIONED);
+    // Non-vacuity guard — ESSENTIAL for a CLEAN fixture; see the doc above for
+    // the stronger structural proof the cross-dimension twin supplies.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a dimensionless point3(0, 0, 1) at a Point3<Length> param must stay SILENT — the \
+         quantity rule is dimensionless-tolerant on the ARG side by decision, and the \
+         cross-dimension twin directly above proves the param resolves and rejects. If this \
+         now fires, the arg-side tolerance at the Point arm has been tightened; re-read the \
+         ruling in crates/reify-core/src/ty.rs before retargeting. Got: {diags:#?}"
+    );
+}
+
 const SRC_POINT2_AT_POINT3_PARAM: &str = r#"module test.point2_at_point3_param
 structure def Anchor { param origin : Point3<Length> }
 structure def Root {
