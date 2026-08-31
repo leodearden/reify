@@ -2485,9 +2485,13 @@ pub(crate) fn compile_geometry_op(
             // special case would fork the caller-facing wording that
             // `required_length_arg` solely owns (decision D9) and would have to
             // be removed again once #6313 binds by name.
-            let iso_level = match args.iter().find(|(n, _)| n == "iso") {
-                None => 0.0,
-                Some(_) => required_length_arg(
+            //
+            // `any`, not `find`: what is branched on is PRESENCE alone. The
+            // expression itself is deliberately not bound here —
+            // `required_length_arg` reads it out of `args` itself, and is the
+            // single owner of both the evaluation and the wording (D9).
+            let iso_level = if args.iter().any(|(n, _)| n == "iso") {
+                required_length_arg(
                     "iso",
                     "isosurface",
                     args,
@@ -2495,7 +2499,9 @@ pub(crate) fn compile_geometry_op(
                     functions,
                     meta_map,
                     diagnostics,
-                )?,
+                )?
+            } else {
+                0.0
             };
 
             let adaptive = match args.iter().find(|(n, _)| n == "adaptive").map(|(_, e)| e) {

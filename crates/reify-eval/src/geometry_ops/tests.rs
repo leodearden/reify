@@ -1596,6 +1596,17 @@
     /// Warning path — mirroring the `edges`/`faces`/`third` optional-arg
     /// convention (fillet/chamfer/draft/offset_curve) rather than a required-arg helper.
     ///
+    /// ALSO THE ANTI-REGRESSION LOCK FOR DECISION D12 (units-length λ, task
+    /// 5755): for `isosurface`, ABSENCE of `iso` is the NORMAL, EXPECTED shape
+    /// (`isosurface(solid)` is the common form, shipped in
+    /// `examples/multi_kernel/voxel_to_mesh.ri`), so the un-gated
+    /// `iso_level = 0.0` default STAYS and an absent `iso` MUST NOT emit a
+    /// missing-arg Warning — only a PRESENT `iso` is LENGTH-gated. Routing the
+    /// absent case through `required_length_arg` too would push
+    /// `eval_named_arg`'s "missing required geometry argument" Warning at every
+    /// bare call site; the `diagnostics.is_empty()` assertion below is what
+    /// fails if the gate is ever "tidied" into covering both halves.
+    ///
     /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
     #[test]
     fn compile_geometry_op_isosurface_bare_defaults_iso_zero_adaptive_false() {
@@ -1633,7 +1644,8 @@
         }
         assert!(
             diagnostics.is_empty(),
-            "bare isosurface(g) must emit no diagnostics, got: {:?}",
+            "bare isosurface(g) must emit no diagnostics — absence is the normal \
+             expected shape, in particular no missing-arg Warning (D12); got: {:?}",
             diagnostics
         );
     }
@@ -1691,59 +1703,6 @@
     }
 
     // ---- units-length λ (task 5755 step-3): Contract C at `isosurface`'s `iso` ----
-
-    /// ANTI-REGRESSION LOCK for decision D12 — this test PASSES TODAY and must
-    /// keep passing after the LENGTH gate lands. It is the guard that stops the
-    /// gate from "fixing" a deliberate default.
-    ///
-    /// D12, verbatim intent: for `isosurface`, ABSENCE of `iso` is the NORMAL,
-    /// EXPECTED shape (`isosurface(solid)` is the common form, shipped in
-    /// `examples/multi_kernel/voxel_to_mesh.ri`). The un-gated `iso_level = 0.0`
-    /// default therefore STAYS, and an absent `iso` MUST NOT emit a missing-arg
-    /// Warning. Only a PRESENT `iso` is LENGTH-gated. Routing the absent case
-    /// through `required_length_arg` would push `eval_named_arg`'s "missing
-    /// required geometry argument" Warning and break every bare call site.
-    ///
-    /// Deliberately a sibling of, not an edit to,
-    /// `compile_geometry_op_isosurface_bare_defaults_iso_zero_adaptive_false`:
-    /// that test locks the whole bare-op lowering (task #4999), this one locks
-    /// the D12 decision specifically, so a future reader retiring one does not
-    /// silently retire the other.
-    #[test]
-    fn compile_geometry_op_isosurface_absent_iso_stays_ungated_zero_default() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        let op = CompiledGeometryOp::Isosurface {
-            grid: GeomRef::Step(0),
-            args: vec![],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        )
-        .expect("an absent `iso` must NOT drop the op (D12)");
-
-        match result {
-            reify_ir::GeometryOp::Surface { iso_level, .. } => assert_eq!(
-                iso_level, 0.0,
-                "an ABSENT `iso` keeps the deliberate un-gated 0.0 default (D12)"
-            ),
-            other => panic!("expected GeometryOp::Surface, got {other:?}"),
-        }
-        assert!(
-            diagnostics.is_empty(),
-            "absence is the normal expected shape — it must emit NO diagnostic, \
-             in particular no missing-arg Warning (D12); got: {diagnostics:?}"
-        );
-    }
 
     /// REJECTION arm of Contract C at `isosurface`'s `iso`. A PRESENT but
     /// non-LENGTH isovalue must DROP the op with exactly one `Severity::Error`
