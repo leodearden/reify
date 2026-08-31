@@ -156,7 +156,19 @@ fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
 /// Panics if git is unavailable or exits non-zero. A silently-empty corpus
 /// would render a falsely-clean survey, which is the one failure mode this
 /// artifact must never have.
-fn tracked_ri_corpus() -> Vec<String> {
+///
+/// Enumerated ONCE per process, behind the same `OnceLock` that
+/// [`stdlib_structure_defs`] and [`fea_owned_defs`] use: the tracked corpus
+/// cannot change while the test binary runs, and the six gate-resident tests
+/// below plus the generator would otherwise spawn seven separate
+/// `git ls-files` subprocesses and re-sort ~676 paths each time.
+fn tracked_ri_corpus() -> &'static [String] {
+    static CORPUS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    CORPUS.get_or_init(scan_tracked_ri_corpus)
+}
+
+/// The uncached enumeration behind [`tracked_ri_corpus`].
+fn scan_tracked_ri_corpus() -> Vec<String> {
     let out = git_at_workspace_root(&["ls-files", "-z", "--", "*.ri"])
         .output()
         .unwrap_or_else(|e| {
@@ -222,11 +234,12 @@ fn tracked_ri_corpus_is_sorted_and_deduplicated() {
     // Determinism: the artifact must be byte-reproducible, which requires the
     // enumeration itself to be a total order with no repeats.
     let corpus = tracked_ri_corpus();
-    let mut expected = corpus.clone();
+    let mut expected = corpus.to_vec();
     expected.sort();
     expected.dedup();
     assert_eq!(
-        corpus, expected,
+        corpus,
+        expected.as_slice(),
         "tracked_ri_corpus must return a sorted, deduplicated list"
     );
 }
@@ -278,7 +291,7 @@ fn tracked_ri_corpus_reaches_outside_examples() {
 #[test]
 fn tracked_ri_corpus_paths_are_repo_relative_forward_slash() {
     let corpus = tracked_ri_corpus();
-    for p in &corpus {
+    for p in corpus {
         assert!(
             !p.starts_with('/') && !p.starts_with("./") && !p.contains('\\'),
             "corpus entries must be repo-relative forward-slash paths, got {p:?}"
@@ -2861,7 +2874,16 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
     // asserted "these sites come through the sub `=` per-arg anchor", which was
     // false for BOTH rows actually in the committed artifact (they are param
     // default initializers). The renderer must therefore report per row what the
-    // code measured, and the group prose must not name one cause as THE cause.
+    // code measured, rather than naming one cause as THE cause for the group.
+    //
+    // That property is pinned BEHAVIOURALLY below (the row's own
+    // `DefOrigin` label and the `def source` column must both reach the
+    // artifact), never by a negative pin on the group blurb's wording. An
+    // earlier draft carried `!md.contains("these sites come\nthrough the sub
+    // `=` per-arg anchor")`, which embedded a newline at a position the
+    // renderer never wraps at: it was vacuously true, would have stayed true
+    // under any rewording, and pinned nothing. Do not reintroduce it — a
+    // wording pin on generated prose can only rot.
     let mut site = synth_site("a.ri", 1, "W", "f", Owner::Unknown);
     site.def = None;
     site.def_origin = DefOrigin::SpanNotIdentifier;
@@ -2878,10 +2900,6 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         md.contains(DefOrigin::SpanNotIdentifier.label()),
         "the row's machine-derived recovery-failure reason must appear in the \
          artifact:\n{md}"
-    );
-    assert!(
-        !md.contains("these sites come\nthrough the sub `=` per-arg anchor"),
-        "the Unknown group must not assert ONE cause for every row in it:\n{md}"
     );
     assert!(
         md.contains("| def source |"),
@@ -3055,7 +3073,7 @@ fn base_commit() -> String {
 #[ignore = "corpus survey generator over every tracked .ri (~660 files and growing); run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
 fn generate_ctor_conformance_corpus_survey() {
     let corpus = tracked_ri_corpus();
-    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), &corpus);
+    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), corpus);
     let rendered = render_survey(&run, &base_commit());
     let out = survey_output_path();
     std::fs::write(&out, &rendered)
