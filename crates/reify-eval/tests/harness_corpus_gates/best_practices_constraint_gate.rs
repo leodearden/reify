@@ -348,16 +348,17 @@ fn corpus_relative(path: &std::path::Path) -> String {
 /// Guards a not-yet-existing `corpus_files()`: at least 6 `.ri` files (the
 /// count measured on this branch — a floor that catches a silently-emptied
 /// or mis-resolved directory, the same class of guard as
-/// `examples_smoke.rs`'s `total >= 40`), every returned path a `.ri` file
+/// `harness_compilation_surface/examples_smoke.rs`'s
+/// `total >= MIN_DISCOVERED_RI_FILES`), every returned path a `.ri` file
 /// sitting directly inside a `best_practices` directory (FLAT — a nested
 /// subdirectory must NOT be swept, matching
-/// `examples_smoke.rs::corpus_ri_files()`, whose comment records that a
-/// nested subdirectory here is a structural change that should be reviewed
-/// rather than silently absorbed), sorted (deterministic failure output),
-/// and containing the known exemplars `bolt_circle.ri` and
-/// `clearance_oracle.ri` by basename (proving path resolution actually
-/// reached the real directory rather than returning an empty vec that would
-/// make every later assertion vacuous).
+/// `harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`, whose
+/// comment records that a nested subdirectory here is a structural change
+/// that should be reviewed rather than silently absorbed), sorted
+/// (deterministic failure output), and containing the known exemplars
+/// `bolt_circle.ri` and `clearance_oracle.ri` by basename (proving path
+/// resolution actually reached the real directory rather than returning an
+/// empty vec that would make every later assertion vacuous).
 #[test]
 fn corpus_discovery_finds_the_flat_best_practices_drawer() {
     let files = corpus_files();
