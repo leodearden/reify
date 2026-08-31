@@ -1708,12 +1708,49 @@ impl Engine {
     /// the measurement path is unchanged; this is purely an additional
     /// observation of what was skipped.
     ///
-    /// The gate is MODULE-wide rather than per-rule, so a module that realized
+    /// # Three deliberate limitations
+    ///
+    /// **(1) The gate is MODULE-wide**, not per-rule, so a module that realized
     /// at least one subject leaves an unrealizable sibling rule silent — the
     /// identical limitation ζ documented and filed as
-    /// `tkt_0RSR81KF1TYDY8PDANNHQZCFV2`.  And `reify check` output is
-    /// UNCHANGED: `realize_for_check` populates `realization_handles` before
-    /// `check()` reaches this pass, so on an OCCT build the gate is false.
+    /// `tkt_0RSR81KF1TYDY8PDANNHQZCFV2`.
+    ///
+    /// **(2) A `reify build` where NOTHING realizes now attributes nothing.**
+    /// `build` runs no separate authoritative `check()` outside the build-phase
+    /// marker's span (below), so its only `check()` is the nested one, and that
+    /// one is silenced unconditionally. This consequence was PRE-CLEARED by the
+    /// steward in esc-6667-2: it is a not-yet-delivered improvement, not a
+    /// regression, because pre-6667 that surface emitted nothing either. It is
+    /// pinned by `the_build_phase_marker_is_cleared_on_the_way_out`
+    /// (`tests/unmeasured_surface_attribution.rs`) and is NOT cause to
+    /// re-escalate.
+    ///
+    /// **(3) The id-less `rule_name` form is NOT a defect** and must not be
+    /// "fixed" by re-keying this diagnostic to a `ConstraintNodeId`. The
+    /// original task-6667 plan hypothesised that the id-less form was what let
+    /// the attribution leak into `reify check`; that premise is FALSE, measured:
+    /// the GD&T half — which IS keyed by `ConstraintNodeId` — leaked identically
+    /// (step-8's `realize_for_check_emits_no_surface_attribution_for_either_kind`
+    /// was RED on exactly that half), so re-keying would have fixed neither.
+    ///
+    /// # `reify check` output is UNCHANGED — via the BUILD-PHASE MARKER
+    ///
+    /// NOT via realization ordering. The argument this comment used to make —
+    /// "`realize_for_check` populates `realization_handles` before `check()`
+    /// reaches this pass" — IS FALSE: `realize_for_check` delegates to
+    /// `build_with_geometry_output`, which calls `self.check(module)` BEFORE its
+    /// realization loop, so `realization_handles` is empty there and the gate
+    /// legitimately opens. `cmd_check` then folds that `BuildResult`'s
+    /// diagnostics through, so `reify check` measured a DFM rule AND told the
+    /// user to run `reify check` (esc-6667-2, caught by `cli_dfm_overhang.rs`'s
+    /// `check_surface_emits_no_unmeasured_attribution_for_dfm_or_gdt`).
+    ///
+    /// What actually keeps the output unchanged is `Engine::check_nested_in_build`,
+    /// set/cleared around each of `engine_build.rs`'s three `self.check(module)`
+    /// calls and read as an extra conjunct on the gate below. `cmd_check`'s
+    /// AUTHORITATIVE `engine.check(&compiled)` (`reify-cli/src/main.rs:944`)
+    /// runs OUTSIDE any build with the marker clear, so on an OCCT build it
+    /// finds `realization_handles` populated and the gate is false.
     ///
     /// # DFMRule discovery — two sources
     ///
