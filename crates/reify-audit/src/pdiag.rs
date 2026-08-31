@@ -665,6 +665,38 @@ const BASELINE_PATH: &str = "crates/reify-audit/pdiag-baseline.txt";
 /// the manifest is how a ratchet quietly stops ratcheting.
 const BASELINE_GEN_BIN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen";
 
+/// The `#` preamble every generated manifest carries.
+///
+/// It exists so the three things a reader needs — how to regenerate, where the
+/// policy lives, and the fact that regenerating is not a fix — travel WITH the
+/// file. A manifest found in a diff without them invites exactly the
+/// re-bless-the-regression move the ratchet exists to prevent.
+///
+/// `pub`, and paired with [`render_baseline`], because this text is not
+/// decoration: [`parse_baseline`] treats `#` lines as comments, so a manifest
+/// whose preamble was stripped parses perfectly and ratchets normally while
+/// having lost the entire deterrent. Nothing but a direct byte comparison can
+/// see that, and a test can only make it when the constant is reachable —
+/// which it was not while this lived inside `src/bin/pdiag-baseline-gen.rs`.
+pub const BASELINE_HEADER: &str = "\
+# PDIAG baseline — per-file allowance of code-less Diagnostic::error/warning
+# construction sites (INV-SF-6 diagnostics-carry-codes).
+#
+# GENERATED — do not hand-edit. Regenerate with:
+#   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \\
+#     > crates/reify-audit/pdiag-baseline.txt
+#
+# Counts may only DECREASE. A row going up, or a new file appearing here, is a
+# hard-gate (High) finding from `reify-audit --pattern PDIAG`.
+#
+# Regenerating is NOT a remediation — it just re-blesses the new sites. If your
+# diff went RED, the three real fixes (attach a DiagnosticCode / take the
+# reviewed `// pdiag:allow — reason` opt-out / fix the sites and shrink the row
+# IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3.
+#
+# Format: `<repo-relative-path> <count>`, ascending by path, no zero rows.
+";
+
 /// Parse the baseline manifest into `path -> allowed code-less count`.
 ///
 /// Grammar: one `<repo-relative-path> <count>` row per line, strictly ascending
@@ -954,6 +986,33 @@ fn empty_census_finding(rows: usize) -> Finding {
 /// the tree alone, or the generator could never regenerate from scratch.
 pub fn live_counts(ctx: &AuditContext) -> BTreeMap<String, u32> {
     census(ctx).counts
+}
+
+/// Render a census as the manifest's bytes: [`BASELINE_HEADER`], then one
+/// `<path> <count>` row per entry, ascending by path.
+///
+/// The rendering half of the same one-derivation posture [`live_counts`] gives
+/// the census. `src/bin/pdiag-baseline-gen.rs` is now literally
+/// `print!("{}", render_baseline(&live_counts(&ctx)))`, so the bytes the
+/// generator writes, the bytes the round-trip test round-trips, and the bytes
+/// the idempotency check compares against the committed file all come from
+/// here. A format change cannot land in one and not the others.
+///
+/// Ascending order is inherited from `BTreeMap`'s iteration rather than
+/// imposed by a sort — which is also the order [`parse_baseline`] requires, so
+/// the two are the same fact stated once. Files with zero code-less sites carry
+/// no entry and therefore no row: a clean file's ABSENCE is the only spelling
+/// of clean, and `parse_baseline` rejects a `0` row outright.
+///
+/// Emits the preamble even for an EMPTY census — the end state the ratchet is
+/// aimed at. A zero-row manifest is exactly when a reader most needs to be told
+/// not to hand-edit it.
+pub fn render_baseline(counts: &BTreeMap<String, u32>) -> String {
+    let mut out = String::from(BASELINE_HEADER);
+    for (path, count) in counts {
+        out.push_str(&format!("{path} {count}\n"));
+    }
+    out
 }
 
 /// One census pass: what [`live_counts`] returns, plus how many swept files

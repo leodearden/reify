@@ -39,31 +39,6 @@ use std::path::PathBuf;
 // but `AuditContext` requires the field.
 use reify_audit::{AuditContext, NoopJCodemunchOps, RealGitOps};
 
-/// The `#` preamble every generated manifest carries.
-///
-/// It exists so the three things a reader needs — how to regenerate, where the
-/// policy lives, and the fact that regenerating is not a fix — travel WITH the
-/// file. A manifest found in a diff without them invites exactly the
-/// re-bless-the-regression move the ratchet exists to prevent.
-const HEADER: &str = "\
-# PDIAG baseline — per-file allowance of code-less Diagnostic::error/warning
-# construction sites (INV-SF-6 diagnostics-carry-codes).
-#
-# GENERATED — do not hand-edit. Regenerate with:
-#   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \\
-#     > crates/reify-audit/pdiag-baseline.txt
-#
-# Counts may only DECREASE. A row going up, or a new file appearing here, is a
-# hard-gate (High) finding from `reify-audit --pattern PDIAG`.
-#
-# Regenerating is NOT a remediation — it just re-blesses the new sites. If your
-# diff went RED, the three real fixes (attach a DiagnosticCode / take the
-# reviewed `// pdiag:allow — reason` opt-out / fix the sites and shrink the row
-# IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3.
-#
-# Format: `<repo-relative-path> <count>`, ascending by path, no zero rows.
-";
-
 fn main() {
     // Minimal arg parse: `--project-root <path>` (default "."). A bare first
     // positional argument is also accepted as the project root for convenience.
@@ -117,11 +92,14 @@ fn main() {
     // order, which is exactly the manifest's grammar — hence "thin renderer".
     let counts = reify_audit::pdiag::live_counts(&ctx);
 
-    let mut out = String::from(HEADER);
-    for (path, count) in &counts {
-        out.push_str(&format!("{path} {count}\n"));
-    }
-    print!("{out}");
+    // Both halves — the census AND the `#` preamble plus row rendering — are
+    // the library's, so this binary owns no derivation of the manifest format
+    // at all. `pdiag::BASELINE_HEADER` and `pdiag::render_baseline` are what
+    // `tests/pdiag_baseline.rs` asserts on; while they lived here they were
+    // unreachable from any test, and the generator's real bytes went
+    // unpinned.
+
+    print!("{}", reify_audit::pdiag::render_baseline(&counts));
 
     let sites: u32 = counts.values().sum();
     eprintln!(
