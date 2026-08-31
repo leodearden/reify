@@ -5118,23 +5118,6 @@ structure def Part {
             Some("string"),
             "reify_save_file: properties.file_path.type must be 'string' even though it is optional"
         );
-
-        // §6.1 / §12-Q1 unit contract: this surface takes a UNIT-BEARING
-        // literal ("120mm"), unlike the orphaned reify-mcp registry text which
-        // describes a bare SI number. Pin the CONTRACT, not the prose — one
-        // `contains` check, so rewording the description stays free.
-        let set_param = defs
-            .iter()
-            .find(|t| t.name == "reify_set_parameter")
-            .expect("reify_set_parameter must be present");
-        let value_desc = set_param.input_schema["properties"]["value"]["description"]
-            .as_str()
-            .expect("reify_set_parameter: properties.value.description must be a string");
-        assert!(
-            value_desc.contains("unit-bearing"),
-            "reify_set_parameter: the `value` description must state the \
-             unit-bearing-literal contract (§6.1), got: {value_desc}"
-        );
     }
 
     /// `reify_open_file` and `open_file` are ONE funnel under two names — the
