@@ -141,14 +141,20 @@
 //! produce a dimensioned `Type::Point` arg, because `point3(…)` carries no
 //! quantity slot" — does NOT, and must not be re-asserted: task 5344 claimed
 //! `point3` / `point2` into the math construction family, so those calls now
-//! return a real `Type::Point { n, quantity }`.  That claim is still written,
+//! return a real `Type::Point { n, quantity }`.  That claim was still written,
 //! and still false, at further sites in `conformance/mod.rs` and
-//! `struct_ctor_field_conformance_tests.rs` — ALL OWNED BY TASK 6436, filed
-//! from esc-6159-3 for exactly this purpose, which enumerates them in its own
-//! description so the site list has ONE home and is not maintained here in
-//! lockstep.  Converting the pre-existing `Point`-arm probes to `.ri` fixtures,
-//! which the ctor-path fixtures above show is now possible for the first time,
-//! is 6436's as well.  Task 6159 corrected only what task 6159 itself authored.
+//! `struct_ctor_field_conformance_tests.rs`; task 6436 (filed from esc-6159-3
+//! for exactly this purpose) corrected all of them, and converted the
+//! pre-existing `Point`-arm probes to `.ri` fixtures — which the ctor-path
+//! fixtures above had shown was possible for the first time.  Task 6159 had
+//! corrected only what task 6159 itself authored.
+//!
+//! The site list is deliberately NOT enumerated here, and was not while it was
+//! outstanding either: each arm's own doc carries the detail, so the two never
+//! have to be maintained in lockstep.  The reconciliation is done; what remains
+//! normative here is the premise itself — a `point3(…)` / `point2(…)` call
+//! carries a real quantity slot, and no site may re-derive an erasure claim from
+//! it.
 //!
 //! One site in THIS file rested on the same premise and HAS BEEN re-argued, a few
 //! paragraphs down: "Why the ARG side is tolerant rather than strict" used to

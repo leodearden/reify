@@ -2663,14 +2663,19 @@ structure def Root {
 /// The same reasoning the `Matrix` fixture states about `matrix_shape` applies
 /// here, one arm over.
 ///
-/// It also retires, by demonstration, the premise that "no `.ri` source can
-/// produce a dimensioned `Type::Point` arg" — expired since 5344 landed, still
-/// written at the sites task 6436 owns.
+/// It also retired, by demonstration, the premise that "no `.ri` source can
+/// produce a dimensioned `Type::Point` arg" — expired since 5344 landed. The
+/// sites that still asserted it were corrected by task 6436; none are
+/// outstanding.
 ///
-/// **Scope fence.** This pins the cell task 6159 itself ruled and measured.
-/// Converting the pre-existing `Point`-arm probes (task 5465's) to `.ri`
-/// fixtures, and reconciling the stale erasure rationales around them, stays
-/// task 6436's.
+/// **Scope fence, discharged.** This fixture pins the cell task 6159 itself
+/// ruled and measured. Converting the pre-existing `Point`-arm probes (task
+/// 5465's) to `.ri` fixtures was left to task 6436 and is now done — see
+/// [`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`]
+/// (reject), [`point2_arg_at_point3_param_warns_arity_arg_type_mismatch`]
+/// (arity) and [`point3_dimensionless_at_dimensioned_point_param_stays_clean`]
+/// (accept), which together give this arm the same three-cell `.ri` seam the
+/// `Vector` arm has.
 #[test]
 fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.

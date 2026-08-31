@@ -1692,7 +1692,11 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //     "Point / Vector quantity-slot convention" section of
         //     `crates/reify-core/src/ty.rs`, deliberately not restated here).
         //   • Scalar-like numeric args, as the expression compiler's
-        //     numeric-fallback placeholder for point-producing builtins.
+        //     numeric-fallback placeholder. NOTE this no longer covers
+        //     `point3(…)` / `point2(…)`: task 5344 (`3c4ee5e9ac`) gave them a
+        //     real `Type::Point`, so they take the branch ABOVE. What still
+        //     arrives here is a BARE numeric literal and `Type::ScalarParam(_)`
+        //     — see [`is_numeric_placeholder_leaf`].
         //
         // The placeholder predicate is deliberately NARROW — see
         // [`is_numeric_placeholder_leaf`] (`Int | Scalar | ScalarParam`).
@@ -1741,7 +1745,11 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                     Type::Point { n: param_n, .. } => param_n == arg_n,
                     _ => true, // unreachable: outer arm guards param_type as Type::Point
                 },
-                // Numeric-fallback placeholder for point-producing builtins.
+                // Numeric-fallback placeholder: a BARE numeric literal or a
+                // `Type::ScalarParam(_)`. NOT `point3(…)` / `point2(…)`, which
+                // have carried a real `Type::Point` since task 5344 and match
+                // the arm above. Pinned by
+                // `bare_numeric_literal_at_point_param_stays_clean`.
                 other => is_numeric_placeholder_leaf(other),
             };
             if !is_conforming {
@@ -7941,9 +7949,10 @@ mod tests {
     /// NOT because a `.ri` source cannot produce a dimensioned `Type::Point` arg.
     /// That older premise expired when task 5344 (`3c4ee5e9ac`) claimed
     /// `point3` / `point2` into the math construction family; it must not be
-    /// re-asserted. Rule, the measured `.ri`-level cells, and the surviving stale
-    /// sites task 6436 owns: the "Point / Vector quantity-slot convention"
-    /// section of `crates/reify-core/src/ty.rs`.
+    /// re-asserted. Rule and the measured `.ri`-level cells: the "Point / Vector
+    /// quantity-slot convention" section of `crates/reify-core/src/ty.rs`. The
+    /// stale sites that section used to point at were corrected by task 6436;
+    /// there are none outstanding.
     ///
     /// The `.ri` twin of this exact cell is
     /// `point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch`
