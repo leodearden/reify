@@ -2034,4 +2034,46 @@ mod tests {
             "Tensor input should return None (only List accepted)"
         );
     }
+
+    // ── PRD 5 §3 Leg A: cross-crate reachability of the shared acceptance family ──
+
+    /// Structural guard for PRD 5 §3 Leg A
+    /// (`docs/prds/v0_6/dimension-checked-readers.md`, task 5791): the
+    /// dimension-acceptance family (`ArgSpec`/`Acceptance`/`accept_arg`) lives in
+    /// **reify-ir**, the one crate BOTH `reify-eval` and `reify-stdlib` already
+    /// depend on, so the two layers share ONE dimension-acceptance rule instead of
+    /// forking it.
+    ///
+    /// reify-stdlib CANNOT reach the family at its former home in `reify-eval` —
+    /// the crate edge runs the other way (`reify-eval` deps `reify-stdlib`, never
+    /// the reverse) — so re-privatising `reify_ir::arg_acceptance`, or moving it
+    /// back into `reify-eval`, must turn this test red as a COMPILE failure, not
+    /// as a silent behavioural drift.
+    ///
+    /// `crates/reify-stdlib/Cargo.toml` already deps `reify-ir` in both
+    /// `[dependencies]` and `[dev-dependencies]`; this test adds no new edge.
+    #[test]
+    fn arg_acceptance_is_reachable_from_reify_stdlib() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+        let ten_mm = Value::Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            accept_arg(&ten_mm, &length_spec()),
+            Acceptance::Accepted(0.01),
+            "a LENGTH Scalar must be Accepted with its SI value through the \
+             shared reify-ir family"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(10.0), &length_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "a bare Real must still be Rejected at a length_spec position (the \
+             10-vs-10mm 1000x hazard)"
+        );
+    }
+
 }
