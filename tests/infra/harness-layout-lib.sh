@@ -127,6 +127,53 @@ declare -ga _HL_CRATES=(reify-cli reify-syntax reify-kernel-occt reify-eval reif
 # by file stem (basename without the .rs extension).
 # harness_layout_override_stems (below) prints it verbatim; the MEMO block
 # further down builds _HL_OVERRIDE_STEM_SET from it once at source time.
+#
+# NOT A SANCTIONED CAP-OVERFLOW DESTINATION (decision, task #6461). None of
+# these 7 stems is a place to park a module whose thematic home is a capped
+# `harness_<subsystem>.rs` (test_harness_kloc_cap.sh rule (a)) in order to
+# relieve that harness's cap pressure.
+#
+# SCOPE — the destination, not growth. Each stem still grows freely with its
+# OWN thematic content (largest today: analytical_validation); what is
+# refused is importing a module FOREIGN to a stem's own focus for cap relief.
+#
+# WHY:
+#   - rule (a) already names its remedy — SPLIT into a second
+#     `harness_<subsystem2>.rs`, "never accommodated by raising the cap" —
+#     and spilling into an override stem is that same accommodation reached
+#     by a different route.
+#   - these stems carry NO line limit: rule (a)'s CAP_LINES applies only to
+#     `harness_*.rs` roots, and an override stem is excluded from the
+#     re-accretion predicate — harness_layout_in_scope_standalone below
+#     returns 1 on it, and rule (b) in test_harness_kloc_cap.sh's
+#     harness_layout_violations `continue`s on it. 5 of the 7 stems aren't
+#     even in one of the 5 _HL_CRATES above, so they never reach rule (b) at
+#     all. No rule measures lines parked here, anywhere — that is what makes
+#     the spill an evasion of the C2 accounting, not a neutral placement
+#     choice.
+#   - it contradicts the exemption's own rationale: these 7 are permanently
+#     standalone for "distinct harness/#[should_panic]/single-focus
+#     semantics that a shared harness would break" (invariant I1,
+#     test_harness_kloc_cap.sh). A module admitted for cap relief is by
+#     construction thematically foreign, which destroys that single-focus
+#     property and defeats a reader filtering `<stem>::`.
+#   - precedent: harness_topology_selector came in 7.4% over cap and was
+#     resolved by SPLITTING out harness_selective_demand, not by parking the
+#     overflow in an override stem (test_harness_kloc_cap.sh Section 5b
+#     HEADROOM note).
+#
+# THE STANDING REMEDY: split the harness (#6121) or recover headroom by
+# hoisting duplicated fixtures (#6152). A future exception requires a
+# conscious amendment to THIS clause, at the single source of truth —
+# mirroring the posture rule (b)'s grandfather ratchet already takes
+# ("requires a conscious baseline edit").
+#
+# NO GUARD. "Thematically foreign to this stem's focus" is not mechanically
+# decidable, and the nearest proxy — forbidding inline `mod x { ... }` blocks
+# in these 7 — is both over-inclusive (a normal Rust idiom for grouping a
+# binary's own tests) and trivially evadable (drop the wrapper, paste the
+# fns at top level); `_harness_layout_mod_decls` below deliberately ignores
+# inline `mod` blocks anyway (they declare no out-of-line file).
 declare -ga _HL_OVERRIDE_STEMS=(
     determinism analytical_validation modal_benchmarks
     buckling_smoke fea_diagnostics_e2e
