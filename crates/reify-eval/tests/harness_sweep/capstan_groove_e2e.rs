@@ -341,9 +341,22 @@ fn compile_dev_capstan() -> reify_compiler::CompiledModule {
     compiled
 }
 
-/// Message prefix of the geometry-consumer resolution error the kernel-free
-/// surface raises by construction — see [`check_dev_capstan`].
-const VOLUME_UNRESOLVED_PREFIX: &str = "`volume` could not be resolved";
+/// How the geometry-consumer resolution error the kernel-free surface raises by
+/// construction names its builtin — see [`check_dev_capstan`].
+///
+/// Deliberately the backticked IDENTIFIER alone, not a sentence prefix. The
+/// emission (`detect_unresolved_geometry_consumers`,
+/// `crates/reify-eval/src/engine_eval.rs`) interpolates the consumer's name into
+/// prose that this module does not own, so pinning that prose makes a pure
+/// rewording reroute both real diagnostics into `rest`, where the `unexpected`
+/// assertion fires first and reports them under "a cell of the design stopped
+/// evaluating" — loud, but a false diagnosis, which is the failure mode this
+/// module works everywhere else to avoid. The structured half of the match
+/// (`DiagnosticCode::EvalUnresolved`) carries the "is this a resolution
+/// failure?" claim; this string only has to say WHICH builtin, and it stays
+/// sharp because every other name in the geometry-consumer family (`area`,
+/// `length`, `centroid`, …) is a different backticked token.
+const VOLUME_BUILTIN_MENTION: &str = "`volume`";
 
 /// Which cells the design file must produce those for, as `<entity>.<cell>`
 /// identities — one per `volume()`-consuming cell of
@@ -400,7 +413,7 @@ fn check_dev_capstan() -> CheckResult {
             .filter(|d| d.severity == Severity::Error)
             .partition(|d| {
                 d.code == Some(DiagnosticCode::EvalUnresolved)
-                    && d.message.starts_with(VOLUME_UNRESOLVED_PREFIX)
+                    && d.message.contains(VOLUME_BUILTIN_MENTION)
             });
         // The OTHER Error a healthy design file can raise here is a constraint
         // VIOLATION: `SimpleConstraintChecker` co-emits a
@@ -464,8 +477,9 @@ fn check_dev_capstan() -> CheckResult {
         want.sort();
         assert_eq!(
             got, want,
-            "the `{VOLUME_UNRESOLVED_PREFIX}` errors {DEV_CAPSTAN} raises on the \
-             kernel-free surface must be exactly one per cell in \
+            "the `EvalUnresolved` errors naming {VOLUME_BUILTIN_MENTION} that \
+             {DEV_CAPSTAN} raises on the kernel-free surface must be exactly one \
+             per cell in \
              `VOLUME_UNRESOLVED_CELLS`. A MISSING entry means that cell was dropped \
              or renamed — the OCCT fixture's stock-removal gate would then be gating \
              less than it reads. An EXTRA entry means a `volume()` cell was added and \
@@ -481,6 +495,11 @@ fn check_dev_capstan() -> CheckResult {
 /// Load, parse, compile and tessellate `prj/printer_v01/dev_capstan.ri` with a
 /// real OCCT kernel, asserting the pipeline is Error-diagnostic-free at every
 /// stage. Use [`dev_capstan`] rather than calling this directly.
+///
+/// "Error-diagnostic-free" here means free of PIPELINE errors:
+/// `DiagnosticCode::ConstraintViolated` is routed out and left to the
+/// satisfaction gates, the same partition [`check_dev_capstan`] makes on the
+/// kernel-free surface — see the comment at the filter.
 fn tessellate_dev_capstan() -> TessellateResult {
     let compiled = dev_capstan_compiled();
 
@@ -493,14 +512,32 @@ fn tessellate_dev_capstan() -> TessellateResult {
     );
 
     let result = engine.tessellate_realizations(compiled);
+    // Constraint VIOLATIONS are routed out, exactly as [`check_dev_capstan`]
+    // routes them out of its own Error filter and for the same reason:
+    // `SimpleConstraintChecker` co-emits a `DiagnosticCode::ConstraintViolated`
+    // `Diagnostic::error` alongside every `Satisfaction::Violated` result
+    // (`crates/reify-constraints/src/lib.rs`), and this surface evaluates and
+    // constraint-checks before it tessellates. Left in, a broken DESIGN relation
+    // panics here first — in all three OCCT gates at once, including the two that
+    // read only geometry and have nothing to do with the relation that broke —
+    // under "unexpected geometry errors", a message that is false for that
+    // failure and that shadows the diagnosis `assert_constraints_ok` exists to
+    // give (it names WHICH relation broke and at what strictness). Verified by
+    // mutation: shortening `Fairlead.stroke` past the band takes all three down
+    // here rather than failing `capstan_surfaces_only_the_finished_drum`'s
+    // satisfaction claim. So the satisfaction gates own them and this fixture's
+    // claim stays what its message says: the KERNEL path raised no Error.
     let geom_errors: Vec<_> = result
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.code != Some(DiagnosticCode::ConstraintViolated))
         .collect();
     assert!(
         geom_errors.is_empty(),
-        "unexpected geometry errors tessellating {DEV_CAPSTAN}: {geom_errors:#?}"
+        "unexpected geometry errors tessellating {DEV_CAPSTAN} (constraint \
+         violations are routed to the satisfaction gates and are not this \
+         fixture's business): {geom_errors:#?}"
     );
     result
 }
@@ -1049,9 +1086,13 @@ const BAND_IDENTITY_REL_TOL: f64 = 1e-12;
 ///   1. `band` really is the ACTIVE migration — `lead · active_turns`. Guards
 ///      the definition against a later edit that quietly redefines it as the
 ///      total grooved extent;
-///   2. `groove_len − band == lead · dead_total` — the decomposition the project
-///      doc asserts in prose ("sized for the full per-axis feed … plus the base
-///      wraps") stated over cells: 88.346 mm − 60.346 mm = 28.000 mm = 7 mm × 4;
+///   2. `groove_len − band == lead · dead_total` — the active-band / dead-wrap
+///      decomposition described in `docs/projects/printer_v01.md`
+///      § "Drive: Vectran tendons + capstans", stated over cells:
+///      88.346 mm − 60.346 mm = 28.000 mm = 7 mm × 4. Cited by path and section
+///      rather than quoted: nothing checks a quotation of that paragraph against
+///      the paragraph, so a copy here goes stale the moment it is reworded (it
+///      already did once on this branch), whereas the citation stays true;
 ///   3. `band < groove_len` strictly, i.e. the two figures have not collapsed
 ///      into one (they cannot while `dead_total > 0`);
 ///   4. the coverage relation itself: `band <= stroke <= band + lead`, read off
@@ -1154,8 +1195,10 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
         "the drum's grooved length must decompose into the active band plus the \
          dead (anchor) wraps: groove_len − band = {:.6} mm − {:.6} mm = {:.6} mm, \
          but lead · dead_total = {:.6} mm × {dead_total} = {:.6} mm. This is the \
-         \"sized for the full per-axis feed … plus 4 dead (anchor) wraps\" claim \
-         in docs/projects/printer_v01.md, stated over the cells.",
+         active-band / dead-wrap decomposition described in \
+         docs/projects/printer_v01.md § \"Drive: Vectran tendons + capstans\", \
+         stated over the cells — cited by section rather than quoted so this \
+         message stays true however that paragraph is reworded.",
         groove_len * 1e3,
         band * 1e3,
         (groove_len - band) * 1e3,
@@ -1506,16 +1549,29 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
 ///     check surface that stopped producing results for every entity but
 ///     `CapstanDrive` reads green on a kernel-free machine.
 ///
-/// Deliberately the WEAK claim (`Violated`-emptiness) and deliberately
-/// file-wide, mirroring the scoping that OCCT-gated copy uses. A constraint
-/// reading one of the `volume()` cells would only be decidable with a kernel and
-/// would read `Indeterminate` here, so an all-`Satisfied` pin at file scope would
-/// fail on a legitimate edit rather than on a regression. The strict
-/// anything-but-`Satisfied` claims stay scoped to the entities whose constraint
-/// inputs are all defined on this surface: `Capstan` in
-/// `capstan_surfaces_only_the_finished_drum`, `CapstanDrive` in
-/// `capstan_drive_constrains_the_shuttle_to_cover_the_band` — which is where
-/// `Indeterminate` is caught, and why that test spells its claim positively.
+/// Two claims, at two scopes, because strictness and scope are independent
+/// choices here:
+///
+///   * FILE-WIDE it is deliberately the WEAK claim (`Violated`-emptiness),
+///     mirroring the scoping that OCCT-gated copy uses. A constraint reading one
+///     of the `volume()` cells would only be decidable with a kernel and would
+///     read `Indeterminate` here, so an all-`Satisfied` pin at file scope would
+///     fail on a legitimate edit rather than on a regression.
+///   * SCOPED to `Capstan` it is the strict anything-but-`Satisfied` claim,
+///     because every `Capstan` constraint reads scalar cells only (`land_r`,
+///     `pitch_r`, `groove_r`, `bore_r`, `lead`, `flange_r`, `d_ratio`) and none
+///     of them touches a `volume()` cell — so `Indeterminate` there is always a
+///     regression, never a missing kernel. That is the strictness axis's whole
+///     point (see [`Strictness::AllSatisfied`]) and it was previously made for
+///     `Capstan` ONLY inside the OCCT-gated
+///     `capstan_surfaces_only_the_finished_drum`, which returns early with no
+///     kernel: an `Indeterminate` `Capstan` constraint — present, reported, and
+///     checking nothing — was caught by nothing at all on a machine without
+///     OCCT, since the checker reports it as a WARNING that
+///     [`check_dev_capstan`]'s `Severity::Error` filter cannot see and the
+///     file-wide `NoneViolated` claim above by definition does not. The
+///     `CapstanDrive` scope gets the same strict treatment, for the same reason,
+///     in `capstan_drive_constrains_the_shuttle_to_cover_the_band`.
 ///
 /// The non-emptiness guard is not ceremony: a `Violated` filter over an empty
 /// `constraint_results` is vacuously green, the same trap
@@ -1534,5 +1590,36 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
          `check_dev_capstan` means the violation raised no Error diagnostic, which \
          is itself worth reading as a change in `SimpleConstraintChecker`'s \
          reporting.",
+    );
+
+    // ---- …and `Capstan` strictly, on this surface too ----
+    // The file-wide claim above is deliberately weak, but `Capstan` is one of the
+    // entities whose constraint inputs are ALL defined kernel-free — every one of
+    // them reads scalar cells only (`land_r`, `pitch_r`, `groove_r`, `bore_r`,
+    // `lead`, `flange_r`, `d_ratio`), none reaches a `volume()` cell — so the
+    // strict claim is decidable here and safe to make.
+    //
+    // Without it, `Indeterminate` on a `Capstan` constraint is caught by NOTHING
+    // where OCCT is absent, which is precisely the blind spot [`Strictness`]
+    // documents: `SimpleConstraintChecker` reports it as a WARNING, so
+    // [`check_dev_capstan`]'s `Severity::Error` filter cannot see it; the
+    // file-wide claim just above is `NoneViolated`, which by definition cannot;
+    // and the module's other strict `Capstan` claim lives in
+    // `capstan_surfaces_only_the_finished_drum`, which returns early with no
+    // kernel. A constraint that is present, reported, and checking nothing would
+    // read green on every kernel-free machine — the exact shape of regression
+    // this test exists to close on the file-wide half.
+    assert_constraints_ok(
+        &result.constraint_results,
+        Some(CAPSTAN_ENTITY),
+        Strictness::AllSatisfied,
+        "the kernel-free check surface",
+        "`Capstan`'s constraints read scalar cells only, so all of them are \
+         decidable without a kernel: an `Indeterminate` here means an input cell \
+         stopped evaluating (an undef leaf, or a reference that no longer \
+         resolves) and the relation is no longer checking anything, NOT that a \
+         kernel was needed. The OCCT-gated copy of this strict claim lives in \
+         `capstan_surfaces_only_the_finished_drum`; this one is what keeps it \
+         covered where OCCT is absent.",
     );
 }
