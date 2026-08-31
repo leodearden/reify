@@ -1315,8 +1315,16 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
 /// Minimum distinct CALL names the LENGTH-ARGUMENTS section's worked forms must
 /// carry, as the anti-vacuity floor on the [`called_names`] half.
 ///
-/// Unchanged at 5 from before the table half existed: it floors the FENCE, which
-/// is a separate claim from the table's coverage and keeps its own number.
+/// SEPARATE from [`MINIMUM_CATALOGUE_ROWS`], and deliberately so: this floors
+/// the FENCE, which is a different claim from the table's coverage — a section
+/// can tabulate a constructor it never demonstrates, and demonstrate one it
+/// never tabulates — so it keeps its own number instead of tracking the table's.
+///
+/// That number is the EXACT live count of 8 (`helix`, `translate`, `cylinder`,
+/// `rotate_around`, `polygon`, `interp`, `nurbs`, `scale`), under the same
+/// contract as [`MINIMUM_FN_CITES`]: at a floor under live, calls can be deleted
+/// from the worked forms while this stays green. See that constant for the
+/// re-measurement protocol.
 const MINIMUM_SECTION_CALL_NAMES: usize = 8;
 
 /// Names the length-arguments section may call that are in none of
@@ -1636,17 +1644,38 @@ pub(crate) fn assert_cited_paths_resolve(
 
 /// Cite floors for [`cited_test_paths_in_the_chunk_resolve`].
 ///
-/// The EXACT live counts, not round numbers under them. At
-/// `MINIMUM_FN_CITES` >= 8 (with 9 actually present) one whole cite could be
-/// deleted and this still passed: dropping trap 5's
-/// `single_body_self_pair_excluded` row left fn_cites=8, rs_paths=5 and
-/// ri_paths=4 all green while that row still read "PINNED by" — a SYNC row
-/// silently claiming a pin it had lost. The ninth cite is this file's own
-/// self-cite from the SYNC block.
+/// The EXACT live counts, not round numbers under them: 13 `<path>::<fn>` cites,
+/// resolving to 6 distinct `.rs` files and 4 distinct `.ri` files. The 13 are
+/// three self-cites in this file, two into `units_chunk_smoke.rs`, two into
+/// `cli_vc_clearance.rs`, one into `kernel_queries_intersects_smoke.rs` and five
+/// into `mechanism_interference_smoke.rs`.
+///
+/// WHY EXACT — a measured incident, not a principle. With the cite floor one
+/// below live, dropping trap 5's `single_body_self_pair_excluded` row left
+/// fn_cites=8, rs_paths=5 and ri_paths=4 — every floor still green while that
+/// row went on reading "PINNED by", a SYNC row silently claiming a pin it had
+/// lost. Any gap between floor and live re-opens exactly that hole, which is why
+/// these track the tree rather than sitting at a round number under it.
 ///
 /// The `.ri` floor covers the four worked references (clearance_oracle,
 /// vc_bolt_pattern_clearance, dock_pickup, intersects_smoke) a designer is sent
 /// to next; losing one is the same discoverability regression task 5389 closed.
+///
+/// RE-MEASUREMENT PROTOCOL, for every `MINIMUM_*` floor in this file and in
+/// `units_chunk_smoke.rs` — stated once, here, and cross-referenced rather than
+/// copied. These floors are hand-maintained and NOTHING detects their drift:
+/// adding a SYNC row, a cite, a catalogue row or a fence call name silently
+/// widens the gap between floor and live, and the check stays green while its
+/// own docstring still claims to be exact. To re-measure one, set it to 999, run
+/// `env cargo test -p reify-compiler --test harness_doc_chunks`, read the live
+/// count out of the panic text, and restore it. Use `env cargo`, never bare
+/// `cargo`: the skim PreToolUse wrapper condenses the run to PASS/FAIL counts
+/// and swallows the panic the measurement depends on. MEASURE ONE FLOOR AT A
+/// TIME — floors inside a single test assert sequentially, so a failing early
+/// floor MASKS every later one in that test, and a batched sweep under-reports.
+/// That masking is not hypothetical: it is why a first pass over these ten
+/// floors found two of the four that had gone stale, and a one-at-a-time sweep
+/// found all four.
 const MINIMUM_FN_CITES: usize = 13;
 const MINIMUM_RS_FILES: usize = 6;
 const MINIMUM_RI_FILES: usize = 4;
