@@ -48,29 +48,58 @@ use reify_eval::persistent_cache::{
 };
 use tempfile::tempdir;
 
-/// Absolute path to the deterministic cantilever fixture both writers solve.
-fn fixture_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fea_cantilever_deterministic.ri")
+use crate::common;
+
+/// The deterministic cantilever fixture both writers solve.
+///
+/// `common::fixture_path` (`tests/common/mod.rs:35`) is the harness-wide
+/// resolver; this module uses it rather than re-deriving
+/// `CARGO_MANIFEST_DIR`/`tests/fixtures` locally, which is what `tests/common`
+/// exists for now that every former standalone binary shares one compile unit.
+fn fixture_path() -> String {
+    common::fixture_path("fea_cantilever_deterministic.ri")
 }
 
 /// A `reify eval --cache-dir <cache>` invocation, not yet spawned.
 ///
 /// The `--cache-dir` FLAG is used rather than `REIFY_CACHE_DIR` because it has
 /// the highest precedence (`crates/reify-cli/src/main.rs:2049`, applied at
-/// :2115/:2133 after env and config resolution), so the test needs no env at
-/// all to steer the binary. The three `env_remove`s below still matter: a stale
-/// dev-shell `REIFY_CACHE_MAX_BYTES` can fail max-bytes resolution outright, and
-/// leaving `REIFY_CACHE_DIR`/`XDG_CACHE_HOME` set would let a startup sweep
-/// touch the developer's real cache.
-fn eval_command(cache: &Path) -> Command {
+/// :2115/:2133 after env and config resolution), so nothing below is needed to
+/// steer the ENGINE at `cache`.
+///
+/// `sandbox` is a SECOND, throwaway tempdir, and it is what makes this test
+/// hermetic. `main` calls `cache::run_startup_sweep()` unconditionally before
+/// the dispatcher (`crates/reify-cli/src/main.rs:140`), and that sweep resolves
+/// its own root through `resolve_cache_root_with_cli`
+/// (`crates/reify-cli/src/cache.rs:672`) — which does NOT see `--cache-dir` and
+/// falls through `$HOME/.config/reify/config.toml`, `<cwd>/.reify/config.toml`,
+/// and finally `$HOME/.cache`. `env_remove`-ing `XDG_CACHE_HOME` therefore does
+/// not suppress the sweep; with `HOME` still inherited it merely aims it at the
+/// developer's real `~/.cache/reify`, where it would delete `.tmp.*` older than
+/// 1 h and orphan engine-version dirs older than 30 days. So both vars are
+/// REDIRECTED into `sandbox` instead of removed: the sweep still runs (that is
+/// production behaviour and not this test's to disable), but every path it can
+/// reach — config layers included — is inside a tempdir.
+///
+/// The two `env_remove`s that remain are unrelated to the sweep: a stale
+/// dev-shell `REIFY_CACHE_MAX_BYTES` can fail max-bytes resolution outright,
+/// and `REIFY_CACHE_DIR` is removed so the `--cache-dir` precedence claim above
+/// is what is actually exercised rather than merely agreed with.
+///
+/// One exposure is deliberately left: `<cwd>/.reify/config.toml` is still read
+/// from the inherited cwd (no such file exists in this repo). Overriding the
+/// child's cwd would also move `.ri` include/stdlib resolution, which is a
+/// bigger blast radius than the read it would close.
+fn eval_command(cache: &Path, sandbox: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify"));
     cmd.arg("eval")
         .arg("--cache-dir")
         .arg(cache)
         .arg(fixture_path())
+        .env("HOME", sandbox)
+        .env("XDG_CACHE_HOME", sandbox.join("xdg-cache"))
         .env_remove("REIFY_CACHE_DIR")
         .env_remove("REIFY_CACHE_MAX_BYTES")
-        .env_remove("XDG_CACHE_HOME")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -128,25 +157,48 @@ fn bin_input_hash(bin: &Path) -> String {
         .to_string()
 }
 
-/// Case 3 — two concurrent `reify eval` processes racing the same cache key
+/// Case 3 — two concurrent `reify eval` processes writing the same cache key
 /// leave exactly one entry and no orphan tempfiles.
 ///
-/// This is a REAL multi-process race, not a simulation: both children are
-/// `spawn()`ed back-to-back before either is waited on, so their solves and
-/// their `write_entry` calls genuinely overlap. Whether they collide inside the
-/// rename window on any given run is up to the scheduler — the contract asserted
-/// here (one published entry, no debris, no corruption, value-identical to a
-/// solitary solve) is what must hold either way.
+/// ## What this test decides, and what it does NOT
+///
+/// DECIDED: multi-process COEXISTENCE. Two independent `reify` processes,
+/// spawned back-to-back before either is waited on, share one cache root and
+/// leave it in the at-rest shape the lock-free contract promises — exactly one
+/// published `.bin` plus its `.meta`, zero `.tmp.*` debris, a header that
+/// decodes with matching engine/input echoes, and a value identical to a
+/// solitary uncontended solve. That is a real property of the composed system
+/// (two OS processes, one directory) and no in-process test can stand in for
+/// it.
+///
+/// NOT DECIDED: the `rename(2)` window itself. Each child spends ~1.5 s in
+/// parse/compile/solve and only microseconds inside
+/// tempfile→`persist()`, so the odds that the two windows actually overlap on
+/// any given run are vanishingly small; and because the fixture is
+/// `deterministic: true`, both writers emit byte-identical entries, so even a
+/// genuine collision would be indistinguishable from two sequential writes.
+/// This test therefore must NOT be read as evidence that last-writer-wins is
+/// value-preserving under a true collision.
+///
+/// The rename-window race proper is owned in-process, where it can be forced,
+/// by `concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value`
+/// (`crates/reify-eval/src/persistent_cache.rs:3153`, cited from the
+/// `write_entry` docs at :786). The two tests are complements: that one pins
+/// the collision, this one pins that two real processes can share a cache root
+/// without corrupting it.
 #[test]
 fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles() {
     let cache = tempdir().expect("cache tempdir must be creatable");
+    // Throwaway $HOME/$XDG_CACHE_HOME so the children's unconditional startup
+    // sweep cannot reach outside these tempdirs; see `eval_command`.
+    let sandbox = tempdir().expect("sandbox tempdir must be creatable");
 
     // ── (b) Both children in flight before either is waited on ──────────────
 
-    let first = eval_command(cache.path())
+    let first = eval_command(cache.path(), sandbox.path())
         .spawn()
         .expect("spawning the first reify eval must succeed");
-    let second = eval_command(cache.path())
+    let second = eval_command(cache.path(), sandbox.path())
         .spawn()
         .expect("spawning the second reify eval must succeed");
 
@@ -238,7 +290,7 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
     // the VALUE.
 
     let reference_cache = tempdir().expect("reference cache tempdir must be creatable");
-    let reference = eval_command(reference_cache.path())
+    let reference = eval_command(reference_cache.path(), sandbox.path())
         .output()
         .expect("the solitary reference run must execute");
     let reference_stderr = String::from_utf8_lossy(&reference.stderr);
@@ -264,6 +316,19 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
         read_entry(reference_cache.path(), ENGINE_VERSION_HASH, &reference_hash)
             .expect("read_entry must not error on the reference entry")
             .expect("the reference entry must decode");
+
+    // A POSITIVE guard first, or the ratio below decides nothing: if both solves
+    // degraded to `max_von_mises == 0.0`, `rel_err` is `0.0 / MIN_POSITIVE ==
+    // 0.0` and the agreement assertion passes vacuously. `survivor.converged`
+    // does not close that hole — a converged solve reporting zero stress is
+    // exactly the silent degradation the (c) trampoline guard exists to catch,
+    // arriving one layer further down.
+    assert!(
+        reference_result.max_von_mises.is_finite() && reference_result.max_von_mises > 0.0,
+        "the solitary reference solve must report a real non-zero max_von_mises \
+         (got {}), or the agreement check below is vacuous",
+        reference_result.max_von_mises,
+    );
 
     // The house tolerance for FEA scalar agreement
     // (`persistent_cache_compute_round_trip.rs:188-196`).
