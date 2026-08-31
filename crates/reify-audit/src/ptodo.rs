@@ -187,86 +187,55 @@ fn allow_dead_code_attr(line: &str) -> Option<&str> {
 ///
 /// CLAUDE.md's TODO-citation convention already bans this register
 /// ("PRD-relative indices (`task-5`) … resolve to `malformed-cite`"); this is
-/// the recogniser that implements it for the `#N` spelling.
+/// the recogniser that implements it for the `#N` spelling.  Three families:
 ///
-/// Three families, all measured over the live corpus (task #6103), governed by
-/// ONE shared digit bound:
-///
-/// 1. **Glued PRD-artifact namespace** — the `#` is glued (no space) to a
-///    section or artifact abbreviation: `§7#5`, `Open Q#4`, `OQ#1`, `PRD DD#4`,
-///    `PRD T#11`.  The abbreviation must itself have a left word boundary, so
-///    an identifier that merely ENDS in one of those letters (`ELEMENT#3`) does
-///    not match.
-/// 2. **Spaced PRD-local noun** — exactly one space separates the `#` from a
-///    preceding `invariant(s)` / `row(s)` / `boundary` / `open-question` /
+/// 1. **Glued PRD-artifact namespace** — `§7#5`, or an uppercase artifact
+///    abbreviation (`OQ`/`DD`/`Q`/`T`) with a left word boundary, so an
+///    identifier merely ENDING in one of those letters (`ELEMENT#3`) does not
+///    match.
+/// 2. **Spaced PRD-local noun** — exactly one space between the `#` and an
+///    `invariant(s)` / `row(s)` / `boundary` / `open-question` /
 ///    `design decision` token.
-/// 3. **`task(s)`** — exactly one space separates the `#` from a `task`/`tasks`
+/// 3. **`task(s)`** — exactly one space between the `#` and a `task`/`tasks`
 ///    token.
 ///
-/// **The `id <= 99` bound is UNIFORM across all three families**, applied once
-/// as an early return rather than per family.  It is a property of the
-/// PRD-relative REGISTER — a document-local index is small — not of the `task`
-/// noun, so a fourth family added later inherits it instead of having to
-/// remember it.
+/// Three properties are load-bearing; each is stated in the code below and
+/// pinned by a test, and the live-corpus measurements behind them (per-family
+/// histograms, the digit-split enumeration, the re-sweep predicates) live in
+/// **PRD §8.2 and §16 Row 2**, which own that methodology:
 ///
-/// **Zero recall cost, re-measured on this branch (2026-08-30).**  The maximum
-/// PRD-relative index is **11** for family 1 (`PRD T#11`; the glued-namespace
-/// histogram is 1–8 plus 11, and a three-or-more-digit sweep of those forms over
-/// all tracked files — `git grep -nEi '(§[0-9.]*|\b(OQ|DD|Q|T))#[0-9]{3,}'` —
-/// returns ZERO), **18** for family 2 (`boundary #18`; the histogram is 1–15
-/// plus 18, plus the single #5238 outlier below), and **27** for family 3.
-/// Every one is comfortably inside the bound.
+/// - **The `id <= 99` bound is UNIFORM across all three families**, applied
+///   once as an early return rather than per family.  It is a property of the
+///   PRD-relative REGISTER — a document-local index is small — not of the
+///   `task` noun, so a fourth family added later inherits it instead of having
+///   to remember it.  It keys on DIGIT COUNT, not on a `PRD` left-context
+///   window, because a window measurably fails in BOTH directions (a long path
+///   pushes `PRD` out of range; a symmetric window kills the genuine
+///   `task #333 per PRD §Slice B`).  Pinned by `prd_relative_cite_negatives`.
+/// - **An UNBOUNDED family is fail-DANGEROUS in the one direction §6.6's
+///   ratchet cannot see.**  A real task id in family-2 register
+///   (`invariant #5238`, `done`) is either DOWNGRADED from a High `orphaned`
+///   finding to the Medium advisory `malformed-cite`, or ERASED outright in the
+///   cite-anchored δ-B lane — purely on which noun precedes the `#`.  The
+///   ratchet asserts only `live ⊆ baseline`, which catches a GAINED finding and
+///   never a LOST one, so nothing downstream would report it.  Pinned by
+///   `prd_relative_families_are_digit_bounded_end_to_end`.
+/// - **Classification is per-`#N`-OCCURRENCE, never per-line.**  Live lines
+///   carry both idioms at once, so a per-line verdict would either drop a real
+///   cite or resurrect a PRD-relative one.  Pinned by
+///   `prd_relative_cite_is_per_occurrence_not_per_line`.
 ///
-/// **An UNBOUNDED family is fail-DANGEROUS, in the one direction §6.6's ratchet
-/// cannot see.**  Exactly one tracked line repo-wide puts a real task id in
-/// family-2 register — `crates/reify-eval/tests/engine_eval_commit_migration.rs`
-/// line 1490, ``/// This is the invariant #5238 nearly lost`` — where #5238 is a
-/// genuine task (`done` — terminal — and that file is in its own
-/// `metadata.files`).  Unbounded, that cite is either DOWNGRADED from a High
-/// `orphaned` hard-gate finding to the Medium advisory `malformed-cite` (marker
-/// lane) or ERASED outright (lane δ-B is cite-anchored, so with no canonical
-/// cite there is no candidate at all) — purely on which noun precedes the `#`.
-/// The ratchet asserts only `live ⊆ baseline`, which catches a GAINED finding
-/// and never a LOST one, so nothing downstream would have reported it.  Pinned
-/// by `prd_relative_cite_negatives` and
-/// `prd_relative_families_are_digit_bounded_end_to_end`.
-///
-/// **Why the bound keys on DIGIT COUNT, not on a `PRD` left-context window.**
-/// A form catalogue of the whole corpus showed left-context alone fails in BOTH
-/// directions.  Poor recall: `crates/reify-core/src/diagnostics.rs:3304` reads
-/// ``(task #2992, PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #11)`` —
-/// `task #11` is PRD-relative but a long path pushes `PRD` outside any sane
-/// window.  False suppression: `crates/reify-compiler/src/stdlib_loader.rs:257`
-/// reads `task #333 per PRD §Slice B`, where a symmetric window would kill a
-/// GENUINE cite.  The digit split is decisive and measured (re-measured
-/// 2026-08-30 over tracked `.rs`, pattern `\btasks? #[0-9]{4}\b` vs
-/// `\btasks? #[0-9]{1,2}\b`): **2039 four-digit genuine `task #N` cites vs 307
-/// one/two-digit PRD-relative ones, and the only genuine sub-four-digit ids are
-/// the legacy #333, #479 and #630 — all ≥ 100.**  Pinned by
-/// `prd_relative_cite_negatives`.
-///
-/// **Classification is per-`#N`-OCCURRENCE, never per-line.**  Six live lines
-/// carry both idioms at once — `crates/reify-mesh-morph/src/eligibility.rs:61`
-/// reads ``/// visibility scheme (PRD task #11, task #2948) maintain separate
-/// counters`` — so a per-line verdict would either drop the real `#2948` cite
-/// or resurrect the PRD-relative `#11`.  Pinned by
-/// `prd_relative_cite_is_per_occurrence_not_per_line`.
-///
-/// **Deliberately out of scope:** the non-PRD `#N` registers `edge #N`,
-/// `suggestion #N`, `Gap #N` and `site #N`.  They are unambiguous non-task
-/// idioms and could be added, but they have ZERO measured exposure in any lane
-/// (none appears in the δ-B population), and PRD §14/§16's methodology is that
-/// every widening arrives with a fresh live-corpus enumeration, a
-/// hand-inspected FP count and a dated §16 row.  Adding unmeasured forms would
-/// violate the discipline this recogniser exists to honour — so a later
-/// widening needs its own evidence row, not a one-line edit here.
+/// Widening the family list is deliberately gated: §14/§16's methodology is
+/// that every widening arrives with a fresh live-corpus enumeration, a
+/// hand-inspected FP count and a dated §16 row.  The non-PRD `#N` registers
+/// considered and left out (`edge #N`, `suggestion #N`, `Gap #N`, `site #N`)
+/// are listed with their measured exposure in PRD §8.2.
 ///
 /// The G-allow owner-cite lane's own narrower `PRD `-immediately-left check
 /// ([`is_g_allow_cite_exempt`] rule (c)) is deliberately NOT refactored to
-/// delegate here: it belongs to a different lane with its own `g-allow-orphaned`
-/// baseline exposure, and widening it would silently change which owner cites
-/// are exempt.  That is the same restraint task #6087 applied to the γ
-/// `#[ignore]` arm.  The two grammars are genuinely decoupled —
+/// delegate here: it belongs to a different lane with its own
+/// `g-allow-orphaned` baseline exposure, and widening it would silently change
+/// which owner cites are exempt.  The two grammars are genuinely decoupled —
 /// [`extract_g_allow_owner_cites`] runs an independent scan and never calls
 /// [`extract_cites`] — so the duplication is contained and is pinned by the
 /// pre-existing `extract_g_allow_owner_cites_*` tests staying green.
@@ -2538,21 +2507,21 @@ mod tests {
     fn prd_relative_cite_positives() {
         let lines = [
             // ---- class (b), verbatim from the live corpus ----
-            // crates/reify-stdlib/src/fea.rs:1270
+            // crates/reify-stdlib/src/fea.rs
             "/// Diagnostic emission is deferred to PRD task #10 (Diagnostic mapping for",
-            // crates/reify-stdlib/src/fea.rs:1308
+            // crates/reify-stdlib/src/fea.rs
             "/// Diagnostic emission is deferred to PRD task #10.",
-            // crates/reify-stdlib/src/fea.rs:1560
+            // crates/reify-stdlib/src/fea.rs
             "///    is deferred to PRD task #10 (Diagnostic mapping for multi-case-",
-            // crates/reify-stdlib/src/fea.rs:1581
+            // crates/reify-stdlib/src/fea.rs
             "// Empty Map → Undef. Diagnostic emission deferred to PRD task #10",
-            // crates/reify-solver-elastic/src/boundary/dirichlet.rs:730
+            // crates/reify-solver-elastic/src/boundary/dirichlet.rs
             "/// a uniaxial-stretch scenario is deferred to the downstream PRD task #12",
-            // crates/reify-eval/src/geometry_ops.rs:8577
+            // crates/reify-eval/src/geometry_ops.rs
             "//   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:",
             // ---- sibling forms from the catalogue re-sweep ----
             // Bare `invariant #N` needs no `PRD` token — all 52 repo-wide
-            // occurrences are single-digit PRD-local (engine_build.rs:6803).
+            // occurrences are single-digit PRD-local (engine_build.rs).
             "///    `topology_attribute_table` debug_assert (invariant #4) never runs.",
             "//! …) — all §7 rows #1 pinned end-to-end.",
             // Glued PRD-artifact namespaces (`§X#N`, `Q#N`, `OQ#N`, `DD#N`, `T#N`).
@@ -2582,29 +2551,39 @@ mod tests {
     }
 
     /// The mirror image: the rule must not suppress a single GENUINE cite.
-    /// Every line here is verbatim from the live corpus and carries real debt.
+    /// Corpus-derived shapes plus synthetic four-digit controls — the
+    /// `#4553` family below is deliberately synthetic, because family 1 has
+    /// ZERO live four-digit exposure and pinning it is what makes the bound a
+    /// property rather than luck.
+    ///
+    /// Provenance comments name a FILE, never a line: nothing verifies a line
+    /// number here, and this test already caught one rotting (the
+    /// `detectors.rs` entry, whose prose this branch itself rewrote).
     #[test]
     fn prd_relative_cite_negatives() {
         let cases: &[(&str, u32)] = &[
-            // crates/reify-compute-contract/src/elastic_result.rs:592
+            // crates/reify-compute-contract/src/elastic_result.rs
             ("/// The `.ri` / gate exposure is deferred to consumer task #3787.", 3787),
-            // crates/reify-core/src/diagnostics.rs:4053
+            // crates/reify-core/src/diagnostics.rs
             ("/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring", 2947),
-            // crates/reify-eval/src/compute_targets/elastic_static.rs:361
+            // crates/reify-eval/src/compute_targets/elastic_static.rs
             ("/// resolution (deferred to P2 / task #4092): reads each support's raw", 4092),
-            // crates/reify-eval/src/engine_build.rs:2154
+            // crates/reify-eval/src/engine_build.rs
             ("/// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel", 3437),
-            // crates/reify-eval/src/detectors.rs:671
-            ("// comment for that drift-risk trade-off (deferred to task μ, #5062).", 5062),
-            // crates/reify-eval/src/engine_edit.rs:2887
+            // crates/reify-eval/src/detectors.rs — the class-(c) line this
+            // branch truth-corrected, quoted at its CURRENT text ("resolved
+            // by", not the pre-fix "deferred to"). The correction changed the
+            // prose, never the citation, which is what this case asserts.
+            ("// comment for that drift-risk trade-off (resolved by task μ, #5062).", 5062),
+            // crates/reify-eval/src/engine_edit.rs
             ("//      not yet in any `diff_*` helper (tracked by #4686);", 4686),
             // The three-digit legacy ids that must survive the `task #N ≤ 99`
             // guard — the only genuine sub-4-digit `task #N` cites in the repo.
-            // crates/reify-compiler/src/stdlib_loader.rs:257
+            // crates/reify-compiler/src/stdlib_loader.rs
             ("        // Reconstruction of lost work from task #333 per PRD §Slice B.", 333),
-            // crates/reify-lsp/tests/incremental_eval_benchmark.rs:2
+            // crates/reify-lsp/tests/incremental_eval_benchmark.rs
             ("//! Re-establishes the deliverable from task #479 that was lost when commit 00a86da53", 479),
-            // crates/reify-expr/tests/field_eval_tests.rs:209
+            // crates/reify-expr/tests/field_eval_tests.rs
             ("/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient", 630),
             // ---- the digit bound must be UNIFORM across all three families ----
             // The one tracked line repo-wide that puts a REAL task id in
@@ -2617,13 +2596,15 @@ mod tests {
             // lane it ERASES the candidate outright.  §6.6's ratchet cannot see
             // either — `live ⊆ baseline` catches a GAINED finding, never a LOST
             // one — so the bound has to be pinned here.
-            // crates/reify-eval/tests/engine_eval_commit_migration.rs:1490
+            // crates/reify-eval/tests/engine_eval_commit_migration.rs
             ("/// This is the invariant #5238 nearly lost: both let evaluators used to emit", 5238),
-            // Synthetic four-digit forms for every family that carried no bound
-            // of its own.  Family 1 has ZERO live four-digit exposure today
-            // (`git grep -nEi '(§[0-9.]*|\b(OQ|DD|Q|T))#[0-9]{3,}'` over all
-            // tracked files returns nothing), so pinning it here is what makes
-            // that shape a PROPERTY rather than luck.
+            // Synthetic four-digit forms for every family that carried no
+            // bound of its own.  Family 1 has ZERO live four-digit exposure
+            // (measure with the detector's own allowlisted crate excluded —
+            // `':!crates/reify-audit/*'` — or the five lines directly below
+            // match their own sweep), so pinning it here is what makes the
+            // shape a PROPERTY rather than luck.  Method and counts: PRD §16
+            // Row 2.
             ("//! superseded by §7#4553 in the ratchet", 4553),
             ("//! superseded by T#4553 in the ratchet", 4553),
             ("//! superseded by Q#4553 in the ratchet", 4553),
@@ -2650,11 +2631,11 @@ mod tests {
     /// resurrect a PRD-relative one.
     #[test]
     fn prd_relative_cite_is_per_occurrence_not_per_line() {
-        // crates/reify-mesh-morph/src/eligibility.rs:61
+        // crates/reify-mesh-morph/src/eligibility.rs
         let co_cite = "/// visibility scheme (PRD task #11, task #2948) maintain separate counters";
         assert!(has_canonical_cite(co_cite));
         assert_eq!(extract_cites(co_cite), vec![2948]);
-        // crates/reify-mesh-morph/tests/chain_degradation.rs:27
+        // crates/reify-mesh-morph/tests/chain_degradation.rs
         let provenance = "//! Provenance: task #2951 (PRD task #14).";
         assert!(has_canonical_cite(provenance));
         assert_eq!(extract_cites(provenance), vec![2951]);

@@ -511,6 +511,16 @@ per-line verdict would either lose a real cite or resurrect a PRD-relative one. 
 lane's own owner-cite rule (c) is deliberately left byte-unchanged — it has its own exemption
 grammar and its own `g-allow-orphaned` baseline exposure. Evidence: §16 Row 2.
 
+**Registers considered and left OUT (2026-08-31).** The non-PRD `#N` idioms `edge #N`, `site
+#N`, `suggestion #N` and `Gap #N` are unambiguous non-task references and could be added, but
+they are not PRD-relative and they are not what this fix is for. Repo-wide occurrence counts
+over tracked `.rs` — `edge` 81, `suggestion` 75, `site` 30, `Gap` 25 — none of which reaches
+any lane: no member of the δ-B population and no marker-lane line carries one, so admitting
+them would change no finding today. Adding a family is therefore governed by the §14/§16 rule
+that applies to every widening — a fresh live-corpus enumeration, a hand-inspected FP count
+and a dated §16 row — not by a one-line edit to the recogniser. `crates/reify-audit/src/
+ptodo.rs`'s `prd_relative_cite` rustdoc points here rather than restating it.
+
 ### 8.3 Violation taxonomy (finding `kind` values)
 
 | Kind | Trigger | Lane |
@@ -1050,6 +1060,24 @@ fingerprint set was verified **unchanged at 11** by an exact-set diff in BOTH di
 deliberately not the one-way `comm -23` subset oracle, which by construction cannot see a
 LOST finding and is exactly what let this defect through — so the §6.6 baseline is untouched
 and no re-seed was needed.
+
+**Measurement method for the digit bound (re-run 2026-08-31).** The bound is decided by one
+enumeration over tracked `.rs`, and both predicates are recorded here so a later reader
+re-runs the same thing rather than a plausible variant:
+
+| Predicate | Hits | Reading |
+|---|---|---|
+| `git grep -nE '\btasks? #[0-9]{4}\b' -- '*.rs'` | 2042 | genuine four-digit task cites |
+| `git grep -nE '\btasks? #[0-9]{1,2}\b' -- '*.rs'` | 303 | one/two-digit PRD-relative cites |
+| `git grep -nEi '(§[0-9.]*\|\b(OQ\|DD\|Q\|T))#[0-9]{3,}' -- '*.rs' ':!crates/reify-audit/*'` | 0 | family 1 has no live three-or-more-digit exposure |
+
+Two caveats a re-run must carry, both learned by hitting them. (1) The third predicate needs
+the `':!crates/reify-audit/*'` exclusion: without it the detector's own synthetic four-digit
+controls (`§7#4553`, `T#4553`, …, in `prd_relative_cite_negatives`) match their own sweep and
+it returns 5, not 0. (2) The counts drift with the corpus — they were 2039 / 307 on
+2026-08-30 — so they are evidence for a *split of two orders of magnitude*, not figures to
+assert. The only genuine sub-four-digit ids are the legacy #333, #479 and #630, all ≥ 100,
+which is what the `N ≤ 99` bound turns on.
 
 ### The claim this evidence supports — and the one it does not
 
