@@ -95,11 +95,11 @@ mod modal_analysis_fns_stdlib_compile {
     //! because `phase_functions` runs before `phase_entities`; see the WHY header at
     //! modal_analysis_fns.ri:6-20).
     //!
-    //! Scope (#6094): `displacement_at`'s DECLARED return type. The trampoline
-    //! reconstructs u(t_j) = Σ_i (Φ_i[node]·direction)·ξ_i[j] — with mass-normalized
-    //! mode shapes Φ (kg^-1/2) and conjugate modal coordinates ξ (kg^1/2·m), the
-    //! PRODUCT is plain metres: the √mass factors cancel. So the return type is
-    //! `List<Length>`, not `List<Real>`.
+    //! Scope (#6094): `displacement_at`'s DECLARED return type, which is
+    //! `List<Length>` and not `List<Real>`. WHY the reconstruction Φ·ξ is plain
+    //! metres — and why Φ and ξ *alone* stay undimensioned — is derived once, at
+    //! the declaration the type belongs to:
+    //! `crates/reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
     //!
     //! Two independent signals:
     //!   (a) both `displacement_at` overloads declare `List<Length>`;
@@ -114,11 +114,6 @@ mod modal_analysis_fns_stdlib_compile {
     //! carries (b)'s RED signal, and the zero-Error assertion is a companion guard
     //! that the retype does not introduce a diagnostic. Do not read (b) as evidence
     //! that annotated-let mismatches are diagnosed — they are not.
-    //!
-    //! Note the deliberate NON-scope: `DisplacementTimeHistory.mode_coords` (ξ
-    //! alone) and `Mode.shape` (Φ alone) each carry a genuinely unrepresentable
-    //! SI-root exponent and stay `Real`/`Dimensionless` — see their notes in
-    //! modal_analysis.ri.
 
     use reify_compiler::{CompiledModule, stdlib_loader};
     use reify_core::{DimensionVector, Type, ty::SelectorKind};

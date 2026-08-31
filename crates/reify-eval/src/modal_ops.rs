@@ -2852,10 +2852,11 @@ pub fn solve_transient_response_trampoline(
 /// Lazy: only the queried node's time series is reconstructed — the full
 /// `n_nodes × n_times` displacement field is never materialized. Unlike the other
 /// modal trampolines this returns a non-struct value: a `Value::List` of
-/// LENGTH-dimensioned `Value::Scalar`s in SI metres (PRD §5.2). Length, not a
-/// bare Real, because the PRODUCT Φ·ξ cancels the √mass factors each carries
-/// alone (#6094). No warm state is donated (ι owns fn+dispatch; caching is λ's
-/// job).
+/// LENGTH-dimensioned `Value::Scalar`s in SI metres (PRD §5.2) — Length, not a
+/// bare Real, since #6094; WHY the reconstruction is metres is derived at the
+/// declaration, `reify-compiler/stdlib/modal_analysis_fns.ri` ::
+/// `displacement_at`. No warm state is donated (ι owns fn+dispatch; caching is
+/// λ's job).
 pub fn displacement_at_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -9175,7 +9176,9 @@ mod tests {
     }
 
     /// Every entry of the emitted series must be a LENGTH-dimensioned
-    /// `Value::Scalar`, not a bare `Value::Real` (#6094).
+    /// `Value::Scalar`, not a bare `Value::Real` (#6094) — the runtime half of
+    /// the `-> List<Length>` declaration whose derivation lives at
+    /// `reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
     ///
     /// Why this cannot be folded into the compile-side pin
     /// (`reify-compiler/tests/modal_mechanism_compile.rs`, nested module
@@ -9243,8 +9246,8 @@ mod tests {
             else {
                 panic!(
                     "series[{j}] must be a Length-dimensioned Value::Scalar, not a bare \
-                     Real: the reconstruction Φ·ξ is plain metres — Φ (kg^-1/2) times \
-                     ξ (kg^1/2·m) cancels the √mass factors (#6094); got {item:?}"
+                     Real (#6094; derivation at stdlib/modal_analysis_fns.ri :: \
+                     displacement_at); got {item:?}"
                 );
             };
             assert_eq!(

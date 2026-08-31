@@ -155,11 +155,9 @@ pub fn transient_response(
 //
 // Return-type pin (#6094): crates/reify-compiler/tests/modal_mechanism_compile.rs
 // :: mod modal_analysis_fns_stdlib_compile — pins BOTH overloads' declared
-// `List<Length>` and, at a real call site, the bound cell's type. It is NESTED in
-// that binary, NOT a standalone tests/modal_analysis_fns_stdlib_compile.rs: a new
-// top-level test binary is `reason=unregistered-standalone` under the C1/C2
-// harness-layout contract (scripts/check-harness-baseline-registration.sh), so do
-// not "restore" one — the host site's header explains the choice. The emitted-Value
+// `List<Length>` and, at a real call site, the bound cell's type. (It is nested in
+// that binary rather than standalone for harness-layout reasons its own header
+// gives; that is host-site trivia, not a fact about this type.) The emitted-Value
 // half is pinned independently in crates/reify-eval/src/modal_ops.rs
 // (`displacement_at_series_entries_are_length_dimensioned`), because nothing
 // compares a declared return type against the emitted Value — which is exactly how
