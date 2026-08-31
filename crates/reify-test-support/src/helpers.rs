@@ -755,18 +755,17 @@ pub fn get_value_cell_in<'a>(
     template_name: &str,
     cell_name: &str,
 ) -> &'a reify_compiler::ValueCellDecl {
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == template_name)
-        .unwrap_or_else(|| panic!("no template named '{template_name}'"));
-    template
+    let Some(template) = module.templates.iter().find(|t| t.name == template_name) else {
+        panic!("no template named '{template_name}'")
+    };
+    let Some(cell) = template
         .value_cells
         .iter()
         .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{template_name}'")
-        })
+    else {
+        panic!("no value cell named '{cell_name}' in template '{template_name}'")
+    };
+    cell
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from a named template.
@@ -793,9 +792,10 @@ pub fn get_let_expr_in<'a>(
     cell_name: &str,
 ) -> &'a CompiledExpr {
     let cell = get_value_cell_in(module, template_name, cell_name);
-    cell.default_expr.as_ref().unwrap_or_else(|| {
+    let Some(expr) = cell.default_expr.as_ref() else {
         panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    };
+    expr
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from the first template.
@@ -1852,6 +1852,32 @@ mod tests {
             cell.default_expr.is_none(),
             "auto_param_module's fixture guarantees default_expr = None; \
              get_value_cell_in must return the cell as-is, not synthesize a default"
+        );
+    }
+
+    /// Pins the ambiguity hazard documented on `get_value_cell_in`: resolution
+    /// keys on `id.member` alone, so when two cells share a member name under
+    /// different `id.entity` values, the first declared silently wins.
+    #[test]
+    fn test_get_value_cell_in_resolves_first_match_when_member_name_is_ambiguous() {
+        use reify_core::{ModulePath, Type};
+
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", Type::dimensionless_scalar())
+            .auto_param("Sub", "x", Type::dimensionless_scalar())
+            .build();
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let cell = super::get_value_cell_in(&module, "S", "x");
+        assert_eq!(
+            cell.id.entity, "S",
+            "get_value_cell_in resolves on id.member alone; with two cells sharing \
+             member 'x' under different id.entity, the FIRST declared (id.entity \
+             == \"S\") must win silently — got id.entity {:?}, so the documented \
+             first-match-wins resolution order has changed",
+            cell.id.entity
         );
     }
 
