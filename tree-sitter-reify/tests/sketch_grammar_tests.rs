@@ -17,6 +17,11 @@
 //! `test/corpus/imaginary_literal.txt` failure it cites is fixed. Do not
 //! propagate the stale claim.)
 //!
+//! Measured again after this task's full grammar delta and both corpus edits:
+//! **250 parses, 250 successful, 0 failed, 100.00%** — 243 baseline, plus the
+//! 6 cases of `test/corpus/sketch_block.txt` and the one clean-parse case added
+//! to `test/corpus/auto_operand_rejection.txt`.
+//!
 //! `tree-sitter generate --force` on that same branch point emits exactly two
 //! `unnecessary conflicts` pairs, both PRE-EXISTING and unrelated:
 //! `constraint_instantiation`/`constraint_declaration` and
