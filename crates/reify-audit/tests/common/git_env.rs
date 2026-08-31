@@ -362,10 +362,17 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
 
     // CARGO_MANIFEST_DIR is evaluated in THIS crate, which always sits at
     // <repo>/crates/reify-audit; two `.parent()` walks reach the repo root.
-    // Same shape and depth as the `resolve_script_and_root` walk inside
-    // `reify_test_support`. This is the one thing the gate above cannot
-    // supply: it hands back an envelope, not the paths it resolved, and the
-    // two spawns below need the script path itself.
+    //
+    // A SECOND COPY of the `resolve_script_and_root` walk inside
+    // `reify_test_support`, and of the argv `build_audit_command` builds a few
+    // lines below — same shape, same depth. It is here only because both of
+    // those are module-private, and the gate above hands back an envelope
+    // rather than the paths it resolved, while the two spawns below need the
+    // script path itself. The right fix is a public seam on
+    // `reify_test_support::orphan_audit` so this copy can be deleted rather
+    // than pinned; that file is outside the lock set of the task that owns
+    // this one, so it is filed as follow-up work. Until then the two premise
+    // checks below bound the damage.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let script = Path::new(manifest_dir)
         .parent()
@@ -380,12 +387,13 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
         .parent()
         .expect("repo root exists");
 
-    // A premise check on the walk directly above — NOT a second copy of the
+    // Premise checks on the walk directly above — NOT a second copy of the
     // skip protocol. The gate already ran the script to completion, so it
     // provably exists at the path `reify-test-support` resolved from its own
-    // manifest dir. Absent at the path resolved here means the two walks
-    // disagree: a bug in this helper, never an environmental condition, so it
-    // fails loudly rather than skipping.
+    // manifest dir; anything wrong here is a bug in this helper, never an
+    // environmental condition, so both fail loudly rather than skipping.
+    //
+    // Check 1: the script is where this walk says it is.
     assert!(
         script.exists(),
         "reify_test_support::run_orphan_audit({scope:?}) just ran the audit script \
@@ -393,6 +401,34 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
          {script:?}, where nothing exists — the two `.parent()` walks disagree, so \
          this helper would spawn a different script (or none) than the one the skip \
          protocol vetted"
+    );
+
+    // Check 2: this root is one from which the OTHER walk reproduces this
+    // same root. `reify_test_support`'s `resolve_script_and_root` walks two
+    // `.parent()`s off ITS manifest dir, so if `crates/reify-test-support`
+    // sits here, that walk lands back on `repo_root` by construction.
+    //
+    // Check 1 alone cannot see this: it only rejects a walk that resolves to
+    // NOTHING. Two walks resolving to existing but DIFFERENT roots — a nested
+    // checkout, a vendored copy, either crate moved out of `crates/` — pass it
+    // silently while spawning a script the gate never vetted. That is the case
+    // this check adds.
+    //
+    // Bounded, deliberately: it does not distinguish this repo from a byte
+    // identical vendored copy laid out the same way. Closing that needs the
+    // path itself rather than a reconstruction of it, which means a public
+    // seam on `reify_test_support::orphan_audit` (its `resolve_script_and_root`
+    // and `build_audit_command` are module-private) — filed as follow-up work,
+    // out of scope for the task that owns this file.
+    let sibling_manifest = repo_root.join("crates/reify-test-support");
+    assert!(
+        sibling_manifest.join("Cargo.toml").exists(),
+        "this crate's CARGO_MANIFEST_DIR walk resolves the repo root to \
+         {repo_root:?}, but {sibling_manifest:?} holds no Cargo.toml — so \
+         `reify_test_support`'s own two-`.parent()` walk, which the skip protocol \
+         above just ran through, cannot have landed on this same root. The two \
+         walks resolve DIFFERENT roots and this helper is about to spawn a script \
+         the gate never vetted"
     );
 
     let decoy = decoy_repo();
