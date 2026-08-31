@@ -114,6 +114,17 @@ and writes no disk, so nothing reconciles the editor buffer on its own —
 which is why its `apply_gui_state` push carries the optional
 `file: {path, content}` member (see `write_tool_frontend_payload`).
 
+**Diagnostics filtering.** `reify_update_source` returns diagnostics filtered
+to the named file via `filter_diagnostics_for_file`, which matches BOTH the
+caller's path spelling AND the stem-only `"<stem>.ri"` module key the engine
+actually stamps on every `DiagnosticInfo.file_path`
+(`EngineSession::get_diagnostics` → `resolve_source` → `module_key`) — a bare
+`==` between the two matches nothing and would silently drop the whole
+warning stream.
+`reify_set_parameter`, by contrast, returns its diagnostics **unfiltered**,
+which is exactly what `crates/reify-mcp/src/tools/write.rs` does for that tool
+name; keep it that way so the two surfaces' envelopes stay in parity.
+
 **`reify_save_file` and `reify_export` are pure I/O.** They commit no new
 engine state and push nothing to the frontend, but they still route through
 `write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds uniformly

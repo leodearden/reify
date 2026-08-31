@@ -766,6 +766,42 @@ pub(crate) fn module_key(name: &str) -> String {
     format!("{}.ri", name)
 }
 
+/// Does a stamped source key `key` refer to the file a caller named as
+/// `requested`?
+///
+/// Diagnostics and `source_map` entries are stamped with
+/// [`module_key`]`(module_name)` = `"<stem>.ri"` — see `resolve_source`
+/// (:3259-3265), which is what `get_diagnostics` hands to
+/// `diagnostics_to_info`, and `UnresolvedGuiState`'s note at commands.rs:539.
+/// That key is NEVER a filesystem path. The reify-debug write tools, by
+/// contrast, receive a caller-supplied REAL path (`/tmp/x/part.ri`) — that is
+/// what their ToolDefs advertise and what every caller passes.
+///
+/// So a bare `==` between the two is **VACUOUS**: it matches nothing and
+/// silently drops every diagnostic, which is exactly the bug this predicate
+/// exists to close (task #5097 δ, review finding). It accepts EITHER spelling
+/// and still discriminates on the stem — `/tmp/x/other.ri` does not match a
+/// `"part.ri"` key.
+///
+/// The comparison spelling is built with [`module_key`] itself rather than a
+/// second `format!("{}.ri", ...)`, so the matcher and the minter of the key
+/// can never drift.
+///
+/// Used by `debug_server::filter_diagnostics_for_file`, and gated to match:
+/// `debug_server` is the only consumer and is itself `#[cfg(feature = "gui")]`
+/// in lib.rs, so an ungated definition is dead code in the default-feature
+/// build that `scripts/verify.sh`'s `clippy ... -- -D warnings` pass runs.
+#[cfg(feature = "gui")]
+pub(crate) fn source_key_matches_path(key: &str, requested: &str) -> bool {
+    key == requested
+        || Path::new(requested)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(module_key)
+            .as_deref()
+            == Some(key)
+}
+
 /// Returns `true` for any `std` or `std.*` import path.
 ///
 /// Used by `compile_entry_with_imports` at two filter sites (prelude-ref

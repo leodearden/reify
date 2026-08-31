@@ -1066,7 +1066,11 @@ learn a cell's dimension before choosing a unit."
                 "properties": {
                     "file_path": {
                         "type": "string",
-                        "description": "Path to the file to update."
+                        "description": "Path to the file to update. The returned \
+                                        diagnostics are filtered to this file, and \
+                                        the filter accepts either a filesystem path \
+                                        or the bare \"<stem>.ri\" module key the \
+                                        engine stamps on diagnostics."
                     },
                     "content": {
                         "type": "string",
@@ -2008,6 +2012,31 @@ pub async fn reify_update_source_on_engine_and_refresh_baseline(
     .await
 }
 
+/// Keep only the diagnostics that belong to the file the caller named.
+///
+/// Pure: no engine, no Tauri handle, no I/O — the same headless-testability
+/// contract as [`write_tool_frontend_payload`], so the discrimination is
+/// pinned directly by `filter_diagnostics_for_file_matches_either_spelling`
+/// over hand-built `DiagnosticInfo` literals.
+///
+/// The per-item decision is delegated to
+/// [`crate::engine::source_key_matches_path`], which lives beside the
+/// `module_key` that MINTS the stamped spelling so the two can never drift.
+/// It exists because `EngineSession::get_diagnostics` stamps every
+/// `file_path` with the stem-only module key `"<stem>.ri"` while this
+/// surface's callers supply a real filesystem path — a bare `==` between them
+/// matches NOTHING and silently drops the whole warning stream (task #5097 δ,
+/// review finding).
+pub(crate) fn filter_diagnostics_for_file(
+    diags: Vec<reify_core::DiagnosticInfo>,
+    requested: &str,
+) -> Vec<reify_core::DiagnosticInfo> {
+    diags
+        .into_iter()
+        .filter(|d| crate::engine::source_key_matches_path(&d.file_path, requested))
+        .collect()
+}
+
 /// Recompile a file's whole buffer from AI-supplied text, push the rebuilt
 /// `GuiState` AND the new text to the frontend, and return the reify-mcp
 /// result envelope.
@@ -2021,8 +2050,13 @@ pub async fn reify_update_source_on_engine_and_refresh_baseline(
 ///     design would re-render while the editor still showed the old text.
 ///  3. `query_frontend("apply_gui_state", ...)` — applies both, no view reset.
 ///  4. Returns `{"success", "diagnostics_count", "diagnostics"}` filtered to
-///     `file_path` — the same envelope
-///     `crates/reify-mcp/src/tools/write.rs` returns for this tool name.
+///     `file_path` via [`filter_diagnostics_for_file`], which matches EITHER
+///     spelling — the caller's real filesystem path OR the stem-only
+///     `"<stem>.ri"` module key `get_diagnostics` actually stamps. A bare
+///     `==` against the caller's path matches NOTHING, so it would report
+///     `diagnostics_count: 0` while advertising a filtered list. The envelope
+///     is otherwise the same one `crates/reify-mcp/src/tools/write.rs`
+///     returns for this tool name.
 ///
 /// Inherits the serial-debug-ops caveat stated on
 /// [`handle_reify_set_parameter`]: the refresh lands before the push.
@@ -2042,10 +2076,7 @@ async fn handle_reify_update_source(
     .await?;
 
     let diagnostics = run_on_engine(&state.engine, |s| Ok(s.get_diagnostics())).await?;
-    let filtered: Vec<_> = diagnostics
-        .into_iter()
-        .filter(|d| d.file_path == file_path)
-        .collect();
+    let filtered = filter_diagnostics_for_file(diagnostics, &file_path);
 
     let payload = write_tool_frontend_payload(&gs, Some((&file_path, &content)))?;
     state
