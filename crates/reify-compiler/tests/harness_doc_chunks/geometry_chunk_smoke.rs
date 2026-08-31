@@ -1317,7 +1317,7 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
 ///
 /// Unchanged at 5 from before the table half existed: it floors the FENCE, which
 /// is a separate claim from the table's coverage and keeps its own number.
-const MINIMUM_SECTION_CALL_NAMES: usize = 5;
+const MINIMUM_SECTION_CALL_NAMES: usize = 8;
 
 /// Names the length-arguments section may call that are in none of
 /// [`CALLABLE_NAME_REGISTRIES`], each with its justification.
@@ -1647,8 +1647,8 @@ pub(crate) fn assert_cited_paths_resolve(
 /// The `.ri` floor covers the four worked references (clearance_oracle,
 /// vc_bolt_pattern_clearance, dock_pickup, intersects_smoke) a designer is sent
 /// to next; losing one is the same discoverability regression task 5389 closed.
-const MINIMUM_FN_CITES: usize = 9;
-const MINIMUM_RS_FILES: usize = 5;
+const MINIMUM_FN_CITES: usize = 13;
+const MINIMUM_RS_FILES: usize = 6;
 const MINIMUM_RI_FILES: usize = 4;
 
 /// Every test the chunk cites as PINNING a runtime claim must still exist.

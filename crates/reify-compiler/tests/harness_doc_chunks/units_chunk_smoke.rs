@@ -541,7 +541,7 @@ fn bare_zero_is_not_special_cased() {
 ///
 /// Raise these WITH the chunk when a cite is added. Never lower one to go green:
 /// a lowered floor is a SYNC row that has quietly stopped claiming anything.
-const MINIMUM_FN_CITES: usize = 6;
+const MINIMUM_FN_CITES: usize = 7;
 const MINIMUM_RS_FILES: usize = 3;
 const MINIMUM_RI_FILES: usize = 1;
 
