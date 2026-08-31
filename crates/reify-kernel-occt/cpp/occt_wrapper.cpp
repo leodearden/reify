@@ -7541,16 +7541,40 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // topologically invalid face that importers resolve inconsistently.
     // Nor do the pins below catch the `step.angleunit.mode` trap: they
     // quantify over unit DECLARATIONS, and as measured below the
-    // declaration does not move when the payload does.
+    // declaration does not move when the payload does. THE SAME IS TRUE OF
+    // #6344's RUNTIME DECLARATION GUARD, and for the same reason — it walks
+    // the model's unit contexts, which the measurement below shows are
+    // byte-identical in all three modes. #6344 therefore closes that trap
+    // with a SEPARATE arm that reads the static directly
+    // (`enforce_step_angle_mode_not_degrees`), not as a consequence of the
+    // unit walk. Do not read either guard as covering the other.
     //
     // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
     // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
     // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
     // quantify over EVERY unit context — a compound emits one per
     // representation_context, three for a two-cone union — rather than
-    // grepping for one ".RADIAN." token, so a partial flip fails. INV-AD-4's
-    // third arm, a runtime refusal guard, is deliberately DEFERRED to #6344
-    // so this leaf keeps its no-behaviour-change character.
+    // grepping for one ".RADIAN." token, so a partial flip fails.
+    //
+    // INV-AD-4's THIRD ARM — the runtime refusal guard — LANDED in #6344 and
+    // runs a few lines below, between Transfer and Write:
+    // `enforce_step_angle_mode_not_degrees()` (the separate mode arm named in
+    // THE TRAP paragraph above) and
+    // `enforce_step_plane_angle_radians()`, whose four declaration arms are
+    // (V1) the model carries at least one unit-assigned context, (V2) every
+    // context reaches at least one angular unit, (V3) every angular unit a
+    // context reaches is the unprefixed SI radian, (V4) every angular unit no
+    // context references is too. It walks the model BY ASSOCIATION rather than
+    // comparing global counts, for the reason spelled out on the handle.rs
+    // helper: STEP permits several contexts to share one unit instance.
+    //
+    // Its failure arms are unreachable from ordinary inputs — as stated above,
+    // OCCT emits the radian unconditionally, so no input shape and no
+    // Interface_Static can drive a real export into them. They are therefore
+    // exercised through `export_step_with_injected_fault_for_test`, which runs
+    // this same body under this same lock with exactly one corruption applied;
+    // see crates/reify-kernel-occt/tests/harness_occt/
+    // step_plane_angle_guard_integration.rs.
     //
     // ------------------------------------------------------------------
     // MEASURED 2026-08-29 (task #6184) against SYSTEM OCCT 7.8. Everything
