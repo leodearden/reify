@@ -347,10 +347,12 @@ mk_config_jsonc() {
 # shape mk_config_jsonc above exercises (task 6486).
 #
 # Built from jcodemunch_mcp/config.py::generate_template() at the pinned
-# 1.108.54, read directly from the cached wheel on this host (~/.cache/uv/
-# archive-v0/E-VdWJWUp5hzN-dXB2Q95/jcodemunch_mcp/config.py). Two JSONC
-# features the real template carries, and mk_config_jsonc above carries
-# NEITHER of:
+# 1.108.54 — cited here by module path + version pin rather than by the
+# host-local uv wheel cache directory it was originally transcribed from
+# (that directory name is a content hash valid only on the machine that
+# resolved it, so citing it would not stay resolvable for the next reader).
+# Four JSONC shapes the real template carries that mk_config_jsonc above
+# carries NONE of:
 #   1. A `//`-commented-out "max_folder_files" line (it ships commented out
 #      by default — config.py:1826) alongside plenty of OTHER `//` prose.
 #   2. A live (uncommented) JSON array — "languages" — whose last element
@@ -362,6 +364,18 @@ mk_config_jsonc() {
 #      out to dodge an unrelated missing native dep; that stub touches only
 #      the "languages" array's CONTENTS, not the trailing-comma shape that
 #      matters here or the fixed max_folder_files section).
+#   3. A NESTED object-of-arrays — "tool_tier_bundles" — mirroring the real
+#      template's shape: a trailing comma before each inner array's `]` AND
+#      one before the outer object's `}`. Added under task 6486's review
+#      pass so nested-depth collapse is ASSERTED rather than assumed — the
+#      stripping pipeline is a flat text rewrite with no notion of nesting,
+#      but nothing had exercised more than one level of it before this.
+#   4. An object whose ENTIRE body is `//` comments — "descriptions" —
+#      collapsing to an empty object the same way "meta_fields" above
+#      collapses to an empty array, and (placed last) landing its own
+#      trailing comma directly before the OUTER closing `}` — a
+#      `}`-then-`}` shape the fixture did not previously cover, since
+#      "languages" above only ever put a `]` before that final `}`.
 #
 # `cap` behaves like mk_config_jsonc's: a number makes max_folder_files a
 # LIVE (uncommented) key at that value; `-` leaves it commented out, exactly
@@ -399,6 +413,23 @@ mk_real_shaped_config_jsonc() {
         echo '  "python",'
         echo '  "rust",'
         echo '  ],'
+        echo ''
+        echo '  // === Tool tiers (nested object-of-arrays, task 6486) ==='
+        echo '  "tool_tier_bundles": {'
+        echo '    "fast": ['
+        echo '      "ripgrep",'
+        echo '      "glob",'
+        echo '    ],'
+        echo '    "slow": ['
+        echo '      "semantic_search",'
+        echo '    ],'
+        echo '  },'
+        echo ''
+        echo '  // === Descriptions (all-comment object body, task 6486) ==='
+        echo '  "descriptions": {'
+        echo '    // "fast": "grep/glob-based literal search",'
+        echo '    // "slow": "semantic embedding search",'
+        echo '  },'
         echo '}'
     } > "$dir/config.jsonc"
 }
