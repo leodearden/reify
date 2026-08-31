@@ -211,6 +211,22 @@ mod tests {
         "frame_to_frame",
     ];
 
+    /// Independent fixture — the 4 expected names in the DECOMPOSER sub-family.
+    /// Deliberately does NOT reference `ORIENTATION_DECOMPOSER_FN_NAMES`, for the
+    /// same reason `EXPECTED_NAMES` above does not reference the producer slice:
+    /// a drift in the slice is caught against an independent hand-derived list.
+    ///
+    /// Derived BY HAND from the SAME two eval dispatchers as `EXPECTED_NAMES`
+    /// (`reify_stdlib::orientation::eval_orientation` contributes three,
+    /// `reify_stdlib::geometry::eval_geometry` one) — and it carries the same
+    /// un-enforced-derivation caveat recorded on `EXPECTED_NAMES`.
+    const EXPECTED_DECOMPOSER_NAMES: [&str; 4] = [
+        "orient_log",
+        "orient_to_euler",
+        "orient_to_axis_angle",
+        "transform_log",
+    ];
+
     // ── Name-family contract (step-1 RED / step-2 GREEN) ─────────────────────
 
     /// `is_orientation_typed_fn` recognises every expected constructor name.
@@ -482,5 +498,126 @@ mod tests {
                  family member must have an explicit match arm"
             );
         }
+    }
+
+    // ── Decomposer name-family contract (this task's step-1 RED / step-2 GREEN) ─
+    //
+    // The mirror image of the producer contract above, for the four DECOMPOSERS.
+    // Membership and every ruling live ONCE on `ORIENTATION_DECOMPOSER_FN_NAMES`.
+
+    /// `is_orientation_decomposer_fn` recognises every expected decomposer name.
+    #[test]
+    fn is_orientation_decomposer_fn_recognises_all_four() {
+        for name in EXPECTED_DECOMPOSER_NAMES {
+            assert!(
+                is_orientation_decomposer_fn(name),
+                "is_orientation_decomposer_fn({name:?}) must be true \
+                 (orientation/transform decomposer sub-family)"
+            );
+        }
+    }
+
+    /// `ORIENTATION_DECOMPOSER_FN_NAMES` is exactly the 4 expected names: correct
+    /// count, every expected name present, and no extra entry. Mirrors
+    /// `orientation_typed_fn_names_are_exactly_the_18`.
+    #[test]
+    fn orientation_decomposer_fn_names_are_exactly_the_four() {
+        assert_eq!(
+            ORIENTATION_DECOMPOSER_FN_NAMES.len(),
+            EXPECTED_DECOMPOSER_NAMES.len(),
+            "ORIENTATION_DECOMPOSER_FN_NAMES must hold exactly {} names, got {:?}",
+            EXPECTED_DECOMPOSER_NAMES.len(),
+            ORIENTATION_DECOMPOSER_FN_NAMES
+        );
+        // Every expected name is in the slice.
+        for name in EXPECTED_DECOMPOSER_NAMES {
+            assert!(
+                ORIENTATION_DECOMPOSER_FN_NAMES.contains(&name),
+                "ORIENTATION_DECOMPOSER_FN_NAMES must contain {name:?}"
+            );
+        }
+        // No extra name beyond the expected fixture.
+        for name in ORIENTATION_DECOMPOSER_FN_NAMES {
+            assert!(
+                EXPECTED_DECOMPOSER_NAMES.contains(name),
+                "ORIENTATION_DECOMPOSER_FN_NAMES has unexpected entry {name:?} \
+                 not in the fixture"
+            );
+        }
+    }
+
+    /// THE TWO-WAY LOCK that keeps the producer/decomposer split honest: no
+    /// PRODUCER may be claimed by the decomposer predicate.
+    ///
+    /// Loops ALL of `ORIENTATION_TYPED_FN_NAMES` rather than spot-checking, so it
+    /// is the exact reciprocal of `is_orientation_typed_fn_rejects_the_four_decomposers`
+    /// above. Together the pair means a name added to the wrong half of this
+    /// module is caught whichever half it is added to — the same regression-lock
+    /// shape the `units.rs` disjointness matrix applies ACROSS families, applied
+    /// here WITHIN one module.
+    #[test]
+    fn is_orientation_decomposer_fn_rejects_the_producers() {
+        for name in ORIENTATION_TYPED_FN_NAMES {
+            assert!(
+                !is_orientation_decomposer_fn(name),
+                "producer {name:?} must NOT be claimed by \
+                 is_orientation_decomposer_fn — the two halves of this module \
+                 are disjoint by construction"
+            );
+        }
+    }
+
+    /// `is_orientation_decomposer_fn` rejects `frame_at`, sibling-family names,
+    /// the empty name, and unknown names.
+    #[test]
+    fn is_orientation_decomposer_fn_rejects_frame_at_and_other_families() {
+        assert!(
+            !is_orientation_decomposer_fn("frame_at"),
+            "'frame_at' belongs to the datum family (datum_constructor_result_type \
+             already types it Frame(3)) — claiming it here would double-classify"
+        );
+        assert!(
+            !is_orientation_decomposer_fn("affine_from_transform"),
+            "must reject 'affine_from_transform' — it CONSUMES a Transform and \
+             produces an AffineMap, so it belongs to the affine family"
+        );
+        // `joint_jacobian` is the sharpest negative available: it already resolves
+        // to `Type::StructureRef("Twist")` via the JOINT family
+        // (joint_signatures.rs:189), the same nominal tag `transform_log` takes
+        // below — so it is the one name a careless reader might file here.
+        assert!(
+            !is_orientation_decomposer_fn("joint_jacobian"),
+            "must reject 'joint_jacobian' — it is already typed \
+             StructureRef(\"Twist\") by the joint family; claiming it here would \
+             double-classify the name across two resolvers"
+        );
+        assert!(
+            !is_orientation_decomposer_fn("project"),
+            "must reject 'project' — its first-arg fallback is already correct"
+        );
+        assert!(!is_orientation_decomposer_fn(""), "must reject empty name");
+        assert!(
+            !is_orientation_decomposer_fn("does_not_exist"),
+            "must reject unrelated name"
+        );
+    }
+
+    /// Case-sensitivity invariant: Reify function names are snake_case, so
+    /// capitalised forms must not match (mirrors
+    /// `is_orientation_typed_fn_is_case_sensitive`).
+    #[test]
+    fn is_orientation_decomposer_fn_is_case_sensitive() {
+        assert!(
+            !is_orientation_decomposer_fn("Orient_Log"),
+            "capitalised form must not match"
+        );
+        assert!(
+            !is_orientation_decomposer_fn("ORIENT_LOG"),
+            "upper-case form must not match"
+        );
+        assert!(
+            !is_orientation_decomposer_fn("Transform_Log"),
+            "capitalised form must not match"
+        );
     }
 }
