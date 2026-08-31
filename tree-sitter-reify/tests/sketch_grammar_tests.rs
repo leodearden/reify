@@ -67,6 +67,10 @@
 //!   [`named_argument_auto_forms_unchanged`],
 //!   [`auto_seed_is_not_admitted_at_binding_sites_in_v1`] — **GREEN before and
 //!   after**. Together they keep the OPTION B reversal of task 3808 NARROW.
+//! - [`positional_auto_free_is_a_seed_not_a_modifier`] — **RED** before step-8;
+//!   GREEN after. Pins the one MEASURED consequence of grammar-generality that
+//!   reads as a surprise: positional `auto(free)` is an `auto_seed`, not the
+//!   `auto_keyword` modifier.
 //!
 //! The INV-SF-7 suite in the middle of this file is separate — see its own
 //! banner comment for why it exists and how its readings were arrived at:
@@ -689,10 +693,17 @@ fn sketch_body_keeps_consecutive_relation_members_separate() {
 // PRD §5 D6, implementing Leo's 2026-07-25 OPTION B decision: grammar-general
 // `auto(<expr>)` in CALL position. That decision records a PARTIAL, explicit
 // reversal of task 3808, which rejected `auto` at operand positions. Only the
-// parenthesized-seed form is reversed — bare `auto`, `auto(free)` and
-// `auto(name = value)` in POSITIONAL argument position all stay parse errors,
-// and [`bare_auto_stays_rejected_in_positional_operand_position`] is what keeps
-// the reversal narrow rather than letting it drift wide later.
+// PARENTHESIZED form is reversed: positionally, bare `auto` and the
+// named-parameter `auto(name = value)` both stay parse errors, and
+// [`bare_auto_stays_rejected_in_positional_operand_position`] is what keeps the
+// reversal narrow rather than letting it drift wide later.
+//
+// `auto(free)` is the one case where "grammar-general" bites: positionally it
+// is now a CLEAN parse — an `auto_seed` whose seed happens to be the identifier
+// `free` — because `auto_keyword`'s modifier arm is not reachable in argument
+// position at all. That is a consequence of the generality, not a special case,
+// and [`positional_auto_free_is_a_seed_not_a_modifier`] pins the measured
+// reading so it cannot be mistaken for the modifier later.
 
 /// The α target surface for `auto(seed)`: the committed PRD fixture whose only
 /// remaining parse blocker after step-2 is `auto(10mm)` in positional argument
@@ -789,22 +800,73 @@ fn auto_seed_cst_contract() {
 /// The half of task 3808 that is NOT reversed: bare `auto` stays a parse error
 /// at every positional operand position.
 ///
-/// GREEN before and after step-8 (probe-verified exit 1 on all four today).
-/// These mirror `test/corpus/auto_operand_rejection.txt` case-for-case. Their
-/// job is to prove the OPTION B reversal is NARROW — the parenthesized-seed
-/// form only — so a later widening cannot quietly restore bare `auto` as an
-/// operand and call it precedent.
+/// GREEN before and after step-8 (probe-verified exit 1 on the first four
+/// today). The first four mirror `test/corpus/auto_operand_rejection.txt`
+/// case-for-case. Their job is to prove the OPTION B reversal is NARROW — the
+/// parenthesized form only — so a later widening cannot quietly restore bare
+/// `auto` as an operand and call it precedent.
+///
+/// The fifth case is the other half of the narrowness contract and has no
+/// corpus counterpart: `auto(seed = 5mm)` is a MODIFIER with a named
+/// parameter, and positionally it must stay an error rather than degrade into
+/// an `auto_seed` that silently drops the parameter NAME. It stays an error
+/// for a structural reason, not a precedence one — `seed = 5mm` is not an
+/// `_expression`, so it cannot fill `auto_seed`'s `seed` field.
 #[test]
 fn bare_auto_stays_rejected_in_positional_operand_position() {
-    let cases: [(&str, &str); 4] = [
+    let cases: [(&str, &str); 5] = [
         ("bare auto as a positional call arg", "structure S { let x : Length = clamp(auto) }"),
         ("bare auto as a binary operand", "structure S { let x : Length = auto + 2mm }"),
         ("bare auto as a list element", "structure S { let xs = [auto] }"),
         ("bare auto as a constraint expr", "structure S { param x : Length  constraint auto }"),
+        ("named-param auto as a positional arg", "structure S { let b = f(auto(seed = 5mm)) }"),
     ];
     for (label, source) in cases {
         assert_has_error(label, source);
     }
+}
+
+/// The one measured consequence of "grammar-general in CALL position" that
+/// reads as a surprise, pinned so it cannot be mistaken for the modifier arm.
+///
+/// RED before step-8 (`f(auto(free))` is a parse ERROR today); GREEN after.
+///
+/// In ARGUMENT position `auto_keyword` is unreachable, so `auto(free)` is not
+/// the free-MODIFIER — it is an ordinary `auto_seed` whose seed happens to be
+/// the identifier `free`. Nothing is ambiguous, because the two readings live
+/// in disjoint positions: this test asserts the positional reading, and
+/// [`named_argument_auto_forms_unchanged`] asserts that the SAME text in named
+/// argument position still reaches `auto_keyword` through `_binding_value`.
+///
+/// Keeping both halves asserted is the point. Either one alone would let a
+/// future widening collapse the positions together and give one token sequence
+/// two readings — precisely the INV-SF-7 failure the position split avoids.
+#[test]
+fn positional_auto_free_is_a_seed_not_a_modifier() {
+    const SOURCE: &str = "structure S { let b = f(auto(free)) }";
+    assert_parses_clean("f(auto(free))", SOURCE);
+
+    let mut parser = make_parser();
+    let tree = parser.parse(SOURCE, None).expect("parse failed");
+    let root = tree.root_node();
+
+    assert_eq!(
+        count_kind(root, "auto_keyword"),
+        0,
+        "positional `auto(free)` must NOT reach auto_keyword's modifier arm:\n{}",
+        root.to_sexp()
+    );
+    let auto_seed = find_node_by_kind(root, "auto_seed").expect("expected an auto_seed node");
+    let seed = auto_seed
+        .child_by_field_name("seed")
+        .expect("expected a `seed` field on auto_seed");
+    assert_eq!(
+        seed.kind(),
+        "identifier",
+        "`free` must be read as an ordinary seed expression here:\n{}",
+        root.to_sexp()
+    );
+    assert_eq!(&SOURCE[seed.byte_range()], "free");
 }
 
 /// The existing NAMED-argument and binding-site `auto` forms are untouched: the
@@ -820,12 +882,26 @@ fn bare_auto_stays_rejected_in_positional_operand_position() {
 /// single-expression node and lose the parameter name.
 #[test]
 fn named_argument_auto_forms_unchanged() {
+    let mut named_parser = make_parser();
     for (label, source) in [
         ("f(x: auto)", "structure S { let y = f(x: auto) }"),
         ("f(x: auto(free))", "structure S { let y = f(x: auto(free)) }"),
         ("f(x: auto(seed = 5mm))", "structure S { let y = f(x: auto(seed = 5mm)) }"),
     ] {
         assert_parses_clean(label, source);
+        // Clean-parse alone would not catch the real hazard: `auto_seed`
+        // leaking into named-argument position would ALSO parse clean, while
+        // silently changing the node kind (and, for the third case, dropping
+        // the parameter name). Assert the kind, not just the absence of errors.
+        let tree = named_parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        assert_eq!(
+            (count_kind(root, "auto_keyword"), count_kind(root, "auto_seed")),
+            (1, 0),
+            "{label} must still reach auto_keyword via _binding_value, never \
+             the new auto_seed node:\n{}",
+            root.to_sexp()
+        );
     }
 
     const PARAM: &str = "structure S { param p : Frame = auto(seed = 5mm) }";

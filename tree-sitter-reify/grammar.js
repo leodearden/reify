@@ -668,6 +668,71 @@ module.exports = grammar({
       field('value', $._expression),
     ),
 
+    // ── auto(seed) in positional call-argument position ─────
+    // PRD v0.6 constrained-2d-sketch §5 D6, implementing the 2026-07-25
+    // OPTION B decision: `auto(<expr>)` is admitted grammar-generally in CALL
+    // position (any `callTail($)` consumer — function_call, namespaced_call,
+    // ad_hoc_selector, trait_method_call), so `point(auto(10mm), 0mm)` means
+    // "solve for this point, seeded at 10mm".
+    //
+    // WHY A DISTINCT NODE RATHER THAN A FOURTH `auto_keyword` ARM.
+    // `auto_keyword` includes the bare `$._auto_token` arm, so admitting
+    // `auto_keyword` into `argument_list` would ALSO admit bare `auto` as a
+    // positional argument and thereby fully reverse task 3808's
+    // operand-position rejection. The OPTION B decision authorises only the
+    // parenthesized-seed form, so only that form gets a rule. The distinct
+    // node kind is also what lets `lower_expr` route it on kind alone,
+    // without re-inspecting children to tell a seed from a modifier.
+    //
+    // WHY NO AMBIGUITY / NO `conflicts` ENTRY. The three `argument_list`
+    // alternatives have disjoint FIRST sets: `named_argument` starts
+    // `identifier ':'`; `auto_seed` starts AUTO_TOKEN; and `_expression` can
+    // never start with AUTO_TOKEN, because the external scanner emits
+    // AUTO_TOKEN regardless of valid_symbols (src/scanner.c:437-505) — the
+    // very mechanism that makes `auto` an ERROR at operand positions. So
+    // `auto` never lexes as an `identifier` here and the arms cannot collide.
+    // `tree-sitter generate` reports no new conflict for this rule (measured);
+    // if that ever changes, resolve it and record the ACTUAL cause here rather
+    // than leaving this claim stale.
+    //
+    // PARTIAL-REVERSAL BREADCRUMB. Task 3808 rejected `auto` at operand
+    // positions. This widens ONLY `auto( <expr> )` in positional call args.
+    // Measured on the generated parser, positionally: bare `auto` stays a
+    // parse error (`f(auto)` → ERROR) and so does the named-parameter form
+    // (`f(auto(seed = 5mm))` → ERROR, since `seed = 5mm` is not an
+    // `_expression`); and `auto(<expr>)` is still NOT admitted at a binding
+    // site in v1 (`_binding_value` is untouched, so `let x : Length =
+    // auto(5mm)` → ERROR). Pinned by tests/sketch_grammar_tests.rs's
+    // `bare_auto_stays_rejected_in_positional_operand_position`,
+    // `named_argument_auto_forms_unchanged` and
+    // `auto_seed_is_not_admitted_at_binding_sites_in_v1`.
+    //
+    // CONSEQUENCE OF THE GENERALITY, called out so no reader mistakes it for a
+    // special case: `auto(free)` in POSITIONAL argument position does NOT stay
+    // an error — it parses as an `auto_seed` whose `seed` is the plain
+    // identifier `free` (measured), NOT as `auto_keyword`'s free-modifier arm,
+    // which is unreachable there. The modifier reading is still the one that
+    // wins wherever `auto_keyword` IS reachable — a binding site, and a NAMED
+    // argument, which reaches `auto_keyword` through `_binding_value`
+    // (`f(x: auto(free))` → `named_argument` / `auto_keyword`, measured). So
+    // the two readings are position-DISJOINT: no single token sequence
+    // acquires two readings, which is what INV-SF-7 actually forbids.
+    //
+    // Admitting a form in the GRAMMAR is not accepting it in the LANGUAGE.
+    // Once `auto_seed` lowers to the existing `ExprKind::Auto` (α's lowering
+    // step), every one of these positional forms — seeded or `free` — hits
+    // `reject_auto_in_arg_list` in reify-compiler/src/expr.rs, which emits the
+    // coded E_AUTO_NOT_AT_BINDING_SITE diagnostic for the first offending arg.
+    // That is what OPTION B's "typed semantic rejection outside sketch scope,
+    // loud + coded, never silent-accept" buys, and γ/η are what relax it
+    // INSIDE sketch scope.
+    auto_seed: $ => seq(
+      $._auto_token,
+      '(',
+      field('seed', $._expression),
+      ')',
+    ),
+
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(
       optional(choice('pub', 'priv')),
@@ -1733,9 +1798,20 @@ module.exports = grammar({
       callTail($),
     )),
 
+    // `$.auto_seed` is a positional-argument ALTERNATIVE, not a wrapper: an
+    // `auto(<expr>)` argument is an ordinary member of the list and keeps its
+    // position among the other arguments. It appears in BOTH choices (head and
+    // repeat) so `f(auto(1mm), x)` and `f(x, auto(1mm))` are equally admitted.
+    //
+    // Deliberately NOT added to `_expression` / `_primary_expression` /
+    // `_binding_value`: scoping the widening to this one rule is what keeps
+    // task 3808's operand-position rejection intact everywhere else. See the
+    // `auto_seed` rule for the full partial-reversal rationale and for why the
+    // three arms need no `conflicts` entry (disjoint FIRST sets — only
+    // `auto_seed` can begin with the external scanner's AUTO_TOKEN).
     argument_list: $ => seq(
-      choice($.named_argument, $._expression),
-      repeat(seq(',', choice($.named_argument, $._expression))),
+      choice($.named_argument, $.auto_seed, $._expression),
+      repeat(seq(',', choice($.named_argument, $.auto_seed, $._expression))),
       optional(','),
     ),
 
