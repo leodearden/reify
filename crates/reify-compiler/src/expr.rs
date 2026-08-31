@@ -3384,6 +3384,7 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
                     // `is_field_op` → `is_parse_typed_fn` →
                     // `is_orientation_typed_fn` (task 5344) →
+                    // `is_orientation_decomposer_fn` (task 6306) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
@@ -3848,6 +3849,46 @@ fn compile_expr_guarded_with_expected_inner(
                         // units.rs disjointness test, so this arm's position in
                         // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
+                    } else if is_orientation_decomposer_fn(name) {
+                        // Orientation / transform DECOMPOSER family (task 6306) —
+                        // the four names the arm ABOVE deliberately excludes.
+                        // Same two eval dispatchers, reached by the same
+                        // name-based dispatch; what differs is the returned value
+                        // KIND. A producer hands back the rigid motion its type
+                        // names; a decomposer hands back its COORDINATES —
+                        // Value::Vector (orient_log), Value::List of Angles
+                        // (orient_to_euler), or Value::Map (orient_to_axis_angle,
+                        // transform_log). That is the same fact that makes a
+                        // prefix rule wrong for the family as a whole.
+                        //
+                        // The defect this fixes is SILENT, unlike the producers'.
+                        // All four take at least one argument, so the fallback
+                        // below never reaches its zero-arg "cannot infer return
+                        // type" warning — nothing marks the mistyping. Task 5344
+                        // sharpened it rather than fixing it: now that
+                        // orient_identity() types as a real Orientation(3),
+                        // orient_log(q) inherits Orientation(3) where it once
+                        // inherited the fallback's Real.
+                        //
+                        // UNLIKE the producer arm, the two Map members have no
+                        // exact Type⇄Value kind correspondence — they are typed
+                        // as nominal StructureRefs over a Value::Map. That relies
+                        // on the StructureRef cell-typing safety argument
+                        // documented on crate::joint_signatures (esc-3845-91),
+                        // whose three points transfer verbatim; the mirroring
+                        // joint arm's comment above states it in full.
+                        //
+                        // Membership and every per-name ruling (the orient_log
+                        // dimensionless ruling, the AxisAngle/Twist names, and
+                        // why AxisAngle is deliberately NOT declared as a stdlib
+                        // structure) live ONCE, on
+                        // ORIENTATION_DECOMPOSER_FN_NAMES and
+                        // orientation_decomposer_result_type. The slice is pinned
+                        // disjoint from all sibling families AND from
+                        // ORIENTATION_TYPED_FN_NAMES by the units.rs disjointness
+                        // tests, so this arm's position in the ladder is
+                        // unobservable.
+                        orientation_decomposer_result_type(name)
                     } else {
                         compiled_args
                             .first()
