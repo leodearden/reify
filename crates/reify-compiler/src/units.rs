@@ -1797,6 +1797,23 @@ mod tests {
     // disjointness from every sibling family (regression-lock: catches any
     // future colliding name added to EITHER slice).
     use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
+    // Orientation/transform DECOMPOSER family (task 6306) — the SIBLING slice of
+    // ORIENTATION_TYPED_FN_NAMES in the same `crate::orientation_signatures`
+    // module, imported here to pin disjointness from every sibling family AND
+    // from the producer half. `is_orientation_decomposer_fn` comes along for the
+    // one loop that binds `name: &str` rather than `&&str`
+    // (`tolerancing_marker_names_are_disjoint_from_other_families`).
+    //
+    // Both names are ALSO reachable without this line — units.rs:1 is
+    // `use super::*`, so lib.rs's `pub(crate) use orientation_signatures::*`
+    // already globs them in. The explicit import is kept anyway because it is
+    // this block's convention (every sibling family slice is named here with its
+    // provenance), and it makes the disjointness dependency deliberate rather
+    // than incidental: deleting the glob would then fail loudly here rather than
+    // silently un-pin the matrix.
+    use crate::orientation_signatures::{
+        ORIENTATION_DECOMPOSER_FN_NAMES, is_orientation_decomposer_fn,
+    };
     // Orientation/transform DECOMPOSER family (task 6306) — the SIBLING slice
     // of ORIENTATION_TYPED_FN_NAMES in the same `crate::orientation_signatures`
     // module, imported here to pin disjointness from every sibling family AND
