@@ -3,15 +3,14 @@ name = "reify-test-support"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Test builders, fixtures, and mock implementations for Reify — plus a few helpers reify-audit consumes on its production path"
+description = "Test builders, fixtures, and mock implementations for Reify"
 
 # Despite the crate NAME, this is not a test-only crate: some of its publics are
 # consumed on `reify-audit`'s PRODUCTION path, which is why that crate carries
-# this one as a normal dependency rather than a dev-dependency. WHICH publics,
+# this one as a normal dependency rather than a dev-dependency. Which publics,
 # why they live here rather than above the edge, and the open question about the
 # shape of the arrangement are argued once in `sanitize`'s doc comment
-# (src/git_env.rs). This note deliberately does not restate that list — it is
-# single-sourced there, so a reach can be added or retired in one edit.
+# (src/git_env.rs).
 
 [dependencies]
 reify-ast.workspace = true

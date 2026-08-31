@@ -139,11 +139,9 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// while still reading as authoritative — see `reify_audit::git_env`'s module
 /// doc, which tells a reader to re-run the sweep instead.
 ///
-/// Single-sourced here: the three sites that describe this arrangement — the
-/// script's comment above the exclusion and both manifests — state only the
-/// fact and point back, keeping no copy. `crates/reify-audit`'s manifest kept
-/// one once and it went stale, when task 5657 added the second item without
-/// touching it.
+/// Single-sourced here: other sites that mention this arrangement state only
+/// the fact and point back, keeping no copy. Keep it that way — adding or
+/// retiring a reach is then one edit.
 ///
 /// Whether the arrangement warrants a dep-free `reify-git-env` leaf crate the
 /// sweep does cover, or a narrower `EXCLUDE_CRATES`, is tracked as follow-up
