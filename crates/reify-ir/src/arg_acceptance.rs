@@ -1,5 +1,23 @@
 //! Shared value-level acceptance helper for dimensioned builtin arguments.
 //!
+//! **Relocated by task 5791** (PRD `docs/prds/v0_6/dimension-checked-readers.md`
+//! §3 Leg A) from its former home `crates/reify-eval/src/arg_acceptance.rs`,
+//! where it was `pub(crate)` and therefore reachable by `reify-eval` ONLY.
+//! `reify-stdlib` cannot depend on `reify-eval` — the crate edge runs the other
+//! way — so a reader-side dimension check in `reify-stdlib` had no way to call
+//! this family and would have had to fork it. Hoisting the module into
+//! `reify-ir`, the one crate BOTH already depend on, means `reify-stdlib` and
+//! `reify-eval` now share ONE dimension-acceptance rule: a single
+//! [`accept_arg`] predicate and a single rejection wording, rather than two
+//! implementations drifting apart. The move needed no `Cargo.toml` edit —
+//! the module depends only on `reify_core` (already a `reify-ir` dep) and on
+//! `reify-ir`'s own [`crate::value::Value`] — so `reify-ir`'s
+//! reify-core + reify-ast dependency floor (pinned by
+//! `crates/reify-ir/tests/dag_invariant.rs`) is unchanged. `reify-eval` keeps
+//! its former `crate::arg_acceptance::…` spelling alive through a crate-root
+//! `pub(crate) use reify_ir::arg_acceptance;`, so every pre-existing consumer
+//! compiles unchanged.
+//!
 //! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
 //! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
 //! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
@@ -132,7 +150,7 @@
 //! adding it to the owning task's triage list too.
 //!
 //! The helper is **value-level only**: it operates on an already-resolved
-//! `reify_ir::Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
+//! `Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
 //! Callers are responsible for extracting the value from the expression
 //! (`resolve_density_arg`/`resolve_spec_arg` evaluate a `CompiledExpr`;
 //! `eval_named_arg_length` goes through `eval_named_arg`).
@@ -250,10 +268,10 @@ pub fn length_spec() -> ArgSpec {
 /// - `Value::Scalar { dimension, .. }` where `dimension == spec.dimension`
 ///   → [`Acceptance::Accepted`] carrying the SI f64.
 /// - Any other defined value → [`Acceptance::Rejected`].
-pub fn accept_arg(value: &reify_ir::Value, spec: &ArgSpec) -> Acceptance {
+pub fn accept_arg(value: &crate::value::Value, spec: &ArgSpec) -> Acceptance {
     match value {
-        reify_ir::Value::Undef => Acceptance::Undefined,
-        reify_ir::Value::Scalar {
+        crate::value::Value::Undef => Acceptance::Undefined,
+        crate::value::Value::Scalar {
             si_value,
             dimension,
         } if *dimension == spec.dimension => Acceptance::Accepted(*si_value),
@@ -267,10 +285,10 @@ pub fn accept_arg(value: &reify_ir::Value, spec: &ArgSpec) -> Acceptance {
 
 /// Produce a short human-readable label for a `Value` used in rejection
 /// diagnostics (e.g. `"Real"`, `"Pressure Scalar"`, `"Bool"`).
-fn value_short_label(value: &reify_ir::Value) -> String {
+fn value_short_label(value: &crate::value::Value) -> String {
     match value {
-        reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => {
+        crate::value::Value::Real(_) => "Real".to_string(),
+        crate::value::Value::Scalar { dimension, .. } => {
             if dimension.is_dimensionless() {
                 "dimensionless Scalar".to_string()
             } else if let Some(name) = dimension.canonical_name() {
@@ -279,9 +297,9 @@ fn value_short_label(value: &reify_ir::Value) -> String {
                 "dimensioned Scalar".to_string()
             }
         }
-        reify_ir::Value::Bool(_) => "Bool".to_string(),
-        reify_ir::Value::Int(_) => "Int".to_string(),
-        reify_ir::Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
+        crate::value::Value::Bool(_) => "Bool".to_string(),
+        crate::value::Value::Int(_) => "Int".to_string(),
+        crate::value::Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
         _ => "unknown".to_string(),
     }
 }
@@ -292,7 +310,7 @@ mod tests {
 
     #[test]
     fn accept_mass_density_scalar_returns_accepted() {
-        let value = reify_ir::Value::Scalar {
+        let value = crate::value::Value::Scalar {
             si_value: 7850.0,
             dimension: reify_core::DimensionVector::MASS_DENSITY,
         };
@@ -306,7 +324,7 @@ mod tests {
 
     #[test]
     fn accept_undef_returns_undefined() {
-        let value = reify_ir::Value::Undef;
+        let value = crate::value::Value::Undef;
         let spec = density_spec();
         assert_eq!(
             accept_arg(&value, &spec),
@@ -321,7 +339,7 @@ mod tests {
         // and message() must include both the arg name and the hint text.
         // The exact wording of the hint is pinned in geometry_ops'
         // resolve_density_arg_diagnostics integration test, not here.
-        let value = reify_ir::Value::Real(7850.0);
+        let value = crate::value::Value::Real(7850.0);
         let spec = density_spec();
         match accept_arg(&value, &spec) {
             Acceptance::Rejected(rej) => {
@@ -342,7 +360,7 @@ mod tests {
 
     #[test]
     fn accept_pressure_scalar_rejected_strict_dimension() {
-        let value = reify_ir::Value::Scalar {
+        let value = crate::value::Value::Scalar {
             si_value: 2.0e11,
             dimension: reify_core::DimensionVector::PRESSURE,
         };
