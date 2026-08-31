@@ -187,8 +187,14 @@ with no registered in-process hold is a leaked fd, and nothing releases it
 before process exit, so deferring can never succeed. (On the merge-worker path
 that row is not what fires: the defer arm catches the leak as its parent class
 first, and the loud first-occurrence signal is the `logger.error` at the
-detection site in `GitOps._lane_lock_self_owned_leak`. The row governs `cli.py`
-`verify-merge` and workflow block classification.) Separately, a fail-CLOSED
+detection site in `GitOps._lane_lock_self_owned_leak`. The row governs
+workflow block classification only — not `cli.py` `verify-merge`, which
+never reaches a `BlockDisposition` lookup at all (zero hits for
+`BlockDisposition` / `block_disposition` / `workflow_types` in `cli.py`). On
+that path this leak surfaces exactly like any other Lease exception does:
+the `logger.error` at the detection site above, plus the generic exit-1 →
+`RunnerUnavailable` → host bench-and-re-dispatch chain this section
+documents earlier.) Separately, a fail-CLOSED
 pre-check raises `MergeVerifyLeaseHeld` — same disposition row, same defer arm —
 when a **different** live pgid holds the merge-verify lease.
 
