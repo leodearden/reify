@@ -57,6 +57,15 @@
 //!   Pins the `commonMembers()` -> `_guard_member` consequence at the GRAMMAR
 //!   level; the semantic rejection is step-12's.
 //!
+//! The INV-SF-7 suite at the bottom of this file is separate — see its own
+//! banner comment for why it exists and how its readings were arrived at:
+//! [`sketch_let_quantity_literal_does_not_absorb_the_next_member`],
+//! [`sketch_argument_whitespace_splits_the_quantity_literal`],
+//! [`sketch_body_records_the_known_item_boundary_join`],
+//! [`sketch_body_item_boundary_matches_a_plain_member_body`],
+//! [`sketch_body_keeps_consecutive_relation_members_separate`]. All GREEN after
+//! step-2, all measured before being asserted.
+//!
 //! All inline snippets wrap members in `structure S { … }` so the grammar sees
 //! them in a valid declaration context.
 
@@ -416,5 +425,250 @@ fn sketch_block_admitted_in_guarded_block() {
         find_node_by_kind(guard, "sketch_block").is_some(),
         "the sketch_block must sit INSIDE the guarded_block, not beside it:\n{}",
         root.to_sexp()
+    );
+}
+
+// ── INV-SF-7 `parse-is-value-faithful` ───────────────────────────────────────
+//
+// `docs/legibility/design-invariants.md:195-220`. The sketch body is the FIRST
+// construct in the language where a `let_declaration` and a bare expression are
+// siblings with no separator token (`relate` bodies hold only bare expressions;
+// `_member` holds only keyword-led declarations), so the invariant's checkable
+// question — "can any statement/expression boundary in the new grammar absorb a
+// following line without a diagnostic?" — has to be answered by measurement,
+// not assumed.
+//
+// It was. Every reading below was probed against the CLI first and the
+// assertions written to match; none was predicted then asserted.
+//
+// The suite asserts NODE KINDS and MEMBER COUNTS, never error spans. That
+// looseness is deliberate and has a precedent-rationale at
+// `imaginary_literal_grammar_tests.rs:202-226`: pinning exact spans just
+// relocates the drift problem into a CI-gated guard that must be re-blessed on
+// every unrelated recovery tweak.
+
+/// Count nodes of `kind` in the subtree rooted at `node`.
+fn count_kind(node: tree_sitter::Node, kind: &str) -> usize {
+    collect_kinds(node).iter().filter(|k| k.as_str() == kind).count()
+}
+
+/// Parse `source` and return its single `sketch_block` node's named-child kinds
+/// (the leading `identifier` is the `name` field and is dropped, so the result
+/// is exactly the BODY member list, in source order).
+fn sketch_body_members(source: &str) -> Vec<String> {
+    let mut parser = make_parser();
+    let tree = parser.parse(source, None).expect("parse failed");
+    // The tree must outlive the borrow, so do the whole walk here.
+    let sketch = find_node_by_kind(tree.root_node(), "sketch_block")
+        .expect("expected a sketch_block node");
+    let mut cursor = sketch.walk();
+    sketch
+        .named_children(&mut cursor)
+        .skip(1) // the `name` field identifier
+        .map(|c| c.kind().to_string())
+        .collect()
+}
+
+/// Parse `source` and return the `value:` field s-expression of its FIRST
+/// `let_declaration`, with byte extents stripped so two different sources can
+/// be compared for structural identity.
+fn first_let_value_shape(source: &str) -> String {
+    let mut parser = make_parser();
+    let tree = parser.parse(source, None).expect("parse failed");
+    let decl = find_node_by_kind(tree.root_node(), "let_declaration")
+        .expect("expected a let_declaration node");
+    decl.child_by_field_name("value")
+        .expect("expected a `value` field on let_declaration")
+        .to_sexp()
+}
+
+/// INV-SF-7, positive half: a `let` whose value ends in a quantity literal must
+/// NOT absorb the following bare-expression member.
+///
+/// GREEN after step-2 (measured). This is the shape INV-SF-7's Evidence section
+/// names as the worst silent-failure form — a misparse yielding a well-typed
+/// WRONG value — so it gets its own test rather than a row in a table.
+#[test]
+fn sketch_let_quantity_literal_does_not_absorb_the_next_member() {
+    let cases: [(&str, &str); 2] = [
+        ("fix(a)", "structure S {\n  sketch s {\n    let d = 5mm\n    fix(a)\n  }\n}\n"),
+        (
+            "horizontal(ab)",
+            "structure S {\n  sketch s {\n    let d = 5mm\n    horizontal(ab)\n  }\n}\n",
+        ),
+    ];
+
+    for (tail, source) in cases {
+        assert_parses_clean(tail, source);
+        assert_eq!(
+            sketch_body_members(source),
+            vec!["let_declaration", "relation_member"],
+            "`let d = 5mm` must not absorb the following `{tail}` line"
+        );
+
+        // The relation_member's TEXT is asserted, not just its kind: a reading
+        // that fused the two lines into one over-long relation_member would
+        // still produce the right kind.
+        let mut parser = make_parser();
+        let tree = parser.parse(source, None).expect("parse failed");
+        let rel = find_node_by_kind(tree.root_node(), "relation_member")
+            .expect("expected a relation_member");
+        assert_eq!(
+            &source[rel.byte_range()],
+            tail,
+            "the relation_member must span exactly `{tail}` and nothing else"
+        );
+    }
+}
+
+/// INV-SF-7, whitespace-splits-the-literal half: `5mm` is a quantity literal,
+/// `5 mm` is a parse ERROR — never a quiet reinterpretation.
+///
+/// GREEN after step-2 (measured). This is the existing law pinned by
+/// `test/corpus/unit_expr.txt`; the test's job is to prove the sketch body
+/// inherits it rather than opening a second reading inside a sketch argument.
+#[test]
+fn sketch_argument_whitespace_splits_the_quantity_literal() {
+    const TIGHT: &str = "structure S {\n  sketch s {\n    let p = point(5mm, 0mm)\n  }\n}\n";
+    const LOOSE: &str = "structure S {\n  sketch s {\n    let p = point(5 mm, 0mm)\n  }\n}\n";
+
+    assert_parses_clean("point(5mm, 0mm)", TIGHT);
+    let mut parser = make_parser();
+    let tight = parser.parse(TIGHT, None).expect("parse failed");
+    assert_eq!(
+        count_kind(tight.root_node(), "quantity_literal"),
+        2,
+        "`point(5mm, 0mm)` must yield two quantity_literals"
+    );
+
+    assert_has_error("point(5 mm, 0mm) must not parse", LOOSE);
+    let loose = parser.parse(LOOSE, None).expect("parse failed");
+    let root = loose.root_node();
+    // The resolution must be a diagnostic, not a quiet pick: no quantity_literal
+    // may span the whitespace-separated `5 mm`.
+    let mut spans_loose = false;
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "quantity_literal" && LOOSE[n.byte_range()].contains(' ') {
+            spans_loose = true;
+        }
+        let mut c = n.walk();
+        stack.extend(n.children(&mut c));
+    }
+    assert!(
+        !spans_loose,
+        "`5 mm` must not be quietly re-read as one quantity_literal:\n{}",
+        root.to_sexp()
+    );
+}
+
+/// INV-SF-7, THE KNOWN ITEM-BOUNDARY JOIN — recorded, not silently changed.
+///
+/// `let x = a.b` followed by a line starting `(` collapses into ONE member: the
+/// `(c)` is consumed as the argument list of a `namespaced_call`. This is the
+/// reading `test/corpus/namespaced_ref.txt` already commits for `relate { a.b ⏎
+/// (x) }`, and the sketch body inherits it verbatim through the shared
+/// `relation_member`/`_expression` machinery.
+///
+/// GREEN after step-2 (measured — the assertion was written to the observed
+/// tree, not to a prediction). It is pinned rather than "fixed" because the
+/// same absorb is reproducible with NO sketch block anywhere (see
+/// [`sketch_body_item_boundary_matches_a_plain_member_body`], which proves that
+/// rather than claiming it): it belongs to `let_declaration`'s `value:` being a
+/// full `_expression`, which is the INV-SF-7 seam task #5392 owns. Narrowing it
+/// here would fork the sketch body away from every other member body in the
+/// language — strictly worse than one seam handled in one place.
+#[test]
+fn sketch_body_records_the_known_item_boundary_join() {
+    // THE JOIN: one member, not two.
+    const JOINED: &str = "structure S {\n  sketch s {\n    let x = a.b\n    (c)\n  }\n}\n";
+    assert_parses_clean("a.b then (c)", JOINED);
+    assert_eq!(
+        sketch_body_members(JOINED),
+        vec!["let_declaration"],
+        "`a.b` ⏎ `(c)` is ONE member — the namespaced_ref.txt item-boundary \
+         reading, inherited from relate_block"
+    );
+    let mut parser = make_parser();
+    let joined = parser.parse(JOINED, None).expect("parse failed");
+    assert_eq!(
+        count_kind(joined.root_node(), "namespaced_call"),
+        1,
+        "the join must surface as a namespaced_call"
+    );
+    assert_eq!(
+        count_kind(joined.root_node(), "relation_member"),
+        0,
+        "no relation_member survives the join"
+    );
+
+    // THE COUNTER-FORM: an identifier-led next line does NOT join.
+    const SPLIT: &str = "structure S {\n  sketch s {\n    let x = a.b\n    fix(c)\n  }\n}\n";
+    assert_parses_clean("a.b then fix(c)", SPLIT);
+    assert_eq!(
+        sketch_body_members(SPLIT),
+        vec!["let_declaration", "relation_member"],
+        "`a.b` ⏎ `fix(c)` stays TWO members — only a `(`-led line joins"
+    );
+}
+
+/// INV-SF-7, the pre-existence PROOF for the two absorbing readings above.
+///
+/// Rather than *claiming* in prose that the sketch body merely inherits
+/// `let_declaration`'s line-spanning `value:`, this asserts it: the same two
+/// source lines are parsed inside a sketch body and inside a plain structure
+/// member body, and the resulting `value:` shapes must be IDENTICAL.
+///
+/// GREEN after step-2 (measured, both readings reproduce with no sketch block
+/// anywhere). Two things follow, and both are the point of the test:
+///  • α did not invent these absorbs — so narrowing them is out of scope here.
+///  • If task #5392 later makes `let_declaration` value-faithful at this seam,
+///    this test keeps the sketch body in LOCKSTEP automatically instead of
+///    silently leaving it behind on the old reading.
+///
+/// If this ever reds, the sketch body has diverged from every other member body
+/// in the language. That is the bug, whichever side moved.
+#[test]
+fn sketch_body_item_boundary_matches_a_plain_member_body() {
+    let pairs: [(&str, &str, &str); 2] = [
+        (
+            "`a.b` ⏎ `(c)` — the namespaced_call join",
+            "structure S {\n  sketch s {\n    let x = a.b\n    (c)\n  }\n}\n",
+            "structure S {\n  let x = a.b\n  (c)\n}\n",
+        ),
+        (
+            "`5mm` ⏎ `- 3mm` — the leading-operator continuation",
+            "structure S {\n  sketch s {\n    let d = 5mm\n    - 3mm\n  }\n}\n",
+            "structure S {\n  let d = 5mm\n  - 3mm\n}\n",
+        ),
+    ];
+
+    for (label, in_sketch, in_plain) in pairs {
+        assert_parses_clean(label, in_sketch);
+        assert_parses_clean(label, in_plain);
+        assert_eq!(
+            first_let_value_shape(in_sketch),
+            first_let_value_shape(in_plain),
+            "{label}: the sketch body must read this exactly as a plain member \
+             body does — it inherits let_declaration's line-spanning `value:`, \
+             it does not add a reading of its own"
+        );
+    }
+}
+
+/// Relate-block parity: two bare relation members on consecutive lines stay two
+/// members. GREEN after step-2 (measured).
+///
+/// The baseline case for the whole INV-SF-7 suite: with no `let` involved, the
+/// sketch body must behave exactly like `relate { }`.
+#[test]
+fn sketch_body_keeps_consecutive_relation_members_separate() {
+    const SOURCE: &str =
+        "structure S {\n  sketch s {\n    fix(a)\n    horizontal(ab)\n  }\n}\n";
+    assert_parses_clean("two consecutive relation members", SOURCE);
+    assert_eq!(
+        sketch_body_members(SOURCE),
+        vec!["relation_member", "relation_member"],
+        "consecutive identifier-led relation members must not fuse"
     );
 }
