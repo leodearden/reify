@@ -18,21 +18,20 @@
 //!   audit produces an envelope. That verified fact is what the child's
 //!   stronger mark carries.
 //! - [`in_replay_child`] — the weak predicate: "am I inside ANY replay
-//!   child?". For a precondition, not for a tightening.
+//!   child?". For a precondition, never for a tightening.
 //! - [`replay_child_expects_envelope`] — the strong one, and the only one a
 //!   test may use to turn an otherwise-graceful skip into a hard failure.
 //! - [`spawn_replay_child_lacking_audit_prereqs`] — the inverse fixture: one
 //!   replay child in an environment that genuinely cannot run the audit, so a
-//!   test can pin which mark may tighten a skip into a failure and which may
-//!   not. It and the real replay build their children from one shared
-//!   `replay_child_command` body, so the fixture cannot drift into pinning a
-//!   process shape the replay no longer uses.
+//!   test can pin which mark may tighten a skip and which may not.
 //! - [`audit_script_stdout_poisoned_and_sanitized`] — spawn the orphan-audit
 //!   script exactly twice (poisoned, then stripped), so the hazard's potency
-//!   stays demonstrable independently of any production call site. It borrows
-//!   `reify_test_support::run_orphan_audit` as its graceful-skip gate for the
-//!   same single-source reason: no second copy of that protocol, and none of
-//!   the git diagnostic string it keys on.
+//!   stays demonstrable independently of any production call site.
+//!
+//! Why the weak/strong split exists, and the regression that forced it, are
+//! stated ONCE — in `tests/g_allow.rs`'s
+//! `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`, the
+//! live guard holding it. Point there; do not re-derive it here.
 //!
 //! # Why a replay harness
 //!
@@ -113,33 +112,19 @@ impl ReplayMark {
     }
 }
 
-/// True when this process is a poisoned replay child, spawned by EITHER
-/// replay variant. It answers exactly one question — "am I inside any replay
-/// child?" — and nothing more.
+/// True when this process is a replay child, spawned by EITHER variant. It
+/// answers exactly one question — "am I inside any replay child?" — and
+/// nothing more.
 ///
-/// Its remaining reader is
-/// [`audit_script_stdout_poisoned_and_sanitized`]'s precondition, which needs
-/// that weak question and no other: that helper's `run_orphan_audit` gate
-/// would hit a repo-root mismatch panic inside ANY poisoned child, whatever
-/// its parent verified.
+/// Its one reader is [`audit_script_stdout_poisoned_and_sanitized`]'s
+/// precondition, which needs that weak question and no other: that helper's
+/// `run_orphan_audit` gate would hit a repo-root mismatch panic inside ANY
+/// poisoned child, whatever its parent verified.
 ///
 /// NOT the predicate for tightening a graceful skip into a hard failure — use
-/// [`replay_child_expects_envelope`]. Mere child-ness carries no claim about
-/// the environment: the replay only `--list`s the selection in the parent, so
-/// it never runs the target and never learns whether the parent's own run
-/// produced an envelope, and a child INHERITS environments where `python3`,
-/// `git` or the script is genuinely absent rather than escaping them. Keyed on
-/// this predicate, a tightening turns such an environment's clean skip into a
-/// red build carrying a diagnosis the child's own stderr contradicts —
-/// measured, and pinned by
+/// [`replay_child_expects_envelope`]. Why, and the measured regression:
+/// `tests/g_allow.rs`'s
 /// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
-///
-/// The predicate is exposed rather than [`REPLAY_GUARD`] itself, and this
-/// accessor plus the marks' own readers are all there is. A caller only ever
-/// needs to ask about the child's status, never to spell the variable;
-/// publishing the const would let a future call site re-read or re-stamp it
-/// under its own name, splitting the single source of truth this module is
-/// built around.
 #[allow(dead_code)]
 pub fn in_replay_child() -> bool {
     std::env::var_os(REPLAY_GUARD).is_some()
@@ -147,24 +132,20 @@ pub fn in_replay_child() -> bool {
 
 /// True when this process is a replay child whose parent verified an audit
 /// envelope before spawning it — [`in_replay_child`] plus the fact that makes
-/// a skip inexplicable.
-///
-/// This is the predicate a test uses to tighten an otherwise-graceful skip
-/// into a hard failure. Keying such a tightening on the weaker
-/// [`in_replay_child`] instead is a measured defect, not a stylistic one: the
-/// child inherits environments where `python3`, `git` or the script is
-/// genuinely absent, and there the tightening converts a supported
-/// environment's clean skip into a red build with a self-contradicting
-/// diagnosis (see
-/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`).
+/// a skip inexplicable. The ONLY predicate a test may use to tighten an
+/// otherwise-graceful skip into a hard failure.
 ///
 /// The guarantee comes from the spawn side:
 /// [`replay_self_under_hook_git_env_expecting_envelope`] is the only thing
-/// that stamps [`REPLAY_ENVELOPE_MARK`], and its contract is that the caller
+/// that stamps [`ReplayMark::Envelope`], and its contract is that the caller
 /// has already seen an envelope in this environment. So inside such a child a
 /// skip means the environment changed underfoot between two runs seconds
-/// apart — which, under an ambient hook git environment, is exactly the
-/// hazard the replay exists to catch.
+/// apart — which, under an ambient hook git environment, is exactly the hazard
+/// the replay exists to catch.
+///
+/// Why the weaker [`in_replay_child`] may not be used here is stated once, in
+/// `tests/g_allow.rs`'s
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
 #[allow(dead_code)]
 pub fn replay_child_expects_envelope() -> bool {
     std::env::var(REPLAY_GUARD).as_deref() == Ok(REPLAY_ENVELOPE_MARK)
@@ -368,13 +349,8 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
     );
 
     // The ENTIRE graceful-skip protocol, in one delegated call — see this
-    // function's doc for why it is delegated rather than re-implemented. A
-    // `None` means "either the environment cannot run the script, or this
-    // scope is excluded", both of which empty BOTH halves below and so make
-    // the comparison meaningless. A work-tree probe that fails for any reason
-    // other than "no repository here" panics inside this call, carrying the
-    // probe's own exit status and stderr, instead of surfacing later as a
-    // misdiagnosed empty sanitized run.
+    // function's doc for why it is delegated rather than re-implemented, and
+    // for why every cause of a `None` makes the comparison below meaningless.
     if reify_test_support::run_orphan_audit(scope).is_none() {
         eprintln!(
             "reify_test_support::run_orphan_audit({scope:?}) produced no envelope \
@@ -435,11 +411,8 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
 
     let mut sanitized_cmd = build();
     poison_with_hook_git_env(&mut sanitized_cmd, &decoy);
-    // Matches production's baseline exactly: `reify_test_support::sanitize`
-    // strips this same `REPO_REDIRECT_VARS` set before every real spawn.
-    // Calling the canonical sanitizer here, instead of hand-rolling a
-    // removal loop, is what keeps this in lockstep with production with no
-    // second copy of the strip list to drift out of sync.
+    // The canonical sanitizer, not a hand-rolled removal loop — see this
+    // function's doc for why.
     reify_audit::git_env::sanitize(&mut sanitized_cmd);
 
     let run = |mut cmd: Command, label: &str| -> AuditRun {
@@ -617,21 +590,15 @@ fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) {
 /// The fixture behind
 /// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`. Its
 /// whole purpose is to hold everything fixed except `mark`, so the caller's
-/// two children differ only in what the mark claims — one body, so the two
-/// spawns cannot drift, the same discipline
-/// [`audit_script_stdout_poisoned_and_sanitized`] uses for its
-/// poisoned-vs-sanitized pair. That body is [`replay_child_command`], shared
-/// with [`replay_with_mark`], so the child this fixture reasons about stays
-/// the same process shape the real replay spawns.
+/// two children differ only in what the mark claims. The body is
+/// [`replay_child_command`] — see its doc for why that is shared.
 ///
 /// `PATH` is an EMPTY [`tempfile::tempdir`], which makes
 /// `reify_test_support::run_orphan_audit`'s FIRST probe —
 /// `Command::new("python3")` — fail with `NotFound` and take its documented
 /// skip path (measured: the child's stderr reads `python3 not on PATH;
 /// skipping orphan audit for scope "crates/reify-audit/src"`). That is a
-/// SUPPORTED environment, not a broken one: the skip protocol exists, with
-/// nine callers across two crates, precisely because `python3`, `git` or the
-/// script can be genuinely absent.
+/// SUPPORTED environment, not a broken one.
 ///
 /// Deliberately NOT poisoned with the hook git environment. With `PATH`
 /// deprived the child skips long before it reaches the audit script, so a

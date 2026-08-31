@@ -39,6 +39,10 @@
 //!   so the first cannot buy its teeth by reddening supported environments.
 //!
 //! None can notice another going vacuous. Retire them together or not at all.
+//!
+//! The third's own doc is likewise the ONLY home for the separate rule that a
+//! replay child's hard failure needs an EARNED mark, not mere child-ness.
+//! Two rules, two homes, everything else a pointer.
 
 use reify_test_support::run_orphan_audit;
 
@@ -131,17 +135,10 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// # Where the graceful skip still rules
 ///
 /// Everywhere except a child whose parent verified an envelope in this same
-/// environment — and this test spawns no child at all otherwise, which is why
-/// it probes first. `run_orphan_audit`'s skip protocol is a contract with nine
-/// callers across two crates, covering environments where `python3`, `git` or
-/// the script is genuinely absent, and a replay child INHERITS such an
-/// environment rather than escaping it.
-///
-/// An earlier form of this test stated the rule as "everywhere outside the
-/// replay child" and keyed the tightening on mere child-ness, which reddens
-/// exactly such an environment. That was measured, and
-/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope` is the
-/// live guard holding it — this prose must not re-derive it.
+/// environment — which is why this test probes first and spawns no child at
+/// all otherwise. Why the tightening may not key on mere child-ness instead is
+/// stated once, in
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`.
 ///
 /// (The original RED measurement, and the task-5605/5698 history of where the
 /// child dies, are recorded in project memory — search `reify` for
@@ -154,10 +151,7 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// would also drag the synthetic witness into the child, where it poisons and
 /// strips its OWN children's environments — pure cost that dilutes the floor's
 /// meaning, and now a hard failure on that helper's `in_replay_child`
-/// precondition (the WEAK predicate, which is the right question for a
-/// precondition; the tightening in `reify_audit_pub_fns_are_g_allow_marked`
-/// uses the strong `replay_child_expects_envelope` instead). Naming the target
-/// also keeps the selection exact: no other
+/// precondition. Naming the target also keeps the selection exact: no other
 /// test name in this binary contains the substring
 /// `reify_audit_pub_fns_are_g_allow_marked`, so the replay cannot select
 /// itself. The helper's `REIFY_AUDIT_HOOK_ENV_REPLAY` guard is the second line
@@ -180,15 +174,12 @@ fn orphan_audit_survives_ambient_hook_git_env() {
     // spawned at all.
     //
     // The whole skip protocol is delegated to `run_orphan_audit` rather than
-    // re-probed here — the same decision the PART 2 helper makes — so this
-    // covers python3/git/the script absent, `repo_root` outside a git work
-    // tree, and an EXCLUDE_CRATES scope uniformly, with no second copy of the
-    // git diagnostic string that protocol keys on.
+    // re-probed here — the same decision the PART 2 helper makes, for the
+    // reason stated in its doc.
     //
     // Cost: one extra scoped script run in the parent — measured 0.10-0.24 s
-    // wall on this lane (`scripts/audit-orphan-producers.sh --scope
-    // crates/reify-audit/src --quiet --format json`), against the handful of
-    // such runs this binary already performs.
+    // wall on this lane, against the handful of such runs this binary already
+    // performs.
     if run_orphan_audit(SCOPE).is_none() {
         eprintln!(
             "run_orphan_audit({SCOPE:?}) produced no envelope in this environment, \
@@ -208,6 +199,11 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// The replay child's hard failure must fire ONLY where the parent has
 /// established that this environment can produce an audit envelope — never on
 /// a mere "am I a replay child?".
+///
+/// This doc is that rule's ONLY home. `common::git_env`'s two predicates,
+/// its module doc, and `orphan_audit_survives_ambient_hook_git_env` all point
+/// here instead of restating it — as this one points at "The hook-git-env
+/// trio" above rather than restating that.
 ///
 /// # The regression this pins
 ///
