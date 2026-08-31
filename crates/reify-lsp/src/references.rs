@@ -233,11 +233,9 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
 
 // ─── Shared SubDecl expression-field enumeration ─────────────────────────────
 //
-// `sub_direct_exprs` is consumed by BOTH halves of this module — the
-// member-segment detection scan immediately below AND `collect_uses_in_sub`'s
-// use-collection scan further down (task #5579 amendment) — so it lives here,
-// outside either section's banner, rather than nested inside one of them as
-// if it belonged to only one consumer.
+// Lives here, outside either section's banner, because both consumers below
+// share it. Field-set rationale is centralized in `sub_direct_exprs`'s doc
+// comment — see it for why, rather than restating it at each call site.
 
 /// Exhaustively enumerate every direct (non-nested-scope) expression carried
 /// by a `SubDecl` — constructor args, specialization param overrides, the
@@ -278,6 +276,9 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         type_args: _,
         args,
         is_collection: _,
+        // Guard condition folded directly into the chain below, unlike every
+        // other member kind's `where` (which routes through
+        // `collect_uses_in_where`) — see `collect_uses_in_sub`'s doc comment.
         where_clause,
         // Nested member scope, not a direct expression — both consumers
         // recurse into it separately at depth + 1 (see doc comment above).
@@ -310,24 +311,28 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
 }
 
 /// Exhaustively enumerate the direct expressions carried by a single keyed
-/// entry (`"key" => { param_overrides… }`): its `param_overrides` values.
+/// entry (`"key" => { param_overrides… }`): its `param_overrides` values,
+/// mirroring `SubDecl.spec_param_overrides` one level down (see
+/// `KeyedSubMemberEntry.param_overrides`'s doc comment, task 3931 γ).
 ///
-/// Mirrors `SubDecl.spec_param_overrides` one level down, inside a single
-/// keyed block (`KeyedSubMemberEntry.param_overrides` doc comment,
-/// `crates/reify-ast/src/decl.rs` — task 3931 γ), so it needs the same
-/// direct-expression treatment `sub_direct_exprs` gives the sub-level
-/// overrides. `collect_uses_in_sub` and `cursor_on_member_segment`'s
-/// `MemberDecl::Sub` arm both consume this at their keyed-block recursion
-/// site instead of re-deriving it, so they cannot drift apart the way
-/// `sub_direct_exprs`'s own fields already have twice (see its doc comment)
-/// — `param_overrides` was itself a live, unwalked instance of that same
-/// drift (task #5579 amendment) until this helper closed it.
-///
-/// Excludes `entry.overrides` (the nested `Vec<MemberDecl>` specialization
-/// body): both consumers recurse into that separately as a nested member
-/// scope, exactly as `sub_direct_exprs` excludes `SubDecl::body`.
+/// Field set centralized here for the same anti-drift reason as
+/// `sub_direct_exprs` — see its doc comment. The exhaustive `let
+/// KeyedSubMemberEntry { .. } = entry` below (no `..`) gives this the same
+/// compile-error tripwire: a new expression-bearing field added to
+/// `KeyedSubMemberEntry` cannot silently go unwalked by both consumers again
+/// (task #5579 amendment — this is what closed that exact gap for
+/// `param_overrides` itself).
 fn keyed_entry_param_override_exprs(entry: &KeyedSubMemberEntry) -> impl Iterator<Item = &Expr> {
-    entry.param_overrides.iter().map(|(_, e)| e)
+    let KeyedSubMemberEntry {
+        key: _,
+        // Nested member scope, not a direct expression — both consumers
+        // recurse into it separately as a nested member scope, exactly as
+        // `sub_direct_exprs` excludes `SubDecl::body`.
+        overrides: _,
+        param_overrides,
+        span: _,
+    } = entry;
+    param_overrides.iter().map(|(_, e)| e)
 }
 
 // ─── Member-segment detection helpers ────────────────────────────────────────
@@ -1008,11 +1013,9 @@ fn collect_uses_in_connect(c: &ConnectDecl, name: &str, out: &mut Vec<SourceSpan
 }
 
 /// Collect uses inside a `sub` declaration: every direct expression
-/// `sub_direct_exprs` enumerates (constructor args, specialization param
-/// overrides, the `at` placement pose, the indexer clause's domain
-/// expression, the inline relate-block relations, and the `where` guard),
-/// each keyed block's own `param_overrides` expressions (task #5579
-/// amendment — see `keyed_entry_param_override_exprs`), plus any nested
+/// `sub_direct_exprs` enumerates (see its doc comment for the field list and
+/// anti-drift rationale), each keyed block's own `param_overrides`
+/// expressions (`keyed_entry_param_override_exprs`), plus any nested
 /// specialization-body / keyed-block-overrides members (depth-bounded).
 ///
 /// `index_binder` (the `i` in `sub xs[i in 0..4] = …`, task #5481 α) is
@@ -2221,6 +2224,62 @@ structure S {
             RefSymbolKind::Param,
             decl_off,
             domain_off,
+        );
+    }
+
+    // --- task #5579 (amendment): index_binder shadow — pin the deliberate
+    // current behavior (reviewer-surfaced gap: neither `sub_direct_exprs` nor
+    // `collect_uses_in_sub`'s doc comment previously had a test observing the
+    // consequence of NOT registering `index_binder` as a binding site) ---
+
+    #[test]
+    fn collect_references_from_outer_param_reaches_shadowed_index_binder_use() {
+        // `i` is declared twice here: once as an outer `param i`, and again as
+        // the indexed-sub's own `index_binder` (`sub xs[i in 0..4] = …`). Per
+        // the deliberate choice documented on `sub_direct_exprs` (mirroring
+        // the "Known limitation" on `collect_idents_in_expr`: binder-
+        // introducing expressions are not modeled as their own scope),
+        // `index_binder` is NOT registered as a local binding, so
+        // `Hole(bore: i)` — logically a use of the BINDER's `i` under
+        // indexed-sub semantics — resolves TODAY as a use of the unrelated
+        // OUTER `param i` instead.
+        //
+        // This pins that current, deliberately-deferred answer so a future
+        // change to binder scope-modeling must update this test rather than
+        // silently flip which `i` a rename touches.
+        let source = "\
+structure S {
+    param i: Int = 0
+    sub xs[i in 0..4] = Hole(bore: i)
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("index_binder_shadow"));
+        // See `collect_references_reaches_indexed_sub_domain_use` above for
+        // why this fixture is not asserted parse-clean: the indexed form
+        // always travels with an interim #5482 diagnostic, unrelated to the
+        // shadow under test here.
+        let sub = find_sub(&parsed, "xs");
+        assert!(
+            sub.index_binder.is_some(),
+            "fixture must actually lower an index_binder for the shadow to exist"
+        );
+
+        // The 1-char identifier `i` is not safe to locate via `occurrences`
+        // (it also matches inside the `in` keyword), so find the two sites we
+        // care about directly instead, mirroring
+        // `collect_references_reaches_indexed_sub_domain_use`'s approach for
+        // the equally-short `n`.
+        let decl_off = source.find("param i:").expect("param i decl") + "param ".len();
+        let use_off = source.find("bore: i)").expect("bore: i) use") + "bore: ".len();
+        assert_eq!(&source[decl_off..decl_off + 1], "i");
+        assert_eq!(&source[use_off..use_off + 1], "i");
+
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "i",
+            RefSymbolKind::Param,
+            decl_off,
+            use_off,
         );
     }
 
