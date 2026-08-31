@@ -4690,6 +4690,129 @@ structure def Part {
         );
     }
 
+    // ── Task 5097 δ step-18: RED — `reify_update_source`'s diagnostics filter
+    // must not be vacuous (review finding) ──
+    //
+    // `EngineSession::get_diagnostics` (engine.rs:3294) stamps EVERY
+    // `DiagnosticInfo.file_path` from `resolve_source()` (engine.rs:3259-3265),
+    // which returns the SOURCE_MAP KEY `module_key(module_name)` = `"<stem>.ri"`
+    // (engine.rs:764) — never a filesystem path. The landed
+    // `engine_get_diagnostics_returns_populated_warning` (engine_tests.rs:3616)
+    // already asserts exactly that (`first.file_path == "test_warn.ri"`), and
+    // commands.rs:539 documents the same stem-only-key fact.
+    //
+    // `handle_reify_update_source` filters `d.file_path == file_path` against
+    // the CALLER's spelling — which its ToolDef documents as a real path, and
+    // which every test drives as an absolute `&canonical`. So the filter drops
+    // EVERYTHING and the tool reports `diagnostics_count: 0` with an empty
+    // array while advertising "filtered to the named file". Because
+    // `update_source` returns `Err` on hard compile errors, what is silently
+    // swallowed is exactly the warning/info stream an AI client edits against.
+    //
+    // FAILS TO COMPILE until step-19 adds `filter_diagnostics_for_file`.
+
+    #[tokio::test]
+    async fn reify_update_source_diagnostics_survive_an_absolute_path_filter() {
+        use reify_test_support::warn_source_with_unknown_port_type;
+
+        let dir = tempfile::tempdir().unwrap();
+        let warn_canonical =
+            write_and_canonicalize(dir.path(), "warn.ri", warn_source_with_unknown_port_type());
+
+        let engine = crate::tests::make_test_engine();
+        // Launched ON the file, so `self.file_path == Some(warn.ri)` and the
+        // stamped source key is `"warn.ri"` — the precondition the real tool
+        // always runs under.
+        launch_via_load_file(&engine, &warn_canonical);
+
+        let s0 = current_gui_state(&engine);
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(s0));
+
+        reify_update_source_on_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &warn_canonical,
+            warn_source_with_unknown_port_type(),
+        )
+        .await
+        .expect("the warning fixture compiles successfully — this must return Ok");
+
+        let diags = crate::engine_lock::with_engine_lock(&engine, |s| s.get_diagnostics())
+            .expect("with_engine_lock must not fail");
+
+        // Half 1 — WHY a naive `==` is vacuous: the engine stamps the stem-only
+        // module key, NOT the caller's path. Pinned here so a future refactor
+        // that changes the stamping breaks this test loudly instead of quietly
+        // making the filter below trivially true.
+        assert!(
+            !diags.is_empty(),
+            "warn.ri must produce at least one diagnostic"
+        );
+        assert!(
+            diags.iter().all(|d| d.file_path == "warn.ri"),
+            "the engine must stamp the stem-only module key `warn.ri`, got: {:?}",
+            diags.iter().map(|d| &d.file_path).collect::<Vec<_>>()
+        );
+        assert_ne!(
+            warn_canonical.as_str(),
+            "warn.ri",
+            "the caller's spelling must be an ABSOLUTE path, or this test proves nothing"
+        );
+
+        // Half 2 — the exact expression the handler will evaluate must SURVIVE
+        // the caller's absolute-path spelling.
+        let kept = filter_diagnostics_for_file(diags, &warn_canonical);
+        assert!(
+            kept.iter().any(|d| d.message.contains("unknown port type")),
+            "the unknown-port-type warning must survive the absolute-path filter, got: {:?}",
+            kept.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// The filter's DISCRIMINATION, as a pure test over hand-built
+    /// `DiagnosticInfo` literals — no engine, no tempdir, no I/O. The KEPT rows
+    /// cover every spelling a caller can legitimately supply (the debug-server
+    /// absolute path, the bare module key a reify-mcp caller may pass, and a
+    /// `./`-relative path); the DROPPED rows are what prove the predicate is a
+    /// real discriminator and not a degenerate keep-everything.
+    ///
+    /// FAILS TO COMPILE until step-19 adds `filter_diagnostics_for_file`.
+    #[test]
+    fn filter_diagnostics_for_file_matches_either_spelling() {
+        fn stamped(key: &str) -> reify_core::DiagnosticInfo {
+            reify_core::DiagnosticInfo {
+                file_path: key.to_string(),
+                line: 2,
+                column: 5,
+                end_line: 2,
+                end_column: 9,
+                severity: "Warning".to_string(),
+                message: "unknown port type 'NonExistentTrait'".to_string(),
+                code: None,
+                has_location: true,
+            }
+        }
+
+        for requested in ["/tmp/x/part.ri", "part.ri", "./part.ri"] {
+            let kept = filter_diagnostics_for_file(vec![stamped("part.ri")], requested);
+            assert_eq!(
+                kept.len(),
+                1,
+                "a diagnostic stamped `part.ri` must be KEPT for requested `{requested}`"
+            );
+        }
+
+        for requested in ["/tmp/x/other.ri", ""] {
+            let kept = filter_diagnostics_for_file(vec![stamped("part.ri")], requested);
+            assert!(
+                kept.is_empty(),
+                "a diagnostic stamped `part.ri` must be DROPPED for requested `{requested}`, got: {:?}",
+                kept.iter().map(|d| &d.file_path).collect::<Vec<_>>()
+            );
+        }
+    }
+
     // ── Task 5097 δ step-13: RED — the two PURE-I/O write tools
     // (`reify_save_file`, `reify_export`) ──
     //
