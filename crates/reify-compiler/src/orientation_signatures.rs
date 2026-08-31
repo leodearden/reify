@@ -48,9 +48,11 @@ use reify_core::Type;
 /// - `orient_to_axis_angle` → `Value::Map` `{angle, axis}`,
 /// - `transform_log` → `Value::Map` (twist).
 ///
-/// The two `Value::Map` cases have no clean `Type` variant and `orient_log`'s
-/// quantity slot needs a dimension ruling, so per-name typing for the
-/// decomposers is out of scope here (a follow-up).
+/// Those four are NOT untyped — they are typed by the SIBLING slice
+/// [`ORIENTATION_DECOMPOSER_FN_NAMES`] below (task 6306), which is where the
+/// follow-up this doc once promised landed. They stay OUT of this slice because
+/// the producer/decomposer split is the very thing that makes the no-prefix-rule
+/// argument above legible: one prefix, two value kinds, therefore two lists.
 ///
 /// `frame_at` is likewise EXCLUDED: `units.rs::datum_constructor_result_type`
 /// already types it `Type::Frame(3)` as part of the DATUM family, so claiming
@@ -99,6 +101,59 @@ pub const ORIENTATION_TYPED_FN_NAMES: &[&str] = &[
 /// [`ORIENTATION_TYPED_FN_NAMES`]. Case-sensitive.
 pub(crate) fn is_orientation_typed_fn(name: &str) -> bool {
     ORIENTATION_TYPED_FN_NAMES.contains(&name)
+}
+
+/// The complete set of orientation/transform DECOMPOSER builtin names recognised
+/// by the compiler (task 6306) — the sibling half of
+/// [`ORIENTATION_TYPED_FN_NAMES`]. Single source of truth; imported into the
+/// `units.rs` test module to pin disjointness from all sibling families AND from
+/// the producer slice.
+///
+/// **4 names**, each with its eval site, runtime `Value`, and resolved static
+/// type (the resolver is [`orientation_decomposer_result_type`], which carries
+/// the per-arm ruling basis):
+/// - `orient_log` (`orientation.rs:203`, result at `:228`) →
+///   `Value::Vector` of three `Value::Real` → `Type::vec3(dimensionless)`.
+/// - `orient_to_euler` (`orientation.rs:264`, result at `:438`) →
+///   `Value::List` of three `Value::angle` → `Type::List(Angle)`.
+/// - `orient_to_axis_angle` (`orientation.rs:440`, result at `:460-470`) →
+///   `Value::Map {angle, axis}` → `Type::StructureRef("AxisAngle")`.
+/// - `transform_log` (`geometry.rs:779`, constructor at `:860-873`) →
+///   `Value::Map {angular, linear}` (a twist) → `Type::StructureRef("Twist")`.
+///
+/// # Why a SEPARATE slice rather than more entries in the producer list
+///
+/// These are the SAME two eval dispatchers as the producers —
+/// `reify_stdlib::orientation::eval_orientation` (three of them) and
+/// `reify_stdlib::geometry::eval_geometry` (one) — reached through the same
+/// name-based dispatch. What differs is the VALUE KIND returned: a producer
+/// hands back the nominal rigid-motion value its type names
+/// (`Value::Orientation`/`Frame`/`Transform`), a decomposer hands back the
+/// COORDINATES of one (`Vector`/`List`/`Map`). That split is exactly why the
+/// prefix rule was rejected on [`ORIENTATION_TYPED_FN_NAMES`], and it is also why
+/// the two halves cannot share one resolver: no single nominal type covers both.
+///
+/// Keeping them apart preserves the producer slice's doc as a true statement and
+/// keeps `is_orientation_typed_fn_rejects_the_four_decomposers` meaningful; the
+/// `is_orientation_decomposer_fn_rejects_the_producers` test pins the reciprocal,
+/// so the two halves are disjoint by test in both directions.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const ORIENTATION_DECOMPOSER_FN_NAMES: &[&str] = &[
+    // Orientation decomposers (3). Eval: orientation::eval_orientation.
+    "orient_log",
+    "orient_to_euler",
+    "orient_to_axis_angle",
+    // Transform decomposer (1). Eval: geometry::eval_geometry.
+    "transform_log",
+];
+
+/// Is `name` an orientation/transform decomposer builtin the compiler types via
+/// [`orientation_decomposer_result_type`]? Name-only classification — a
+/// `.contains` over the single-source-of-truth slice
+/// [`ORIENTATION_DECOMPOSER_FN_NAMES`]. Case-sensitive.
+pub(crate) fn is_orientation_decomposer_fn(name: &str) -> bool {
+    ORIENTATION_DECOMPOSER_FN_NAMES.contains(&name)
 }
 
 /// Result type for an orientation/transform/frame constructor builtin — a fixed
@@ -241,13 +296,20 @@ mod tests {
         }
     }
 
-    /// The FOUR decomposers are deliberately EXCLUDED — see the
-    /// no-prefix-rule section of [`ORIENTATION_TYPED_FN_NAMES`] for why.
+    /// The FOUR decomposers are deliberately EXCLUDED from the PRODUCER family —
+    /// see the no-prefix-rule section of [`ORIENTATION_TYPED_FN_NAMES`] for why.
+    ///
+    /// EXCLUDED HERE DOES NOT MEAN UNTYPED. Since task 6306 all four are typed by
+    /// the sibling predicate [`is_orientation_decomposer_fn`] over
+    /// [`ORIENTATION_DECOMPOSER_FN_NAMES`]; this test asserts only that they are
+    /// not claimed by the PRODUCER half, and
+    /// `is_orientation_decomposer_fn_rejects_the_producers` asserts the converse.
     ///
     /// The eval sites the exclusion was derived from, for re-checking it:
     /// `orient_log` `orientation.rs:203`, `orient_to_euler`
     /// `orientation.rs:264`, `orient_to_axis_angle` `orientation.rs:440`,
-    /// `transform_log` `geometry.rs:677`.
+    /// `transform_log` `geometry.rs:779` (was cited as `:677` before task 6306 —
+    /// that line is inside `transform_exp`, which spans `:670-777`).
     #[test]
     fn is_orientation_typed_fn_rejects_the_four_decomposers() {
         assert!(
