@@ -1486,12 +1486,12 @@ fn collect_underivable(
 ///   non-determinedness §11.6 exists to catch.
 /// - A side missing but the param present in `underivable` ⇒ ABSTAIN, counting
 ///   the param as bracketed (esc-5711-3). The `None` there is a derivation
-///   BLIND SPOT, not evidence about the user's model: everything outside
-///   [`derive_from_side`]'s three recognised shapes — `Eq`, coefficient,
-///   nonlinear, coupled, `Or`, sum and dispatch-backed predicates among them —
-///   is invisible to [`derive_param_intervals`], and that list is a set of
-///   EXAMPLES, not a taxonomy (see [`params_in_underivable_constraints`]),
-///   and letting one masquerade as "the user did not bound this side" converts
+///   BLIND SPOT, not evidence about the user's model. Everything outside
+///   [`derive_from_side`]'s three recognised shapes is invisible to
+///   [`derive_param_intervals`] — `Eq`, coefficient, nonlinear, coupled, `Or`,
+///   sum and dispatch-backed predicates among them, as EXAMPLES rather than a
+///   taxonomy (see [`params_in_underivable_constraints`] for the general rule).
+///   Letting one masquerade as "the user did not bound this side" converts
 ///   a valid, bounded γ model into a user-facing `error: strict auto parameter
 ///   resolution is not uniquely determined`. MEASURED before the fix, on this
 ///   branch: γ + `1mm<x<4mm ∧ y>1mm ∧ y < 5mm - x` reported
