@@ -179,6 +179,19 @@ resolve_file_cap() {
         # pattern space (`:a;N;$!ba`) so the `,` and its closing bracket can
         # be matched across the newline between them, then drops any comma
         # that is followed only by whitespace and a `]` or `}`.
+        #
+        # NOT STRING-AWARE, BY MEASUREMENT RATHER THAN BY DESIGN (task 6486
+        # review pass). Both passes are plain text rewrites with no notion of
+        # JSON string boundaries, so a comma INSIDE a string value that
+        # happens to be followed only by whitespace and a `]`/`}` — e.g. an
+        # extra_ignore_patterns entry "src/{a,b,}" or a prose value
+        # "note": "x, } y" — would be silently rewritten too. That cannot
+        # change this function's OUTPUT: the only thing read below is the
+        # single numeric `.max_folder_files` key, never a string value the
+        # stripper might mangle, and both the live host config and the real
+        # 1.108.54 template parse to the correct cap through this pipeline
+        # (measured). Revisit this if the pipeline is ever reused to read a
+        # string-valued key.
         local stripped from_config
         stripped="$(sed -e 's|^[[:space:]]*//.*$||' -e 's|[[:space:]]//[^"]*$||' "$CONFIG_JSONC" \
             | sed -e ':a' -e 'N' -e '$!ba' -e 's/,\([[:space:]]*[]}]\)/\1/g')"
