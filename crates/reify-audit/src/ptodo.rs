@@ -325,112 +325,113 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
     if left.last() != Some(&b' ') || (left.len() >= 2 && left[left.len() - 2] == b' ') {
         return false;
     }
+    // Families 2 and 3 share one noun table: family 3's `task`/`tasks` is safe
+    // here only because of the hoisted `id > 99` early return at the top of
+    // this fn, which is not re-spelled per family.  Compared on the raw bytes
+    // (`eq_ignore_ascii_case`) rather than via a lowercased `String`, so
+    // classifying a cite allocates nothing — the `decision` arm below always
+    // did this, and the two halves now agree.
+    const PRD_LOCAL_NOUNS: [&[u8]; 9] = [
+        b"invariant",
+        b"invariants",
+        b"row",
+        b"rows",
+        b"boundary",
+        b"open-question",
+        b"design_decision",
+        b"task",
+        b"tasks",
+    ];
     let (token, token_start) = token_before(left, left.len() - 1);
-    let token = String::from_utf8_lossy(token).to_ascii_lowercase();
-    match token.as_str() {
-        "invariant" | "invariants" | "row" | "rows" | "boundary" | "open-question"
-        | "design_decision" => true,
-        // `design decision #5` — the bare noun `decision` is only PRD-local
-        // when `design` immediately qualifies it (one space, as above).
-        "decision" => {
-            token_start > 0
-                && left[token_start - 1] == b' '
-                && token_before(left, token_start - 1)
-                    .0
-                    .eq_ignore_ascii_case(b"design")
-        }
-        // Family 3 — the digit bound that makes this arm safe is the hoisted
-        // `id > 99` early return at the top of this fn, shared with families 1
-        // and 2; it is not re-spelled here.
-        "task" | "tasks" => true,
-        _ => false,
+    if PRD_LOCAL_NOUNS.iter().any(|n| token.eq_ignore_ascii_case(n)) {
+        return true;
     }
+    // `design decision #5` — the bare noun `decision` is only PRD-local when
+    // `design` immediately qualifies it (one space, as above).
+    token.eq_ignore_ascii_case(b"decision")
+        && token_start > 0
+        && left[token_start - 1] == b' '
+        && token_before(left, token_start - 1)
+            .0
+            .eq_ignore_ascii_case(b"design")
 }
 
-/// §8.2 canonical citation: a `#` immediately followed by a run of 1..=5 ASCII
-/// digits whose run length is ≤5 (the char after the run is not a digit, so a
-/// 6-digit number is not matched on its 5-digit prefix) AND whose value is ≥1.
-/// An all-zero run (`#0`, `#00`) is rejected — task ids start at 1, so a `#0`
-/// cite is not canonical and falls through to the structural `untracked`
-/// classification (mirrors the ≥1 guard in [`extract_cites`]).
+/// §8.2 cite occurrences — the SINGLE `#`+digit-run scanner. Yields
+/// `(byte_offset_of_the_hash, id)` for every numerically well-formed cite on
+/// the line, in source order.
 ///
-/// A `#N` that [`prd_relative_cite`] recognises as a PRD-relative index is NOT
-/// canonical — it names a position inside a PRD document, not a task.
-fn has_canonical_cite(line: &str) -> bool {
+/// [`has_canonical_cite`], [`extract_cites`] and [`has_malformed_cite`]'s `#N`
+/// pass are all expressed over this one iterator, so the grammar they share —
+/// a run of 1..=5 ASCII digits (a 6-digit number is *not* matched on its
+/// 5-digit prefix) whose value is ≥1 (`#0`/`#00` is not a task id) — holds by
+/// CONSTRUCTION. It was previously three hand-rolled copies required to stay
+/// lock-step by three doc comments, which is a promise rather than a guarantee.
+/// The three callers now differ in exactly one thing: what each does with a
+/// [`prd_relative_cite`] occurrence — skip it, drop it, or report it.
+///
+/// A consumed digit run is skipped whole; a malformed run (a bare `#`, `#abc`,
+/// `#123456`) advances one byte, so a `#N` immediately after it is still seen.
+///
+/// The G-allow owner-cite lane deliberately does NOT scan through here — see
+/// [`extract_g_allow_owner_cites`], which carries its own exemption grammar.
+fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
     let bytes = line.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'#' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            let run = j - (i + 1);
-            // ≥1 guard: the run must carry a non-zero digit (`#0`/`#00` → 0 → not
-            // a valid task id). `#007` (= 7) is still canonical.
-            //
-            // `line[i + 1..j]` is a 1..=5-digit ASCII run, so it always fits in
-            // u32 (max 99999) and the parse cannot fail. The §8.2 PRD-relative
-            // filter is applied AFTER the digit-run and ≥1 checks so it COMPOSES
-            // with the existing grammar rather than replacing it, and it is
-            // consulted per-OCCURRENCE — a disqualified `#N` is skipped and the
-            // scan continues, so a line carrying both idioms still reports the
-            // genuine cite.
-            if (1..=5).contains(&run)
-                && let Ok(id) = line[i + 1..j].parse::<u32>()
-                && id >= 1
-                && !prd_relative_cite(bytes, i, id)
-            {
-                return true;
-            }
-        }
-        i += 1;
-    }
-    false
-}
-
-/// §8.2 cite extraction (β liveness lane): every canonical `#NNNN` id on the
-/// line, in source order. Mirrors [`has_canonical_cite`]'s `#`+digit-run scan
-/// but parses each 1..=5-digit run to `u32` (runs of length 0 or >5 are
-/// skipped, so `#abc`, a bare `#`, and a 6-digit `#123456` yield nothing —
-/// consistent with the canonical-cite recogniser). The id-0 case (`#0`, `#00`)
-/// is also skipped — task ids start at 1, so a `#0` cite is not a valid id and
-/// is dropped here (keeping it lock-step with [`has_canonical_cite`]'s ≥1 guard,
-/// so `#0` classifies structurally as `untracked` rather than spuriously
-/// `unknown-id`).
-///
-/// PRD-relative indices are dropped here too, by the same
-/// [`prd_relative_cite`] filter [`has_canonical_cite`] applies — the two are
-/// required to stay lock-step, so a cite that is not canonical must also not be
-/// extracted.
-fn extract_cites(line: &str) -> Vec<u32> {
-    let bytes = line.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'#' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            let run = j - (i + 1);
-            if (1..=5).contains(&run) {
-                // `line[i + 1..j]` is a 1..=5-digit ASCII run; it always fits
-                // in u32 (max 99999), so the parse cannot fail. Skip id 0 (`#0`,
-                // `#00`) — task ids start at 1, so it is not a valid cite.
-                if let Ok(id) = line[i + 1..j].parse::<u32>()
-                    && id >= 1
-                    && !prd_relative_cite(bytes, i, id)
-                {
-                    out.push(id);
-                }
-                i = j; // skip past the consumed digit run
+    std::iter::from_fn(move || {
+        while i < bytes.len() {
+            if bytes[i] != b'#' {
+                i += 1;
                 continue;
             }
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if !(1..=5).contains(&(j - (i + 1))) {
+                i += 1;
+                continue;
+            }
+            let at = i;
+            i = j; // skip past the consumed digit run
+            // A 1..=5-digit ASCII run always fits in u32 (max 99999), so the
+            // parse cannot fail. `#0`/`#00` parses to 0 — task ids start at 1,
+            // so it is not a cite and is dropped here for every caller.
+            if let Ok(id) = line[at + 1..j].parse::<u32>()
+                && id >= 1
+            {
+                return Some((at, id));
+            }
         }
-        i += 1;
-    }
-    out
+        None
+    })
+}
+
+/// §8.2 canonical citation: `true` when the line carries at least one
+/// [`cite_occurrences`] cite (`#` + 1..=5 digits, value ≥1) that is NOT a
+/// PRD-relative index.
+///
+/// A `#N` that [`prd_relative_cite`] recognises names a position inside a PRD
+/// document, not a task, so it cannot anchor tracking. The filter is applied
+/// per-OCCURRENCE, so a line carrying both idioms still reports the genuine
+/// cite. An all-PRD-relative (or all-zero) line falls through to the structural
+/// `untracked` / `malformed-cite` classification.
+fn has_canonical_cite(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    cite_occurrences(line).any(|(at, id)| !prd_relative_cite(bytes, at, id))
+}
+
+/// §8.2 cite extraction (β liveness lane): every canonical id on the line, in
+/// source order.
+///
+/// Shares [`cite_occurrences`] with [`has_canonical_cite`] and applies the same
+/// [`prd_relative_cite`] filter, so the two are lock-step by construction: a
+/// cite that is not canonical is also not extracted.
+fn extract_cites(line: &str) -> Vec<u32> {
+    let bytes = line.as_bytes();
+    cite_occurrences(line)
+        .filter(|&(at, id)| !prd_relative_cite(bytes, at, id))
+        .map(|(_, id)| id)
+        .collect()
 }
 
 /// `true` when `c` is a Greek-block letter (U+0370..=U+03FF) — the banned
@@ -456,11 +457,12 @@ fn is_greek(c: char) -> bool {
 /// convention already mandates the `malformed-cite` disposition for
 /// PRD-relative indices; this closes the `#N` spelling of it.
 ///
-/// The scan is a SEPARATE pass over `line.as_bytes()` rather than being fused
-/// into the `char` loop below: the Greek arm needs `char` indices (Greek
-/// letters are multi-byte) while [`prd_relative_cite`] takes a byte offset, and
-/// fusing the two would require maintaining both cursors in lock-step for no
-/// gain. Both passes are O(n) over a single line.
+/// The `#N` register is scanned in a SEPARATE pass, via the shared
+/// [`cite_occurrences`] iterator, rather than being fused into the `char` loop
+/// below: the Greek arm needs `char` indices (Greek letters are multi-byte)
+/// while [`prd_relative_cite`] takes a byte offset, and fusing the two would
+/// require maintaining both cursors in lock-step for no gain. Both passes are
+/// O(n) over a single line.
 ///
 /// `is_g_allow_cite_exempt` rule (c) and [`extract_g_allow_owner_cites`] are
 /// deliberately NOT refactored to delegate here — the G-allow owner-cite lane
@@ -469,35 +471,15 @@ fn is_greek(c: char) -> bool {
 /// decoupled lane. The pre-existing `extract_g_allow_owner_cites_*` tests
 /// staying green is the proof of that decoupling.
 fn has_malformed_cite(line: &str) -> bool {
-    // Pass 1 (§8.2 `#N` register): mirror `has_canonical_cite`'s `#`+digit-run
-    // scan — 1..=5 digit run, parse to u32, id ≥ 1 — and report the line
+    // Pass 1 (§8.2 `#N` register): the shared [`cite_occurrences`] scan, with
+    // the verdict INVERTED relative to `has_canonical_cite` — the line is
     // malformed when ANY occurrence lands in PRD-relative left-context. "Any",
     // not "all", because arm (3) consults this only AFTER `has_canonical_cite`
     // has already returned false, so reaching here means no occurrence on the
     // line was a genuine cite.
     let bytes = line.as_bytes();
-    let mut b = 0;
-    while b < bytes.len() {
-        if bytes[b] == b'#' {
-            let mut j = b + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            let run = j - (b + 1);
-            if (1..=5).contains(&run) {
-                // `line[b + 1..j]` is a 1..=5-digit ASCII run, so it always
-                // fits in u32 (max 99999) and the parse cannot fail.
-                if let Ok(id) = line[b + 1..j].parse::<u32>()
-                    && id >= 1
-                    && prd_relative_cite(bytes, b, id)
-                {
-                    return true;
-                }
-                b = j; // skip past the consumed digit run
-                continue;
-            }
-        }
-        b += 1;
+    if cite_occurrences(line).any(|(at, id)| prd_relative_cite(bytes, at, id)) {
+        return true;
     }
 
     // Pass 2 (Greek + legacy `task-N`/`task_N`/`task N` registers), unchanged.
