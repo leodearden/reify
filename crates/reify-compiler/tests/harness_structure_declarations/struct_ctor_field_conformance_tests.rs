@@ -948,14 +948,27 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 //       revert.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── (b) excluded family: Point ← numeric-fallback placeholder ────────────────
+// ── (b) Point ← a MATCHING dimensioned `point3(…)` call ────────────────────
 //
-// `point3(0m, 0m, 0m)` is a `CompiledExprKind::FunctionCall` whose result_type
-// is the expression compiler's numeric fallback `Scalar[m]`, NOT `Type::Point`.
-// `type_compatible` has a Point-vs-Point arm but no Point-vs-Scalar arm, so the
-// general leaf arm false-rejects. This is the same placeholder class the
-// pre-existing `Type::Geometry` carve-out and `promote_function_call_to_structure_ref`
-// exist for. Shape taken from examples/anisotropic_bar.ri and the five
+// This group used to be filed as an EXCLUDED family on a premise that has since
+// expired. It read: "`point3(0m, 0m, 0m)` is a `CompiledExprKind::FunctionCall`
+// whose result_type is the expression compiler's numeric fallback `Scalar[m]`,
+// NOT `Type::Point`", so the arg was unjudgeable and had to be tolerated as a
+// placeholder. Task 5344 (`3c4ee5e9ac`) claimed `point3` / `point2` into
+// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"` arm,
+// and the call now types as a real `Type::Point { n: 3, quantity: Scalar[m] }`.
+//
+// The two fixtures below stay GREEN, but for the OPPOSITE reason: the arg's
+// quantity slot MATCHES the param's `Length`, so the quantity rule is consulted
+// and agrees. They are now the CLEAN leg of that rule at the ctor seam, not a
+// carve-out from it — which is why they are worth keeping and why their names
+// no longer say "placeholder". The genuine placeholder tolerance still exists
+// (`is_numeric_placeholder_leaf`, in `conformance/mod.rs`), but its surviving
+// inputs are a BARE numeric literal and `Type::ScalarParam(_)`, not a
+// `point3(…)` call — see `bare_numeric_literal_at_point_param_stays_clean`
+// further down this file.
+//
+// Shape taken from examples/anisotropic_bar.ri and the five
 // examples/tensegrity_*.ri files.
 const SRC_FAMILY_POINT: &str = r#"module test.family_point
 structure def Anchor { param origin : Point3<Length> }
@@ -964,50 +977,79 @@ structure def Root {
 }
 "#;
 
-/// Clean fixture for the promoted `Point` family.
+/// Clean fixture for the `Point` family: the arg's dimension AGREES with the
+/// param's, so the quantity rule is consulted and is silent.
 ///
-/// `point3` is a stdlib EVAL-BUILTIN (`crates/reify-stdlib/src/geometry.rs:942`)
-/// with no `.ri` signature, so it carries no declared return type at compile
-/// time and the call compiles to a `CompiledExprKind::FunctionCall` typed
-/// `Scalar[m]` — the expression compiler's numeric fallback — never
-/// `Type::Point`. The dedicated `Point` arm tolerates scalar-like args as
-/// exactly that placeholder.
+/// **Why this fixture is still worth keeping, under a premise that changed.**
+/// It was written as a placeholder carve-out: `point3` is a stdlib EVAL-BUILTIN
+/// (`construct_point_or_vector` in `crates/reify-stdlib/src/geometry.rs`) with
+/// no `.ri` signature, and its calls were said to compile to a `FunctionCall`
+/// typed `Scalar[m]` — the expression compiler's numeric fallback — never
+/// `Type::Point`, hence unjudgeable. Task 5344 (`3c4ee5e9ac`) retired that: the
+/// call now types as a real `Point3<Scalar[m]>`, which MATCHES the
+/// `Point3<Length>` param exactly. The cell is still clean, but it is now the
+/// CLEAN LEG of the quantity rule rather than an exemption from it, and that is
+/// a stronger thing to hold: it is the fixture that would notice the rule
+/// starting to reject args whose dimensions agree.
+///
+/// Its counterparts at the same arm are
+/// [`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`]
+/// (dimensions disagree ⇒ reject) and
+/// [`point3_dimensionless_at_dimensioned_point_param_stays_clean`] (arg names no
+/// dimension at all ⇒ the surviving tolerance).
 ///
 /// Shape from `examples/anisotropic_bar.ri:82` (`origin: point3(0m, 0m, 0m)`)
 /// and `examples/dynamics/pendulum_idyn.ri:29` (`com:`).
 #[test]
-fn point_param_given_placeholder_function_call_stays_clean() {
+fn point_param_given_matching_dimensioned_point3_call_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_POINT);
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
         "a Point3<Length> param given `point3(0m, 0m, 0m)` must emit ZERO ctor-conformance \
-         diagnostics — the arg's result_type is the numeric-fallback placeholder Scalar[m], \
-         not Type::Point, so `type_compatible` cannot judge it. Got: {diags:#?}"
+         diagnostics — since task 5344 the arg types as a real Point3<Scalar[m]>, whose \
+         quantity slot names the SAME dimension as the param's Length, so the quantity rule \
+         is consulted and agrees. It is NOT silent because the arg is an unjudgeable \
+         placeholder — that premise expired. Got: {diags:#?}"
     );
 }
 
-const SRC_LIST_OF_POINT_PLACEHOLDERS: &str = r#"module test.list_point
+const SRC_LIST_OF_MATCHING_POINT3_CALLS: &str = r#"module test.list_point
 structure def Truss { param nodes : List<Point3<Length>> }
 structure def Root {
     let t = Truss(nodes: [point3(0m, 0m, 0m), point3(1m, 0m, 0m), point3(0m, 1m, 0m)])
 }
 "#;
 
-/// Wrapper composition on the clean side: the placeholder tolerance must be
-/// reached PER ELEMENT through the walker's `ListLiteral` recursion.
+/// Wrapper composition on the clean side: the quantity rule must be reached PER
+/// ELEMENT through the walker's `ListLiteral` recursion.
+///
+/// The per-element claim is what this fixture uniquely holds, and task 5344
+/// (`3c4ee5e9ac`) made it sharper rather than weaker. It was written when each
+/// element was believed to be an unjudgeable numeric-fallback placeholder, so
+/// "reached per element" meant only that the walker recursed without emitting a
+/// wrapper-shape diagnostic on top. Now each element types as a real
+/// `Point3<Scalar[m]>` and the quantity rule genuinely fires at every one of
+/// them, agreeing three times over.
+///
+/// Its REJECT-side composition twin is
+/// [`list_of_point3_dimensioned_at_real_point_param_warns_arg_type_mismatch`],
+/// which drives the same `List`/`List` recursion into a DISAGREEING element.
+/// Holding both directions is what stops the recursion from silently stopping at
+/// the wrapper; the `Vector` arm's equivalent pair sits one arm over.
 ///
 /// Shape from `examples/tensegrity_pavilion.ri:53-58`, where the `point3(…)`
 /// calls sit inside a list literal.
 #[test]
-fn list_of_point_param_given_placeholder_calls_stays_clean() {
-    let module = compile_source_with_stdlib(SRC_LIST_OF_POINT_PLACEHOLDERS);
+fn list_of_point_param_given_matching_dimensioned_point3_calls_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_LIST_OF_MATCHING_POINT3_CALLS);
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
         "a List<Point3<Length>> param given a list literal of `point3(…)` calls must emit ZERO \
-         ctor-conformance diagnostics — each element is the same numeric-fallback placeholder. \
-         Got: {diags:#?}"
+         ctor-conformance diagnostics — the List/List wrapper arm recurses into EACH element, \
+         and since task 5344 each one types as a real Point3<Scalar[m]> whose dimension agrees \
+         with the param's Length. Got: {diags:#?}"
     );
 }
 
