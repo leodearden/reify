@@ -517,6 +517,10 @@ true` (or any bare `git config rerere.*` write) in **any** reify worktree — us
 
 ## 8. Open items
 
+All three items below are **CLOSED** as of 2026-08-30 (task 6889). They are kept as a numbered
+ledger — at their original numbers, which §7 back-references — because each records what was
+measured and, more importantly, what its closure does *not* buy.
+
 1. **CLOSED 2026-08-30 (task 6889, open item (b)) — `git fsck` is MEASURED, and the store is clean.**
    `git fsck --connectivity-only --no-progress` on `/home/leo/src/reify` completes in **1m12s**,
    **exit 0**, emitting only `dangling tree` / `dangling commit` lines. The 900s timeout that killed
@@ -568,24 +572,52 @@ true` (or any bare `git config rerere.*` write) in **any** reify worktree — us
    point stands on its own: an `include.path` re-arm would leave no `rerere` string in the file an
    auditor greps, so §6's `--includes` reads keep covering that shape whichever writer is live.
 
-3. **`arm` runs at developer-setup cadence, not lane cadence.** This is the concrete form of item 2's
-   "narrows the window, does not close it", and it is worth stating as its own gap because
-   `CLAUDE.md` states the disarm as an invariant: as landed, *no frequently-executed path upholds it*.
-   `setup-dev.sh` is the only caller, and a developer runs it rarely — which is why the 2026-08-29
-   re-measurement above found the store armed with nothing having re-asserted the pin in between.
+3. **CLOSED 2026-08-30 (task 6889, open item (c)) — `arm` now runs at LANE cadence.** The gap this
+   item recorded was real: `CLAUDE.md` states the disarm as an invariant while `setup-dev.sh` was
+   the only caller, so *no frequently-executed path upheld it* — which is why the 2026-08-29
+   re-measurement found the store armed with nothing having re-asserted the pin in between.
+   `scripts/seed-warm-lane.sh --fresh-checkout` now delegates to `git-rerere-guard.sh arm` at the
+   tail of the seed, re-pinning the shared config on **every warm-lane ACQUIRE**. The mechanism —
+   mode gate, existence gate, the fail-open `0 | 2 | *` branch that guarantees an acquire never
+   fails because the store could not be pinned, and the `REIFY_WARM_LANE_RERERE_ARM=0` operator
+   escape hatch — is normative in that script's *git rerere disarm at LANE cadence* block and
+   summarised in the guard header's CALLERS section; it is not restated here.
 
-   The natural fix is a caller at lane cadence. `scripts/setup-main-gate-worktree-config.sh` is the
-   obvious candidate: it already exists to defend against the same per-worktree-enter shared-config
-   clobber, and it already runs per lane. The orchestrator's lane ACQUIRE is the other. Either is
-   cheap — `check` is sub-second on the live 254-lane store (measured, §7) and `arm` is a byte-level
-   no-op when the pin is already in place. Neither is wired today; both are outside this task's
-   module scope, so this is filed as follow-up rather than done here.
+   **CORRECTION, in place rather than merely superseded: `setup-main-gate-worktree-config.sh` does
+   NOT run per lane.** This item previously named `scripts/setup-main-gate-worktree-config.sh` as
+   the obvious fix because "it already runs per lane". That is **measured false**, and it is the
+   exact claim that mis-aimed this task's own original description, so it is corrected here rather
+   than quietly dropped. MEASURED on base `ee5c57c8ca`: its only runtime caller is
+   `scripts/setup-dev.sh:341` — the *same* developer-setup cadence this gap is about — so wiring
+   `arm` there would have bought nothing. `scripts/seed-warm-lane.sh --fresh-checkout`, driven by
+   dark-factory's `_seed_warm_lane()` (`git_ops.py:1227`) on every ACQUIRE, is the only genuine
+   per-lane host inside reify. `scripts/warm-lane-preflight.sh` is **not** a substitute either: it
+   is pool-level, takes `--mount`/`--base-dir` and never a lane dir, and is fail-closed.
+   Measurement record: mem0 `329f8efa-c09f-47d7-b926-5880e11f619c`.
+
+   **A mitigation, not a cure — do not read this closure as closing the hazard.** Lane cadence
+   narrows the exposure window from "since the last developer setup" to "since the last acquire";
+   it does not close it, because the re-armer is **agent behaviour** and no `arm` cadence outruns an
+   agent re-running the shared write (§7's CONSEQUENCE paragraph, and item 2 above). The cost is why
+   running it every acquire is free regardless: `check` is sub-second on the live 253-lane store
+   (0.082–0.180s, measured §7) and `arm` is a byte-level no-op once the pin is in place.
+
+   **Known gap, left deliberately.** The merge-spec lane is not covered: dark-factory's
+   `acquire_spec_lane` (`git_ops.py:5923`) calls `_seed_warm_lane(lane, '--reset-in-place')` at
+   `:6076`, at an indent common to BOTH its create and its reset branch, so a merge-spec acquire is
+   **always** `--reset-in-place` and never reaches the block. That is harmless for this defence,
+   which is why the gate was left as-is rather than widened: the pin is a property of the **one
+   shared `.git/config`**, not of a lane, so any acquire that pins it pins it for every lane
+   including the spec lane — and task-lane acquires dominate by volume. It would matter for a
+   lane-scoped write; it does not for a shared-store one.
 
 ## Pointers
 
 | Topic | Source |
 |---|---|
-| Guard contract, exit codes, subcommand detail | `scripts/git-rerere-guard.sh` header |
+| Guard contract, exit codes, subcommand detail (incl. CALLERS, both cadences) | `scripts/git-rerere-guard.sh` header |
+| Lane-cadence `arm` wiring (mode gate, fail-open, opt-out) | `scripts/seed-warm-lane.sh` → *git rerere disarm at LANE cadence* block |
+| Developer-cadence `arm` wiring (aborts setup on an unexpected non-zero) | `scripts/setup-dev.sh` |
 | Behavioural oracles (real conflicted merges against a populated cache) | `tests/infra/test_git_rerere_guard.sh` |
 | Sibling shared-`.git` hazard (`refs/stash` is one host-wide ref) | `CLAUDE.md` → "Warm lanes"; `hooks/reference-transaction` |
 | Warm-lane pool lifecycle & invariants | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5 |
