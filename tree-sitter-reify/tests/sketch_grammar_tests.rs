@@ -57,7 +57,18 @@
 //!   Pins the `commonMembers()` -> `_guard_member` consequence at the GRAMMAR
 //!   level; the semantic rejection is step-12's.
 //!
-//! The INV-SF-7 suite at the bottom of this file is separate — see its own
+//! - [`sketch_auto_seed_target_fixture_parses_with_zero_error_nodes`] —
+//!   **RED** before step-8; GREEN after. The second headline signal: after
+//!   step-2 this fixture's only remaining blocker is `auto(10mm)` in
+//!   positional argument position.
+//! - [`auto_seed_cst_contract`] — **RED** before step-8 (no `auto_seed` node
+//!   kind); GREEN after.
+//! - [`bare_auto_stays_rejected_in_positional_operand_position`],
+//!   [`named_argument_auto_forms_unchanged`],
+//!   [`auto_seed_is_not_admitted_at_binding_sites_in_v1`] — **GREEN before and
+//!   after**. Together they keep the OPTION B reversal of task 3808 NARROW.
+//!
+//! The INV-SF-7 suite in the middle of this file is separate — see its own
 //! banner comment for why it exists and how its readings were arrived at:
 //! [`sketch_let_quantity_literal_does_not_absorb_the_next_member`],
 //! [`sketch_argument_whitespace_splits_the_quantity_literal`],
@@ -670,5 +681,198 @@ fn sketch_body_keeps_consecutive_relation_members_separate() {
         sketch_body_members(SOURCE),
         vec!["relation_member", "relation_member"],
         "consecutive identifier-led relation members must not fuse"
+    );
+}
+
+// ── `auto(seed)` in positional call-argument position ────────────────────────
+//
+// PRD §5 D6, implementing Leo's 2026-07-25 OPTION B decision: grammar-general
+// `auto(<expr>)` in CALL position. That decision records a PARTIAL, explicit
+// reversal of task 3808, which rejected `auto` at operand positions. Only the
+// parenthesized-seed form is reversed — bare `auto`, `auto(free)` and
+// `auto(name = value)` in POSITIONAL argument position all stay parse errors,
+// and [`bare_auto_stays_rejected_in_positional_operand_position`] is what keeps
+// the reversal narrow rather than letting it drift wide later.
+
+/// The α target surface for `auto(seed)`: the committed PRD fixture whose only
+/// remaining parse blocker after step-2 is `auto(10mm)` in positional argument
+/// position.
+const SKETCH_AUTO_SEED_TARGET: &str =
+    include_str!("../../tests/prd-gate/fixtures/sketch_auto_seed_target.ri");
+
+/// Second α headline signal — RED before step-8 (probe-verified exit 1), GREEN
+/// after.
+///
+/// This fixture's sketch block already parses after step-2; `point(auto(10mm),
+/// 0mm)` is the only thing left, so step-8 alone can turn it green.
+#[test]
+fn sketch_auto_seed_target_fixture_parses_with_zero_error_nodes() {
+    assert_parses_clean(
+        "tests/prd-gate/fixtures/sketch_auto_seed_target.ri",
+        SKETCH_AUTO_SEED_TARGET,
+    );
+}
+
+/// `auto(<expr>)` surfaces as its own `auto_seed` node with a `seed` field, in
+/// ANY call's positional argument list — not just inside a sketch.
+///
+/// RED before step-8 (the `auto_seed` node kind does not exist).
+///
+/// The generality is asserted, not assumed: OPTION B says "grammar-general in
+/// call position", so the same form is exercised through a plain
+/// `function_call` AND a `namespaced_call`, the two `callTail($)` consumers a
+/// sketch actually reaches. Without this, generality would be incidental —
+/// true only because nothing tested the other consumers.
+#[test]
+fn auto_seed_cst_contract() {
+    const SOURCE: &str = "structure S { let b = point(auto(10mm), 0mm) }";
+    assert_parses_clean("point(auto(10mm), 0mm)", SOURCE);
+
+    let mut parser = make_parser();
+    let tree = parser.parse(SOURCE, None).expect("parse failed");
+    let root = tree.root_node();
+
+    assert_eq!(
+        count_kind(root, "auto_seed"),
+        1,
+        "expected exactly one auto_seed node:\n{}",
+        root.to_sexp()
+    );
+    let auto_seed = find_node_by_kind(root, "auto_seed").expect("expected an auto_seed node");
+
+    let seed = auto_seed
+        .child_by_field_name("seed")
+        .expect("expected a `seed` field on auto_seed");
+    assert_eq!(
+        seed.kind(),
+        "quantity_literal",
+        "the seed must be the parsed expression, not raw text"
+    );
+    assert_eq!(
+        &SOURCE[seed.byte_range()],
+        "10mm",
+        "seed text must be exactly the seeded value"
+    );
+
+    // The argument list keeps its ordinary shape: auto_seed is a sibling
+    // ALTERNATIVE to an expression argument, not a wrapper around the list.
+    let args = find_node_by_kind(root, "argument_list").expect("expected an argument_list");
+    let mut cursor = args.walk();
+    let arg_kinds: Vec<String> = args
+        .named_children(&mut cursor)
+        .map(|c| c.kind().to_string())
+        .collect();
+    assert_eq!(
+        arg_kinds,
+        vec!["auto_seed", "quantity_literal"],
+        "auto_seed must be the FIRST of two ordinary positional arguments:\n{}",
+        args.to_sexp()
+    );
+
+    // Generality across callTail($) consumers.
+    for (label, source) in [
+        ("function_call", "structure S { let b = point(auto(10mm), 0mm) }"),
+        ("namespaced_call", "structure S { let b = m.f(auto(1mm)) }"),
+    ] {
+        assert_parses_clean(label, source);
+        let t = parser.parse(source, None).expect("parse failed");
+        assert_eq!(
+            count_kind(t.root_node(), "auto_seed"),
+            1,
+            "`auto(<expr>)` must be admitted in {label} position too — OPTION B \
+             is grammar-general in CALL position, not sketch-only:\n{}",
+            t.root_node().to_sexp()
+        );
+    }
+}
+
+/// The half of task 3808 that is NOT reversed: bare `auto` stays a parse error
+/// at every positional operand position.
+///
+/// GREEN before and after step-8 (probe-verified exit 1 on all four today).
+/// These mirror `test/corpus/auto_operand_rejection.txt` case-for-case. Their
+/// job is to prove the OPTION B reversal is NARROW — the parenthesized-seed
+/// form only — so a later widening cannot quietly restore bare `auto` as an
+/// operand and call it precedent.
+#[test]
+fn bare_auto_stays_rejected_in_positional_operand_position() {
+    let cases: [(&str, &str); 4] = [
+        ("bare auto as a positional call arg", "structure S { let x : Length = clamp(auto) }"),
+        ("bare auto as a binary operand", "structure S { let x : Length = auto + 2mm }"),
+        ("bare auto as a list element", "structure S { let xs = [auto] }"),
+        ("bare auto as a constraint expr", "structure S { param x : Length  constraint auto }"),
+    ];
+    for (label, source) in cases {
+        assert_has_error(label, source);
+    }
+}
+
+/// The existing NAMED-argument and binding-site `auto` forms are untouched: the
+/// new node must not steal them.
+///
+/// GREEN before and after step-8 (probe-verified exit 0 today — named-argument
+/// position already reaches `auto_keyword` through `_binding_value`, so task
+/// 3808's rejection never covered it).
+///
+/// The `auto_keyword`-vs-`auto_seed` discrimination is the real content here: a
+/// delta that admitted `auto_seed` too widely would silently re-route
+/// `auto(seed = 5mm)` — a MODIFIER with a named parameter — into the new
+/// single-expression node and lose the parameter name.
+#[test]
+fn named_argument_auto_forms_unchanged() {
+    for (label, source) in [
+        ("f(x: auto)", "structure S { let y = f(x: auto) }"),
+        ("f(x: auto(free))", "structure S { let y = f(x: auto(free)) }"),
+        ("f(x: auto(seed = 5mm))", "structure S { let y = f(x: auto(seed = 5mm)) }"),
+    ] {
+        assert_parses_clean(label, source);
+    }
+
+    const PARAM: &str = "structure S { param p : Frame = auto(seed = 5mm) }";
+    assert_parses_clean("param default auto(seed = 5mm)", PARAM);
+    let mut parser = make_parser();
+    let tree = parser.parse(PARAM, None).expect("parse failed");
+    let root = tree.root_node();
+    assert_eq!(
+        count_kind(root, "auto_keyword"),
+        1,
+        "the binding-site modifier must still be an auto_keyword:\n{}",
+        root.to_sexp()
+    );
+    assert_eq!(
+        count_kind(root, "auto_param_list"),
+        1,
+        "`seed = 5mm` must still parse as an auto_param_list, keeping the \
+         parameter NAME:\n{}",
+        root.to_sexp()
+    );
+    assert_eq!(
+        count_kind(root, "auto_seed"),
+        0,
+        "auto_seed must NOT steal the binding-site modifier form:\n{}",
+        root.to_sexp()
+    );
+}
+
+/// D6's surface is CALL position only: `auto(<expr>)` is not admitted at a
+/// binding site in v1.
+///
+/// GREEN before and after step-8 (probe-verified exit 1 today).
+///
+/// Admitting it in `_binding_value` later would be a non-breaking widening, and
+/// is DELIBERATELY not taken here: at a binding site `auto(free)` already means
+/// the `auto_keyword` free-modifier arm, so a second reading of the same token
+/// sequence as `auto_seed` with `seed` = the identifier `free` would be exactly
+/// the two-reading ambiguity INV-SF-7 forbids. In CALL position no such
+/// collision exists, because `auto_keyword` is not reachable there.
+#[test]
+fn auto_seed_is_not_admitted_at_binding_sites_in_v1() {
+    assert_has_error(
+        "let binding site must reject auto(5mm)",
+        "structure S { let x : Length = auto(5mm) }",
+    );
+    assert_has_error(
+        "param default must reject auto(5mm)",
+        "structure S { param p : Length = auto(5mm) }",
     );
 }
