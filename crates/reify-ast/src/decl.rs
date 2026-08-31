@@ -1653,7 +1653,7 @@ mod has_test_annotation_tests {
 mod member_test_fixtures {
     use super::{
         Expr, GuardedGroupDecl, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
-        ParamDecl, PortDecl, SubDecl,
+        ParamDecl, PortDecl, SketchDecl, SubDecl,
     };
     use crate::ast::ExprKind;
     use reify_core::{ContentHash, PortDirection, SourceSpan};
@@ -1760,6 +1760,23 @@ mod member_test_fixtures {
                     span: SourceSpan::new(0, 1),
                 })
                 .collect(),
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// `sketch <name> { members }` — a member-level sketch block
+    /// (constrained-2d-sketch α, task 5506; PRD `docs/prds/v0_6/constrained-2d-sketch.md`
+    /// §7 C1).
+    ///
+    /// Unlike `relate { … }` (which holds `Vec<Expr>`), a sketch body holds a real
+    /// `Vec<MemberDecl>`, so it is the first `DescendKind::Never` variant whose
+    /// non-descent is a genuine decision rather than a vacuous one — see
+    /// `sketch_body_is_never_descended_into`.
+    pub(super) fn sketch(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
+        MemberDecl::Sketch(SketchDecl {
+            name: name.to_string(),
+            members,
             span: SourceSpan::new(0, 1),
             content_hash: ContentHash(0),
         })
@@ -2446,6 +2463,7 @@ mod member_walker_contract_tests {
             MemberDecl::ForallConstraint(_) => DescendKind::Never,
             MemberDecl::MatchArmDeclGroup(_) => DescendKind::Always,
             MemberDecl::Relate(_) => DescendKind::Never,
+            MemberDecl::Sketch(_) => DescendKind::Never,
         }
     }
 
@@ -2531,6 +2549,76 @@ mod member_walker_contract_tests {
                 );
             }
         }
+    }
+
+    /// A sketch body is NEVER descended into, under ANY recursion set
+    /// (constrained-2d-sketch α, task 5506).
+    ///
+    /// PRD `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1: sketch-local entity
+    /// names "are not visible outside the block in v1", so the member-lookup,
+    /// specialization-scope and param-default walkers must all stop at the
+    /// `sketch { … }` boundary — the same cell `Relate` occupies.
+    ///
+    /// Pinned as its own test rather than as a `nesting_variants` row because
+    /// this is the FIRST `DescendKind::Never` variant that actually carries a
+    /// `Vec<MemberDecl>` body. Every other `Never` variant is trivially
+    /// non-descending (it has no member body to descend into), so their
+    /// classification is unfalsifiable; this one is a real decision and a
+    /// future walker change could silently break it. Asserting non-reach
+    /// across all three recursion sets is what makes it falsifiable.
+    #[test]
+    fn sketch_body_is_never_descended_into() {
+        let recursion_sets: [(&str, MemberRecursionSet); 3] = [
+            (
+                "SPECIALIZATION_SCOPE",
+                MemberRecursionSet::SPECIALIZATION_SCOPE,
+            ),
+            (
+                "NAMED_MEMBER_LOOKUP",
+                MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            ),
+            (
+                "PARAM_DEFAULT_LOOKUP",
+                MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+            ),
+        ];
+
+        for (set_name, set) in recursion_sets {
+            let member = sketch("profile", vec![param("marker", (0, 40), None)]);
+            assert_eq!(
+                descends_into(&member),
+                DescendKind::Never,
+                "sketch bodies must be classified Never"
+            );
+            assert!(
+                !reaches_marker(member, set),
+                "{set_name}: walk_members must not reach a param nested inside a sketch body"
+            );
+        }
+    }
+
+    /// The sketch member itself IS visited (it is a sibling in the enclosing
+    /// body); only its BODY is out of reach. Without this, the test above would
+    /// also pass if `walk_members` skipped sketch members entirely.
+    #[test]
+    fn the_sketch_member_itself_is_still_visited() {
+        let members = vec![sketch("profile", vec![param("marker", (0, 40), None)])];
+        let mut seen_sketch = false;
+        let _: ControlFlow<()> = walk_members(
+            &members,
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            0,
+            &mut |m| {
+                if matches!(m, MemberDecl::Sketch(_)) {
+                    seen_sketch = true;
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert!(
+            seen_sketch,
+            "the sketch member must be handed to the visitor even though its body is not walked"
+        );
     }
 
     // ── (c) early-exit short-circuit ───────────────────────────────────────
