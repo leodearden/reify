@@ -11,17 +11,17 @@
 //! required on `member_forces`, none tolerated on the qᵢ/σ echoes — across all
 //! three emission sites: anchored line-only, anchored surfaces, free-standing.
 //!
-//! SCOPE — gauge COVARIANCE is asserted at BOTH emitters (the last two tests: anchored
-//! via `solve_at`, free-standing via `solve_free_at`), because they reach the property by
-//! different mechanisms — algebraic homogeneity of `D_ff x_f = −D_fa x_a` anchored, versus
-//! homogeneity of the GroupRatios search that fixes the gauge from `reference_group` when
-//! free-standing. Both fixtures are LINE-ONLY; the SURFACES path is the one deliberately
-//! scoped out, for TWO reasons. (1) The gauge is the (q, σ) PAIR: `D = CᵀQC + Σ_T σ_T·L_T`
-//! is linear in the pair, not in q alone, so a surfaces covariance experiment must rescale
-//! every σ_T by λ too — scaling q alone shifts the q/σ balance and MOVES the free nodes,
-//! which is physics, not a defect. (2) Even rescaled as a pair, surfaces convergence is
-//! judged on an ABSOLUTE tolerance on a residual not normalised by |D| (itself linear in
-//! q) — solver-side, outside #6095's scope, filed as #6119 (dup #6124).
+//! SCOPE — gauge COVARIANCE is asserted at ALL THREE emitters (the last three tests),
+//! each of which reaches the property by a DIFFERENT mechanism, so none of the three
+//! subsumes another: algebraic homogeneity of `D_ff x_f = −D_fa x_a` (anchored line-only,
+//! via `solve_at`); homogeneity of the GroupRatios search that fixes the gauge from
+//! `reference_group` (free-standing, via `solve_free_at`); and the gauge-RELATIVE stop
+//! criterion of the cotangent fixed point (anchored surfaces, via `solve_combined`).
+//! The surfaces case rescales the (q, σ) PAIR, never q alone: `D = CᵀQC + Σ_T σ_T·L_T` is
+//! linear in the pair, so that fixture scales every σ_T by λ alongside every qᵢ and
+//! asserts the σ echoes scale by λ too. Rescaling q on its own would shift the q/σ
+//! balance and MOVE the free nodes — physics, not a covariance failure — and excluding
+//! that confound is exactly what the σ-echo assertion is there for.
 
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -341,7 +341,8 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
 /// and surfaces carrying a non-empty member set. The surfaces path needs its own
 /// fixture because `membrane_tensegrity` has zero struts and zero cables — there
 /// `member_forces` is empty, so `force_si` and the qᵢ·Lᵢ pairing never run on it. One
-/// solve each, no gauge rescale, so this stays clear of the #6119/#6124 scope-out.
+/// solve each, no gauge rescale; the surfaces gauge rescale lives in
+/// `rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_path`.
 #[test]
 fn member_force_is_q_times_solved_length_in_the_unit_gauge() {
     let line_only = solve_at(&BASE_Q);
