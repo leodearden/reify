@@ -272,14 +272,9 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// panic's prose, so rewording that panic does not fail this test.
 #[test]
 fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
-    // The two marks, as the child sees them in REIFY_AUDIT_HOOK_ENV_REPLAY.
-    // The envelope mark's single source of truth is `common::git_env`; this
-    // literal is checked against it there, so a drift fails on that check
-    // rather than by silently turning half B into a second copy of half A.
-    const PLAIN_MARK: &str = "1";
-    const ENVELOPE_MARK: &str = "envelope";
+    use common::git_env::ReplayMark;
 
-    // The suffix EVERY one of `run_orphan_audit`'s skip notes carries — see
+    // The marker EVERY one of `run_orphan_audit`'s skip notes carries — see
     // the doc above on why each half keys on the family rather than on the
     // python3 probe's own wording, which is merely the one this fixture's
     // empty `PATH` happens to trip first today.
@@ -291,7 +286,8 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     const TARGET: [&str; 1] = ["reify_audit_pub_fns_are_g_allow_marked"];
 
     // --- Half A: an unverified mark must leave the graceful skip intact ---
-    let plain = common::git_env::spawn_replay_child_lacking_audit_prereqs(&TARGET, PLAIN_MARK);
+    let plain =
+        common::git_env::spawn_replay_child_lacking_audit_prereqs(&TARGET, ReplayMark::Plain);
     let plain_stdout = String::from_utf8_lossy(&plain.stdout);
     let plain_stderr = String::from_utf8_lossy(&plain.stderr);
 
@@ -308,7 +304,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     );
     assert!(
         plain.status.success(),
-        "a replay child stamped with the PLAIN mark {PLAIN_MARK:?} FAILED (exit \
+        "a replay child stamped with {:?} FAILED (exit \
          {:?}) in an environment that simply lacks the audit's prerequisites. \
          Nothing established \
          that this environment can run the audit, so `run_orphan_audit`'s \
@@ -317,6 +313,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
          diagnosis its own stderr contradicts.\n\
          --- child stdout (truncated) ---\n{:.800}\n\
          --- child stderr (truncated) ---\n{:.800}",
+        ReplayMark::Plain,
         plain.status.code(),
         plain_stdout,
         plain_stderr,
@@ -335,7 +332,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
 
     // --- Half B: the earned mark must keep the tightening's teeth ---
     let envelope =
-        common::git_env::spawn_replay_child_lacking_audit_prereqs(&TARGET, ENVELOPE_MARK);
+        common::git_env::spawn_replay_child_lacking_audit_prereqs(&TARGET, ReplayMark::Envelope);
     let envelope_stdout = String::from_utf8_lossy(&envelope.stdout);
     let envelope_stderr = String::from_utf8_lossy(&envelope.stderr);
 
@@ -349,7 +346,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     );
     assert!(
         !envelope.status.success(),
-        "a replay child stamped with the ENVELOPE mark {ENVELOPE_MARK:?} exited \
+        "a replay child stamped with {:?} exited \
          0 despite skipping the audit. That mark is stamped only after the \
          parent has SEEN an envelope for this scope in this environment, so a \
          skip here means the environment changed underfoot or the sanitizer \
@@ -359,6 +356,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
          It has lost its teeth: half A's fix has been over-applied.\n\
          --- child stdout (truncated) ---\n{:.800}\n\
          --- child stderr (truncated) ---\n{:.800}",
+        ReplayMark::Envelope,
         envelope_stdout,
         envelope_stderr,
     );

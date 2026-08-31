@@ -81,9 +81,37 @@ const REPLAY_PLAIN_MARK: &str = "1";
 /// treat a skip as a failure.
 ///
 /// Kept private alongside [`REPLAY_GUARD`], for the same single-source reason:
-/// the predicate and the spawner below are its only readers, so no call site
-/// can re-read or re-stamp the marker under its own name.
+/// [`ReplayMark::value`] and [`replay_child_expects_envelope`] are its only
+/// readers, so no call site can re-read or re-stamp the marker under its own
+/// name — a caller names [`ReplayMark::Envelope`] instead.
 const REPLAY_ENVELOPE_MARK: &str = "envelope";
+
+/// Which claim a replay child's [`REPLAY_GUARD`] value carries.
+///
+/// The public spelling of the two private marks: a caller names the claim and
+/// this enum resolves it to the value, so no call site re-spells a mark and a
+/// drift is a compile error rather than something a runtime check must catch.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayMark {
+    /// The parent verified NOTHING beyond the fact that it is replaying.
+    Plain,
+    /// The parent saw an audit envelope in this same environment moments
+    /// before spawning — the only claim that entitles the child to treat a
+    /// skip as a failure (see [`replay_child_expects_envelope`]).
+    Envelope,
+}
+
+impl ReplayMark {
+    /// The value stamped into [`REPLAY_GUARD`] for a child carrying this
+    /// claim.
+    fn value(self) -> &'static str {
+        match self {
+            ReplayMark::Plain => REPLAY_PLAIN_MARK,
+            ReplayMark::Envelope => REPLAY_ENVELOPE_MARK,
+        }
+    }
+}
 
 /// True when this process is a poisoned replay child, spawned by EITHER
 /// replay variant. It answers exactly one question — "am I inside any replay
@@ -454,7 +482,7 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
 /// is unaffected because the child is spawned by us, not by nextest.
 #[allow(dead_code)]
 pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
-    replay_with_mark(filters, expected_min, REPLAY_PLAIN_MARK);
+    replay_with_mark(filters, expected_min, ReplayMark::Plain);
 }
 
 /// [`replay_self_under_hook_git_env`], but stamping the marker that entitles
@@ -473,7 +501,7 @@ pub fn replay_self_under_hook_git_env(filters: &[&str], expected_min: usize) {
 /// drift apart.
 #[allow(dead_code)]
 pub fn replay_self_under_hook_git_env_expecting_envelope(filters: &[&str], expected_min: usize) {
-    replay_with_mark(filters, expected_min, REPLAY_ENVELOPE_MARK);
+    replay_with_mark(filters, expected_min, ReplayMark::Envelope);
 }
 
 /// The `Command` shape EVERY replay child is spawned with: this test binary,
@@ -488,17 +516,17 @@ pub fn replay_self_under_hook_git_env_expecting_envelope(filters: &[&str], expec
 /// here reaches both; added at one call site it would silently make the two
 /// children different processes while the test that compares them kept
 /// passing.
-fn replay_child_command(filters: &[&str], mark: &str) -> Command {
+fn replay_child_command(filters: &[&str], mark: ReplayMark) -> Command {
     let mut cmd = Command::new(std::env::current_exe().expect("current_exe"));
     cmd.args(filters)
         .args(["--test-threads=1", "--nocapture"])
-        .env(REPLAY_GUARD, mark);
+        .env(REPLAY_GUARD, mark.value());
     cmd
 }
 
 /// The shared body of both replay variants; `mark` is the value stamped into
 /// [`REPLAY_GUARD`] for the child, and the ONLY difference between them.
-fn replay_with_mark(filters: &[&str], expected_min: usize, mark: &str) {
+fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) {
     // Re-entrancy guard: we ARE the replayed child. Do not recurse.
     if std::env::var_os(REPLAY_GUARD).is_some() {
         return;
@@ -616,19 +644,8 @@ fn replay_with_mark(filters: &[&str], expected_min: usize, mark: &str) {
 #[allow(dead_code)]
 pub fn spawn_replay_child_lacking_audit_prereqs(
     filters: &[&str],
-    mark: &str,
+    mark: ReplayMark,
 ) -> std::process::Output {
-    // The mark's meaning is what the caller is testing, so a literal that has
-    // drifted from the const it is meant to name must fail HERE, naming both,
-    // rather than downstream as a mysteriously well-behaved child. This is
-    // also why neither const needs to be `pub`.
-    assert!(
-        mark == REPLAY_PLAIN_MARK || mark == REPLAY_ENVELOPE_MARK,
-        "{mark:?} is neither the plain replay mark ({REPLAY_PLAIN_MARK:?}) nor the \
-         envelope mark ({REPLAY_ENVELOPE_MARK:?}), so a child stamped with it \
-         exercises neither branch of the tightening"
-    );
-
     // Held until after `output()` returns, so the child sees a PATH that
     // exists and is empty rather than one pointing at a deleted directory.
     let empty_path = tempfile::tempdir().expect("create empty PATH dir for the deprived child");
