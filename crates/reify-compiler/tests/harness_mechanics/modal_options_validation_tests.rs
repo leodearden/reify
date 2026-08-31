@@ -752,7 +752,7 @@ structure CtorMisspelledLabelProbe {
 #[test]
 fn corpus_rayleigh_ctor_args_lower_to_dimensioned_literals() {
     let module = compile_source_with_stdlib(include_str!(
-        "../../../examples/modal/transient_step_response.ri"
+        "../../../../examples/modal/transient_step_response.ri"
     ));
     let errors = errors_only(&module);
     assert!(
