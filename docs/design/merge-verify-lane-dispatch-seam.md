@@ -13,12 +13,14 @@ Sibling documents: `warm-lane-ref-visibility-seam.md`,
 This upgrades esc-5363-5's hypothesis to a code-level finding, traced read-only
 through dark-factory.
 
-`<worktree_base>/<lane>.lock` is **one inode** — `verify_cancel.py`'s
+`<worktree_base>/<lane>.lock` is **one inode per host** — `verify_cancel.py`'s
 `def lane_lock_path(lane_dir: Path) -> Path:` returns
 `lane_dir.with_name(lane_dir.name + '.lock')`, i.e. a *sibling* of the lane
-directory. Five dark-factory call sites acquire it: four in-orchestrator sites
-below, each on its own independently-tunable wait constant, plus a fifth on the
-laptop/CLI path described after the table:
+directory, resolved against whichever host's own `<worktree_base>` is asking.
+Five dark-factory call sites acquire it: four in-orchestrator sites below run
+on the **workstation** and so share its one literal inode, each on its own
+independently-tunable wait constant; a fifth, on a **separate host**, is
+described in prose after the table:
 
 | Acquirer | Wait | On timeout |
 |---|---|---|
@@ -27,15 +29,29 @@ laptop/CLI path described after the table:
 | `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | fail-CLOSED at the lock: `rc == _SEED_WARM_LANE_LOCK_TIMEOUT_RC` is logged as a distinct diagnosable timeout ("failing closed rather than risk a torn target/") and returned to callers, which read any non-zero as a seed fault and degrade to a **cold** worktree — fail-soft, the lane is never removed and the scheduler never blocks. No retry inside the method. Same VALUE as the reset row (30) but a **separate** constant since DF 3003 |
 | `GitOps.task_verify_lease` (`git_ops.py`, `async def task_verify_lease(`) — DF task 3027 | 300s (`_TASK_VERIFY_LEASE_WAIT_SECS`), then **holds for the whole task-lane verify** | **fail-OPEN**: logs a WARNING and yields *without* the hold rather than raising. A task verify must never be aborted by its own lane lease, and proceeding unheld is exactly the pre-3027 baseline, so fail-open is non-regressive. No merge-queue disposition is involved on this path at all |
 
-A fifth call site sits outside dark-factory's in-process orchestrator entirely:
-`cli.py`'s own `verify-merge` command gates dispatch onto this inode before it
-ever touches the tree. Its pre-flight acquire,
+A fifth call site sits outside dark-factory's in-process orchestrator entirely,
+on a genuinely separate machine: `cli.py`'s own `verify-merge` command, reached
+only via `RemoteRunner` (`verify_runner.py`; ships the spec over `git push` +
+`ssh` — `is_local: ClassVar[bool] = False`). `LocalRunner`
+(`is_local = True`) covers the workstation's own in-process verify and wraps
+`run_scoped_verification` directly; it never calls `cli.py` at all, so the
+workstation itself never takes this fifth acquirer's lock. In this deployment
+the dispatch target is `leo-laptop` (`dark-factory-orchestrator.yaml`
+`verify_runners`) — a second, physically distinct host. `verify-merge` gates
+dispatch onto *that host's own* `_merge-verify.lock` before it ever touches the
+tree: same name and `lane_lock_path()` derivation as the four rows above, but
+that host's own inode on that host's own disk, not literally the workstation's
+("one inode per host", this section's opening). Its pre-flight acquire,
 `acquire_merge_verify_flock(lane_lock_path(git_ops.persistent_merge_worktree_path),
 flock_wait_secs)`, waits 10s (`MERGE_VERIFY_FLOCK_WAIT_SECS = 10.0`) — uniquely
 in this family **env-overridable**, via `ORCH_MERGE_VERIFY_FLOCK_WAIT_SECS`. DF's
-own comment at that gate confirms the identity: this is "the SAME lock
+own comment at that gate calls it "the SAME lock
 `GitOps.merge_verify_lease`, `GitOps.reset_persistent_merge_worktree`, and
-reify's seed/thin/gc take" (task 2685). On timeout the gate is fail-**CLOSED**
+reify's seed/thin/gc take" (task 2685) — true of *that host's* own local
+instances of those methods and scripts (its own subsequent
+`acquire_host_verify_worktree` → `reset_persistent_merge_worktree` call, just
+below, exercises exactly that on the same host), not a claim that it is the
+workstation's inode. On timeout the gate is fail-**CLOSED**
 and **terminal**, not deferred: it returns a distinguished
 `make_flock_contention_result` *without ever touching the tree* (no
 `acquire_host_verify_worktree`, no ephemeral fallback) and the command still
@@ -45,8 +61,8 @@ this path. (What the workstation does once that result comes back is a
 separate question from this table's dispatch-time acquire semantics — not
 addressed here.)
 
-The same `verify-merge` invocation re-acquires this identical inode a second
-time, inside its `_run()` closure, held only around the build. That reacquire
+The same `verify-merge` invocation re-acquires that same host-local lock a
+second time, inside its `_run()` closure, held only around the build. That reacquire
 shares the gate's own `MERGE_VERIFY_FLOCK_WAIT_SECS` /
 `ORCH_MERGE_VERIFY_FLOCK_WAIT_SECS` constant rather than an
 independently-tunable one of its own, which is why it is not counted as a
@@ -142,6 +158,48 @@ the whole inode family: `MERGE_VERIFY_FLOCK_WAIT_SECS` (`cli.py`, the fifth
 acquirer above) *is* env-overridable, via `ORCH_MERGE_VERIFY_FLOCK_WAIT_SECS`
 — the one exception in this family, and easy to misread this paragraph as
 covering it too.
+
+**One path on this inode still resolves a genuinely terminal,
+thrash-ladder-eligible outcome, unaffected by DF 3003 or any of the bounds
+above** — because it never raises at all. The fifth acquirer's pre-flight gate
+(above) does not defer on contention: it returns a distinguished
+`VerifyResult` (`make_flock_contention_result`; `verify_runner.py`
+`FLOCK_CONTENTION_CATEGORY = 'flock_contention'`) and the CLI still exits 0.
+On the receiving side, `merge_queue.py` `_run_post_merge_verify` checks
+`is_flock_contention_failure(verify)` FIRST — before the unscoped-gate
+sentinel and the main-health probe — and on a match: (a) fires
+`_alarm_verify_worktree_contention`, a `level=2` / `severity='critical'`
+**born-at-L2** escalation that routes straight to a human, bypassing the
+auto-watcher (deduped per-host while one is already open, so an orphaned
+holder does not repeat-fire); and (b) returns `MergeOutcome('blocked',
+reason=f'Post-merge verification blocked: {verify.summary} [category:
+{verify.category}]', failure_category=verify.category)`. Because that is a
+**return**, not a **raise**, the typed `except (MergeVerifyLeaseContended,
+MergeVerifyLeaseHeld)` defer arm this section leans on throughout is never in
+the call stack to catch it — this path is terminal on its FIRST occurrence,
+with no defer, no requeue, no bounded-wait budget to burn through first.
+
+And unlike the 3003 cap-out (above), whose per-worker ordinal keeps
+consecutive cap-outs signature-DISTINCT, this outcome's basis is invariant:
+`verify.category` is the constant `'flock_contention'` — never a dynamic
+value, and even `verify.summary` (the reason string's fallback) is a fixed
+literal, not host- or holder-specific — so
+`RetryLedger.compute_merge_outcome_signature(category, cause_hint, ...)`
+(`shared/task_metadata.py`, what `workflow.py`'s `_merge_outcome_signature`
+delegates to) hashes `category + '\x1f' + normalize_cause_hint(cause_hint)` and
+produces an **identical** 16-hex signature on every occurrence, on any host,
+against any holder. That is the exact deterministic-signature shape
+this section already blames for the esc-5363-5 false-positive on
+`consecutive_merge_thrash` (above) — still live here, predates DF 3003, and
+untouched by it: 3003 fixed a *raise*-based timeout on the reset path, and
+this is a *return*-based classification on a different acquirer entirely,
+never in that task's scope.
+
+Scoped fact, not a generalisation: this is the remote/laptop host's *own*
+lane lock (this section's opening — "one inode per host"), not the
+workstation's four rows above. In this deployment the host is `leo-laptop`
+(`dark-factory-orchestrator.yaml` `verify_runners`). No fix is proposed here —
+this document records the seam; remediation, if any, is dark-factory's half.
 
 ## 2. Hypothesis correction — do not re-file this
 
