@@ -1542,7 +1542,10 @@ fn collect_underivable(
 /// (`tests/cost_robustness_tradeoff_blend.rs`) PINS this gap as measured
 /// behaviour rather than leaving it inferred. Deciding it the other way is a
 /// §11.6 policy change for γ, and belongs in a task that can re-measure the
-/// whole γ fixture set — not in a local tightening here.
+/// whole γ fixture set — not in a local tightening here. Already tracked:
+/// task #6465 ("make the blend seed-invariant, or give under-determined γ
+/// models a precise diagnostic"), filed by #5711's architect for exactly this
+/// class of γ quality question. Do not re-file.
 ///
 /// Free params are exempt: they carry no §11.6 obligation at all, and
 /// [`finalise_uniqueness`] only reaches `verify_uniqueness` when at least one
