@@ -268,7 +268,11 @@ fn kind_from_name(pat: &str) -> Option<NodeKind> {
 /// This is intentional, and the mismatch stays cosmetic: the
 /// IMMEDIATE→never-cancelled guard was task η (#3581, B4), and the scheduler
 /// that would have consumed it was deleted with `concurrent.rs` in c1b8dba3f7
-/// (task ο, #5065), so no dispatch path observes the mismatch today.
+/// (task ο, #5065), so no *scheduler dispatch* path observes the mismatch
+/// today. The only live reader is `reify dev inspect-node` (via
+/// [`resolve_with_traits`](NodePolicyOverrides::resolve_with_traits)), which
+/// reports the derived policy verbatim — so the mismatch **is** observable
+/// there, just not in dispatch.
 // G-allow: same-file caller only; audit counts cross-file refs
 pub fn default_overrides(_kind: NodeKind, traits: NodeTraits) -> NodeCommitmentOverride {
     if !traits.contains(NodeTraits::COMMITTABLE) {
