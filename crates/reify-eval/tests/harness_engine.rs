@@ -47,3 +47,8 @@ mod nested_sub_derived_let_e2e;
 // anti-re-accretion reason as #5196's, #5045's and #5360's above.
 #[path = "harness_engine/dimensioned_ctor_migration_si_values.rs"]
 mod dimensioned_ctor_migration_si_values;
+// Task #6038's trait-body eval pins for the polymorphic-zero coercion land here
+// for the same anti-re-accretion reason as #5196's, #5045's, #5360's and
+// #5758's above.
+#[path = "harness_engine/polymorphic_zero_trait_eval.rs"]
+mod polymorphic_zero_trait_eval;

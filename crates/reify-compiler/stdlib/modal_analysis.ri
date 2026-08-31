@@ -522,7 +522,8 @@ structure def StepForce : ForcingFunction {
     //
     // Pinned by crates/reify-compiler/tests/polymorphic_zero_tests.rs. The
     // TRAIT-BODY sites (`Physical.material.density`, `Insulating`) are pinned
-    // at eval level in crates/reify-eval/tests/polymorphic_zero_trait_eval.rs
+    // at eval level in
+    // crates/reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs
     // instead: a trait body compiled with no conformer is not
     // dimension-checked, so a compile-time probe written there is vacuous.
     constraint magnitude > 0N

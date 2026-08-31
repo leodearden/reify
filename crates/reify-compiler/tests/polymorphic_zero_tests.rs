@@ -22,7 +22,7 @@
 //! conformer does not dimension-check its body, so a clean-compile probe written
 //! that way is vacuous (see `member_access_mismatched_non_zero_still_errors`).
 //! They are pinned at eval level instead, in
-//! `reify-eval/tests/polymorphic_zero_trait_eval.rs`.
+//! `reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs`.
 //!
 //! Step-5 tests (additive position + edge/negative cases) are added in the same
 //! file: the additive tests confirm the coercion fires before the Add/Sub dimension
@@ -392,7 +392,7 @@ structure S {
 /// see `member_access_mismatched_non_zero_still_errors` below for why a trait
 /// body would make this assertion vacuous. The trait-body form is pinned at
 /// eval level instead, by `trait_body_member_access_gt_bare_zero_satisfied` in
-/// `reify-eval/tests/polymorphic_zero_trait_eval.rs`.
+/// `reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs`.
 #[test]
 fn member_access_lhs_gt_zero_no_error() {
     let compiled = compile_source_with_stdlib(
