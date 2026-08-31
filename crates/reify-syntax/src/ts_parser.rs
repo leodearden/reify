@@ -5148,6 +5148,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
                 MemberDecl::Relate(_) => "relate".into(),
+                MemberDecl::Sketch(sk) => format!("sketch:{}", sk.name),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
@@ -5337,6 +5338,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
                 MemberDecl::Relate(r) => r.span,
+                MemberDecl::Sketch(sk) => sk.span,
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => f.span,
             };
@@ -5472,6 +5474,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
                 MemberDecl::Relate(_) => {}
+                MemberDecl::Sketch(_) => {}
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => {
                     assert!(
@@ -5542,6 +5545,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
                 MemberDecl::Relate(r) => (r.span, r.content_hash),
+                MemberDecl::Sketch(sk) => (sk.span, sk.content_hash),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
@@ -5658,6 +5662,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
                 MemberDecl::Relate(r) => (r.content_hash, r.span),
+                MemberDecl::Sketch(sk) => (sk.content_hash, sk.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
@@ -5680,6 +5685,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
                 MemberDecl::Relate(r) => (r.content_hash, r.span),
+                MemberDecl::Sketch(sk) => (sk.content_hash, sk.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };

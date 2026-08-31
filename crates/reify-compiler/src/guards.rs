@@ -410,6 +410,22 @@ pub(crate) fn compile_guarded_members(
                         .with_label(DiagnosticLabel::new(r.span, "not yet supported")),
                 );
             }
+            // A `sketch { … }` nested inside a `where { }` guarded block. The
+            // grammar admits it here because `sketch_block` is in
+            // `commonMembers()`, which feeds `_guard_member` — exactly as
+            // `relate_block` is. This is a SEPARATE member loop from entity.rs,
+            // so a rejection wired only there would leave this position a silent
+            // no-op (constrained-2d-sketch α, task 5506). Same wording as the
+            // top-level arm so both positions read alike.
+            reify_ast::MemberDecl::Sketch(sketch) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sketch blocks are not yet supported \
+                         (compile lowering lands in constrained-2d-sketch task γ)",
+                    )
+                    .with_label(DiagnosticLabel::new(sketch.span, "not yet supported")),
+                );
+            }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope

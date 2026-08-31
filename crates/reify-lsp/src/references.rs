@@ -578,6 +578,14 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
             MemberDecl::Relate(r) => {
                 r.relations.iter().any(|rel| expr_member_segment_hit(rel, off))
             }
+            // A `sketch { … }` block carries NO direct-scope expressions of its
+            // own — its `let` values and bare relations live in its nested
+            // member list, which the `for_each_child_scope` recursion below
+            // visits at `depth + 1` (constrained-2d-sketch α, task 5506). This
+            // is the `GuardedGroup`/`Port` shape, not the `Relate` shape: a
+            // relate block holds `Vec<Expr>` directly, a sketch holds
+            // `Vec<MemberDecl>`.
+            MemberDecl::Sketch(_) => false,
             // Not walked by `collect_uses` — no tracked binding.
             MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => false,
         };
@@ -772,6 +780,14 @@ fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[MemberDecl]
                 visit(std::slice::from_ref(&*arm.member));
             }
         }
+        // A `sketch { … }` body is a nested scope (constrained-2d-sketch α, task
+        // 5506). This arm is REQUIRED for correctness and rustc does NOT flag
+        // its absence — the `_ => {}` below swallows a new variant silently.
+        // Without it, `collect_uses` (which does descend into a sketch body)
+        // and `collect_bindings_in_scope` (which reads its child scopes from
+        // here) drift apart, and a use of a sketch-local `let a` resolves to an
+        // outer binding named `a` — Invariant 1 mis-attribution.
+        MemberDecl::Sketch(s) => visit(s.members.as_slice()),
         _ => {}
     }
 }
@@ -831,6 +847,13 @@ fn member_span(member: &MemberDecl) -> Option<SourceSpan> {
         // A `relate { … }` block is walked by `collect_uses` (its relations carry
         // tracked uses), so it must be spanned here too (task δ 4384).
         MemberDecl::Relate(r) => Some(r.span),
+        // A `sketch { … }` block is walked by `collect_uses` (its body members
+        // carry tracked uses — e.g. `distance(a, b, slot_w)` uses the enclosing
+        // `slot_w` param), so the CRITICAL invariant above requires a span here
+        // (constrained-2d-sketch α, task 5506). Returning `None` while walking
+        // it would put every use collected from the body outside
+        // `entity_region` and mis-attribute it under shadowing.
+        MemberDecl::Sketch(s) => Some(s.span),
         // Not walked by `collect_uses` — no tracked binding or collected use.
         MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => None,
     }
@@ -986,6 +1009,21 @@ fn collect_uses(members: &[MemberDecl], name: &str, depth: usize, out: &mut Vec<
                 for rel in &r.relations {
                     collect_idents_in_expr(rel, name, out);
                 }
+            }
+            // A member-level `sketch { … }` block: recurse into its body as a
+            // nested scope, mirroring GuardedGroup/Port (constrained-2d-sketch
+            // α, task 5506). Descending matters — a sketch body genuinely uses
+            // enclosing names (`distance(a, b, slot_w)`), so skipping it would
+            // make "find references" silently miss them.
+            //
+            // `for_each_child_scope` carries the matching arm so
+            // `collect_bindings_in_scope` descends into EXACTLY the same list:
+            // that pairing is what bounds a sketch-local `let a` to the block's
+            // own region (PRD docs/prds/v0_6/constrained-2d-sketch.md §7 C1 —
+            // sketch-local names are not visible outside the block) instead of
+            // letting a use of `a` inside the body resolve to an outer `a`.
+            MemberDecl::Sketch(s) => {
+                collect_uses(&s.members, name, depth + 1, out);
             }
             // See the fn-body note above — intentionally not walked.
             MemberDecl::Fn(_) => {}

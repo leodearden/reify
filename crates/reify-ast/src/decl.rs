@@ -166,6 +166,18 @@ pub enum MemberDecl {
     /// carries the same flat relation set on `SubDecl.relate_relations` instead
     /// of producing a separate `MemberDecl::Relate`.
     Relate(RelateDecl),
+    /// A member-level `sketch <name> { … }` block: a named 2D constrained
+    /// sketch (constrained-2d-sketch, PRD `docs/prds/v0_6/constrained-2d-sketch.md`
+    /// §7 C1; task α 5506).
+    ///
+    /// α carries the block FAITHFULLY from source — grammar, AST, lowering — and
+    /// deliberately supplies NO compile semantics. Every compile-side arm added
+    /// for this variant in α is a loud "not yet supported" rejection, never a
+    /// silent no-op (INV-SF-1 / PRD §5 D14); the pins live in
+    /// `crates/reify-compiler/tests/harness_langcore/sketch_member_unsupported_tests.rs`.
+    /// constrained-2d-sketch γ replaces those rejections with the real
+    /// `SketchTemplate` lowering and the coded `E_SKETCH_*` diagnostics.
+    Sketch(SketchDecl),
 }
 
 /// A `relate { concentric(…)  flush(…) }` member block (task δ 4384).
@@ -179,6 +191,50 @@ pub struct RelateDecl {
     /// The relation expressions, in source order. Each must type to
     /// `Type::Relation` (compiler enforcement, task δ step-14).
     pub relations: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A `sketch profile { aux let cl = line(a, b)  fix(a) }` member block
+/// (constrained-2d-sketch α, task 5506; PRD §7 C1).
+///
+/// # Why `Vec<MemberDecl>` and not pre-split entity/constraint vectors
+///
+/// The body is carried in DECLARATION ORDER, unclassified. PRD §7 C2's split of
+/// a sketch body into `SketchEntityDecl` / `SketchConstraintDecl` is task γ's
+/// job, and it is a SEMANTIC classification (it depends on what each call
+/// resolves to), not a syntactic one. Pre-splitting here would force α to guess
+/// that classification from syntax alone and would make the AST a lossy record
+/// of the source — the INV-SF-7 `parse-is-value-faithful` failure mode.
+///
+/// # Body shape
+///
+/// Grammar-wise a sketch body admits exactly two member kinds (`grammar.js`'s
+/// `sketch_block` rule): `let_declaration` and `relation_member`. Lowering maps
+/// them onto EXISTING `MemberDecl` variants — `Let` (whose pre-existing
+/// `is_aux` flag delivers PRD §5 D12's construction geometry with no new field)
+/// and `Relate` (a single-expression `RelateDecl`, the same bare-expression
+/// shape `relate { }` already uses, so γ can reuse `check_relate_relations`
+/// verbatim). No `sketch_member` wrapper kind is invented: a second new
+/// `MemberDecl` variant would re-open the whole exhaustiveness blast radius for
+/// zero gain.
+///
+/// # Scoping
+///
+/// Sketch-local names "are not visible outside the block in v1" (PRD §7 C1), so
+/// `walk_members` does NOT descend into `members` — see the explicit no-op arm
+/// there and the `sketch_body_is_never_descended_into` pin.
+#[derive(Debug, Clone)]
+pub struct SketchDecl {
+    /// The sketch's name, e.g. `profile` in `sketch profile { … }`. Required by
+    /// the grammar (an anonymous `sketch { … }` is a parse error) because γ's
+    /// downstream consumers — `extrude(profile, length)` and friends — refer to
+    /// the sketch by name.
+    pub name: String,
+    /// The body members in source order, unclassified. See the type doc above.
+    /// An empty `sketch s { }` lowers to `members: vec![]` (the `relate { }`
+    /// parity case).
+    pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -794,7 +850,14 @@ where
             | MemberDecl::MetaBlock(_)
             | MemberDecl::ForallConnect(_)
             | MemberDecl::ForallConstraint(_)
-            | MemberDecl::Relate(_) => {}
+            // Sketch bodies are NOT descended into: sketch-local names are
+            // invisible outside the block in v1 (PRD
+            // `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1). Unlike the other
+            // variants in this group, `SketchDecl` DOES carry a
+            // `Vec<MemberDecl>`, so this is a real decision rather than a
+            // vacuous one — pinned by `sketch_body_is_never_descended_into`.
+            | MemberDecl::Relate(_)
+            | MemberDecl::Sketch(_) => {}
         }
     }
     ControlFlow::Continue(())
