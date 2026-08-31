@@ -5698,4 +5698,87 @@ assert "W8: --help documents REIFY_WARM_LANE_RERERE_ARM" \
 # Do not let the knob leak into any later block of this long-lived suite.
 unset REIFY_WARM_LANE_RERERE_ARM
 
+# ── W10: the SUBCOMMAND is `arm`, not `check` ────────────────────────────────
+#
+# The half of the coverage gap CALLS_FILE structurally CANNOT reach: the guard's
+# only observable git calls (`--is-inside-work-tree`, `--git-common-dir`) both
+# precede its subcommand dispatch (:951-953), so no CALLS_FILE assert can tell
+# `arm` from `check`. That distinction is the whole point of the block — a
+# `check` would REPORT the drift while leaving all ~253 lanes ARMED.
+#
+# MECHANISM — a guard SHIM beside a fixture copy of the script. Sound here for a
+# reason established by measurement, not assumed: `_SCRIPT_DIR` is derived once
+# at scripts/seed-warm-lane.sh:171 from BASH_SOURCE[0], and `grep -n _SCRIPT_DIR`
+# returns exactly three lines — that derivation plus its only two uses, the `-x`
+# existence gate (:1666) and the invocation (:1668). seed sources no sibling lib
+# at all, so a copy into a temp dir is faithful in every respect EXCEPT which
+# guard it finds — precisely the substitution wanted. run_helper is UNCHANGED: it
+# invokes `bash "$SCRIPT" "$@"`, so BASH_SOURCE[0] — and therefore _SCRIPT_DIR —
+# resolves to the temp dir.
+#
+# DELIBERATELY ADDITIVE, not a replacement for W1-W9. The real guard running
+# against the stub `git` and exiting 1 is what gives W3's fail-open assert its
+# teeth; a shim that exits 0 would make W3 vacuous, reintroducing exactly the
+# defect under remediation. So W1-W9 stay on the real guard and W10 stands
+# alongside. Because the shim exits 0, W10 also exercises the previously
+# UNTESTED `_rerere_arm_rc -eq 0` success branch — no other assert covers it,
+# since the real guard never returns 0 under the stub git.
+W10_DIR="$(mktemp -d /tmp/test-seed-W10-XXXXXX)"
+_TMPDIRS+=("$W10_DIR")
+cp "$SCRIPT" "$W10_DIR/seed-warm-lane.sh"
+W10_ARGV="$W10_DIR/guard-argv"
+
+# Self-contained shim: it writes BESIDE ITSELF, so the heredoc needs no
+# expansion and cannot pick up a stale path from the enclosing shell.
+cat > "$W10_DIR/git-rerere-guard.sh" <<'W10_SHIM'
+#!/usr/bin/env bash
+echo "$*" >> "$(dirname "${BASH_SOURCE[0]}")/guard-argv"
+exit 0
+W10_SHIM
+# EXECUTABLE matters: :1666 gates on `-x`, so a non-executable shim silently
+# takes the warn branch and every assert below would pass vacuously against a
+# never-created file. Asserted, not merely chmod-ed.
+chmod +x "$W10_DIR/git-rerere-guard.sh"
+
+assert "W10: fixture — the shim is executable (a non-exec shim takes the warn branch)" \
+    test -x "$W10_DIR/git-rerere-guard.sh"
+
+W_LANE6="$(make_isolated_lane W-shim)"
+W10_SCRIPT_SAVED="$SCRIPT"
+SCRIPT="$W10_DIR/seed-warm-lane.sh"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$W_BASE" "$W_LANE6" --fresh-checkout
+W10_RC="$RC"
+W10_OUT="$OUT"
+# RESTORED IMMEDIATELY, in the same sub-block: this suite is long-lived and every
+# later block reads $SCRIPT, so a leaked override would silently retarget the
+# remainder of a 440-assert run at a stale copy.
+SCRIPT="$W10_SCRIPT_SAVED"
+
+assert "W10: the SCRIPT global was restored (later blocks must not run the copy)" \
+    bash -c '[ "$1" = "$2" ]' _ "$SCRIPT" "$REPO_ROOT/scripts/seed-warm-lane.sh"
+
+# Exactly one line, so a future call that ALSO ran `check` cannot satisfy the
+# `arm` assert by accident.
+assert "W10: the guard was invoked exactly once" \
+    bash -c '[ "$(wc -l < "$1")" -eq 1 ]' _ "$W10_ARGV"
+
+assert "W10: the argv is EXACTLY 'arm <lane_dir>'" \
+    bash -c '[ "$(cat "$1")" = "arm $2" ]' _ "$W10_ARGV" "$W_LANE6"
+
+assert "W10: ...argv[1] is 'arm'" \
+    bash -c '[ "$(cut -d" " -f1 "$1")" = arm ]' _ "$W10_ARGV"
+
+assert "W10: ...and is explicitly NOT 'check' (which would leave the fleet armed)" \
+    bash -c '[ "$(cut -d" " -f1 "$1")" != check ]' _ "$W10_ARGV"
+
+# The exit-0 branch, reachable only under the shim: seed must still honour its
+# C5/C6/E3/H1c/I3 single-use-stdout contract on the SUCCESS path too.
+assert "W10: seed still exits 0 on the guard-success branch" \
+    test "$W10_RC" -eq 0
+
+assert "W10: ...and STDOUT is still exactly <lane_dir>/target on that branch" \
+    bash -c '[ "$1" = "$2" ]' _ "$W10_OUT" "$W_LANE6/target"
+
 test_summary
