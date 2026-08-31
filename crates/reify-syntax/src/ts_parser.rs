@@ -2332,6 +2332,12 @@ impl<'a> Lowering<'a> {
                 "relate block",
                 self.lower_relate_block(child).map(MemberDecl::Relate)
             ),
+            "sketch_block" => check_and_lower!(
+                self,
+                child,
+                "sketch block",
+                self.lower_sketch_block(child).map(MemberDecl::Sketch)
+            ),
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
@@ -3096,6 +3102,74 @@ impl<'a> Lowering<'a> {
     fn lower_relate_block(&self, node: tree_sitter::Node) -> Option<RelateDecl> {
         Some(RelateDecl {
             relations: self.lower_relation_members(node),
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower a `sketch_block` CST node into a [`SketchDecl`]
+    /// (constrained-2d-sketch α, task 5506; PRD
+    /// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1).
+    ///
+    /// Infallible-`Some` in the same shape as [`Self::lower_relate_block`]:
+    /// fallibility is carried by the `check_and_lower!` at the dispatch site, so
+    /// an ERROR-bearing block pushes a diagnostic and yields `None` rather than a
+    /// partially-lowered member.
+    ///
+    /// # Body mapping
+    ///
+    /// The grammar admits exactly two body child kinds. Each maps onto an
+    /// EXISTING `MemberDecl` variant rather than a new sketch-specific one — a
+    /// second new variant would re-open the whole exhaustiveness blast radius
+    /// (10 src + 9 test matches) for zero gain:
+    ///
+    ///   * `let_declaration` → `MemberDecl::Let` via [`Self::lower_let`]. `aux`
+    ///     detection is NOT reimplemented here: `lower_let` already calls
+    ///     `has_aux_keyword` and sets `LetDecl.is_aux`, which is exactly PRD §5
+    ///     D12's construction-geometry marking.
+    ///   * `relation_member` → a single-expression `MemberDecl::Relate`, the
+    ///     same bare-expression shape `relate { }` already uses, so γ can reuse
+    ///     `check_relate_relations` verbatim.
+    ///
+    /// Members are collected in SOURCE ORDER and left UNCLASSIFIED: PRD §7 C2's
+    /// entity/constraint split is semantic (it depends on what each call
+    /// resolves to) and belongs to γ.
+    ///
+    /// A body child that lowers to `None` is skipped rather than substituted, so
+    /// the member count is a faithful record of what actually lowered.
+    fn lower_sketch_block(&mut self, node: tree_sitter::Node) -> Option<SketchDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor).collect::<Vec<_>>() {
+            match child.kind() {
+                "let_declaration" => {
+                    if let Some(decl) = self.lower_let(child) {
+                        members.push(MemberDecl::Let(decl));
+                    }
+                }
+                "relation_member" => {
+                    if let Some(expr_node) = child.child_by_field_name("expr")
+                        && let Some(expr) = self.lower_expr(expr_node)
+                    {
+                        members.push(MemberDecl::Relate(RelateDecl {
+                            relations: vec![expr],
+                            span: self.span(child),
+                            content_hash: self.content_hash(child),
+                        }));
+                    }
+                }
+                // Anonymous tokens (`sketch`, the braces) and the `name`
+                // identifier. Nothing else is grammatically reachable here.
+                _ => {}
+            }
+        }
+
+        Some(SketchDecl {
+            name,
+            members,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
