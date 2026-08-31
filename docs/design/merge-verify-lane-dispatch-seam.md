@@ -79,7 +79,7 @@ site, and `remove_merge_worktree_guarded`'s zero-wait acquire early-returns
 
 **That asymmetry on one inode WAS the defect**, not speculation about load — and
 it is now HISTORICAL: DF task 3003 closed it upstream (verified at DF HEAD
-`7cb0ef2e0c`, 2026-08-21). Recorded here because it is esc-5363-5's signature
+`14232ac30d`, 2026-08-31). Recorded here because it is esc-5363-5's signature
 and nothing else in this repo states it: a lease held for ~2h starves a 30s
 waiter, and the two paths *then* disagreed about what a timeout on the *same
 lock* meant — 300s said "requeue", 30s said "this merge failed". Pre-3003, a
@@ -365,7 +365,7 @@ fi
 
 **(b) ~~Give the 30s `reset_persistent_merge_worktree` path the requeue
 disposition the 300s lease path already has~~ — LANDED upstream as DF task
-3003.** Verified at DF HEAD `7cb0ef2e0c` (2026-08-21): the path's lock acquire
+3003.** Verified at DF HEAD `14232ac30d` (2026-08-31): the path's lock acquire
 raises `MergeVerifyLeaseContended`, `workflow_types.py` carries its REQUEUE /
 no-cap-burn `BlockDisposition` row, and `merge_queue.py` `_run_inflight_verify`
 requeues it in a defer arm ahead of the generic handler. Contention on this
@@ -376,7 +376,9 @@ than deleted, because §1's historical chain and esc-5363-5 both refer to it; se
 Only **(a)** remains outstanding, and it is genuinely unlanded — at the same DF
 HEAD, zero hits for `lock_guard_enabled`, `warm-lane-lock-guard` or
 `WARM_LANE_LOCK_BUSY` anywhere in DF source, and no `lock_guard` key in reify's
-`dark-factory-orchestrator.yaml`. Its value survives (b): a contended dispatch
+`dark-factory-orchestrator.yaml` (a bare `lock_guard` grep over DF source does
+return hits — 16 of them at this HEAD — but every one is the unrelated
+`reblock_guard`; a decoy, not (a) having landed). Its value survives (b): a contended dispatch
 that is *deferred upstream of the acquire* never burns the 30s bounded wait, nor
 the requeue and re-dispatch cycle that now follows it.
 
