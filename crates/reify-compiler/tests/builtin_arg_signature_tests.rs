@@ -1142,6 +1142,16 @@ fn build_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<reify_cor
 /// and its sibling `wrong_dimension_written_inline_is_rejected_at_both_layers`
 /// records what the cost does NOT extend to.
 ///
+/// NOR DOES THE EVAL LAYER BACKSTOP IT for this shape, and the reason is
+/// structural rather than a gap in that gate. `is_geometry_let`
+/// (`reify-compiler/src/geometry.rs`, the `FunctionCall` arm) requires
+/// `!functions.iter().any(|f| f.name == *name)` — a USER-DEFINED function name
+/// is excluded from geometry-let classification by construction. So
+/// `let s = beam(10mm)` lowers to NO `RealizationDecl` (MEASURED: zero
+/// realizations, against one holding two ops for the same body written inline),
+/// and `geometry_ops::required_length_value` never runs on it. Do not read this
+/// test as evidence that the eval-layer gate is broken; it is never reached.
+///
 /// If this test ever turns RED because a diagnostic APPEARED, that is good news
 /// — some later leaf started checking instantiations. Delete the test and say
 /// so; do not re-pin the silence.
