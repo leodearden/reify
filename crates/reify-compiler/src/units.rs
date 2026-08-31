@@ -1797,6 +1797,12 @@ mod tests {
     // disjointness from every sibling family (regression-lock: catches any
     // future colliding name added to EITHER slice).
     use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
+    // Orientation/transform DECOMPOSER family (task 6306) — the SIBLING slice
+    // of ORIENTATION_TYPED_FN_NAMES in the same `crate::orientation_signatures`
+    // module, imported here to pin disjointness from every sibling family AND
+    // from the producer half. `is_orientation_decomposer_fn` is imported
+    // alongside it for the one loop that binds `name: &str` rather than `&&str`
+    // (`tolerancing_marker_names_are_disjoint_from_other_families`).
 
     // Local fixtures for name families that have no pub single-source slice —
     // they are hardcoded match arms in `affine_map_algebra_result_type` and
@@ -2438,6 +2444,15 @@ mod tests {
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
             );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
@@ -2509,6 +2524,15 @@ mod tests {
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
+            );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
             );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
@@ -2618,6 +2642,15 @@ mod tests {
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
             );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
@@ -2718,6 +2751,15 @@ mod tests {
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
+            );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
             );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
@@ -2835,6 +2877,15 @@ mod tests {
                 "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
+            );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
             );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
@@ -3439,6 +3490,13 @@ mod tests {
                 !is_orientation_typed_fn(name),
                 "{name} in ORIENTATION_TYPED_FN_NAMES"
             );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306). Predicate form, not `.contains`: this loop binds
+            // `for &name in`, so `name: &str` rather than `&&str`.
+            assert!(
+                !is_orientation_decomposer_fn(name),
+                "{name} in ORIENTATION_DECOMPOSER_FN_NAMES"
+            );
             assert!(
                 !is_geometry_function(name),
                 "{name} in GEOMETRY_FUNCTION_NAMES"
@@ -3836,6 +3894,15 @@ mod tests {
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
             );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
@@ -3914,6 +3981,15 @@ mod tests {
                 "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
+            );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
             );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
@@ -4259,6 +4335,15 @@ mod tests {
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
             );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
@@ -4431,6 +4516,15 @@ mod tests {
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
             );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in GEOMETRY_FUNCTION_NAMES"
@@ -4554,6 +4648,15 @@ mod tests {
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
             );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "FIELD_OP_NAMES entry {name:?} must NOT also be in \
@@ -4654,6 +4757,15 @@ mod tests {
                 "RELATION_FN_NAMES entry {name:?} must NOT also be in \
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
+            );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
             );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
@@ -5278,6 +5390,15 @@ mod tests {
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
             );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
+            );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
                 "PARSE_FN_NAMES entry {name:?} must NOT also be in \
@@ -5400,6 +5521,16 @@ mod tests {
     #[test]
     fn orientation_typed_fn_names_are_disjoint_from_other_families() {
         for name in ORIENTATION_TYPED_FN_NAMES {
+            // The SIBLING-HALF check (task 6306): the decomposer slice lives in
+            // the same module as this one, so a name moved or copied between the
+            // two halves would collide here first. Reciprocal of the identical
+            // assert in
+            // `orientation_decomposer_fn_names_are_disjoint_from_other_families`.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES — the producer and \
+                 decomposer halves of `orientation_signatures` must stay disjoint"
+            );
             assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
             assert!(!GEOMETRY_QUERY_HELPER_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_HELPER_NAMES");
             assert!(!GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_KINEMATIC_QUERY_NAMES");
@@ -5428,6 +5559,79 @@ mod tests {
         assert!(
             !ORIENTATION_TYPED_FN_NAMES.contains(&"frame_at"),
             "'frame_at' must NOT be in ORIENTATION_TYPED_FN_NAMES — \
+             datum_constructor_result_type already types it Type::Frame(3)"
+        );
+        assert_eq!(
+            datum_constructor_result_type("frame_at", &[]),
+            Some(reify_core::Type::Frame(3)),
+            "guards the premise of the assert above: frame_at is genuinely \
+             claimed by the datum family"
+        );
+    }
+
+    /// Disjointness regression-lock for the orientation/transform DECOMPOSER
+    /// family (task 6306) — the sibling of
+    /// `orientation_typed_fn_names_are_disjoint_from_other_families` directly
+    /// above, for the four names that half deliberately excludes.
+    ///
+    /// Every `ORIENTATION_DECOMPOSER_FN_NAMES` entry must be absent from every
+    /// other builtin-name family, so the `is_orientation_decomposer_fn` arm in
+    /// `expr.rs`'s `NoUserFunctions` ladder is reached for exactly those four
+    /// names and its LADDER POSITION IS UNOBSERVABLE — no name can satisfy two
+    /// predicates. The reverse direction is pinned by an
+    /// `!ORIENTATION_DECOMPOSER_FN_NAMES.contains(name)` assert planted in each
+    /// sibling family's own disjointness test, so a collision is caught whichever
+    /// slice it is added to.
+    ///
+    /// Two checks this test makes that the generic loop shape does not give for
+    /// free:
+    /// - **The sibling-half check.** `!ORIENTATION_TYPED_FN_NAMES.contains(name)`
+    ///   is the one the producers' own test structurally CANNOT make about
+    ///   itself. The two slices live in one module and describe one prefix
+    ///   family split by returned value kind, which makes them the likeliest pair
+    ///   in the whole matrix to drift into overlap.
+    /// - **The resolver-backed datum family.** It has no name SLICE (it is
+    ///   `datum_constructor_result_type`), so the loop cannot cover it; `frame_at`
+    ///   gets an explicit absence assert plus a premise guard proving it really is
+    ///   claimed there, exactly as in the producer test above.
+    #[test]
+    fn orientation_decomposer_fn_names_are_disjoint_from_other_families() {
+        for name in ORIENTATION_DECOMPOSER_FN_NAMES {
+            // The sibling half of `orientation_signatures` — see the doc above.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_TYPED_FN_NAMES — the decomposer and \
+                 producer halves of `orientation_signatures` must stay disjoint"
+            );
+            assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
+            assert!(!GEOMETRY_QUERY_HELPER_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_HELPER_NAMES");
+            assert!(!GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_KINEMATIC_QUERY_NAMES");
+            assert!(!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name), "{name:?} in GEOMETRY_TOPOLOGY_SELECTOR_NAMES");
+            assert!(!GEOMETRY_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_NAMES");
+            assert!(!DYNAMICS_QUERY_NAMES.contains(name), "{name:?} in DYNAMICS_QUERY_NAMES");
+            assert!(!DYNAMICS_CONSTRUCTOR_NAMES.contains(name), "{name:?} in DYNAMICS_CONSTRUCTOR_NAMES");
+            assert!(!AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name), "{name:?} in AFFINE_MAP_CONSTRUCTOR_NAMES");
+            assert!(!TOLERANCING_MARKER_NAMES.contains(name), "{name:?} in TOLERANCING_MARKER_NAMES");
+            assert!(!MATH_CONSTRUCTION_NAMES.contains(name), "{name:?} in MATH_CONSTRUCTION_NAMES");
+            assert!(!MATH_OPERATION_NAMES.contains(name), "{name:?} in MATH_OPERATION_NAMES");
+            assert!(!MATH_TRANSCENDENTAL_NAMES.contains(name), "{name:?} in MATH_TRANSCENDENTAL_NAMES");
+            // `joint_jacobian` is in this slice and is already typed
+            // StructureRef("Twist") — the SAME nominal tag `transform_log` takes.
+            // Sharing a tag is fine; sharing a NAME would double-classify.
+            assert!(!JOINT_TYPED_FN_NAMES.contains(name), "{name:?} in JOINT_TYPED_FN_NAMES");
+            assert!(!ANALYSIS_FN_NAMES.contains(name), "{name:?} in ANALYSIS_FN_NAMES");
+            assert!(!RELATION_FN_NAMES.contains(name), "{name:?} in RELATION_FN_NAMES");
+            assert!(!PARSE_FN_NAMES.contains(name), "{name:?} in PARSE_FN_NAMES");
+            assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
+            assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
+        }
+
+        // The DATUM constructor family is typed by `datum_constructor_result_type`
+        // — a RESOLVER, not a name slice — so the generic loop above cannot cover
+        // it. Same explicit pin + premise guard as the producer test above.
+        assert!(
+            !ORIENTATION_DECOMPOSER_FN_NAMES.contains(&"frame_at"),
+            "'frame_at' must NOT be in ORIENTATION_DECOMPOSER_FN_NAMES — \
              datum_constructor_result_type already types it Type::Frame(3)"
         );
         assert_eq!(
@@ -5512,6 +5716,15 @@ mod tests {
                 "{name:?} in ORIENTATION_TYPED_FN_NAMES — the reciprocal of the \
                  frame_at assert in \
                  orientation_typed_fn_names_are_disjoint_from_other_families"
+            );
+            // Reciprocal of `orientation_decomposer_fn_names_are_disjoint_from_other_families`
+            // (task 6306) — the same OTHER-direction pin for the DECOMPOSER
+            // half of `orientation_signatures`, whose four names are a separate
+            // slice from the 18 producers above.
+            assert!(
+                !ORIENTATION_DECOMPOSER_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_DECOMPOSER_FN_NAMES \
+                 (orientation/transform decomposer family, task 6306)"
             );
         }
     }
