@@ -581,3 +581,99 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
         poisoned.stderr,
     );
 }
+
+/// [`common::git_env::libtest_summary_count`] is the single parser both
+/// `replay_with_mark`'s non-vacuity checks and
+/// `replay_child_hard_fails_only_when_the_parent_verified_an_envelope`'s two
+/// count assertions read child summaries through, so its stated properties
+/// need pinning here rather than inferring from those callers — a parser bug
+/// there surfaces as a confusing count mismatch attributed to the child.
+///
+/// Driven over literal libtest summary lines rather than a spawned child:
+/// these are pure-function properties, and a spawned child could only produce
+/// whichever shapes today's tests happen to reach.
+#[test]
+fn libtest_summary_count_reads_the_field_it_was_asked_for() {
+    use common::git_env::libtest_summary_count;
+
+    const OK: &str = "test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured; 30 filtered out";
+    const FAILED: &str =
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out";
+
+    // Both summary verdicts parse — the `FAILED.` shape is what half B of the
+    // discrimination test reads, and it differs from `ok.` before the counts.
+    assert_eq!(libtest_summary_count(OK, "passed"), Some(5));
+    assert_eq!(libtest_summary_count(OK, "failed"), Some(0));
+    assert_eq!(libtest_summary_count(OK, "ignored"), Some(2));
+    assert_eq!(libtest_summary_count(FAILED, "passed"), Some(0));
+    assert_eq!(libtest_summary_count(FAILED, "failed"), Some(1));
+
+    // The property the doc claims: the count is parsed as a NUMBER, so a
+    // 21-passing run is not read as the 1 that both `Some(1)` call sites
+    // compare against. A substring match on `"1 passed"` would return `Some(1)`
+    // here and silently turn each of those assertions into a green.
+    const TWENTY_ONE: &str =
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out";
+    assert_eq!(libtest_summary_count(TWENTY_ONE, "passed"), Some(21));
+
+    // A field this parser knows nothing about yields `None`, NOT a count. Both
+    // call sites compare against `Some(1)`, so a misspelled field fails the
+    // assertion rather than reading some neighbouring number — the failure is
+    // confusing, but it is a failure, and this pins that it stays one.
+    assert_eq!(libtest_summary_count(OK, "pased"), None);
+    assert_eq!(libtest_summary_count(OK, "measured"), Some(0));
+
+    // No summary at all: `None`, which is what `replay_with_mark` turns into
+    // its "could not find libtest's `test result:` summary" panic.
+    assert_eq!(libtest_summary_count("", "passed"), None);
+    assert_eq!(
+        libtest_summary_count("running 1 test\ntest foo ... ok\n", "passed"),
+        None
+    );
+}
+
+/// The LAST `test result:` line wins — the other property
+/// [`common::git_env::libtest_summary_count`]'s doc claims, and the one that
+/// matters in practice: every replay child is spawned with `--nocapture`, so a
+/// test's own stdout is interleaved with libtest's and can carry the same
+/// prefix.
+///
+/// Not hypothetical for this binary: the child runs
+/// `reify_audit_pub_fns_are_g_allow_marked`, whose failure message embeds the
+/// audit's JSON, and this file's own assertion messages embed truncated child
+/// stdout — which is a real summary line, verbatim, one nesting level down.
+#[test]
+fn libtest_summary_count_takes_the_last_summary_line() {
+    use common::git_env::libtest_summary_count;
+
+    // A decoy `test result:` line emitted by the test's OWN output under
+    // `--nocapture`, ahead of the real summary. Reading the first match would
+    // report the decoy's 99.
+    let interleaved = concat!(
+        "running 1 test
+",
+        "some test echoed a captured child summary:
+",
+        "test result: ok. 99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+",
+        "test reify_audit_pub_fns_are_g_allow_marked ... ok
+",
+        "
+",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out
+",
+    );
+    assert_eq!(libtest_summary_count(interleaved, "passed"), Some(1));
+
+    // libtest indents nothing, but a nested child's summary reaching the
+    // parent through a `--- child stdout ---` block may arrive indented. The
+    // parser trims before matching the prefix, so such a line is still a
+    // candidate — and being LAST is what decides, not indentation.
+    let indented = concat!(
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+",
+        "    test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+",
+    );
+    assert_eq!(libtest_summary_count(indented, "passed"), Some(2));
+}
