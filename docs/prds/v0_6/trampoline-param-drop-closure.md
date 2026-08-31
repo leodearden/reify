@@ -268,18 +268,18 @@ Phase 3 — remaining honors. Phase 4 — docs-truth + close.
 
 | Label | Task | Modules | Observable signal | Prereqs |
 |---|---|---|---|---|
-| α | Diagnostic codes + honored-set declaration mechanism | `reify-core` (diagnostics), `reify-eval` | `E_PARAM_NOT_HONORED` / `W_PARAM_NOT_APPLICABLE` exist as `DiagnosticCode` variants and round-trip; declaration macro compiles on one trampoline | — |
-| β | Vertical slice: `ElasticOptions` fully declared + `max_iter`/`cg_tolerance` honored | `reify-eval` | B1 + B2 + B3 pass against `ElasticOptions`; `max_iter: 50` observably fails to converge | α |
-| γ | Buckling: honor `supports`, `PointLoad.point`/`.direction`, `PressureLoad`/`Gravity` | `reify-eval`, `examples/` | B8 passes **under its G6 note** (relational, not a textbook constant); `buckling_column_smoke.ri` **and its line-42 comment** corrected in the same change — that comment says "pin-pin — fixed supports at both ends" while the file passes a single `FixedSupport(target: "base")`, an inconsistency the discard currently hides | α, β |
-| δ | `LoadCase.options` in `buckling_multi_case` | `reify-eval` | a `LoadCase` carrying options changes the buckling multi-case result | α |
-| ε | `actuator_limits` honored; delete the `force_limit` phantom read | `reify-stdlib` | B9 passes | α |
-| ζ | Modal: honor `mechanism_modal` `tol`/`max_iters`; declare `element_order` not_applicable | `reify-eval` | B4 passes; user `tol` observably reaches the eigensolver | α, **#6097** |
-| η | `reify-audit --pattern PDROP` + baseline ratchet + liveness lane | `reify-audit` | B5 + B6 + B7 pass; `/audit --pattern PDROP` reports the live allowlist | α, β |
-| η′ | PDROP drift-guard registration | `tests/infra/` | `run-all-classification.manifest` row lands **in η′'s own diff**, wired as a hard dep of η — never prose-ordered (the esc-4914-162 failure) | η |
-| θ | Ruling: wire or delete `target_fidelity` ×2 | `reify-compiler` stdlib, `reify-fdm` | a decision recorded; the param either reaches `select_rungs` or is gone | α |
-| ι | File the allowlist owners + the split PRD bookmark | — (task-filing) | `mesh_size`, elastic `element_order`, QoI each have a live owning task; `traction-and-body-force-loads.md` bookmarked | — |
-| κ | Doc-chunk + exemplar + cheatsheet + discoverability | `reify-mcp` chunks, `examples/best_practices/`, `.claude/skills/reify-design/SKILL.md` | an author who knows the goal ("make the solver use my iteration budget") finds the knob from the chunks/index; every documented signature compiles | β, γ, ε, ζ |
-| λ | PRD-close: terminal stamp | this PRD + manifest | committed `SHIPPED` header with landed leaf ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map | all above |
+| α #7079 | Diagnostic codes + honored-set declaration mechanism | `reify-core` (diagnostics), `reify-eval` | `E_PARAM_NOT_HONORED` / `W_PARAM_NOT_APPLICABLE` exist as `DiagnosticCode` variants and round-trip; declaration macro compiles on one trampoline | — |
+| β #7080 | Vertical slice: `ElasticOptions` fully declared + `max_iter`/`cg_tolerance` honored | `reify-eval` | B1 + B2 + B3 pass against `ElasticOptions`; `max_iter: 50` observably fails to converge | α |
+| γ #7081 | Buckling: honor `supports`, `PointLoad.point`/`.direction`, `PressureLoad`/`Gravity` | `reify-eval`, `examples/` | B8 passes **under its G6 note** (relational, not a textbook constant); `buckling_column_smoke.ri` **and its line-42 comment** corrected in the same change — that comment says "pin-pin — fixed supports at both ends" while the file passes a single `FixedSupport(target: "base")`, an inconsistency the discard currently hides | α, β |
+| δ #7082 | `LoadCase.options` in `buckling_multi_case` | `reify-eval` | a `LoadCase` carrying options changes the buckling multi-case result | α |
+| ε #7083 | `actuator_limits` honored; delete the `force_limit` phantom read | `reify-stdlib` | B9 passes | α |
+| ζ #7084 | Modal: honor `mechanism_modal` `tol`/`max_iters`; declare `element_order` not_applicable | `reify-eval` | B4 passes; user `tol` observably reaches the eigensolver | α, **#6097** |
+| η #7085 | `reify-audit --pattern PDROP` + baseline ratchet + liveness lane | `reify-audit` | B5 + B6 + B7 pass; `/audit --pattern PDROP` reports the live allowlist | α, β |
+| η′ #7086 | PDROP drift-guard registration | `tests/infra/` | `run-all-classification.manifest` row lands **in η′'s own diff**, wired as a hard dep of η — never prose-ordered (the esc-4914-162 failure) | η |
+| θ #7087 | Ruling: wire or delete `target_fidelity` ×2 | `reify-compiler` stdlib, `reify-fdm` | a decision recorded; the param either reaches `select_rungs` or is gone | α |
+| ι — discharged at decompose: #7074 #7075 #7076 #7077 #7078 | File the allowlist owners + the split PRD bookmark | — (task-filing; no task of its own) | `mesh_size`, elastic `element_order`, QoI each have a live owning task; `traction-and-body-force-loads.md` bookmarked | — |
+| κ #7088 | Doc-chunk + exemplar + cheatsheet + discoverability | `reify-mcp` chunks, `examples/best_practices/`, `.claude/skills/reify-design/SKILL.md` | an author who knows the goal ("make the solver use my iteration budget") finds the knob from the chunks/index; every documented signature compiles | β, γ, ε, ζ |
+| λ #7089 | PRD-close: terminal stamp | this PRD + manifest | committed `SHIPPED` header with landed leaf ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map | all above |
 
 ## 11. Out of scope
 
