@@ -1169,9 +1169,9 @@ fn trampoline_dimensionless_scalar_force_density_still_solves() {
 /// diagnostics, and `force_densities: [1, 1, 1, 1]` — the unit silently stripped
 /// and its SI magnitude reinterpreted as the bare ratio.
 ///
-/// Uses an INLINE source (not a `tests/prd-gate/fixtures/*.ri` file) so no
-/// `_RUST_COUPLED_RI_FIXTURES` registration is required — the same shape the
-/// other e2e tests in this file use.
+/// Uses an INLINE source (not a checked-in `.ri` file under the prd-gate
+/// fixtures directory) so no `_RUST_COUPLED_RI_FIXTURES` registration is
+/// required — the same shape the other e2e tests in this file use.
 #[test]
 fn e2e_mixed_list_dimensioned_force_density_is_error() {
     const SOURCE: &str = r#"
