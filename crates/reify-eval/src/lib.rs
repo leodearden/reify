@@ -1107,6 +1107,35 @@ pub struct Engine {
     /// Mirrors the `capture_undef_causes` / `set_capture_undef_causes` pattern:
     /// default-false, always-present field, setter in `engine_admin.rs`.
     capture_repr_tol: bool,
+    /// When `true`, a `check()` call is running NESTED INSIDE a realization
+    /// pass — i.e. it was reached from one of `engine_build.rs`'s three
+    /// `self.check(module)` calls (`build_with_geometry_output`,
+    /// `distance_between_placed`, `tessellate_realizations`), each of which
+    /// runs BEFORE that pass populates [`Self::realization_handles`].
+    ///
+    /// Task 6667 reads it as an extra conjunct on the two surface-attribution
+    /// gates in `engine_constraints.rs` (`measure_dfm_rules`,
+    /// `measure_gdt_conformance`). Those gates are keyed on
+    /// `realization_handles.is_empty()`, which is legitimately TRUE during a
+    /// nested check and would otherwise make `reify check` measure a DFM rule
+    /// and simultaneously tell the user to run `reify check` because nothing
+    /// was measured (the defect step-7's CLI contract guard caught,
+    /// esc-6667-2). `cmd_check`'s AUTHORITATIVE `engine.check(&compiled)` runs
+    /// OUTSIDE any build with this marker clear, so it still attributes.
+    ///
+    /// ENGINE-INTERNAL, deliberately: unlike `capture_undef_causes` /
+    /// `capture_repr_tol`, whose default-false always-present convention this
+    /// otherwise follows, there is NO public setter. This is a transient phase
+    /// marker owned by `engine_build.rs`, not a caller-facing opt-in — a
+    /// caller able to set it could silence a truthful attribution.
+    ///
+    /// Set immediately before and cleared immediately after each of the three
+    /// calls, never spanning a whole function: a function-spanning marker would
+    /// leak on any early return or `?`, whereas each of those three regions is
+    /// straight-line, making set/clear leak-proof without a guard type.
+    /// `the_build_phase_marker_is_cleared_on_the_way_out`
+    /// (`tests/unmeasured_surface_attribution.rs`) pins the clear.
+    check_nested_in_build: bool,
     /// Whether the geometry kernel(s) this engine holds DECLARED the ability to
     /// produce a BRep representation — i.e. at least one `(_, ReprKind::BRep)`
     /// pair on the picked adapter's `CapabilityDescriptor`.

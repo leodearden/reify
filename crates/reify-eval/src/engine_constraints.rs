@@ -1886,14 +1886,30 @@ impl Engine {
         // unrealizable sibling rule silent.  Same limitation ζ documented and
         // filed as tkt_0RSR81KF1TYDY8PDANNHQZCFV2.
         //
-        // `reify check` OUTPUT IS UNCHANGED: `realize_for_check`
-        // (reify-cli/src/main.rs:919) populates `realization_handles` before
-        // `check()` reaches this pass, so on an OCCT build the gate is false and
-        // `diags` starts empty — byte-identical to the pre-6667 `Vec::new()`.
-        // The accepted exception is a stub-mode `reify check`, where nothing
-        // realizes and arm 1 fires naming OCCT: the same deliberate stub-mode
-        // change ζ's own arm 1 made.
-        if self.realization_handles.is_empty() && !skipped_rule_names.is_empty() {
+        // `reify check` OUTPUT IS UNCHANGED — via the BUILD-PHASE MARKER, not
+        // via realization ordering. The ordering argument this comment used to
+        // make ("`realize_for_check` populates `realization_handles` before
+        // `check()` reaches this pass") IS FALSE: `realize_for_check` delegates
+        // to `build_with_geometry_output`, which calls `self.check(module)`
+        // BEFORE its realization loop runs, so `realization_handles` is empty
+        // there and this gate legitimately opens. That leak is what step-7's
+        // CLI contract guard caught (esc-6667-2).
+        //
+        // `check_nested_in_build` is the correcting conjunct: `engine_build.rs`
+        // sets it immediately before and clears it immediately after each of
+        // its three `self.check(module)` calls, so no check nested inside a
+        // realization can attribute. `cmd_check`'s AUTHORITATIVE
+        // `engine.check(&compiled)` runs OUTSIDE any build with the marker
+        // clear, so on an OCCT build `realization_handles` is populated by
+        // then, the gate is false, and `diags` starts empty — byte-identical to
+        // the pre-6667 `Vec::new()`. The accepted exception is a stub-mode
+        // `reify check`, where nothing realizes and that authoritative check
+        // fires arm 1 naming OCCT: the same deliberate stub-mode change ζ's own
+        // arm 1 made.
+        if self.realization_handles.is_empty()
+            && !self.check_nested_in_build
+            && !skipped_rule_names.is_empty()
+        {
             let reason = self.unmeasured_reason_for(UnmeasuredMeasurement::DfmRule);
             let mut attributed: HashSet<String> = HashSet::new();
             for name in &skipped_rule_names {
@@ -2306,13 +2322,27 @@ impl Engine {
         // new signal out of the resolution path and would invert ζ's own
         // regression guard, so it stays out of scope here.
         //
-        // `reify check` OUTPUT IS UNCHANGED: `realize_for_check`
-        // (reify-cli/src/main.rs:919) populates `realization_handles` BEFORE
-        // `check()` reaches this pass, so on an OCCT build the gate is false.
-        // The accepted exception is a stub-mode `reify check`, where nothing
-        // realizes and arm 1 fires naming OCCT — the same deliberate stub-mode
-        // change ζ's own arm 1 made.
-        let attribute_unmeasured = self.realization_handles.is_empty();
+        // `reify check` OUTPUT IS UNCHANGED — via the BUILD-PHASE MARKER, not
+        // via realization ordering. The ordering argument this comment used to
+        // make ("`realize_for_check` populates `realization_handles` BEFORE
+        // `check()` reaches this pass") IS FALSE: `realize_for_check` delegates
+        // to `build_with_geometry_output`, which calls `self.check(module)`
+        // BEFORE its realization loop runs, so `realization_handles` is empty
+        // there and this gate legitimately opens (measured: task 6667 step-8's
+        // `realize_for_check_emits_no_surface_attribution_for_either_kind`).
+        //
+        // `check_nested_in_build` is the correcting conjunct: `engine_build.rs`
+        // sets it immediately before and clears it immediately after each of
+        // its three `self.check(module)` calls, so no check nested inside a
+        // realization can attribute. `cmd_check`'s AUTHORITATIVE
+        // `engine.check(&compiled)` runs OUTSIDE any build with the marker
+        // clear, so on an OCCT build `realization_handles` is populated by then
+        // and the gate is false. The accepted exception is a stub-mode `reify
+        // check`, where nothing realizes and that authoritative check fires arm
+        // 1 naming OCCT — the same deliberate stub-mode change ζ's own arm 1
+        // made.
+        let attribute_unmeasured =
+            self.realization_handles.is_empty() && !self.check_nested_in_build;
         let unmeasured_reason = self.unmeasured_reason_for(UnmeasuredMeasurement::GdtConformance);
 
         for w in work {
