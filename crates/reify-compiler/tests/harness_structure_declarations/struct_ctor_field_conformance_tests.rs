@@ -2722,6 +2722,70 @@ fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
     );
 }
 
+const SRC_LIST_OF_POINT3_DIMENSIONED_AT_REAL: &str = r#"module test.list_point3_dimensioned_at_real
+structure def Bead { param centerline : List<Point3<Real>> = [] }
+structure def Root {
+    let b = Bead(centerline: [point3(1mm, 0mm, 0mm)])
+}
+"#;
+
+/// THE `fdm_slice.ri` COUNTERFACTUAL, made measurable — and the REJECT leg of
+/// the `List`/`List` wrapper arm recursing into the `Point` arm.
+///
+/// `crates/reify-core/src/ty.rs` makes a counterfactual claim it could not
+/// otherwise hold: `Bead.centerline` is absent from the tightening's
+/// zero-new-diagnostics measurement "only because the measurement is over
+/// constructor-ARG sites and no `.ri` file constructs a `Bead` today", and "if
+/// one ever did it would NOT stay silent, including from a literal `point3(…)`
+/// arg rather than merely a `List<Point3<Length>>`-typed REF". A claim about a
+/// construction site that does not exist cannot be pinned by the corpus gate, by
+/// definition — so this fixture builds the counterfactual construction site
+/// directly, mirroring `stdlib/fdm_slice.ri:43`'s param verbatim
+/// (`param centerline : List<Point3<Real>> = []`).
+///
+/// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
+/// "argument 'centerline' has quantity 'Scalar[m]' but param 'centerline'
+/// requires quantity 'Real'". Zero compile errors. The `mm` literal is what
+/// makes this bite: `fdm_slice.ri`'s marshalling contract says centerline
+/// coordinates are RAW G-CODE MILLIMETRES — bare numbers — so `Real` is
+/// deliberate there and a `Length`-dimensioned arg is a real breach of it, not a
+/// mis-typed param. Anyone tempted to retype that param must weigh the
+/// marshalling contract, as ty.rs says.
+///
+/// **The corpus stays unaffected, and that is checked, not assumed.** There is
+/// still no `.ri` construction site for `Bead` anywhere in the tree
+/// (`grep -rn 'Bead(' --include=*.ri .` returns nothing at this HEAD), so
+/// `no_example_emits_ctor_field_conformance_diagnostics` is untouched by this
+/// fixture. If a real `Bead` construction site ever appears, this test is the
+/// one that predicts what it will emit.
+///
+/// **Composition.** This drives the `List`/`List` wrapper arm's per-element
+/// recursion into the `Point` arm on the REJECT side; its CLEAN twin is
+/// [`list_of_point_param_given_matching_dimensioned_point3_calls_stays_clean`].
+/// The `Vector`-arm equivalent of the same composition is
+/// `list_wrapped_vector_param_rejects_cross_dimension_element` in
+/// `conformance/mod.rs` — the direct-`Type` seam of this cell, which enters the
+/// wrapper arm without going through `math_fn_result_type`. Exactly one
+/// diagnostic is required either way: the wrapper walk must not emit a shape
+/// diagnostic on top of the element's quantity conflict.
+#[test]
+fn list_of_point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    let module = compile_source_with_stdlib(SRC_LIST_OF_POINT3_DIMENSIONED_AT_REAL);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "centerline",
+        "Real",
+        "Scalar[m]",
+        "List<Point3<Real>> ← List<Point3<Length>> (the fdm_slice.ri Bead.centerline shape)",
+    );
+}
+
 const SRC_POINT3_CROSS_DIMENSION_AT_DIMENSIONED: &str = r#"module test.point3_cross_dimension_at_dimensioned
 structure def Anchor { param origin : Point3<Length> }
 structure def Root {
