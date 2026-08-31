@@ -1210,6 +1210,7 @@ mod tests {
     use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
     use reify_ir::CompiledExpr;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::OnceLock;
 
     /// Inclusive upper bound for every arity sweep in this module.
     ///
@@ -1235,6 +1236,23 @@ mod tests {
         FEA_ENVELOPE_NAMES,
         FIELD_OP_NAMES,
     ];
+
+    /// [`builtin_arg_slots`] keys that belong to NO [`BUILTIN_NAME_FAMILIES`]
+    /// slice, and so cannot be reached by any slice-derived sweep — they must be
+    /// probed BY NAME or every sweep stays vacuous for them.
+    ///
+    /// `generate` (task 3994's list combinator, the table's lone `Int` count
+    /// slot) is exactly the name the predecessor invariant
+    /// `arg_slot_keys_are_subset_of_topology_selector_names` structurally could
+    /// not reach.
+    ///
+    /// ONE list, two consumers — [`arg_slot_keys_are_registered_builtin_names`]
+    /// and [`slotted_builtin_names`] — because a comment-enforced "kept in
+    /// lockstep" pair is exactly the drift the FINDING-2 completeness arm exists
+    /// to close: a key added to one copy and not the other would make
+    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] vacuous for
+    /// precisely that key, a silent false GREEN.
+    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate"];
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
     /// members of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` (task 5652).
@@ -2088,13 +2106,12 @@ mod tests {
     #[test]
     fn arg_slot_keys_are_registered_builtin_names() {
         // Keys that belong to NO units.rs family slice and so cannot be reached
-        // by any slice-derived sweep — they must be probed by name or the
-        // subset assertion stays vacuous for them. `generate` is exactly the
-        // name the predecessor test structurally could not reach; listing it
-        // here is what actually closes that hole (removing it from
-        // NON_SELECTOR_ARG_SLOT_KEYS now fails the assertion below, whereas
-        // before it would have gone unnoticed).
-        let non_family_keys: &[&str] = &["generate"];
+        // by any slice-derived sweep — see `NON_FAMILY_SLOT_KEYS`, which is
+        // shared with `slotted_builtin_names` so the two sweeps cannot drift.
+        // Listing `generate` there is what actually closes the predecessor
+        // test's hole (removing it from NON_SELECTOR_ARG_SLOT_KEYS now fails
+        // the assertion below, whereas before it would have gone unnoticed).
+        let non_family_keys: &[&str] = NON_FAMILY_SLOT_KEYS;
 
         // Extra non-selector names that must never map to non-empty slots.
         // `"box"` and `"cylinder"` used to head this list. Task 5750
@@ -3118,22 +3135,17 @@ mod tests {
     /// Every name [`builtin_arg_slots`] actually serves, derived MECHANICALLY
     /// rather than listed by hand.
     ///
-    /// Sweeps [`BUILTIN_NAME_FAMILIES`] (flattened) plus the non-family keys
+    /// Sweeps [`BUILTIN_NAME_FAMILIES`] (flattened) plus [`NON_FAMILY_SLOT_KEYS`]
     /// across `0..=MAX_PROBED_ARITY` and keeps every name yielding a non-empty
     /// slot list at some arity — the same technique
     /// [`arg_slot_keys_are_registered_builtin_names`] uses, and what makes the
     /// ledger guard self-maintaining: a name added to the table in a future leaf
     /// is picked up here automatically instead of quietly escaping the guard.
     fn slotted_builtin_names() -> BTreeSet<&'static str> {
-        // `generate` belongs to no units.rs family slice, so a slice-derived
-        // sweep cannot reach it; it must be named. Kept in lockstep with the
-        // `non_family_keys` list in `arg_slot_keys_are_registered_builtin_names`.
-        let non_family_keys: &[&str] = &["generate"];
-
         BUILTIN_NAME_FAMILIES
             .iter()
             .flat_map(|family| family.iter())
-            .chain(non_family_keys.iter())
+            .chain(NON_FAMILY_SLOT_KEYS.iter())
             .copied()
             .filter(|name| {
                 (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty())
@@ -3168,7 +3180,25 @@ mod tests {
     /// Measured: a 546-call probe module produced 445 arity diagnostics with no
     /// truncation and no diagnostic cap, so ONE compile suffices for the whole
     /// sweep.
-    fn lowering_accepted_arities() -> BTreeMap<String, BTreeSet<usize>> {
+    ///
+    /// # Memoised
+    ///
+    /// Both consumers — the pin/coupling guard and the completeness arm — need
+    /// the identical probe, and the probe is a full `parse_with_stdlib` +
+    /// `compile_with_stdlib` over a module whose size grows with both the slot
+    /// table and [`MAX_PROBED_ARITY`]. It is pure and deterministic, so it runs
+    /// ONCE per test binary behind a `OnceLock` and both callers share the
+    /// result.
+    fn lowering_accepted_arities() -> &'static BTreeMap<String, BTreeSet<usize>> {
+        static PROBE: OnceLock<BTreeMap<String, BTreeSet<usize>>> = OnceLock::new();
+        PROBE.get_or_init(probe_lowering_accepted_arities)
+    }
+
+    /// The uncached probe body behind [`lowering_accepted_arities`]. Pure and
+    /// deterministic — it depends only on the slot table and the lowering, both
+    /// compile-time constants of the test binary — which is what makes sharing
+    /// one result across both consumers safe.
+    fn probe_lowering_accepted_arities() -> BTreeMap<String, BTreeSet<usize>> {
         let names: Vec<&str> = slotted_builtin_names().into_iter().collect();
 
         let mut src = String::from("module test\n\nstructure def ArityProbe {\n");
@@ -3202,11 +3232,47 @@ mod tests {
             .collect()
     }
 
+    /// A ledger row's pinned accepted-arity set, held STRUCTURALLY so that a row
+    /// backed by an OPEN lowering tail stays correct when [`MAX_PROBED_ARITY`]
+    /// moves.
+    ///
+    /// [`MAX_PROBED_ARITY`] is shared by ~10 sweeps in this module, so raising it
+    /// for an unrelated reason is a plausible future edit. Written as the
+    /// enumerated window `[2, 3, …, 14]`, `shell`'s
+    /// `check_arg_count_at_least(2)` tail would break the pin on that edit and
+    /// report it as "accepted-arity set moved … value-form overload arriving" —
+    /// pointing the reader at entirely the wrong cause. [`AtLeast`] expands
+    /// against the CURRENT bound instead, so the row means what the lowering
+    /// means.
+    ///
+    /// [`AtLeast`]: AcceptedArities::AtLeast
+    #[derive(Debug, Clone, Copy)]
+    enum AcceptedArities {
+        /// A CLOSED set — one `check_arg_count_exact` form per member.
+        Exactly(&'static [usize]),
+        /// An OPEN tail — a `check_arg_count_at_least(n)` lowering, expanding to
+        /// `n..=MAX_PROBED_ARITY`.
+        AtLeast(usize),
+    }
+
+    impl AcceptedArities {
+        /// The set to compare the probe against, resolved against the CURRENT
+        /// [`MAX_PROBED_ARITY`].
+        fn expand(self) -> BTreeSet<usize> {
+            match self {
+                AcceptedArities::Exactly(arities) => arities.iter().copied().collect(),
+                AcceptedArities::AtLeast(min) => (min..=MAX_PROBED_ARITY).collect(),
+            }
+        }
+    }
+
     /// The PINNED accepted-arity ledger: the 32 slotted names whose lowering
     /// emits an observable arg-count diagnostic, and the arities each accepts.
     ///
     /// Derived by MEASUREMENT (see [`lowering_accepted_arities`]), not by
-    /// reading the lowering arms. If an entry disagrees with the probe,
+    /// reading the lowering arms, and held as an [`AcceptedArities`] so a row
+    /// backed by an OPEN lowering tail does not silently become wrong when
+    /// [`MAX_PROBED_ARITY`] moves. If an entry disagrees with the probe,
     /// INVESTIGATE — a name that GAINED an accepted arity is exactly FINDING 2's
     /// hazard arriving (task 5351's value forms are the named motivating case) —
     /// rather than blindly re-pinning the new value.
@@ -3216,48 +3282,48 @@ mod tests {
     /// [`ARITY_UNOBSERVABLE_SLOT_KEYS`]; the completeness arm of
     /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] asserts
     /// every slotted name sits in exactly one of the two lists.
-    const LOWERING_ACCEPTED_ARITIES: &[(&str, &[usize])] = &[
+    const LOWERING_ACCEPTED_ARITIES: &[(&str, AcceptedArities)] = &[
         // Primitive CSG producers.
-        ("box", &[3]),
-        ("box_centered", &[3]),
-        ("cone", &[3]),
-        ("cylinder", &[2]),
-        ("cylinder_centered", &[2]),
-        ("half_space", &[6]),
-        ("sphere", &[1]),
-        ("torus", &[2]),
-        ("tube", &[3]),
-        ("wedge", &[4]),
+        ("box", AcceptedArities::Exactly(&[3])),
+        ("box_centered", AcceptedArities::Exactly(&[3])),
+        ("cone", AcceptedArities::Exactly(&[3])),
+        ("cylinder", AcceptedArities::Exactly(&[2])),
+        ("cylinder_centered", AcceptedArities::Exactly(&[2])),
+        ("half_space", AcceptedArities::Exactly(&[6])),
+        ("sphere", AcceptedArities::Exactly(&[1])),
+        ("torus", AcceptedArities::Exactly(&[2])),
+        ("tube", AcceptedArities::Exactly(&[3])),
+        ("wedge", AcceptedArities::Exactly(&[4])),
         // 2-D profile producers.
-        ("circle", &[1]),
-        ("ellipse", &[2]),
-        ("rectangle", &[2]),
+        ("circle", AcceptedArities::Exactly(&[1])),
+        ("ellipse", AcceptedArities::Exactly(&[2])),
+        ("rectangle", AcceptedArities::Exactly(&[2])),
         // Modify producers.
-        ("chamfer", &[2, 3]),
-        ("chamfer_asymmetric", &[4]),
-        ("fillet", &[2, 3]),
-        ("fillet_all", &[2]),
-        ("offset_curve", &[2, 3]),
-        ("offset_solid", &[2]),
+        ("chamfer", AcceptedArities::Exactly(&[2, 3])),
+        ("chamfer_asymmetric", AcceptedArities::Exactly(&[4])),
+        ("fillet", AcceptedArities::Exactly(&[2, 3])),
+        ("fillet_all", AcceptedArities::Exactly(&[2])),
+        ("offset_curve", AcceptedArities::Exactly(&[2, 3])),
+        ("offset_solid", AcceptedArities::Exactly(&[2])),
         // `shell` is `check_arg_count_at_least(2)` — args 2.. are face indices,
-        // so the accepted tail is OPEN and this row is the probe window
-        // `2..=MAX_PROBED_ARITY` (14) truncated, not a closed set. Raising
-        // MAX_PROBED_ARITY requires extending this row; the pin below says so.
-        ("shell", &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]),
-        ("shell_open", &[3]),
-        ("thicken", &[2]),
-        ("zone_slab", &[2]),
+        // so the accepted tail is OPEN. `AtLeast` says exactly that, and
+        // expands against the CURRENT MAX_PROBED_ARITY, so raising that bound
+        // no longer breaks this pin with a misattributed message.
+        ("shell", AcceptedArities::AtLeast(2)),
+        ("shell_open", AcceptedArities::Exactly(&[3])),
+        ("thicken", AcceptedArities::Exactly(&[2])),
+        ("zone_slab", AcceptedArities::Exactly(&[2])),
         // Sweep producers.
-        ("extrude", &[2]),
-        ("extrude_symmetric", &[2]),
-        ("pipe", &[2]),
-        ("revolve", &[8]),
-        ("revolve_full", &[7]),
+        ("extrude", AcceptedArities::Exactly(&[2])),
+        ("extrude_symmetric", AcceptedArities::Exactly(&[2])),
+        ("pipe", AcceptedArities::Exactly(&[2])),
+        ("revolve", AcceptedArities::Exactly(&[8])),
+        ("revolve_full", AcceptedArities::Exactly(&[7])),
         // Transform producers and patterns.
-        ("linear_pattern", &[6]),
-        ("linear_pattern_2d", &[11]),
-        ("rotate_around", &[8]),
-        ("translate", &[4]),
+        ("linear_pattern", AcceptedArities::Exactly(&[6])),
+        ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
+        ("rotate_around", AcceptedArities::Exactly(&[8])),
+        ("translate", AcceptedArities::Exactly(&[4])),
     ];
 
     /// Slotted names whose lowering emits NO observable arg-count diagnostic, so
@@ -3340,8 +3406,15 @@ mod tests {
     /// accepts MORE THAN ONE arity may not be served by an arity-AGNOSTIC arm
     /// unless it is an explicitly-argued [`MULTI_ARITY_AGNOSTIC_SAFE`] entry.
     ///
-    /// Two assertions, and the second is the one that makes FINDING 2
+    /// Four assertions, and the second is the one that makes FINDING 2
     /// enforceable rather than conventional:
+    ///
+    /// 0. MATCHER SANITY — every name pinned to a BOUNDED set must have had at
+    ///    least one rejection RECOGNISED by the probe. Asserted first, and with
+    ///    its own wording, so that a reworded arity diagnostic is reported as a
+    ///    probe failure rather than as every ledger row simultaneously
+    ///    "gaining an overload" — two very different causes that the pin's
+    ///    message alone cannot tell apart.
     ///
     /// 1. PIN — each ledger entry's measured accepted-arity set still equals the
     ///    pinned set. A slotted name that gains an accepted arity (i.e. gains a
@@ -3366,8 +3439,38 @@ mod tests {
         let probed = lowering_accepted_arities();
         let mut agnostic_multi_arity: Vec<(&str, Vec<usize>)> = Vec::new();
 
+        // (0) MATCHER SANITY, asserted BEFORE the pin so a reworded diagnostic
+        // is reported as ITSELF instead of as 30-odd simultaneous "accepted-arity
+        // set moved" failures, which name the wrong cause.
+        //
+        // Every name below is pinned to a BOUNDED set, so the probe must have
+        // recognised at least one REJECTION for it. A name whose measured set is
+        // the FULL probe window means the probe saw no rejection at all — which
+        // is a fact about the MATCHER, not about the lowering gaining arities.
+        let full_window: BTreeSet<usize> = (0usize..=MAX_PROBED_ARITY).collect();
+        let matcher_blind: Vec<&str> = LOWERING_ACCEPTED_ARITIES
+            .iter()
+            .filter(|(name, pinned)| {
+                pinned.expand() != full_window && probed.get(*name) == Some(&full_window)
+            })
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            matcher_blind.is_empty(),
+            "the probe saw NO recognised arg-count rejection for these ledgered \
+             names, though each is pinned to a BOUNDED arity set: \
+             {matcher_blind:?}.\n\
+             Read this as a PROBE failure, NOT as task 6862 FINDING 2. Either \
+             the arity diagnostic MESSAGE SHAPE changed out from under \
+             `lowering_accepted_arities`'s matcher (`\"{{name}}() expects …, \
+             got {{N}}\"` — there are THREE emit sites, so a reword at one of \
+             them blinds only part of this list), or those lowerings dropped \
+             their arity check entirely. Fix that first; the pin failures below \
+             would otherwise all report the same thing under the wrong name."
+        );
+
         for (name, pinned_arities) in LOWERING_ACCEPTED_ARITIES {
-            let pinned: BTreeSet<usize> = pinned_arities.iter().copied().collect();
+            let pinned: BTreeSet<usize> = pinned_arities.expand();
             let measured = probed.get(*name).unwrap_or_else(|| {
                 panic!(
                     "ledger names {name:?}, but it is not a slotted builtin — the probe never \
