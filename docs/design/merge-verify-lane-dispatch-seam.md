@@ -25,9 +25,52 @@ described in prose after the table:
 | Acquirer | Wait | On timeout |
 |---|---|---|
 | `GitOps.merge_verify_lease` (`git_ops.py`, `_MERGE_VERIFY_LEASE_WAIT_SECS`) | 300s, then **holds for the whole verify** (1–2h) | `MergeVerifyLeaseContended` → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → **retryable**, no escalation |
-| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | **the lock acquire** raises `MergeVerifyLeaseContended` (DF task 3003; fail-CLOSED — tree untouched) → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(category=NONE, escalate_to_human=False, requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → caught by `merge_queue.py` `_run_inflight_verify`'s defer arm, placed **before** its generic `except Exception` → `InflightStatus.REQUEUED` with `req.result` left PENDING → **transient DEFER, not a merge failure — on the merge-worker path**. The same lock acquire, reached instead from `cli.py` `verify-merge` via `acquire_host_verify_worktree`, is never caught there (zero `except`-Lease arms in `cli.py`) and is a terminal bail instead of a requeue — in `cli.py`'s own words, "30s timeout -> RuntimeError -> verify exits without ever building" (§1's closing paragraphs, below). Two bounds: git faults *inside the method body* still raise plain `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git fault still classifies as blocked"); and continuous contention past `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally resolve `MergeOutcome('blocked')`, its reason carrying a strictly-increasing per-worker cap-out ordinal (`_contended_lease_cap_outs`, rendered `lane cap-out #N`) so consecutive cap-outs stay signature-DISTINCT and can never re-feed `consecutive_merge_thrash` — closing the false-positive story above. That cap is the *only* terminal bound on the defer itself: between attempts it is throttled to `CONTENDED_LEASE_DEFER_MIN_PERIOD_SECS` (30s, `merge_queue.py` — already paid by this row's own 30s wait, so free here — the floor exists for `MergeVerifyLeaseHeld`'s zero-wait pre-check, which refuses IMMEDIATELY with no wait of its own and would otherwise spin the dequeue at whatever rate git allows for the life of a 1–2h foreign holder); an unbroken streak crossing `CONTENDED_LEASE_REQUEUE_WARN_STREAK` (5, `==` not `>=`, so it fires once at the crossing) logs a single ERROR with WARNING heartbeats either side, resolving nothing by itself; and a non-cap-out defer leaves `req.result` PENDING with `_last_merge_block_reason` (`workflow.py`) never set, so it cannot feed that ladder either way |
+| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_RESET_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py` — DF task 3003 split this out of `_SEED_WARM_LANE_LOCK_WAIT_SECS` at the same 30s value) | **the lock acquire** raises `MergeVerifyLeaseContended` (DF task 3003; fail-CLOSED — tree untouched) → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(category=NONE, escalate_to_human=False, requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → caught by `merge_queue.py` `_run_inflight_verify`'s defer arm, placed **before** its generic `except Exception` → `InflightStatus.REQUEUED` with `req.result` left PENDING → **transient DEFER, not a merge failure — on the merge-worker path**. The same lock acquire, reached instead from `cli.py` `verify-merge` via `acquire_host_verify_worktree`, is caught by the CLI's generic `except Exception` wrapper — not by any typed `except`-Lease arm, but that is not the absence of a handler (this section's own "ancestry" paragraph, below) — and resolves as a host bench-and-re-dispatch, not a terminal bail; the paragraph after this table has the measured chain and the source of the claim it corrects. Two bounds: git faults *inside the method body* still raise plain `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git fault still classifies as blocked"); and continuous contention past `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally resolve `MergeOutcome('blocked')`, its reason carrying a strictly-increasing per-worker cap-out ordinal (`_contended_lease_cap_outs`, rendered `lane cap-out #N`) so consecutive cap-outs stay signature-DISTINCT and can never re-feed `consecutive_merge_thrash` — closing the false-positive story above. That cap is the *only* terminal bound on the defer itself: between attempts it is throttled to `CONTENDED_LEASE_DEFER_MIN_PERIOD_SECS` (30s, `merge_queue.py` — already paid by this row's own 30s wait, so free here — the floor exists for `MergeVerifyLeaseHeld`'s zero-wait pre-check, which refuses IMMEDIATELY with no wait of its own and would otherwise spin the dequeue at whatever rate git allows for the life of a 1–2h foreign holder); an unbroken streak crossing `CONTENDED_LEASE_REQUEUE_WARN_STREAK` (5, `==` not `>=`, so it fires once at the crossing) logs a single ERROR with WARNING heartbeats either side, resolving nothing by itself; and a non-cap-out defer leaves `req.result` PENDING with `_last_merge_block_reason` (`workflow.py`) never set, so it cannot feed that ladder either way |
 | `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | fail-CLOSED at the lock: `rc == _SEED_WARM_LANE_LOCK_TIMEOUT_RC` is logged as a distinct diagnosable timeout ("failing closed rather than risk a torn target/") and returned to callers, which read any non-zero as a seed fault and degrade to a **cold** worktree — fail-soft, the lane is never removed and the scheduler never blocks. No retry inside the method. Same VALUE as the reset row (30) but a **separate** constant since DF 3003 |
 | `GitOps.task_verify_lease` (`git_ops.py`, `async def task_verify_lease(`) — DF task 3027 | 300s (`_TASK_VERIFY_LEASE_WAIT_SECS`), then **holds for the whole task-lane verify** | **fail-OPEN**: logs a WARNING and yields *without* the hold rather than raising. A task verify must never be aborted by its own lane lease, and proceeding unheld is exactly the pre-3027 baseline, so fail-open is non-regressive. No merge-queue disposition is involved on this path at all |
+
+The reset row above corrects a claim with a real, traceable source, worth
+recording so a future re-verifier does not read the same DF comments and
+"correct" the doc straight back. `git_ops.py`'s
+`_RESET_WARM_LANE_LOCK_WAIT_SECS` rationale paraphrases `cli.py`'s own
+comment carrying that exact sentence — but `cli.py`'s comment describes a
+**counterfactual**: what would happen if the CLI held the lane lock
+continuously across `_run()`, which is precisely the esc-2830-1
+self-conflict bug task 2830's DUAL-LOCK, SPLIT lane-lock lifetime (same
+file, same `_run()`) was written to *avoid*. Under the code as it stands
+the lock is not held continuously, so that chain never fires — each
+paraphrase (`cli.py` → `git_ops.py` → this doc) was locally faithful; the
+root was never live behaviour.
+
+Measured chain instead, at DF HEAD `14232ac30d`: `verify-merge` wraps
+`asyncio.run(_run())` in a generic `try` / `except Exception as e:
+click.echo(...); sys.exit(1)`, and `_run()` is what calls
+`acquire_host_verify_worktree` (→ this row's
+`reset_persistent_merge_worktree`). `MergeVerifyLeaseContended` **is-a**
+`RuntimeError` (this section's own "ancestry" paragraph, below), so the
+generic arm catches it — zero *typed* `except`-Lease arms in `cli.py` is not
+zero handlers. `sys.exit(1)` is a non-zero exit, which `RemoteRunner`
+(`verify_runner.py`) maps via `if ssh_rc != 0: raise
+RunnerUnavailable(...)`. The production remote path does not then fall back
+to a local runner despite `VerifyRunnerPool`'s own docstring promising it:
+`merge_queue.py` builds that path's pool as `VerifyRunnerPool([runner],
+...)` with no `LocalRunner` member, so `dispatch`'s `except
+RunnerUnavailable` finds `self._local is None` and re-raises (DF's own
+INV-2 comment: "the single-runner production pool's caller benches +
+re-dispatches on a free host"). What actually catches it is
+`merge_queue.py` `_run_inflight_verify`'s own `except RunnerUnavailable` arm
+— placed *before* the typed Lease arm this row describes above — which
+clears the contended-lease streak ("a dead remote transport is not lane
+contention", DF's own task 3003 amend comment) and returns an
+`InflightStatus.RUNNER_UNAVAILABLE` result, driving
+`HostAllocator.quarantine_and_release` (`verify_runner.py`) to bench the
+host before `_remerge` re-dispatches on a fresh `_merge-<uuid>`. Net effect
+on this path: **host bench-and-re-dispatch** — neither a terminal merge
+failure nor a merge-worker-style defer — and because the streak is cleared
+explicitly, this occurrence is invisible to both the requeue cap and the
+`consecutive_merge_thrash` ladder this row otherwise documents. Not free,
+but not terminal either: lane contention here is laundered into a host
+quarantine instead.
 
 A fifth call site sits outside dark-factory's in-process orchestrator entirely,
 on a genuinely separate machine: `cli.py`'s own `verify-merge` command, reached
