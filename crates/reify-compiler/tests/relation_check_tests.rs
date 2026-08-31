@@ -10,6 +10,9 @@
 //!       Direction) emits `DatumProjectionUnavailable`;
 //!   (4) REGRESSION — the arity-2 `angle`/`distance` DERIVE forms still type as
 //!       `Scalar<Angle>` / `Scalar<Length>` (geometry-query path untouched).
+//!   (5) GRADUALISM — a `Scalar<Q>` metric/radius inside a dimension-kinded
+//!       generic fn (`fn f<Q: Dimension>(...)`) draws no `ArgTypeMismatch`
+//!       (PRD decision-6, `Type::ScalarParam`).
 //!
 //! Cases 1–3 are RED until step-8 wires the relation arm + `check_relation_arg_types`
 //! into `expr.rs`'s `NoUserFunctions` ladder; case 4 is a boundary guard that
@@ -239,6 +242,13 @@ fn drive_offset<Q: Dimension>(pa: Plane, pb: Plane, d: Scalar<Q>) -> Relation { 
 /// a distinct code path from `scalar_param_metric_in_generic_fn_emits_no_arg_type_mismatch`.
 /// Also asserts zero `TangentOperandsUnsupported`, so the widened skip cannot
 /// be credited to an unrelated suppression.
+///
+/// Kept in this file rather than moved beside its sibling radius-slot tests in
+/// `tests/harness_relate/tangent_operand_check_tests.rs`
+/// (`radius_slot_with_the_wrong_dimension_is_a_unit_mismatch`,
+/// `second_radius_slot_dimension_is_policed_too`) — that file is outside this
+/// task's assigned scope. Cross-referenced here so the split reads as
+/// deliberate, not an oversight.
 ///
 /// VERIFIED RED against the base-commit binary: `target/debug/reify check` on
 /// `fn drive_tangent<Q: Dimension>(a: Axis, p: Plane, r: Scalar<Q>) -> Relation
