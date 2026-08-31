@@ -21,7 +21,8 @@
 //! ## Test tiers
 //!
 //! (a/b) **seam tests** — hermetic tempdir fixtures pinning `live_counts`'s
-//!   census contract and `parse_baseline`'s round trip.
+//!   census contract, and the `render_baseline` → `parse_baseline` round trip
+//!   over the REAL renderer the generator binary itself calls.
 //!
 //! (A) **`baseline_exists_and_parses`** — always-on, hermetic. Resolves
 //!   `crates/reify-audit/pdiag-baseline.txt` via `CARGO_MANIFEST_DIR` (so it
@@ -30,6 +31,15 @@
 //!   `pdiag::check` treats an unreadable manifest as an EMPTY one, which is the
 //!   fail-LOUD direction for the ratchet but would let a deleted or renamed
 //!   manifest slip past *this* test vacuously.
+//!
+//!   **`the_committed_baseline_carries_the_generated_preamble`** joins it in
+//!   this tier: also always-on, and also main-INDEPENDENT — it compares the
+//!   committed bytes against the crate's own `pdiag::BASELINE_HEADER` and never
+//!   reads the working tree's diagnostics. It guards the one drift class
+//!   `parse_baseline` structurally cannot see, since `#` lines are comments to
+//!   the grammar: a hand-edit that strips the preamble carrying the regen
+//!   command, the policy pointer and the "regenerating is NOT a remediation"
+//!   warning.
 //!
 //! (A′) **`rejects_*`** — always-on, hermetic. Drives crafted content straight
 //!   through the same `parse_baseline`, so every grammar rule keeps real
@@ -61,7 +71,7 @@
 
 use reify_audit::Severity;
 use reify_audit::pdiag::test_support::{Fixture, coded_src, codeless_src};
-use reify_audit::pdiag::{is_swept_path, parse_baseline};
+use reify_audit::pdiag::{BASELINE_HEADER, is_swept_path, parse_baseline, render_baseline};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -241,10 +251,18 @@ fn parse_baseline_accepts_an_empty_manifest() {
 }
 
 #[test]
-fn a_live_census_renders_rows_that_parse_back_unchanged() {
+fn render_baseline_emits_the_preamble_then_ascending_rows() {
     // The generator's whole contract in one assertion: whatever `live_counts`
     // reports must be expressible in — and recoverable from — the manifest
     // grammar. If these two ever drift, a regenerated baseline stops parsing.
+    //
+    // Driven through the REAL renderer. This test used to re-implement
+    // `format!("{path} {count}\n")` itself, which made it a SECOND derivation of
+    // the manifest format — one free to agree with itself forever while the
+    // binary's copy drifted, and one that could say nothing at all about the
+    // preamble because the preamble lived only inside the binary. Now the
+    // binary, this round trip and the idempotency check all render through
+    // `pdiag::render_baseline`.
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut fx = Fixture::new(tmp.path());
     fx.write("crates/reify-eval/src/geometry_ops.rs", &codeless_src(3));
@@ -252,10 +270,31 @@ fn a_live_census_renders_rows_that_parse_back_unchanged() {
     fx.write("gui/src-tauri/src/lib.rs", &codeless_src(2));
     let census = fx.counts();
 
-    let rendered: String =
-        census.iter().map(|(path, count)| format!("{path} {count}\n")).collect();
+    let rendered = render_baseline(&census);
 
-    assert_eq!(parse_baseline(&rendered).expect("rendered census must parse"), census);
+    // The preamble travels WITH the file — regen command, policy pointer, and
+    // the "regenerating is NOT a remediation" warning — so a manifest read in
+    // isolation still carries the deterrent.
+    let body = rendered.strip_prefix(BASELINE_HEADER).unwrap_or_else(|| {
+        panic!("rendered manifest must open with BASELINE_HEADER, got:\n{rendered}")
+    });
+
+    // …then exactly one row per census entry, ascending by path, and nothing
+    // else. Compared against the BTreeMap's own iteration order, which IS
+    // ascending — and re-asserted below so the ordering rule is pinned by an
+    // explicit claim rather than by a property of the expectation's container.
+    let rows: Vec<&str> = body.lines().collect();
+    let expected: Vec<String> =
+        census.iter().map(|(path, count)| format!("{path} {count}")).collect();
+    assert_eq!(rows, expected, "rendered rows must be one `<path> <count>` per census entry");
+    assert!(
+        rows.windows(2).all(|w| w[0] < w[1]),
+        "rendered rows must ascend by path, got {rows:?}"
+    );
+
+    // And the round trip: whatever the renderer emits, the parser recovers —
+    // preamble and all, since `parse_baseline` skips `#` lines.
+    assert_eq!(parse_baseline(&rendered).expect("rendered manifest must parse"), census);
 }
 
 // -----------------------------------------------------------------------
@@ -286,6 +325,39 @@ fn baseline_exists_and_parses() {
     if let Err(err) = parse_baseline(&content) {
         panic!("pdiag-baseline.txt does not parse: {err}\nRegenerate it with:\n  {REGEN}");
     }
+}
+
+/// The committed manifest opens with exactly [`BASELINE_HEADER`].
+///
+/// Always-on and deliberately NOT `#[ignore]`d, because it is
+/// main-INDEPENDENT: it compares the committed file against the crate's own
+/// constant and never reads the working tree's diagnostics, so it carries zero
+/// exposure to the main-moves-under-the-branch drift that keeps the whole-repo
+/// ratchet on-demand. Being merge-blocking costs nothing here.
+///
+/// It closes the one drift class nothing else guards: a hand-edit or a
+/// truncation that strips the "GENERATED — do not hand-edit" / "Regenerating is
+/// NOT a remediation" preamble. `parse_baseline` cannot catch it — `#` lines are
+/// comments to the grammar, so a manifest with the preamble deleted parses
+/// perfectly — and the ratchet cannot either, since it only ever reads rows.
+/// Yet that preamble is precisely the text that deters the re-bless-the-
+/// regression move the whole detector exists to prevent.
+#[test]
+fn the_committed_baseline_carries_the_generated_preamble() {
+    let path = baseline_path();
+    let content =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
+
+    assert!(
+        content.starts_with(BASELINE_HEADER),
+        "pdiag-baseline.txt has lost the generated preamble — the regen command, the policy \
+         pointer and the \"regenerating is NOT a remediation\" warning all travel with it, and \
+         `parse_baseline` cannot notice because `#` lines are comments to the grammar. \
+         Restore it by regenerating:\n  {REGEN}\n\nExpected the file to open with:\n{}\n\nIt \
+         opens with:\n{}",
+        BASELINE_HEADER,
+        content.chars().take(BASELINE_HEADER.chars().count()).collect::<String>(),
+    );
 }
 
 // -----------------------------------------------------------------------
