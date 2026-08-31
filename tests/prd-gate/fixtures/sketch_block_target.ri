@@ -1,0 +1,19 @@
+// TARGET fixture for constrained-2d-sketch.md task α (grammar producer).
+// EXPECTED TO FAIL parse until α lands; α's signal is this fixture parsing clean.
+structure def Extrusion2020 {
+    param slot_w : Length = 6.2mm
+    param length : Length = 100mm
+    sketch profile {
+        aux let cl = line(origin, point(0mm, 10mm))
+        let a  = point(0mm, 0mm)
+        let b  = point(10mm, 0mm)
+        let ab = line(a, b)
+        let c1 = arc(point(9mm, 1mm), b, point(10mm, 2mm))
+        fix(a)
+        horizontal(ab)
+        tangent(ab, c1)
+        distance(a, b, slot_w)
+        symmetric(a, b, cl)
+    }
+    let body = extrude(profile, length)
+}
