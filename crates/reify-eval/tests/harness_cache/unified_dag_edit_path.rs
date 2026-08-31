@@ -1,4 +1,4 @@
-//! θ2 (task 4531) edit-path unified-driver test binary.
+//! θ2 (task 4531) edit-path unified-driver test module.
 //!
 //! Pins the design-doc "warm output == cold output becomes structural" claim on
 //! the EDIT surface: `edit_param` / `edit_source` / `edit_check` must order their
@@ -137,7 +137,7 @@ const DRIVER_ORDER_P2_SRC: &str = r#"structure DriverOrder {
 }"#;
 
 /// Construct a fresh kernel-backed engine pinned to `scheduler`. Mirrors the
-/// inline constructor used across the unified-dag test binaries.
+/// inline constructor used across the unified-dag test modules.
 fn fresh_engine(scheduler: BuildScheduler) -> Engine {
     let mut engine = Engine::new(
         Box::new(SimpleConstraintChecker),

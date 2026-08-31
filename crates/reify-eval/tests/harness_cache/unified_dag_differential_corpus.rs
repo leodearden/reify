@@ -8,7 +8,7 @@
 //! `docs/prds/v0_6/engine-unified-build-dag.md` §6, decomposition §8-ζ).
 //!
 //! The §6 boundary cases a plain legacy-vs-unified diff cannot surface live in
-//! the sibling binary `unified_dag_boundary_cases.rs`.
+//! the sibling module `unified_dag_boundary_cases.rs`.
 //!
 //! The shared differential corpus helpers are declared once at the
 //! `harness_cache` root (`#[path = "common/differential.rs"] mod differential;`)
