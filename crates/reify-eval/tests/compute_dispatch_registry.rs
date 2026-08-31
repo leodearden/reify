@@ -1493,7 +1493,7 @@ fn instance_scope_optimized_decline_warning_does_not_scale_with_instance_count()
         assert_eq!(
             eval_result
                 .values
-                .get(&ValueCellId::new(&format!("OuterM.{sub}"), "r")),
+                .get(&ValueCellId::new(format!("OuterM.{sub}"), "r")),
             Some(&Value::Int(0)),
             "OuterM.{sub}.r overrides x, so it must body-inline to the sentinel 0"
         );
@@ -1502,7 +1502,7 @@ fn instance_scope_optimized_decline_warning_does_not_scale_with_instance_count()
         assert_eq!(
             eval_result
                 .values
-                .get(&ValueCellId::new(&format!("OuterM.bolts[{i}]"), "r")),
+                .get(&ValueCellId::new(format!("OuterM.bolts[{i}]"), "r")),
             Some(&Value::Int(6)),
             "collection element OuterM.bolts[{i}].r takes the default x, so its \
              inputs are value-identical to the template's and it must reuse 6"
@@ -1601,7 +1601,7 @@ fn instance_scope_optimized_param_default_decline_is_silent_while_template_scope
         assert_eq!(
             eval_result
                 .values
-                .get(&ValueCellId::new(&format!("OuterPD.{sub}"), "p")),
+                .get(&ValueCellId::new(format!("OuterPD.{sub}"), "p")),
             Some(&Value::Int(0)),
             "OuterPD.{sub}.p must agree with the template's body-inlined 0"
         );
