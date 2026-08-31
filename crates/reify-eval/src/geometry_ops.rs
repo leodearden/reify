@@ -2476,12 +2476,15 @@ pub(crate) fn compile_geometry_op(
             //
             // The real fix is to honour `arg_names` in that lowering arm (bind
             // by name, fall back to position), which lives in
-            // `crates/reify-compiler/src/geometry.rs` — a file units-length λ
-            // (task 5755) holds no lock on, and a pre-existing quirk λ did not
-            // introduce. Deliberately NOT patched around here: a local
-            // `Value::Bool` special case would fork the caller-facing wording
-            // that `required_length_arg` solely owns (decision D9) and would
-            // have to be removed again once the lowering binds by name.
+            // `crates/reify-compiler/src/geometry.rs` and is OWNED BY THE LIVE
+            // TASK #6313 ("Geometry builtins silently ignore argument labels —
+            // `isosurface(g, adaptive: true)` misbinds `true` into the `iso`
+            // slot"). That file is one units-length λ (task 5755) holds no lock
+            // on, and the quirk is pre-existing — λ did not introduce it.
+            // Deliberately NOT patched around here: a local `Value::Bool`
+            // special case would fork the caller-facing wording that
+            // `required_length_arg` solely owns (decision D9) and would have to
+            // be removed again once #6313 binds by name.
             let iso_level = match args.iter().find(|(n, _)| n == "iso") {
                 None => 0.0,
                 Some(_) => required_length_arg(

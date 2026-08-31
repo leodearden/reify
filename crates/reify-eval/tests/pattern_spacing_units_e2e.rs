@@ -547,8 +547,10 @@ fn absent_iso_keeps_the_ungated_default_and_stays_quiet() {
 /// This test asserts the CURRENT behaviour, not the desired one. The lowering
 /// quirk is pre-existing (λ did not introduce it) and its fix — honouring
 /// `arg_names` — lives in `crates/reify-compiler/src/geometry.rs`, a file λ
-/// holds no lock on. When that lands, `adaptive: true` will bind to `adaptive`
-/// and this test SHOULD be rewritten to assert a clean build; the assertions
+/// holds no lock on. That fix is filed and live as task #6313, which is the
+/// ADDRESSEE of the rewrite instruction below. When #6313 lands,
+/// `adaptive: true` will bind to `adaptive` and this test SHOULD be rewritten
+/// to assert a clean build; the assertions
 /// deliberately name the positional binding so that rewrite is obviously the
 /// right response to the failure rather than a regression to paper over.
 #[test]

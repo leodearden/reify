@@ -1779,7 +1779,9 @@ impl PatternKind {
 /// wrapper, so it does NOT shadow either site. Correcting those two is out of
 /// D7's scope (D7 names `Linear` / `Linear2D` only) and its C6 migration
 /// reaches assertion files task 5755 holds no lock on, so it is a standalone
-/// follow-up rather than something to fold in here.
+/// follow-up — filed and live as task #6874, which owns flipping both arms,
+/// migrating the call sites the rename newly rejects, and deleting this KNOWN
+/// REMAINING GAP paragraph — rather than something to fold in here.
 ///
 /// Pinned by `pattern_kind_display` below — change a label there and here
 /// together, and migrate the call sites the change newly rejects (C6).
