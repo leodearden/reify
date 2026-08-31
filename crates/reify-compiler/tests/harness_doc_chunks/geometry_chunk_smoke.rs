@@ -1636,12 +1636,13 @@ pub(crate) fn assert_cited_paths_resolve(
 
 /// Cite floors for [`cited_test_paths_in_the_chunk_resolve`].
 ///
-/// The EXACT live counts, not round numbers under them. At `MINIMUM_FN_CITES`
-/// >= 8 (with 9 actually present) one whole cite could be deleted and this still
-/// passed: dropping trap 5's `single_body_self_pair_excluded` row left
-/// fn_cites=8, rs_paths=5 and ri_paths=4 all green while that row still read
-/// "PINNED by" — a SYNC row silently claiming a pin it had lost. The ninth cite
-/// is this file's own self-cite from the SYNC block.
+/// The EXACT live counts, not round numbers under them. At
+/// `MINIMUM_FN_CITES` >= 8 (with 9 actually present) one whole cite could be
+/// deleted and this still passed: dropping trap 5's
+/// `single_body_self_pair_excluded` row left fn_cites=8, rs_paths=5 and
+/// ri_paths=4 all green while that row still read "PINNED by" — a SYNC row
+/// silently claiming a pin it had lost. The ninth cite is this file's own
+/// self-cite from the SYNC block.
 ///
 /// The `.ri` floor covers the four worked references (clearance_oracle,
 /// vc_bolt_pattern_clearance, dock_pickup, intersects_smoke) a designer is sent
