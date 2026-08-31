@@ -31,6 +31,10 @@
 use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
+use reify_constraints::relate_solve::{
+    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
+    partition_driving_set, pose_from_frame,
+};
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
@@ -876,6 +880,404 @@ fn global_float_example_emits_b6_diagnostic() {
             && float_diag.message.contains("ground a part"),
         "the B6 message guides the fix; got: {}",
         float_diag.message
+    );
+}
+
+// ─── step-7 (task 5540) — the tangent acceptance e2e ─────────────────────────
+//
+// The committed `examples/geometric_relations/tangent_roller.ri` worked example is
+// the acceptance fixture for 3D assembly-relate `tangent`. It places one `at auto`
+// roller against two grounded anchors with BOTH curated cylinder combos live in a
+// single scope:
+//
+//   * `tangent(roller.axis, base.top_plane, 5mm)` — cylinder/plane, codimension 2
+//     (one ROTATIONAL row pinning the roller axis perpendicular to the plane normal,
+//     one TRANSLATIONAL row pinning the signed axis-origin-to-plane distance to the
+//     radius), and
+//   * `tangent(roller.axis, idler.axis, 5mm, 7mm)` — cylinder/cylinder, codimension
+//     1 (the axis line-to-line distance equals |r1 + r2| = 12 mm).
+//
+// ⇒ spent 3, residual 3 (slide along the roller's own axis, spin about it, and the
+// remaining in-plane swing about the plane normal, which is a null direction of the
+// cylinder/cylinder row at the witness).
+//
+// **Why this test exists.** Before this task `tangent` produced NO Jacobian rows at
+// all: `residual_dispatch` fell through to the catch-all, `relation_jacobian`
+// returned an empty row set, `partition_driving_set` filed the relation as redundant
+// with `rank_contribution: 0`, and the post-solve `max_relation_residual` verification
+// read a flat `0.0`. A `.ri` author asking for tangency got a build that succeeded,
+// a placement that ignored the request, and not one diagnostic. Every assertion below
+// is chosen so that silent no-solve FAILS it rather than passing vacuously — in
+// particular (c) pins the exact per-relation codimensions (a no-row relation measures
+// rank 0) and (e) measures the placement geometrically (a self-consistently wrong
+// residual converges just as happily as a right one).
+
+/// Read the committed tangent-roller worked example so the acceptance e2e exercises
+/// the SAME source a user would `reify build` — no drift between test and example.
+/// `CARGO_MANIFEST_DIR` is `crates/reify-eval`; `../../examples/...` is the
+/// workspace-root example dir. Mirrors [`bolt_plate_source`].
+fn tangent_roller_source() -> String {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/geometric_relations/tangent_roller.ri"
+    );
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read tangent example {path}: {e}"))
+}
+
+/// The roller's radius in SI metres, as the fixture declares it (`5mm`).
+const ROLLER_RADIUS_M: f64 = 0.005;
+/// The idler's radius in SI metres, as the fixture declares it (`7mm`).
+const IDLER_RADIUS_M: f64 = 0.007;
+
+/// An identity placeholder seed Frame for the roller's `at auto` unknown (the local
+/// datums are pose-independent, so the realization ignores it — see step-5).
+fn identity_roller_seeds() -> HashMap<String, Value> {
+    [("roller".to_string(), seed_frame([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))]
+        .into_iter()
+        .collect()
+}
+
+/// A `Value::Point`'s coordinates in SI metres.
+fn point_m(v: &Value) -> [f64; 3] {
+    let Value::Point(cs) = v else {
+        panic!("expected Value::Point, got {v:?}");
+    };
+    let mut o = [0.0_f64; 3];
+    for (i, c) in cs.iter().take(3).enumerate() {
+        o[i] = c.as_f64().unwrap_or(f64::NAN);
+    }
+    o
+}
+
+/// A `Value::Direction`'s components (unit, dimensionless).
+fn dir_xyz(v: &Value) -> [f64; 3] {
+    let Value::Direction { x, y, z } = v else {
+        panic!("expected Value::Direction, got {v:?}");
+    };
+    [*x, *y, *z]
+}
+
+/// A realized `Value::Axis`'s `(origin_m, unit_direction)`.
+fn axis_parts(v: &Value) -> ([f64; 3], [f64; 3]) {
+    let Value::Axis { origin, direction } = v else {
+        panic!("expected Value::Axis, got {v:?}");
+    };
+    (point_m(origin), dir_xyz(direction))
+}
+
+/// A realized `Value::Plane`'s `(origin_m, unit_normal)`.
+fn plane_parts(v: &Value) -> ([f64; 3], [f64; 3]) {
+    let Value::Plane { origin, normal } = v else {
+        panic!("expected Value::Plane, got {v:?}");
+    };
+    (point_m(origin), dir_xyz(normal))
+}
+
+/// A `Value::Frame`'s basis quaternion as `[w, x, y, z]`.
+fn frame_basis_quat(v: &Value) -> [f64; 4] {
+    let Value::Frame { basis, .. } = v else {
+        panic!("expected Value::Frame, got {v:?}");
+    };
+    let Value::Orientation { w, x, y, z } = basis.as_ref() else {
+        panic!("frame basis must be a Value::Orientation, got {basis:?}");
+    };
+    [*w, *x, *y, *z]
+}
+
+/// Rotate `v` by the unit quaternion `q = [w, x, y, z]` (`q ⊗ v ⊗ q*`).
+fn rotate_by_quat(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
+    let [w, x, y, z] = q;
+    let u = [x, y, z];
+    let uv = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let uuv = [
+        u[1] * uv[2] - u[2] * uv[1],
+        u[2] * uv[0] - u[0] * uv[2],
+        u[0] * uv[1] - u[1] * uv[0],
+    ];
+    [
+        v[0] + 2.0 * (w * uv[0] + uuv[0]),
+        v[1] + 2.0 * (w * uv[1] + uuv[1]),
+        v[2] + 2.0 * (w * uv[2] + uuv[2]),
+    ]
+}
+
+/// Place a LOCAL axis datum by the solved assembly Frame: rotate its origin and
+/// direction by the Frame basis, then offset the origin by the Frame origin. This is
+/// the same rigid placement the surfacing walk's `ApplyTransform` performs, recomputed
+/// INDEPENDENTLY here so assertion (e) measures the geometry rather than re-asking the
+/// solver whether it converged.
+fn place_axis(pose: &Value, local_axis: &Value) -> ([f64; 3], [f64; 3]) {
+    let (lo, ld) = axis_parts(local_axis);
+    let q = frame_basis_quat(pose);
+    let t = frame_origin_m(pose);
+    let ro = rotate_by_quat(q, lo);
+    (
+        [ro[0] + t[0], ro[1] + t[1], ro[2] + t[2]],
+        rotate_by_quat(q, ld),
+    )
+}
+
+/// Distance between the lines `oa + s·ua` and `ob + s·ub` (the common-normal distance
+/// for skew lines, the perpendicular offset when parallel). Recomputed here rather than
+/// reused from the solver so the geometric check is independent of the residual under
+/// test.
+fn line_line_distance_m(
+    oa: [f64; 3],
+    ua: [f64; 3],
+    ob: [f64; 3],
+    ub: [f64; 3],
+) -> f64 {
+    let w = [ob[0] - oa[0], ob[1] - oa[1], ob[2] - oa[2]];
+    let n = [
+        ua[1] * ub[2] - ua[2] * ub[1],
+        ua[2] * ub[0] - ua[0] * ub[2],
+        ua[0] * ub[1] - ua[1] * ub[0],
+    ];
+    let nn = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if nn < 1e-12 {
+        // Parallel: the perpendicular offset of `ob` from the line through `oa`.
+        let un = (ua[0] * ua[0] + ua[1] * ua[1] + ua[2] * ua[2]).sqrt();
+        let uh = [ua[0] / un, ua[1] / un, ua[2] / un];
+        let d = w[0] * uh[0] + w[1] * uh[1] + w[2] * uh[2];
+        let p = [w[0] - d * uh[0], w[1] - d * uh[1], w[2] - d * uh[2]];
+        (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
+    } else {
+        ((w[0] * n[0] + w[1] * n[1] + w[2] * n[2]) / nn).abs()
+    }
+}
+
+/// Rebuild the fixture's two tangent [`RelationInstance`]s over the realized datums,
+/// in source order. `reify_eval`'s `build_relation_instances` is private, so the
+/// residual-verification assertion (b) and the per-relation rank assertion (c)
+/// reconstruct the same instances here — the operand order and the trailing-scalar
+/// radius transport are exactly what the eval layer builds (`sub: Some(..)` for a
+/// datum operand, `sub: None` for a metric one).
+fn tangent_relation_instances(realized: &RealizedDatums) -> Vec<RelationInstance> {
+    let datum = |sub: &str, member: &str| Operand {
+        sub: Some(sub.to_string()),
+        datum: realized
+            .get(sub, member)
+            .unwrap_or_else(|| panic!("the realization must carry {sub}.{member}"))
+            .clone(),
+    };
+    let radius = |r: f64| Operand {
+        sub: None,
+        datum: Value::Real(r),
+    };
+    vec![
+        // tangent(roller.axis, base.top_plane, 5mm) — cylinder/plane.
+        RelationInstance {
+            name: "tangent".to_string(),
+            operands: vec![
+                datum("roller", "axis"),
+                datum("base", "top_plane"),
+                radius(ROLLER_RADIUS_M),
+            ],
+            nominal_delta_dof: None,
+        },
+        // tangent(roller.axis, idler.axis, 5mm, 7mm) — cylinder/cylinder, external.
+        RelationInstance {
+            name: "tangent".to_string(),
+            operands: vec![
+                datum("roller", "axis"),
+                datum("idler", "axis"),
+                radius(ROLLER_RADIUS_M),
+                radius(IDLER_RADIUS_M),
+            ],
+            nominal_delta_dof: None,
+        },
+    ]
+}
+
+/// step-7 — the committed tangent-roller example solves, builds, and the tangency it
+/// asks for actually HOLDS at the solved placement (task 5540 acceptance).
+#[test]
+fn tangent_roller_example_solves_places_and_holds_tangency() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping tangent_roller_example_solves_places_and_holds_tangency: OCCT not available"
+        );
+        return;
+    }
+
+    let source = tangent_roller_source();
+    let module = compile_source_with_stdlib(&source);
+    let compile_errors: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "the committed tangent example must compile cleanly against the tangent operand \
+         policing, got: {compile_errors:?}"
+    );
+
+    let rig = template(&module, "RollerRig");
+    let scope: RelateScope = collect_relate_scope(rig);
+    assert_eq!(
+        scope.relations.len(),
+        2,
+        "the RollerRig scope carries both tangent relations"
+    );
+
+    let mut engine = occt_engine();
+    let realized = realize_operand_datums(&scope, &module, &mut engine, &identity_roller_seeds());
+    let solution = solve_relate_scope(&scope, &realized);
+
+    // ── (a) the `at auto` roller receives a solved pose; the anchors do not ──────
+    let roller_pose = solution
+        .poses
+        .get("roller")
+        .expect("the `at auto` roller sub must receive a solved Frame");
+    assert!(
+        matches!(roller_pose, Value::Frame { .. }),
+        "the solved roller pose is a Value::Frame, got {roller_pose:?}"
+    );
+    assert!(
+        !solution.poses.contains_key("base") && !solution.poses.contains_key("idler"),
+        "the grounded base/idler anchors are never solver-placed, got poses for {:?}",
+        solution.poses.keys().collect::<Vec<_>>()
+    );
+
+    // ── (b) the solve CONVERGED and the tangency holds within the assertion tol ──
+    //
+    // This is THE assertion the pre-task silent no-solve would have passed vacuously:
+    // with no residual rows `max_relation_residual` reads a flat 0.0 whatever the
+    // placement. It is meaningful only because (c) proves the rows exist and (e)
+    // proves they measure the right geometry.
+    let solve_errors: Vec<&str> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        solve_errors.is_empty(),
+        "the tangent solve must raise no error diagnostics, got: {solve_errors:?}"
+    );
+    let instances = tangent_relation_instances(&realized);
+    let unknown = FrameUnknown {
+        sub: "roller".to_string(),
+        free: false,
+    };
+    let solved_pose = pose_from_frame(roller_pose)
+        .expect("the solved roller Frame must convert back to a Pose");
+    let residual = max_relation_residual(&instances, &unknown, &solved_pose);
+    let tol = RelateTolerance::kernel_default();
+    assert!(
+        residual < tol.assertion(),
+        "both tangency relations must hold at the solved placement: residual {residual:e} \
+         exceeds the assertion tolerance {:e}",
+        tol.assertion()
+    );
+
+    // ── (c) DOF accounting is OPERAND-CONDITIONAL, per relation ─────────────────
+    //
+    // The exact integers, not a range: cylinder/plane is codimension 2 and
+    // cylinder/cylinder codimension 1, so the scope spends 3 and leaves 3. A silent
+    // no-solve measures individual_rank 0 for BOTH.
+    let partition =
+        partition_driving_set(&instances, &unknown, &Pose::identity(), tol.solver_convergence());
+    assert_eq!(
+        partition.per_relation[0].individual_rank, 2,
+        "tangent(cylinder, plane) is codimension 2 — one rotational row (axis ⟂ normal) \
+         plus one translational row (signed distance = radius)"
+    );
+    assert_eq!(
+        partition.per_relation[1].individual_rank, 1,
+        "tangent(cylinder, cylinder) is codimension 1 — the axis line-to-line distance"
+    );
+    assert_eq!(solution.spent, 3, "cylinder/plane(2) + cylinder/cylinder(1) spends 3 DOF");
+    assert_eq!(
+        solution.free, 3,
+        "3 residual DOF: slide along the roller axis, spin about it, and swing about \
+         the plane normal"
+    );
+    assert_eq!(solution.driving, 2, "both tangent relations are driving");
+    assert_eq!(solution.redundant, 0, "neither tangent relation is redundant");
+
+    // ── (d) the STEP build writes back the same solved pose ─────────────────────
+    let result = engine.build(&module, ExportFormat::Step);
+    let build_errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "the tangent example must build end-to-end with no errors, got: {build_errors:?}"
+    );
+    let roller_cell = auto_pose_cell("RollerRig", "roller");
+    let built_pose = result.values.get(&roller_cell).unwrap_or_else(|| {
+        panic!("the `at auto` roller must have a solved auto-pose Frame under {roller_cell:?}")
+    });
+    assert!(
+        matches!(built_pose, Value::Frame { .. }),
+        "the roller's written-back auto-pose must be a Value::Frame, got {built_pose:?}"
+    );
+    for anchor in ["base", "idler"] {
+        assert!(
+            result
+                .values
+                .get(&auto_pose_cell("RollerRig", anchor))
+                .is_none(),
+            "the grounded `{anchor}` sub must NOT receive an auto-pose Frame"
+        );
+    }
+    let built_o = frame_origin_m(built_pose);
+    let solved_o = frame_origin_m(roller_pose);
+    for k in 0..3 {
+        assert!(
+            (built_o[k] - solved_o[k]).abs() < 1e-6,
+            "the build's placement must agree with the direct solve at axis {k}: \
+             built {built_o:?} vs solved {solved_o:?}"
+        );
+    }
+
+    // ── (e) the placement is geometrically CORRECT, not merely converged ────────
+    //
+    // Convergence alone cannot catch a residual that is self-consistently wrong (a
+    // sign flip, a dropped radius, a distance measured to the wrong datum). So place
+    // the roller's LOCAL axis by the solved Frame independently and measure the two
+    // tangency quantities directly against the declared radii.
+    let (ro, rd) = place_axis(built_pose, realized.get("roller", "axis").expect("roller axis"));
+    let (po, pn) = plane_parts(realized.get("base", "top_plane").expect("base plane"));
+    let (io, id) = axis_parts(realized.get("idler", "axis").expect("idler axis"));
+
+    // The cylinder/plane rotational row: the placed roller axis lies IN the plane's
+    // directions, i.e. perpendicular to its normal. Without this row the cylinder can
+    // tilt out of tangency at exactly zero translational residual.
+    let axis_dot_normal = rd[0] * pn[0] + rd[1] * pn[1] + rd[2] * pn[2];
+    assert!(
+        axis_dot_normal.abs() < 1e-6,
+        "the placed roller axis must be perpendicular to the base plane normal \
+         (dot = {axis_dot_normal:e}); a tilted axis is not tangent"
+    );
+
+    // The cylinder/plane translational row: the signed axis-origin-to-plane distance
+    // equals the roller radius.
+    let plane_gap = (ro[0] - po[0]) * pn[0] + (ro[1] - po[1]) * pn[1] + (ro[2] - po[2]) * pn[2];
+    assert!(
+        (plane_gap - ROLLER_RADIUS_M).abs() < 1e-6,
+        "the placed roller axis must sit exactly one radius ({ROLLER_RADIUS_M} m) off the \
+         base plane, measured {plane_gap} m"
+    );
+
+    // The cylinder/cylinder row: the axis line-to-line distance equals r1 + r2 (both
+    // radii positive ⇒ EXTERNAL tangency).
+    let centre_distance = line_line_distance_m(ro, rd, io, id);
+    let expected = ROLLER_RADIUS_M + IDLER_RADIUS_M;
+    assert!(
+        (centre_distance - expected).abs() < 1e-6,
+        "the placed roller axis must stand r1 + r2 = {expected} m from the idler axis \
+         (external tangency), measured {centre_distance} m"
     );
 }
 

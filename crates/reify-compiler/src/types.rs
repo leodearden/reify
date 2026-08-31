@@ -858,6 +858,100 @@ pub fn find_template<'a>(
     templates.iter().find(|t| t.name == name)
 }
 
+/// The prelude-derived lookup tables `compile_entity` threads through the
+/// entity-compile recursion, bundled into one named-field value.
+///
+/// The two maps have the SAME type and different meanings, so as adjacent
+/// positional parameters in an already 20+-argument signature a future call
+/// site could transpose them and the compiler could not catch it — and the
+/// resulting bug (the Structure-filtered map used for sub targets) is exactly
+/// the one task #5867 fixed. Field names make that transposition unspellable.
+///
+/// `'r` is the borrow of the tables themselves; `'t` is the lifetime of the
+/// prelude templates they point at. They are separate because the tables are
+/// phase-locals in `phase_entities` while the templates outlive it.
+pub(crate) struct PreludeRegistries<'r, 't> {
+    /// Prelude templates for CONSTRUCTOR lowering — `EntityKind::Structure`-
+    /// FILTERED, because only `structure def`s are constructible via `Foo()`
+    /// (task 3540 / esc-3540-177 RULING 1).
+    pub(crate) ctor: &'r HashMap<String, &'t TopologyTemplate>,
+    /// Prelude templates for SUB-TARGET resolution — UNFILTERED by
+    /// `EntityKind`, because a sub target may be an occurrence
+    /// (`sub o = STLOutput(…)`). Read only via [`find_template_with_prelude`].
+    pub(crate) sub_target: &'r HashMap<String, &'t TopologyTemplate>,
+    /// Entity names THIS module declares itself (local only — never seeded
+    /// from the prelude). Suppresses the prelude fallback for a name the
+    /// module owns; see property 1 of [`find_template_with_prelude`].
+    pub(crate) local_entity_names: &'r HashSet<String>,
+}
+
+/// Resolve a **sub-target** template by name: module-local first, stdlib
+/// prelude second.
+///
+/// This is the compile-side single source of truth for the question "which
+/// template does `sub x = Foo(…)` / `sub x : Foo` point at?", mirroring
+/// `reify_eval::unfold::find_template_in_scope` on the eval side. Every
+/// sub-target lookup in `entity.rs` routes through here so no resolver on the
+/// path is left module-only — the asymmetry that caused esc-5360-9, where one
+/// resolver gained the prelude fallback and its sibling did not.
+///
+/// Three properties the callers depend on:
+///
+/// 1. **Module-local definitions shadow the prelude — in BOTH declaration
+///    orders.** `find_template` is consulted first, so a user module that
+///    defines its own `DisplayStyle` wins over the stdlib one. That arm alone
+///    is not enough, though: `templates` holds only the templates compiled
+///    EARLIER in the module, so a local definition appearing AFTER its first
+///    use would miss it and bind to the prelude instead. The
+///    `local_entity_names` guard closes that hole by suppressing the prelude
+///    arm for any name the module declares, restoring the pre-existing
+///    forward-declared/optimistic path for that case. MEASURED without the
+///    guard: `structure def User { sub c = Color(alpha: 0.5mm) … }` followed by
+///    a local `structure def Color` bound to stdlib `Color`
+///    (`materials_appearance.ri:17`) and hard-errored `unknown member 'alpha'
+///    on sub 'c'` — a new build failure on source that compiled clean before.
+///    Guard reach: `local_entity_names` comes from `ctx.seen_entity_names`,
+///    which `pre_pass::collect_decl_refs` fills via
+///    `CompilationCtx::record_or_report_duplicate` from EVERY entity
+///    declaration in the module — top-level `Declaration::Structure` /
+///    `Declaration::Occurrence` AND the structures nested inside a
+///    `Declaration::Purpose` body (task 4639), all recorded under a
+///    "structure"/"occurrence" kind. So a purpose-nested definition shadows a
+///    prelude name exactly as a top-level one does. What the guard does NOT
+///    see is a template that was never a source declaration — a synthesized
+///    monomorph — whose name is mangled and so cannot collide with a prelude
+///    entity name in the first place.
+/// 2. **The prelude fallback is load-bearing, not belt-and-braces.** Stdlib
+///    templates live in the prelude and are deliberately NOT merged into
+///    `CompiledModule::templates` (io-export δ / esc-4287-15), so a bare
+///    `find_template` never sees them. Task #5867: that miss left
+///    `sub_member_types` / `sub_realization_names` unpopulated while
+///    `sub_component_types` was populated — precisely the "forward-declared"
+///    shape that makes a relaying `let` lower to a `RealizationDecl` instead of
+///    a value cell, silently.
+/// 3. **The registry consulted must be UNFILTERED by `EntityKind`.** This
+///    reads [`PreludeRegistries::sub_target`], never `ctor`: the latter is
+///    `EntityKind::Structure`-filtered on purpose, because it drives
+///    constructor lowering where occurrences are correctly excluded. Sub
+///    targets may be occurrences — `sub o = STLOutput(…)` is a shipped shape —
+///    and a Structure-filtered registry leaves exactly that case broken
+///    (MEASURED, task #5867).
+pub(crate) fn find_template_with_prelude<'a>(
+    templates: &'a [TopologyTemplate],
+    prelude: &PreludeRegistries<'_, 'a>,
+    name: &str,
+) -> Option<&'a TopologyTemplate> {
+    find_template(templates, name).or_else(|| {
+        // Property 1, forward-reference half: a name the module declares is
+        // the module's, whether or not it has been compiled yet.
+        if prelude.local_entity_names.contains(name) {
+            None
+        } else {
+            prelude.sub_target.get(name).copied()
+        }
+    })
+}
+
 /// Return `true` iff synthesizing a monomorph named `mono` would collide with a
 /// pre-existing template that was **not** created by α's current monomorphization
 /// pass.
@@ -1255,6 +1349,40 @@ pub struct RealizationDecl {
     /// `TopologyTemplateBuilder` test helpers likewise default to `false`.
     /// Downstream (reify-eval) reads this to set `MeshSurface.default_visible`.
     pub is_aux: bool,
+    /// Whether this realization exists ONLY to give a geometry *query* an
+    /// evaluable handle, and is therefore not product geometry at all
+    /// (task 5345).
+    ///
+    /// Set exclusively for the synthetic `__geoq_<N>` lets that
+    /// `desugar_inline_geometry_query_args` (entity.rs) mints when hoisting an
+    /// inline geometry call out of a whole-handle query argument — e.g.
+    /// `let v = volume(torus(20mm, 5mm))` desugars to
+    /// `let __geoq_0 = torus(20mm, 5mm); let v = volume(__geoq_0)`. Every
+    /// user-authored `let`/`param` constructs with `false`.
+    ///
+    /// This is deliberately NOT the same axis as [`Self::is_aux`]. `aux` means
+    /// "real geometry the user declared, but with no external geometric
+    /// effect": it is still a body, it still participates in the
+    /// final-realization selection, and a structure whose bodies are ALL aux is
+    /// an error ("all realized bodies are aux; no product geometry to export").
+    /// A query-only realization is not a body at all — it is measurement
+    /// scaffolding synthesized by the desugarer, and the pre-hoist behaviour it
+    /// must preserve is "no realization existed here". Consequently reify-eval
+    /// must exclude it from:
+    ///   * the `had_realization_ops` predicate (so a structure whose only
+    ///     geometry lives inside a query arg exports nothing *without* an
+    ///     error, exactly as it did before the hoist);
+    ///   * final-realization selection AND the export skip set
+    ///     (`non_final_realization_indices`) — otherwise a later-indexed
+    ///     `__geoq_N` would displace the user's real product body from
+    ///     STEP/STL/3MF;
+    ///   * the tessellation body list (otherwise the viewer shows a phantom
+    ///     body the user never declared).
+    ///
+    /// It must NOT be excluded from realization *execution* or from
+    /// `named_steps`/`terminal_handles` recording — the query reads its handle
+    /// from exactly there.
+    pub is_query_only: bool,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
 }
@@ -1459,6 +1587,12 @@ pub enum ModifyKind {
     Thicken,
     ZoneSlab,
     OffsetSolid,
+    /// Offset a surface along its normal by a scalar distance
+    /// `offset_surface(surface, distance)` (θ, task 4192). Uses the Skin
+    /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape`, distinct from
+    /// `OffsetSolid`'s `PerformBySimple` solid mode. Produces a fresh Surface.
+    /// Collapses to `Operation::ModifyOffsetSurface` (BRep kernel capability).
+    OffsetSurface,
     /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
     /// (ι, task 4193). Produces a fresh Wire offset from the target curve by
     /// `distance`. The optional 3rd arg — a reference Surface or a direction
@@ -1481,7 +1615,7 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Fillet,
         Self::Chamfer,
         Self::ChamferAsymmetric,
@@ -1490,6 +1624,7 @@ impl ModifyKind {
         Self::Thicken,
         Self::ZoneSlab,
         Self::OffsetSolid,
+        Self::OffsetSurface,
         Self::OffsetCurve,
     ];
 
@@ -1512,6 +1647,7 @@ impl std::fmt::Display for ModifyKind {
             ModifyKind::Thicken => f.write_str("thicken"),
             ModifyKind::ZoneSlab => f.write_str("zone_slab"),
             ModifyKind::OffsetSolid => f.write_str("offset_solid"),
+            ModifyKind::OffsetSurface => f.write_str("offset_surface"),
             ModifyKind::OffsetCurve => f.write_str("offset_curve"),
         }
     }
@@ -2060,6 +2196,7 @@ mod kind_display_tests {
             (ModifyKind::Thicken, "thicken"),
             (ModifyKind::ZoneSlab, "zone_slab"),
             (ModifyKind::OffsetSolid, "offset_solid"),
+            (ModifyKind::OffsetSurface, "offset_surface"),
             (ModifyKind::OffsetCurve, "offset_curve"),
         ]);
     }

@@ -5,6 +5,32 @@
 //! the `resolving` cycle-detection set stay phase-local because they are
 //! only consumed inside this phase.
 //!
+//! # Not every alias is resolved here (task 6259)
+//!
+//! "Resolve every alias" above means *attempt* every alias. An alias whose
+//! body names an ENTITY — `type AL = SomeEnum` / `= SomeStructureDef` /
+//! `= SomeOccurrenceDef` / `= SomeTrait` — deliberately comes out of this
+//! phase with `resolved_type: None`, and that is not a failure: structures,
+//! traits and enums are not compiled yet when this phase runs (the resolution
+//! name sets are built *after* it, by `build_resolution_names` and
+//! `enums_phase::build_resolution_enums_from_cache`), so their names cannot be
+//! resolved here even in principle.
+//!
+//! Such an alias is instead resolved at each USE SITE, by the deferred arm of
+//! `type_resolution::resolve_type_expr_with_aliases_kinded`, which reads the
+//! raw body retained in `TypeAliasEntry::type_expr` (stored unconditionally by
+//! `resolve_alias_dfs` for every alias, parametric or not) at a point where all
+//! four namespaces are in scope. This is the same deferral the parametric-alias
+//! path already uses, extended to the non-parametric-but-unresolved case.
+//!
+//! That is why this phase does NOT need — and must not be "fixed" to take —
+//! the structure / trait / enum name sets: doing so would require reordering
+//! `phase_aliases` against the names and enums phases, whose ordering
+//! constraints are load-bearing. A `resolved_type: None` entry leaving this
+//! phase is therefore not, on its own, evidence of an ill-formed alias, which
+//! is also why there is no definition-site "cannot resolve this body"
+//! diagnostic here.
+//!
 //! # Prelude seeding
 //!
 //! When `prelude_aliases` is non-empty, pub aliases from the prelude are

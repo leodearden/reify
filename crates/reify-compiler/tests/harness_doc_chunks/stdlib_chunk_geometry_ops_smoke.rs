@@ -25,7 +25,8 @@
 //!    compiler — NO diagnostic at ANY severity — so only names that already
 //!    have a geometry-op arm are ever arity-checked, and a
 //!    documented-but-nonexistent op (the phantom `offset_surface` task 5347
-//!    removed by hand) passes (1) untouched.
+//!    removed by hand — since IMPLEMENTED for real by task #4192, so it is no
+//!    longer a phantom) passes (1) untouched.
 //!    `bogus_geometry_op_names_are_reported_as_unrecognised` is the negative
 //!    control that pins this guard's discriminating power, so the hole cannot
 //!    silently reopen.
@@ -198,7 +199,8 @@ fn stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors() {
 // ignores an unknown call name in a `structure def` body — it emits NO
 // diagnostic at ANY severity — so only names that already have a geometry-op
 // arm ever get arity-checked. That means a documented-but-nonexistent op (the
-// phantom `offset_surface` this task removed by hand) sails through the
+// phantom `offset_surface` this task removed by hand — task #4192 has since
+// implemented it for real) sails through the
 // zero-Error assertion untouched. The tests below close that hole by checking
 // call names — extracted from the fixture's parsed AST, and from the chunk
 // itself — against the compiler's OWN name registries.
@@ -434,12 +436,20 @@ fn unrecognised_geometry_call_names(source: &str, label: &str) -> Vec<String> {
 
 /// NEGATIVE CONTROL — the reviewer's exact repro, inline (no fixture edit).
 ///
-/// `scal`/`thikken` are typo'd renames of real ops and `offset_surface` is the
-/// phantom signature this task deleted from stdlib.md BY HAND. None of the
-/// three produces a diagnostic at any severity, so
-/// `stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors` cannot see them.
-/// This test pins the guard's discriminating power so that hole cannot silently
-/// reopen.
+/// All three names are typo'd renames of real ops. None produces a diagnostic
+/// at any severity, so `stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors`
+/// cannot see them. This test pins the guard's discriminating power so that
+/// hole cannot silently reopen.
+///
+/// The third slot originally held `offset_surface` itself — the phantom
+/// signature task 5347 deleted from stdlib.md by hand, and the reviewer's
+/// actual repro. Task #4192 (PRD `geometry-modify-sweep-completion.md` task θ)
+/// IMPLEMENTED `offset_surface`, registering it in `GEOMETRY_FUNCTION_NAMES`,
+/// so the name is now recognised and can no longer serve as a control. It is
+/// replaced by a typo of itself, which keeps the slot in the same class as
+/// `scal`/`thikken` and cannot be invalidated by a future implementation task.
+/// The guard's mechanism is name-class-blind — it reports any call name with
+/// no arm in the registries — so the substitution costs no coverage.
 #[test]
 fn bogus_geometry_op_names_are_reported_as_unrecognised() {
     let source = r#"
@@ -448,14 +458,14 @@ structure def BogusOps {
     let surface = rectangle(10mm, 10mm)
     let sc = scal(solid, 2.0)
     let th = thikken(solid, 1mm)
-    let of = offset_surface(surface, 1mm)
+    let of = offset_surfase(surface, 1mm)
 }
 "#;
 
     assert_eq!(
         unrecognised_geometry_call_names(source, "bogus-ops snippet"),
         vec![
-            "offset_surface".to_string(),
+            "offset_surfase".to_string(),
             "scal".to_string(),
             "thikken".to_string(),
         ],

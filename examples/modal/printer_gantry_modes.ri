@@ -51,21 +51,39 @@
 //   (crates/reify-eval/tests/modal_analysis_e2e.rs::e2e_printer_gantry_prints_five_modes)
 //   verifies as the sole accuracy criterion (no analytic tolerance; see PRD §1).
 //
-// Positional binding (IMPORTANT):
-//   ModalOptions argument binding is POSITIONAL — `name:` labels are cosmetic;
-//   the parser binds each value to the param in ModalOptions' DECLARATION order
-//   (n_modes, boundary_conditions, damping, sigma, tol, max_iters,
-//   reference_direction, element_order). Every param must be spelled out in
-//   order so that `element_order: ElementOrder.P2` lands in the last slot.
-//   A partial keyword-style call would silently bind `element_order`'s value
-//   to an earlier param and leave the real `element_order` at the P1 default.
+// Argument binding (IMPORTANT — this note previously said the opposite):
+//   ModalOptions ctor args bind BY NAME. Since task-4522 the compiler's
+//   structure-ctor lowering resolves each `name:` label against the template's
+//   declared params and only fills the UNLABELLED slots positionally, in
+//   declaration order (n_modes, boundary_conditions, damping, sigma, tol,
+//   max_iters, reference_direction, element_order). So labels are load-bearing,
+//   not cosmetic, and a reordered or partial keyword call binds correctly —
+//   `element_order: ElementOrder.P2` lands in `element_order` wherever it is
+//   written.
+//   The real trap is a MISSPELLED label: an unknown name emits
+//   `E_CTOR_UNKNOWN_FIELD` — a Warning today, an Error at δ — and is STILL
+//   appended lenient as `__arg{i}`, so the intended param falls back to its
+//   default anyway — which for `element_order` is P1, quietly reinstating the
+//   bending lock this fixture exists to avoid. A Warning does not fail the
+//   build, so spelling every param out, in order, still keeps that failure
+//   mode visible under review.
 //
 // RayleighDamping: matches the PRD §1 dogfood snippet and the resonance-budget
-//   purpose (per-mode damping ratios ζₙ = (α + β·ωₙ²) / (2·ωₙ)). It is a
-//   real stdlib structure def (modal_analysis.ri:46-48), fully supported by the
-//   trampoline (extract_damping:1162, rayleigh_damping_ratio:981). Damping does
-//   NOT affect the extracted natural frequencies, so the frequency gate is
-//   unaffected. Fall back to `NoDamping()` if ctor-lowering ever misbehaves.
+//   purpose (per-mode damping ratios ζₙ = (α + β·ωₙ²) / (2·ωₙ)). It is a real
+//   stdlib `structure def RayleighDamping` in modal_analysis.ri, fully
+//   supported by the trampoline via `extract_damping` in
+//   reify-eval/src/modal_ops.rs. `rayleigh_damping_ratio` is NOT in
+//   modal_ops.rs — it is cross-crate, in reify-stdlib::modal::free_vibration,
+//   merely imported there. (Cited by symbol and file, never `file:line`:
+//   line anchors in a comment rot on the next edit to the file they point at,
+//   which is exactly what these four had already done.)
+//   `alpha` is a `Frequency` (s⁻¹) and `beta` a `Time` (s) since task #6093,
+//   hence the `0.0Hz` / `0.0001s` unit literals below; note the solver
+//   consumes α on the rad/s scale — see the ANGULAR-RATE TRAP note at the
+//   declaration in modal_analysis.ri before writing a non-zero α.
+//   Damping does NOT affect the extracted natural frequencies, so the
+//   frequency gate is unaffected. Fall back to `NoDamping()` if ctor-lowering
+//   ever misbehaves.
 
 structure PrinterGantryModes {
     // Geometry: 500 mm span, 60 × 40 mm rectangular cross-section.
@@ -102,19 +120,20 @@ structure PrinterGantryModes {
     // 1.5 · f_vertical for this aspect ratio), but all 7 requested modes are
     // real structural modes (not rigid-body), so strict ordering still holds.
     //
-    // IMPORTANT — argument binding is POSITIONAL (name: labels are cosmetic;
-    // the parser strips them and binds each value to the param in ModalOptions'
-    // DECLARATION order: n_modes, boundary_conditions, damping, sigma, tol,
-    // max_iters, reference_direction, element_order). Every preceding param must
-    // be spelled out in order so that element_order = ElementOrder.P2 lands in
-    // the last slot — a partial call would silently misplace it.
+    // IMPORTANT — argument binding is BY NAME (see the header note above):
+    // each `name:` label is resolved against ModalOptions' declared params, so
+    // `element_order: ElementOrder.P2` lands in `element_order` regardless of
+    // position. Every param is still spelled out, in declaration order, because
+    // a MISSPELLED label emits only an `E_CTOR_UNKNOWN_FIELD` Warning today
+    // (Error at δ) and is STILL bound leniently as `__arg{i}`, so it would
+    // leave element_order at its P1 default without failing the build.
     //
-    // RayleighDamping(alpha: 0.0, beta: 0.0001): structural damping for the
+    // RayleighDamping(alpha: 0.0Hz, beta: 0.0001s): structural damping for the
     // resonance-budget reference (damping does not affect natural frequencies).
     let opts = ModalOptions(
         n_modes: 7,
         boundary_conditions: [mount_left, mount_right],
-        damping: RayleighDamping(alpha: 0.0, beta: 0.0001),
+        damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
         sigma: 0.0,
         tol: 0.000000001,
         max_iters: 200,

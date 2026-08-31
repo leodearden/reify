@@ -42,8 +42,8 @@ most likely failure mode of this whole exercise is a table of confident near-zer
 that are silent non-realizations.
 
 There is also a *third* outcome, distinct from both: `INDETERMINATE`, which is what a
-construct that compiles but never realizes produces (loft, `nurbs_surface`, degenerate
-cone — §1.5, §2.3).
+construct that compiles but never realizes produces (loft, degenerate cone — §1.5,
+§2.3).
 
 **Caveat 3 — sampled lower bound.** The reported deviation is a sampled lower bound on
 the true Hausdorff chord error (4 interior points per facet), and per PRD §2.1 only the
@@ -171,13 +171,63 @@ bounds, not suprema — see §2.4.
 Not measurable, recorded honestly:
 
 * **sweep along a helix**, either profile — `TIMEOUT > 90 s` at every `d` tried.
-* **`nurbs_surface(…)`** — `INDETERMINATE` in **0.22 s**, a *fast* fail, i.e. no
-  realization was attempted rather than a slow kernel failure. Consistent with the known
-  gap: `Operation::SurfaceNurbs` is absent from `occt_capability_descriptor()`
-  (`crates/reify-kernel-occt/src/register.rs:101-163`). `nurbs(…)` is excluded on
-  semantics, not behaviour: it returns a **Wire**, which has no facets and therefore no
-  chord deviation.
+* **`nurbs(…)`** is excluded on semantics, not behaviour: it returns a **Wire**, which
+  has no facets and therefore no chord deviation.
 * **loft** — blocked at realization, both failure modes below.
+
+**`nurbs_surface(…)` is measurable and does not belong in the list above.** The
+`INDETERMINATE` in 0.22 s originally recorded here was **not** a capability gap: it was
+an artifact of a flat, bare-`[x,y,z]`-literal control-point/weight encoding rejected at
+eval decode — precisely diagnosed, not silently. `control_points`/`weights` are NESTED
+(u-major × v) grids (the `GeometryOp::NurbsSurface` variant in
+`crates/reify-ir/src/geometry.rs`), and every pole must be a `point3(…)`. The flat
+form's 9 bare triples are read as 9 ROWS: row 0 (`[0mm,0mm,0mm]`) itself passes the
+row-is-a-List check, so its three elements are each then decoded as a POLE by the pole
+decoder `accept_length_point3` (`crates/reify-eval/src/geometry_ops.rs`), called per
+pole from the control-point grid loop in `compile_geometry_op`'s `SurfaceKind::Nurbs`
+arm (same file). Pole 0 of row 0 is the bare scalar `0mm` — a `Value::Scalar`, not a
+`Value::Point`/`Value::Vector` — so it fails the SHAPE check first; the LENGTH-dimension
+requirement (task 5745) is a real, separate gate that fires only once the shape check
+passes, and is not why this form is rejected (its components are already `mm`).
+(`point3_components`, in the same file, survives only as the un-gated decoder for the
+three DIRECTION positions.) The compiler gates only arity (`check_arg_count_exact`
+checks for exactly 6, in the `"nurbs_surface"` arm of `compile_geometry_call_inner`,
+`crates/reify-compiler/src/geometry.rs`), so the wrong-shape call compiles clean, but
+eval-time decode then rejects it with a precise per-pole diagnostic: `error: failed to
+compile geometry operation: nurbs_surface: control_points[0][0] must be a
+Point3<Length>, got Scalar { .. }`, surfaced by the `Err(String)` → `Diagnostic::error`
+conversion in the `Err(err)` arm of `execute_realization_ops`
+(`crates/reify-eval/src/engine_build.rs`), followed by the message "all geometry
+operations failed; no geometry output produced" (emitted from two identical-text call
+sites in the same file, so the message text is the citation, not a line). What made the
+2026-08-10 observation read as a capability gap is the EXIT CODE, which stays 0 because
+the constraint resolves INDETERMINATE (subject undefined) rather than erroring — not a
+missing diagnostic.
+Re-measured 2026-08-24 at HEAD=`2306e029ec` with the corrected nested
+encoding (3x3 u-major control net of `point3(…)` poles, nested unit weights, the same
+clamped knots `[0,0,0,1,1,1]` in both directions and `u_degree = v_degree = 2` as
+before). EXCERPT of a longer transcript (elides the leading `warning: constraint
+expression has type PnrgSpline, expected Bool` line and truncates the trailing `for
+PnrgSplineCheck` suffix):
+
+    error: RepresentationWithin: sampled facet deviation 1.713e-2 m exceeds bound 1.000e-6 m
+
+The corrected call is now committed as its own runnable fixture,
+`tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` (`reify check` it), rather than
+living only as a comment, so a future measurer does not have to reconstruct it from
+prose. It reproduces the same **deviation** — 1.713e-2 m — but not the excerpt above
+verbatim: the fixture's checker is named `PnrgNurbsSurfaceCheck` rather than
+`PnrgSplineCheck`, and its elided warning names `PnrgNurbsSurface`. Identifier only; the
+measurement is identical. No commit sha is cited for that run on purpose — until the
+fixture lands it exists only on a task branch, and every amend or rebase orphans a
+branch-local sha.
+
+`Operation::SurfaceNurbs` remains genuinely absent from `occt_capability_descriptor()`
+(`crates/reify-kernel-occt/src/register.rs`) — that fact still holds. What was wrong was
+the inference that the absence prevents realization: it resolves instead via the
+`DEFAULT_KERNEL_NAME` fallback, which is exactly how the corrected call above realizes.
+No d-ladder row exists yet for this class — one measurement is not a ladder — tracked as
+follow-up task #6545 (ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`).
 
 ### 1.6 Loft is unreachable from the source language
 
@@ -411,7 +461,8 @@ expected values are continuous measurements that drift with OCCT and machine):
 | `tests/prd-gate/fixtures/pnrg_envelope_fillet_blend.ri` | fillet blend |
 | `tests/prd-gate/fixtures/pnrg_envelope_sweep.ri` | sweep |
 | `tests/prd-gate/fixtures/pnrg_envelope_pipe.ri` | pipe |
-| `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline (+ the `nurbs_surface` non-realization) |
+| `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline |
+| `tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` | nurbs surface |
 | `tests/prd-gate/fixtures/pnrg_envelope_loft.ri` | loft — **evidence only**, does not realize |
 | `tests/prd-gate/fixtures/pnrg_cost_split_sphere.ri` | cost split |
 

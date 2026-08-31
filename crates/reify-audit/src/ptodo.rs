@@ -1085,12 +1085,21 @@ fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<Strin
 /// §6.3 inverse lane: for each non-terminal master task, check each cited
 /// `metadata.files` path. A path absent from `tracked` (not an exact tracked
 /// file and not a directory prefix of one) is checked for git history via
-/// [`crate::GitOps::last_commit_for_path`]:
+/// [`crate::GitOps::last_commit_for_path`], giving a three-way outcome:
 ///
-/// - `Some(commit)` → the path was deleted → emit a Medium [`Pattern::PTodo`]
-///   `task-cites-deleted-path` finding carrying the task id, the path, and
-///   the last-touching commit.
+/// - `Some(commit)` **and** that commit renamed the path (per
+///   [`crate::GitOps::rename_target_for_path`]) → emit a Medium
+///   [`Pattern::PTodo`] `task-cites-renamed-path` finding carrying the task id,
+///   BOTH paths, and the renaming commit — the cite is stale but repointable.
+/// - `Some(commit)` otherwise → the path was deleted → emit a Medium
+///   [`Pattern::PTodo`] `task-cites-deleted-path` finding carrying the task id,
+///   the path, and the last-touching commit.
 /// - `None` → path never existed → presumed to-be-created → pass (no finding).
+///
+/// The renamed classification is strictly the narrower one: any rename the git
+/// seam cannot resolve (a merge commit, a git error — see
+/// [`crate::GitOps::rename_target_for_path`]) degrades to the deleted kind, so
+/// the lane never trades one misleading finding for another.
 ///
 /// Fail-soft on DB errors (propagated as `Err` so the caller's
 /// `and_then`-based degradation handles them alongside the liveness lane).
@@ -1119,10 +1128,16 @@ pub fn resolve_inverse(
         .collect::<rusqlite::Result<_>>()?;
 
     let mut out: Vec<Finding> = Vec::new();
-    // Per-run cache: avoid redundant `git log` spawns when multiple tasks cite
-    // the same absent path (common in larger backlogs where a single deleted
-    // file is referenced by several related tasks).
+    // Per-run caches: avoid redundant `git log` / `git show` spawns when
+    // multiple tasks cite the same absent path (common in larger backlogs where
+    // a single deleted or renamed file is referenced by several related tasks —
+    // the measured live case was 2 renamed paths cited by 6 tasks).
     let mut git_cache: HashMap<String, Option<GitCommit>> = HashMap::new();
+    // Keyed on (cited path, sha) rather than the path alone: within a run the
+    // sha IS a pure function of the path (it comes from `git_cache`), but the
+    // tuple key is correct without depending on that invariant, and matches the
+    // `HashMap<(String, String), _>` shape the GitOps mock uses.
+    let mut rename_cache: HashMap<(String, String), Option<String>> = HashMap::new();
 
     for (id, status, metadata_opt) in rows {
         if is_terminal_status(&status) {
@@ -1150,19 +1165,53 @@ pub fn resolve_inverse(
                 .or_insert_with(|| git.last_commit_for_path(&path))
                 .clone();
             if let Some(commit) = commit_opt {
-                out.push(Finding {
-                    pattern: Pattern::PTodo,
-                    severity: Severity::Medium,
-                    task_id: id.to_string(),
-                    summary: format!(
-                        "task-cites-deleted-path: task #{id} cites deleted path '{path}' (last touched {sha})",
-                        sha = commit.sha,
-                    ),
-                    evidence: vec![
-                        EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
-                        EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
-                    ],
-                });
+                // Did that same commit RENAME the path rather than delete it?
+                // Fail-safe: None on a merge commit, a genuine delete, or any
+                // git error → the unchanged deleted-path finding below.
+                let rename_target = rename_cache
+                    .entry((path.clone(), commit.sha.clone()))
+                    .or_insert_with(|| git.rename_target_for_path(&path, &commit.sha))
+                    .clone()
+                    // Only advertise a target the reader can actually go look
+                    // at: a target that was itself renamed again or deleted
+                    // falls back to the deleted kind. `path_present_in_tracked`
+                    // (not a bare `tracked.contains`) keeps the trailing-slash
+                    // and directory-prefix semantics identical to the cited-path
+                    // check above, so the two membership tests cannot drift.
+                    .filter(|new_path| path_present_in_tracked(new_path, tracked));
+                if let Some(new_path) = rename_target {
+                    out.push(Finding {
+                        pattern: Pattern::PTodo,
+                        severity: Severity::Medium,
+                        task_id: id.to_string(),
+                        summary: format!(
+                            "task-cites-renamed-path: task #{id} cites renamed path '{path}' (renamed to '{new_path}' in {sha})",
+                            sha = commit.sha,
+                        ),
+                        evidence: vec![
+                            // Only the CITED path: `MetadataFiles` means
+                            // "entries from a task's metadata.files", and it is
+                            // this lane's path sort key (see the sort below).
+                            EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
+                            EvidenceRef::File { path: new_path },
+                            EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
+                        ],
+                    });
+                } else {
+                    out.push(Finding {
+                        pattern: Pattern::PTodo,
+                        severity: Severity::Medium,
+                        task_id: id.to_string(),
+                        summary: format!(
+                            "task-cites-deleted-path: task #{id} cites deleted path '{path}' (last touched {sha})",
+                            sha = commit.sha,
+                        ),
+                        evidence: vec![
+                            EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
+                            EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
+                        ],
+                    });
+                }
             }
             // None → path never existed → presumed to-be-created → pass.
         }
@@ -1422,8 +1471,9 @@ fn resolve_liveness_keyed(
 /// Build a PTODO liveness [`Finding`] at `path` with the given severity and summary.
 ///
 /// `severity` is caller-supplied per-kind (task η, #4559): `orphaned` → High;
-/// `unknown-id` → Medium. `task-cites-deleted-path` (inverse lane) is always
-/// Medium and built directly in [`resolve_inverse`] without calling this helper.
+/// `unknown-id` → Medium. The inverse-lane kinds (`task-cites-deleted-path`,
+/// `task-cites-renamed-path`) are always Medium and built directly in
+/// [`resolve_inverse`] without calling this helper.
 fn liveness_finding(path: &str, severity: Severity, summary: String) -> Finding {
     Finding {
         pattern: Pattern::PTodo,
@@ -1474,7 +1524,8 @@ pub fn fingerprint(finding: &Finding) -> String {
     let after_kind = after_kind.strip_prefix(' ').unwrap_or(after_kind);
 
     // Strip an optional "line <digits>: " prefix (present in structural and
-    // liveness findings; absent in inverse `task-cites-deleted-path` findings).
+    // liveness findings; absent in the inverse lane's `task-cites-deleted-path`
+    // / `task-cites-renamed-path` findings).
     let text_raw = if let Some(rest) = after_kind.strip_prefix("line ") {
         // Consume the digit run and the ": " that follows.
         let end = rest

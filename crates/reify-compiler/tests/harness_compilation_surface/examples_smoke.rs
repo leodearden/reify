@@ -25,18 +25,12 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 ///
 /// Default: empty — all 43 example files compile clean on HEAD after task #2346
 /// (recursive examples_smoke discovery) was merged on 2026-04-26.
+// NOTE: `topology_selectors/fillet_top_edges.ri` used to be skipped here for a
+// missing 3-arg `fillet(solid, edges, radius)` stdlib binding.  That binding
+// landed (#3205/#4360/#4362) and #5208 made curated 3-arg fillet reachable
+// through the production pipeline, so the entry was removed and the file is now
+// compiled by the bulk walker like every other example.
 const SKIP_SET: &[(&str, &str)] = &[
-    (
-        "topology_selectors/fillet_top_edges.ri",
-        "topology-selectors PRD task 7 worked example; \
-         compile_with_stdlib gated on the missing 3-arg fillet(solid, edges, radius) \
-         stdlib binding — current compiler only wires 2-arg fillet(solid, radius) \
-         (crates/reify-compiler/src/geometry_modify.rs:115). \
-         This is NOT a 2698/2699 gap (those are landed); it is a separate binding. \
-         Gated compile-with-stdlib smoke is in \
-         crates/reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs::\
-         fillet_top_edges_compiles_with_stdlib_no_errors (#[ignore]).",
-    ),
     (
         "auto/bearing_constraint_select.ri",
         "strict `auto: Seal` with two stub-feasible candidates (ThinSeal, ThickSeal) \
