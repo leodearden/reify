@@ -5540,7 +5540,19 @@ _SHARED_TRASH_DIR="$_SHARED_TRASH_DIR_SAVED_R8"
 # `rev-parse HEAD`. So `--is-inside-work-tree` in CALLS_FILE is a precise "the
 # guard ran" probe that no existing seed call can forge. Deliberately NOT
 # `git config`: under this suite's stub `git` the guard bails at
-# git-rerere-guard.sh:177 (`cd: abc1234`) and never reaches a config call.
+# git-rerere-guard.sh:197 (`cd: abc1234`) and never reaches a config call.
+#
+# BUT THE PROBE IS DISPATCH-INDEPENDENT — do NOT re-derive it as an `arm` probe.
+# That misreading is what left W1-W8 coarser than they read, and it is worth
+# spelling out: `--is-inside-work-tree` is emitted at git-rerere-guard.sh:182,
+# BEFORE the subcommand dispatch at :951-953, so it fires identically for `arm`
+# and for `check`, and identically whatever target was passed. On its own it
+# proves only "some guard-shaped call happened somewhere". Two asserts close the
+# two halves it cannot reach:
+#   * W9 — the ARGUMENT half: was the guard pointed at THIS lane?
+#   * W10 — the SUBCOMMAND half: was it `arm` and not `check`? CALLS_FILE
+#     structurally cannot reach this, since the guard's only observable git
+#     calls precede its dispatch; W10 uses a guard SHIM instead.
 #
 # THE GUARD IS DELIBERATELY NOT STUBBED OUT. It runs for real against the stub
 # `git`, where it exits 1 (measured: empty stdout, one stderr line, exactly the
@@ -5566,6 +5578,38 @@ W1_OUT="$OUT"
 
 assert "W1: --fresh-checkout invokes git-rerere-guard.sh (--is-inside-work-tree seen)" \
     bash -c 'grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W9: ...AND IT WAS POINTED AT THIS LANE. W1 above is the cheap presence check;
+# W9 refines it from "some guard-shaped call happened somewhere" to "the guard
+# was pointed at THIS lane". Without it, dropping or mis-deriving the
+# `"$LANE_DIR"` argument leaves every one of W1-W8 green.
+#
+# MEASURED shape: the guard resolves TARGET from its first positional
+# (git-rerere-guard.sh:175) and its first call is `git -C "$TARGET" rev-parse
+# --is-inside-work-tree`, so the recorded line is literally
+#     git -C <LANE_DIR> rev-parse --is-inside-work-tree
+# Match the FIELD after `-C`, not a substring of the line: a substring grep for
+# the lane path would also be satisfied by a call that passed a CHILD of the
+# lane, and a grep for a parent would be satisfied by the lane itself.
+#
+# Reuses W1's already-captured CALLS_FILE rather than adding a fixture, so this
+# adds no runtime.
+_guard_target_from_calls() {
+    awk '/--is-inside-work-tree/ {
+             for (i = 1; i <= NF; i++)
+                 if ($i == "-C") { print $(i + 1); exit }
+         }' "$1"
+}
+
+# Asserted as a FUNCTION, not `bash -c`: assert runs "$@" directly in THIS shell
+# (test_helpers.sh's no-subshell idiom), whereas a `bash -c` child would not
+# inherit _guard_target_from_calls and the check would fail for the wrong reason.
+_guard_targeted_lane() {   # <expected_lane> <calls_file>
+    [ "$(_guard_target_from_calls "$2")" = "$1" ]
+}
+
+assert "W9: ...and the guard was pointed at THIS lane (the -C field is \$W_LANE1)" \
+    _guard_targeted_lane "$W_LANE1" "$CALLS_FILE"
 
 # W2 (b): NOT invoked on --reset-in-place, which pins the mode gate. That gate
 # covers every TASK-lane acquire (dark-factory drives those through
