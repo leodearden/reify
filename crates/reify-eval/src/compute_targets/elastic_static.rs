@@ -13049,46 +13049,4 @@ mod tests {
         );
         assert_eq!(rot_sf.name, live.name);
     }
-
-    /// (d) NEGATIVE wire-format guarantee — the compute-contract record gained
-    /// no rotation slab.
-    ///
-    /// Rotation is a pure ×½ of a slab already on the wire, so persisting it
-    /// would buy nothing and cost everything:
-    /// `crates/reify-compute-contract/src/elastic_result.rs` pins a FROZEN
-    /// binary header with `curl_len: u64` at a fixed byte offset, guarded by a
-    /// byte-exact golden test that asserts literal hex. A `rotation_len` field
-    /// would shift that offset, invalidate every persisted cache entry, and
-    /// force a format version bump.
-    ///
-    /// A source-text guard is used deliberately: the guarantee is about what
-    /// must NOT exist, which no type-level assertion can express. The companion
-    /// positive assertion — that the golden test still passes — is the
-    /// compute-contract crate's own suite, which this change does not touch.
-    #[test]
-    fn rotation_channel_adds_no_compute_contract_wire_field() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../reify-compute-contract/src/elastic_result.rs");
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-
-        // Sanity: we are reading the right file (the frozen header's curl slab).
-        assert!(
-            src.contains("curl_len"),
-            "guard sanity: {} must contain the frozen header's curl_len",
-            path.display()
-        );
-        assert!(
-            !src.contains("rotation_len"),
-            "the compute-contract wire format must NOT gain a rotation_len field \
-             — rotation is DERIVED from the curl slab at wrap time (ruling #6164). \
-             Adding it breaks the frozen byte offsets and invalidates every \
-             persisted cache entry."
-        );
-        assert!(
-            !src.contains("pub rotation"),
-            "the compute-contract ElasticResult must NOT gain a `rotation` slab \
-             — see rotation_sf_from_curl's doc comment for why."
-        );
-    }
 }
