@@ -7513,13 +7513,23 @@ mod tests {
     /// arg whose quantity slot names a CONCRETE dimension different from the
     /// param's is exactly one `ArgTypeMismatch`.
     ///
-    /// **Why this is an in-module unit test and not a `.ri` fixture.**
-    /// `resolve_parameterized_builtin_type` recognises `Point3` only, and
-    /// `point3(…)` is an eval-builtin with no `.ri` return type — its calls
-    /// compile to a `Scalar[m]` / `Int` placeholder. No `.ri` source can
-    /// therefore produce a *dimensioned* `Type::Point` arg, so the `Type` is
-    /// constructed directly, exactly as the adjacent arity and dimensionless
-    /// probes do (see `struct_ctor_field_conformance_tests.rs`'s own note on this).
+    /// Constructed as a direct `Type` so the probe reaches the walker without
+    /// depending on `math_fn_result_type`'s first-argument quantity inference
+    /// (task 5889's to change) — NOT because a `.ri` source cannot produce a
+    /// dimensioned `Type::Point` arg. That older premise expired when task 5344
+    /// (`3c4ee5e9ac`) claimed `point3` / `point2` into the math construction
+    /// family; it must not be re-asserted.
+    ///
+    /// The `.ri` twin of this exact cell is
+    /// `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Warning`).
+    /// Pinning BOTH seams matters because they reach this arm by different
+    /// routes — a `ValueRef` carrying a persisted `Type::Point` here, versus a
+    /// `FunctionCall`'s inferred `result_type` there — and only the type-level
+    /// walker sees the former, while only the `.ri` fixture would notice the
+    /// inference chain ceasing to produce a dimensioned `Type::Point` at all.
+    /// This is the same two-seams shape `vector_param_rejects_cross_dimension_vector_arg`
+    /// states one arm over.
     ///
     /// The complement of `point_param_accepts_dimensionless_point_arg` directly
     /// above: that one pins the TOLERANT half (either side declines to name a
