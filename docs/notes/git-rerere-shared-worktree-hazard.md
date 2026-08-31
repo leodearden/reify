@@ -511,10 +511,25 @@ true` (or any bare `git config rerere.*` write) in **any** reify worktree — us
 
 ## 8. Open items
 
-1. **`git fsck` on the shared store remains UNMEASURED.** The 2026-07-30 attempt was killed at a 900s
-   timeout. It needs a queue-idle window. Until then, whether the concurrent writes left any
-   object-level damage behind is an open question — the hardening here prevents *new* occurrences, and
-   makes no claim about the existing store's integrity.
+1. **CLOSED 2026-08-30 (task 6889, open item (b)) — `git fsck` is MEASURED, and the store is clean.**
+   `git fsck --connectivity-only --no-progress` on `/home/leo/src/reify` completes in **1m12s**,
+   **exit 0**, emitting only `dangling tree` / `dangling commit` lines. The 900s timeout that killed
+   the 2026-07-30 attempt was never a wall, and the queue-idle window this item asked for turned out
+   not to be needed. Store shape measured alongside the run: **39G** of objects, **43** packs,
+   **1641** refs, **253** linked worktrees. Forensics record: mem0
+   `d26dcfbb-c59e-4de7-b4da-fdb6570e51e9`.
+
+   **The interpretive point outlives the result, and is the half a future reader cannot re-derive
+   from a clean exit code: `.git/rr-cache` holds plain `preimage`/`postimage`/`thisimage` FILES, not
+   git objects.** The concurrent rr-cache writers this runbook is about were therefore never capable
+   of corrupting the object database *at all* — no amount of cross-lane rr-cache contention reaches
+   the ODB, so a clean fsck here confirms a property that was structural rather than lucky. The only
+   ODB-visible residue of the exit-128-yet-lands path (§3) is **dangling objects**, which is exactly
+   what the run reported.
+
+   This **retires** the old "whether the concurrent writes left any object-level damage behind is an
+   open question" caveat rather than deferring it: §8's standing claim about the existing store's
+   integrity is now positive — measured clean — instead of absent.
 
 2. **The re-armer is unidentified** (esc-5870-11, above). This bounds what landing this task buys: the
    guard re-asserts `false` on every `setup-dev.sh` run, so if an active writer does exist, that
