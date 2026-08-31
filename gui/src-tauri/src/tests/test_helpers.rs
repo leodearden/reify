@@ -73,50 +73,31 @@ pub(crate) fn rigid_mass_props_session() -> crate::engine::EngineSession {
 
 /// [`rigid_mass_props_session`] with an explicit `GeometryHandleId` seed range.
 ///
-/// Seeding a NARROW range is how a test drives the negative case: the mock's
-/// `next_id` is monotonic and never reset, so a rebuild that re-executes the box
-/// allocates an id past the range, its volume / centroid / inertia queries go
-/// unanswered, and the mass-prop cells resolve to `Undef` — a stand-in for the
-/// production "geometry went degenerate / the kernel query failed" case, which
-/// the delta encodes identically (an explicit `Undef` entry). Used by
-/// `degenerate_geometry_after_rebuild_clears_the_retained_mass_props`
-/// (commands_tests.rs) to prove the retention cache does NOT replay a stale value
-/// as `determined` once the realization has actually re-run.
+/// The mock's `next_id` is monotonic and never reset, so a rebuild that
+/// re-executes the box allocates a fresh id on every dispatch; a narrower
+/// range than `rigid_mass_props_session`'s default `1..=16` is useful when a
+/// test wants to observe how many dispatches actually occurred (e.g. via
+/// `rigid_mass_props_session_seeded_with_ops`'s operation log) without also
+/// needing every one of them to succeed. For inducing a genuine "geometry
+/// query failed" case, prefer [`rigid_mass_props_session_seeded_then_failing`],
+/// which fails those queries explicitly rather than by leaving them unseeded.
 pub(crate) fn rigid_mass_props_session_seeded(
     ids: std::ops::RangeInclusive<u64>,
 ) -> crate::engine::EngineSession {
     rigid_mass_props_session_seeded_with_ops(ids).0
 }
 
-/// [`rigid_mass_props_session_seeded`] plus the mock kernel's shared operation
-/// log, so a test can assert a precondition about DISPATCH directly — "the warm
-/// rebuild re-executed the box and got a handle past the seeded ceiling, so its
-/// geometry queries are unanswered" — instead of leaving it as a comment about a
-/// measured dispatch count.
-///
-/// Only `GeometryKernel::execute` pushes to this log (`MockGeometryKernel`,
-/// crates/reify-test-support/src/mocks.rs); queries do not, so
-/// `GeometryOpRecord::result_handle` is exactly the handle a dispatched op
-/// allocated, and comparing it against the seed range says whether that op's
-/// queries can be answered.
-///
-/// Reviewer suggestion 4 asked for explicit failure seeding on the mock itself
-/// (`with_volume_error(h, ..)` / a `fail_after_n_dispatches` knob) so the
-/// degeneration is injected rather than starved. That mock lives in
-/// `crates/reify-test-support`, outside this task's locked scope, so the
-/// precondition is made OBSERVABLE here instead of injectable there; the
-/// injectable form is filed under ticket `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
-pub(crate) fn rigid_mass_props_session_seeded_with_ops(
+/// Seed a fresh `MockGeometryKernel` with succeeding volume / centroid /
+/// inertia-tensor replies for every `GeometryHandleId` in `ids`. Factored out
+/// of [`rigid_mass_props_session_seeded_with_ops`] / used by
+/// [`rigid_mass_props_session_seeded_then_failing`] so both share one source
+/// of truth for the seeded reply shapes (task #6471).
+fn seeded_rigid_mass_props_kernel(
     ids: std::ops::RangeInclusive<u64>,
-) -> (
-    crate::engine::EngineSession,
-    std::sync::Arc<std::sync::Mutex<Vec<reify_test_support::GeometryOpRecord>>>,
-) {
-    use reify_constraints::SimpleConstraintChecker;
+) -> reify_test_support::MockGeometryKernel {
     use reify_ir::{GeometryHandleId, Value};
     use reify_test_support::MockGeometryKernel;
 
-    let checker = SimpleConstraintChecker;
     let mut kernel = MockGeometryKernel::new();
     for id in ids {
         let h = GeometryHandleId(id);
@@ -136,11 +117,64 @@ pub(crate) fn rigid_mass_props_session_seeded_with_ops(
                 ]),
             );
     }
+    kernel
+}
+
+/// [`rigid_mass_props_session_seeded`] plus the mock kernel's shared operation
+/// log, so a test can assert against DISPATCH directly (e.g. that a rebuild
+/// re-executed the box) instead of leaving it as a comment about a measured
+/// dispatch count.
+///
+/// Only `GeometryKernel::execute` pushes to this log (`MockGeometryKernel`,
+/// crates/reify-test-support/src/mocks.rs); queries do not, so
+/// `GeometryOpRecord::result_handle` is exactly the handle a dispatched op
+/// allocated.
+pub(crate) fn rigid_mass_props_session_seeded_with_ops(
+    ids: std::ops::RangeInclusive<u64>,
+) -> (
+    crate::engine::EngineSession,
+    std::sync::Arc<std::sync::Mutex<Vec<reify_test_support::GeometryOpRecord>>>,
+) {
+    use reify_constraints::SimpleConstraintChecker;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = seeded_rigid_mass_props_kernel(ids);
     let ops = kernel.operations_ref();
     (
         crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel))),
         ops,
     )
+}
+
+/// [`rigid_mass_props_session_seeded`] variant that EXPLICITLY fails every
+/// geometry query dispatched after `good_ids`, via
+/// `MockGeometryKernel::fail_after_n_dispatches` (crates/reify-test-support/src/mocks.rs),
+/// instead of leaving handles past `good_ids` unseeded and relying on the
+/// generic "no mock result" fallback to fail them incidentally.
+///
+/// This is the replacement for the seed-range-STARVATION mechanism that
+/// `degenerate_geometry_after_rebuild_clears_the_retained_mass_props`
+/// (commands_tests.rs) used to induce "the geometry query failed / the body
+/// went degenerate": that test picked a narrow `ids` range and inferred the
+/// failure from a later dispatch landing outside it, coupling the test to
+/// exactly how many kernel dispatches production code happens to perform.
+/// Here the failure is stated directly — "queries past dispatch
+/// `good_ids.end()` fail" — so no downstream precondition assertion is
+/// needed to confirm it actually took effect.
+///
+/// Reviewer suggestion 4 on task #5338 (escalation `agent-followup-5338`,
+/// `suggestion_hash 5338-mock-kernel-query-failure-seeding`); implemented as
+/// task #6471 because the knob lives in `crates/reify-test-support`, outside
+/// #5338's locked scope. Filed under ticket `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
+pub(crate) fn rigid_mass_props_session_seeded_then_failing(
+    good_ids: std::ops::RangeInclusive<u64>,
+) -> crate::engine::EngineSession {
+    use reify_constraints::SimpleConstraintChecker;
+
+    let checker = SimpleConstraintChecker;
+    let ceiling = *good_ids.end();
+    let kernel = seeded_rigid_mass_props_kernel(good_ids).fail_after_n_dispatches(ceiling);
+    crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Absolute path to the committed `examples/rigid_mass_props_smoke.ri` fixture,

@@ -833,6 +833,52 @@ impl QueryKey {
     }
 }
 
+/// Extract the "primary" handle associated with `query` — the handle used
+/// both for the generic (handle-only) fallback lookup in
+/// `MockGeometryKernel::query` and for the `fail_after_n_dispatches` gate
+/// (task #6471). For multi-handle queries this picks the same representative
+/// handle the generic fallback historically used (e.g. `from` for `Distance`,
+/// `actual` for `MaxDeviation`).
+fn primary_handle(query: &GeometryQuery) -> GeometryHandleId {
+    match query {
+        GeometryQuery::Volume(id) => *id,
+        GeometryQuery::SurfaceArea(id) => *id,
+        GeometryQuery::Centroid(id) => *id,
+        GeometryQuery::BoundingBox(id) => *id,
+        GeometryQuery::Distance { from, .. } => *from,
+        GeometryQuery::MomentOfInertia { handle, .. } => *handle,
+        GeometryQuery::AdjacentFaces { shape, .. } => *shape,
+        GeometryQuery::AncestorFacesOfEdge { shape, .. } => *shape,
+        GeometryQuery::SharedEdges { shape, .. } => *shape,
+        GeometryQuery::IsWatertight(id) => *id,
+        GeometryQuery::IsManifold(id) => *id,
+        GeometryQuery::IsOrientable(id) => *id,
+        GeometryQuery::IsClosed(id) => *id,
+        GeometryQuery::IsConnected(id) => *id,
+        GeometryQuery::IsBounded(id) => *id,
+        GeometryQuery::CenterOfMass { handle, .. } => *handle,
+        GeometryQuery::InertiaTensor { handle, .. } => *handle,
+        GeometryQuery::EdgeLength(id) => *id,
+        GeometryQuery::EdgeTangent(id) => *id,
+        GeometryQuery::FaceNormal(id) => *id,
+        GeometryQuery::FaceSurfaceKind(id) => *id,
+        GeometryQuery::EdgeCurveKind(id) => *id,
+        GeometryQuery::OwnerBody(id) => *id,
+        GeometryQuery::ClosestPointOnShape { handle, .. } => *handle,
+        GeometryQuery::PointOnShape { handle, .. } => *handle,
+        GeometryQuery::Contains { handle, .. } => *handle,
+        GeometryQuery::GeoEquiv { left, .. } => *left,
+        GeometryQuery::SurfaceAngle { face_a, .. } => *face_a,
+        GeometryQuery::FaceNormalAt { handle, .. } => *handle,
+        GeometryQuery::CurveCurvatureAt { handle, .. } => *handle,
+        GeometryQuery::SurfaceCurvatureAt { handle, .. } => *handle,
+        GeometryQuery::MaxDeviation { actual, .. } => *actual,
+        GeometryQuery::FaceAnalyticDatum(id) => *id,
+        GeometryQuery::EdgeAnalyticDatum(id) => *id,
+        GeometryQuery::ShapeLocalTolerance(id) => *id,
+    }
+}
+
 /// The canned interchange mesh the mock kernels hand back from `tessellate`
 /// and `realize_mesh_from_voxel`: a closed, consistently outward-wound unit
 /// tetrahedron (V0=(0,0,0), V1=(1,0,0), V2=(0,1,0), V3=(0,0,1)).
@@ -908,6 +954,22 @@ pub struct MockGeometryKernel {
     queries: HashMap<GeometryHandleId, Value>,
     /// Per-query-type results (takes precedence over generic).
     typed_queries: HashMap<QueryKey, Value>,
+    /// Explicit per-query-type FAILURE seeding (task #6471): takes precedence
+    /// over `typed_queries` / `queries`. Lets a test state "this query fails"
+    /// directly — e.g. `with_volume_error(handle, err)` — mirroring the
+    /// `with_extract_vertices_error` pattern below, instead of achieving the
+    /// same effect by leaving `handle` unseeded and relying on the generic
+    /// "no mock result for …" fallback (seed-range starvation).
+    typed_query_errors: HashMap<QueryKey, QueryError>,
+    /// When `Some(n)`, every query whose [`primary_handle`] was allocated by
+    /// the `(n+1)`-th or later `execute`/`make_compound` dispatch fails,
+    /// regardless of query type or whether `typed_queries` / `queries` also
+    /// has an entry for that handle. Set via `fail_after_n_dispatches` (task
+    /// #6471) — the coarser sibling of `typed_query_errors`: states "queries
+    /// past dispatch `n` fail" directly, replacing the seed-range-starvation
+    /// mechanism where a test picked a narrow success range and let handles
+    /// past it go unanswered.
+    fail_queries_after_dispatch: Option<u64>,
     /// Per-parent edge-extraction results; `Ok(vec)` or `Err(e)`.
     extracted_edges: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
     /// Per-parent face-extraction results; `Ok(vec)` or `Err(e)`.
@@ -935,6 +997,8 @@ impl MockGeometryKernel {
             tessellate_tolerances: Arc::new(Mutex::new(Vec::new())),
             queries: HashMap::new(),
             typed_queries: HashMap::new(),
+            typed_query_errors: HashMap::new(),
+            fail_queries_after_dispatch: None,
             extracted_edges: HashMap::new(),
             extracted_faces: HashMap::new(),
             extracted_vertices: HashMap::new(),
@@ -1129,6 +1193,67 @@ impl MockGeometryKernel {
             },
             value,
         );
+        self
+    }
+
+    /// Configure a Volume query to explicitly FAIL for a specific handle
+    /// (task #6471). `kernel.query(&GeometryQuery::Volume(handle))` returns
+    /// `Err(err)` — takes precedence over `with_volume_result` / the generic
+    /// fallback for the same handle. Mirrors `with_extract_vertices_error`:
+    /// states "this query fails" directly instead of leaving `handle`
+    /// unseeded and relying on the generic "no mock result" fallback.
+    pub fn with_volume_error(mut self, handle: GeometryHandleId, err: QueryError) -> Self {
+        self.typed_query_errors.insert(QueryKey::Volume(handle), err);
+        self
+    }
+
+    /// Configure a Centroid query to explicitly FAIL for a specific handle
+    /// (task #6471). See [`Self::with_volume_error`] for the semantics.
+    pub fn with_centroid_error(mut self, handle: GeometryHandleId, err: QueryError) -> Self {
+        self.typed_query_errors
+            .insert(QueryKey::Centroid(handle), err);
+        self
+    }
+
+    /// Configure an InertiaTensor query to explicitly FAIL for a specific
+    /// handle and density (task #6471). `density` must be bits-equal to the
+    /// value the query is issued with, matching `with_inertia_tensor_result`.
+    /// See [`Self::with_volume_error`] for the general semantics.
+    ///
+    /// # Panics (debug)
+    /// Panics if `density` is NaN — NaN bits are not equal to themselves,
+    /// which would silently break HashMap lookup.
+    pub fn with_inertia_tensor_error(
+        mut self,
+        handle: GeometryHandleId,
+        density: f64,
+        err: QueryError,
+    ) -> Self {
+        let density_bits = density_bits(density);
+        self.typed_query_errors.insert(
+            QueryKey::InertiaTensor {
+                handle,
+                density_bits,
+            },
+            err,
+        );
+        self
+    }
+
+    /// Configure the mock to FAIL every query whose [`primary_handle`] was
+    /// allocated by the `(n+1)`-th or later `execute`/`make_compound`
+    /// dispatch — i.e. everything past the first `n` dispatches — regardless
+    /// of query type or whether `typed_queries` / `queries` also has a
+    /// (now-shadowed) entry for that handle (task #6471).
+    ///
+    /// This is the coarse-grained sibling of `with_volume_error` and friends:
+    /// where those target one query type on one handle, this states "the
+    /// kernel goes degenerate from dispatch `n+1` onward" directly, replacing
+    /// the seed-range-starvation idiom of seeding success only up to `n` and
+    /// relying on the generic "no mock result" fallback to fail everything
+    /// past it incidentally.
+    pub fn fail_after_n_dispatches(mut self, n: u64) -> Self {
+        self.fail_queries_after_dispatch = Some(n);
         self
     }
 
@@ -1737,10 +1862,34 @@ impl GeometryKernel for MockGeometryKernel {
     }
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
-        // Check per-query-type map first
+        // Explicit per-query-type FAILURE seeding (task #6471) takes
+        // precedence over everything else — a test that configured this
+        // wants the failure enforced, not shadowed by a coincidentally
+        // seeded success.
         let key = QueryKey::from_query(query);
+        if let Some(err) = self.typed_query_errors.get(&key) {
+            return Err(err.clone());
+        }
+
+        // Check per-query-type map next
         if let Some(value) = self.typed_queries.get(&key) {
             return Ok(value.clone());
+        }
+
+        // Coarse-grained `fail_after_n_dispatches` gate (task #6471): fails
+        // every query whose primary handle was allocated past the
+        // configured dispatch count, regardless of query type. Checked
+        // before the OwnerBody special-case and the generic fallback so it
+        // uniformly covers both.
+        if let Some(ceiling) = self.fail_queries_after_dispatch {
+            let handle = primary_handle(query);
+            if handle.0 > ceiling {
+                return Err(QueryError::QueryFailed(format!(
+                    "MockGeometryKernel: query for {handle:?} explicitly failed — \
+                     configured via fail_after_n_dispatches({ceiling}) and this \
+                     handle was allocated by a later dispatch"
+                )));
+            }
         }
 
         // OwnerBody is special: an unstaged child handle has no recorded
@@ -1755,58 +1904,14 @@ impl GeometryKernel for MockGeometryKernel {
             )));
         }
 
-        // Fall back to generic handle-only map
-        let handle_id = match query {
-            GeometryQuery::Volume(id) => id,
-            GeometryQuery::SurfaceArea(id) => id,
-            GeometryQuery::Centroid(id) => id,
-            GeometryQuery::BoundingBox(id) => id,
-            GeometryQuery::Distance { from, .. } => from,
-            GeometryQuery::MomentOfInertia { handle, .. } => handle,
-            GeometryQuery::AdjacentFaces { shape, .. } => shape,
-            GeometryQuery::AncestorFacesOfEdge { shape, .. } => shape,
-            GeometryQuery::SharedEdges { shape, .. } => shape,
-            GeometryQuery::IsWatertight(id) => id,
-            GeometryQuery::IsManifold(id) => id,
-            GeometryQuery::IsOrientable(id) => id,
-            // θ conformance predicates (task #4171)
-            GeometryQuery::IsClosed(id) => id,
-            GeometryQuery::IsConnected(id) => id,
-            GeometryQuery::IsBounded(id) => id,
-            GeometryQuery::CenterOfMass { handle, .. } => handle,
-            GeometryQuery::InertiaTensor { handle, .. } => handle,
-            GeometryQuery::EdgeLength(id) => id,
-            GeometryQuery::EdgeTangent(id) => id,
-            GeometryQuery::FaceNormal(id) => id,
-            GeometryQuery::FaceSurfaceKind(id) => id,
-            GeometryQuery::EdgeCurveKind(id) => id,
-            // OwnerBody is handled above the generic fallback because its
-            // miss path produces a domain-specific error message. The
-            // exhaustiveness guard retains this arm so a future kernel
-            // change is forced to revisit the dispatch table.
-            GeometryQuery::OwnerBody(id) => id,
-            // Topology selectors (task 2324) — generic fallback returns the
-            // canonical first handle, parallel to the Distance arm.
-            GeometryQuery::ClosestPointOnShape { handle, .. } => handle,
-            GeometryQuery::PointOnShape { handle, .. } => handle,
-            GeometryQuery::Contains { handle, .. } => handle,
-            GeometryQuery::GeoEquiv { left, .. } => left,
-            GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
-            GeometryQuery::FaceNormalAt { handle, .. } => handle,
-            GeometryQuery::CurveCurvatureAt { handle, .. } => handle,
-            GeometryQuery::SurfaceCurvatureAt { handle, .. } => handle,
-            // ζ / C4: generic fallback uses the `actual` handle as the
-            // representative handle (parallel to the Distance `from` arm).
-            GeometryQuery::MaxDeviation { actual, .. } => actual,
-            // ε: single-handle analytic-datum + tolerance queries fall back to
-            // their handle, parallel to the FaceSurfaceKind / EdgeCurveKind arms.
-            GeometryQuery::FaceAnalyticDatum(id) => id,
-            GeometryQuery::EdgeAnalyticDatum(id) => id,
-            GeometryQuery::ShapeLocalTolerance(id) => id,
-        };
+        // Fall back to generic handle-only map. `primary_handle` is the same
+        // handle-extraction table this match used to inline (task #6471
+        // factored it out so the `fail_after_n_dispatches` gate above shares
+        // it rather than duplicating the arms).
+        let handle_id = primary_handle(query);
 
         self.queries
-            .get(handle_id)
+            .get(&handle_id)
             .cloned()
             .ok_or_else(|| QueryError::QueryFailed(format!("no mock result for {:?}", handle_id)))
     }
