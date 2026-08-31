@@ -8137,15 +8137,34 @@ mod tests {
     /// Arity leg of the `Type::Point` arm (task 5465, family 1): a `Point{n:2}`
     /// arg against a `Point3<Length>` param is exactly one `ArgTypeMismatch`.
     ///
-    /// **Why this is an in-module unit test and not an integration probe in
-    /// `struct_ctor_field_conformance_tests.rs` (where the other four Point
-    /// probes live).** The surface language has no `Point2` spelling —
-    /// `resolve_parameterized_builtin_type` recognises `Point3` only
-    /// (`type_resolution.rs:3192`) — so no `.ri` source can produce a
-    /// `Type::Point { n: 2, .. }` arg and the arity rule is unreachable from
-    /// inline-source fixtures. Constructing the `Type` directly is the only way
-    /// to pin it. Sibling of `vector_param_rejects_wrong_arity_vector_arg`,
-    /// which exists for the same reason.
+    /// **The param-side asymmetry, and what does NOT follow from it.** The
+    /// surface language has no `Point2` PARAM spelling:
+    /// `resolve_parameterized_builtin_type` recognises `Point3` only — its arms
+    /// are `"Point3" if type_args.len() == 1` (`type_resolution.rs`, two sites),
+    /// with no `"Point2"` arm anywhere. That is why this probe's param type is
+    /// `Point3<Length>` and why the `.ri` twin's param must be spelled the same
+    /// way. It does NOT follow that the arity rule is unreachable from
+    /// inline-source fixtures — the older note drew exactly that inference and
+    /// it expired when task 5344 (`3c4ee5e9ac`) claimed `point2` into
+    /// `math_fn_result_type`'s collapsed
+    /// `"vec3" | "vec2" | "point3" | "point2"` arm, which fixes `n` from the
+    /// name suffix. A param spelling constrains params, not args; it must not be
+    /// re-asserted over the arg side.
+    ///
+    /// The arity leg IS now pinned from `.ri` source, by
+    /// `point2_arg_at_point3_param_warns_arity_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`). This probe stays as the
+    /// direct-`Type` seam of the same pair the cross-dimension probe above
+    /// describes: constructed directly so it reaches the walker without
+    /// depending on `math_fn_result_type`'s name-suffix `n` inference (task
+    /// 5889's to change), while the `.ri` fixture is the one that would notice
+    /// that inference ceasing to produce a `Type::Point { n: 2, .. }` at all.
+    ///
+    /// Sibling of `vector_param_rejects_wrong_arity_vector_arg`, which is also a
+    /// direct-`Type` arity probe — note its own doc claims no erasure premise,
+    /// so nothing there needs the correction this block carries. The `Vector`
+    /// arm has the same asymmetry (no `Vector2` param spelling; `vec2` claimed
+    /// into the same family by 5344) and so has no `.ri` arity twin yet.
     #[test]
     fn point_param_rejects_wrong_arity_point_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();

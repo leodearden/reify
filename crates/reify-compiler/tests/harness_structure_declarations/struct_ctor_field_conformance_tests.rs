@@ -1034,15 +1034,29 @@ fn point_param_given_string_warns_arg_type_mismatch() {
 }
 
 // The `Point` arm's ARITY rule ("a `Point2` value is not a valid substitute for
-// a `Point3` param", mirroring the `Type::Vector` arm) is NOT pinned here.
-// `resolve_parameterized_builtin_type` recognises `Point3` only
-// (crates/reify-compiler/src/type_resolution.rs:3192) — there is no `Point2`
-// surface spelling — so no inline `.ri` fixture can produce a
-// `Type::Point { n: 2, .. }` arg. It is pinned instead by
+// a `Point3` param", mirroring the `Type::Vector` arm) IS pinned here as well,
+// by `point2_arg_at_point3_param_warns_arity_arg_type_mismatch` further down
+// this file.
+//
+// It did not used to be, and this note used to say it could not be. The premise
+// it rested on is half true: `resolve_parameterized_builtin_type` really does
+// recognise `Point3` only — its arms are `"Point3" if type_args.len() == 1`
+// (`crates/reify-compiler/src/type_resolution.rs`, two sites), with no
+// `"Point2"` arm — so there is no `Point2` PARAM spelling, which is why that
+// fixture's param is `Point3<Length>`. But a param spelling constrains params,
+// not args, and the inference to the ARG side expired when task 5344
+// (`3c4ee5e9ac`) claimed `point2` into `math_fn_result_type`'s collapsed
+// `"vec3" | "vec2" | "point3" | "point2"` arm: `point2(1m, 2m)` compiles and
+// types as `Type::Point { n: 2, quantity }`.
+//
+// The rule is ALSO pinned at the direct-`Type` seam by
 // `point_param_rejects_wrong_arity_point_arg` in `conformance/mod.rs`'s own
-// `mod tests`, which constructs the `Type` directly, alongside
-// `point_param_accepts_dimensionless_point_arg` for the loose-quantity leg.
-// `vector_param_rejects_wrong_arity_vector_arg` sits there for the same reason.
+// `mod tests`, alongside `point_param_accepts_dimensionless_point_arg` for the
+// loose-quantity leg. Both seams are kept: that probe constructs the `Type`
+// directly and so does not depend on the name-suffix `n` inference, while the
+// `.ri` fixture is the only one that would notice the inference breaking.
+// `vector_param_rejects_wrong_arity_vector_arg` sits there as the `Vector` arm's
+// direct-`Type` equivalent.
 
 const SRC_OPTION_POINT_GIVEN_STRING: &str = r#"module test.option_point_string
 structure def Anchor { param origin : Option<Point3<Length>> }
