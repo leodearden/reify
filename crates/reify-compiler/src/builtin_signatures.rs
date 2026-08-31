@@ -224,16 +224,12 @@
 //!    `tests::scalar_param_still_rejected_at_int_slot`.
 //!
 //! 2. **A slotted name that accepts more than one arity needs a guard or an
-//!    argued exemption.** `tests::lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`
-//!    derives each lowering's accepted-arity set BEHAVIOURALLY (compiles real
-//!    calls, reads back the arg-count diagnostics), pins it, and requires any
-//!    multi-arity name to carry an `if arg_count ==` guard or appear in
-//!    `tests::MULTI_ARITY_AGNOSTIC_SAFE` with the layout proving its indices
-//!    denote the same parameters at every form. A companion completeness arm
-//!    keeps the ledger honest: every name the table serves must be ledgered or
-//!    recorded in `tests::ARITY_UNOBSERVABLE_SLOT_KEYS`. What this buys, and its
-//!    MEASURED blind spot (the nine topology selectors and `generate` emit no
-//!    arity diagnostic at all), is on the HAZARD block above the primitive arms.
+//!    argued exemption.** An arity-agnostic arm serving an overloaded name is
+//!    how a slot index comes to fire on the wrong argument. The mechanism, the
+//!    worked example, what the guard buys and its MEASURED blind spot are
+//!    stated ONCE, on the HAZARD block above the primitive arms; the
+//!    enforcement is
+//!    `tests::lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`.
 //!
 //! # Relationship to the eval-layer units gate (task 5214)
 //!
@@ -736,8 +732,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //
         // Both names are single-form (`check_arg_count_exact`), so both arms
         // stay arity-agnostic per the rule stated on this function — and are
-        // therefore subject to the HAZARD block above the primitives, which
-        // names what a future value-form overload would do to these indices.
+        // therefore subject to the HAZARD block above the primitives.
         //
         // translate(target, dx, dy, dz)
         //   arg0:    the geometry handle — permanently unchecked (ε=4358's
@@ -849,9 +844,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // this leaf through its named fixtures. Arg names from `geometry.rs`'s
         // Sweep arms.
         //
-        // Arity-agnostic, so subject to the HAZARD block above the primitives —
-        // `revolve` is that block's worked example, because its ox@1 / oy@2
-        // origin slots sit exactly where a value form's Axis and angle would.
+        // Arity-agnostic, so subject to the HAZARD block above the primitives,
+        // whose worked example is `revolve`'s own origin slots.
         //
         // extrude(profile, distance) / extrude_symmetric(profile, distance)
         // pipe(path, radius)
@@ -3102,14 +3096,9 @@ mod tests {
 
     // ── Task 6862 FINDING 2: the lowering-arity ledger ───────────────────────
     //
-    // FINDING 2's hazard: the 26 arg-slot arms task 5750 added are all
-    // arity-AGNOSTIC. That is correct today — none of those names is
-    // overloaded — but if a slotted name later gains a VALUE-FORM overload
-    // (task 5351's family) without a matching edit here, the existing slot
-    // INDICES fire on the WRONG arguments. The reviewer's worked example:
-    // adding `revolve(profile, axis_value, angle)` would make the ox@1 / oy@2
-    // origin slots land on the `Axis` and on a `Scalar{ANGLE}`, i.e. two FALSE
-    // `ArgTypeMismatch` errors on correct code.
+    // FINDING 2's hazard — an arity-agnostic arm meeting a future value-form
+    // overload — is stated once, with its worked example, on the HAZARD block
+    // above the primitive arms in this file. What follows is its enforcement.
     //
     // The existing `assert_slots_at_every_arity` sweeps catch a stray GUARD
     // being ADDED here; they cannot catch a new OVERLOAD being added over in
