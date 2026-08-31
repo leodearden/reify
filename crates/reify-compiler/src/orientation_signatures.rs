@@ -682,4 +682,157 @@ mod tests {
             "capitalised form must not match"
         );
     }
+
+    // ── Decomposer result-type resolution (step-3 RED / step-4 GREEN) ────────
+
+    /// All 4 decomposer names, pinning their result types. The ruling BASIS for
+    /// each lives on `orientation_decomposer_result_type`; this is the executable
+    /// record of the mapping.
+    #[test]
+    fn orientation_decomposer_result_type_maps_each_name_to_its_result_type() {
+        assert_eq!(
+            orientation_decomposer_result_type("orient_log"),
+            Type::vec3(Type::dimensionless_scalar()),
+            "orient_log returns the rotation vector — Value::Vector of three \
+             Value::Real (orientation.rs:228)"
+        );
+        assert_eq!(
+            orientation_decomposer_result_type("orient_to_euler"),
+            Type::List(Box::new(Type::angle())),
+            "orient_to_euler returns Value::List of three Value::angle \
+             (orientation.rs:438)"
+        );
+        assert_eq!(
+            orientation_decomposer_result_type("orient_to_axis_angle"),
+            Type::StructureRef("AxisAngle".to_string()),
+            "orient_to_axis_angle returns Value::Map{{angle, axis}} \
+             (orientation.rs:460-470)"
+        );
+        assert_eq!(
+            orientation_decomposer_result_type("transform_log"),
+            Type::StructureRef("Twist".to_string()),
+            "transform_log returns the Value::Map{{angular, linear}} twist \
+             (geometry.rs:860-873)"
+        );
+    }
+
+    /// ACCEPTANCE PIN for the `orient_log` dimension ruling: the quantity slot is
+    /// DIMENSIONLESS, explicitly NOT `Angle`.
+    ///
+    /// Two INDEPENDENT bases, either of which alone settles it:
+    /// 1. **Runtime match.** `orientation.rs:228` builds
+    ///    `Value::Vector(vec![Value::Real(lx), Value::Real(ly), Value::Real(lz)])`
+    ///    on BOTH the general and the near-identity Taylor branch, and
+    ///    `Value::Real` takes the `_ => DIMENSIONLESS` catch-all in
+    ///    `Value::dimension()`. Typing this `Angle` would manufacture a fresh
+    ///    static/runtime dimension DISAGREEMENT — the exact defect class the
+    ///    producer family was created to remove.
+    /// 2. **Precedent already ruled.** `reify_stdlib::geometry`'s
+    ///    `const TWIST_ANGULAR_DIM: DimensionVector = DimensionVector::DIMENSIONLESS`
+    ///    (geometry.rs:216) rules this identical ω rotation-vector quantity
+    ///    dimensionless on the `transform_exp`/`transform_log` seam, and is a LIVE
+    ///    eval gate — `transform_log`'s own tests assert the angular half is
+    ///    DIMENSIONLESS. An `Angle` here would contradict a running gate.
+    ///
+    /// The components are semantically radians but are UNTAGGED at the value
+    /// layer. Re-tagging them is a value-layer change (task 6080's seam), not a
+    /// compiler-typing one; the compiler's job is to describe what eval actually
+    /// produces.
+    #[test]
+    fn orient_log_quantity_slot_is_dimensionless_not_angle() {
+        assert_eq!(
+            orientation_decomposer_result_type("orient_log"),
+            Type::vec3(Type::dimensionless_scalar()),
+            "orient_log's rotation-vector components are Value::Real — DIMENSIONLESS"
+        );
+        assert_ne!(
+            orientation_decomposer_result_type("orient_log"),
+            Type::vec3(Type::angle()),
+            "orient_log must NOT be typed vec3<Angle>: eval emits untagged \
+             Value::Real, and TWIST_ANGULAR_DIM (geometry.rs:216) already rules \
+             this same ω quantity DIMENSIONLESS on the live transform_exp gate"
+        );
+    }
+
+    /// `orient_to_euler` is a `List<Angle>` — decisively NOT its first argument.
+    ///
+    /// The concrete defect: arg 0 is the convention SELECTOR, so under the
+    /// terminal first-arg fallback the SAME call takes TWO different static types
+    /// depending on how the selector is spelled — `Type::String` for
+    /// `orient_to_euler("xyz", q)` and `Type::Enum("EulerConvention")` for
+    /// `orient_to_euler(EulerConvention.XYZ, q)`. Resolving by NAME makes the
+    /// result type independent of the spelling, which is also why this pin
+    /// survives task 6082's flip to subject-first `orient_to_euler(q, convention)`
+    /// unchanged: the answer never depended on the arguments.
+    #[test]
+    fn orient_to_euler_is_a_list_of_angles_not_its_first_arg() {
+        assert_eq!(
+            orientation_decomposer_result_type("orient_to_euler"),
+            Type::List(Box::new(Type::angle())),
+            "orient_to_euler returns three Angles as a Value::List"
+        );
+        assert_ne!(
+            orientation_decomposer_result_type("orient_to_euler"),
+            Type::String,
+            "must NOT adopt the arg-0 convention SELECTOR's String type — the \
+             mistyping that made one call site have two static types"
+        );
+        assert_ne!(
+            orientation_decomposer_result_type("orient_to_euler"),
+            Type::Enum("EulerConvention".to_string()),
+            "nor the enum spelling of the same selector"
+        );
+    }
+
+    /// The two `Value::Map` decomposers type as their NOMINAL structures, and
+    /// decisively NOT as the first-argument types they silently adopt today.
+    ///
+    /// Those negatives are the whole point: post-5344 `orient_to_axis_angle(q)`
+    /// inherits `Type::Orientation(3)` from `q` and `transform_log(t)` inherits
+    /// `Type::Transform(3)` from `t` — both 1-arg, so the fallback never reaches
+    /// its zero-arg warning and the mistyping is SILENT.
+    #[test]
+    fn map_decomposers_type_as_their_nominal_structure_refs() {
+        assert_eq!(
+            orientation_decomposer_result_type("orient_to_axis_angle"),
+            Type::StructureRef("AxisAngle".to_string()),
+        );
+        assert_ne!(
+            orientation_decomposer_result_type("orient_to_axis_angle"),
+            Type::Orientation(3),
+            "orient_to_axis_angle DECOMPOSES an Orientation into {{angle, axis}} — \
+             it must not adopt its argument's Orientation(3) type"
+        );
+        assert_eq!(
+            orientation_decomposer_result_type("transform_log"),
+            Type::StructureRef("Twist".to_string()),
+        );
+        assert_ne!(
+            orientation_decomposer_result_type("transform_log"),
+            Type::Transform(3),
+            "transform_log DECOMPOSES a Transform into a {{angular, linear}} \
+             twist — it must not adopt its argument's Transform(3) type"
+        );
+    }
+
+    /// Anti-fallthrough lock, mirroring
+    /// `every_orientation_fn_name_maps_to_a_non_scalar_result_type` for the
+    /// producer half: no decomposer name may resolve to a scalar. The resolver's
+    /// `_` arm returns `Type::dimensionless_scalar()` and is meant to be
+    /// unreachable (the caller gates on `is_orientation_decomposer_fn`), so a name
+    /// that silently reached it would be INDISTINGUISHABLE from the old buggy
+    /// fallback. This makes that failure loud.
+    #[test]
+    fn every_decomposer_name_maps_to_a_non_scalar_result_type() {
+        for name in ORIENTATION_DECOMPOSER_FN_NAMES {
+            assert!(
+                !matches!(
+                    orientation_decomposer_result_type(name),
+                    Type::Scalar { .. }
+                ),
+                "{name} fell through to the unreachable `_` scalar arm — every \
+                 family member must have an explicit match arm"
+            );
+        }
+    }
 }
