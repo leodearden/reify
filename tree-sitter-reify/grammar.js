@@ -35,6 +35,7 @@ function commonMembers($) {
     $.minimize_declaration,
     $.maximize_declaration,
     $.relate_block,
+    $.sketch_block,
     $.guarded_block,
     $.port_declaration,
     $.connect_statement,
@@ -746,6 +747,47 @@ module.exports = grammar({
       'where',
       '{',
       repeat($.relation_member),
+      '}',
+    ),
+
+    // ── Sketch block (member-level) ─────────────────────────
+    // `sketch profile { aux let cl = line(…)  let a = point(…)  fix(a) }` — a
+    // member-level constrained 2D sketch (constrained-2d-sketch v0_6, PRD §7
+    // C1; §5 D2/D11/D12; task α 5506).  The block binds `name` as a member
+    // whose value is the assembled profile region, so `extrude(profile, …)`
+    // consumes it through the ordinary member-reference path (D11) with no
+    // new call surface.
+    //
+    // `sketch` is a PLAIN string token (contextual keyword), mirroring
+    // `relate`'s proven pattern (see relate_block above): tree-sitter makes it
+    // a lex candidate ONLY where the parse state admits a member start (via
+    // commonMembers()).  No member alternative begins with a bare identifier,
+    // so `'sketch'` and `identifier` are never both valid at one state —
+    // everywhere else (operands, names, args, let bindings) `sketch` keeps
+    // lexing as `identifier`.
+    //
+    // The body deliberately REUSES two existing node kinds rather than
+    // introducing a `sketch_member` wrapper:
+    //   • `let_declaration` — its existing `optional('aux')` already delivers
+    //     PRD §5 D12's construction geometry with ZERO new grammar, and its
+    //     `optional(seq(':', type))` gives an annotated sketch entity for free.
+    //   • `relation_member` — the same bare-expression shape as
+    //     `relate_block`/`sub_relate_block`, so `lower_relation_members` stays
+    //     single-implementation across all three blocks.
+    // Body shape therefore mirrors relate_block's: GLR separates newline- and
+    // `;`-separated members with no explicit separator token, and empty
+    // `sketch s { }` is admitted (repeat = zero-or-more), matching `relate { }`.
+    //
+    // PRD §5 D2's `on <expr>` datum-plane clause is DELIBERATELY ABSENT in v1
+    // (every sketch is implicitly on the structure's XY datum).  The slot
+    // between `name` and `{` is reserved for it: adding
+    // `optional(seq('on', field('plane', $._expression)))` there is a
+    // non-breaking widening, because no v1 source can occupy that slot.
+    sketch_block: $ => seq(
+      'sketch',
+      field('name', $.identifier),
+      '{',
+      repeat(choice($.let_declaration, $.relation_member)),
       '}',
     ),
 
