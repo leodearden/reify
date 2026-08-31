@@ -370,4 +370,152 @@ mod tests {
             "Pressure scalar must be Rejected (strict-dimension check closes Pressure-as-density hole)"
         );
     }
+
+    // ── PRD 5 §3 Leg B: the DIMENSIONED spec constructors ─────────────────────
+
+    /// Every PRD-5 spec constructor must read its `dimension` from the
+    /// `reify_core::DimensionVector` REGISTRY const by name, never from a
+    /// hand-written `from_exps` exponent tuple. That is what makes a later
+    /// re-dimensioning (see the ROTATIONAL_STIFFNESS re-dimensioning of task
+    /// #5799) a ONE-LINE registry change instead of a hunt through every
+    /// reader. Comparing against the const rather than against a literal
+    /// tuple is the whole point of this test — do not "strengthen" it into an
+    /// exponent assertion.
+    #[test]
+    fn prd5_spec_constructors_read_dimensions_from_the_core_registry() {
+        use reify_core::DimensionVector as DV;
+
+        let cases: [(&str, ArgSpec, DV); 11] = [
+            ("pressure_spec", pressure_spec(), DV::PRESSURE),
+            ("force_spec", force_spec(), DV::FORCE),
+            ("mass_spec", mass_spec(), DV::MASS),
+            ("frequency_spec", frequency_spec(), DV::FREQUENCY),
+            ("time_spec", time_spec(), DV::TIME),
+            ("velocity_spec", velocity_spec(), DV::VELOCITY),
+            ("acceleration_spec", acceleration_spec(), DV::ACCELERATION),
+            ("force_density_spec", force_density_spec(), DV::FORCE_DENSITY),
+            (
+                "moment_of_inertia_spec",
+                moment_of_inertia_spec(),
+                DV::MOMENT_OF_INERTIA,
+            ),
+            (
+                "translational_stiffness_spec",
+                translational_stiffness_spec(),
+                DV::TRANSLATIONAL_STIFFNESS,
+            ),
+            (
+                "rotational_stiffness_spec",
+                rotational_stiffness_spec(),
+                DV::ROTATIONAL_STIFFNESS,
+            ),
+        ];
+
+        for (name, spec, expected) in cases {
+            assert_eq!(
+                spec.dimension, expected,
+                "{name}: dimension must EQUAL the named reify_core registry const"
+            );
+            assert!(
+                !spec.type_name.is_empty(),
+                "{name}: type_name must be non-empty (it is the `expects {{…}}` \
+                 text in every rejection message)"
+            );
+        }
+    }
+
+    /// The PRD-5 constructors inherit `accept_arg`'s STRICT dimension equality:
+    /// a neighbouring dimension is as wrong as a bare `Real`.
+    #[test]
+    fn prd5_spec_constructors_enforce_strict_dimension_equality() {
+        use reify_core::DimensionVector as DV;
+
+        let pressure = crate::value::Value::Scalar {
+            si_value: 2.0e11,
+            dimension: DV::PRESSURE,
+        };
+        assert_eq!(
+            accept_arg(&pressure, &pressure_spec()),
+            Acceptance::Accepted(2.0e11),
+            "a PRESSURE Scalar must be Accepted by pressure_spec with its SI value"
+        );
+
+        let force = crate::value::Value::Scalar {
+            si_value: 5000.0,
+            dimension: DV::FORCE,
+        };
+        assert!(
+            matches!(
+                accept_arg(&force, &pressure_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "a FORCE Scalar must be Rejected by pressure_spec (strict equality)"
+        );
+
+        assert!(
+            matches!(
+                accept_arg(&crate::value::Value::Real(2.0e11), &pressure_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "a bare Real must be Rejected by pressure_spec"
+        );
+        assert!(
+            matches!(
+                accept_arg(
+                    &crate::value::Value::Real(1.0),
+                    &moment_of_inertia_spec()
+                ),
+                Acceptance::Rejected(_)
+            ),
+            "a bare Real must be Rejected by moment_of_inertia_spec"
+        );
+
+        assert_eq!(
+            accept_arg(&crate::value::Value::Undef, &force_spec()),
+            Acceptance::Undefined,
+            "Undef must stay quiet-degrading at a force_spec position"
+        );
+    }
+
+    /// `TRANSLATIONAL_STIFFNESS` is a NAME ALIAS of `STIFFNESS` (dimension.rs:302)
+    /// while `ROTATIONAL_STIFFNESS` (dimension.rs:283) is a DISTINCT vector,
+    /// re-dimensioned by task #5799 to carry slot 7 (angle) at -2.
+    ///
+    /// PRD §3 Leg B routes a joint's `spring_rate` to ONE OR THE OTHER by joint
+    /// kind (prismatic → translational, revolute → rotational), so a silent
+    /// collapse of the two would be a soundness hole: a revolute spring rate
+    /// would be accepted at a prismatic reader and vice versa.
+    #[test]
+    fn translational_stiffness_and_stiffness_are_the_same_vector() {
+        use reify_core::DimensionVector as DV;
+
+        assert_eq!(
+            translational_stiffness_spec().dimension,
+            DV::STIFFNESS,
+            "TRANSLATIONAL_STIFFNESS aliases STIFFNESS (dimension.rs:302)"
+        );
+        assert_ne!(
+            rotational_stiffness_spec().dimension,
+            translational_stiffness_spec().dimension,
+            "ROTATIONAL_STIFFNESS must stay a DISTINCT vector from \
+             TRANSLATIONAL_STIFFNESS — PRD §3 Leg B routes spring_rate to one \
+             or the other by joint kind"
+        );
+
+        // And the distinction is observable through accept_arg, not just through
+        // the consts: a rotational spring rate is rejected at a prismatic reader.
+        let rotational = crate::value::Value::Scalar {
+            si_value: 12.0,
+            dimension: DV::ROTATIONAL_STIFFNESS,
+        };
+        assert!(
+            matches!(
+                accept_arg(&rotational, &translational_stiffness_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "a ROTATIONAL_STIFFNESS Scalar must be Rejected at a \
+             translational_stiffness_spec position"
+        );
+    }
+
 }
