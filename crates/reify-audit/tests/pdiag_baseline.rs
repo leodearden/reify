@@ -48,12 +48,25 @@
 //!   non-vacuous today — but migration is opportunistic per PRD §6.7, and these
 //!   rules must not go inert as rows burn down toward zero.
 //!
-//! (B) **`live_counts_are_within_the_committed_baseline`** — on-demand,
-//!   `#[ignore]`. Runs `pdiag::check` over the real working tree with
-//!   `RealGitOps` and asserts ZERO `Severity::High` findings, i.e. no file
-//!   exceeds its row and no code-less file is missing one. Medium (slack)
-//!   findings are expected and deliberately tolerated: a file someone
-//!   opportunistically improved must never turn a diff RED.
+//! (B) **on-demand, `#[ignore]`d**, both against the real working tree with
+//!   `RealGitOps`, both sharing one invocation and one graceful-skip:
+//!
+//!   * **`live_counts_are_within_the_committed_baseline`** runs `pdiag::check`
+//!     and asserts ZERO `Severity::High` findings — no file exceeds its row and
+//!     no code-less file is missing one. Medium (slack) findings are expected
+//!     and deliberately tolerated: a file someone opportunistically improved
+//!     must never turn a diff RED.
+//!   * **`regenerating_the_committed_baseline_is_a_no_op`** asserts
+//!     `render_baseline(live_counts(..))` is BYTE-identical to the committed
+//!     file. Strictly wider: High covers only `Exceeded`/`NewFile`, so downward
+//!     drift (`Stale`) and `OrphanRow` are exit-neutral by design and could
+//!     otherwise sit in the manifest indefinitely with no signal anywhere.
+//!     Byte-identity catches both directions plus row order and preamble drift.
+//!
+//!   Both stay out of `tests/infra/test_reify_audit_pdiag.sh`: byte-identity is
+//!   RED on downward drift too, so making it merge-blocking would reverse the
+//!   `Stale`/`OrphanRow`-are-exit-neutral decision and let an unrelated task's
+//!   landed `DiagnosticCode` turn every open branch RED.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test pdiag_baseline`               (a/b + A + A′)
@@ -69,10 +82,13 @@
 //!   `pdiag:allow` opt-out / shrink the row) is in
 //!   `docs/notes/diagnostic-severity-policy.md` §3.
 
-use reify_audit::Severity;
 use reify_audit::pdiag::test_support::{Fixture, coded_src, codeless_src};
-use reify_audit::pdiag::{BASELINE_HEADER, is_swept_path, parse_baseline, render_baseline};
-use std::collections::BTreeMap;
+use reify_audit::pdiag::{
+    BASELINE_HEADER, is_swept_path, live_counts, parse_baseline, render_baseline,
+};
+use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps, Severity};
+use rusqlite::Connection;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// `crates/reify-audit/pdiag-baseline.txt`, resolved from the manifest dir so
@@ -95,6 +111,56 @@ fn repo_root() -> PathBuf {
 /// whoever just went RED never reaches for a hand-edit.
 const REGEN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen -- \
                      --project-root . > crates/reify-audit/pdiag-baseline.txt";
+
+/// The graceful-skip preamble the two on-demand (B) checks share: `git` on
+/// PATH, and a resolved root that is actually a checkout. `None` means
+/// "skipped", with the reason already on stderr.
+///
+/// Shared rather than copied because the two checks must skip under EXACTLY the
+/// same conditions — a divergence would leave one of them silently running
+/// against a tree the other declined to look at.
+fn live_checkout(check: &str) -> Option<PathBuf> {
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("pdiag_baseline: skipping {check} — git not available");
+        return None;
+    }
+    let root = repo_root();
+    // A linked worktree's `.git` is a FILE, not a directory — `exists()` is the
+    // predicate that covers both, which matters because this crate is developed
+    // in warm-lane worktrees far more often than in the main checkout.
+    if !root.join(".git").exists() {
+        eprintln!("pdiag_baseline: skipping {check} — {root:?} is not a git checkout");
+        return None;
+    }
+    Some(root)
+}
+
+/// The real-tree [`AuditContext`], spelled ONCE — the `RealGitOps` counterpart
+/// to `Fixture::with_ctx`'s synthetic one.
+///
+/// A closure rather than a returned value: the context borrows the git seam,
+/// the sqlite handle and the jcodemunch stub, and all three have to outlive it.
+///
+/// `conn`, `jc` and `task_metadata` are inert placeholders — PDIAG is a purely
+/// structural lane (`ls_files` plus working-tree reads) and touches neither the
+/// task DB nor jcodemunch.
+fn with_live_ctx<R>(root: &Path, f: impl FnOnce(&AuditContext) -> R) -> R {
+    let git = RealGitOps::new(root.to_path_buf());
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    let jc = MockJCodemunchOps::new();
+    let ctx = AuditContext {
+        project_root: root.to_path_buf(),
+        conn: &conn,
+        git: &git,
+        jcodemunch: &jc,
+        task_metadata: HashMap::new(),
+        target_task_id: None,
+        window: None,
+        now: None,
+        producer_branch: None,
+    };
+    f(&ctx)
+}
 
 // The fixture, `codeless_src` and `coded_src` are `pdiag::test_support`'s —
 // the SAME harness `pdiag.rs`'s unit tests drive, so the nine-field
@@ -479,39 +545,11 @@ fn line_numbers_count_comment_and_blank_lines() {
     checkout — graceful-skip otherwise."]
 #[test]
 fn live_counts_are_within_the_committed_baseline() {
-    if std::process::Command::new("git").arg("--version").output().is_err() {
-        eprintln!("pdiag_baseline: skipping whole-repo ratchet — git not available");
+    let Some(root) = live_checkout("whole-repo ratchet") else {
         return;
-    }
-    let root = repo_root();
-    if !root.join(".git").exists() {
-        eprintln!("pdiag_baseline: skipping whole-repo ratchet — {root:?} is not a git checkout");
-        return;
-    }
-
-    // `conn`, `jc` and `task_metadata` are inert placeholders: PDIAG is a
-    // purely structural lane (ls_files + working-tree reads), touching neither
-    // the task DB nor jcodemunch.
-    use reify_audit::{AuditContext, MockJCodemunchOps};
-    use rusqlite::Connection;
-    use std::collections::HashMap;
-
-    let git = reify_audit::RealGitOps::new(root.clone());
-    let conn = Connection::open_in_memory().expect("in-memory sqlite");
-    let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.clone(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
     };
 
-    let high: Vec<String> = reify_audit::pdiag::check(&ctx)
+    let high: Vec<String> = with_live_ctx(&root, reify_audit::pdiag::check)
         .into_iter()
         .filter(|f| f.severity == Severity::High)
         .map(|f| f.summary)
@@ -525,5 +563,97 @@ fn live_counts_are_within_the_committed_baseline() {
          genuinely warranted, regenerate:\n  {REGEN}",
         high.len(),
         high.join("\n"),
+    );
+}
+
+/// On-demand: regenerating the manifest against this tree must be a NO-OP —
+/// `render_baseline(live_counts(..))` byte-identical to the committed file.
+///
+/// Coverage this adds over the ratchet above, which is deliberately narrower:
+/// `check`'s High verdicts are only `Exceeded` and `NewFile`, so DOWNWARD drift
+/// (`Stale` — a row still budgeting for sites someone has since coded) and
+/// `OrphanRow` (a deleted or renamed file) are Medium and exit-neutral by
+/// design, and can therefore sit in the manifest indefinitely with no signal
+/// anywhere in the suite. Byte-identity catches both directions, plus row ORDER
+/// and preamble/format drift, in one command.
+///
+/// Deliberately `#[ignore]`d and deliberately NOT a scenario in
+/// `tests/infra/test_reify_audit_pdiag.sh`. Byte-identity is RED on downward
+/// drift too, so making it merge-blocking would reverse the standing decision
+/// that `Stale`/`OrphanRow` stay exit-neutral — an unrelated task landing a
+/// `DiagnosticCode` on main would turn every open branch RED through no fault
+/// of its author. The blocking direction is already covered mechanically by the
+/// infra gate; this check is the pre-land hygiene pass, sharing one invocation
+/// with its sibling:
+///   `cargo test -p reify-audit --test pdiag_baseline -- --ignored`
+///
+/// On mismatch it prints the ROW-LEVEL delta, not a byte diff. The reader is
+/// whoever is about to land, not a parser, and a raw diff of an 89-line file
+/// buries the one row that moved.
+#[ignore = "on-demand regeneration-idempotency check; run via --ignored. Needs \
+    a real git checkout — graceful-skip otherwise."]
+#[test]
+fn regenerating_the_committed_baseline_is_a_no_op() {
+    let Some(root) = live_checkout("regeneration-idempotency check") else {
+        return;
+    };
+
+    let path = baseline_path();
+    let committed =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
+
+    let live = with_live_ctx(&root, live_counts);
+    if render_baseline(&live) == committed {
+        return;
+    }
+
+    // Reached only on failure, so the cost of a second parse is irrelevant and
+    // the payoff is a message someone can act on without running anything else.
+    let rows = match parse_baseline(&committed) {
+        Ok(rows) => rows,
+        Err(err) => panic!(
+            "pdiag-baseline.txt does not parse ({err}), so no row-level delta can be \
+             computed. Regenerate it:\n  {REGEN}"
+        ),
+    };
+
+    let mut delta: Vec<String> = Vec::new();
+    for (p, live_count) in &live {
+        match rows.get(p) {
+            None => delta.push(format!("  + {p} {live_count}   (new row)")),
+            Some(was) if was != live_count => {
+                let note = if live_count > was { "WENT UP" } else { "went down" };
+                delta.push(format!("  ~ {p} {was} -> {live_count}   ({note})"));
+            }
+            Some(_) => {}
+        }
+    }
+    for (p, was) in &rows {
+        if !live.contains_key(p) {
+            delta.push(format!(
+                "  - {p} {was}   (row no longer earned — file deleted, renamed, or fully coded)"
+            ));
+        }
+    }
+
+    let body = if delta.is_empty() {
+        // The maps agree, so the drift is in the bytes AROUND the rows: a
+        // stripped or edited preamble, a reordering, stray whitespace. Naming
+        // that explicitly beats printing an empty delta and looking broken.
+        "The rows themselves agree — the drift is in the manifest's FORMAT: the preamble, \
+         the row order, or whitespace. Regenerating restores the canonical bytes."
+            .to_string()
+    } else {
+        delta.join("\n")
+    };
+
+    panic!(
+        "regenerating pdiag-baseline.txt would change it — the committed manifest no longer \
+         describes this tree:\n{body}\n\n\
+         A row that WENT UP or a NEW row is a real regression: attach a DiagnosticCode, or take \
+         the reviewed `pdiag:allow` opt-out (docs/notes/diagnostic-severity-policy.md §3). Rows \
+         that went down or vanished are someone else's fix already landed, and absorbing them is \
+         the whole point of a ratchet. Either way the manifest is only ever written by its \
+         generator:\n  {REGEN}"
     );
 }
