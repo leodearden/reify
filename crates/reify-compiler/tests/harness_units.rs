@@ -34,6 +34,7 @@
 //!   - `harness_units_materials.rs` holds the compiler-side unit *machinery* —
 //!     `UnitEntry` / `UnitRegistry`, the `unit`-declaration pre-pass, dimension resolution —
 //!     beside the materials / money / cost / affine clusters it was swept with.
+//!
 //! The "μ should add its module here rather than create a second unit-subsystem harness"
 //! steer above is scoped to #5789's angle-units work only — it is NOT an invitation to move
 //! `unit_declaration_tests.rs` / `unit_registry_tests.rs` (or any future compiler-machinery
