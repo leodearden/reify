@@ -2660,6 +2660,76 @@ fn point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch() {
     );
 }
 
+const SRC_POINT2_AT_POINT3_PARAM: &str = r#"module test.point2_at_point3_param
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: point2(1m, 2m))
+}
+"#;
+
+/// THE ARITY LEG of the `Point` arm reached from `.ri` source — the fixture the
+/// surrounding rationale blocks long asserted could not exist.
+///
+/// The `.ri` twin of `conformance/mod.rs`'s
+/// `point_param_rejects_wrong_arity_point_arg`, which constructs its
+/// `Type::Point { n: 2, .. }` directly.
+///
+/// **The asymmetry that makes this possible.** The old note inferred "no `.ri`
+/// source can produce a `Type::Point { n: 2, .. }` arg" from a true premise
+/// about the PARAM side: `resolve_parameterized_builtin_type` really does
+/// recognise `Point3` only — its arms are `"Point3" if type_args.len() == 1`
+/// (`type_resolution.rs`, two sites), with no `"Point2"` arm anywhere — which is
+/// why this fixture's param is spelled `Point3<Length>` and cannot be spelled
+/// otherwise. But a param spelling constrains PARAMS, not ARGS. The arg side
+/// became reachable when task 5344 (`3c4ee5e9ac`) claimed `point2` into
+/// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"`
+/// arm, which fixes `n` from the name suffix: `point2(1m, 2m)` compiles and
+/// types as `Type::Point { n: 2, quantity: Scalar[m] }`. The inference from the
+/// param side to the arg side is what broke, not the premise it started from.
+///
+/// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
+/// "argument 'origin' has type 'Point2<Scalar[m]>' but param 'origin' requires
+/// type 'Point3<Scalar[m]>'". Zero compile errors, so `point2(…)` genuinely
+/// compiles from `.ri`.
+///
+/// The negative assertion below is load-bearing: it pins that this cell routes
+/// through the ARITY leg (`emit_arg_type_mismatch`, whole types) and NOT the
+/// quantity-slot rule, which is exactly the distinction the in-module probe
+/// exists to hold. Both components are `m` here, so the quantity slots AGREE —
+/// were the arity check ever to fall through to the quantity rule, this fixture
+/// would go silent rather than change its message.
+#[test]
+fn point2_arg_at_point3_param_warns_arity_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    let module = compile_source_with_stdlib(SRC_POINT2_AT_POINT3_PARAM);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The WHOLE-TYPE helper, deliberately NOT the quantity sibling: this cell's
+    // quantity slots agree and only the arity differs.
+    let diags = assert_single_arg_type_mismatch_warning_in(
+        &module,
+        "origin",
+        "Point3<Length> ← Point2<Length> (arity)",
+    );
+    assert!(
+        diags[0].message.contains("Point2<Scalar[m]>")
+            && diags[0].message.contains("Point3<Scalar[m]>"),
+        "the diagnostic must name BOTH whole types, which is what distinguishes the ARITY \
+         leg's `emit_arg_type_mismatch` from the quantity-slot emitter. Got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].message.contains("has quantity"),
+        "this cell must route through the ARITY leg, NOT the quantity-slot rule — both \
+         components are `m`, so the quantity slots AGREE and a quantity-shaped message \
+         would mean the arity check stopped separating these two types. Got: {:?}",
+        diags[0].message
+    );
+}
+
 const SRC_VECTOR_GIVEN_STRING: &str = r#"module test.vector_string
 structure def Joint { param axis : Vector3<Length> }
 structure def Root {
