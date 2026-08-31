@@ -783,6 +783,39 @@ module.exports = grammar({
     // between `name` and `{` is reserved for it: adding
     // `optional(seq('on', field('plane', $._expression)))` there is a
     // non-breaking widening, because no v1 source can occupy that slot.
+    //
+    // ── INV-SF-7 `parse-is-value-faithful` ──
+    // (docs/legibility/design-invariants.md:195-220.)  This body is the FIRST
+    // place in the language where a `let_declaration` and a bare expression are
+    // siblings with no separator token, so the adjacency readings were MEASURED
+    // rather than assumed.  All five are pinned by
+    // `tests/sketch_grammar_tests.rs`; each inherits an existing precedent
+    // rather than inventing a reading:
+    //
+    //   • `let d = 5mm` ⏎ `fix(a)` stays TWO members — the quantity literal
+    //     does not absorb the following line.  (The relation_member's exact
+    //     text is asserted, not just its kind.)
+    //   • `5mm` is one quantity_literal; `5 mm` is a parse ERROR and no
+    //     quantity_literal may span the whitespace.  Inherited law, pinned by
+    //     `test/corpus/unit_expr.txt` — a diagnostic, never a quiet pick.
+    //   • `let x = a.b` ⏎ `(c)` collapses into ONE member: the `(c)` becomes a
+    //     namespaced_call argument list.  This is the ITEM-BOUNDARY reading
+    //     `test/corpus/namespaced_ref.txt` already commits for `relate { a.b ⏎
+    //     (x) }` ("namespaced_ref item boundary" case).  `fix(c)` on that line
+    //     does NOT join — only a `(`-led line does.
+    //   • `fix(a)` ⏎ `horizontal(ab)` stays two relation_members (relate-block
+    //     parity).
+    //
+    // The join above, and the `let d = 5mm` ⏎ `- 3mm` leading-operator
+    // continuation, both reproduce with NO sketch block anywhere — they belong
+    // to `let_declaration`'s `value:` being a full `$._expression`, which is
+    // the seam INV-SF-7's evidence task #5392 describes.  So they are NOT
+    // narrowed here: doing so would fork this body away from every other member
+    // body in the language.  Instead
+    // `sketch_body_item_boundary_matches_a_plain_member_body` asserts this body
+    // reads them IDENTICALLY to a plain member body, so a future fix at that
+    // seam propagates here automatically and the test reds if the two diverge.
+    // Recorded at greater length in escalation esc-5506-1.
     sketch_block: $ => seq(
       'sketch',
       field('name', $.identifier),
