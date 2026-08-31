@@ -1274,8 +1274,8 @@ fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
 /// The stub — pure POSIX shell builtins, no external commands — writes a
 /// recognisable marker FIRST, so it survives `elide`'s head window even
 /// though the marker is nowhere near the 512-byte threshold, then exactly
-/// 256 iterations of a 1024-byte `printf`, i.e. 256 * 1024 = 262144 bytes,
-/// then exits 0.
+/// `PAYLOAD_BYTES` (256 * 1024 = 262144) bytes via repeated 1024-byte
+/// `printf` calls, then exits 0.
 ///
 /// `spawn_sh_stub` calls `spawn_pipe_reader` on the stderr pipe before
 /// returning, i.e. before this test can possibly wait on the child —
@@ -1293,14 +1293,18 @@ fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
 /// running it under an external `timeout` and observing it get killed
 /// rather than complete, then reverted to this ordering.
 ///
-/// Asserts `stderr.len() == 262_175` — the stub's output is fully
-/// deterministic (a 31-byte marker-plus-newline followed by 256 * 1024 =
-/// 262144 bytes of payload), so there is no reason to leave the slack the
-/// old `>= 128 * 1024` bound did: a drain that silently drops or duplicates
-/// bytes (e.g. a short-read/partial-fold bug in
-/// `spawn_pipe_reader`/`drain`) would still pass a half-payload bound but
-/// fails this exact one — and that the marker survived, proving the
-/// captured bytes came from this stub and not some other source.
+/// Asserts `stderr.len() == BACKPRESSURE_MARKER.len() + 1 + PAYLOAD_BYTES`
+/// (262175 today: a 31-byte marker-plus-newline followed by 262144 bytes of
+/// payload) — the stub's output is fully deterministic, so there is no
+/// reason to leave the slack the old `>= 128 * 1024` bound did: a drain
+/// that silently drops or duplicates bytes (e.g. a short-read/partial-fold
+/// bug in `spawn_pipe_reader`/`drain`) would still pass a half-payload
+/// bound but fails this exact one — and that the marker survived, proving
+/// the captured bytes came from this stub and not some other source.
+/// Deriving the expectation from the same named constants the script is
+/// built from (rather than transcribing the total) is deliberate: a rename
+/// or reflow of the marker can no longer desync the assertion from what the
+/// stub actually writes (task #6162's amendment review).
 ///
 /// Does not take `acquire_lsp_test_lock()`: this stub is not an LSP
 /// process, needs no tokio runtime, and taking the lock would serialise
