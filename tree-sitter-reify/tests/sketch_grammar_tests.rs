@@ -18,11 +18,17 @@
 //! propagate the stale claim.)
 //!
 //! `tree-sitter generate --force` on that same branch point emits exactly two
-//! `unnecessary conflicts` warnings, both PRE-EXISTING and unrelated:
+//! `unnecessary conflicts` pairs, both PRE-EXISTING and unrelated:
 //! `constraint_instantiation`/`constraint_declaration` and
 //! `function_definition`/`function_signature` (plus an ABI-14 notice for the
-//! absent `tree-sitter.json`). A THIRD warning appearing after a grammar delta
-//! is a signal to fix precedence, not to accept.
+//! absent `tree-sitter.json`). A THIRD pair appearing after a grammar delta is
+//! a signal to fix precedence, not to accept.
+//!
+//! Compare that warning set AS A SET, never as text: the two pairs are emitted
+//! in a DIFFERENT ORDER between runs of the same unchanged grammar (measured
+//! across the step-2/step-4 regenerations here). A `diff` against a recorded
+//! transcript will therefore show a spurious change; only a new *pair* means
+//! anything.
 //!
 //! # TDD status of each test
 //!
