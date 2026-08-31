@@ -231,13 +231,19 @@ while absent and reported again once it is back, since `check` is re-run rather 
 
 ### `arm` writes with `--replace-all`
 
-`git config --add rerere.enabled true` — precisely what an unidentified re-armer (§7) would leave
-behind — makes the shared key **multi-valued**, and a plain single-value write then fails:
-measured on git 2.43.0, `git config --local rerere.enabled false` against a `true`/`true` shared
-config reports `error: cannot overwrite multiple values with a single value` and exits 5. That was
-not inert: `arm` returned 1, and `setup-dev.sh`'s `*` arm turns any non-zero into `err` + `exit 1`,
-killing the build-accelerator systemd block, npm and the smoke test for every developer — while the
-fleet stayed **armed**, the exact outcome the guard exists to prevent.
+`git config --add rerere.enabled true` makes the shared key **multi-valued**, and a plain
+single-value write then fails: measured on git 2.43.0, `git config --local rerere.enabled false`
+against a `true`/`true` shared config reports `error: cannot overwrite multiple values with a
+single value` and exits 5. That was not inert: `arm` returned 1, and `setup-dev.sh`'s `*` arm turns
+any non-zero into `err` + `exit 1`, killing the build-accelerator systemd block, npm and the smoke
+test for every developer — while the fleet stayed **armed**, the exact outcome the guard exists to
+prevent.
+
+This defence is **prophylactic**, not a description of the live writer. The re-armer identified in
+§7 uses a plain set, not `--add`, so no sighting on this store has been multi-valued — every armed
+reading has been the single-valued SPLIT shape. It is kept because the failure mode it prevents is
+*measured* rather than hypothetical, and one `--add` from any of the ~253 lanes — by an agent, or by
+a future script — is enough to trigger it.
 
 `--replace-all` is a strict superset of the old write: **byte-identical** output for the unset and
 single-valued cases (so idempotence is unchanged), and it collapses a multi-valued key to one
@@ -531,24 +537,36 @@ true` (or any bare `git config rerere.*` write) in **any** reify worktree — us
    open question" caveat rather than deferring it: §8's standing claim about the existing store's
    integrity is now positive — measured clean — instead of absent.
 
-2. **The re-armer is unidentified** (esc-5870-11, above). This bounds what landing this task buys: the
-   guard re-asserts `false` on every `setup-dev.sh` run, so if an active writer does exist, that
-   per-run re-assertion **narrows the window between re-arm and disarm — it does not close it.** Any
-   resolution recorded inside that window still lands in the one shared cache. Closing it requires
-   naming the writer, which requires sampling the effective config over time rather than reading it
-   once; `check` is the natural probe, since it already exits 1 on an armed store. **Such a probe
-   must treat any non-zero as "not clean", not just 1** — `check` exit **3** means it could not
-   determine some lane's state at all (§6), and reading that as healthy would put the fail-open hole
-   back in the one place the probe exists to close.
+2. **CLOSED 2026-08-30 (task 6889, open item (a)) — the re-armer is IDENTIFIED.** It is **agent
+   behaviour**, not automation: a bare `git config rerere.enabled true` run from inside a **linked
+   worktree** is `--local`-scoped, and for a linked worktree `--local` resolves to the **SHARED**
+   common-dir config. The evidence — the hermetic proof, the transcript counts that located the
+   instruction, the hard negatives that cleared every mechanical suspect (including the now-complete
+   dark-factory sweep), and the measured re-arm interval — is in §7's *2026-08-30 — the re-armer is
+   IDENTIFIED* subsection, and is not restated here.
 
-   `Hypothesis:` the store could have been re-armed through an `include.path` chain rather than a
-   direct key — a shape `check` was blind to until the round documented in §6, and one that would
-   have left no `rerere` string in the file an auditor grepped. This is a possibility that fix makes
-   newly *detectable*, **not** a diagnosis, and the evidence currently points the other way: the
-   writer has still not been isolated, and both the 2026-08-27 measurement and a read-only
+   **What survives the resolution.** Naming the writer sharpens this item's bound; it does not lift
+   it. The guard re-asserting `false` — now at lane cadence as well as developer cadence (item 3) —
+   still only **narrows the window between re-arm and disarm; it does not close it**, because no
+   `arm` cadence outruns an agent re-running the shared write, and any resolution recorded inside
+   that window still lands in the one shared cache. The **cure** is the practice change stated at
+   the end of §7, not the cadence.
+
+   **The periodic-`check` probe this item proposed is still the right monitoring**, and its
+   normative caveat is untouched by the identification: **such a probe must treat any non-zero as
+   "not clean", not just 1** — `check` exit **3** means it could not determine some lane's state at
+   all (§6), and reading that as healthy would put the fail-open hole back in the one place the
+   probe exists to close.
+
+   **RETIRED hypothesis — `include.path`, ruled out.** This item previously carried a `Hypothesis:`
+   that the store was being re-armed through an `include.path` chain rather than a direct key. It
+   was never the diagnosis, and it is not the diagnosis now: the identified writer sets the key
+   directly, and the measurements agree — both the 2026-08-27 reading and a read-only
    re-measurement on 2026-08-28 found the keys set **directly** in `/home/leo/src/reify/.git/config`
-   (lines 46-48) with **no `include` directive anywhere in that file** — `check` exit 1,
-   `rr-cache` 269 entries, still armed.
+   (lines 46-48) with **no `include` directive anywhere in that file** (`check` exit 1, `rr-cache`
+   269 entries, still armed). It is recorded here rather than deleted because the *detectability*
+   point stands on its own: an `include.path` re-arm would leave no `rerere` string in the file an
+   auditor greps, so §6's `--includes` reads keep covering that shape whichever writer is live.
 
 3. **`arm` runs at developer-setup cadence, not lane cadence.** This is the concrete form of item 2's
    "narrows the window, does not close it", and it is worth stating as its own gap because
