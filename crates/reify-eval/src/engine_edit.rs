@@ -33,32 +33,52 @@
 //! branch through `dispatch_merged_cluster_solve` /
 //! `dispatch_merged_cluster_solve_cached` (task #5118).
 //!
-//! Each arm writes some subset of seven legs. Three are uniform across
+//! Each arm writes some subset of eight legs. Four are uniform across
 //! all six arms; four are not:
 //!
 //! 1. `values` — uniform
 //! 2. snapshot map as `Determined` — uniform
 //! 3. cache entry — uniform
 //! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
-//! 5. journal — all arms journal, except two distinct un-journaled
-//!    write-backs across two arms: `eval`'s two arms journal via
-//!    hand-rolled `Started`/`Completed` pairs; `eval_cached`'s
-//!    merged-cluster arm, [`Engine::edit_param`] and
-//!    [`Engine::edit_source`] via `commit_cell_result`. First, the
-//!    pinned-connector-auto write-back
-//!    (`write_solved_pinned_connector_autos`, task #4710) is
-//!    un-journaled by design — its own doc says "Does NOT touch the
-//!    journal" — and fires in BOTH `eval`'s per-template arm and
-//!    `eval_cached`'s per-template arm. Second, `eval_cached`'s
-//!    per-template arm ALSO has its own resolved-auto write-back: a
-//!    bare cache record with no journal event, distinct from the
-//!    pinned-connector write-back above. That same arm's wave-2
-//!    downstream let-cone re-eval DOES journal, via `commit_cell_result`
-//!    like the others. Audit the whole arm, not just one write-back,
-//!    when checking journal coverage.
+//! 5. journal — mechanism differs per arm:
+//!    - `Engine::eval` per-template arm — hand-rolled `Started`/`Completed`
+//!      pairs around the solver write-back. Exception: the
+//!      pinned-connector-auto write-back
+//!      (`write_solved_pinned_connector_autos`, task #4710) fires first
+//!      and is un-journaled by design — its own doc says "Does NOT touch
+//!      the journal".
+//!    - `Engine::eval`'s merged-cluster branch
+//!      (`dispatch_merged_cluster_solve`) — hand-rolled `Started`/
+//!      `Completed` pairs, same shape as the per-template arm. No
+//!      pinned-connector write-back here (the merged builder already
+//!      excludes strict connector-instance autos), so no exception.
+//!    - `Engine::eval_cached` per-template arm — TWO un-journaled
+//!      write-backs: the pinned-connector-auto write-back (same
+//!      exception as the `eval` per-template arm) and, separately, its
+//!      own solver-resolved-value write-back, a bare cache record with
+//!      no journal event. Its wave-2 downstream let-cone re-eval, by
+//!      contrast, DOES journal, via `commit_cell_result`.
+//!    - `Engine::eval_cached`'s merged-cluster branch
+//!      (`dispatch_merged_cluster_solve_cached`) — `commit_cell_result`
+//!      for both the main write-back and its wave-2. No pinned-connector
+//!      write-back (same exclusion as `eval`'s merged-cluster branch).
+//!    - [`Engine::edit_param`] — `commit_cell_result` for both the main
+//!      write-back and its wave-2 driver-order reseed. No un-journaled
+//!      write-back.
+//!    - [`Engine::edit_source`] — main write-back journals via
+//!      `commit_cell_result`; its wave-2 ("Second propagation wave")
+//!      does NOT — a bare `values`/snapshot insert plus
+//!      `cache.record_evaluation`, no journal event.
 //! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
 //!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
 //! 7. `objective_provenance` — `eval`'s two arms only
+//! 8. `resolved_ids` / `all_resolved_ids` — uniform: every arm populates
+//!    a local resolved-ids set from the solver's resolved values.
+//!    `eval`'s two arms feed it into `SnapshotProvenance::Resolution {
+//!    resolved }`; the other four arms (`eval_cached`'s two arms,
+//!    [`Engine::edit_param`], [`Engine::edit_source`]) use it instead to
+//!    seed the wave-2 downstream dirty cone. Omitting a newly resolved
+//!    cell here silently skips its downstream re-eval.
 //!
 //! Legs 6-7 are a deliberate, documented divergence, not drift:
 //! `dispatch_merged_cluster_solve_cached`'s own doc records that its arm
@@ -66,7 +86,7 @@
 //! that symbol's doc for the rationale before "fixing" `eval_cached` to
 //! write them.
 //!
-//! Check all seven legs when modifying warm Resolution back-prop.
+//! Check all eight legs when modifying warm Resolution back-prop.
 //!
 //! A further arm, `resolve_concurrent_edit` — the fourth member of this
 //! roster's original four-site form, before [`Engine::edit_source`] and the
@@ -1775,7 +1795,7 @@ impl Engine {
             // preserved automatically.  This is the `edit_param` arm of the
             // warm-Resolution back-prop sync set — see the roster in this
             // file's module-level doc comment ("# Warm-Resolution back-prop
-            // sync set") for the full membership, the seven legs to check,
+            // sync set") for the full membership, the eight legs to check,
             // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
@@ -4115,7 +4135,7 @@ impl Engine {
             // preserved automatically.  This is the `edit_source` arm of the
             // warm-Resolution back-prop sync set — see the roster in this
             // file's module-level doc comment ("# Warm-Resolution back-prop
-            // sync set") for the full membership, the seven legs to check,
+            // sync set") for the full membership, the eight legs to check,
             // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
