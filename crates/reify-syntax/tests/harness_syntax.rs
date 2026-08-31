@@ -120,6 +120,8 @@ mod radix_literals_lowering_tests;
 mod relate_at_auto_lowering_tests;
 #[path = "harness_syntax/scientific_notation_tests.rs"]
 mod scientific_notation_tests;
+#[path = "harness_syntax/sketch_block_lowering_tests.rs"]
+mod sketch_block_lowering_tests;
 #[path = "harness_syntax/sub_decl_specialization_body_parser_tests.rs"]
 mod sub_decl_specialization_body_parser_tests;
 #[path = "harness_syntax/sub_decl_specialization_tests.rs"]
