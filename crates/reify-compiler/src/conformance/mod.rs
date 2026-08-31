@@ -1305,10 +1305,24 @@ fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
 /// arms use to accept the expression compiler's numeric-fallback placeholder
 /// (task 5465).
 ///
-/// `point3(…)` and friends are stdlib eval-builtins with no `.ri` return type,
-/// so their calls compile to a `FunctionCall` typed `Scalar[m]` / `Int` rather
-/// than `Type::Point`. `Type::ScalarParam(_)` is the same shape with an
-/// unresolved dimension (see [`arg_type_is_unverifiable`]'s closing note).
+/// Its surviving inputs are a BARE numeric literal (`Anchor(origin: 5)`) and
+/// `Type::ScalarParam(_)` — a scalar shape whose DIMENSION is unresolved rather
+/// than absent (see [`arg_type_is_unverifiable`]'s closing note).
+///
+/// It used to have a third and far more visible input: `point3(…)` and friends
+/// are stdlib eval-builtins with no `.ri` return type, so their calls were said
+/// to compile to a `FunctionCall` typed `Scalar[m]` / `Int` rather than
+/// `Type::Point`. That expired at task 5344 (`3c4ee5e9ac`), which claimed
+/// `point3` / `point2` into `math_fn_result_type`'s construction family; such a
+/// call now carries a real `Type::Point` and takes the arm's OTHER branch, where
+/// its quantity slot is actually compared. Do not re-derive this predicate's
+/// justification from `point3(…)`.
+///
+/// The bare-literal input is the one that keeps the `Point` branch alive, and it
+/// is a deliberate GHR-γ placeholder exclusion rather than an oversight. It is
+/// pinned by `bare_numeric_literal_at_point_param_stays_clean`
+/// (`struct_ctor_field_conformance_tests.rs`) — measured to be the ONLY test in
+/// either file that fails if this branch is deleted, which is why it exists.
 ///
 /// Deliberately NOT `type_compat.rs::is_scalar_like_leaf`, which also admits
 /// `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and `Geometry` — that
@@ -1694,17 +1708,30 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // `Type::Point`, this arm structurally cannot be reached by a `String` /
         // `Bool` / `Int` / `Real` param, so that hazard is dissolved by
         // construction. It also covers the `let p = point3(…); Anchor(origin: p)`
-        // shape, which an arg-side skip would MISS: the placeholder type
-        // propagates through the value cell and only the type-level walker sees
-        // the resulting `ValueRef`.
+        // shape, which an arg-side skip would MISS: only the type-level walker
+        // sees the resulting `ValueRef`. That shape reaches this SAME arm by a
+        // second route — carrying a persisted `Type::Point` on the value cell
+        // rather than a `FunctionCall`'s inferred `result_type` — and since task
+        // 5344 it carries a real quantity slot, so the rule below fires through
+        // it exactly as it does for a direct call. (It was previously described
+        // as a PLACEHOLDER type propagating through the value cell; that is no
+        // longer what happens, though the reason this must be an arm rather than
+        // an arg-side skip is unchanged.)
         //
         // THE BOUNDED, DELIBERATE COST: a bare numeric literal at a Point slot
         // (`Anchor(origin: 5)`) stays silent. That is identical in kind to the
         // pre-existing `Type::Geometry` placeholder exclusion (geometry
         // constructors compile to a dimensionless-scalar placeholder, GHR-γ).
-        // The tolerance can be tightened to a FunctionCall-shaped check once
-        // `point3` carries a real return type — tracked by the family-5 /
-        // placeholder follow-up filed with this task.
+        // That note used to add: "the tolerance can be tightened to a
+        // FunctionCall-shaped check once `point3` carries a real return type."
+        // The precondition HAS occurred — task 5344 (`3c4ee5e9ac`) gave it one —
+        // and the tightening it anticipated turned out to be unnecessary rather
+        // than merely pending: a `point3(…)` arg no longer reaches the
+        // placeholder branch at all, so the branch's remaining inputs are a bare
+        // numeric literal and `Type::ScalarParam(_)`. Neither is a `FunctionCall`
+        // and neither would be narrowed by that check. The residual is therefore
+        // a standing RULING, pinned by
+        // `bare_numeric_literal_at_point_param_stays_clean`, not an open item.
         //
         // That bounded cost is UNCHANGED by task 5766's quantity rule — see the
         // `else` branch below for why.
@@ -1721,10 +1748,24 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
             } else {
                 // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
-                // `crates/reify-core/src/ty.rs`; applied after the arity check. The
-                // `is_numeric_placeholder_leaf` branch carries no slot and so stays
-                // dimension-blind, which is the branch every real corpus
-                // `point3(…)` arg takes.
+                // `crates/reify-core/src/ty.rs`; applied after the arity check.
+                //
+                // A real corpus `point3(…)` arg reaches this check. It takes the
+                // `Type::Point { .. }` branch above, carrying a genuine quantity
+                // slot, and IS compared here — measured in both directions by
+                // `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+                // (dimensions disagree ⇒ one `ArgTypeMismatch`) and
+                // `point3_dimensionless_at_dimensioned_point_param_stays_clean`
+                // (arg names no dimension ⇒ silent, the arg-side tolerance), both
+                // in `struct_ctor_field_conformance_tests.rs`.
+                //
+                // This comment previously said the opposite — that the
+                // dimension-blind `is_numeric_placeholder_leaf` branch "is the
+                // branch every real corpus `point3(…)` arg takes", i.e. that the
+                // rule was unreachable from real point args. That was true before
+                // task 5344 (`3c4ee5e9ac`) and is false after it. The
+                // placeholder branch does still carry no slot and stay
+                // dimension-blind; it is simply no longer where `point3(…)` goes.
                 emit_if_quantity_conflict(param_type, arg_ty, ctx);
             }
         }
@@ -1988,16 +2029,23 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// placeholder/erasure/missing-coercion rationale below is still why those arms
 /// are shape-based rather than `type_compatible`-based:
 ///
-/// * `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is the numeric
-///   fallback `Scalar[m]`, never `Type::Point`;
 /// * an analytical `field def` erases both slots to `Field<Real, Real>` whatever
 ///   its declaration says;
 /// * a nested list literal is the idiomatic `Matrix3x3` spelling but compiles to
 ///   `List<List<Real>>`, for which no `List`→`Matrix` coercion arm exists.
 ///
+/// That list used to open with a third entry — "`point3(0m, 0m, 0m)` is a
+/// `FunctionCall` whose result_type is the numeric fallback `Scalar[m]`, never
+/// `Type::Point`" — retired at task 5344 (`3c4ee5e9ac`), which gave `point3` /
+/// `point2` a real `Type::Point` return type. The `Point` arm stays shape-based
+/// for the reasons the arm itself states; it just no longer rests on an erasure
+/// that is not happening. The same two survivors carry the arg-side tolerance
+/// ruling in `crates/reify-core/src/ty.rs`, and the two lists must stay
+/// consistent.
+///
 /// But "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
-/// families themselves are now checked. For the two placeholder families this is
-/// the same class the `Type::Geometry` exclusion below and
+/// families themselves are now checked. For the remaining placeholder families
+/// this is the same class the `Type::Geometry` exclusion below and
 /// [`promote_function_call_to_structure_ref`] already exist for.
 ///
 /// # Deliberately excluded, with evidence
