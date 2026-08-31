@@ -121,3 +121,15 @@ mod eval_cached_guarded_groups;
 // geometry kernel — engine-level, kernel-independent.
 #[path = "harness_engine/redispatch_template_order_regression.rs"]
 mod redispatch_template_order_regression;
+// Task #6667's surface-attribution over-reach guards land here for the same
+// anti-re-accretion reason as #5196's, #5045's and #5360's above: a NEW
+// top-level `crates/reify-eval/tests/*.rs` is `reason=unregistered-standalone`
+// under scripts/check-harness-baseline-registration.sh, and the sanctioned
+// remedy is consolidation, never a new grandfather row (SUPERSEDED — Leo
+// 2026-07-22, esc-5056-11). It is also a topical fit: the guards drive
+// `Engine::check` and the `check_nested_in_build` marker set by
+// `Engine::build_with_geometry_output`, and their MEASURING-surface fixture is
+// modelled on `reset_per_build_state_classification`'s `WIDGET_SRC` — a
+// sibling module in this same unit.
+#[path = "harness_engine/unmeasured_surface_attribution.rs"]
+mod unmeasured_surface_attribution;

@@ -290,7 +290,7 @@ fn check_dfm_overhang_error_emits_e_dfm_overhang_under_occt() {
 /// `grep -c` returns 0), so `!stderr.contains("does not measure geometric
 /// conformance")` passes here even if the GD&T leak persists. The GD&T half is
 /// covered instead by the kernel-free engine-level pins in
-/// `crates/reify-eval/tests/unmeasured_surface_attribution.rs`
+/// `crates/reify-eval/tests/harness_engine/unmeasured_surface_attribution.rs`
 /// (`realize_for_check_emits_no_surface_attribution_for_either_kind`, which was
 /// RED on exactly that half, and `the_build_phase_marker_is_cleared_on_the_way_out`).
 /// Deleting either of those silently removes this contract's GD&T coverage.

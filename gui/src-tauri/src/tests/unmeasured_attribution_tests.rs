@@ -27,8 +27,8 @@
 //! silently passing for the wrong reason.
 //!
 //! The cheap RED/GREEN engine-level loop lives in
-//! `crates/reify-eval/tests/unmeasured_surface_attribution.rs`; THIS module is
-//! the contract.
+//! `crates/reify-eval/tests/harness_engine/unmeasured_surface_attribution.rs`;
+//! THIS module is the contract.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, Severity};

@@ -1722,8 +1722,8 @@ impl Engine {
     /// steward in esc-6667-2: it is a not-yet-delivered improvement, not a
     /// regression, because pre-6667 that surface emitted nothing either. It is
     /// pinned by `the_build_phase_marker_is_cleared_on_the_way_out`
-    /// (`tests/unmeasured_surface_attribution.rs`) and is NOT cause to
-    /// re-escalate.
+    /// (`tests/harness_engine/unmeasured_surface_attribution.rs`) and is NOT
+    /// cause to re-escalate.
     ///
     /// **(3) The id-less `rule_name` form is NOT a defect** and must not be
     /// "fixed" by re-keying this diagnostic to a `ConstraintNodeId`. The

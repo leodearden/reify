@@ -1134,7 +1134,7 @@ pub struct Engine {
     /// leak on any early return or `?`, whereas each of those three regions is
     /// straight-line, making set/clear leak-proof without a guard type.
     /// `the_build_phase_marker_is_cleared_on_the_way_out`
-    /// (`tests/unmeasured_surface_attribution.rs`) pins the clear.
+    /// (`tests/harness_engine/unmeasured_surface_attribution.rs`) pins the clear.
     check_nested_in_build: bool,
     /// Whether the geometry kernel(s) this engine holds DECLARED the ability to
     /// produce a BRep representation — i.e. at least one `(_, ReprKind::BRep)`
