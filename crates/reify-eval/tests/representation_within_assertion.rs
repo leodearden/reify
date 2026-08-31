@@ -1500,6 +1500,13 @@ structure SphereCheck {
 ///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
 /// ```
 ///
+/// CAVEAT on the 0.10mm row: `d/R` there is 1e-4, inside the separate ~1.49x
+/// branch reported below `d/R` < 2.5e-4 in
+/// `precision-nominal-representation-guarantee.md` §2 — this table's 2.078x
+/// reading for it should not be read as extending the envelope/tooth
+/// characterization that low; see `dfm_with_repr_within.ri`'s header note
+/// for that branch.
+///
 /// CORRECTED 2026-08-10 (gate 6060/esc-6060-1, 388-point sweep —
 /// supersedes both an earlier "sawtooth" label and the "very close to LINEAR"
 /// label this comment used to carry). Seven of these eight points sit at
@@ -1531,12 +1538,21 @@ structure SphereCheck {
 /// periods away and establish nothing about this locality; that neighbour
 /// argument is exactly the extrapolation the paragraph above labels FALSE and
 /// unsafe. The real argument — teeth deviate DOWNWARD only, so the envelope
-/// upper-bounds the achieved deviation — is `dfm_with_repr_within.ri`'s header
-/// note; see there rather than restating the digits here. That envelope
+/// (an OBSERVED SUPREMUM, not a proven bound — it has measured as high as
+/// 2.106x in a finer regime) is the branch to size against — is
+/// `dfm_with_repr_within.ri`'s header note; see there rather than restating
+/// the digits here. That envelope
 /// argument extends ±17% around 0.3mm: every point in that neighbourhood is
 /// likewise envelope-bounded below the bound. The faster 0.48mm/0.50mm were rejected:
 /// 0.48mm clears the bound by only 0.12%, and 0.50mm was rejected because it
 /// clears only by landing on a tooth, with envelope violations on both sides.
+///
+/// If BT7's `achieved` ever reads below 4e-4 m (its low-side diagnostic,
+/// below), that is this same tooth-landing risk manifesting at 0.3mm: NOT a
+/// failure, but re-measure this sweep before trusting it, and if it is a
+/// tooth, RETUNE #precision back onto the envelope rather than merely
+/// re-measuring in place — a value sitting on a tooth is one retune away
+/// from the envelope, which near the bound violates.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
@@ -1651,19 +1667,16 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     // inside a still-PASSING test, so it is visible solely under
     // `cargo test -- --nocapture` — the repo's cargo output-condensation
     // wrapper (CLAUDE.md) collapses a normal run to
-    // `PASS: N | FAIL: M | SKIP: K` and hides it entirely.
+    // `PASS: N | FAIL: M | SKIP: K` and hides it entirely. The full
+    // interpretation (finer OCCT build vs. tooth-landing) and retune guidance
+    // live on `OCCT_SOURCE_FINE`'s doc comment above, where a reader retuning
+    // #precision will actually see them; this message is a short pointer.
     if achieved < 4e-4 {
         eprintln!(
             "BT7 note: fine sphere deviation ({achieved:.3e} m) is well below the \
-             6.202e-4 m measured for #precision(0.3mm) on a 1 m sphere. NOT a failure \
-             — the verdict is still Satisfied — but there are two possible causes: \
-             (1) this OCCT build meshes finer than when the value was tuned, or (2) \
-             #precision(0.3mm) has drifted onto one of the downward teeth documented \
-             in dfm_with_repr_within.ri's header note (their ratio, applied to \
-             0.3mm, lands under this 4e-4 m line). Re-measure OCCT_SOURCE_FINE's \
-             sweep before relying on its numbers; if it is cause (2), RETUNE #precision \
-             back onto the envelope rather than merely re-measuring — a value sitting on \
-             a tooth is one retune away from the envelope, which near the bound violates."
+             6.202e-4 m measured for #precision(0.3mm). NOT a failure — see \
+             OCCT_SOURCE_FINE's doc comment above for what this can mean and how to \
+             retune."
         );
     }
     assert!(
