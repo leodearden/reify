@@ -252,6 +252,12 @@ fn corpus_has_zero_bare_scalar() {
     // permanently committed placement probe that IS a live violator of this
     // predicate, so this arm can never silently go vacuous: delete it, narrow its
     // path, or move the tree, and this test reds again naming that file.
+    //
+    // That "IS a live violator" claim is not left as prose: the sentinel test
+    // `spec_conformance_placement_probe_is_a_live_violator` below runs THIS
+    // file's own predicate over the probe, so a drive-by migration of the
+    // probe's bare annotation reds here — in the very file whose arm it
+    // silently disarms — with zero drift surface.
     let spec_conformance_fixtures = root
         .join("crates")
         .join("reify-spec-conformance")
@@ -284,6 +290,51 @@ fn corpus_has_zero_bare_scalar() {
          Migrate each `: Scalar` -> `: Length` and `-> Scalar` -> `-> Length`:\n\n{}",
         violations.len(),
         violations.join("\n")
+    );
+}
+
+// ── Sentinel for the spec-conformance exclusion arm ──────────────────
+
+/// The exclusion arm above claims it "can never silently go vacuous" because a
+/// permanently committed live violator sits under it. This test is what makes
+/// that a checked property rather than a comment.
+///
+/// It runs the REAL predicate — the one two lines of scrolling above — over the
+/// probe, so it carries no drift surface at all: any narrowing of
+/// [`line_has_bare_scalar`] that would stop flagging the probe reds here, in
+/// the same file, in the same change.
+///
+/// `crates/reify-spec-conformance/tests/fixture_tree.rs` keeps a MIRRORED copy
+/// of the same check. That copy is the fast-feedback one (it still fires under
+/// a scope narrowing that never builds `reify-cli`); this one is authoritative.
+///
+/// If this guard is ever retired as compiler-redundant (see the header: once
+/// γ adds `E_BARE_SCALAR`), retire the probe and both sentinels in the same
+/// change — do not leave a sentinel standing watch over nothing.
+#[test]
+fn spec_conformance_placement_probe_is_a_live_violator() {
+    let probe = workspace_root()
+        .join("crates/reify-spec-conformance/fixtures/_placement-probe/placement_probe.ri");
+
+    let content = std::fs::read_to_string(&probe).unwrap_or_else(|e| {
+        panic!(
+            "The spec-conformance placement probe {} is missing or unreadable ({e}). \
+             It is the live violator that keeps this test's `reify-spec-conformance/fixtures` \
+             exclusion arm from being vacuous. Restore it, or retire the arm in the same change. \
+             See crates/reify-spec-conformance/fixtures/README.md.",
+            probe.display()
+        )
+    });
+
+    assert!(
+        content.lines().any(line_has_bare_scalar),
+        "The spec-conformance placement probe {} no longer trips this test's own predicate, \
+         so the `reify-spec-conformance/fixtures` exclusion arm above now excludes nothing \
+         detectable: it would stay green even if deleted.\n\n\
+         Do NOT \"fix\" the probe — its bare annotation is deliberate. Restore it, or retire \
+         the exclusion arm (and the probe) in the same change. \
+         See crates/reify-spec-conformance/fixtures/README.md.",
+        probe.display()
     );
 }
 
