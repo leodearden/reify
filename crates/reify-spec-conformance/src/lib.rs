@@ -31,7 +31,13 @@
 //! whose resident is deliberately unparseable, carries no directive annotations,
 //! and is a deliberate violator of the corpus-cleanliness guard — it is the
 //! sentinel that keeps that guard's registered exclusion arm for this tree from
-//! going vacuous (pinned by `tests/fixture_tree.rs`), not a conformance fixture.
+//! going vacuous, not a conformance fixture. That is machine-checked from BOTH
+//! sides: `spec_conformance_placement_probe_is_a_live_violator` inside the guard
+//! itself (authoritative — it runs the real predicate), and
+//! `placement_probe_sentinel_still_violates_the_corpus_guard` plus
+//! `corpus_guard_still_registers_this_tree` in `tests/fixture_tree.rs` (the
+//! fast-feedback mirror, which also reds if the guard is retired out from under
+//! the probe).
 //!
 //! This is an obligation on leaf gamma (#6761): the manifest generator and the
 //! directive/annotation harness walk `fixtures/**/*.ri`, so they MUST skip any
