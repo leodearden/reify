@@ -1231,53 +1231,73 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             && has_deferral_prose(line)
             && g_allow_marker_body(line).is_none()
         {
-            // (7) lane δ-B (.rs only): an ordinary comment — no TODO-family
-            // marker, no attribute — that both DEFERS work and NAMES the task
-            // it is deferred to. The live deliverable is
+            // (7) lane δ-B (.rs only): an ordinary FULL-LINE comment — no
+            // TODO-family marker, no attribute — that both DEFERS work and
+            // NAMES the task it is deferred to. The live deliverable is
             // `crates/reify-core/src/diagnostics.rs`'s `HexWedgeMeshOutcome`
             // rustdoc, "blocked on VolumeMesh realization (task #2947)", whose
             // cite is `cancelled`: a promise pinned to a task that will never
-            // arrive, invisible to every other arm.
+            // arrive, invisible to every other arm. Population enumeration, FP
+            // measurements and the adoption ruling: PRD §16 Row 2.
             //
-            // Four load-bearing choices:
+            // Five load-bearing choices:
             //
-            // (i) APPENDED LAST, after the phantom arm (6). This minimises
-            // perturbation of the existing precedence chain — every earlier arm
-            // keeps every line it owned before — and the `else if` chain is what
-            // guarantees at-most-one entry per line, which the `fingerprint` /
-            // §6.6 baseline machinery assumes.
+            // (i) APPENDED LAST, after the phantom arm (6), so every earlier arm
+            // keeps every line it owned. The `else if` chain is what guarantees
+            // at-most-one entry per line, which the `fingerprint` / §6.6
+            // baseline machinery assumes.
             //
             // (ii) CITE-ANCHORED, hence NO structural kind. δ-A has an attribute
-            // to anchor on and can therefore afford to report the uncited case
-            // as `Untracked`; δ-B has nothing but the comment itself, so the
-            // cite IS the anchor. An uncited deferral comment is not a δ-B
-            // candidate at all — which is exactly what stops this lane firing on
-            // every prose comment containing "pending". Consequently the lane
-            // emits only `Cited` and reaches ONLY the unchanged β liveness lane
-            // (`orphaned` / `unknown-id` / `parked-on-anchor`); §8.3's taxonomy,
-            // `VALID_KINDS` and the §8.4 severity map are untouched by it.
+            // to anchor on and can afford to report the uncited case as
+            // `Untracked`; δ-B has only the comment, so the cite IS the anchor —
+            // which is what stops the lane firing on every prose comment
+            // containing "pending". It therefore emits only `Cited` and reaches
+            // ONLY the unchanged β liveness lane, leaving §8.3's taxonomy,
+            // `VALID_KINDS` and the §8.4 severity map untouched.
             //
             // (iii) Both predicates match the WHOLE line, not a stripped comment
-            // body. Safe here — unlike δ-A, where prose is deliberately matched
-            // against the extracted rationale so the `dead_code` token inside
-            // the attribute cannot be misread as prose — because on a δ-B line
-            // the entire line IS comment text; there is no attribute text to
-            // confuse. Stripping the `//` would change nothing but cost a scan.
+            // body. Safe here — unlike δ-A, which matches prose against the
+            // extracted rationale so the attribute's own `dead_code` token
+            // cannot be misread as prose — because on a δ-B line the entire line
+            // IS comment text.
             //
-            // (iv) The `g_allow_marker_body` guard DELEGATES `// G-allow:` lines
-            // to their owner lane, which runs an independent
-            // `scan_g_allow_markers` → `resolve_g_allow_owner_liveness` pass
-            // with its own `g-allow-orphaned` kind. Without the guard, such a
-            // line would emit TWO findings under two different kinds once its
-            // owner cite went terminal. Live today at
-            // `crates/reify-ir/src/value.rs` (two sites, both citing #5235) —
-            // benign while #5235 is `pending`, latent otherwise, and cheapest to
-            // close now.
+            // (iv) The `g_allow_marker_body` guard delegates the ENTIRE
+            // `// G-allow:` register to its owner lane, which runs an
+            // independent `scan_g_allow_markers` →
+            // `resolve_g_allow_owner_liveness` pass with its own
+            // `g-allow-orphaned` kind; without it such a line emits TWO findings
+            // under two kinds once its owner cite goes terminal (live today at
+            // `crates/reify-ir/src/value.rs`, two sites citing #5235).
             //
-            // The lane's false-positive control is entirely inherited, not new:
-            // `has_deferral_prose`'s three guards kill the identifier class
-            // (`mark_pending_with_cause`), and §8.2's `prd_relative_cite` — via
-            // `has_canonical_cite` — kills the PRD-relative class
+            // The guard deliberately also covers the case that lane does NOT
+            // report: a G-allow line whose cites are ALL provenance-exempt
+            // (rules (a)/(b)/(c)) has no owner, so neither lane claims it. That
+            // is two rules composing, not a hole — on such a line the owner-cite
+            // grammar IS the cite grammar, and `extract_cites` is blind to its
+            // exemptions, so admitting the line would anchor δ-B on exactly the
+            // cites the sibling grammar classified as provenance (`#N (done)`,
+            // `re-homed from cancelled #N`, `PRD #N`) and resurrect the
+            // population that grammar exists to suppress — in the fail-dangerous
+            // direction, since an FP here is a High `orphaned` hard-gate
+            // finding. Measured (2026-08-31): ZERO live lines are
+            // `// G-allow:` ∧ cite ∧ deferral prose ∧ owner-less, so the
+            // narrower guard would buy no recall today. Pinned by
+            // `scan_file_delta_b_negative_g_allow_owner_less`.
+            //
+            // (v) FULL-LINE comments only (`trim_start().starts_with("//")`): a
+            // trailing comment after code (`let x = f(); // deferred to #1234`)
+            // is out of scope. Decided, not overlooked — it is what makes the
+            // whole-line predicates in (iii) sound, and measured (2026-08-31)
+            // exactly one tracked `.rs` line is code-then-trailing-comment with
+            // deferral prose and a four-digit cite, whose "code" is the
+            // `#[allow(dead_code)]` attribute arm (5) already owns. δ-A reads a
+            // trailing comment because its anchor is an attribute, which cannot
+            // appear mid-expression. Pinned by
+            // `scan_file_delta_b_negative_trailing_comment`.
+            //
+            // FP control is entirely inherited, not new: `has_deferral_prose`'s
+            // guards kill the identifier class (`mark_pending_with_cause`) and
+            // §8.2's `prd_relative_cite` kills the PRD-relative class
             // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
             // 48% false-positive rate; those two guards are what changed.
             out.push((line_no, LineClass::Cited(extract_cites(line)), line.trim().to_string()));
@@ -3195,6 +3215,69 @@ mod tests {
             scan_file(line, true),
             vec![],
             "δ-B must delegate G-allow lines to their owner lane"
+        );
+    }
+
+    /// Class (d), the seam: a `// G-allow:` line whose cites are ALL
+    /// provenance-EXEMPT (rules (a)/(b)/(c)) yields no owner, so the G-allow
+    /// lane skips it for having nothing to resolve and δ-B skips it for being a
+    /// G-allow line — NEITHER lane claims it. That is the composition of two
+    /// rules, not an oversight, and this test pins it as a decision: on such a
+    /// line the owner-cite grammar IS the cite grammar, and `extract_cites` is
+    /// blind to its exemptions, so admitting the line into δ-B would anchor it
+    /// on precisely the cites the sibling grammar classified as provenance.
+    /// Both halves are asserted, because the property is about the PAIR.
+    #[test]
+    fn scan_file_delta_b_negative_g_allow_owner_less() {
+        let line =
+            "// G-allow: envelope assembly is deferred to #4092 (done); re-homed from cancelled #3429";
+        // The owner lane is silent: every cite is provenance-exempt.
+        let body = g_allow_marker_body(line).expect("a G-allow body");
+        assert_eq!(
+            extract_g_allow_owner_cites(body),
+            Vec::<u32>::new(),
+            "both cites must be provenance-exempt for this to be the seam case"
+        );
+        // …and so is δ-B, by the `g_allow_marker_body` guard.
+        assert_eq!(
+            scan_file(line, true),
+            vec![],
+            "an owner-less G-allow line stays delegated to the G-allow lane"
+        );
+        // The same prose WITHOUT the `// G-allow:` prefix is a δ-B candidate —
+        // so the guard, not the prose or the cites, is what silences it.
+        let plain = "// envelope assembly is deferred to #4092";
+        assert_eq!(
+            scan_file(plain, true),
+            vec![(1, LineClass::Cited(vec![4092]), plain.to_string())]
+        );
+    }
+
+    /// δ-B is scoped to FULL-LINE comments: a trailing comment after code is
+    /// not a candidate, because both of the lane's predicates match the WHOLE
+    /// line and are only sound while the whole line is comment text.
+    ///
+    /// Decided, not overlooked — and measured (tracked `.rs`, 2026-08-31):
+    /// exactly ONE line repo-wide is code-then-trailing-comment carrying both
+    /// deferral prose and a four-digit cite, and its "code" is the
+    /// `#[allow(dead_code)]` attribute that arm (5) already owns
+    /// (`scan_file_delta_b_allow_dead_code_lane_wins`). The restriction
+    /// therefore costs no recall today. δ-A reads a trailing comment because
+    /// its anchor is an attribute, which cannot appear mid-expression.
+    #[test]
+    fn scan_file_delta_b_negative_trailing_comment() {
+        let trailing = "let x = f(); // wiring is deferred to task #2947";
+        assert_eq!(
+            scan_file(trailing, true),
+            vec![],
+            "a trailing comment after code is out of δ-B's scope"
+        );
+        // The control: the same comment as a full line IS a candidate, so the
+        // code prefix is the only difference the assertion above turns on.
+        let full_line = "// wiring is deferred to task #2947";
+        assert_eq!(
+            scan_file(full_line, true),
+            vec![(1, LineClass::Cited(vec![2947]), full_line.to_string())]
         );
     }
 

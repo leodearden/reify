@@ -747,6 +747,12 @@ mod tests {
         // terminal isolates δ-B's `g_allow_marker_body` guard as the ONLY thing
         // preventing a finding on that line.
         //
+        // #4092 / #3429 are the OWNER-LESS class-(d) seam: the G-allow lane
+        // exempts both as provenance (rule (a) "(done)", rule (b) "re-homed
+        // from cancelled"), so it has no owner to resolve; seeding them
+        // terminal isolates δ-B's guard as the only thing keeping that line
+        // silent.
+        //
         // #5235 is the exception, and deliberately non-terminal. It is the
         // owner cite of the VERBATIM live G-allow shape, which rule (c) does NOT
         // exempt — so a terminal #5235 would make the independent G-allow lane
@@ -761,6 +767,8 @@ mod tests {
                 ("master", 2335, "done"),
                 ("master", 4739, "done"),
                 ("master", 7777, "done"),
+                ("master", 4092, "done"),
+                ("master", 3429, "cancelled"),
                 ("master", 5235, "pending"),
             ],
         );

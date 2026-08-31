@@ -92,12 +92,22 @@ fn scenario17_uncited_deferral() {}
 // Its owner cite is NOT exempt under rule (c), so it is seeded non-terminal
 // (as #5235 is live today); it documents the real population rather than
 // discriminating the guard.
+//
+// The third line is the OWNER-LESS seam: every cite on it is provenance-exempt
+// under the G-allow lane's OWN rules (a) ("#4092 (done)") and (b) ("re-homed
+// from cancelled"), so that lane has no owner to resolve and stays silent for a
+// second, independent reason. Neither lane claims such a line — two rules
+// composing, not a hole (see scan_file arm (7) choice (iv)) — and both cites are
+// seeded terminal so a δ-B that reached the line would fire.
 
 // G-allow: shared display formatter input type (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
 fn scenario17_g_allow_marker_live_shape() {}
 
 // G-allow: shared envelope assembler; the four surfaces are blocked on PRD #7777 — no non-test caller until then
 fn scenario17_g_allow_marker_discriminating() {}
+
+// G-allow: envelope assembly is deferred to #4092 (done); re-homed from cancelled #3429 — no non-test caller yet
+fn scenario17_g_allow_marker_owner_less() {}
 
 // --- the dominant benign class: a comment that EXPLAINS rather than defers --
 
