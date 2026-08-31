@@ -150,14 +150,15 @@
 //! which the ctor-path fixtures above show is now possible for the first time,
 //! is 6436's as well.  Task 6159 corrected only what task 6159 itself authored.
 //!
-//! 6436's list also includes one site in THIS file, and that one IS flagged in
-//! place, because a reader of this section reaches it a few paragraphs down:
-//! "Why the ARG side is tolerant rather than strict" still leads with
-//! `point3(…)` as one of three erasure routes.  Only that ONE route is retired;
-//! the other two — a `Matrix<3,3,MomentOfInertia>` spelled `List<List<Real>>` at
-//! every corpus site, and a `Field`'s slots erasing to `Field<Real, Real>` — are
-//! untouched, so the arg-side tolerance RULING stands and only its stated basis
-//! needs re-arguing.
+//! One site in THIS file rested on the same premise and HAS BEEN re-argued, a few
+//! paragraphs down: "Why the ARG side is tolerant rather than strict" used to
+//! lead with `point3(…)` as one of three erasure routes.  Only that ONE route was
+//! retired; the other two — a `Matrix<3,3,MomentOfInertia>` spelled
+//! `List<List<Real>>` at every corpus site, and a `Field`'s slots erasing to
+//! `Field<Real, Real>` — are untouched, so the arg-side tolerance RULING stands
+//! on those two and the paragraph now states them as such.  It is recorded here
+//! because a reader of this section reaches that paragraph next and should know
+//! the count went from three to two by measurement, not by oversight.
 //!
 //! The `Real` quantity slots on `stdlib/solver_elastic.ri`'s `ElasticResult`
 //! `gradient` / `frame` params are out of the measurement's reach for a
@@ -203,12 +204,31 @@
 //! **Why the ARG side is tolerant rather than strict.**  This rationale is
 //! ARG-SIDE ONLY — it is what the param-side ruling above does *not* inherit.
 //! The arg side of these arms is systematically erased, so strict equality would
-//! compare a declaration against a hole: `point3(…)` is an eval-builtin with no
-//! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders;
+//! compare a declaration against a hole.  TWO erasure routes carry this:
 //! `Matrix<3,3,MomentOfInertia>` is spelled `List<List<Real>>` at every corpus
-//! site; a `Field`'s slots always erase to `Field<Real, Real>`, which is what
-//! produced the false warnings that arm's comment records.  None of those three
-//! erasure routes exists on the param side, where the slot is always written out.
+//! site; and a `Field`'s slots always erase to `Field<Real, Real>`, which is what
+//! produced the false warnings that arm's comment records.  Neither route exists
+//! on the param side, where the slot is always written out.  (These are the same
+//! two entries `arg_type_is_unverifiable` lists in `conformance/mod.rs`; the two
+//! lists must stay consistent.)
+//!
+//! There used to be a THIRD, listed first: `point3(…)` is an eval-builtin with no
+//! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders.
+//! Task 5344 retired it.  **The ruling survives the loss because that route did
+//! not become STRICT — it became CORRECT.**  A `point3(…)` arg now carries a real
+//! quantity slot, so at the `Point` arm the tolerance is no longer NEEDED rather
+//! than no longer JUSTIFIED, and nothing that was silent for a good reason has
+//! started comparing a declaration against a hole.
+//!
+//! What the remaining tolerance still buys at that arm is measured, in both
+//! directions, by an accept/reject pair of `.ri` fixtures in
+//! `struct_ctor_field_conformance_tests.rs`:
+//! `point3_dimensionless_at_dimensioned_point_param_stays_clean` — `point3(0, 0,
+//! 1)` at a `Point3<Length>` param, SILENT, which is what the tolerance is for —
+//! and `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+//! — `point3(1kg, 0kg, 0kg)` at the same param, REJECTED.  Those two are where
+//! the arm's line now sits, and they are the fixtures a future tightening has to
+//! move deliberately rather than by accident.
 //!
 //! **The residual this knowingly leaves — an ARG-side one, deliberately kept.**
 //! A `Vector3<Length>` param fed a *dimensionless* vector stays silent: the
