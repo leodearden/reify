@@ -262,11 +262,23 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// (`crates/reify-test-support/src/orphan_audit.rs`), so keying on it adds no
 /// cross-tool coupling, and it is what ATTRIBUTES each half to the deprived
 /// fixture: without it, half A could pass green-for-the-wrong-reason on a
-/// machine where the audit genuinely ran and succeeded. Keying on the suffix
-/// EVERY skip note shares, rather than on the python3 probe's own wording,
-/// means reordering `run_orphan_audit_detailed`'s probes (the empty `PATH`
-/// hides `git` too) moves this test onto another skip cause instead of
-/// reddening it on an assertion that is not the property under test.
+/// machine where the audit genuinely ran and succeeded.
+///
+/// The marker is shared by the three PREREQUISITE-PROBE skip notes and no
+/// others — measured, 3 of the 5 skip notes in `orphan_audit.rs` carry it:
+/// the `python3` probe, the `git` probe, and the work-tree probe (whose
+/// `child_repo_root` folds a `git` spawn failure into `NoRepository`). The
+/// other two do NOT: the script-absent note reads `... not found at {:?};
+/// skipping`, and the `EXCLUDE_CRATES` note says nothing about skipping at
+/// all. Keying on the family rather than on the python3 probe's own wording
+/// therefore buys exactly one thing: reordering those three probes among
+/// themselves (the empty `PATH` hides `git` too) moves this test onto another
+/// of them instead of reddening it. It does NOT survive the fixture reaching
+/// a fourth skip cause — but it cannot: an empty `PATH` leaves the script
+/// present on disk and never gets far enough to run it, so neither
+/// non-conforming note is reachable from here. If that changes (the script
+/// moves, or a probe is added ahead of the three), BOTH halves fail on this
+/// assertion — loudly and on a stated premise, not silently.
 ///
 /// The counts come from libtest's summary rather than from the tightening
 /// panic's prose, so rewording that panic does not fail this test.
@@ -274,10 +286,9 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     use common::git_env::ReplayMark;
 
-    // The marker EVERY one of `run_orphan_audit`'s skip notes carries — see
-    // the doc above on why each half keys on the family rather than on the
-    // python3 probe's own wording, which is merely the one this fixture's
-    // empty `PATH` happens to trip first today.
+    // The marker the three PREREQUISITE-PROBE skip notes share — NOT every
+    // skip note in `run_orphan_audit` (two do not carry it; see the doc above
+    // for which, and for why neither is reachable from this fixture).
     const SKIP_MARKER: &str = "skipping orphan audit";
 
     // The same filter the replay harness uses, for the same reason: this test
