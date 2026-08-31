@@ -28,9 +28,10 @@
 //! reachable from ordinary `.ri` source, not an artefact of a hand-built problem. It
 //! reuses the inline-`&str` harness at
 //! `crates/reify-eval/tests/solver_optimality_unproven.rs:79-131` verbatim rather than
-//! adding a `tests/prd-gate/fixtures/*.ri` file, which would pull in a
-//! `_RUST_COUPLED_RI_FIXTURES` pinning obligation in `scripts/verify.sh:1050-1081`
-//! (and the PG-DRIFT scenario in `tests/infra/test_verify_scope.sh`) for no triage gain.
+//! adding a checked-in `.ri` file under the prd-gate fixtures directory, which would
+//! pull in a `_RUST_COUPLED_RI_FIXTURES` pinning obligation in
+//! `scripts/verify.sh:1050-1081` (and the PG-DRIFT scenario in
+//! `tests/infra/test_verify_scope.sh`) for no triage gain.
 //!
 //! It asserts two things:
 //!
