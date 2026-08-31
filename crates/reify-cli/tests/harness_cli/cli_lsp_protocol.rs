@@ -122,24 +122,41 @@ fn wait_for_exit(
     timeout_secs: u64,
     stderr_reader: PipeReader,
 ) -> (ExitStatus, String) {
+    match wait_for_exit_no_stderr(child, timeout_secs) {
+        Some(status) => (status, drain(stderr_reader, "stderr")),
+        None => {
+            child.kill().ok();
+            reap_bounded(child, CLEANUP_BUDGET);
+            let stderr = drain_bounded(stderr_reader, "stderr", CLEANUP_BUDGET);
+            panic!(
+                "child process did not exit within {timeout_secs}s\n\
+                 --- child stderr ---\n{}\n--- end child stderr ---",
+                elide(&stderr)
+            );
+        }
+    }
+}
+
+/// Polls `try_wait` until the child exits or `timeout_secs` elapses,
+/// returning `None` on timeout instead of panicking or touching stderr.
+/// This is the poll/deadline/50ms-sleep timing policy shared by
+/// `wait_for_exit` above (which layers stderr draining and a kill+panic on
+/// top on `None`) and
+/// `lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr` (which
+/// must NOT drain stderr — see that test's doc comment, and `wait_for_exit`'s
+/// own doc comment for why draining it would defeat the test). Extracted so
+/// the timing policy lives in exactly one place instead of two copies that
+/// could silently drift apart (task #6162).
+fn wait_for_exit_no_stderr(child: &mut Child, timeout_secs: u64) -> Option<ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        match child.try_wait().expect("try_wait failed") {
-            Some(status) => return (status, drain(stderr_reader, "stderr")),
-            None => {
-                if Instant::now() >= deadline {
-                    child.kill().ok();
-                    reap_bounded(child, CLEANUP_BUDGET);
-                    let stderr = drain_bounded(stderr_reader, "stderr", CLEANUP_BUDGET);
-                    panic!(
-                        "child process did not exit within {timeout_secs}s\n\
-                         --- child stderr ---\n{}\n--- end child stderr ---",
-                        elide(&stderr)
-                    );
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
+        if let Some(status) = child.try_wait().expect("try_wait failed") {
+            return Some(status);
         }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -1121,18 +1138,10 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
     // above), and deliberately not asserting the exit code or waiting for
     // the shutdown response (see doc comment above): only that the process
     // exits at all (without dying from a signal), which is exactly the
-    // property the bug violates.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let exit_status = loop {
-        if let Some(status) = child.try_wait().expect("try_wait failed") {
-            break Some(status);
-        }
-        if Instant::now() >= deadline {
-            break None;
-        }
-        thread::sleep(Duration::from_millis(50));
-    };
-    let status = exit_status.unwrap_or_else(|| {
+    // property the bug violates. Reuses `wait_for_exit`'s own poll/deadline
+    // policy via `wait_for_exit_no_stderr` rather than a second inline copy
+    // of it (task #6162).
+    let status = wait_for_exit_no_stderr(&mut child, 30).unwrap_or_else(|| {
         panic!(
             "reify lsp did not exit within 30s after a huge unknown-URI didChange with stderr \
              piped but never drained — task #6162's wedge: did_change blocks in pipe_write \
