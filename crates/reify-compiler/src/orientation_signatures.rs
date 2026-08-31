@@ -222,6 +222,110 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
     }
 }
 
+/// Result type for an orientation/transform DECOMPOSER builtin (task 6306) — the
+/// sibling of [`orientation_typed_fn_result_type`], keyed on `name` alone.
+///
+/// # Why the name-only INFALLIBLE shape is safe here
+///
+/// Adopts the same `fn(&str) -> Type` shape as its producer sibling rather than
+/// an args-aware `&[CompiledExpr]` one, because every result here is
+/// argument-INDEPENDENT — `orient_log` INCLUDED, which is the one a reader is
+/// most likely to doubt. It is arity-1; its sole argument must match
+/// `Value::Orientation` (anything else returns `Value::Undef` before any vector
+/// is built); and its components are unconditionally `Value::Real` on BOTH the
+/// general and the near-identity Taylor branch. No argument type or count can
+/// change any of the four answers. Taking `&[CompiledExpr]` would add an unused
+/// parameter and suggest arity gating is in play here, as it genuinely is for the
+/// datum family's `offset`.
+///
+/// # Per-arm ruling basis
+///
+/// **`orient_log` → `vec3<DIMENSIONLESS>`.** Eval `orientation.rs:203`, result
+/// `:228` = `Value::Vector` of three `Value::Real`. The quantity slot is
+/// DIMENSIONLESS on two independent grounds — the untagged `Value::Real`
+/// components, and `reify_stdlib::geometry`'s
+/// `TWIST_ANGULAR_DIM = DIMENSIONLESS` (geometry.rs:216), a LIVE eval gate that
+/// already rules this identical ω rotation-vector quantity. `Angle` would
+/// manufacture a static/runtime dimension disagreement and contradict that gate.
+/// Pinned by `orient_log_quantity_slot_is_dimensionless_not_angle`.
+///
+/// **`orient_to_euler` → `List<Angle>`.** Eval `orientation.rs:264`, result
+/// `:438` = `Value::List` of three `Value::angle`. Identical for all twelve
+/// conventions, so the convention argument cannot affect it — which is also why
+/// this arm is unaffected by task 6082's flip to subject-first
+/// `orient_to_euler(q, convention)`.
+///
+/// **`orient_to_axis_angle` → `StructureRef("AxisAngle")`** (eval
+/// `orientation.rs:440`, `Value::Map {angle, axis}` at `:460-470`) and
+/// **`transform_log` → `StructureRef("Twist")`** (eval `geometry.rs:779`,
+/// `Value::Map {angular, linear}` at `:860-873`).
+///
+/// - *Why StructureRef is SAFE for a `Value::Map` cell*: the three-point argument
+///   in [`crate::joint_signatures`]'s module doc (esc-3845-91) — cited, not
+///   restated. It transfers verbatim: both cells today hold a WORSE first-arg
+///   type (`Orientation(3)` / `Transform(3)`) while eval stores a `Value::Map`.
+/// - *Why these NAMES*: ratified upstream by
+///   `docs/prds/v0_6/builtin-signature-registry.md` decision 7, which names
+///   `AxisAngle {angle, axis}` and `Twist {angular, linear}` for exactly these
+///   two builtins and closes the PRD's own `AxisAngle`-vs-`OrientAxisAngle`
+///   question. `Twist` additionally already EXISTS (`structure def Twist { }`,
+///   `crates/reify-compiler/stdlib/kinematic.ri:244`) and is already the tag
+///   `joint_signatures.rs:189` gives `joint_jacobian` for the same two-key shape,
+///   so this reuses a nominal tag rather than minting one. (Note the tag
+///   agreement is over the SHAPE, not the dimensions: `geometry.rs:187-190`
+///   records that a Jacobian column is ∂pose/∂q rather than a twist and may get
+///   its own structure under #6102 — `transform_log` is a genuine twist either
+///   way.)
+///
+/// # `AxisAngle` is deliberately NOT declared as a stdlib structure
+///
+/// Leaving it undeclared is load-bearing, not an omission, and the asymmetry is
+/// the reason: `member_path::resolve_hop` resolves a `StructureRef(name)` whose
+/// name is ABSENT from `template_registry` to a SOFT
+/// `Indeterminate(TemplateNotInRegistry)`, but a REGISTERED structure missing the
+/// field to a HARD `UnknownMember` ERROR. So adding an empty
+/// `structure def AxisAngle { }` marker — which would look natural, since
+/// `Twist`/`BodyId`/`JointBinding` are exactly that — would flip
+/// `tests/prd-gate/fixtures/orient_axis_angle_member_parses.ri:12`'s live
+/// `orient_to_axis_angle(q).angle` from soft-Indeterminate to a hard error and
+/// REGRESS the prd-gate. Declaring it WITH fields is the PRD's τ2-orientation
+/// post-state and belongs to the registry leaf, not here. Pinned end-to-end by
+/// `orient_to_axis_angle_member_access_still_compiles`.
+///
+/// (The mirror audit for `Twist` is clean the other way: it IS registered and
+/// empty, but no `.ri` file in the corpus performs an `.angular`/`.linear` member
+/// access, so no site is exposed.)
+///
+/// Only reached for names in [`ORIENTATION_DECOMPOSER_FN_NAMES`] (the caller
+/// gates on [`is_orientation_decomposer_fn`]); the `_` arm is therefore
+/// unreachable in practice and returns a harmless `Type::dimensionless_scalar()`.
+/// `every_decomposer_name_maps_to_a_non_scalar_result_type` makes a silent
+/// fallthrough loud.
+pub(crate) fn orientation_decomposer_result_type(name: &str) -> Type {
+    match name {
+        // Rotation vector / log map. Value::Vector of three Value::Real —
+        // DIMENSIONLESS, see the ruling above.
+        "orient_log" => Type::vec3(Type::dimensionless_scalar()),
+
+        // Three Euler angles. Value::List of three Value::angle, for all twelve
+        // conventions alike.
+        "orient_to_euler" => Type::List(Box::new(Type::angle())),
+
+        // Value::Map {angle, axis} → the nominal AxisAngle structure, which is
+        // deliberately NOT declared in the stdlib (see the ruling above).
+        "orient_to_axis_angle" => Type::StructureRef("AxisAngle".to_string()),
+
+        // Value::Map {angular, linear} → the nominal Twist structure, already
+        // declared (kinematic.ri:244) and already used for the same shape by
+        // joint_signatures.rs:189.
+        "transform_log" => Type::StructureRef("Twist".to_string()),
+
+        // Unreachable in practice — the caller gates on
+        // is_orientation_decomposer_fn.
+        _ => Type::dimensionless_scalar(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
