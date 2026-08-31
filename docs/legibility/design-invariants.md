@@ -74,7 +74,7 @@ requires a census row in the same change.**
 | `dimensionless_scalar()` reintroduction | PDSSENTINEL | shipped |
 | layer-rule imports | PLAYER | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
-| prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark filed by `result-field-vacuity-closure.md` ζ | unenforced |
+| prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
 
 ## INV-SF-1 `undef-has-provenance`

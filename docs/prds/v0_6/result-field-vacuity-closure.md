@@ -7,7 +7,11 @@
 **Provenance:** Part-investigation session census (`investigate-reify-574090`, 2026-08-31), every
 finding re-verified by symbol in the authoring session (`prd-reify-1067854`, same day). Scope,
 loudness, naming and doc-promise dispositions in §6 were ruled by Leo in the authoring session and
-are recorded here, not re-opened.
+are recorded here, not re-opened. **Amended at decompose (same day)** from the D3 adversarial
+verification (workflow `wf_0f28544c-9dc`; findings cited as `ADV-*`; fixtures
+`tests/prd-gate/fixtures/adv_beta_*.ri`, carried verbatim by **#7106** until it lands them — their
+own landing surfaced the pre-commit hook-env leak that task fixes): the δ↔γ reorder, D8/D9, the
+§2.3 fake-value family, and the C1′/C2′ refinements.
 
 **Mandate (Leo, 2026-08-31, verbatim):** *"Nothing should exist vacuously and unowned. Ever.
 Anywhere."*
@@ -81,13 +85,20 @@ value is always `Value::Undef` on the dims path (`build_modal_topology_value`). 
 exists — `CarriedTopology`, R3a task #4654 — but the modal path never reaches it. This is the
 finding class the contract's written-but-undeclared arm (§4 C1′) exists for.
 
-### 2.3 The declared-degraded charter member
+### 2.3 The mechanism-modal fake-value family (allowlisted to #7012)
 
 `mechanism_modal` emits every `Mode` with `shape = []` and `participation_mass = 0`
-unconditionally. **#7012 (pending)** owns it and documents why it is contract-shaped: the lumped
-generalized-coordinate model genuinely has no 3D mode shape, and participation mass has no mesh to
-project against. This is the *declared-degraded-with-reason* bucket's charter member — the correct
-end state is a recorded reason, not a populated value. (The damping half was fixed by #6875.)
+unconditionally — and (adversary-measured at decompose, fixture
+`tests/prd-gate/fixtures/adv_beta_v7_degraded_arith.ri`) also writes a **hard-coded**
+`boundary_conditions = []` (not even an echo of the caller's) and `mass_matrix_norm` /
+`stiffness_matrix_norm` `= 0.0`, with a source comment naming them known-unpopulated. These are
+C2′ **fakes** (empty-list-masquerading-as-computed, zero-masquerading-as-measured), not the honest
+`Undef` form — so they enter the gate as **allowlist entries owned by #7012 (pending)**, whose
+description covers this extent. Whether each becomes *degraded-with-reason* (honest `Undef` + a
+recorded lumped-model reason) or *populated* is #7012's ruling; the lumped model genuinely has no
+3D mode shape and no mesh to project participation against, so degraded-with-reason is the likely
+end state. (The damping half was fixed by #6875.) The *degraded* bucket's charter members are
+instead the conventions that are already honest — §2.4.
 
 ### 2.4 The honest convention that already exists
 
@@ -154,21 +165,26 @@ extract-and-share, the way PTYPE shares PTODO's liveness lane.
 
 Each Rust producer declares, per constructed result structure, three disjoint sets:
 
-- **populated** — the producer writes a real, sampleable, non-sentinel value on the production path.
+- **populated** — the producer writes the real value whenever one exists on the path; an
+  input-conditional absence writes the honest `Undef` form, never a fake (the mechanism-modal
+  `damping` case: real when the caller supplies a descriptor, honest `Undef` otherwise).
 - **degraded** — the producer writes the honest `Undef` form; carries a one-line reason (which may
-  cite a task that owns a future upgrade, e.g. #7012).
+  cite a task that owns a future upgrade).
 - **allowlisted** — declared, not yet real; carries a live owning task id. The value written today
   must still be the honest `Undef` form for **new** entries; a pre-existing plausible-fake value
-  (the `placeholder_part()` case) is tolerated only while its allowlist owner is live, and the flip
-  to honest form belongs to that owner.
+  (`placeholder_part()`, the `shape = []` / `participation_mass = 0` / `norms = 0.0` family) is
+  tolerated only while its allowlist owner is live, and the flip to honest form belongs to that
+  owner.
 
 Invariants:
 
 1. The three sets are disjoint and their union **equals** the `structure_def`'s declared field set
    — equality, not subset, so the gate is a universal quantifier.
 2. Every field the producer *writes* appears in the declared field set — the written-but-undeclared
-   arm (catches `ModalResult.topology`). An undeclared write is resolved by declaring the field in
-   the `.ri`, deleting the write, or allowlisting it with a live owner.
+   arm (catches `ModalResult.topology`). An undeclared write is a **separate registry** from the
+   field dispositions (it is keyed to writes, not to declared fields, so it can never satisfy
+   invariant 1's equality); it is resolved by declaring the field in the `.ri`, deleting the write,
+   or carrying an undeclared-write allowlist entry with a live owner.
 3. Every `degraded`-cited upgrade task and every `allowlisted` owner is live (not absent, `done`,
    or `cancelled`) at gate time.
 4. A structure constructed by two producers carries two independent declarations (the
@@ -212,9 +228,9 @@ Facing both sides of the producer seam.
 | V3 | Gate catches an undeclared write | fixture producer writes a field the `structure_def` lacks | PVAC reds, failure mode (b′) |
 | V4 | Gate catches a dead owner | flip a fixture allowlist entry's owner to `cancelled` | PVAC reds, failure mode (c) |
 | V5 | Gate catches overlap | one field in two sets | PVAC reds, failure mode (d) |
-| V6 | Real tree is green with the debt visible | main, seeded allowlist | `reify-audit --pattern PVAC` exits 0 **and reports the live allowlist** |
-| V7 | Degraded fields are honest on the production path | construct a degenerate/degraded result via the production entry (Rust-side test) | every `degraded`-declared field is `Value::Undef`, not a well-formed fake |
-| V8 | Populated means sampleable | the modal happy path | every `populated`-declared field of `ModalResult` holds a non-`Undef`, non-sentinel value |
+| V6 | Real tree is green with the debt visible | main, full family declared (δ precedes γ — see §10) | `reify-audit --pattern PVAC` exits 0 **and its stdout names each allowlist entry with its owner task id** — exit code alone cannot distinguish a working detector from a silent one (adversary finding ADV-γ-6) |
+| V7 | Degraded fields are honest on the production path | construct a degenerate/degraded result via the production entry (Rust-side test, **never release-gated** — the modal e2e suite is `#[ignore]`d in debug lanes, so a release-gated V7 would never run in a task lane) | every `degraded`-declared field is `Value::Undef`, not a well-formed fake |
+| V8 | Populated means the solve's own value | the modal happy path (Rust-side, never release-gated) | every `populated`-declared field holds a value the solve computed (e.g. `modes` non-empty with finite frequencies) — **not merely non-`Undef`/non-sentinel**, since `[]` and `0.0` satisfy that predicate while being exactly the fakes C2′ forbids (adversary fixtures `adv_beta_v7_degraded_arith.ri`, `adv_beta_v7_pm_is_real_zero.ri`) |
 | V9 | An empty scan cannot green | point discovery at a producer-free tree (hermetic fixture) | PVAC reds, failure mode (e) — never exit 0 on zero discovered producers |
 
 **G6 note.** No boundary test asserts a numeric bound, an exactness, or a rejection diagnostic — V1–V6
@@ -268,6 +284,22 @@ principle plus the INV-PD-2 entry are this PRD's deliverable; the INV-PD-1 entry
 close the measured gap (§header). Landing them as docs rather than as a leaf makes the principle
 citable by every PRD authored from today, including the in-flight siblings.
 
+**D8 — The allowlist IS the baseline (pinned at decompose, 2026-08-31).** No fingerprint baseline
+file, no baseline-generator bin, no baseline-freshness guard — the PTODO baseline apparatus
+(`ptodo-baseline.txt` + generator + freshness test) is NOT mirrored, because a second ratchet file
+would be a second source of truth over the same debt. Pinned here rather than left as an open
+question because the choice determines γ's own same-diff registration set (adversary finding
+ADV-γ-9): with D8, γ registers exactly one infra runner row and no baseline-artifact guards.
+
+**D9 — The vacuity floor requires new CLI plumbing; the "additive pattern" shape does not cover
+it (adversary finding ADV-γ-8, measured).** Every existing pattern dispatches
+`check(ctx) -> Vec<Finding>` from the `reify-audit` bin, which is findings-only: PTODO's own §6.6
+scan-stats floor lives in `check_with_stats` and is consumed **only by its test harness — the CLI
+never sees it** (measured: zero `check_with_stats` references in the bin/lib dispatch). C4′(e) as
+a *CLI-observable* failure mode therefore charters new work in γ: a stats-carrying dispatch for
+PVAC (and the floor asserts in both the CLI exit path and the infra runner). The §8 substrate
+claim is honest only with this carve-out.
+
 ## 7. Disposition table
 
 Every measured finding, with its exit. No finding is unassigned (D4).
@@ -275,9 +307,11 @@ Every measured finding, with its exit. No finding is unassigned (D4).
 | Finding | Disposition | Owner |
 |---|---|---|
 | `ModalResult.part` / `ForcingTimeHistory.part` / `DisplacementTimeHistory.part` | **allowlist** — join-key convergence on `GeometryHandleRef` when modal-on-real-geometry lands (§2.1 ratified direction) | whole-printer-modal decomposition (in flight); leaf ζ files the owner if absent at decompose time |
-| `ModalResult.topology` (written-but-undeclared, `Undef`) | **allowlist** under C1′-2 — populated form is `CarriedTopology` (R3b twin) | same owner as `.part` (one convergence, one owner) |
+| `ModalResult.topology` (written-but-undeclared, `Undef`) | **undeclared-write registry entry** (C1′-2's own arm — it is not a declared field, so it can never sit in the field allowlist; adversary finding ADV-β-3) — populated form is `CarriedTopology` (R3b twin) | same owner as `.part` (one convergence, one owner) |
 | `run_transient_response` `.part` re-echo identity discard | **allowlist** — rides the `.part` entry; noted for its owner | same owner |
-| `mechanism_modal` `Mode.shape` / `participation_mass` | **degraded** — lumped-model reason recorded; upgrade cited | **#7012** (pending) |
+| `mechanism_modal` `Mode.shape` / `participation_mass` | **allowlist** — the values are C2′ fakes (`[]`, `0`), so they cannot sit in `degraded` until #7012 rules and flips the form (§2.3) | **#7012** (pending; description covers this extent) |
+| `mechanism_modal` hard-coded `boundary_conditions = []` + `mass/stiffness_matrix_norm = 0.0` | **allowlist** — same fake-value family, adversary-measured (§2.3) | **#7012** (pending; description covers this extent) |
+| `degenerate_modal_result` / degenerate-builder fields (`modes=[]`, `bcs=[]`, `norms=0.0`) | **degraded** — error-path builder accompanied by its diagnostic; β flips remaining fakes to honest `Undef` **on the degenerate builders only** (error paths, minimal observable change) and records reasons | this PRD, leaf β |
 | buckling `pre_stress` / degenerate `damping` `Undef` convention | **degraded** — already honest; declarations land in δ | this PRD, leaf δ |
 | `placeholder_part()` plausible-fake form | tolerated under `.part`'s allowlist entry per C1′; the honest-form flip belongs to the owner | `.part`'s owner |
 | stale prose promises (§2.7) | **fix** — rewrite to cite live owners; delete false consumer claims | this PRD, leaf ε |
@@ -289,10 +323,12 @@ Every measured finding, with its exit. No finding is unassigned (D4).
 None blocking. `reify-audit` exposes the live per-pattern substrate (`Pattern` enum;
 `p1_producer_orphan.rs`, `ptodo.rs`, `puntested.rs`, `pdoccover.rs`, `pdssentinel.rs`, …), the
 `fused_memory_client` liveness lane is shipped (PTODO lane β precedent), and the baseline/ratchet
-precedents are live. No novel grammar — G3 N/A beyond the substrate named here (verified against
-the trampoline PRD §8's identical check). Two soft sequencing edges, wired as real dependencies at
-decompose: PVAC's declaration syntax follows **#7079** (PDROP α); PVAC's detector extends
-**#7085**'s (PDROP η) structure-reading + allowlist machinery.
+precedents are live — **with the D9 carve-out**: the findings-only `check(ctx)` dispatch shape
+covers failure modes (a)–(d), but the (e) vacuity floor needs new stats plumbing into the bin
+dispatch, chartered in γ. No novel grammar — G3 N/A beyond the substrate named here (verified
+against the trampoline PRD §8's identical check). Two soft sequencing edges, wired as real
+dependencies at decompose: PVAC's declaration syntax follows **#7079** (PDROP α); PVAC's detector
+extends **#7085**'s (PDROP η) structure-reading + allowlist machinery.
 
 ## 9. Cross-PRD relationship
 
@@ -311,18 +347,21 @@ adds none).
 ## 10. Decomposition plan
 
 Phase 1 — foundation. Phase 2 — vertical slice proving the contract on the modal family. Phase 3 —
-detector + sweep. Phase 4 — docs-truth + close. (The umbrella + invariant entries are **not**
-leaves — they land with this PRD's commit, D7.)
+full-family declarations, **then** the detector (δ precedes γ: adversary finding ADV-γ-7 falsified
+the reverse order — with only the modal family declared, PVAC's real-tree run would red mode (a)
+on the ~21 undeclared files, or the gate would have to be vacuous; the sweep is mechanical once α
+exists, so it lands first and γ's real-tree green is honest). Phase 4 — docs-truth + close. (The
+umbrella + invariant entries are **not** leaves — they land with this PRD's commit, D7.)
 
 | Label | Task | Modules | Observable signal | Prereqs |
 |---|---|---|---|---|
-| α | Field-disposition declaration mechanism (C1′), following PDROP's syntax convention | `reify-eval`, `reify-stdlib` | declaration compiles on the modal producers and is consumable by a reader fn; unlocks β/γ | **#7079** |
-| β | Vertical slice: modal family fully declared + V7/V8 boundary tests | `reify-eval` (modal_ops) | V7 + V8 pass; the modal declarations carry the §7 dispositions (`.part`/`.topology` allowlisted, #7012 degraded) | α |
-| γ | `reify-audit --pattern PVAC` + allowlist + liveness + infra ratchet runner, **drift-guard registrations in γ's own diff** (run-all-classification manifest row; wallclock registration if any elapsed-time assertion is added — the esc-4914-162 lesson, same-diff not prose-ordered) | `reify-audit`, `tests/infra/` | V1–V6 pass; `/audit --pattern PVAC` reports the live allowlist | α, β, **#7085** |
-| δ | Full-family sweep: dispositions declared for every §2.5 producer file | `reify-eval`, `reify-stdlib` | PVAC exits 0 on the real tree with the complete ~22-file family covered; the allowlist report enumerates every seeded entry with a live owner | α, γ |
-| ε | Doc-truth cleanup: rewrite the §2.7 stale promises to cite live owners; delete the false θ/ι consumer claim; fix `placeholder_part` rustdoc | `reify-compiler` stdlib, `reify-eval` | no doc comment in `modal_analysis.ri`/`modal_ops.rs` cites a terminal task as a future owner; the ζ-filed owners are cited instead | ζ |
-| ζ — discharged at decompose | File the owners + bookmarks: `.part`/`.topology` owner if the whole-printer decomposition hasn't landed one; the PTODO-prose-grammar bookmark (D6) | — (task-filing) | every §7 allowlist entry names a live task; the bookmark exists | — |
-| η | PRD-close: terminal stamp + census-status refresh | this PRD + manifest + `design-invariants.md` census column | committed `SHIPPED` header with landed leaf ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map; the umbrella census table's PVAC row flipped chartered→shipped | all above |
+| α #7099 | Field-disposition declaration mechanism (C1′), following PDROP's syntax convention | `reify-eval`, `reify-stdlib` | declaration compiles on the modal producers and is consumable by a reader fn; unlocks β/δ/γ | **#7079** |
+| β #7100 | Vertical slice: modal family fully declared + V7/V8 boundary tests (Rust-side, never release-gated) + honest-`Undef` flips on the **degenerate builders only** | `reify-eval` (modal_ops) | V7 + V8 pass; the modal declarations carry the §7 dispositions (`.part` allowlisted to #7097, `.topology` in the undeclared-write registry, the mechanism-modal fake family allowlisted to #7012) | α |
+| δ #7101 | Full-family sweep: dispositions declared for every §2.5 producer file (intermediate — unlocks γ's honest real-tree green) | `reify-eval`, `reify-stdlib` | declarations compile across the full ~22-file family; the reader fn enumerates them; consumer: γ | α, β |
+| γ #7102 | `reify-audit --pattern PVAC` + allowlist + liveness + stats-carrying dispatch (D9) + infra ratchet runner, **drift-guard registrations in γ's own diff** (run-all-classification manifest row; wallclock registration if any elapsed-time assertion is added — the esc-4914-162 lesson, same-diff not prose-ordered; per D8 no baseline-artifact guards exist to register) | `reify-audit`, `tests/infra/` | V1–V6 + V9 pass; `reify-audit --pattern PVAC` exits 0 on the real tree with stdout naming each allowlist entry + owner id; `/audit` routes the pattern. Unknown-pattern discrimination: `--pattern PVAC` before γ exits 125 ("unknown pattern"), after γ it is an accepted value — tests must distinguish exit 1 (findings) from exit 125 (no such pattern) | α, δ, **#7085** |
+| ε #7103 | Doc-truth cleanup: rewrite the §2.7 stale promises to cite live owners; delete the false θ/ι consumer claim; fix `placeholder_part` rustdoc | `reify-compiler` stdlib, `reify-eval` | no doc comment in `modal_analysis.ri`/`modal_ops.rs` cites a terminal task as a future owner; the ζ-filed owner #7097 is cited instead | ζ |
+| ζ — discharged at decompose: **#7097** (`.part`/`.topology` owner, filed **deferred** as a trigger-gated bookmark; the whole-printer-modal decomposition adopts or rescopes it), **#7098** (PTODO-prose-grammar bookmark, D6), **#7012 rewritten** to cover the §2.3 extent | File the owners + bookmarks | — (task-filing) | every §7 allowlist entry names a live task whose text covers the entry's extent; the bookmark exists | — |
+| η #7105 | PRD-close: terminal stamp + census-status refresh | this PRD + manifest + `design-invariants.md` census column | committed `SHIPPED` header with landed leaf ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map; the umbrella census table's PVAC row flipped chartered→shipped | all above |
 
 ## 11. Out of scope
 
@@ -344,12 +383,11 @@ leaves — they land with this PRD's commit, D7.)
 
 1. **Declaration syntax.** Follows #7079's resolution (const table vs macro). Adopt whichever PDROP
    lands; decide the PVAC-side reader in α.
-2. **Allowlist-as-baseline.** Whether PVAC needs a fingerprint baseline file or the allowlist *is*
-   the baseline. **Suggested resolution:** the allowlist is the baseline (a second ratchet file
-   would be a second source of truth — the same suggested resolution as PDROP's open question 3).
-   Decide in γ.
+2. ~~Allowlist-as-baseline~~ — **pinned as D8 at decompose** (the allowlist is the baseline; no
+   second ratchet file). Removed from the open set because it determines γ's same-diff
+   registration obligations (ADV-γ-9).
 3. **Whether `topology` becomes a declared `.ri` field** when its populated form arrives, or stays
-   an engine-attached extra. The allowlist owner's call; C1′-2 accepts either exit.
+   an engine-attached extra. The undeclared-write owner's call; C1′-2 accepts either exit.
 4. **Discovery convention for producers not using the `u32::MAX` idiom** (registry-backed
    construction of `.ri`-declared result structures, if any exist). **Suggested resolution:** δ's
    sweep measures; if found, either declare them too or pin the idiom as mandatory for result
