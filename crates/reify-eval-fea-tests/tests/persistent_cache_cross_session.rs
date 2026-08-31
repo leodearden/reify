@@ -11,11 +11,51 @@
 //! `persistent_cache_compute_round_trip.rs` and this crate's
 //! `buckling_persistent_cache_round_trip.rs`) already establish that a fresh
 //! engine on a warm cache dir HITS, and that one headline scalar survives.
-//! They stop there. The layer above is what this file pins:
+//! They stop there. The layer above is what this file pins — one bullet per
+//! `#[test]` in this binary, in source order:
 //!
-//! * **case 1** — a HIT leaves the on-disk entry byte-for-byte untouched, and
-//!   the reconstructed `Value` is bit-identical across the whole `displacement`
+//! * **case 1** (`cross_session_hit_returns_byte_identical_entry_and_does_not_rewrite_it`)
+//!   — a HIT leaves the on-disk entry byte-for-byte untouched, and the
+//!   reconstructed `Value` is bit-identical across the whole `displacement`
 //!   and `stress` slabs, not merely to a tolerance on one scalar.
+//! * **case 2** (`engine_version_bump_misses_cold_solves_and_leaves_old_subdir_until_sweep_prunes_it`)
+//!   — an engine-version bump MISSES and cold-solves into a new subdir, and the
+//!   superseded subdir survives its 30-day `ORPHAN_DIR_AGE` grace before the
+//!   startup sweep prunes it (grace-then-prune, never immediate).
+//! * **case 5** (`crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entries`)
+//!   — a crashed writer's debris degrades to a cold solve rather than an error
+//!   (`Ok(None)`, not `Err`), a fresh tempfile inside the 1-hour
+//!   `STALE_TEMPFILE_AGE` grace is preserved, an aged one is swept, and a live
+//!   sibling entry in the same shard is untouched throughout.
+//!
+//! Keep this list in step with the `#[test]` fns below; it is the file's index.
+//!
+//! ## Not here: PRD case 4 (cost-aware eviction)
+//!
+//! Case 4 was drafted in this binary and then removed as lockstep duplication
+//! — the same G7 reasoning case 5 already applies to its own unit-covered
+//! parts. Eviction has no composed-layer surface reachable from here: there is
+//! no `Engine` path to it at all (the PRD's "opportunistic on write" trigger is
+//! unwired — esc-2980-1/-2/-3, task #6639), so a test in this file could only
+//! call `evict_over_cap`/`eviction_score` directly, with no `Engine` in the
+//! picture, which is not what this binary is for.
+//!
+//! The policy is owned, more strongly, by:
+//!
+//! * `evict_over_cap_evicts_cheap_stale_first_keeps_expensive_old_removes_meta_and_respects_engine_version_scope`
+//!   (`crates/reify-eval/src/persistent_cache.rs:3482`) and its 13 sibling
+//!   `evict_over_cap_*` unit tests, which pin the discriminating property
+//!   (cost-aware score beats naive LRU: the cheap-but-NEWER entry is evicted
+//!   first), the `.meta`-with-`.bin` removal, engine-version scoping, the
+//!   `EvictionReport` fields, and shard-dir prune-vs-preserve. They backdate to
+//!   a fixed epoch base, so they carry no drift margin against
+//!   `evict_over_cap`'s internal `SystemTime::now()` — the draft here needed a
+//!   hand-tuned >= 10x score separation and had already been observed at
+//!   9.99993x.
+//! * `cache_gc_evicts_when_forced_over_cap`
+//!   (`crates/reify-cli/tests/harness_cli/cli_cache.rs:1391`) for the composed
+//!   pin, at the one surface that actually reaches eviction in production:
+//!   `reify cache gc`.
 //!
 //! ## Dispatch-count probe
 //!
@@ -201,7 +241,17 @@ fn bin_input_hash(bin: &std::path::Path) -> String {
 /// invisible from an integration test in another crate — `cfg(test)` applies
 /// only when reify-eval is itself the crate under test, not when it is a
 /// dev-dependency. This is a deliberate mirror of that helper, not an
-/// accidental duplicate; keep the two bodies in step if either changes.
+/// accidental duplicate.
+///
+/// "Keep the two bodies in step" is an unenforced obligation and will rot. The
+/// DURABLE fix is to widen the upstream gate from `#[cfg(test)]` to
+/// `#[cfg(any(test, feature = "test-instrumentation"))]` and delete this copy
+/// in favour of an import — exactly the pattern this crate's own `Cargo.toml`
+/// already documents for `cache_store()`, and whose `test-instrumentation`
+/// feature this crate already enables. That edit lands in
+/// `crates/reify-eval/src/persistent_cache.rs`, which is production source and
+/// outside task #2980's test-only scope, so it is deliberately NOT made here.
+/// A future author touching either body should do that instead of re-syncing.
 ///
 /// Directories are opened read-only and regular files write-only: on Linux
 /// `futimens` requires only ownership of the inode, not write access on the
@@ -223,42 +273,6 @@ fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
             .expect("opening a file write-only must succeed")
     };
     f.set_times(times).expect("set_times must succeed");
-}
-
-/// Seed one cache entry and age it, returning its on-disk `.bin` size.
-///
-/// The age is applied to the `.meta` SIDECAR, not the `.bin`: that sidecar's
-/// mtime is the last-access signal `evict_over_cap` reads via
-/// `read_sidecar_mtime`, which falls back to the `.bin` mtime only when the
-/// sidecar is absent. Backdating the sidecar is therefore what actually moves
-/// an entry's `eviction_score`.
-///
-/// The returned `.bin` size is what lets a caller derive a cap from real
-/// on-disk footprints instead of guessing at one — the eviction loop stops the
-/// moment `remaining <= cap`, so a guessed cap silently changes how many
-/// entries are evicted.
-fn seed_entry(root: &std::path::Path, hash: &str, solve_time_ms: u64, age_secs: u64) -> u64 {
-    use reify_eval::persistent_cache::{entry_bin_path, entry_meta_path, write_entry};
-
-    write_entry(
-        root,
-        ENGINE_VERSION_HASH,
-        hash,
-        &make_elastic_result_fixture(solve_time_ms),
-    )
-    .expect("seeding a cache entry must succeed");
-
-    let meta = entry_meta_path(root, ENGINE_VERSION_HASH, hash);
-    assert!(
-        meta.is_file(),
-        "write_entry must leave a .meta sidecar for {hash}, or the backdate below \
-         would silently age nothing",
-    );
-    backdate_mtime(&meta, age_secs);
-
-    std::fs::metadata(entry_bin_path(root, ENGINE_VERSION_HASH, hash))
-        .expect("a seeded entry must have a .bin on disk")
-        .len()
 }
 
 /// Extract `max_von_mises` as a raw bit pattern.
@@ -845,191 +859,5 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     assert!(
         good_meta.is_file(),
         "the good entry's .meta sidecar must survive the sweep intact",
-    );
-}
-
-/// Case 4 — eviction order follows the cost-aware score, and an entry that was
-/// expensive to solve and recently used survives a cap squeeze.
-///
-/// `evict_over_cap` is driven DIRECTLY here, which is the same entry point
-/// `reify cache gc` uses (`crates/reify-cli/src/cache.rs:226`). That is
-/// deliberate and is the only way to reach eviction today: the PRD's
-/// "opportunistic on write" trigger
-/// (`docs/prds/v0_3/persistent-fea-cache.md` §"GC policy") is NOT wired — the
-/// engine's persistent-write hook never checks directory size — so this test
-/// must not be read as evidence that a write triggers eviction. That gap is
-/// tracked separately (esc-2980-1/-2/-3, task #6639).
-///
-/// The cap is computed from REAL on-disk `.bin` footprints rather than guessed,
-/// and the four fixtures' scores are separated by at least 10x. Both choices are
-/// load-bearing; see the comments at each.
-///
-/// The 25 GiB default cap is deliberately NOT re-pinned here — `reify-config`'s
-/// own `resolve_cache_all_defaults()` test already owns that constant, and
-/// restating it would be lockstep duplication.
-#[test]
-fn eviction_order_follows_score_and_expensive_recent_entries_survive() {
-    use reify_eval::persistent_cache::{
-        entry_bin_path, entry_meta_path, evict_over_cap, eviction_score,
-    };
-
-    let tmp = tempfile::TempDir::new().expect("tmp dir creation must succeed");
-    let root = tmp.path();
-
-    // ── Four fixtures whose scores are separated by >= 10x ──────────────────
-    //
-    // score = age_secs / max(solve_time_ms, 1)   (persistent_cache.rs:1371-1381)
-    //
-    //   cheap_old          1 ms, 1_000_000 s -> 1e6     evicted 1st
-    //   expensive_old  1_000 ms, 1_000_000 s -> 1e3     evicted 2nd
-    //   cheap_recent       1 ms,        10 s -> 1e1     survives
-    //   expensive_recent 1_000 ms,       1 s -> 1e-3    survives (lowest score)
-    //
-    // WHY THE >= 10x SEPARATION IS REQUIRED, and why a future author must not
-    // tighten these fixtures: `evict_over_cap` takes its own `SystemTime::now()`
-    // internally (persistent_cache.rs:1224) and there is no injectable clock, so
-    // the ages it computes differ from the ones computed here by however long
-    // the test takes to reach the call. A 10x margin makes the ORDER immune to
-    // that drift; scores closer than that would turn this into a flake.
-    //
-    // The gaps above are 1000x / 100x / 10000x — deliberately well clear of the
-    // 10x floor rather than sitting on it. An earlier draft used RECENT_SECS =
-    // 100, which puts expensive_old and cheap_recent at EXACTLY 10x; the drift
-    // then lands the measured ratio a hair BELOW the floor (observed: 1000.0000
-    // vs 100.0070, i.e. 9.99993x). Do not tune these back toward the boundary.
-    //
-    // Note the drift is additive and identical for all four entries (one `now`
-    // advances), so it is the SMALLEST nominal age that is most distorted by it
-    // — which is why the lowest-scoring entry gets the largest relative gap.
-    const CHEAP_MS: u64 = 1;
-    const EXPENSIVE_MS: u64 = 1_000;
-    const OLD_SECS: u64 = 1_000_000;
-    const RECENT_SECS: u64 = 10;
-    const VERY_RECENT_SECS: u64 = 1;
-
-    let cheap_old = "aa".to_string() + &"0".repeat(30);
-    let expensive_old = "bb".to_string() + &"0".repeat(30);
-    let cheap_recent = "cc".to_string() + &"0".repeat(30);
-    let expensive_recent = "dd".to_string() + &"0".repeat(30);
-
-    let size_cheap_old = seed_entry(root, &cheap_old, CHEAP_MS, OLD_SECS);
-    let size_expensive_old = seed_entry(root, &expensive_old, EXPENSIVE_MS, OLD_SECS);
-    let size_cheap_recent = seed_entry(root, &cheap_recent, CHEAP_MS, RECENT_SECS);
-    let size_expensive_recent = seed_entry(root, &expensive_recent, EXPENSIVE_MS, VERY_RECENT_SECS);
-
-    // ── (a) The expected order IS score-descending, per the public formula ───
-    //
-    // Scored through `eviction_score` itself rather than by restating the
-    // arithmetic, so this pins the shipped formula through its own public API.
-
-    let now = std::time::SystemTime::now();
-    let mut scored: Vec<(f64, &str)> = [
-        (&cheap_old, CHEAP_MS),
-        (&expensive_old, EXPENSIVE_MS),
-        (&cheap_recent, CHEAP_MS),
-        (&expensive_recent, EXPENSIVE_MS),
-    ]
-    .iter()
-    .map(|(hash, solve_ms)| {
-        let last_access = std::fs::metadata(entry_meta_path(root, ENGINE_VERSION_HASH, hash))
-            .expect("every seeded entry must have a .meta sidecar")
-            .modified()
-            .expect("the .meta sidecar must expose an mtime");
-        (eviction_score(now, last_access, *solve_ms), hash.as_str())
-    })
-    .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("no NaN scores"));
-
-    let order: Vec<&str> = scored.iter().map(|(_, h)| *h).collect();
-    assert_eq!(
-        order,
-        vec![
-            cheap_old.as_str(),
-            expensive_old.as_str(),
-            cheap_recent.as_str(),
-            expensive_recent.as_str(),
-        ],
-        "score-descending order must be cheap+old, expensive+old, cheap+recent, \
-         expensive+recent — scores were {:?}",
-        scored.iter().map(|(s, _)| *s).collect::<Vec<f64>>(),
-    );
-    for pair in scored.windows(2) {
-        assert!(
-            pair[0].0 >= pair[1].0 * 10.0,
-            "adjacent scores must stay >= 10x apart or this test becomes a flake \
-             against evict_over_cap's internal clock: {} vs {}",
-            pair[0].0,
-            pair[1].0,
-        );
-    }
-
-    // ── (b) Squeeze the cap to exactly the two survivors' footprint ──────────
-    //
-    // Derived from measured `.bin` sizes, not guessed: the loop stops as soon as
-    // `remaining <= cap`, so a cap of exactly size(cheap_recent) +
-    // size(expensive_recent) forces precisely two evictions.
-
-    let cap = size_cheap_recent + size_expensive_recent;
-    let total = size_cheap_old + size_expensive_old + cap;
-    assert!(
-        cap < total,
-        "test invariant: the cap ({cap}) must be below the total footprint ({total}), \
-         or nothing would be evicted",
-    );
-
-    let report = evict_over_cap(root, ENGINE_VERSION_HASH, cap).expect("eviction must succeed");
-    assert_eq!(
-        report.evicted_count, 2,
-        "exactly the two highest-scoring entries must be evicted",
-    );
-    assert_eq!(
-        report.evicted_bytes,
-        size_cheap_old + size_expensive_old,
-        "evicted_bytes must be the summed .bin footprint of the two highest-scoring entries",
-    );
-    assert!(
-        report.remaining_bytes <= cap,
-        "eviction must bring the footprint to or below the cap: {} > {cap}",
-        report.remaining_bytes,
-    );
-
-    // ── (c) Survivorship, and eviction removes the .bin/.meta PAIR ───────────
-
-    for evicted in [&cheap_old, &expensive_old] {
-        assert!(
-            read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, evicted)
-                .expect("read_entry must not error on an evicted entry")
-                .is_none(),
-            "an evicted entry must read as a cache MISS: {evicted}",
-        );
-        assert!(
-            !entry_bin_path(root, ENGINE_VERSION_HASH, evicted).exists(),
-            "eviction must remove the .bin: {evicted}",
-        );
-        assert!(
-            !entry_meta_path(root, ENGINE_VERSION_HASH, evicted).exists(),
-            "eviction must remove the .meta sidecar alongside its .bin: {evicted}",
-        );
-    }
-
-    // THE COST-AWARENESS CLAIM: the entry that was expensive to solve and
-    // recently used is the one that survives — that is the whole point of
-    // weighting the score by solve time rather than using plain LRU.
-    let survivor: ElasticResult = read_entry(root, ENGINE_VERSION_HASH, &expensive_recent)
-        .expect("read_entry must not error on the expensive-recent entry")
-        .expect("the expensive, recently-used entry must survive the cap squeeze");
-    assert_eq!(
-        survivor.solve_time_ms, EXPENSIVE_MS,
-        "the surviving entry must be the expensive one, not a same-shaped cheap one",
-    );
-    assert!(
-        entry_meta_path(root, ENGINE_VERSION_HASH, &expensive_recent).exists(),
-        "the survivor's .meta sidecar must survive eviction",
-    );
-    assert!(
-        read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &cheap_recent)
-            .expect("read_entry must not error on the cheap-recent entry")
-            .is_some(),
-        "the cheap but recently-used entry is under the cap and must also survive",
     );
 }
