@@ -407,8 +407,13 @@ script's `${REIFY_...:-<literal>}` fallback.)
 ## 5. Scope bound
 
 **Task 5608 does not by itself eliminate the cost of a contended 30s lock
-wait.** The spurious `merge_error` it was originally scoped against is gone —
-DF task 3003 reclassified that timeout as a defer (§1, §4(b)). What a reify-side
+wait.** The spurious `merge_error` it was originally scoped against is gone
+**on the merge-worker path**, within the bounds §1 now enumerates — DF task
+3003 reclassified that timeout as a defer (§1, §4(b)), though the defer's own
+4h cap still ends in a terminal `blocked` (signature-distinct, so it cannot
+re-feed the thrash ladder) and a separate acquirer, `cli.py` `verify-merge`'s
+flock-contention gate, still ends in a terminal `blocked` with a constant,
+thrash-eligible signature (§1's closing paragraphs). What a reify-side
 primitive still cannot fix alone is the wait: with no pre-dispatch consult, DF
 burns the full 30s bounded wait on an inode it could have known was held, then
 pays a requeue and re-dispatch cycle. Task 5608 ships the primitive and pins
