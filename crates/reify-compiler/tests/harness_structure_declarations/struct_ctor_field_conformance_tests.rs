@@ -2599,6 +2599,67 @@ fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
     );
 }
 
+const SRC_POINT3_CROSS_DIMENSION_AT_DIMENSIONED: &str = r#"module test.point3_cross_dimension_at_dimensioned
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: point3(1kg, 0kg, 0kg))
+}
+"#;
+
+/// THE CROSS-DIMENSION LEG of the quantity rule at the `Point` arm, `.ri`/ctor
+/// seam: a `point3` whose components carry a dimension that DISAGREES with the
+/// param's quantity slot is rejected — reached from real source, not from a
+/// hand-built `Type`.
+///
+/// The `.ri` twin of `conformance/mod.rs`'s
+/// `point_param_rejects_cross_dimension_point_arg`, exactly as
+/// [`vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch`]
+/// twins the `Vector` arm's probe one arm over. The two seams reach the same
+/// arm by DIFFERENT routes and both are worth holding: the in-module probe
+/// constructs the `Type::Point` directly, so it pins the walker's rule without
+/// depending on `math_fn_result_type`'s first-argument quantity inference (task
+/// 5889's to change); this fixture drives that whole inference chain from `.ri`
+/// source, so it is the one that would notice if the chain stopped producing a
+/// dimensioned `Type::Point` at all.
+///
+/// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
+/// "argument 'origin' has quantity 'Scalar[kg]' but param 'origin' requires
+/// quantity 'Scalar[m]'". Zero compile errors, so `Point3<Length>` resolves as a
+/// param spelling and `point3(1kg, 0kg, 0kg)` genuinely compiles and types as
+/// `Type::Point { n: 3, quantity: Scalar[kg] }`.
+///
+/// **This fixture passes on arrival, and that is its point.** The capability
+/// landed with task 5344 (`3c4ee5e9ac`), which claimed `point3` / `point2` into
+/// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"`
+/// arm. Before 5344 the arm returned the expression compiler's numeric fallback
+/// and the rationale blocks around the `Point` probes said in as many words that
+/// "no `.ri` source can produce a *dimensioned* `Type::Point` arg". This fixture
+/// is the standing evidence that the premise is dead, so it cannot be
+/// re-asserted from prose alone.
+#[test]
+fn point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // LOAD-BEARING twice over here: a `Point3<Length>` param that failed to
+    // resolve, or a `point3(…)` call that failed to compile, would emit zero
+    // ctor-conformance diagnostics and read as a RULE failure rather than a
+    // broken fixture.
+    let module = compile_source_with_stdlib(SRC_POINT3_CROSS_DIMENSION_AT_DIMENSIONED);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The `_in` variant so the guard above and the assertion share that one
+    // compile of the source plus the whole stdlib.
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "origin",
+        "Scalar[m]",
+        "Scalar[kg]",
+        "Point3<Length> ← Point3<Mass>",
+    );
+}
+
 const SRC_VECTOR_GIVEN_STRING: &str = r#"module test.vector_string
 structure def Joint { param axis : Vector3<Length> }
 structure def Root {
