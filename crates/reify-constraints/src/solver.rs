@@ -1302,16 +1302,18 @@ fn resolve_bounds(
 /// unlike a CLAMP target (`resolve_bounds`'s `include_strict = false`
 /// callers), which must never cross a strict inequality boundary.
 ///
-/// Shared verbatim by [`multistart_points`] (the multistart corner/midpoint
-/// anchors) and `verify_uniqueness` (the perturbation anchor), per task
-/// #5711: keeping the derivation in exactly one place means a future change
-/// to which constraint set feeds it (e.g. the synthesised robustness floor)
-/// cannot silently diverge between the two call sites.
+/// Used by [`multistart_points`] (the multistart corner/midpoint anchors);
+/// `verify_uniqueness` (the perturbation anchor) produces the SAME box, but
+/// derives its intervals itself — it needs them raw for its γ branch too — and
+/// composes them through this function's [`seed_box_from_intervals`] half. Per
+/// task #5711 the two boxes must not diverge: a future change to which
+/// constraint set feeds the derivation, or to the `include_strict` choice, has
+/// exactly one place to land for both call sites.
 fn derived_seed_box(
     problem: &ResolutionProblem,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Vec<(f64, f64)> {
-    resolve_bounds(
+    seed_box_from_intervals(
         &problem.auto_params,
         &derive_param_intervals(
             &problem.auto_params,
@@ -1320,31 +1322,68 @@ fn derived_seed_box(
             &problem.functions,
             dispatch,
         ),
-        true,
     )
+}
+
+/// The COMPOSE half of [`derived_seed_box`], split out for a caller that has
+/// already derived the intervals and needs them for a second purpose (today:
+/// `verify_uniqueness`, whose γ branch reads the RAW `None`s that composing
+/// through [`resolve_bounds`] would erase).
+///
+/// The split exists so that caller can derive ONCE instead of twice while the
+/// `include_strict = true` decision — the thing that actually distinguishes a
+/// SEED box from a CLAMP box, and the divergence [`derived_seed_box`]'s doc
+/// warns about — still lives in exactly one place. Deriving separately at each
+/// call site is what would let the two boxes drift; re-COMPOSING from the same
+/// intervals through this one function cannot.
+fn seed_box_from_intervals(
+    auto_params: &[AutoParam],
+    intervals: &[DerivedInterval],
+) -> Vec<(f64, f64)> {
+    resolve_bounds(auto_params, intervals, true)
 }
 
 /// Auto-param indices that appear in at least one constraint conjunct the bound
 /// derivation could NOT read as a bound on them (task #5711, esc-5711-3).
 ///
-/// [`derive_from_expr`]/[`derive_from_side`] recognise only three syntactic
-/// shapes (`p OP c`, `p − k OP c`, `k − p OP c`) on `Ge`/`Gt`/`Le`/`Lt` with a
-/// CONSTANT, auto-free far operand. Every other legitimate way a user can bound
-/// a param derives to `None`:
+/// **The rule is GENERAL, and its reach is wide.** A param is recorded here
+/// whenever some leaf conjunct MENTIONS it (via
+/// `CompiledExpr::collect_value_refs`, which walks every expression kind) while
+/// yielding NO bound at all for it. That is deliberately not a list of
+/// enumerated shapes: [`derive_from_expr`]/[`derive_from_side`] recognise only
+/// `p OP c`, `p − k OP c` and `k − p OP c` on `Ge`/`Gt`/`Le`/`Lt` with a
+/// CONSTANT, auto-free far operand, so *everything else* a user can legitimately
+/// write derives to `None` and abstains. Examples, NOT an exhaustive taxonomy:
 ///
 /// - `Eq` is skipped outright by the op rule, yet `constraint x == 10mm` is the
 ///   canonical DSL way to determine a strict auto
 ///   (`examples/auto_binding_sites.ri`);
 /// - coefficient/nonlinear forms (`2*t > 3mm`, `t*t > 4`) match no shape;
 /// - a COUPLED bound (`y < 5mm - x`) has a far operand naming another auto, so
-///   [`constant_operand_value`] rejects it for BOTH params.
+///   [`constant_operand_value`] rejects it for BOTH params;
+/// - `Or` is skipped by the same op rule as `Eq` (it is not split like `And`),
+///   so a disjunctive conjunct abstains for every param it mentions;
+/// - a SUM constraint (`x + y > 1mm`) puts the param inside an unrecognised
+///   near-side expression;
+/// - a DISPATCH-BACKED predicate (`stress(t) < LIMIT`, the FEA shape this
+///   crate's own `fea_binding_problem` fixture uses) is unreadable on BOTH
+///   sides: `derive_from_side` cannot see a `Call` on the near side, and
+///   [`constant_operand_value`] rejects a far side naming the auto.
 ///
 /// Those `None`s are derivation BLIND SPOTS, not evidence that the user left a
 /// side unbounded — the distinction [`strict_autos_constraint_bracketed`] needs
 /// in order to reserve its `false` verdict for params positively confirmed
-/// unbounded. A param is recorded here when some conjunct MENTIONS it (via
-/// `CompiledExpr::collect_value_refs`, which walks every expression kind, not
-/// just the three shapes) while yielding NO bound at all for it.
+/// unbounded.
+///
+/// ACCEPTED CONSEQUENCE (review, robustness): because the rule is general, a γ
+/// model carrying ONE unreadable constraint abstains for every strict auto that
+/// constraint mentions — including one whose sides really are
+/// [`default_bounds_for`]'s. That over-abstention is the deliberate direction of
+/// error: it can only turn a `ConstraintNonUnique` error into a `Solved`
+/// verdict, never the reverse, and the alternative (reading a blind spot as
+/// evidence) was MEASURED to reject valid, bounded models. Narrowing it means
+/// teaching [`derive_from_expr`] the missing shapes, not tightening the test
+/// here.
 ///
 /// Conjuncts are split on `And` before the test, mirroring
 /// [`derive_from_expr`]'s own recursion: in `x > 1mm AND y < 5mm - x` the first
@@ -1369,13 +1408,18 @@ fn params_in_underivable_constraints(
         .enumerate()
         .map(|(i, p)| (p.id.clone(), i))
         .collect();
+    // One scratch buffer for the whole walk, reset per leaf conjunct rather than
+    // reallocated (review suggestion 1): `collect_underivable` scores EVERY leaf,
+    // so a per-leaf `vec![DerivedInterval::default(); n]` allocated a fresh Vec
+    // for each conjunct of every constraint.
+    let mut scratch = vec![DerivedInterval::default(); auto_params.len()];
     for (_, expr) in constraints {
         collect_underivable(
             expr,
             &auto_index,
             values,
             functions,
-            auto_params.len(),
+            &mut scratch,
             &mut out,
             dispatch,
         );
@@ -1386,12 +1430,17 @@ fn params_in_underivable_constraints(
 /// Recursive worker for [`params_in_underivable_constraints`]: splits on `And`,
 /// then scores one leaf conjunct by re-running [`derive_from_expr`] on it into a
 /// scratch buffer and comparing what it bounded against what it mentions.
+///
+/// `scratch` is caller-owned and RESET (not reallocated) at each leaf; it must be
+/// `auto_params.len()` long, since `derive_from_expr` indexes it by auto index.
+/// Its contents carry no meaning across leaves — the per-conjunct granularity
+/// documented on [`params_in_underivable_constraints`] depends on the reset.
 fn collect_underivable(
     expr: &CompiledExpr,
     auto_index: &HashMap<ValueCellId, usize>,
     values: &ValueMap,
     functions: &[CompiledFunction],
-    n_params: usize,
+    scratch: &mut [DerivedInterval],
     out: &mut HashSet<usize>,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
@@ -1401,12 +1450,12 @@ fn collect_underivable(
         right,
     } = &expr.kind
     {
-        collect_underivable(left, auto_index, values, functions, n_params, out, dispatch);
-        collect_underivable(right, auto_index, values, functions, n_params, out, dispatch);
+        collect_underivable(left, auto_index, values, functions, scratch, out, dispatch);
+        collect_underivable(right, auto_index, values, functions, scratch, out, dispatch);
         return;
     }
-    let mut scratch = vec![DerivedInterval::default(); n_params];
-    derive_from_expr(expr, auto_index, values, functions, &mut scratch, dispatch);
+    scratch.fill(DerivedInterval::default());
+    derive_from_expr(expr, auto_index, values, functions, scratch, dispatch);
     for id in expr.collect_value_refs() {
         if let Some(&i) = auto_index.get(&id)
             && scratch
@@ -1437,9 +1486,11 @@ fn collect_underivable(
 ///   non-determinedness §11.6 exists to catch.
 /// - A side missing but the param present in `underivable` ⇒ ABSTAIN, counting
 ///   the param as bracketed (esc-5711-3). The `None` there is a derivation
-///   BLIND SPOT, not evidence about the user's model: `Eq`, coefficient,
-///   nonlinear and coupled bounds are all invisible to
-///   [`derive_param_intervals`] (see [`params_in_underivable_constraints`]),
+///   BLIND SPOT, not evidence about the user's model: everything outside
+///   [`derive_from_side`]'s three recognised shapes — `Eq`, coefficient,
+///   nonlinear, coupled, `Or`, sum and dispatch-backed predicates among them —
+///   is invisible to [`derive_param_intervals`], and that list is a set of
+///   EXAMPLES, not a taxonomy (see [`params_in_underivable_constraints`]),
 ///   and letting one masquerade as "the user did not bound this side" converts
 ///   a valid, bounded γ model into a user-facing `error: strict auto parameter
 ///   resolution is not uniquely determined`. MEASURED before the fix, on this
@@ -1453,6 +1504,45 @@ fn collect_underivable(
 /// interval data at all": in the coupled example above `x` has a readable
 /// lower bound and only its upper side is opaque, so an all-or-nothing
 /// abstention test would still have errored on it.
+///
+/// MONOTONE in `underivable`: growing that set can only move a param from "not
+/// bracketed" to "abstain", never the reverse, so the verdict can only go
+/// `false` → `true`. `verify_uniqueness` RELIES on this — it evaluates the
+/// predicate against an empty set first and only builds the (per-conjunct,
+/// eval-heavy) evidence set if that first answer is `false`. Keep the
+/// `underivable.contains(&i) || …` shape; a rule that let the evidence set
+/// REMOVE a bracketing would silently break that short-circuit.
+/// `strict_autos_constraint_bracketed_abstains_for_underivable_param` pins both
+/// directions on one fixture.
+///
+/// # Known, ACCEPTED gap: a blend that is FLAT over the bracket
+///
+/// This predicate answers §11.6 test (2) from the CONSTRAINTS alone; it never
+/// evaluates the objective. That is exact only when the blend actually has a
+/// unique argmin over the derived interval. When the γ cost expression does not
+/// reference a bracketed strict auto (or ties across its interval) the argmin is
+/// a SET, not a point, and this reports `true` — where the non-γ path's
+/// [`classify_uniqueness`] tie arm deliberately reports `NonUnique` for the
+/// analogous flat objective (`flat_objective_over_inequality_bracket_reports_non_unique`).
+/// The two paths therefore give opposite verdicts on the same §11.6 question,
+/// and that divergence is ACCEPTED here rather than fixed:
+///
+/// - the widening is MONOTONE. Before #5711 amendment 2 the γ path was 100%
+///   `ConstraintNonUnique` for every strict auto (see the A/B table on
+///   [`verify_uniqueness`]), so a flat-blend model reported an error then and
+///   reports `Solved` now — no previously-`Solved` γ model changes verdict, and
+///   no non-γ verdict is touched at all;
+/// - closing it means evaluating the blend, and the blend is exactly the
+///   seed-dependent dispatch this branch exists to route AROUND. Sampling it at
+///   the interval endpoints would re-introduce a weaker version of the
+///   measurement error the branch removes (an endpoint tie is not a flat
+///   region, and a non-tie is not uniqueness).
+///
+/// `gamma_flat_blend_over_bracket_is_accepted_as_unique`
+/// (`tests/cost_robustness_tradeoff_blend.rs`) PINS this gap as measured
+/// behaviour rather than leaving it inferred. Deciding it the other way is a
+/// §11.6 policy change for γ, and belongs in a task that can re-measure the
+/// whole γ fixture set — not in a local tightening here.
 ///
 /// Free params are exempt: they carry no §11.6 obligation at all, and
 /// [`finalise_uniqueness`] only reaches `verify_uniqueness` when at least one
@@ -1837,8 +1927,9 @@ fn multistart_points(
     points.push(extract_initial_point(problem, dispatch));
 
     // Constraint-derived seed box, one entry per auto param (task #5618).
-    // #5711: shared with `verify_uniqueness` via `derived_seed_box` so the
-    // derivation cannot silently diverge between the two call sites.
+    // #5711: `verify_uniqueness` builds the same box through this function's
+    // shared `seed_box_from_intervals` half, so the composition cannot
+    // silently diverge between the two call sites.
     let bounds = derived_seed_box(problem, dispatch);
 
     // Per-axis midpoint — shared by the all-midpoint point and as the
@@ -3074,14 +3165,29 @@ fn verify_uniqueness(
     solved_values: &HashMap<ValueCellId, Value>,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> bool {
+    // Derive the constraint intervals ONCE for this call (review suggestion 1).
+    // Two consumers below need them and they used to be derived separately for
+    // each: `derive_param_intervals` walks every constraint and calls
+    // `constant_operand_value` -> `reify_expr::eval_expr` on each candidate far
+    // operand, which on a dispatch-backed model is real evaluation work. It is a
+    // pure function of `problem` + `dispatch`, so hoisting it changes no verdict.
+    let intervals = derive_param_intervals(
+        &problem.auto_params,
+        &problem.constraints,
+        &problem.current_values,
+        &problem.functions,
+        dispatch,
+    );
+
     // Build perturbed initial point: reflect each param to the opposite
     // end of its bounds range from the solution.  #5711 step-5: this is now
-    // the #5618 constraint-derived SEED box (shared with multistart_points
-    // via `derived_seed_box`; include_strict = true since an anchor is a
-    // seed point, not a clamp target) rather than the unconstrained
-    // effective_bounds box — see the header note above for the measured
-    // mechanism this fixes.
-    let bounds = derived_seed_box(problem, dispatch);
+    // the #5618 constraint-derived SEED box (the same box `multistart_points`
+    // gets from `derived_seed_box`, composed here through that function's
+    // shared `seed_box_from_intervals` half; include_strict = true since an
+    // anchor is a seed point, not a clamp target) rather than the
+    // unconstrained effective_bounds box — see the header note above for the
+    // measured mechanism this fixes.
+    let bounds = seed_box_from_intervals(&problem.auto_params, &intervals);
     let (perturbed, missing) =
         build_perturbation_anchors(&problem.auto_params, solved_values, &bounds);
     if !missing.is_empty() {
@@ -3104,35 +3210,43 @@ fn verify_uniqueness(
     // loud-not-silent contract, and BEFORE the re-solve, so the inapplicable
     // solve never runs.
     //
-    // `derive_param_intervals` is called DIRECTLY rather than via
-    // `derived_seed_box`: that helper composes with `effective_bounds`, which
-    // would substitute a solver-internal default for a missing side and erase
-    // exactly the `None` this predicate keys on.
+    // The RAW `intervals` derived above are used here, NOT the composed
+    // `bounds`: `seed_box_from_intervals` substitutes a solver-internal default
+    // for a missing side and would erase exactly the `None` this predicate keys
+    // on.
     if problem
         .objective
         .as_ref()
         .and_then(|obj| obj.cost_robustness_lambda)
         .is_some()
     {
-        let intervals = derive_param_intervals(
-            &problem.auto_params,
-            &problem.constraints,
-            &problem.current_values,
-            &problem.functions,
-            dispatch,
-        );
         // esc-5711-3: a param whose missing side is attributable to a
         // constraint the derivation could not READ abstains rather than
         // reporting non-uniqueness — see `params_in_underivable_constraints`.
-        let underivable = params_in_underivable_constraints(
+        //
+        // Computed LAZILY (review suggestion 1). The predicate is MONOTONE in
+        // its `underivable` argument — that set can only move a param from
+        // "not bracketed" to "abstain", never the reverse — so when the raw
+        // derivation already brackets every strict auto the evidence set cannot
+        // change the verdict, and the per-conjunct re-derivation (which re-runs
+        // `derive_from_expr`, and through it `eval_expr`, once per leaf
+        // conjunct) is skipped entirely. That is the common case: the γ models
+        // this branch exists to keep green.
+        let bracketed = strict_autos_constraint_bracketed(
             &problem.auto_params,
-            &problem.constraints,
-            &problem.current_values,
-            &problem.functions,
-            dispatch,
+            &intervals,
+            &HashSet::new(),
+        ) || strict_autos_constraint_bracketed(
+            &problem.auto_params,
+            &intervals,
+            &params_in_underivable_constraints(
+                &problem.auto_params,
+                &problem.constraints,
+                &problem.current_values,
+                &problem.functions,
+                dispatch,
+            ),
         );
-        let bracketed =
-            strict_autos_constraint_bracketed(&problem.auto_params, &intervals, &underivable);
         // debug!, deliberately NOT warn!: solver_tracing.rs's
         // `normal_solve_emits_zero_warns` expectation and step-4's exact-WARN-count
         // assertion must both stay untouched by this branch.
@@ -5290,6 +5404,73 @@ mod tests {
             std::collections::HashSet::from([0]),
             "a readable conjunct must not launder an unreadable sibling that mentions the \
              same param"
+        );
+    }
+
+    /// A NON-ENUMERATED shape: `Or`. The doc's four named shapes (Eq /
+    /// coefficient / nonlinear / coupled) are EXAMPLES, not a taxonomy — the
+    /// rule is "any conjunct that mentions the param and yields no bound". `Or`
+    /// falls into `derive_from_expr`'s same `_ => {}` arm as `Eq` and is NOT
+    /// split like `And`, so `q >= 1 OR q <= 4` bounds nothing while mentioning
+    /// `q`. Pins the true reach of the abstention rather than leaving it
+    /// inferred from the enumeration (review, robustness).
+    #[test]
+    fn params_in_underivable_constraints_flags_or_disjunction() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let params = vec![real_auto_param(q.clone())];
+        let disjunction = CompiledExpr::binop(
+            BinOp::Or,
+            cmp_ref_lit(BinOp::Ge, &q, 1.0),
+            cmp_ref_lit(BinOp::Le, &q, 4.0),
+            Type::Bool,
+        );
+
+        assert_eq!(
+            super::params_in_underivable_constraints(
+                &params,
+                &as_constraints(vec![disjunction]),
+                &ValueMap::new(),
+                &[],
+                None,
+            ),
+            std::collections::HashSet::from([0]),
+            "`Or` is skipped by the same op rule as `Eq` and must NOT be split like `And`: \
+             the disjunction bounds nothing, so it is a blind spot for `q`"
+        );
+    }
+
+    /// A NON-ENUMERATED shape that is also the realistic one: a DISPATCH-BACKED
+    /// predicate, `stress(t) < LIMIT` (this file's own `fea_binding_problem`,
+    /// the FEA fixture from #4880). Unreadable on BOTH sides — `derive_from_side`
+    /// cannot see a `Call` on the near side, and `constant_operand_value` rejects
+    /// a far side naming the auto — so `t` is flagged even though the constraint
+    /// is the model's whole point. Asserted WITH a live dispatch attached, since
+    /// the derivation threads one through and a reader could otherwise assume the
+    /// hook rescues the shape.
+    #[test]
+    fn params_in_underivable_constraints_flags_dispatch_backed_predicate() {
+        use std::sync::atomic::AtomicUsize;
+
+        let (_t_id, problem) = fea_binding_problem();
+        let mock = CountingDispatch {
+            calls: AtomicUsize::new(0),
+            k: 1.0,
+        };
+
+        assert_eq!(
+            super::params_in_underivable_constraints(
+                &problem.auto_params,
+                &problem.constraints,
+                &problem.current_values,
+                &problem.functions,
+                Some(&mock),
+            ),
+            std::collections::HashSet::from([0]),
+            "`stress(t) < LIMIT` mentions `t` and bounds neither side, so it abstains — \
+             a dispatch hook does not make the Call-shaped near side readable"
         );
     }
 

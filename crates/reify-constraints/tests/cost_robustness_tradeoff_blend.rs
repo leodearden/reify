@@ -562,3 +562,70 @@ fn gamma_strict_autos_coupled_bound_is_not_non_unique() {
     );
     assert_not_non_unique(&problem, "coupled multi-param bound");
 }
+
+/// The KNOWN, ACCEPTED gap in `strict_autos_constraint_bracketed`: a γ blend
+/// that is FLAT with respect to a bracketed strict auto still reports
+/// `unique: true`.
+///
+/// `u` is bracketed by the user's own model (`1mm < u < 4mm`) but appears in NO
+/// cost term — the money expression references `t` only — and at λ=1 the blend
+/// is a positive-affine transform of cost alone, so the objective is genuinely
+/// constant in `u` over its whole interval. Its argmin is therefore a SET, not
+/// a point: §11.6 test (2) is not satisfied for `u`, yet the γ predicate — which
+/// answers that test from the CONSTRAINTS alone, never evaluating the objective
+/// — reports well-determined.
+///
+/// The non-γ path gives the OPPOSITE verdict for the analogous shape
+/// (`solver.rs`'s `flat_objective_over_inequality_bracket_reports_non_unique`,
+/// via `classify_uniqueness`'s tie arm). That divergence is accepted, not
+/// overlooked — see `strict_autos_constraint_bracketed`'s "Known, ACCEPTED gap"
+/// section for the reasoning (the widening is monotone: γ reported
+/// `ConstraintNonUnique` for EVERY strict auto before #5711 amendment 2, so no
+/// previously-`Solved` model changes verdict).
+///
+/// This test exists to PIN that as measured behaviour rather than leave it
+/// inferred. It is a characterisation test: if a future change teaches the γ
+/// path to consult the objective, this assertion is the one that must be
+/// re-decided deliberately — flipping it is a §11.6 policy change for γ, not an
+/// incidental regression. `t`'s resolved value is asserted too, so a flip that
+/// merely broke the solve is distinguishable from a deliberate policy change.
+#[test]
+fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    let u_id = ValueCellId::new("CostRobustnessTradeoff", "u");
+    let problem = strict_problem_with(
+        &[t_id.clone(), u_id.clone()],
+        &t_id, // cost = 5 USD × (t / 1mm) — `u` appears nowhere in it
+        1.0,   // λ=1 ⇒ pure cost ⇒ the blend is exactly flat in `u`
+        vec![
+            gt_expr(&t_id, 0.001),
+            lt_expr(&t_id, 0.004),
+            gt_expr(&u_id, 0.001),
+            lt_expr(&u_id, 0.004),
+        ],
+    );
+
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Solved { values, unique } => {
+            assert!(
+                unique,
+                "ACCEPTED GAP: the γ predicate decides §11.6 test (2) from constraint \
+                 bracketing alone, so a blend that is flat in `u` still reports unique. \
+                 If this flipped deliberately, update `strict_autos_constraint_bracketed`'s \
+                 \"Known, ACCEPTED gap\" section rather than just this assertion"
+            );
+            let u_si = values
+                .get(&u_id)
+                .and_then(|v| v.as_f64())
+                .expect("solved value for u missing or non-numeric");
+            assert!(
+                (0.001..=0.004).contains(&u_si),
+                "u must still land inside its own 1mm..4mm bracket, got {u_si:.6e} m"
+            );
+        }
+        other => panic!(
+            "expected Solved for a both-sides-bracketed pair under γ (the flat-in-`u` blend \
+             is the accepted gap, not an error path); got {other:?}"
+        ),
+    }
+}
