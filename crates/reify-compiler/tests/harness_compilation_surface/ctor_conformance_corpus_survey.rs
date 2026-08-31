@@ -2657,8 +2657,17 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
     };
     let md = render_survey(&run, "cafe1234");
 
-    let fea_at = md.find("FEA").expect("FEA group heading");
-    let non_fea_at = md.find("non-FEA").expect("non-FEA group heading");
+    // Anchor every ordering probe on the rendered `### <title>` heading, never on
+    // a bare substring: the artifact's own `## Format` prose mentions "FEA"
+    // above `## Sites`, so `md.find("FEA")` would return a fixed header offset
+    // that precedes EVERY group and make this ordering assertion vacuously
+    // green — including when the FEA group is emitted last or dropped entirely.
+    let heading_at = |owner: Owner| {
+        md.find(&format!("### {}", owner.title()))
+            .unwrap_or_else(|| panic!("missing group heading for {owner:?}:\n{md}"))
+    };
+    let fea_at = heading_at(Owner::FeaDeferredToV06);
+    let non_fea_at = heading_at(Owner::NonFea);
     assert!(
         fea_at < non_fea_at,
         "the do-not-touch FEA partition must come FIRST — γ's first question is \
@@ -2693,9 +2702,7 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
     // The two non-actionable triage buckets must sort AFTER the actionable one,
     // so γ reads its own work first and does not mistake a function-call row for
     // a ctor site it owns.
-    let unresolved_at = md
-        .find(Owner::UnresolvedDef.title())
-        .expect("UnresolvedDef group heading");
+    let unresolved_at = heading_at(Owner::UnresolvedDef);
     assert!(
         non_fea_at < unresolved_at,
         "the actionable non-FEA group must precede the manual-triage buckets:\n{md}"
