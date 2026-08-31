@@ -1053,6 +1053,73 @@ fn list_of_point_param_given_matching_dimensioned_point3_calls_stays_clean() {
     );
 }
 
+const SRC_BARE_NUMERIC_AT_POINT_PARAM: &str = r#"module test.bare_numeric_at_point
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: 5)
+}
+"#;
+
+/// THE RESIDUAL that survived task 5344 — the only remaining justification for
+/// `is_numeric_placeholder_leaf`'s `Point` branch, and until now pinned by
+/// nothing at all.
+///
+/// `conformance/mod.rs` calls this cell "THE BOUNDED, DELIBERATE COST" and
+/// `crates/reify-core/src/ty.rs` calls it "the `Point` arm's tolerance of a bare
+/// numeric literal", but both said it in prose only. This fixture makes it a
+/// measured, held fact.
+///
+/// **Why it is needed NOW.** Before 5344 the `is_numeric_placeholder_leaf`
+/// branch had a second, much more visible justification: every `point3(…)` arg
+/// in the corpus was believed to take it. That justification was false and is
+/// being deleted as such. Without THIS fixture the branch would be left looking
+/// dead — a reader could reasonably conclude 5344 killed the `Point` case
+/// entirely, delete it, and watch every other test in both files stay green
+/// while `Anchor(origin: 5)` silently became a warning against the whole corpus.
+/// This is the regression fence that makes that deletion visible.
+///
+/// That "every other test stays green" is MEASURED, not assumed. Killing the
+/// `other => is_numeric_placeholder_leaf(other)` branch of the `Type::Point` arm
+/// in `conformance/mod.rs` (replacing it with `false`) fails THIS test and
+/// nothing else: 114/115 in this file still pass, all 84 in-module `conformance`
+/// probes pass, and the `no_example_emits_ctor_field_conformance_diagnostics`
+/// corpus gate stays green — because no `.ri` example passes a bare numeric
+/// literal to a `Point` param today. That is precisely why the branch needs a
+/// fixture rather than a comment.
+///
+/// **It is a RULING, not an oversight.** The tolerance is the deliberate
+/// `Type::Geometry`-class placeholder exclusion (GHR-γ): geometry constructors
+/// compile to a dimensionless-scalar placeholder and are excluded in the same
+/// way. Anyone tightening this arm must therefore treat this cell as a decision
+/// to be re-opened rather than a bug to be fixed — and must also account for
+/// `Type::ScalarParam(_)`, the branch's OTHER surviving input, which stands for
+/// a dimension that is not yet resolved rather than one that is absent.
+///
+/// MEASURED at HEAD `2c449f5d6e`: CLEAN, zero compile errors.
+#[test]
+fn bare_numeric_literal_at_point_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_BARE_NUMERIC_AT_POINT_PARAM);
+    // Non-vacuity guard — ESSENTIAL for a CLEAN fixture, which is otherwise
+    // indistinguishable from one that never compiled. The `Point3<Length>` param
+    // spelling is shown to resolve-and-reject by the cross-dimension fixture
+    // further down this file, which uses the identical `Anchor` declaration.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a bare numeric literal at a Point3<Length> param must stay SILENT — this is the \
+         `is_numeric_placeholder_leaf` Point branch's LAST surviving input, and it is a \
+         deliberate GHR-γ placeholder exclusion, not an oversight. If this now fires, that \
+         branch has been narrowed or deleted: re-read the ruling in \
+         crates/reify-core/src/ty.rs and the arm's own comment in conformance/mod.rs before \
+         retargeting, and check Type::ScalarParam(_) at the same time. Got: {diags:#?}"
+    );
+}
+
 const SRC_POINT_GIVEN_STRING: &str = r#"module test.point_string
 structure def Anchor { param origin : Point3<Length> }
 structure def Root {
