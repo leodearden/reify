@@ -308,3 +308,196 @@ fn sketch_block_target_fixture_lowers_cleanly() {
         "relation members must survive lowering in source order"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// `auto(seed)` in positional call-argument position — PRD §5 D6
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Added by step-15. RED until step-16 adds `lower_expr`'s `"auto_seed"` arm.
+//
+// The grammar half landed in step-8: `auto( <expr> )` is admitted in ANY
+// positional call-argument position, recording Leo's 2026-07-25 OPTION B
+// decision as a PARTIAL reversal of task 3808. Until `lower_expr` learns the
+// node kind, it returns `None` and the argument is SILENTLY DROPPED — the
+// `point(auto(10mm), 0mm)` call would lower to a one-argument `point(0mm)`,
+// changing the user's value with no diagnostic. That is precisely the
+// silent-accept Option B forbids, and is what these tests exist to catch.
+//
+// The convergence contract: positional `auto(<expr>)` lowers to EXACTLY the same
+// `ExprKind::Auto` the existing named binding-site form `auto(seed = <expr>)`
+// produces. One AST shape, two surfaces. That is what keeps the `Expr` blast
+// radius at zero (~1590 `Expr::` sites in crates/*/src) and what makes the
+// pre-existing `E_AUTO_NOT_AT_BINDING_SITE` gate fire on the new surface for
+// free — Option B's "typed semantic rejection outside sketch scope".
+
+// ── auto_seed helpers ────────────────────────────────────────────────────────
+
+/// Parse `source` and return the value expression of the first structure-level
+/// `let`.
+fn first_let_value(source: &str) -> Expr {
+    structure_members(source)
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Let(l) => Some(l.value.clone()),
+            _ => None,
+        })
+        .expect("expected a structure-level let member")
+}
+
+/// Parse `source` and return the default expression of the first structure-level
+/// `param`.
+fn first_param_default(source: &str) -> Expr {
+    structure_members(source)
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Param(p) => p.default.clone(),
+            _ => None,
+        })
+        .expect("expected a structure-level param with a default")
+}
+
+/// The positional arguments of a `FunctionCall` expression.
+fn call_args(expr: &Expr) -> &[Expr] {
+    match &expr.kind {
+        ExprKind::FunctionCall { args, .. } => args,
+        other => panic!("expected ExprKind::FunctionCall, got {other:?}"),
+    }
+}
+
+/// Destructure an `ExprKind::Auto`, panicking with the actual kind otherwise.
+fn as_auto(expr: &Expr) -> (bool, Vec<(String, Expr)>) {
+    match &expr.kind {
+        ExprKind::Auto { free, params } => (*free, params.clone()),
+        other => panic!("expected ExprKind::Auto, got {other:?}"),
+    }
+}
+
+/// Assert an expression is the quantity literal `<value><unit>`.
+fn assert_quantity(expr: &Expr, value: f64, unit: &str) {
+    match &expr.kind {
+        ExprKind::QuantityLiteral { value: v, unit: u } => {
+            assert_eq!(*v, value, "quantity magnitude");
+            assert_eq!(
+                *u,
+                UnitExpr::Unit(unit.to_string()),
+                "quantity unit"
+            );
+        }
+        other => panic!("expected ExprKind::QuantityLiteral, got {other:?}"),
+    }
+}
+
+// ── The new surface ──────────────────────────────────────────────────────────
+
+/// `point(auto(10mm), 0mm)` — the positional seed form lowers to
+/// `ExprKind::Auto { free: false, params: [("seed", 10mm)] }`.
+///
+/// The param NAME is the load-bearing part: `"seed"` is the canonical name the
+/// existing named form already uses (corpus `auto(seed = 5mm)`), so every
+/// downstream consumer of `ExprKind::Auto.params` reads the positional form
+/// without knowing it exists.
+#[test]
+fn positional_auto_seed_lowers_to_expr_kind_auto_with_a_seed_param() {
+    let value = first_let_value("structure def T { let b = point(auto(10mm), 0mm) }");
+    let args = call_args(&value);
+    assert_eq!(args.len(), 2, "the auto arg must survive, not be dropped: {args:?}");
+
+    let (free, params) = as_auto(&args[0]);
+    assert!(!free, "the positional seed form is not `free`");
+    assert_eq!(params.len(), 1, "exactly one param, got {params:?}");
+    assert_eq!(params[0].0, "seed", "the param must be named `seed`");
+    assert_quantity(&params[0].1, 10.0, "mm");
+
+    // The second argument is untouched — a lowering that mis-indexed the arg
+    // list would still satisfy the assertions above.
+    assert_quantity(&args[1], 0.0, "mm");
+}
+
+/// The `auto_seed` node's span covers the whole `auto(10mm)` text, not just the
+/// seed sub-expression.
+#[test]
+fn positional_auto_seed_span_covers_the_whole_construct() {
+    const SOURCE: &str = "structure def T { let b = point(auto(10mm), 0mm) }";
+    let value = first_let_value(SOURCE);
+    let auto_arg = &call_args(&value)[0];
+    let text = &SOURCE[auto_arg.span.start as usize..auto_arg.span.end as usize];
+    assert_eq!(
+        text, "auto(10mm)",
+        "span must cover the whole construct, got {text:?}"
+    );
+}
+
+// ── Convergence with the existing binding-site surface ───────────────────────
+
+/// `param p : Frame = auto(seed = 5mm)` still lowers through `_binding_value` to
+/// the SAME `ExprKind::Auto` shape.
+///
+/// This is the convergence assertion: two surfaces, one AST shape. If the new
+/// arm had introduced a distinct `ExprKind`, this test would keep passing while
+/// every downstream `ExprKind::Auto` consumer silently ignored the new form.
+#[test]
+fn named_auto_seed_at_a_binding_site_lowers_to_the_same_shape() {
+    let default = first_param_default("structure def T { param p : Frame = auto(seed = 5mm) }");
+    let (free, params) = as_auto(&default);
+    assert!(!free);
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].0, "seed");
+    assert_quantity(&params[0].1, 5.0, "mm");
+}
+
+/// Bare `auto` at a binding site still lowers to `params: vec![]`.
+///
+/// The negative control for the convergence test above: the new arm must not
+/// steal or reshape the pre-existing binding-site forms.
+#[test]
+fn bare_auto_at_a_binding_site_still_lowers_to_empty_params() {
+    let default = first_param_default("structure def T { param p : Frame = auto }");
+    let (free, params) = as_auto(&default);
+    assert!(!free, "bare `auto` is strict, not free");
+    assert!(params.is_empty(), "bare `auto` carries no params, got {params:?}");
+}
+
+// ── The PRD gate fixture ─────────────────────────────────────────────────────
+
+/// The committed `auto(seed)` PRD gate fixture lowers with zero diagnostics, and
+/// its `auto(10mm)` argument survives into the AST.
+///
+/// The second headline user-observable signal, at AST level. Asserting the
+/// argument SURVIVES (not merely that the file lowers without complaint) is the
+/// point: `lower_expr` returning `None` produces a clean lowering of the wrong
+/// program.
+#[test]
+fn sketch_auto_seed_target_fixture_lowers_cleanly() {
+    const FIXTURE: &str =
+        include_str!("../../../../tests/prd-gate/fixtures/sketch_auto_seed_target.ri");
+
+    let members = structure_members(FIXTURE);
+    let sketch = members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Sketch(s) => Some(s),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("fixture must contain a sketch member: {members:?}"));
+
+    let b = sketch
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Let(l) if l.name == "b" => Some(l),
+            _ => None,
+        })
+        .expect("fixture's sketch body declares `let b = point(auto(10mm), 0mm)`");
+
+    let args = call_args(&b.value);
+    assert_eq!(
+        args.len(),
+        2,
+        "`point(auto(10mm), 0mm)` must keep both arguments: {args:?}"
+    );
+    let (free, params) = as_auto(&args[0]);
+    assert!(!free);
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].0, "seed");
+    assert_quantity(&params[0].1, 10.0, "mm");
+}

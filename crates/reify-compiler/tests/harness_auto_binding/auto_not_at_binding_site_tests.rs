@@ -503,3 +503,129 @@ fn non_auto_ad_hoc_selector_produces_no_gate_error() {
         gate_errors
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// (l)-(n) `auto(<expr>)` in POSITIONAL call-argument position — task 5506
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// constrained-2d-sketch α widened the GRAMMAR to admit `auto( <expr> )` in any
+// positional call-argument position (PRD `docs/prds/v0_6/constrained-2d-sketch.md`
+// §5 D6, and Leo's 2026-07-25 OPTION B decision — a PARTIAL reversal of task
+// 3808: bare `auto`, `auto(free)` and `auto(name = value)` all remain parse
+// errors there).
+//
+// THIS is Option B's other half: "typed semantic rejection outside sketch scope
+// — loud + coded, never silent-accept". Widening the grammar without it would
+// mean `clamp(auto(5mm))` compiles to something arbitrary with no diagnostic.
+//
+// It costs nothing to implement. Because `auto(5mm)` lowers to the EXISTING
+// `ExprKind::Auto` (α introduced no new `Expr` variant), the gate at
+// `crates/reify-compiler/src/expr.rs:644-686` — which matches `ExprKind::Auto`
+// in raw call args and short-circuits through `make_poison_literal` — fires on
+// the new surface unchanged. These tests are what make that inheritance
+// load-bearing rather than incidental.
+//
+// EXPECTED TO CHANGE, DELIBERATELY: constrained-2d-sketch γ/η RELAX this gate
+// inside sketch scope, where `point(auto(10mm), 0mm)` is the whole point of the
+// feature. A future task that makes these tests red must change them
+// deliberately — narrowing the assertion to "outside sketch scope" — never
+// delete them, and never weaken them to "compiles clean", which would re-open
+// the silent-accept hole from the other side.
+
+/// (l) `clamp(auto(5mm))` — the NEW positional seed surface in a function-call
+/// argument.
+///
+/// Must emit exactly one `AutoNotAtBindingSite` error, and exactly one error in
+/// total (the existing anti-cascade contract, unchanged).
+#[test]
+fn positional_auto_seed_emits_auto_not_at_binding_site() {
+    let source = format!("{CLAMP_FN}  structure S {{ let y = clamp(auto(5mm)) }}");
+    let module = compile_source_with_stdlib(&source);
+
+    let errors = errors_only(&module);
+    let gate_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
+        .collect();
+
+    assert_eq!(
+        gate_errors.len(),
+        1,
+        "expected exactly one AutoNotAtBindingSite error for `clamp(auto(5mm))` — \
+         the grammar admits it, so the SEMANTIC gate is the only thing standing \
+         between the user and a silent accept;\n  all errors: {:?}",
+        errors
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one total error (anti-cascade, unchanged by the new \
+         surface);\n  all errors: {:?}",
+        errors
+    );
+
+    let first = gate_errors[0];
+    assert_eq!(first.severity, Severity::Error);
+    assert!(
+        first.message.contains("clamp"),
+        "expected the message to name the callee 'clamp'; got: {:?}",
+        first.message
+    );
+}
+
+/// (m) The rejection's label points at the `auto(5mm)` operand, not at the whole
+/// call.
+///
+/// A gate that labelled the enclosing `clamp(…)` would still satisfy (l) while
+/// telling the user nothing about WHICH argument is at fault.
+#[test]
+fn positional_auto_seed_label_points_at_the_auto_operand() {
+    let source = format!("{CLAMP_FN}  structure S {{ let y = clamp(auto(5mm)) }}");
+    let module = compile_source_with_stdlib(&source);
+
+    let gate_errors: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
+        .collect();
+    let diag = gate_errors
+        .first()
+        .unwrap_or_else(|| panic!("no gate error; diagnostics: {:?}", module.diagnostics));
+
+    assert!(
+        !diag.labels.is_empty(),
+        "the rejection must carry a label: {diag:?}"
+    );
+    let span = diag.labels[0].span;
+    let labelled = &source[span.start as usize..span.end as usize];
+    assert!(
+        labelled.contains("auto(5mm)"),
+        "label must cover the offending `auto(5mm)` operand, got {labelled:?}"
+    );
+}
+
+/// (n) Anti-cascade on the new surface: two `auto(<expr>)` args, still ONE
+/// diagnostic.
+///
+/// The companion to the existing `function_call_multi_auto_reports_only_first_arg`
+/// contract, re-asserted for the positional seed form so the new surface inherits
+/// the first-offending-arg short-circuit rather than merely appearing to.
+#[test]
+fn positional_auto_seed_reports_only_the_first_offending_arg() {
+    let source = format!(
+        "fn span2(a: Length, b: Length) -> Length = a  \
+         structure S {{ let y = span2(auto(5mm), auto(7mm)) }}"
+    );
+    let module = compile_source_with_stdlib(&source);
+
+    let gate_errors: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoNotAtBindingSite))
+        .collect();
+
+    assert_eq!(
+        gate_errors.len(),
+        1,
+        "two offending args must still report once (first-offending-arg \
+         anti-cascade);\n  gate errors: {gate_errors:?}"
+    );
+}
