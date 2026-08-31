@@ -44,7 +44,9 @@ use reify_test_support::{compile_source, errors_only};
 /// Matched on the message rather than on a `DiagnosticCode` because α
 /// deliberately introduces no `E_SKETCH_*` code — γ owns the coded surface, and
 /// inventing a code here would strand it as a name γ has to migrate off.
-fn sketch_unsupported_errors(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
+fn sketch_unsupported_errors(
+    module: &reify_compiler::CompiledModule,
+) -> Vec<&reify_core::Diagnostic> {
     errors_only(module)
         .into_iter()
         .filter(|d| {

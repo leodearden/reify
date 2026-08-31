@@ -3667,6 +3667,51 @@ impl<'a> Lowering<'a> {
             "match_expression" => self.lower_match_expr(node),
             "lambda_expression" => self.lower_lambda_expression(node),
             "quantifier_expression" => self.lower_quantifier_expression(node),
+            // Positional `auto( <expr> )` in a call-argument position
+            // (constrained-2d-sketch α, task 5506; PRD
+            // `docs/prds/v0_6/constrained-2d-sketch.md` §5 D6, and Leo's
+            // 2026-07-25 OPTION B decision — a PARTIAL reversal of task 3808).
+            //
+            // (i) NORMALISATION CONTRACT. Positional `auto(<expr>)` IS the
+            // existing named form `auto(seed = <expr>)`, so both surfaces
+            // converge on ONE AST shape and every downstream consumer of
+            // `ExprKind::Auto` keeps working unchanged: `entity.rs`'s
+            // substitute_expr and its three other Auto sites, `shadow_lint.rs`,
+            // `dot_chain_lint.rs`, and `AutoPoseSpec` in `types.rs`. `"seed"` is
+            // the canonical param name the corpus already uses.
+            //
+            // (ii) WHY NO NEW `ExprKind` VARIANT. There are ~1590 `Expr::` sites
+            // in crates/*/src; a new variant would be an unbounded blast radius
+            // for zero semantic gain, since the meaning is exactly the existing
+            // one.
+            //
+            // (iii) THE LOUD-FAILURE LINK. Because the shape IS `ExprKind::Auto`,
+            // the pre-existing gate at `crates/reify-compiler/src/expr.rs:644-686`
+            // fires for calls outside sketch scope and emits
+            // `E_AUTO_NOT_AT_BINDING_SITE` via `make_poison_literal`. That
+            // inheritance IS Option B's "typed semantic rejection outside sketch
+            // scope — loud + coded, never silent-accept"; it costs no new code
+            // here and is pinned by cases (l)/(m)/(n) in
+            // `harness_auto_binding/auto_not_at_binding_site_tests.rs`. γ/η relax
+            // that gate inside sketch scope.
+            //
+            // `free` is always false: the grammar's `auto_seed` rule admits only
+            // the parenthesized-expression form. Bare `auto` and `auto(free)`
+            // remain parse errors in positional argument position, which is what
+            // keeps the task-3808 reversal partial. (Note `auto(free)` written in
+            // argument position parses as `auto_seed` with `seed` = the
+            // identifier `free` — a consequence of grammar-generality, not a
+            // modifier arm; see the grammar.js comment.)
+            "auto_seed" => node
+                .child_by_field_name("seed")
+                .and_then(|seed_node| self.lower_expr(seed_node))
+                .map(|seed| Expr {
+                    kind: ExprKind::Auto {
+                        free: false,
+                        params: vec![("seed".to_string(), seed)],
+                    },
+                    span: self.span(node),
+                }),
             "quantity_literal" => self.lower_quantity_literal(node),
             "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),

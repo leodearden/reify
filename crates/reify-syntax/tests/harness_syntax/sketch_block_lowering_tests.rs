@@ -278,7 +278,12 @@ fn sketch_block_target_fixture_lowers_cleanly() {
         .iter()
         .filter(|m| matches!(m, MemberDecl::Relate(_)))
         .collect();
-    assert_eq!(lets.len(), 5, "fixture has 5 let members: {:?}", sketch.members);
+    assert_eq!(
+        lets.len(),
+        5,
+        "fixture has 5 let members: {:?}",
+        sketch.members
+    );
     assert_eq!(
         relations.len(),
         5,
@@ -292,7 +297,11 @@ fn sketch_block_target_fixture_lowers_cleanly() {
     );
 
     assert_eq!(
-        sketch.members.iter().filter(|m| matches!(m, MemberDecl::Let(l) if l.is_aux)).count(),
+        sketch
+            .members
+            .iter()
+            .filter(|m| matches!(m, MemberDecl::Let(l) if l.is_aux))
+            .count(),
         1,
         "exactly one `aux let` (the `cl` centreline)"
     );
@@ -377,11 +386,7 @@ fn assert_quantity(expr: &Expr, value: f64, unit: &str) {
     match &expr.kind {
         ExprKind::QuantityLiteral { value: v, unit: u } => {
             assert_eq!(*v, value, "quantity magnitude");
-            assert_eq!(
-                *u,
-                UnitExpr::Unit(unit.to_string()),
-                "quantity unit"
-            );
+            assert_eq!(*u, UnitExpr::Unit(unit.to_string()), "quantity unit");
         }
         other => panic!("expected ExprKind::QuantityLiteral, got {other:?}"),
     }
@@ -400,7 +405,11 @@ fn assert_quantity(expr: &Expr, value: f64, unit: &str) {
 fn positional_auto_seed_lowers_to_expr_kind_auto_with_a_seed_param() {
     let value = first_let_value("structure def T { let b = point(auto(10mm), 0mm) }");
     let args = call_args(&value);
-    assert_eq!(args.len(), 2, "the auto arg must survive, not be dropped: {args:?}");
+    assert_eq!(
+        args.len(),
+        2,
+        "the auto arg must survive, not be dropped: {args:?}"
+    );
 
     let (free, params) = as_auto(&args[0]);
     assert!(!free, "the positional seed form is not `free`");
@@ -454,7 +463,10 @@ fn bare_auto_at_a_binding_site_still_lowers_to_empty_params() {
     let default = first_param_default("structure def T { param p : Frame = auto }");
     let (free, params) = as_auto(&default);
     assert!(!free, "bare `auto` is strict, not free");
-    assert!(params.is_empty(), "bare `auto` carries no params, got {params:?}");
+    assert!(
+        params.is_empty(),
+        "bare `auto` carries no params, got {params:?}"
+    );
 }
 
 // ── The PRD gate fixture ─────────────────────────────────────────────────────
