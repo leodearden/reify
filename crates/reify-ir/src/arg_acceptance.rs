@@ -906,4 +906,177 @@ mod tests {
         );
     }
 
+
+    // ── PRD 5 §7: accept_field / FieldAcceptance, the A2 Option semantics ─────
+
+    /// Build a `StructureInstanceData` shaped like a materialised
+    /// `Steel_AISI_1045()` for the `accept_field` cases below.
+    fn steel_instance(
+        fields: &[(&str, crate::value::Value)],
+    ) -> crate::value::StructureInstanceData {
+        crate::value::StructureInstanceData {
+            type_id: crate::structure_registry::StructureTypeId(1),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields: fields
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        }
+    }
+
+    fn pressure(si: f64) -> crate::value::Value {
+        crate::value::Value::Scalar {
+            si_value: si,
+            dimension: reify_core::DimensionVector::PRESSURE,
+        }
+    }
+
+    #[test]
+    fn accept_field_classifies_the_struct_field_shapes_of_prd5() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        // (1) bare Scalar{PRESSURE} at a pressure_spec field.
+        let data = steel_instance(&[("youngs_modulus", pressure(2.05e11))]);
+        assert_eq!(
+            accept_field(&data, "youngs_modulus", &pressure_spec()),
+            FieldAcceptance::Accepted(2.05e11),
+            "a bare PRESSURE Scalar field must be Accepted with its SI value"
+        );
+
+        // (2) key absent from `fields` → Absent.
+        assert_eq!(
+            accept_field(&data, "shear_modulus", &pressure_spec()),
+            FieldAcceptance::Absent,
+            "a field that is not in `fields` at all must read as Absent"
+        );
+
+        // (3) Value::Undef → Undefined (§6 decision 2's quiet degradation).
+        let undef = steel_instance(&[("youngs_modulus", Value::Undef)]);
+        assert_eq!(
+            accept_field(&undef, "youngs_modulus", &pressure_spec()),
+            FieldAcceptance::Undefined,
+            "Undef must stay quiet-degrading, not become a fault"
+        );
+
+        // (4) Option(None) ≡ Absent — amendment A2's extension of §6 decision 3
+        //     ("Absent ≠ wrong"): both legitimately fall back to a declared
+        //     default, and the two are indistinguishable to a reader.
+        let none = steel_instance(&[("yield_stress", Value::Option(None))]);
+        assert_eq!(
+            accept_field(&none, "yield_stress", &pressure_spec()),
+            FieldAcceptance::Absent,
+            "Option(None) must read as Absent, not as a rejection"
+        );
+
+        // (5) THE VALUE FLOOR amendment A2 names explicitly. The default
+        //     spelling `Steel_AISI_1045()` materialises yield_stress from its
+        //     `= some(310MPa)` default (materials_fea.ri:179) as
+        //     Option(Some(Scalar{310e6, PRESSURE})).
+        let default_spelling = steel_instance(&[(
+            "yield_stress",
+            Value::Option(Some(Box::new(pressure(310_000_000.0)))),
+        )]);
+        assert_eq!(
+            accept_field(&default_spelling, "yield_stress", &pressure_spec()),
+            FieldAcceptance::Accepted(310_000_000.0),
+            "the `Steel_AISI_1045()` default spelling must still read 310 MPa \
+             through the Option — this is the regression proof that the Option \
+             path survives validate_dimensioned_scalar becoming an adapter"
+        );
+
+        //     …and `Steel_AISI_1045(yield_stress: some(310mm))` — a LENGTH
+        //     inside the same Option — must be a fault, not a silent read.
+        let wrong_dim = steel_instance(&[(
+            "yield_stress",
+            Value::Option(Some(Box::new(Value::Scalar {
+                si_value: 0.31,
+                dimension: DV::LENGTH,
+            }))),
+        )]);
+        assert!(
+            matches!(
+                accept_field(&wrong_dim, "yield_stress", &pressure_spec()),
+                FieldAcceptance::Rejected(_)
+            ),
+            "a LENGTH inside Option(Some(..)) at a PRESSURE field must be Rejected"
+        );
+
+        // (6) Nested Option, for behavioural parity with the recursion in
+        //     crates/reify-stdlib/src/flexures/common.rs:109 `scalar_si`.
+        let nested = steel_instance(&[(
+            "yield_stress",
+            Value::Option(Some(Box::new(Value::Option(Some(Box::new(pressure(
+                310_000_000.0,
+            ))))))),
+        )]);
+        assert_eq!(
+            accept_field(&nested, "yield_stress", &pressure_spec()),
+            FieldAcceptance::Accepted(310_000_000.0),
+            "nested Option must unwrap all the way down (parity with scalar_si)"
+        );
+
+        // (7) The poisson_ratio shape: a bare Real lands at a dimensionless
+        //     field and is Accepted; the same bare Real at a PRESSURE field is
+        //     Rejected.
+        let ratio = steel_instance(&[("poisson_ratio", Value::Real(0.3))]);
+        assert_eq!(
+            accept_field(&ratio, "poisson_ratio", &dimensionless_spec()),
+            FieldAcceptance::Accepted(0.3),
+            "a bare Real at a dimensionless_spec field must be Accepted \
+             (common.rs's material_numeric_field records that poisson_ratio \
+             lands as a bare Real at runtime)"
+        );
+        let bare_at_pressure = steel_instance(&[("youngs_modulus", Value::Real(2.0e11))]);
+        assert!(
+            matches!(
+                accept_field(&bare_at_pressure, "youngs_modulus", &pressure_spec()),
+                FieldAcceptance::Rejected(_)
+            ),
+            "a bare Real at a PRESSURE field must be Rejected"
+        );
+
+        // (8) Option(Some(Undef)) → Undefined, not Rejected.
+        let opt_undef =
+            steel_instance(&[("yield_stress", Value::Option(Some(Box::new(Value::Undef))))]);
+        assert_eq!(
+            accept_field(&opt_undef, "yield_stress", &pressure_spec()),
+            FieldAcceptance::Undefined,
+            "Undef inside an Option must still be Undefined"
+        );
+    }
+
+    /// PRD §11 open question 3, DECIDED HERE: a field rejection is formatted by
+    /// the SHIPPED `ArgRejection::message`, passing a DOTTED PATH as `arg_name`.
+    /// No new formatter, no second wording.
+    #[test]
+    fn field_rejection_message_renders_a_dotted_path() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let wrong_dim = steel_instance(&[(
+            "yield_stress",
+            Value::Option(Some(Box::new(Value::Scalar {
+                si_value: 0.31,
+                dimension: DV::LENGTH,
+            }))),
+        )]);
+        let rej = match accept_field(&wrong_dim, "yield_stress", &pressure_spec()) {
+            FieldAcceptance::Rejected(rej) => rej,
+            other => panic!("expected Rejected, got {other:?}"),
+        };
+
+        let msg = rej.message("prb_cantilever_beam", "material.youngs_modulus");
+        assert!(
+            msg.contains("material.youngs_modulus"),
+            "the dotted path must appear VERBATIM in the message; got {msg:?}"
+        );
+        assert_eq!(
+            msg, "prb_cantilever_beam: material.youngs_modulus argument expects Pressure, got Length Scalar",
+            "the message must still match the shipped \
+             `{{builtin}}: {{arg_name}} argument expects {{expected}}, got {{got}}` shape"
+        );
+    }
+
 }
