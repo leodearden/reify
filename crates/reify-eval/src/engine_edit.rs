@@ -26,10 +26,10 @@
 //! # Warm-Resolution back-prop sync set
 //!
 //! Four entry points resolve Auto params through the constraint solver and
-//! back-propagate the result: `Engine::eval`, `Engine::eval_cached`,
+//! back-propagate the result: [`Engine::eval`], [`Engine::eval_cached`],
 //! [`Engine::edit_param`], and [`Engine::edit_source`]. Between them there
-//! are six write-back arms, because, per template index, `Engine::eval` and
-//! `Engine::eval_cached` each take a mutually exclusive merged-cluster
+//! are six write-back arms, because, per template index, [`Engine::eval`] and
+//! [`Engine::eval_cached`] each take a mutually exclusive merged-cluster
 //! branch through `dispatch_merged_cluster_solve` /
 //! `dispatch_merged_cluster_solve_cached` (task #5118).
 //!
@@ -41,24 +41,24 @@
 //! 3. cache entry — uniform
 //! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
 //! 5. journal — mechanism differs per arm:
-//!    - `Engine::eval` per-template arm — hand-rolled `Started`/`Completed`
+//!    - [`Engine::eval`] per-template arm — hand-rolled `Started`/`Completed`
 //!      pairs around the solver write-back. Exception: the
 //!      pinned-connector-auto write-back
 //!      (`write_solved_pinned_connector_autos`, task #4710) fires first
 //!      and is un-journaled by design — its own doc says "Does NOT touch
 //!      the journal".
-//!    - `Engine::eval`'s merged-cluster branch
+//!    - [`Engine::eval`]'s merged-cluster branch
 //!      (`dispatch_merged_cluster_solve`) — hand-rolled `Started`/
 //!      `Completed` pairs, same shape as the per-template arm. No
 //!      pinned-connector write-back here (the merged builder already
 //!      excludes strict connector-instance autos), so no exception.
-//!    - `Engine::eval_cached` per-template arm — TWO un-journaled
+//!    - [`Engine::eval_cached`] per-template arm — TWO un-journaled
 //!      write-backs: the pinned-connector-auto write-back (same
 //!      exception as the `eval` per-template arm) and, separately, its
 //!      own solver-resolved-value write-back, a bare cache record with
 //!      no journal event. Its wave-2 downstream let-cone re-eval, by
 //!      contrast, DOES journal, via `commit_cell_result`.
-//!    - `Engine::eval_cached`'s merged-cluster branch
+//!    - [`Engine::eval_cached`]'s merged-cluster branch
 //!      (`dispatch_merged_cluster_solve_cached`) — `commit_cell_result`
 //!      for both the main write-back and its wave-2. No pinned-connector
 //!      write-back (same exclusion as `eval`'s merged-cluster branch).
