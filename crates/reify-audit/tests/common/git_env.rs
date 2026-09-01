@@ -51,9 +51,7 @@
 //!
 //! # Why the replay counts tests
 //!
-//! libtest exits 0 when a filter matches ZERO tests (measured:
-//! `./cli-<hash> 'cli::nonexistent_filter_xyz'` prints
-//! `test result: ok. 0 passed; … 35 filtered out` and exits 0). Asserting only
+//! libtest exits 0 when a filter matches ZERO tests. Asserting only
 //! on the child's exit status would therefore turn this harness into a silent
 //! green the instant a filter stops matching — a rename, a dropped `mod`
 //! wrapper, or a test moving to another binary — which is precisely the
@@ -481,9 +479,8 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
 /// Re-run this test binary's `filters`-matching tests under a poisoned
 /// *ambient* git environment, and assert they all still pass.
 ///
-/// `filters` are libtest positional filters, OR-combined (measured: passing
-/// two names lists exactly those two). A single `""` selects every test in the
-/// binary.
+/// `filters` are libtest positional filters, OR-combined. A single `""`
+/// selects every test in the binary.
 ///
 /// `expected_min` is the caller's declared floor on how many tests the
 /// selection must contain — the guard against a vacuous pass. Set it to the
@@ -646,9 +643,9 @@ fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) {
 /// `PATH` is an EMPTY [`tempfile::tempdir`], which makes
 /// `reify_test_support::run_orphan_audit`'s FIRST probe —
 /// `Command::new("python3")` — fail with `NotFound` and take its documented
-/// skip path (measured: the child's stderr reads `python3 not on PATH;
-/// skipping orphan audit for scope "crates/reify-audit/src"`). That is a
-/// SUPPORTED environment, not a broken one.
+/// skip path. That is a SUPPORTED environment, not a broken one. The caller
+/// asserts on the skip note the child actually emits rather than trusting a
+/// copy of it quoted here.
 ///
 /// Deliberately NOT poisoned with the hook git environment. With `PATH`
 /// deprived the child skips long before it reaches the audit script, so a
