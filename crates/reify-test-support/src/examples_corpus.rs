@@ -19,10 +19,78 @@
 //! production build graph (see the measured 130-vs-185-crate note in this
 //! crate's `Cargo.toml`).
 
+use std::path::Path;
+
+/// Absolute path to the workspace `examples/` directory.
+///
+/// Resolved at compile time from `CARGO_MANIFEST_DIR` evaluated inside **this**
+/// crate, which always sits at `<repo>/crates/reify-test-support/` regardless of
+/// which downstream crate calls the public API — the same resolution precedent
+/// [`crate::orphan_audit`]'s `resolve_script_and_root` documents (and
+/// [`crate::temp_dirs::assert_no_unguarded_temp_dir_sites`] reuses), so a helper
+/// here can walk a corpus owned by the workspace rather than by any one crate.
+///
+/// # This `concat!` is the one definition of the lexical prefix
+///
+/// [`relative_to_examples_dir`] strips this path as a **lexical string**
+/// prefix, so the walk root and the strip prefix must come from a single
+/// definition or the round-trip contract silently breaks. A caller that
+/// re-spelled `concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples")` in *its*
+/// crate would produce a different byte string naming the same directory —
+/// `…/crates/reify-compiler/../../examples` rather than
+/// `…/crates/reify-test-support/../../examples` — and every `strip_prefix`
+/// against it would panic. That is why this is a function returning a `Path`
+/// and not a `pub const &str`: the mis-spelling is unrepresentable. Callers
+/// wanting the old string form use `examples_dir().join(…)` or
+/// `examples_dir().display()`, which serve every existing use.
+///
+/// # Deliberately not canonicalized
+///
+/// The returned path retains its `..` components. Canonicalizing would resolve
+/// them and no longer match the paths [`discover_ri_files`] builds by walking
+/// from this same root, breaking [`relative_to_examples_dir`]'s lexical
+/// `strip_prefix`. Tests that need to compare this against a *differently
+/// spelled* path to the same directory must canonicalize both sides
+/// themselves.
+pub fn examples_dir() -> &'static Path {
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"))
+}
+
+/// Strip the [`examples_dir`] prefix from `path` and return a portable,
+/// forward-slash-separated relative path string.
+///
+/// For example:
+/// - `<examples_dir>/bracket.ri`                   → `"bracket.ri"`
+/// - `<examples_dir>/fields/composed_stiffness.ri` → `"fields/composed_stiffness.ri"`
+///
+/// This is the canonical form used as skip-list keys and in failure reports, so
+/// that same-basename files in different subdirectories stay unambiguous. It is
+/// also the key form [`crate::helpers::missing_paths_under`] expects, which is
+/// what lets a suite check its skip list for dead keys with a plain
+/// `dir.join(rel)`.
+///
+/// # Panics
+///
+/// Panics if `path` does not begin with the **lexical** [`examples_dir`]
+/// prefix. Callers must pass paths produced by [`discover_ri_files`] — i.e.
+/// paths constructed by walking [`examples_dir`] without canonicalization.
+/// Canonicalized paths (which resolve `..` components) will not match the
+/// lexical prefix string and will panic.
+pub fn relative_to_examples_dir(path: &Path) -> String {
+    let rel = path.strip_prefix(examples_dir()).unwrap_or_else(|e| {
+        panic!(
+            "reify_test_support::examples_corpus: '{}' is not under examples_dir ({}): {}",
+            path.display(),
+            examples_dir().display(),
+            e
+        )
+    });
+    rel.to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/")
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     /// `examples_dir` names the real workspace `examples/` directory.
     ///
     /// Pins the load-bearing premise that this crate's `CARGO_MANIFEST_DIR`
@@ -86,6 +154,5 @@ mod tests {
             nested,
             "expected the relative key to round-trip back onto examples_dir()"
         );
-        let _ = Path::new(&rel);
     }
 }
