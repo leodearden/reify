@@ -19,7 +19,7 @@
 //! production build graph (see the measured 130-vs-185-crate note in this
 //! crate's `Cargo.toml`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Absolute path to the workspace `examples/` directory.
 ///
@@ -87,6 +87,62 @@ pub fn relative_to_examples_dir(path: &Path) -> String {
     });
     rel.to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/")
+}
+
+/// Return all `*.ri` files under `dir` (recursively), sorted by full path.
+///
+/// Call sites walking the workspace corpus pass [`examples_dir`]; the root is a
+/// parameter rather than baked in so this is unit-testable against a fixture
+/// tree instead of only against the live corpus (and to match
+/// [`crate::helpers::missing_paths_under`], which likewise takes its directory
+/// explicitly).
+///
+/// # Contracts callers may rely on
+///
+/// - **The result is sorted by full path.** Suites report discovered files in
+///   failure messages and ratchet on their count, so a `read_dir`-order walk
+///   would make those messages reorder between runs on the same corpus. The
+///   sort is a determinism contract, not an incidental tidy-up.
+/// - **Paths are returned uncanonicalized**, built by joining onto `dir`. That
+///   is what keeps them valid inputs to [`relative_to_examples_dir`], whose
+///   `strip_prefix` is lexical.
+/// - **Only `.ri` file EXTENSIONS match.** A *directory* whose name ends in
+///   `.ri` is recursed into, never pushed.
+///
+/// # Panics
+///
+/// Panics if any directory in the tree cannot be read, naming the directory and
+/// the io error. A corpus walk that silently degraded to walking nothing would
+/// turn every guard built on it vacuous, so an unreadable directory must fail
+/// loudly.
+pub fn discover_ri_files(dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    collect_ri_files(dir, &mut paths);
+    paths.sort();
+    paths
+}
+
+/// Recursively collect `*.ri` files under `dir` into `out`.
+///
+/// Private: the sort in [`discover_ri_files`] is part of the public contract,
+/// and exposing the unsorted accumulator would let a caller opt out of it.
+fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "reify_test_support::examples_corpus: cannot read directory '{}': {}",
+            dir.display(),
+            e
+        )
+    });
+    for entry in entries {
+        let entry = entry.expect("IO error reading examples dir entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ri_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
+            out.push(path);
+        }
+    }
 }
 
 #[cfg(test)]
