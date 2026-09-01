@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData, FeaDiagnosticInfo } from '../../types';
+import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData, FeaDiagnosticInfo, ScalarChannelTag } from '../../types';
 import { createFeaModeStore } from '../../stores';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
@@ -1285,6 +1285,82 @@ describe('Viewport FEA Lock Current + readout wiring', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Viewport tagged scalar channels (task #6185)
+// End-to-end B8: a tagged channel's unit reaches the legend, and a SIGNED
+// channel's negative values survive range computation all the way into the
+// FEA store rather than being clamped away.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport — tagged scalar channels (task #6185)', () => {
+  function makeTaggedMesh(
+    channel: string,
+    values: number[],
+    tag?: ScalarChannelTag,
+  ): MeshData {
+    return {
+      entity_path: 'bracket',
+      vertices: new Float32Array(0),
+      indices: new Uint32Array(0),
+      normals: null,
+      scalar_channels: { [channel]: new Float32Array(values) },
+      ...(tag === undefined ? {} : { scalar_channel_tags: { [channel]: tag } }),
+    };
+  }
+
+  it('(a) a Pa-tagged channel renders its unit in the max readout', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-a" feaModeStore={store as any} />);
+
+    setMeshes({
+      bracket: makeTaggedMesh('vonMises', [2, 8], { unit: 'Pa', signed: false }),
+    });
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/Pa/);
+    expect(readout.textContent).toMatch(/vonMises/);
+  });
+
+  it('(b) a signed channel keeps its NEGATIVE min through to the store, and shows rad', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    store.setChannel('testRotation');
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-b" feaModeStore={store as any} />);
+
+    setMeshes({
+      bracket: makeTaggedMesh('testRotation', [-0.5, 0, 0.25], { unit: 'rad', signed: true }),
+    });
+
+    // The B8 pin: negatives survive range computation to the renderer.
+    expect(store.state.range.min).toBe(-0.5);
+    expect(store.state.range.max).toBe(0.25);
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toMatch(/rad/);
+  });
+
+  it('(c) untagged meshes render no unit and keep the non-negative range', () => {
+    // Regression pin for pre-tag payloads.
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+    render(() => <Viewport meshes={meshes()} viewportId="test-tag-c" feaModeStore={store as any} />);
+
+    setMeshes({ bracket: makeTaggedMesh('vonMises', [-1, 2, 8]) });
+
+    // -1 is the OOB sentinel for an untagged channel and must not reach the range.
+    expect(store.state.range).toEqual({ mode: 'auto', min: 2, max: 8 });
+
+    const readout = screen.getByTestId('fea-mode-max-readout');
+    expect(readout.textContent).toBe('max vonMises: 8');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Viewport FEA auto-enable determinism (step-3 — RED)
 // Verifies that the auto-enable effect picks a channel deterministically
 // regardless of the insertion order of scalar_channels keys.
@@ -1377,6 +1453,158 @@ describe('Viewport FEA auto-enable determinism', () => {
 
     expect(store.state.enabled).toBe(true);
     expect(store.state.channel).toBe('vonMises_top');
+  });
+});
+
+// Task 5669: the FEA toolbar channel dropdown must reflect whatever channel
+// pickDefaultScalarChannel auto-selects, even for shell FEA meshes whose
+// preferred channel ('vonMises_top') is not part of feaToolbarChannels' fixed
+// base list.
+//
+// The option-list POLICY itself — base list, errorIndicator extension, the
+// store's current channel (seed), the PREFERRED_FEA_CHANNELS scan, and the
+// ordering the three compose into — now lives in
+// gui/src/viewport/feaToolbarChannels.ts with pure unit coverage in
+// feaToolbarChannels.test.ts (task 5828). Three cases that asserted only that
+// content moved there, each having cost a full <Viewport> render to prove what
+// a ~10-line pure call proves.
+//
+// What remains here is what a pure helper test cannot reach: the store ↔
+// <select> WIRING and its reactivity — that select.value tracks
+// store.state.channel at mount, across a mesh-set prop change (where the
+// one-shot auto-enable leaves the channel stranded), and across a store write.
+// The swap case additionally spans pickDefaultScalarChannel's lexicographic
+// last-resort branch through to the rendered dropdown, since only a real
+// auto-enable can put a channel the scan would never admit into the store.
+describe('Viewport FEA channel dropdown sync (task 5669)', () => {
+  it('shell mesh with {vonMises_top, vonMises_bottom} → dropdown offers both and value matches store.state.channel', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_top: new Float32Array([3]),
+          vonMises_bottom: new Float32Array([1]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5669" feaModeStore={store as any} />);
+
+    // Auto-enable picked the shell's preferred channel.
+    expect(store.state.channel).toBe('vonMises_top');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // Exact list, not membership: pins the ordering contract too (base list
+    // first, in its own order, then the widened extras appended lexicographically
+    // sorted — so the option order is insertion-order independent).
+    expect(options).toEqual([
+      'vonMises',
+      'displacement_magnitude',
+      'vonMises_bottom',
+      'vonMises_top',
+    ]);
+    expect(select.value).toBe(store.state.channel);
+  });
+
+  it('mesh set swapped after a non-preferred auto-enable → select.value still matches store.state.channel (one-shot auto-enable residual desync)', () => {
+    const store = createFeaModeStore();
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({
+      probe: {
+        entity_path: 'probe',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          // The only non-empty channel, and a member of neither the base list
+          // nor PREFERRED_FEA_CHANNELS, so pickDefaultScalarChannel reaches it
+          // through its lexicographic last-resort branch. Letting auto-enable
+          // choose the channel (rather than forcing it with setChannel) is what
+          // makes this case span pickDefaultScalarChannel → store → seed →
+          // rendered dropdown: a regression that seeded only
+          // PREFERRED_FEA_CHANNELS members would strand the <select> here.
+          temperature: new Float32Array([300]),
+        },
+      },
+    });
+
+    render(() => <Viewport meshes={meshes()} viewportId="test-5669-swap" feaModeStore={store as any} />);
+
+    // Auto-enable fires once, landing on the lexicographic fallback.
+    expect(store.state.channel).toBe('temperature');
+
+    const selectAtMount = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    expect(Array.from(selectAtMount.options).map((o) => o.value)).toContain('temperature');
+    expect(selectAtMount.value).toBe(store.state.channel);
+
+    // Replace the mesh set with a solid-only rebuild whose channels don't
+    // include 'temperature' at all. Auto-enable is one-shot (autoEnabledOnce),
+    // so store.state.channel does NOT change — the dropdown must still offer
+    // a matching option instead of silently falling back to the base list.
+    setMeshes({
+      solid: {
+        entity_path: 'solid',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([4]),
+        },
+      },
+    });
+
+    expect(store.state.channel).toBe('temperature');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // 'temperature' survives only via the current-channel seed — the new mesh
+    // set carries nothing the scan would admit. Membership, not the full list:
+    // the option-list ordering is the helper's contract, pinned once in
+    // feaToolbarChannels.test.ts.
+    expect(options).toContain('temperature');
+    expect(select.value).toBe(store.state.channel);
+  });
+
+  it('store channel switched to a channel outside the mesh set → an <option> appears for it and select.value stays in sync (store-write reactive path)', () => {
+    const store = createFeaModeStore();
+    const meshes: Record<string, MeshData> = {
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_top: new Float32Array([3]),
+          vonMises_mid: new Float32Array([2]),
+          vonMises_bottom: new Float32Array([1]),
+        },
+      },
+    };
+
+    render(() => <Viewport meshes={meshes} viewportId="test-5828-order" feaModeStore={store as any} />);
+
+    expect(store.state.channel).toBe('vonMises_top');
+
+    // setChannel is unvalidated (setState('channel', c)), which is exactly what
+    // a programmatic / out-of-band selection does. This also drives the memo
+    // from a STORE write rather than a prop change — a reactive path neither
+    // case above exercises.
+    store.setChannel('temperature');
+
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    // Membership and value, deliberately not the full list: what this render
+    // buys is that the memo re-ran on a store WRITE and the <select> ended up
+    // offering the store's new channel. How the seed and the scan extras
+    // compose into one sorted list is the helper's contract, pinned once in
+    // feaToolbarChannels.test.ts case (q) — re-asserting it here would red two
+    // suites for one ordering change and prove nothing the pure call does not.
+    expect(options).toContain('temperature');
+    expect(select.value).toBe(store.state.channel);
   });
 });
 

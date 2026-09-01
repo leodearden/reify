@@ -6355,6 +6355,14 @@ structure Assembly {
                 label: "OffsetSolid → [target]",
             },
             Case {
+                op: GeometryOp::OffsetSurface {
+                    target: GeometryHandleId(105),
+                    distance: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(105)],
+                label: "OffsetSurface → [target]",
+            },
+            Case {
                 op: GeometryOp::Shell {
                     target: GeometryHandleId(84),
                     thickness: Value::Real(0.002),
@@ -6376,7 +6384,7 @@ structure Assembly {
                 op: GeometryOp::Draft {
                     target: GeometryHandleId(70),
                     faces: vec![],
-                    angle: Value::Real(0.1),
+                    angle: Value::angle(0.1),
                     plane: GeometryHandleId(71),
                 },
                 expected: vec![GeometryHandleId(70)],
@@ -6475,7 +6483,7 @@ structure Assembly {
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",
             },
-            // ── Remaining primitives (task 4671 step-3: full 47-variant coverage) ─
+            // ── Remaining primitives (task 4671 step-3: full 48-variant coverage) ─
             Case {
                 op: GeometryOp::Sphere { radius: Value::Real(0.005) },
                 expected: vec![],
@@ -6776,7 +6784,7 @@ structure Assembly {
     // ── substitute_op_parents unit tests ─────────────────────────────────────
 
     /// Characterizes the per-variant-family parent-handle substitution semantics
-    /// of `substitute_op_parents`. For every non-Split variant (47 total):
+    /// of `substitute_op_parents`. For every non-Split variant (48 total):
     /// builds an op with known handle ids, applies `substitute_op_parents` with
     /// a mapping that remaps those ids, and asserts that only the PARENT fields
     /// are rewritten — non-parent fields (Pipe.path, Sweep.path, SweepGuided.path
@@ -6785,7 +6793,7 @@ structure Assembly {
     ///   from the map are left as-is (tested via Union left absent from map).
     ///
     /// All expected values are hardcoded independently of the L1 table, so
-    /// full 47-variant coverage gives full validation of the table's
+    /// full 48-variant coverage gives full validation of the table's
     /// `parent_role` column for this function.
     ///
     /// Stays GREEN against the current per-variant fn; the coverage-completeness
@@ -7049,6 +7057,10 @@ structure Assembly {
             10, 110, "OffsetSolid"
         );
         check_single_target!(
+            GeometryOp::OffsetSurface { target: h(10), distance: Value::Real(0.002) },
+            10, 110, "OffsetSurface"
+        );
+        check_single_target!(
             GeometryOp::Shell { target: h(10), thickness: Value::Real(0.002), faces_to_remove: vec![0], open_face_handles: vec![] },
             10, 110, "Shell"
         );
@@ -7059,13 +7071,14 @@ structure Assembly {
 
         // Draft.plane is a constraint, not a parent — must NOT be remapped
         {
-            let mut op = GeometryOp::Draft { target: h(10), faces: vec![], angle: Value::Real(0.1), plane: h(20) };
+            let mut op = GeometryOp::Draft { target: h(10), faces: vec![], angle: Value::angle(0.1), plane: h(20) };
             seen.insert(GeometryOpDiscriminants::from(&op));
             substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
             match &op {
-                GeometryOp::Draft { target, plane, .. } => {
+                GeometryOp::Draft { target, angle, plane, .. } => {
                     assert_eq!(*target, h(110), "Draft.target must be remapped");
                     assert_eq!(*plane, h(20), "Draft.plane must NOT be remapped (reference constraint)");
+                    assert_eq!(*angle, Value::angle(0.1), "Draft.angle must be an ANGLE-dimensioned Value and must survive parent remapping unchanged (task 5777)");
                 }
                 _ => panic!("op must still be Draft"),
             }
@@ -7475,7 +7488,10 @@ structure Assembly {
                 op: GeometryOp::Draft {
                     target: h(1),
                     faces: vec![],
-                    angle: r(0.1),
+                    // NOT `r(..)` — that closure builds a bare `Value::Real` and is
+                    // shared with the LENGTH-semantic Chamfer/Shell/Thicken cases
+                    // in this same table, so it must stay as it is (task 5777).
+                    angle: Value::angle(0.1),
                     plane: h(2),
                 },
                 expected: Operation::ModifyDraft,
@@ -7504,6 +7520,14 @@ structure Assembly {
                 },
                 expected: Operation::ModifyOffsetSolid,
                 label: "OffsetSolid → ModifyOffsetSolid",
+            },
+            Case {
+                op: GeometryOp::OffsetSurface {
+                    target: h(1),
+                    distance: r(0.002),
+                },
+                expected: Operation::ModifyOffsetSurface,
+                label: "OffsetSurface → ModifyOffsetSurface",
             },
             Case {
                 op: GeometryOp::OffsetCurve {

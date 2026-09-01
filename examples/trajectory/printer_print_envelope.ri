@@ -72,11 +72,14 @@ structure def PrinterPrintEnvelope {
     // The asymmetric 60 × 40 mm cross-section keeps vertical/lateral bending
     // families non-degenerate so modes are strictly distinct.
     //
-    // Argument binding is POSITIONAL (name: labels are cosmetic; the parser binds
-    // each value to the param in ModalOptions' DECLARATION order: n_modes,
+    // Argument binding is BY NAME (task-4522's by-name ctor binder resolves each
+    // `name:` label against ModalOptions' declared params; only UNLABELLED args
+    // fill the remaining slots in declaration order: n_modes,
     // boundary_conditions, damping, sigma, tol, max_iters, reference_direction,
-    // element_order). All params spelled out in order so element_order = P2 lands
-    // in the last slot — a partial call would silently misplace it.
+    // element_order). All params are still spelled out because a MISSPELLED
+    // label is STILL bound leniently — appended as `__arg{i}`, leaving the
+    // intended param (here element_order) at its P1 default — under only an
+    // `E_CTOR_UNKNOWN_FIELD` Warning today (Error at δ).
 
     let gantry_length = 500mm
     let gantry_width  = 60mm
@@ -91,7 +94,7 @@ structure def PrinterPrintEnvelope {
     let modal_opts = ModalOptions(
         n_modes: 7,
         boundary_conditions: [mount_left, mount_right],
-        damping: RayleighDamping(alpha: 0.0, beta: 0.0001),
+        damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
         sigma: 0.0,
         tol: 0.000000001,
         max_iters: 200,

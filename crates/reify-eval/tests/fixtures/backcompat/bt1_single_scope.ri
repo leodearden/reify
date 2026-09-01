@@ -5,7 +5,7 @@
 // lower bound, so w resolves to 1µm (0.000001 m).
 //
 // Golden: crates/reify-eval/tests/golden/bt1_single_scope.txt
-// Test:   crates/reify-eval/tests/harness_fea_solver_e2e/objective_inheritance_e2e.rs::bt1_single_scope_byte_identity
+// Test:   crates/reify-cli/tests/harness_cli/cli_objective_inheritance_golden.rs::bt1_single_scope_byte_identity
 structure Bar {
     param w: Length = auto
 

@@ -256,8 +256,8 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 /// boundary. Neither subsumes the other, so this one keeps working if the
 /// first is bypassed or has a hole.
 ///
-/// `OcctKernel::execute`'s 46 numeric-extraction sites split 46 = 41 + 3 + 2:
-/// the 41 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
+/// `OcctKernel::execute`'s 47 numeric-extraction sites split 47 = 42 + 3 + 2:
+/// the 42 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
 /// (dimensionless unit-normal components) and `CircularPattern.angle` /
 /// `Draft.angle` (ANGLE — PRD 3's surface) stay on the context-free
 /// [`extract_f64`], each marked at its call site with a
@@ -715,6 +715,73 @@ impl OcctKernel {
     /// restore.
     pub fn warm_start_failures(&self) -> usize {
         self.last_warm_start_failures
+    }
+
+    /// Number of shapes currently resident in this kernel's native `shapes`
+    /// table.
+    ///
+    /// This is the observability primitive for task 5212's reload
+    /// native-memory-bound signal: `shapes` holds one `cxx::UniquePtr<OcctShape>`
+    /// per minted handle and is the map that grows unbounded across GUI
+    /// whole-file reloads until [`Self::reset`] evicts it. Exposing the count
+    /// lets callers (and the boundedness regression test) verify that a
+    /// reset genuinely frees the resident shapes and that repeated
+    /// execute-batch→reset cycles stay bounded rather than accumulating.
+    /// Mirrors the [`Self::warm_start_failures`] diagnostic accessor above.
+    pub fn shape_count(&self) -> usize {
+        self.shapes.len()
+    }
+
+    /// Free every resident native shape and clear all derived provenance/
+    /// idempotency caches, returning the kernel to an empty-but-reusable
+    /// state — WITHOUT rewinding the `next_id` handle counter.
+    ///
+    /// This is the reload native-memory bound for task 5212. The reify-eval
+    /// `Engine` and the `OcctKernel` it owns are long-lived and reused across
+    /// GUI whole-file reloads; without this, every reload re-executes the
+    /// design's geometry and mints fresh `shapes` while prior-design shapes
+    /// stay resident, growing OCCT native memory unbounded over a long
+    /// session. Calling `reset()` once per reload (see
+    /// `Engine::reset_geometry_for_reload`) evicts the previous build's
+    /// shapes so the resident count stays bounded.
+    ///
+    /// `next_id` is deliberately KEPT monotonic (not reset to 1): the leak is
+    /// the `shapes` map, not the 8-byte counter. Keeping handle ids strictly
+    /// increasing means any handle that outlives a reload (e.g. a lingering
+    /// realization-cache entry) can never alias a freshly-minted shape — it
+    /// resolves to a clean `InvalidReference` via the #5211 `get_shape`
+    /// IsNull/InvalidReference guard instead of silently reading a different
+    /// shape. INV-BUILD-1 (`engine_build.rs`) warns that "re-minting id 1 on
+    /// a later build would be served silently in release"; this is the
+    /// read-side counterpart. (It is also why `with_warm_state`'s
+    /// `*next_id = warm.next_id` swap, which CAN lower the counter, is a
+    /// dormant aliasing hazard — see its guard comment.)
+    pub fn reset(&mut self) {
+        // INV-GEO-3 state-inventory guard: this exhaustive destructure (no
+        // `..` spread) forces every OcctKernel field to be classified here as
+        // CLEAR (freed on reload) or KEEP (deliberately preserved). Adding a
+        // new field to OcctKernel without extending this pattern is a hard
+        // compile error (E0027), so the reload clear/keep decision can't be
+        // silently skipped. Mirrors the warm_state()/with_warm_state()
+        // destructures.
+        let Self {
+            shapes,
+            reprs,
+            extracted_edges,
+            extracted_faces,
+            extracted_vertices,
+            parent_handle,
+            next_id: _,                  // KEEP: monotonic — see doc comment above.
+            last_warm_start_failures: _, // KEEP: last-restore diagnostic, not a resident shape.
+        } = self;
+        // CLEAR: free the resident native shapes (the reload memory bound)
+        // and every derived provenance/idempotency cache keyed to them.
+        shapes.clear();
+        reprs.clear();
+        extracted_edges.clear();
+        extracted_faces.clear();
+        extracted_vertices.clear();
+        parent_handle.clear();
     }
 
     /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
@@ -2982,6 +3049,18 @@ impl OcctKernel {
                 ffi::ffi::offset_solid_shape(shape, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::OffsetSurface { target, distance } => {
+                let shape = self.get_shape(*target)?;
+                let d = extract_length_f64(distance, op, "distance")?;
+                let out = ffi::ffi::make_offset_surface(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // `BRepKind::Face` assumes a single-face input/result, true
+                // for every current DSL surface producer. See
+                // `make_offset_surface`'s header doc comment (occt_wrapper.h)
+                // for the shell-input caveat this would need if that ever
+                // changes.
+                return Ok(self.store_with_repr(out, BRepKind::Face));
+            }
             GeometryOp::Shell {
                 target,
                 thickness,
@@ -4618,6 +4697,18 @@ impl WarmStartable for OcctKernel {
             *shapes = staged;
             *reprs = new_reprs;
             *next_id = warm.next_id;
+            // FORWARD-LOOKING HAZARD (task 5212, no production caller today):
+            // this wholesale `*shapes = staged` swap paired with
+            // `*next_id = warm.next_id` can LOWER next_id to a value at or
+            // below ids already handed out this session. If OCCT geometry
+            // warm-start is ever wired into the GUI whole-file reload path, a
+            // later `store_with_repr` could then re-mint an id that a stale
+            // handle (e.g. a lingering realization-cache entry) still names,
+            // aliasing it onto a freshly-minted shape — silent data corruption
+            // / UAF — instead of failing cleanly. This is exactly why
+            // `OcctKernel::reset()` deliberately keeps next_id MONOTONIC (see
+            // its doc comment and INV-BUILD-1): a warm-start reload wiring must
+            // reconcile next_id (take the max, never lower it), not overwrite.
             // CLEAR-on-restore: derived provenance/idempotency caches keyed to
             // the pre-restore shape table. Cached child ids may not correspond
             // to any face/edge/vertex of the freshly-restored shapes, and
@@ -5853,6 +5944,216 @@ mod tests {
             "persisted shape count must stay pinned at the two-root count \
              ({ROOT_COUNT}) across cycles — a post-extraction root must never \
              be dropped, and sub-shapes must stay filtered: {counts:?}"
+        );
+    }
+
+    /// `shape_count()` reports the number of resident native shapes in the
+    /// kernel's `shapes` table. A fresh kernel holds zero; after executing two
+    /// primitives it holds exactly two. This accessor is the observability
+    /// primitive for the reload native-memory-bound signal (task 5212) — it
+    /// mirrors the existing `warm_start_failures()` diagnostic accessor — and
+    /// is the hook the `reset()` boundedness test below reads.
+    #[test]
+    fn shape_count_reports_resident_shape_table_size() {
+        let mut kernel = OcctKernel::new();
+        assert_eq!(
+            kernel.shape_count(),
+            0,
+            "a fresh kernel holds no resident shapes"
+        );
+
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+
+        assert_eq!(
+            kernel.shape_count(),
+            2,
+            "executing two primitives leaves exactly two resident shapes"
+        );
+    }
+
+    /// `reset()` part (a): frees every resident native shape and clears all
+    /// derived provenance/idempotency caches, so a reused kernel carries no
+    /// build-N state into a whole-file reload. All three `extract_*` caches
+    /// (+ `parent_handle`) are populated first so each emptiness assertion is
+    /// non-vacuous. Direct private-field access is valid here — `tests` is a
+    /// descendant module of the crate root where `OcctKernel` is defined
+    /// (same pattern as the warm-state tests below, e.g. `kernel.next_id`).
+    #[test]
+    fn reset_clears_shape_table_and_derived_caches() {
+        let mut kernel = OcctKernel::new();
+        let box_handle = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let box_id = box_handle.id;
+        kernel
+            .extract_faces(box_id)
+            .expect("extract_faces on the box should succeed");
+        kernel
+            .extract_edges(box_id)
+            .expect("extract_edges on the box should succeed");
+        kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices on the box should succeed");
+
+        // Precondition: shapes + reprs + every derived cache are populated.
+        assert!(
+            kernel.shape_count() > 0,
+            "box + extracted sub-shapes should be resident before reset"
+        );
+        assert!(!kernel.reprs.is_empty(), "reprs populated before reset");
+        assert!(
+            !kernel.extracted_faces.is_empty(),
+            "extracted_faces populated before reset"
+        );
+        assert!(
+            !kernel.extracted_edges.is_empty(),
+            "extracted_edges populated before reset"
+        );
+        assert!(
+            !kernel.extracted_vertices.is_empty(),
+            "extracted_vertices populated before reset"
+        );
+        assert!(
+            !kernel.parent_handle.is_empty(),
+            "parent_handle populated before reset"
+        );
+
+        kernel.reset();
+
+        assert_eq!(
+            kernel.shape_count(),
+            0,
+            "reset must free every resident native shape"
+        );
+        assert!(kernel.reprs.is_empty(), "reset must clear reprs");
+        assert!(
+            kernel.extracted_faces.is_empty(),
+            "reset must clear extracted_faces"
+        );
+        assert!(
+            kernel.extracted_edges.is_empty(),
+            "reset must clear extracted_edges"
+        );
+        assert!(
+            kernel.extracted_vertices.is_empty(),
+            "reset must clear extracted_vertices"
+        );
+        assert!(
+            kernel.parent_handle.is_empty(),
+            "reset must clear parent_handle"
+        );
+    }
+
+    /// `reset()` part (b): `next_id` stays MONOTONIC across a reset — it is
+    /// deliberately NOT rewound to 1. A stale handle that outlives a reload
+    /// (e.g. a lingering realization-cache entry) must resolve to a clean
+    /// InvalidReference via the 5211 `get_shape` guard, never alias a
+    /// freshly-minted shape. See `reset()`'s doc comment and INV-BUILD-1.
+    #[test]
+    fn reset_keeps_next_id_monotonic() {
+        let mut kernel = OcctKernel::new();
+        let pre = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let pre_id = pre.id.0;
+
+        kernel.reset();
+        assert_eq!(
+            kernel.shape_count(),
+            0,
+            "reset must free the resident shape"
+        );
+
+        let post = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        assert!(
+            post.id.0 > pre_id,
+            "next_id must stay monotonic across reset: post-reset id {} must \
+             strictly exceed pre-reset id {} (never rewound to 1)",
+            post.id.0,
+            pre_id
+        );
+    }
+
+    /// `reset()` part (c): the reload native-memory bound. Across N
+    /// execute-batch→reset cycles the resident shape count stays CONSTANT
+    /// (bounded, not monotonic) while `next_id` strictly increases — proving
+    /// reset frees native memory every cycle without ever reusing a handle
+    /// id. Direct analog of
+    /// `warm_state_persisted_shape_count_stays_bounded_across_cycles`.
+    #[test]
+    fn reset_bounds_shape_count_across_execute_reset_cycles() {
+        let mut kernel = OcctKernel::new();
+        let mut counts = Vec::new();
+        let mut first_ids = Vec::new();
+        const CYCLES: usize = 5;
+        for _ in 0..CYCLES {
+            let box_h = kernel
+                .execute(&GeometryOp::Box {
+                    width: Value::Real(10.0),
+                    height: Value::Real(20.0),
+                    depth: Value::Real(30.0),
+                })
+                .unwrap();
+            first_ids.push(box_h.id.0);
+            let cyl_h = kernel
+                .execute(&GeometryOp::Cylinder {
+                    radius: Value::Real(5.0),
+                    height: Value::Real(20.0),
+                })
+                .unwrap();
+            kernel
+                .execute(&GeometryOp::Union {
+                    left: box_h.id,
+                    right: cyl_h.id,
+                })
+                .unwrap();
+            counts.push(kernel.shape_count());
+            kernel.reset();
+        }
+
+        // The core bound: every batch leaves the same resident count. Without
+        // reset this would climb monotonically (3, 6, 9, ...).
+        assert!(
+            counts.iter().all(|&c| c == counts[0]),
+            "resident shape count must stay bounded (constant) across \
+             execute→reset cycles: {counts:?}"
+        );
+        assert!(
+            counts[0] > 0,
+            "each batch must leave resident shapes so the bound is \
+             non-vacuous: {counts:?}"
+        );
+        // next_id is monotonic: each cycle's first (box) id strictly exceeds
+        // the previous cycle's, so reset never rewinds the counter.
+        assert!(
+            first_ids.windows(2).all(|w| w[1] > w[0]),
+            "next_id must strictly increase across reset cycles (handle ids \
+             never reused): {first_ids:?}"
         );
     }
 
@@ -8135,6 +8436,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn make_offset_surface_ffi_contract() {
+        // 20mm x 10mm rectangle face at z=0 (metres).
+        let face = ffi::ffi::make_rectangle_face(0.020, 0.010, 0.0)
+            .expect("make_rectangle_face(0.020, 0.010, 0.0) should succeed");
+        assert!(
+            ffi::ffi::make_offset_surface(&face, 0.002).is_ok(),
+            "2mm surface offset should succeed"
+        );
+        assert!(
+            ffi::ffi::make_offset_surface(&face, 0.0).is_err(),
+            "zero-distance surface offset should fail (degenerate)"
+        );
+
+        // Negative distance: offsets along the face's -normal, opposite the
+        // +0.002 case above. Previously uncovered (reviewer finding) — pin
+        // the *sign*, not just success, via query_bbox: the result must land
+        // at z ≈ -0.002m, catching a regression that mis-signs the normal
+        // or silently no-ops on inward/negative offsets.
+        let neg = ffi::ffi::make_offset_surface(&face, -0.002)
+            .expect("-2mm surface offset should succeed (-normal direction)");
+        let bb = ffi::ffi::query_bbox(&neg).expect("query_bbox should succeed");
+        let expected_z = -0.002_f64;
+        let tol = 0.0005_f64; // 0.5mm, matching offset_surface_e2e's bbox tolerance
+        assert!(
+            (bb.zmin - expected_z).abs() < tol,
+            "-2mm surface offset: bbox.zmin should be ≈-0.002m, got {}",
+            bb.zmin
+        );
+        assert!(
+            (bb.zmax - expected_z).abs() < tol,
+            "-2mm surface offset: bbox.zmax should be ≈-0.002m, got {}",
+            bb.zmax
+        );
+    }
+
     // --- OffsetSolid high-level execute tests ---
 
     #[test]
@@ -8602,7 +8939,14 @@ mod tests {
         );
 
         // AABB check: parse all vertex positions from the binary body and assert
-        // each axis extent ≈ 10.0 (within 1e-2).
+        // each axis extent ≈ 10000.0 (within 10.0).
+        //
+        // The box is 10 MODEL units = 10 SI metres, and `write_stl_binary` emits
+        // millimetres (task #6187), so the expected extent and its tolerance are
+        // BOTH the same physical quantities this test has always verified — 10 m
+        // and 0.01 m — merely re-expressed in the writer's millimetre regime.
+        // The tolerance is scaled alongside the value on purpose: tightening it
+        // would pin a fidelity nothing here has measured.
         let mut min = [f32::MAX; 3];
         let mut max = [f32::MIN; 3];
         for tri in 0..count as usize {
@@ -8627,8 +8971,8 @@ mod tests {
         for axis in 0..3usize {
             let extent = max[axis] - min[axis];
             assert!(
-                (extent - 10.0).abs() < 1e-2,
-                "axis {} extent should be ≈10.0, got {extent}",
+                (extent - 10000.0).abs() < 10.0,
+                "axis {} extent should be ≈10000.0 mm, got {extent}",
                 axis
             );
         }
@@ -8777,7 +9121,7 @@ mod tests {
         let draft_h = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
             faces: vec![],
-            angle: Value::Real(0.1),
+            angle: Value::angle(0.1),
             plane: plane_h.id,
         });
         // Draft is complex and may fail for certain shapes - we just verify it
@@ -8833,6 +9177,159 @@ mod tests {
         (target_h, plane_h)
     }
 
+    /// Dimensioning a Draft fixture's angle does not change the geometry OCCT
+    /// produces — PRD `docs/prds/v0_6/angle-units-surface-convergence.md`
+    /// decision D2, observed at the kernel boundary (task 5777, angle-units α).
+    ///
+    /// A CHARACTERIZATION pin, expected green against unchanged production
+    /// code: the OCCT Draft arm reads its angle via `extract_f64`, a thin
+    /// wrapper over `Value::as_f64`, so this closes at actual OCCT output what
+    /// `reify_ir::value::tests::angle_and_real_agree_bit_exactly_under_as_f64`
+    /// pins at the `Value` layer.
+    ///
+    /// Draft is finicky, so this sweeps up to two CURATED faces — never the
+    /// all-faces path, which `execute_draft_curated_faces_honored` explicitly
+    /// declines to use as an oracle — and requires `compared > 0` so a run
+    /// where no face produced geometry fails loudly instead of passing
+    /// silently. The three-way failure split below names the culprit: the two
+    /// forms DIVERGING is the D2 contradiction; both failing IDENTICALLY
+    /// exonerates the dimension tag and indicts the fixture.
+    ///
+    /// The success arm's oracle is equal VOLUME plus equal FACE COUNT, over two
+    /// handles asserted to be distinct. That is deliberately not a proof of
+    /// congruence — no cheap query here is — but it is strictly more than a
+    /// single scalar, and the handle assertion closes the vacuity path a
+    /// memoising `execute` would otherwise open.
+    #[test]
+    fn draft_angle_dimensioned_matches_bare_real_volume() {
+        let angle_rad = std::f64::consts::PI / 60.0;
+        let mut kernel = OcctKernel::new();
+
+        let (target, plane) = build_draft_fixture(&mut kernel);
+        let faces = kernel
+            .extract_faces(target.id)
+            .expect("extract_faces must succeed");
+        assert!(
+            faces.len() >= 2,
+            "box must have at least 2 faces, got {}",
+            faces.len()
+        );
+
+        // Any single face can legitimately be one OCCT declines to draft, so
+        // sweep up to two of them — exactly as
+        // `execute_draft_curated_faces_honored` does — stopping at the first
+        // where BOTH forms produced geometry, and requiring at least one.
+        let mut compared = 0usize;
+        for face in [faces[0], *faces.last().unwrap()] {
+            let bare = kernel.execute(&GeometryOp::Draft {
+                target: target.id,
+                faces: vec![face],
+                // Stays bare deliberately — task 5777. This is the CONTROL arm of
+                // the D2 equivalence pin; retyping it to `Value::angle` collapses
+                // both arms into one and deletes the comparison. δ (5780) owns
+                // `draft`, but not this site.
+                angle: Value::Real(angle_rad),
+                plane: plane.id,
+            });
+            let dimensioned = kernel.execute(&GeometryOp::Draft {
+                target: target.id,
+                faces: vec![face],
+                angle: Value::angle(angle_rad),
+                plane: plane.id,
+            });
+
+            match (bare, dimensioned) {
+                (Ok(b), Ok(d)) => {
+                    // Anti-vacuity, the axis the `compared > 0` guard does not
+                    // cover: the comparison only means something if the two
+                    // calls actually executed TWO drafts. `execute` builds a
+                    // fresh shape per call today, but a future content-hash
+                    // memoisation keyed on the `extract_f64` output — exactly
+                    // the change this pin exists to survive — would hand the
+                    // same handle back twice and make every assertion below
+                    // trivially true.
+                    assert_ne!(
+                        b.id, d.id,
+                        "both forms must have executed a fresh draft; identical handles \
+                         mean the comparison below is vacuous"
+                    );
+                    let vb = volume_of(&mut kernel, &b);
+                    let vd = volume_of(&mut kernel, &d);
+                    assert_eq!(
+                        vb, vd,
+                        "Value::angle({angle_rad}) and Value::Real({angle_rad}) must \
+                         produce equal draft volume — they differ only in a \
+                         dimension tag that extract_f64 discards"
+                    );
+                    // Volume alone is a weak oracle: two distinct shapes can
+                    // share one. Compare the face count too, so a divergence
+                    // that redistributes material without changing its total
+                    // is still caught. Neither oracle makes the shapes provably
+                    // congruent — the claim this pin actually supports is
+                    // "equal volume AND equal face count", not "bit-identical
+                    // geometry".
+                    let fb = kernel
+                        .extract_faces(b.id)
+                        .expect("extract_faces on the bare-form draft must succeed")
+                        .len();
+                    let fd = kernel
+                        .extract_faces(d.id)
+                        .expect("extract_faces on the dimensioned-form draft must succeed")
+                        .len();
+                    assert_eq!(
+                        fb, fd,
+                        "Value::angle({angle_rad}) and Value::Real({angle_rad}) must produce \
+                         the same face count; equal volume with a different face count would \
+                         be a shape change the volume oracle alone cannot see"
+                    );
+                    compared += 1;
+                }
+                // Same failure from both forms is itself the D2 signal, but it
+                // measures nothing about the geometry — try the other face.
+                (
+                    Err(GeometryError::OperationFailed(_)),
+                    Err(GeometryError::OperationFailed(_)),
+                ) => {}
+                // Both forms failed the SAME way, but not with the tolerated
+                // `OperationFailed`. The dimension tag is EXONERATED here — it
+                // changed nothing — so blaming D2 would be a misdiagnosis of
+                // what is really a broken fixture. Named separately for exactly
+                // that reason (the `compared > 0` guard below exists to stop the
+                // same confusion from the other direction).
+                (Err(bare_err), Err(dim_err))
+                    if std::mem::discriminant(&bare_err) == std::mem::discriminant(&dim_err) =>
+                {
+                    panic!(
+                        "both forms failed identically with {bare_err:?} — this says nothing \
+                         about D2 (the dimension tag changed neither branch nor error); \
+                         repair the fixture"
+                    )
+                }
+                (bare, dimensioned) => panic!(
+                    "dimensioning the angle changed which branch the draft took, which \
+                     contradicts D2: bare -> {:?}, dimensioned -> {:?}",
+                    bare.map(|h| h.id),
+                    dimensioned.map(|h| h.id)
+                ),
+            }
+
+            // One face where both forms produced geometry is the whole signal;
+            // a second costs another OCCT draft + volume pair for no added
+            // information. The sweep exists only to survive a face OCCT
+            // declines to draft.
+            if compared > 0 {
+                break;
+            }
+        }
+
+        assert!(
+            compared > 0,
+            "anti-vacuity: no face produced geometry under EITHER form, so this test \
+             proved nothing about D2 equivalence — the fixture needs repair rather \
+             than a silent pass"
+        );
+    }
+
     /// (a) CURATED SELECTION HONORED: a one-face draft (via `faces: [f0]`)
     /// must succeed with a positive volume that differs both from the
     /// undrafted box volume AND from any other single-face selection (proves
@@ -8858,7 +9355,7 @@ mod tests {
         let result_f0 = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![faces[0]],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8867,7 +9364,7 @@ mod tests {
         let result_fn = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![*faces.last().unwrap()],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8916,7 +9413,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8959,7 +9456,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![foreign_face],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
         match result {
@@ -9332,7 +9829,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
             faces: vec![],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: sphere_h.id,
         });
 
@@ -13630,7 +14127,7 @@ mod tests {
 
     /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
     ///
-    /// The PRD's split is 46 = 41 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
+    /// The PRD's split is 47 = 42 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
     /// — dimensionless unit-normal components, not lengths. The 2 are
     /// `CircularPattern.angle` and `Draft.angle` — ANGLE, which is PRD 3's
     /// surface, not this one. All five must stay on the plain, context-free
@@ -13685,11 +14182,26 @@ mod tests {
                 axis_origin: [0.0, 0.0, 0.0],
                 axis_dir: [0.0, 0.0, 1.0],
                 count: 2,
+                // Stays bare deliberately — task 5777. ε (5781) migrates
+                // `circular_pattern` angles, but NOT this one: it is a control
+                // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
+                // fixture. A bare `Value::Real` is the one shape
+                // `check_length_field` can never wave through — its early
+                // return is gated on the `Value::Scalar` variant — so the arm
+                // still catches a rewire to `extract_length_f64` even if that
+                // predicate is later loosened to accept any dimensioned
+                // `Scalar`. A retyped arm would still warn on a rewire today
+                // (an ANGLE `Scalar` is not LENGTH), but it gives that extra
+                // reach up for nothing. See
+                // docs/notes/angle-literal-migration-ledger.md §1.2.1.
                 angle: Value::Real(std::f64::consts::PI),
             });
             let _ = kernel.execute(&GeometryOp::Draft {
                 target,
                 faces: vec![],
+                // Stays bare deliberately — task 5777, same control contract as
+                // the arm above, but δ's (5780): `draft` is δ's migration
+                // target.
                 angle: Value::Real(0.05),
                 plane: target,
             });
@@ -13751,7 +14263,7 @@ mod tests {
 
     /// **Full 41-field enumeration (step-9B).**
     ///
-    /// The completeness check for the PRD's 46 = 41 + 3 + 2 split, proved by
+    /// The completeness check for the PRD's 47 = 42 + 3 + 2 split, proved by
     /// OBSERVATION rather than by asserting a table against itself: every one of
     /// the 41 LENGTH-semantic `(op, field)` pairs is driven through
     /// `OcctKernel::execute` with a bare `Value::Real` in the field under test
@@ -14157,7 +14669,7 @@ mod tests {
         assert_eq!(
             cases.len(),
             41,
-            "the PRD's 46 = 41 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
+            "the PRD's 47 = 42 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
         );
 
         for (op, op_kind, field) in cases {

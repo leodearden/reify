@@ -748,6 +748,57 @@ fn form_find_result_structure_has_surface_stresses_field() {
     );
 }
 
+/// Declaration lock (task #6095): `FormFindResult.member_forces : List<Force>`
+/// and `force_densities : List<Real>`. Rationale — the unit reference force
+/// density gauge `q_ref ≡ 1 N/m` — lives in the "Dimensional bridge" paragraph
+/// of `stdlib/tensegrity.ri`; this is only its declaration-side lock.
+///
+/// `form_find_result_structure_has_surface_stresses_field` above checks these
+/// two by NAME only (and already pins σ's `List<Real>` cell_type, so σ is
+/// deliberately not re-pinned here).
+#[test]
+fn form_find_result_dimensional_bridge_declaration_lock() {
+    let template = find_structure("FormFindResult");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    let member_forces = params
+        .iter()
+        .find(|vc| vc.id.member == "member_forces")
+        .unwrap_or_else(|| {
+            panic!(
+                "FormFindResult missing 'member_forces' field; got: {:?}",
+                names
+            )
+        });
+    assert_eq!(
+        member_forces.cell_type,
+        Type::List(Box::new(Type::Scalar {
+            dimension: DimensionVector::FORCE
+        })),
+        "FormFindResult.member_forces stays List<Force> — the q_ref ≡ 1 N/m gauge \
+         (task #6095); retyping it is a deliberate act, not a drive-by. Got {:?}",
+        member_forces.cell_type
+    );
+
+    let force_densities = params
+        .iter()
+        .find(|vc| vc.id.member == "force_densities")
+        .unwrap_or_else(|| {
+            panic!(
+                "FormFindResult missing 'force_densities' field; got: {:?}",
+                names
+            )
+        });
+    assert_eq!(
+        force_densities.cell_type,
+        Type::List(Box::new(Type::dimensionless_scalar())),
+        "FormFindResult.force_densities stays List<Real> — qᵢ are nullity-invariant \
+         dimensionless ratios (Leg B, upheld by task #6095's adjudication). Got {:?}",
+        force_densities.cell_type
+    );
+}
+
 // ─── TensegrityWire structure ─────────────────────────────────────────────────
 
 /// `TensegrityWire` has 9 params: `kind : String`, `from_index : Int`,

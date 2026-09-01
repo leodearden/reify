@@ -819,13 +819,20 @@ real edge is wired, and φ is `pending`. Ω (#6808) is no longer blocked on a pa
 ### Dependency summary
 
 Hard intra-batch edges, as wired: `α → {β, γ, δ, ε, η, ρ}`; `η → {θ, ι, κ, σ}`;
-`δ → ζ`; `ε → λ`; `ν → {ξ, ο}`; `{σ, θ, ι, κ, λ, γ, δ, ξ, ο, μ} → χ`; `χ → ψ`;
+`δ → ζ`; `ε → λ`; `ν → {ξ, ο}`; `{σ, θ, ι, κ, λ, γ, δ, ξ, ο, π, μ} → χ`; `χ → ψ`;
 `{λ, σ, τ, φ} → ω`; all twenty-four → `Ω`.
+*(Corrected 2026-08-28, seam-integrity F3 ruling: π restored to χ's row — the §10 leaf
+table always listed it while this summary and the store omitted it; the two committed
+lists disagreed and Leo ruled the leaf table authoritative. Edge `#6805 ← #6798` wired.)*
 
 Out-of-batch hard edges, as wired: `{#6689, #5748, #6803} → α` · `#6694 → {ε, λ}` ·
 `#6721 → ζ` · `#6740 → {γ, δ}` · `#6724 → μ` · `#5519 → ξ` · `#5520 → {ο, υ}` ·
 `#5516 → υ` · `{#6700, #5521} → χ` · `#6803 → φ` · `#6837 → ω`. The last of α's, the φ
 edge and the ω edge were added 2026-08-27, once the GUI purpose PRD decomposed (§8.3).
+*(Additions 2026-08-28: `#6693 → α` wired, seam-integrity F12 ruling — α and P1 δ
+restructure the same cmd_check/cmd_build region. E3 note: #6803 was retired to deferred
+by the E3 recombination experiment — both #6803 edges above now point at its replacement
+#6904, per that task's own inbound-edge note.)*
 
 Outbound, into other PRDs: the spec-conformance suite's #6769 depends on σ (#6800), and
 its #6787 depends on ψ (#6806) — its CLI-observable tier and cross-driver tier, whose own

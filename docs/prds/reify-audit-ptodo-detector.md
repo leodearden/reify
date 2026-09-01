@@ -144,6 +144,20 @@ last-touching commit); if it never existed it is presumed to-be-created and pass
 Prose-path scanning of task descriptions is **out of scope** (FP-prone — historical
 mentions, planned files, partial paths). Advisory severity; own leaf (ζ).
 
+**Renamed ≠ deleted (2026-08-12, task #5654).** An absent path whose last-touching
+commit **renamed** it, to a target still tracked at HEAD, is reported as
+`task-cites-renamed-path` carrying the old path, the new path, and the commit — a cite
+a consumer can repoint without re-running any git archaeology. Mechanism: `git show -M
+--name-status --format= <sha>` on the commit `git log -1` already resolved (one bounded
+single-commit diff, not a history walk), matching the `R`-status line whose old side is
+the cited path. `-M` is explicit so a user/global `diff.renames=false` cannot silently
+disable detection. Everything else stays `task-cites-deleted-path`, and the fall-back is
+total: no matching `R` line, a **merge** commit (`git show` defaults to `--cc` and prints
+no diff for a merge, so a rename landed directly in a merge is not detected), any git
+error, or a rename target that is itself no longer tracked → the deleted kind. A git
+failure can therefore only ever cause a MISSED reclassification, never a false renamed
+finding. Copies (`C` status) are not resolved — only `-M` is passed. See §17.
+
 ### 6.4 Citation grammar — **canonical `#NNNN`, strict from day one, one migration sweep**
 
 Canonical forms (normative spec in §8): `TODO(#NNNN):` for comment markers; `#NNNN`
@@ -440,6 +454,7 @@ one live cite suffices for tracking.
 | `unknown-id` | cite parses but id not in the task DB | liveness |
 | `orphaned` | cited task status ∈ {done, cancelled} — reported with cited id + status | liveness |
 | `task-cites-deleted-path` | non-terminal task `metadata.files` path absent from tracked set but present in git history | inverse |
+| `task-cites-renamed-path` | non-terminal task `metadata.files` path absent from tracked set, whose last-touching commit renamed it to a path still tracked at HEAD — reported with both paths + the commit | inverse |
 | `parked-on-anchor` | cited task is non-terminal but `metadata.do_not_complete == true` (a permanently-parked / never-completing anchor) and no other cite on the marker is genuinely live | liveness |
 
 **`#[ignore]` reason policy:** reasons containing a cite → liveness-checked; reasons
@@ -507,6 +522,10 @@ Consequences, recorded so they are not re-derived:
 - **A non-zero PTODO exit on main is the steady state, not an alarm.** Measured on main
   2026-08-27: **65 findings, 11 High, exit code 11** — 10 `untracked` + 1 `orphaned`
   (High), 3 `malformed-cite`, 51 `task-cites-deleted-path`. No gate observes any of it.
+  (That ζ kind breakdown predates §17: after #5654 the same population splits between
+  `task-cites-deleted-path` and `task-cites-renamed-path`. The two are mutually
+  exclusive per cited path and both Medium, so the 51 total and the exit code are
+  unchanged — only the kind labels move.)
 - **What the ratchet actually reaches is narrower than "all findings".**
   `ptodo-baseline-gen` filters to path-keyed source-marker findings
   (`is_swept_ext(&f.task_id) && !is_g_allow_finding(f)`), so of those 65 only **14** are
@@ -536,6 +555,13 @@ flag — NOT bare `deferred` (genuine paused/human-owned deferred tasks like #45
 would be false positives) and NOT `do_not_dispatch` (#4642 is human-owned and will
 complete). See §15 for the full design-decision record.
 
+`task-cites-renamed-path` emits **Medium** (advisory, exit-neutral), exactly like the
+`task-cites-deleted-path` it refines: `reify-audit`'s exit code is the High count, and
+the inverse lane must never hard-fail verify — a stale-but-repointable citation is a
+cleanup prompt, not a blocker. The two kinds are mutually exclusive by construction (a
+cited path either resolves to a rename target still tracked at HEAD, or it does not), so
+adding the kind changes no exit class and no finding count. See §17.
+
 ## 9. Boundary-test sketch
 
 Fixture-driven, both directions across the detector↔repo and detector↔DB seams
@@ -561,6 +587,9 @@ Fixture-driven, both directions across the detector↔repo and detector↔DB sea
 | 15 | Deferred without flag (FP guard a) | `// TODO(#42):`, DB has 42=deferred, NULL metadata | no finding |
 | 15b | do_not_dispatch-only (FP guard b) | `// TODO(#42):`, DB has 42=deferred + `{"do_not_dispatch":true}` | no finding |
 | 16 | One genuinely-live co-cite (§8.2 preservation) | marker cites #42 (deferred+do_not_complete) AND #43 (pending) | no finding |
+| 17 | Inverse: renamed path, target tracked | metadata.files names a path whose last-touching commit renamed it to a path still tracked at HEAD | one `task-cites-renamed-path` Medium finding naming BOTH paths + the sha; no `task-cites-deleted-path` |
+| 18 | Inverse: renamed path, target itself absent | same, but the rename target is not tracked either (renamed again / later deleted) | `task-cites-deleted-path` (never advertise a target that is itself gone) |
+| 19 | Inverse: genuine delete (regression pin) | metadata.files names a deleted path, no rename target resolvable (also the merge-commit and git-error shapes) | `task-cites-deleted-path`, unchanged — and carrying no `File` evidence ref |
 
 ## 10. Cross-PRD relationship (G4)
 
@@ -620,9 +649,12 @@ Labels are PRD-relative; ids assigned at decompose. All signals CLI-observable.
   introducing an untracked `TODO:` in a tracked file flips the infra check red
   (scenario 13); the no-`--pattern` sweep lists PTODO findings; CLAUDE.md documents
   the convention.
-- **ζ — inverse lane** (dep β). `task-cites-deleted-path` per §6.3. **Leaf.** Signal:
-  a non-terminal fixture task whose `metadata.files` names a git-deleted path is
-  reported with the path + last-touching commit (scenarios 11/12).
+- **ζ — inverse lane** (dep β). `task-cites-deleted-path` + `task-cites-renamed-path`
+  per §6.3. **Leaf.** Signal: a non-terminal fixture task whose `metadata.files` names
+  a git-deleted path is reported with the path + last-touching commit; one whose cited
+  path was RENAMED to a still-tracked target is reported with both paths + the renaming
+  commit (scenarios 11/12/17/18/19). Renamed-vs-deleted landed 2026-08-12 (task #5654,
+  §17) — a within-lane refinement, not a new leaf.
 - **η — ratchet to hard gate** (dep ε). Flip `untracked`/`orphaned`/`bare-ignore` to
   High (§8.4); infra check fails hard accordingly. Dispatch condition (checked at
   dispatch, not a dep edge): PTODO reports **zero** violations on main — if not,
@@ -915,3 +947,55 @@ Re-open δ-B once §8.2 can classify a PRD-relative `#N` as `malformed-cite` rat
 task cite; re-measure the 25-hit population before adopting anything. Any further widening
 of §8.1 must arrive with the same shape of evidence: a fresh live-corpus enumeration, a
 hand-inspected FP count, and a dated row here — including a row when the answer is no.
+
+## 17. Amendment 2026-08-12 (task #5654): inverse lane distinguishes renamed from deleted
+
+**DECISION: the ζ inverse lane reports a renamed-not-deleted `metadata.files` citation as
+its own kind, `task-cites-renamed-path`, carrying old path + new path + commit. A class
+fix, chosen over another instance sweep of the live backlog.**
+
+**Measured evidence.**
+
+1. **The instance backlog has a half-life in hours.** Re-measured 2026-07-28 at HEAD
+   `3e54addf4a`: 350 non-terminal master tasks, 301 `metadata.files` paths absent from the
+   tracked set, **12** live `task-cites-deleted-path` findings — with **zero** overlap
+   against the 24 enumerated one day earlier. A sweep fixes the 12 it can see and is stale
+   before it lands; only a detector change survives the churn.
+2. **Half the findings were renames, not deletions.** 6 of those 12 were exact `R100`
+   renames landed by #5477, i.e. the file is still in the tree under a new name and the
+   citation is repointable — reported to the reader as "deleted" with no pointer to where
+   it went. 2 renamed paths accounted for 6 citing tasks, which is also the argument for
+   the per-run memo on the added `git show`.
+3. **The mechanism resolves the real case.** `git show -M --name-status --format=
+   60be72d922` prints two status lines, the second of which is
+   `R100<TAB>crates/reify-compiler/tests/geometry_chunk_smoke.rs<TAB>crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs`
+   (the first is an unrelated `A` line — which is why the parse scans every line rather
+   than only the first), and `git log -1 -- <old path>` returns that same sha — so the two
+   seam calls compose on the commit the lane already resolved, with no history walk.
+4. **Every degenerate input measured collapses to the unchanged deleted kind.** A genuine
+   delete prints only `D<TAB><path>` lines; a merge commit prints **0** lines (`git show`
+   defaults to `--cc`); a bogus sha exits non-zero with `fatal: bad object`, which
+   `RealGitOps::run` turns into `Err` and `run_or_warn` into `None`.
+
+**Outcome.** `GitOps::rename_target_for_path(path, sha)` shells `git show -M
+--name-status --format= <sha>` through the existing `run_or_warn` (no new
+`Command::new("git")` call site, so `git_env.rs`'s sanitization and sweep-status inventory
+are inherited unchanged), and `resolve_inverse` emits `task-cites-renamed-path` (Medium,
+§8.4) when — and only when — an `R` line's old side is the cited path AND the target is
+still present in the tracked set, per the same `path_present_in_tracked` helper the cited
+path is tested with. Findings stay keyed on the numeric task id, so inverse findings
+remain outside `ptodo-baseline.txt` (both `ptodo-baseline-gen` and the ratchet test filter
+on `is_swept_ext(task_id)`) and no ratchet, `VALID_KINDS`, or generator change was needed.
+Scenarios 17/18/19 (§9) pin the split; the real-git seam has its own temp-repo test.
+
+**Known limits, recorded honestly.** (a) A rename landed **directly in a merge commit** is
+not detected — `git show` prints no diff for a merge — and degrades to
+`task-cites-deleted-path`. (b) **Copies** (`C` status) are not resolved, because only `-M`
+is passed. Both are misses, never mislabels.
+
+**Revisit condition.** Revisit if a live sweep shows a material share of absent-path
+findings whose rename landed inside a merge commit (the fix would be `-m --first-parent`
+on the `git show`, at the cost of a wider diff per lookup), or if `C`-status copies show
+up in practice. A further inverse kind must arrive with the same shape of evidence: a
+dated live-corpus measurement, the fail-safe argument for why git failure cannot
+manufacture it, and a row here.

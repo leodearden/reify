@@ -847,104 +847,10 @@ fn e2e_cable_net_second_eval_hits_cache() {
     );
 }
 
-/// (c) CLI smoke: `reify eval examples/tensegrity_cable_net.ri` exits zero and
-/// prints the solved z (0.5) — the user-observable `result.nodes` signal.
-///
-/// `CARGO_BIN_EXE_reify` is only injected for `reify-cli`'s own integration
-/// tests, so this cross-crate test execs the pre-built `reify` binary
-/// directly. It deliberately does NOT use `cargo run`: even when the binary
-/// is already compiled, `cargo run` re-fingerprints the entire workspace and
-/// blocks on the global cargo build-lock before exec, and under concurrent
-/// multi-worktree verify load that overhead can push the test past its time
-/// budget (esc-4340-32, exit 124). The merge gate's debug `--workspace` pass
-/// builds all `[[bin]]` targets (including `reify`) at `target/debug/reify`;
-/// its release pass is scoped to release-sensitive crates and does NOT rebuild
-/// `reify-cli`, so the resolution below prefers the profile-local bin and falls
-/// back to the debug-profile one when it is absent. The cargo runner
-/// (`.cargo/run-with-occt.sh`) exports `LD_LIBRARY_PATH` into this test
-/// process's environment, which the spawned child inherits, so OCCT shared
-/// libraries resolve without going through cargo.
-#[test]
-fn cli_cable_net_prints_solved_z() {
-    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root is two levels above crates/reify-eval")
-        .to_path_buf();
-    let example = workspace_root.join("examples/tensegrity_cable_net.ri");
-
-    // Resolve the prebuilt `reify` binary from this test binary's own location.
-    // The integration-test binary lives at `…/target/<profile>/deps/<testbin>`,
-    // so its grandparent is `…/target/<profile>` and the `reify` bin sits beside
-    // it at `…/target/<profile>/reify`.
-    //
-    // Cross-task seam (task/4390 HAS LANDED): the merge gate's RELEASE pass
-    // (verify.sh, DF_VERIFY_ROLE=merge --profile both) is scoped to
-    // release-sensitive crates and deliberately does NOT build `reify-cli`, so
-    // `target/release/reify` is absent during the release test pass. The
-    // preceding DEBUG pass runs the full `--workspace` (building
-    // `target/debug/reify`), and the reify CLI's golden output is
-    // profile-independent (the release pass exists to re-check reify-eval's own
-    // overflow/debug-assert behaviour, not the spawned CLI). So prefer the
-    // profile-local bin but fall back to the debug-profile sibling when it is
-    // absent. (Per-task verifies are unaffected: a reify-eval change pulls
-    // `reify-cli` into the affected set as a reverse-dep, so the debug bin is
-    // built.)
-    let test_bin = std::env::current_exe().expect("current_exe");
-    let profile_dir = test_bin
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("test binary lives in target/<profile>/deps");
-    let profile_local = profile_dir.join("reify");
-    let reify_bin = if profile_local.exists() {
-        profile_local
-    } else {
-        // Release pass: target/release/reify is absent (reify-cli not built);
-        // fall back to the debug-profile bin the debug pass built.
-        profile_dir
-            .parent()
-            .map(|target_dir| target_dir.join("debug").join("reify"))
-            .filter(|p| p.exists())
-            .unwrap_or(profile_local)
-    };
-
-    let output = std::process::Command::new(&reify_bin)
-        .current_dir(&workspace_root)
-        .arg("eval")
-        .arg(&example)
-        .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "failed to spawn pre-built reify binary at {}: {e}; is it built? \
-                 The gated verify pass builds it when it compiles `reify-cli` \
-                 (`cargo test -p reify-cli`, or the merge gate's debug \
-                 `--workspace` pass that builds all `[[bin]]` targets). Note: an \
-                 ad-hoc `cargo test -p reify-eval` alone does NOT build the \
-                 `reify` bin.",
-                reify_bin.display()
-            )
-        });
-
-    assert!(
-        output.status.success(),
-        "`reify eval examples/tensegrity_cable_net.ri` exited non-zero.\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
-    // Tight assertion: the solved free node 0 prints at the anchor centroid
-    // (0, 0, 0.5) m, i.e. the exact token `point(0 m, 0 m, 0.5 m)`. A bare "0.5"
-    // substring would also match "0.50" / "10.5" / any incidental 0.5 in another
-    // cell, so a *wrong* solve could pass; the full point string ties z = 0.5 to
-    // node 0 being at the centroid. The 1×1 reduced solve is bit-exact here
-    // (2 / 4 = 0.5 in IEEE-754), so the printed form needs no tolerance.
-    assert!(
-        stdout.contains("point(0 m, 0 m, 0.5 m)"),
-        "expected the solved node 0 at the anchor centroid `point(0 m, 0 m, 0.5 m)` \
-         in `reify eval` stdout; got:\n{stdout}"
-    );
-}
+// CLI-level coverage for this file (cli_cable_net_prints_solved_z,
+// cli_membrane_prints_converged) now lives in
+// crates/reify-cli/tests/harness_cli/cli_tensegrity_e2e.rs, where cargo
+// guarantees a freshly built `reify` binary (#5718).
 
 // ── step-11 (γ): membrane form-find e2e + cache-hit + CLI ─────────────────────
 //
@@ -1122,77 +1028,193 @@ fn e2e_membrane_second_eval_hits_cache() {
     );
 }
 
-/// Resolve the prebuilt `reify` binary from this test binary's own location —
-/// the profile-local `…/target/<profile>/reify`, falling back to the
-/// debug-profile sibling when the release pass did not build `reify-cli`. The
-/// full rationale (merge-gate profile scoping, why not `cargo run`) is documented
-/// at length on `cli_cable_net_prints_solved_z` above; this factors just the path
-/// resolution for the second CLI smoke.
-fn resolve_reify_bin() -> std::path::PathBuf {
-    let test_bin = std::env::current_exe().expect("current_exe");
-    let profile_dir = test_bin
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("test binary lives in target/<profile>/deps");
-    let profile_local = profile_dir.join("reify");
-    if profile_local.exists() {
-        profile_local
-    } else {
-        profile_dir
-            .parent()
-            .map(|target_dir| target_dir.join("debug").join("reify"))
-            .filter(|p| p.exists())
-            .unwrap_or(profile_local)
+// ── task #6120: dimensionless gate on force_densities / surface_stresses ──────
+//
+// `force_densities`, `seed_ratios` and `surface_stresses` are nullity-invariant
+// RELATIVE ratios, not physical quantities — the dimension-checked-readers PRD
+// Leg B "Deliberately bare" bucket. The reader must therefore ACCEPT a bare
+// `Real` (and a dimensionless `Scalar`) while REJECTING a dimensioned `Scalar`
+// with a located `E_FormFindInfeasible … has the wrong unit` diagnostic, rather
+// than silently stripping the unit and reinterpreting its SI magnitude as the
+// bare ratio.
+//
+// Reachability note: a HOMOGENEOUS dimensioned list (`[1N/1m, 1N/1m, …]`) never
+// reaches the trampoline — `resolve_function_overload`'s strict `param_ty ==
+// arg_ty` gate rejects `List<Scalar[kg·s^-2]>` against the `List<Real>` param at
+// COMPILE time. The `.ri`-reachable form of the defect is a MIXED list, whose
+// element type infers as `List<Real>` (Int→Real widening) while the runtime
+// `Value` keeps its dimension — which is what the e2e test below exercises.
+
+/// A force-density-dimensioned Scalar (N/m — `kg·s^-2`), the unit an author
+/// would reach for if they believed `force_densities` were a physical quantity.
+fn force_density_scalar(v: f64) -> Value {
+    Value::Scalar {
+        si_value: v,
+        dimension: DimensionVector::FORCE_DENSITY,
     }
 }
 
-/// (c) CLI smoke: `reify eval examples/tensegrity_membrane_formfind.ri` exits zero
-/// and prints the form-found membrane result — `FormFindResult { converged: true,
-/// … }`. No exact coordinate is asserted (the curved minimal-surface shape is a
-/// MEASURED mesh-convergence bound that lives only in the kernel golden, never at
-/// the .ri level); `converged: true` is the honest user-observable γ signal.
+/// (#6120-a) A dimensioned `Scalar` in `force_densities` must be REJECTED with a
+/// located wrong-unit diagnostic — not silently stripped to its SI magnitude.
 #[test]
-fn cli_membrane_prints_converged() {
-    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root is two levels above crates/reify-eval")
-        .to_path_buf();
-    let example = workspace_root.join("examples/tensegrity_membrane_formfind.ri");
+fn trampoline_dimensioned_force_density_is_failed_wrong_unit() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![
+            Value::Real(1.0),
+            Value::Real(1.0),
+            Value::Real(1.0),
+            force_density_scalar(1.0), // ← dimensioned: must not be accepted
+        ]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    ];
 
-    let reify_bin = resolve_reify_bin();
+    // Both needles: the wrong-unit vocabulary shared with the sibling tensegrity
+    // trampolines, and the located index of the offending entry.
+    assert_failed_infeasible(call_form_find(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_form_find(&value_inputs), "force_densities[3]");
+}
 
-    let output = std::process::Command::new(&reify_bin)
-        .current_dir(&workspace_root)
-        .arg("eval")
-        .arg(&example)
-        .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "failed to spawn pre-built reify binary at {}: {e}; is it built? \
-                 The gated verify pass builds it when it compiles `reify-cli` \
-                 (the merge gate's debug `--workspace` pass builds all `[[bin]]` \
-                 targets).",
-                reify_bin.display()
-            )
-        });
+/// (#6120-b) The same gate on the OPTIONAL 4th `surface_stresses` input: a
+/// Pressure-dimensioned Scalar is rejected, located to its index.
+#[test]
+fn trampoline_dimensioned_surface_stress_is_failed_wrong_unit() {
+    let value_inputs = vec![
+        membrane_tensegrity(),
+        Value::List(vec![]), // no struts/cables ⇒ empty force_densities
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::List(vec![
+            Value::Real(1.0),
+            Value::Real(1.0),
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::PRESSURE,
+            }, // ← dimensioned: must not be accepted
+        ]),
+    ];
 
-    assert!(
-        output.status.success(),
-        "`reify eval examples/tensegrity_membrane_formfind.ri` exited non-zero.\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+    assert_failed_infeasible(call_form_find(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_form_find(&value_inputs), "surface_stresses[3]");
+}
+
+/// (#6120-c) ACCEPTANCE FLOOR — the narrowing must not over-reach: a
+/// `Scalar{DIMENSIONLESS}` is still a valid ratio spelling and must solve
+/// identically to its bare-`Real` twin. Green today; guards the gate's upper
+/// bound so a future tightening to "bare Real only" is caught.
+#[test]
+fn trampoline_dimensionless_scalar_force_density_still_solves() {
+    let dimensionless = Value::Scalar {
+        si_value: 1.0,
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![dimensionless; 4]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    ];
+
+    let fields = match call_form_find(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => d.fields,
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!(
+            "a dimensionless Scalar is a valid ratio spelling and must still \
+             solve; got {other:?}"
+        ),
+    };
+
+    let nodes = match fields.get(&"nodes".to_string()) {
+        Some(Value::List(ns)) => ns,
+        other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
+    };
+    let n0 = match &nodes[0] {
+        Value::Point(c) if c.len() == 3 => [coord(&c[0]), coord(&c[1]), coord(&c[2])],
+        other => panic!("nodes[0] must be a 3-component Point, got {other:?}"),
+    };
+    for (i, (got, exp)) in n0.iter().zip([0.0, 0.0, 0.5].iter()).enumerate() {
+        assert!(
+            (got - exp).abs() < 1e-9,
+            "nodes[0][{i}] = {got}, expected anchor-centroid component {exp}",
+        );
+    }
+    assert_eq!(
+        fields.get(&"converged".to_string()),
+        Some(&Value::Bool(true)),
+        "a dimensionless-Scalar q solve must report converged == true"
     );
-    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
-    // The form cell renders as `MembraneFormFind.form = FormFindResult { converged:
-    // true, … }` (fields alphabetised, so `converged` leads). Asserting the
-    // `FormFindResult { converged: true,` prefix ties the convergence flag to the
-    // form-find result — the user-observable γ signal — without pinning any
-    // (non-honest) solved coordinate.
+}
+
+/// (#6120-d) END-TO-END: the `.ri`-reachable form of the defect. A MIXED list
+/// infers as `List<Real>` and passes the overload gate, but the last element
+/// reaches the reader as a still-dimensioned `Value::Scalar`.
+///
+/// MEASURED RED before the gate lands: this source evaluates with EXIT 0, zero
+/// diagnostics, and `force_densities: [1, 1, 1, 1]` — the unit silently stripped
+/// and its SI magnitude reinterpreted as the bare ratio.
+///
+/// Uses an INLINE source (not a checked-in `.ri` file under the prd-gate
+/// fixtures directory) so no `_RUST_COUPLED_RI_FIXTURES` registration is
+/// required — the same shape the other e2e tests in this file use.
+#[test]
+fn e2e_mixed_list_dimensioned_force_density_is_error() {
+    const SOURCE: &str = r#"
+structure CableNet {
+    let net = Tensegrity(
+        nodes: [
+            point3(0.3m, 0.2m, 0.4m),
+            point3(1m, 0m, 0m),
+            point3(-1m, 0m, 0m),
+            point3(0m, 1m, 1m),
+            point3(0m, -1m, 1m)
+        ],
+        struts: [],
+        cables: [[0, 1], [0, 2], [0, 3], [0, 4]]
+    )
+    let qs = [1.0, 1.0, 1.0, 1.0 * 1N / 1m]
+    let anchors = [1, 2, 3, 4]
+    let form = form_find(net, qs, anchors)
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let errors: Vec<&reify_core::Diagnostic> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let joined = errors
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
     assert!(
-        stdout.contains("FormFindResult { converged: true,"),
-        "expected a form-found `FormFindResult {{ converged: true, … }}` in \
-         `reify eval` stdout; got:\n{stdout}"
+        joined.contains("E_FormFindInfeasible"),
+        "a dimensioned force-density entry must surface an E_FormFindInfeasible \
+         Error diagnostic rather than being silently stripped; got: {joined:?}"
+    );
+    assert!(
+        joined.contains("wrong unit"),
+        "expected the diagnostic to name the wrong unit; got: {joined:?}"
     );
 }

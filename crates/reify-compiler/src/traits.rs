@@ -68,9 +68,22 @@ fn resolve_trait_member_type_annotation(
     ) {
         Some(t) => t,
         None => {
+            // `enum_defs` is this site's PRIVATE enum namespace — no
+            // `EnumNameScope` is installed around trait-member resolution, so
+            // the ambient set the deferred alias arm in
+            // `resolve_type_expr_with_aliases_kinded` consults is empty here.
+            // `type AL = Zq` therefore arrives still spelled `AL`, and looking
+            // `AL` up in `enum_defs` misses the enum-ness of its body. Hop the
+            // unresolved-alias chain to the name the body ultimately spells
+            // (task 6259).
+            //
+            // Strictly additive: this fallback runs only after
+            // `resolve_type_expr_with_aliases` above already returned `None`, so
+            // it cannot perturb the direct spelling.
             if let reify_ast::TypeExprKind::Named { name, type_args } = &type_expr.kind
                 && let Some(t) = resolve_enum_type_with_args(
-                    name,
+                    &unresolved_alias_body_name(name, alias_registry)
+                        .unwrap_or_else(|| name.clone()),
                     type_args,
                     enum_defs,
                     empty_params,

@@ -1055,6 +1055,7 @@ is_occt_crate() {
 #     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
+#     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
 #     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
@@ -1062,7 +1063,10 @@ is_occt_crate() {
 #     indexed_sub_coll_arm_baseline.ri, indexed_sub_forall_range_baseline.ri,
 #     indexed_sub_inst_arm_baseline.ri, indexed_sub_spec_arm_baseline.ri
 #     (the four sub-arm baselines held as indexed_sub_grammar_tests.rs's
-#     existing_sub_arms_regression_floor, task 5481)
+#     existing_sub_arms_regression_floor, task 5481);
+#     stdlib_ns_qualified_expr.ri, stdlib_ns_qualified_type.ri (the two
+#     qualified-reference probes held as qualified_ref_grammar_tests.rs's
+#     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495)
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
 #     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri
@@ -1078,7 +1082,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1108,9 +1112,9 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri ge
 #
 # Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
-# rots on the next addition — it already had, at 10, when unit_middot_mul.ri
-# made the rust list 11 (task #5784 amendment pass).
-_GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+# rots on the next addition — this one already had, still reading 10 after the
+# list had grown past it, when task #5784 added unit_middot_mul.ri.
+_GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
@@ -1217,13 +1221,20 @@ decide_scope() {
                 #     its own tests/fixtures + examples/, then pushes ONE
                 #     explicit prd-gate path — so ADDING a fixture provably
                 #     cannot change any Rust target's inputs. EDITING one of the
-                #     five in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
+                #     eleven in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
                 #     no later gate — a red-main class outage). That
                 #     no-directory-glob premise is not left to this comment:
                 #     PG-DRIFT fails if any *.rs names the directory itself
-                #     rather than a `<name>.ri` leaf.
+                #     rather than a `<name>.ri` leaf. That residual gate gap is not
+                #     hypothetical: an UNCOUPLED prd-gate fixture carrying a
+                #     phantom-tracking marker landed exactly this way on `main`
+                #     108d1d9226, reddening post-merge verification for every task
+                #     until 9ebebcec22 reworded it (task 6817).
+                #     select_cheap_ptodo_gate (below) now runs the PTODO ratchet on
+                #     this exact --scope staged hook path, closing that gap for
+                #     both the coupled- and uncoupled-fixture shapes.
                 #   • RENAMES reach this arm by BOTH names: --name-only shows
                 #     only a rename's destination, so the source side is
                 #     recovered up-front (see the rename-source block above) —
@@ -1232,11 +1243,14 @@ decide_scope() {
                 #     basename.
                 #   • The other consumers are the scripts/prd-capability-check.py
                 #     / prd-decompose-verify.mjs probes, which are not cargo poles.
-                #   • RESIDUAL: this affects only --scope staged/branch.
-                #     DF_VERIFY_ROLE=merge still forces --scope all (contract C2),
-                #     so the merge gate remains the wholesale authority — the same
-                #     accepted latency-not-coverage trade-off documented at the
-                #     task 5125 block below.
+                #   • RESIDUAL: --scope staged is now covered by
+                #     select_cheap_ptodo_gate (below), which runs the PTODO
+                #     ratchet on this exact hook path (task 6817). --scope branch
+                #     (per-task lanes) stays uncovered here: DF_VERIFY_ROLE=merge
+                #     still forces --scope all (contract C2), so the merge gate's
+                #     run_all.sh pool remains the wholesale authority there — the
+                #     same accepted latency-not-coverage trade-off documented at
+                #     the task 5125 block below.
                 #   • GOTCHA: a bash `case` glob's `*` matches `/`, so a future
                 #     nested path under fixtures/ also lands in this arm; the
                 #     ${f##*/} basename test still applies and the direction of
@@ -1293,6 +1307,19 @@ decide_scope
 # ---------------------------------------------------------------------------
 SELECTED_INFRA_GLOBS=""
 
+# add_selected_infra_glob <glob-or-path> — append into SELECTED_INFRA_GLOBS
+# with whole-token dedup via space sentinels (prevents false dedup when one
+# glob is a substring of another, e.g. a specific path vs a broader wildcard
+# pattern). Shared by every selector below (select_infra_tests,
+# select_harness_kloc_guard, select_cheap_ptodo_gate, ...) so the sentinel
+# trick is written once instead of hand-copied per selector.
+add_selected_infra_glob() {
+    case " $SELECTED_INFRA_GLOBS " in
+        *" $1 "*) : ;;
+        *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$1" ;;
+    esac
+}
+
 select_infra_tests() {
     local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
     # Graceful degradation: absent map or empty changed-file list -> empty.
@@ -1307,14 +1334,8 @@ select_infra_tests() {
         while IFS= read -r _f; do
             [ -z "$_f" ] && continue
             if [ "$_f" = "$_artifact" ]; then
-                # Append glob to selection if not already present (whole-token
-                # dedup via space sentinels — prevents false dedup when one
-                # glob is a substring of another, e.g. a specific path vs a
-                # broader wildcard pattern).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" $_glob "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
-                esac
+                # Append glob to selection if not already present.
+                add_selected_infra_glob "$_glob"
                 break
             fi
         done <<< "$CHANGED_FILES_RAW"
@@ -1423,17 +1444,116 @@ select_harness_kloc_guard() {
         esac
         case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
             *" $_crate "*)
-                # Whole-token dedup via space sentinels (mirrors select_infra_tests).
-                case " $SELECTED_INFRA_GLOBS " in
-                    *" tests/infra/test_harness_kloc_cap.sh "*) : ;;
-                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }tests/infra/test_harness_kloc_cap.sh" ;;
-                esac
+                add_selected_infra_glob "tests/infra/test_harness_kloc_cap.sh"
                 return 0
                 ;;
         esac
     done <<< "$_changed"
 }
 select_harness_kloc_guard
+
+# ---------------------------------------------------------------------------
+# Cheap PTODO ratchet on the hook-gated --scope staged path (task 6817).
+#
+# hooks/pre-commit -> hooks/project-checks is the ONLY production caller of
+# `--scope staged` (grep -rn -- "--scope staged" over tracked files confirms
+# this); every per-task lane uses `--scope branch`, and merge/background force
+# `--scope all` (contract C2). A hook-gated main commit is therefore the one
+# and only landing path with NO later gate: task 5125 moved the PTODO ratchet
+# (tests/infra/test_reify_audit_ptodo.sh, scenario (a) — live ptodo-baseline-gen
+# fingerprints must be a subset of crates/reify-audit/ptodo-baseline.txt) to the
+# MERGE-tier run_all.sh pool only, so a docs-landing commit staging an
+# uncoupled tests/prd-gate/fixtures/*.ri (task 5536's no-heavy-checks carve-out
+# above) got neither the full pool nor a selective subset. 108d1d9226's
+# phantom-tracking marker landed on `main` through exactly this gap and
+# reddened post-merge verification for every task until 9ebebcec22 reworded it
+# (task 6817). Deliberately NOT extended to `--scope branch`: that would be
+# doing 5125's explicitly deferred follow-up ("a cheap per-task-only PTODO
+# precheck ... is a possible follow-up if per-task PTODO latency proves costly
+# in practice") and would add ~3.4s to every task lane for a signal the merge
+# gate already provides there.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
+# populates (mirrors select_harness_kloc_guard's precedent paragraph just
+# above), so it inherits for free: (a) merge/background suppression — the
+# selective emission block (add_tool site below) is suppressed when
+# DF_VERIFY_ROLE=merge|background, where run_all.sh already runs this exact
+# file wholesale (exactly-once, INV-5); (b) the REIFY_INFRA_SUITE_ACTIVE
+# re-entrancy guard; (c) fail-fast ordering before the cargo poles; (d)
+# add_tool's LD_LIBRARY_PATH scrub, so no new plain-`add` call site appears
+# for tests/infra/test_verify_ld_library_path_scope.sh to police. A plain path
+# is a degenerate glob, so no emission-side change is needed at all.
+#
+# Measured cost: tests/infra/test_reify_audit_ptodo.sh is 22 assertions,
+# 0m3.362s warm on 2026-08-28 (main checkout, target/release/{reify-audit,
+# ptodo-baseline-gen} already built) — a single cheap leaf, not a cargo pole.
+#
+# Extension arm landed at reify-audit's FULL swept-extension set
+# (crates/reify-audit/src/ptodo.rs::is_swept_ext) in one piece (task 6817
+# step-4), not built up path-by-path: keying on the whole extension set
+# rather than the .ri-only tests/prd-gate/fixtures/ path closes the
+# same-class docs/**/*.ri and gui/**/*.{ts,tsx,js} holes in one rule, instead
+# of enumerating decide_scope's no-heavy case arms one at a time. Kept honest
+# by a derive-from-source drift guard, test_verify_scope.sh's PT-DRIFT
+# scenario — see the case arm below for exactly what direction that guard
+# covers.
+#
+# ACCEPTED RESIDUAL: REIFY_AUDIT_NO_COLD_BUILD is deliberately NOT set on this
+# path (the merge tier sets it, paired with a pre-build and a positive
+# existence assertion). If target/release/reify-audit is stale here,
+# reify_audit_guard's rebuild-budget-safe path self-heals via `cargo build
+# --release -q -p reify-audit` inside the 10m selective-infra wall — setting
+# the knob would make the guard SKIP budget-safely instead, silently
+# reopening exactly the hole this selector closes. A cold build that blows
+# the wall fails the commit loudly, which is the correct direction of error
+# for a gate protecting a main landing.
+#
+# A THIRD outcome is accepted too, not just the two above: if
+# reify_audit_guard's rebuild attempt still leaves the binary judged stale
+# (rc=125 — e.g. a cargo no-op fingerprint match against an on-disk mtime
+# older than the last crates/reify-audit commit, such as a warm-lane target/
+# with stamped mtimes) while REIFY_AUDIT_BIN stays executable,
+# tests/infra/test_reify_audit_ptodo.sh sets RATCHET_SKIP=1 and skips exactly
+# scenario (a)+(b) — the gen-driven fingerprint ratchet this selector exists
+# to run — while still executing its (c)-(f) exit-code hard gate, which is
+# High-severity-only. phantom-tracking is MEDIUM, so that hard gate does not
+# catch it: this path can exit GREEN on a main landing without the ratchet
+# having run at all. Left accepted rather than closed here because closing it
+# needs a change to test_reify_audit_ptodo.sh, outside this task's scope
+# (scripts/verify.sh + tests/infra/test_verify_scope.sh) — e.g. an opt-in
+# REIFY_PTODO_RATCHET_REQUIRED that turns the rc=125-with-present-binary case
+# into a hard failure instead of RATCHET_SKIP=1. Filed as follow-up work
+# rather than done inline (task 6817 amendment pass).
+# ---------------------------------------------------------------------------
+select_cheap_ptodo_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    local _f
+    while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        # ${_f,,} (bash case-fold) mirrors is_swept_ext's path.to_lowercase().
+        # This extension list is a DERIVED COPY of is_swept_ext in
+        # crates/reify-audit/src/ptodo.rs (cited by FUNCTION NAME, not line
+        # number — a line cite rots on the next edit to that file). Its
+        # source of truth is BEHAVIOURAL, not this comment:
+        # tests/infra/test_verify_scope.sh's PT-DRIFT scenario re-derives the
+        # set from is_swept_ext's source on every infra run and goes RED if
+        # is_swept_ext GAINS an extension this list lacks. That check is
+        # ONE-DIRECTIONAL: nothing asserts the reverse (this list still
+        # carrying an extension is_swept_ext later drops), so the direction
+        # of error on THAT side is over-selection (one extra ~3.4s leaf),
+        # never a silent coverage hole. Note `*.ts` also matches `*.tsx`
+        # under a bash glob; both are listed anyway so this reads as a
+        # faithful mirror of the Rust function rather than a minimal set.
+        case "${_f,,}" in
+            *.rs|*.ri|*.sh|*.py|*.ts|*.tsx|*.js) : ;;
+            *) continue ;;
+        esac
+        add_selected_infra_glob "tests/infra/test_reify_audit_ptodo.sh"
+        return 0
+    done <<< "$CHANGED_FILES_RAW"
+}
+select_cheap_ptodo_gate
 
 # ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.

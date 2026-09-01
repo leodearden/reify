@@ -28,8 +28,9 @@
 //!
 //! # `EXPECTED_INDETERMINATE` is not a `SKIP_SET`
 //!
-//! `examples/best_practices/INDEX.md:14` and
-//! `.claude/skills/reify-design/SKILL.md:197-200` both forbid adding a
+//! The "Do not add a `SKIP_SET` entry to exempt one" sentence in
+//! `examples/best_practices/INDEX.md`, and its counterpart in
+//! `.claude/skills/reify-design/SKILL.md`, both forbid adding a
 //! `SKIP_SET` entry to this corpus — but that prohibition is scoped to the
 //! COMPILE gate ("a file that cannot reach a clean compile does not belong
 //! here"). `EXPECTED_INDETERMINATE` exempts no file from anything: every
@@ -347,16 +348,17 @@ fn corpus_relative(path: &std::path::Path) -> String {
 /// Guards a not-yet-existing `corpus_files()`: at least 6 `.ri` files (the
 /// count measured on this branch — a floor that catches a silently-emptied
 /// or mis-resolved directory, the same class of guard as
-/// `examples_smoke.rs`'s `total >= 40`), every returned path a `.ri` file
+/// `harness_compilation_surface/examples_smoke.rs`'s
+/// `total >= MIN_DISCOVERED_RI_FILES`), every returned path a `.ri` file
 /// sitting directly inside a `best_practices` directory (FLAT — a nested
 /// subdirectory must NOT be swept, matching
-/// `examples_smoke.rs::corpus_ri_files()`, whose comment records that a
-/// nested subdirectory here is a structural change that should be reviewed
-/// rather than silently absorbed), sorted (deterministic failure output),
-/// and containing the known exemplars `bolt_circle.ri` and
-/// `clearance_oracle.ri` by basename (proving path resolution actually
-/// reached the real directory rather than returning an empty vec that would
-/// make every later assertion vacuous).
+/// `harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`, whose
+/// comment records that a nested subdirectory here is a structural change
+/// that should be reviewed rather than silently absorbed), sorted
+/// (deterministic failure output), and containing the known exemplars
+/// `bolt_circle.ri` and `clearance_oracle.ri` by basename (proving path
+/// resolution actually reached the real directory rather than returning an
+/// empty vec that would make every later assertion vacuous).
 #[test]
 fn corpus_discovery_finds_the_flat_best_practices_drawer() {
     let files = corpus_files();
@@ -418,8 +420,9 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
 ///
 /// # This is NOT a `SKIP_SET`
 ///
-/// `examples/best_practices/INDEX.md:14` and
-/// `.claude/skills/reify-design/SKILL.md:197-200` forbid adding a `SKIP_SET`
+/// The "Do not add a `SKIP_SET` entry to exempt one" sentence in
+/// `examples/best_practices/INDEX.md`, and its counterpart in
+/// `.claude/skills/reify-design/SKILL.md`, forbid adding a `SKIP_SET`
 /// entry to this corpus — but that prohibition is scoped to the COMPILE gate
 /// ("a file that cannot reach a clean compile does not belong here"). This
 /// const exempts NO file from anything: every listed constraint is still
@@ -438,16 +441,18 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
         0,
         "`constraint not fouls` — `intersects` is a geometry-consumer builtin: it needs \
          a realized kernel and resolves only on the build()/tessellate() path, not the \
-         pure value-eval surface this gate (and `reify check`) runs on. Documented at \
-         clearance_oracle.ri:25-35, which states verbatim \"THAT IS EXPECTED, NOT A \
-         FAILURE\", and echoed by INDEX.md's `clearance_oracle.ri` idiom row.",
+         pure value-eval surface this gate (and `reify check`) runs on. Documented by \
+         the EVAL/BUILD ONLY bullet in clearance_oracle.ri, which states verbatim \
+         \"THAT IS EXPECTED, NOT A FAILURE\", and echoed by the `clearance_oracle.ri` \
+         row of examples/best_practices/INDEX.md.",
     ),
     (
         "clearance_oracle.ri",
         1,
         "`constraint gap > min_gap` — same class as constraint[0] above, via the \
-         geometry-consumer builtin `distance`. Documented at clearance_oracle.ri:25-35 \
-         and echoed by INDEX.md's `clearance_oracle.ri` idiom row.",
+         geometry-consumer builtin `distance`. Documented by the EVAL/BUILD ONLY \
+         bullet in clearance_oracle.ri and echoed by the `clearance_oracle.ri` row of \
+         examples/best_practices/INDEX.md.",
     ),
     (
         "discrete_choice.ri",

@@ -47,3 +47,6 @@ mod ri_literal_roundtrip;
 
 #[path = "harness_units/unit_middot_mul_tests.rs"]
 mod unit_middot_mul_tests;
+
+#[path = "harness_units/volume_unit_tests.rs"]
+mod volume_unit_tests;

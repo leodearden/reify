@@ -209,9 +209,14 @@ positive/negative lists are in the leaf bodies):
   (`List<Real>` unit vectors, deliberate per task 4439), `vec3` axis components (already
   strict via `validate_dimensionless_unit_axis_vec3`), joint `ratio` (already
   DIMENSIONLESS-checked by `ratio_input`), the buckling eigenvalue λ,
-  `infill_gibson_ashby_c/n`, `read_location_index`, and **tensegrity `force_densities`**
-  (`tensegrity.ri:230/:345`) — nullity-invariant relative ratios, documented as such at
-  `tensegrity.ri:275-281`; genuinely dimensionless, not a gap.
+  `infill_gibson_ashby_c/n`, `read_location_index`, and tensegrity's bare `List<Real>`
+  force/ratio inputs — `form_find`'s `force_densities` parameter, `form_find_free`'s
+  `seed_ratios` parameter, and both functions' `surface_stresses` parameter
+  (illustrative, not an exhaustive list of every such site) — nullity-invariant
+  relative ratios, documented as such in the "Dimensional bridge" paragraph of
+  `tensegrity.ri`'s `FormFindResult` doc block, which also covers `FormFindResult`'s
+  own `force_densities` field (a solver-constructed *output* echo, not a reader
+  input); genuinely dimensionless, not a gap.
 - **Angle-semantic positions** (`revolute` binds, planar/cylindrical θ, `ramp_profile`
   from/to on a revolute) route through `reify-stdlib`'s existing ANGLE-checked `trig_input`.
   This PRD changes **no angle policy** — it replaces ad-hoc `as_f64()` with the helper that
@@ -325,8 +330,8 @@ the same file (ordering only — no semantic dependency).
 | PRD 1 `units-length-gate-completion` | consumes | `arg_acceptance` core (FROZEN) + its length-side constructors; the closure-guard harness | **PRD 1** owns the harness and geometry chokepoints; **this PRD** owns the `reify-ir` relocation and the second probe universe | relocation is verbatim + `pub use`; PRD 1's additive constructors are unaffected by order |
 | PRD 3 `angle-units-surface-convergence` | consumes | `angle_spec`; `trig_input`'s bare-radians arm; all ANGLE policy | **PRD 3** | this PRD funnels angle-semantic reader positions into `trig_input` and changes **no** angle policy; PRD 3 retires the bare arm in one place afterwards |
 | PRD 4 `dimensioned-construction-strictness` | **bidirectional** | the four retyped load-ctor slots (`PointLoad.force`, `PressureLoad.magnitude`, `TractionLoad.traction`, `BodyForce.force_density`) become dimensioned ctor slots under PRD 4's strict-equality promotion; ctor conformance is Warning-only today (`conformance/mod.rs:32`, δ flip pending) | **PRD 4** owns `conformance/mod.rs` / `type_compat.rs` / the δ severity flip; **this PRD** owns the `.ri` retype + the 90-site migration | the migration must cover the bare `PointLoad(force: 1000.0)` corpus **regardless** of PRD 4's landing order; the coordinator wires the definitive cross-batch edge once both batches exist |
-| PRD 2 `check-diagnostic-truthfulness` | produces-for | every new `Severity::Error` code here becomes check-visible once PRD 2 lands | **PRD 2** | all signals here are phrased against `reify eval`; the new codes are **genuine failures** and must never enter PRD 2's exit-code allowlist |
-| `eradicate-silent-undef.md` (ε #5403) | sibling / consumes | the check Error-severity exit gate + `UndefCause` never-overwrite half of INV-SF-1 | **that PRD** | this PRD's readers push their **specific** code through `push_op_contract_failure` (`reify-expr/src/lib.rs:2898` takes the code as a parameter) rather than the generic `OpContractViolation` |
+| PRD 2 `check-diagnostic-truthfulness` | produces-for | every new `Severity::Error` code here becomes check-visible once PRD 2 lands | **PRD 2** | all signals here are phrased against `reify eval`; the new `FeaLoadKindUnsupported` and the reused `DimensionedArgRejected` are **genuine failures** and must never enter PRD 2's exit-code allowlist |
+| `eradicate-silent-undef.md` (ε #5403) | sibling / consumes | the check Error-severity exit gate + `UndefCause` never-overwrite half of INV-SF-1 | **that PRD** | this PRD's readers push their **specific** code (`DimensionedArgRejected`, per §6 decision 1's reconciliation) through `push_op_contract_failure` (`reify-expr/src/lib.rs:3262` takes the code as a parameter; call sites `:646`/`:4282`) rather than the generic `OpContractViolation`. The exercised push is leaf β's, not α's — task 5791 amendment A6 |
 | `placeholder-type-eradication-ratchet.md` (η, **task 5412** `pending`) | **defers to** | `pub type JointValue = Real` (`trajectory.ri:77`) and its four uncited `TODO(joint-value-type)` blanket escapes (`trajectory.ri:75/:184/:222`, `dynamics.ri:189`) | **that PRD / task 5412** | this PRD does **not** retype `JointValue`; it fixes `jointvalue_from_bound_value`'s *reads* per joint kind, which is independent of the alias. Recorded so the seam is not double-owned |
 | `materials-parameter-surface-completion.md` | adjacent | `std.materials` param surface | that PRD | its "#3111-family deferred" out-of-scope note is **stale** (#3111/#3112/#3113 all `done`); this PRD's docs leaf corrects `docs/reify-stdlib-reference.md`, not the `.ri` |
 | `compute-fea-hardening.md` (INV-FEA-2, task 5083 `done`) | builds on | `FeaValueShapeError` + the Result-ified `extract_loads` | that PRD | this PRD extends the same error enum rather than adding a parallel one |
@@ -347,10 +352,47 @@ compute-target work stays inside the existing `@optimized` ComputeNode trampolin
    solve (1e12× spring rate, a load that vanishes). INV-SF-2's corollary applies in the
    affirmative: this is not a diagnostic a healthy path can hit. The house precedent is
    already `Diagnostic::error("E_StackupDimMismatch: …")` for exactly this failure class.
-   **Two** new codes only — `ArgDimensionMismatch` (all reader rejections; the message names
-   builtin + arg/field and carries the migration hint) and `FeaLoadKindUnsupported` — kept
-   distinct from the arithmetic `DiagnosticCode::DimensionMismatch` (`diagnostics.rs:497`) so
-   they can be counted and gated separately.
+   **ONE** new code only — `FeaLoadKindUnsupported` — kept distinct from the arithmetic
+   `DiagnosticCode::DimensionMismatch` (`diagnostics.rs:497`), whose semantics are the
+   Add/Sub operator-level invariant. Reader and field DIMENSION rejections REUSE the
+   existing `reify_core::DiagnosticCode::DimensionedArgRejected`
+   (`crates/reify-core/src/diagnostics.rs:4045`); the message still names builtin +
+   arg/field and still carries the migration hint, because both surfaces format through
+   the one `ArgRejection::message`.
+
+   > **RECONCILIATION — RULED by Leo 2026-08-30 (esc-5791-3). Supersedes this decision's
+   > original wording, "Two new codes only — `ArgDimensionMismatch` and
+   > `FeaLoadKindUnsupported` … so they can be counted and gated separately."**
+   > The governing rule is ONE CODE PER REJECTION REASON, not one per surface, so
+   > `ArgDimensionMismatch` is **not** minted. As originally written this decision
+   > contradicted the clause at `crates/reify-core/src/diagnostics.rs:4035-4037` (landed by
+   > PRD 1's task 5743), which charters PRD 5 to reuse `DimensionedArgRejected`. The two
+   > were authored **four minutes apart in the same 2026-07-28 fan-out session** (PRD 1
+   > `54afdee50b` 22:14:36, this PRD `efba5a8036` 22:18:14), so neither superseded the
+   > other and no reconciliation record existed until now.
+   >
+   > *Why reuse won.* PRD 1's D9 exists to give PRDs 1/3/5 one wording template and ONE
+   > code; after task α relocates `arg_acceptance` the dimension predicate is literally one
+   > function (`accept_arg`), so two codes over one predicate is incoherent. PRD 3 already
+   > complied and mints none (`angle-units-surface-convergence.md:336-341`, `:542`, `:555`).
+   > And `DimensionedArgRejected` is **already** reused at a stdlib surface — the `bbox` arm
+   > at `crates/reify-stdlib/src/geometry.rs:1670-1681` (task 6081) — so "eval-layer
+   > `geometry_ops` only" was never the real boundary; task α widens that variant's Origin
+   > block to name this reader/field surface instead.
+   >
+   > *The original justification was measured false.* "So they can be counted and gated
+   > separately" presupposed a PRD 2 ratchet that counts by code. PRD 2 **forbids** a
+   > per-code allowlist (`check-diagnostic-truthfulness.md:252-256`); the real ratchet
+   > (`CHECK_ERROR_EXIT_ALLOWLIST`, `eradicate-silent-undef.md:121-144`, task 5403) is an
+   > exemption list burning down to zero, not a census, and already admits message-prefix
+   > matchers; this PRD's own capability manifest requires the codes never enter it; and
+   > 5403 has not landed, so no consumer exists. Note also that this decision's stated
+   > comparand was the *arithmetic* `DimensionMismatch`, never `DimensionedArgRejected`,
+   > which did not exist when this PRD was written.
+   >
+   > Binding record: task 5791 amendment **A7**. Revisit only on a DEMONSTRATED consumer
+   > that must distinguish the reader surface from the geometry-builtin surface by code
+   > identity — not a speculative one.
 2. **`Undef` in ⇒ `Undef` out, quietly.** `Acceptance::Undefined` keeps its existing quiet
    degradation. Undef inputs are expected transient state during solver iteration; only
    *defined-but-wrong* values are rejected. This is unchanged `accept_arg` semantics.
@@ -442,9 +484,16 @@ pub enum FieldAcceptance { Accepted(f64), Absent, Undefined, Rejected(ArgRejecti
   arg_name)`; every diagnostic carries a `DiagnosticCode` (INV-SF-6); every non-finite value is
   rejected with its own distinct wording rather than silently dropped.
 - **I5 — specific cause.** When a reader rejection makes a builtin return `Undef`, the
-  `UndefCause` recorded is the specific `ArgDimensionMismatch`, not the generic
-  `OpContractViolation` (INV-SF-1's never-overwrite half;
-  `push_op_contract_failure` already takes the code as a parameter).
+  `UndefCause` recorded is the specific `DimensionedArgRejected`, not the generic
+  `OpContractViolation` (INV-SF-1's never-overwrite half; `push_op_contract_failure`
+  already takes the code as a parameter — it is at `crates/reify-expr/src/lib.rs:3262`,
+  and its two call sites `:646` and `:4282` both pass the generic code today).
+  The invariant demands a cause that is SPECIFIC rather than `OpContractViolation`, which
+  `DimensionedArgRejected` satisfies (§6 decision 1 reconciliation). **The exercised push
+  and its `reify-expr` edit belong to leaf β, not α** — they are unreachable from α's
+  declared module set, and `record_op_contract_failures`
+  (`crates/reify-eval/src/engine_eval.rs:4621`) implements the first-push-wins half. α owns
+  only a black-box ordering floor test. See task 5791 amendment A6.
 - **I6 — both emission channels.** `reify-stdlib` readers surface via the `diagnose` classifier
   → `EvalContext::diagnostics`; `reify-eval` compute targets surface via
   `ComputeOutcome::Failed { diagnostics, .. }`. The *wording and code* are identical across
@@ -458,9 +507,9 @@ pub enum FieldAcceptance { Accepted(f64), Absent, Undefined, Rejected(ArgRejecti
 | # | Scenario | Preconditions | Postconditions |
 |---|---|---|---|
 | B1 | solver ↔ stdlib, **positive** | one body, one support, `PointLoad(force: 5000N)` | `solve_elastic_static` and `solve_buckling` report the **same** applied force; the elastic reaction is non-zero and matches the closed-form tip deflection band. *Negative-assertion mandate: asserts the force is APPLIED, not merely that a warning appeared* |
-| B2 | solver ↔ stdlib, **negative** | same scene, `PointLoad(force: 5000.0)` (bare) | `reify eval` exits 1; one `ArgDimensionMismatch` Error naming `PointLoad`/`force`; the solve does **not** silently proceed with 0 N |
+| B2 | solver ↔ stdlib, **negative** | same scene, `PointLoad(force: 5000.0)` (bare) | `reify eval` exits 1; one `DimensionedArgRejected` Error naming `PointLoad`/`force`; the solve does **not** silently proceed with 0 N |
 | B3 | dead-wired load | `loads: [TractionLoad(traction: 5.0e6Pa)]` | `reify eval` exits 1 with `FeaLoadKindUnsupported` naming `TractionLoad`; **no** result value is produced |
-| B4 | stdlib ↔ eval, material | `prb_cantilever_beam(20mm, 5mm, 0.5mm, Material(youngs_modulus: 200mm, …), …)` | exits 1, `ArgDimensionMismatch` naming `prb_cantilever_beam` / `youngs_modulus`; the `200GPa` twin yields the reference spring rate within band |
+| B4 | stdlib ↔ eval, material | `prb_cantilever_beam(20mm, 5mm, 0.5mm, Material(youngs_modulus: 200mm, …), …)` | exits 1, `DimensionedArgRejected` naming `prb_cantilever_beam` / `youngs_modulus`; the `200GPa` twin yields the reference spring rate within band |
 | B5 | absent-vs-wrong | material with `yield_stress` **absent** vs `yield_stress: 310mm` | absent ⇒ the documented PRB small-deflection fallback, no diagnostic; wrong-dimension ⇒ exit 1 (decision 3) |
 | B6 | Undef transience | a load whose `force` cell is `Undef` mid-solve | quiet degradation, **no** diagnostic, exit 0 (decision 2) |
 | B7 | joint-kind polymorphism | `bind` an ANGLE to a prismatic joint and a LENGTH to a revolute, through the loop-closure path | both exit 1 with the position named — matching `joints.rs:1224`'s existing behaviour, which `loop_closure.rs:691` contradicts today |
@@ -487,7 +536,7 @@ waiver. No G7 waivers are required.
 **Phase 2 — vertical slice (the headline defect)**
 
 - **β — flexure reader adoption + dimension-rejection classifier arm.** Prereq α. *Signal:*
-  `reify eval` on the B4 fixture exits 1 with `ArgDimensionMismatch` naming
+  `reify eval` on the B4 fixture exits 1 with `DimensionedArgRejected` naming
   `prb_cantilever_beam`/`youngs_modulus`; the `200GPa` twin reproduces the reference spring
   rate. Consolidates `scalar_si`/`material_field_si`/`material_numeric_field`/`length_si`;
   fixes the stale `modal_ops.rs:839` citation at `common.rs:137`.
@@ -606,10 +655,13 @@ waiver. No G7 waivers are required.
 1. **Module name at its new home.** `reify_ir::arg_acceptance` (preserve) vs
    `reify_ir::dimension_contract` (clearer). **Suggested:** preserve the name so the `pub use`
    is a pure alias and no sibling PRD's diff churns. Decide in α.
-2. **One `ArgDimensionMismatch` code vs a per-family set.** One keeps INV-SF-6 satisfied with
-   minimal surface; a per-family set (`FlexureArgDimension`, `FeaLoadDimension`, …) would let
-   PRD 2's allowlist ratchet reason more finely. **Suggested:** start with one; split only if
-   PRD 2 demonstrates a need. Decide in α.
+2. **CLOSED AS MOOT — ruled by Leo 2026-08-30 (esc-5791-3).** This asked "one
+   `ArgDimensionMismatch` code vs a per-family set (`FlexureArgDimension`, `FeaLoadDimension`,
+   …)", on the premise that a finer set "would let PRD 2's allowlist ratchet reason more
+   finely". Both halves fell. No `ArgDimensionMismatch` is minted at all — reader rejections
+   reuse `DimensionedArgRejected` (§6 decision 1 reconciliation) — and PRD 2 has no such
+   ratchet: it forbids per-code allowlists outright
+   (`check-diagnostic-truthfulness.md:252-256`). Nothing left to decide in α.
 3. **Rejection wording for a wrong-dimension *field* vs a wrong-dimension *positional arg*.**
    `ArgRejection::message` takes `(builtin, arg_name)`; a field read wants
    `(builtin, "material.youngs_modulus")`. **Suggested:** dotted path in `arg_name`, no new

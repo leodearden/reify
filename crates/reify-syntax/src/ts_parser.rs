@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
@@ -154,6 +154,25 @@ struct Lowering<'a> {
     errors: RefCell<Vec<ParseError>>,
     /// Enum names collected in the first pass for disambiguation.
     known_enums: HashSet<&'a str>,
+    /// Module-namespace bindings introduced by this file's `import`
+    /// declarations, collected in the SAME order-independent first pass as
+    /// `known_enums` (task 5495 μ). Only `ImportKind::Aliased` (the alias) and
+    /// `ImportKind::Module` (the final path segment) contribute — see
+    /// `collect_import_bindings` for why the entity-binding kinds do not.
+    /// Read by `lower_namespaced_call`'s qualifier gate.
+    namespace_bindings: HashSet<String>,
+    /// The names this file's imports bind NON-namespace-wise, each mapped to the
+    /// `ImportKind` that bound it (task 5495 μ). Populated by the same
+    /// `collect_import_bindings` pass, from exactly the three kinds
+    /// `namespace_bindings` deliberately skips — `Entity`, `EntityAliased` and
+    /// `Destructured`.
+    ///
+    /// This map is what lets `lower_namespaced_call` tell "this name is bound,
+    /// but as an entity" from "this name is not bound at all". Both are
+    /// rejections, but only the latter is fixed by declaring an import: telling
+    /// an author who wrote `import a.b.Widget` to "declare one as `import
+    /// <path>.Widget`" hands back the line they already wrote.
+    entity_bindings: HashMap<String, ImportKind>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
     /// Structured module path from a top-of-file `module a.b.c` declaration.
@@ -185,6 +204,8 @@ impl<'a> Lowering<'a> {
             declarations: Vec::new(),
             errors: RefCell::new(Vec::new()),
             known_enums,
+            namespace_bindings: HashSet::new(),
+            entity_bindings: HashMap::new(),
             module_pragmas: Vec::new(),
             declared_module_path: None,
         }
@@ -299,13 +320,17 @@ impl<'a> Lowering<'a> {
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
         // First pass: collect enum names for disambiguation of member_access
-        // vs EnumAccess in expressions. This enables order-independent declarations.
+        // vs EnumAccess in expressions, and the module-namespace bindings this
+        // file's imports introduce. This enables order-independent declarations.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "enum_declaration"
                 && let Some(name_node) = child.child_by_field_name("name")
             {
                 self.known_enums.insert(self.node_text(name_node));
+            }
+            if child.kind() == "import_declaration" {
+                self.collect_import_bindings(child);
             }
         }
 
@@ -516,6 +541,143 @@ impl<'a> Lowering<'a> {
                 _ => self.warn_unexpected_child(child, "source file"),
             }
         }
+    }
+
+    /// Record the module-namespace binding, if any, that one
+    /// `import_declaration` introduces (task 5495 μ; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` D-7).
+    ///
+    /// D-7 defines the qualifier of a qualified reference as the import's
+    /// binding name — the alias if `as` was used, else the final path segment —
+    /// so exactly two of the five `ImportKind`s contribute:
+    ///
+    /// - `Aliased { alias }` → the alias (`import a.b as pp` binds `pp`)
+    /// - `Module` → the final `.`-segment of the path (`import a.b` binds `b`)
+    ///
+    /// `Entity`, `EntityAliased` and `Destructured` deliberately contribute
+    /// NOTHING: they bind ENTITY names, not module namespaces. `Widget.mk()`
+    /// (from `import a.b.Widget`) is a method call on an entity — syntax Reify
+    /// does not have, and a hard parse error before μ — so binding those kinds
+    /// would reopen a narrower version of the very hole this gate closes.
+    ///
+    /// Those three kinds are still recorded, in `entity_bindings`, mapped to the
+    /// `ImportKind` that bound them. They must not qualify a call, but they are
+    /// not UNBOUND either, and the two cases need different remedies: only the
+    /// wholly-unbound one is fixed by declaring an import. Both maps are filled
+    /// from the same `lower_import` call, so a name can never be classified one
+    /// way here and another way by the import system.
+    ///
+    /// The name recorded is the one the AUTHOR WRITES, which for `EntityAliased`
+    /// is the alias (`import a.b.Widget as W` is used as `W`), not the entity.
+    ///
+    /// The classification is obtained by CALLING `lower_import` and matching the
+    /// returned `ImportKind`, rather than re-deriving Module-vs-Entity from the
+    /// CST: the uppercase-final-segment heuristic then has exactly one
+    /// implementation and this gate cannot drift from what the import system
+    /// actually binds. The second call is pure — `lower_import` pushes no
+    /// diagnostic — so no error is duplicated by lowering the node twice.
+    ///
+    /// Called from `lower_source_file`'s FIRST pass, the same order-independent
+    /// pass that seeds `known_enums`, so an `import parts as pp` written after
+    /// the structure that uses `pp.Pulley()` still binds.
+    ///
+    /// **This file's OWN imports only — no external seeding hook (task ν).**
+    /// `known_enums` can be pre-seeded from outside the file
+    /// (`parse_with_prelude_enums` → `with_prelude_enums`); these two maps
+    /// cannot — by construction they see only the `import_declaration` nodes of
+    /// the file being parsed. So a qualifier that `std.prelude` supplies, or
+    /// that a facade re-exports via `pub import` (PRD D-4, §10 Q1), is absent
+    /// from this file's import set and `lower_namespaced_call`'s gate rejects
+    /// it at PARSE time.
+    ///
+    /// The enum precedent is deliberately not mirrored yet: a
+    /// `with_prelude_bindings` seed has no caller until the N3 prelude work
+    /// (PRD §8 ι) ships `std.prelude`, so it would be untested surface today.
+    /// Widening the gate to prelude-supplied and re-exported bindings is
+    /// ν's (task 5505), alongside the qualified lookup that gives such a
+    /// binding a module to resolve against.
+    fn collect_import_bindings(&mut self, node: tree_sitter::Node) {
+        let Some(import) = self.lower_import(node) else {
+            return;
+        };
+        let namespace_binding = match &import.kind {
+            ImportKind::Aliased { alias } => Some(alias.clone()),
+            ImportKind::Module => import.path.rsplit('.').next().map(str::to_string),
+            ImportKind::Entity(_) | ImportKind::EntityAliased { .. } => None,
+            ImportKind::Destructured(_) => None,
+        };
+        if let Some(binding) = namespace_binding.filter(|b| !b.is_empty()) {
+            self.namespace_bindings.insert(binding);
+            return;
+        }
+
+        let entity_names: Vec<String> = match &import.kind {
+            ImportKind::Entity(entity) => vec![entity.clone()],
+            ImportKind::EntityAliased { alias, .. } => vec![alias.clone()],
+            ImportKind::Destructured(names) => names.clone(),
+            ImportKind::Aliased { .. } | ImportKind::Module => Vec::new(),
+        };
+        for name in entity_names.into_iter().filter(|n| !n.is_empty()) {
+            self.entity_bindings.insert(name, import.kind.clone());
+        }
+    }
+
+    /// How a diagnostic should describe the NON-namespace binding an import made
+    /// for a name, per `ImportKind` (task 5495 μ).
+    ///
+    /// Kept per-kind rather than a flat "an entity" so the message reflects what
+    /// the author actually wrote — an `import a.b.Widget as W` reader needs to
+    /// be told `W` is their own alias, not hunt for a `W` in the module.
+    ///
+    /// Total over all five kinds rather than `unreachable!` on the two
+    /// namespace-binding ones: `collect_import_bindings` never records those
+    /// here, but a diagnostic path is the last place that should be able to
+    /// panic if that ever changes.
+    fn entity_binding_note(kind: &ImportKind) -> String {
+        match kind {
+            // The qualifier IS the entity name here, so naming it again would
+            // only repeat the word the message already quoted.
+            ImportKind::Entity(_) => "an entity name".to_string(),
+            ImportKind::EntityAliased { entity, .. } => {
+                format!("an alias for the entity name `{entity}`")
+            }
+            ImportKind::Destructured(_) => "an entity name destructured from it".to_string(),
+            ImportKind::Aliased { .. } | ImportKind::Module => "an entity name".to_string(),
+        }
+    }
+
+    /// The trailing caveat for the two `ImportKind`s whose entity-ness was
+    /// INFERRED rather than written, so the author whose module happens to have
+    /// a capitalised path segment has a next step (task 5495 μ).
+    ///
+    /// `lower_import` classifies a ≥2-segment import by the CAPITALISATION of
+    /// its final segment: `import geometry.Shapes` is `Entity("Shapes")` and
+    /// `import geometry.Shapes as sh` is `EntityAliased`, so neither binds a
+    /// namespace and `Shapes.Circle()` / `sh.Circle()` are rejected above — with
+    /// a confident explanation that is simply WRONG if `Shapes` is a module.
+    /// Without this sentence the author has no workaround, because their code is
+    /// not in fact wrong. The heuristic predates μ; μ is the first feature that
+    /// turns it into a user-visible hard error. Resolving module-vs-entity from
+    /// the actual module graph instead of from capitalisation is ν's (task 5505)
+    /// — see the `entity_bindings` note and PRD D-7.
+    ///
+    /// `Destructured` gets NO caveat: `import a.b.{C, D}` names its entities
+    /// explicitly, so capitalisation played no part and mentioning it would be
+    /// noise. The two namespace-binding kinds never reach this path.
+    fn entity_binding_capitalisation_hint(kind: &ImportKind) -> String {
+        let segment = match kind {
+            ImportKind::Entity(entity) => entity,
+            ImportKind::EntityAliased { entity, .. } => entity,
+            ImportKind::Destructured(_) | ImportKind::Aliased { .. } | ImportKind::Module => {
+                return String::new();
+            }
+        };
+        format!(
+            ". If `{segment}` names a MODULE rather than an entity, note that the \
+             final path segment is classified by capitalisation — a capitalised one \
+             is always read as an entity name — so it has to be lowercase to bind a \
+             namespace"
+        )
     }
 
     fn lower_import(&self, node: tree_sitter::Node) -> Option<ImportDecl> {
@@ -803,11 +965,77 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
+    /// Dot-join a `namespaced_name` node's `binding` and `name` CST fields.
+    ///
+    /// Returns `None` if `node` is not a `namespaced_name` or is missing either
+    /// field (only reachable on an error-recovery tree).
+    ///
+    /// **Encoding contract for the resolution phase (task ν).** A qualified
+    /// reference rides DOT-JOINED in the existing `String` name slots —
+    /// `TypeExprKind::Named { name }`, `SubDecl::structure_name`,
+    /// `ExprKind::FunctionCall { name }` — with no new AST variant, because `.`
+    /// is not a legal identifier character and `name.contains('.')` is therefore
+    /// an unambiguous discriminator for ν's rewrite. Rationale and alternatives:
+    /// PRD `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q1/Q3, D-7.
+    ///
+    /// Joining the two FIELDS — rather than reading the node's source text — is
+    /// what normalises interior whitespace, so `pp . Pulley` yields exactly
+    /// `"pp.Pulley"` and ν's discriminator never has to cope with a spaced
+    /// variant. Pinned by `qualified_type_whitespace_is_normalised` and
+    /// `sub_structure_name_whitespace_is_normalised` in
+    /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    ///
+    /// **Pre-ν loudness is per-POSITION, not blanket** — measured on this
+    /// branch with `target/debug/reify check`:
+    ///
+    /// - TYPE position is loud on its own: `param p : obj.width` answers
+    ///   `error: unresolved type: obj.width` (exit 1).
+    /// - `sub` structure_name is loud on its own: `sub s = obj.width()` answers
+    ///   `error: sub-component "s" references unknown structure "obj.width"`
+    ///   (exit 1).
+    /// - EXPRESSION position is NOT, because the compiler has no unknown-function
+    ///   diagnostic behind `ExprKind::FunctionCall`. Loudness there is delivered
+    ///   by `lower_namespaced_call`'s import-binding guard for an undeclared
+    ///   qualifier, and by module resolution (`error: module 'parts' not found`,
+    ///   exit 1) for a declared binding whose module is absent.
+    ///
+    /// That leaves exactly one silent case — declared binding, module resolves,
+    /// member does not — which is resolution work and therefore ν's (task 5505).
+    /// See `lower_namespaced_call` for the two-guard sequence.
+    fn namespaced_name_text(&self, node: tree_sitter::Node) -> Option<String> {
+        if node.kind() != "namespaced_name" {
+            return None;
+        }
+        let binding = node.child_by_field_name("binding")?;
+        let name = node.child_by_field_name("name")?;
+        Some(self.dot_join(binding, name))
+    }
+
+    /// The ONE implementation of μ's dot-join, shared by the two rules that
+    /// produce a qualified name — `namespaced_name_text` (type + `sub`
+    /// position, joining `binding`/`name`) and `lower_namespaced_call`
+    /// (expression position, joining the callee's `object`/`member`).
+    ///
+    /// The two CST rules have different field NAMES, so they cannot share a
+    /// single entry point — but the encoding contract the whole of μ rests on
+    /// is this join, and it must not drift between the two halves. Extracted
+    /// for exactly the reason `lower_call_arguments` gives the argument walk
+    /// exactly one implementation.
+    ///
+    /// Joining the two nodes' texts — rather than reading the parent's source
+    /// text — is what normalises interior whitespace, so both `pp . Pulley` and
+    /// `pp . Pulley()` yield exactly `"pp.Pulley"`.
+    fn dot_join(&self, first: tree_sitter::Node, second: tree_sitter::Node) -> String {
+        format!("{}.{}", self.node_text(first), self.node_text(second))
+    }
+
     /// Lower a type_expr node to a TypeExpr. Handles bare identifiers, parameterized types,
-    /// and qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`).
+    /// qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`),
+    /// and namespaced references through an import binding (`pp.Pulley`).
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
-            // type_expr is choice(function_type, parameterized_type, qualified_type, identifier)
+            // type_expr is choice(function_type, parameterized_type, qualified_type,
+            // namespaced_name, identifier)
             let child = node.child(0).unwrap_or(node);
             if child.kind() == "function_type" {
                 return self.lower_function_type(child);
@@ -817,6 +1045,17 @@ impl<'a> Lowering<'a> {
             }
             if child.kind() == "qualified_type" {
                 return self.lower_qualified_type(child);
+            }
+            // Namespaced reference `pp.Pulley` (task 5495 μ) — see
+            // `namespaced_name_text` for the dot-joined encoding contract.
+            if let Some(dotted) = self.namespaced_name_text(child) {
+                return TypeExpr {
+                    kind: TypeExprKind::Named {
+                        name: dotted,
+                        type_args: vec![],
+                    },
+                    span: self.span(child),
+                };
             }
             // bare identifier
             TypeExpr {
@@ -833,6 +1072,15 @@ impl<'a> Lowering<'a> {
         } else if node.kind() == "qualified_type" {
             self.lower_qualified_type(node)
         } else {
+            // NOTE: no un-wrapped `namespaced_name` arm here, deliberately.
+            // `namespaced_name` occurs in exactly two grammar positions: as a
+            // `type_expr` arm (handled above, through the wrapper) and as a
+            // `sub_declaration`'s `structure_name`. The `structure_name` field
+            // has exactly two readers — `lower_sub`, which calls
+            // `namespaced_name_text` on the node itself, and
+            // `lower_match_arm_decl_arm`, which reads it as raw text — so
+            // neither routes a bare `namespaced_name` here. An arm for it would
+            // be unreachable-and-untested code on a hot lowering path.
             // treat as bare identifier
             TypeExpr {
                 kind: TypeExprKind::Named {
@@ -2520,7 +2768,13 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let struct_node = node.child_by_field_name("structure_name")?;
-        let structure_name = self.node_text(struct_node).to_string();
+        // A `namespaced_name` structure_name (`sub p = pp.Pulley()`, task 5495 μ)
+        // is joined from its `binding`/`name` CST fields so interior whitespace
+        // is normalised — see `namespaced_name_text` for the encoding contract
+        // that ν's resolution-phase fixup reads.
+        let structure_name = self
+            .namespaced_name_text(struct_node)
+            .unwrap_or_else(|| self.node_text(struct_node).to_string());
 
         // Detect collection form: `sub name : List<StructName>` by looking for
         // the anonymous `'List'` keyword token among the DIRECT children. An
@@ -3352,6 +3606,7 @@ impl<'a> Lowering<'a> {
             }),
             "identifier" => self.lower_identifier(node),
             "function_call" => self.lower_function_call(node),
+            "namespaced_call" => self.lower_namespaced_call(node),
             "list_literal" => self.lower_list_literal(node),
             "set_literal" => self.lower_set_literal(node),
             "map_literal" => self.lower_map_literal(node),
@@ -4311,6 +4566,47 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let (args, arg_names) = self.lower_call_arguments(node);
+
+        Some(Expr {
+            kind: ExprKind::FunctionCall { name, args, arg_names },
+            span: self.span(node),
+        })
+    }
+
+    /// Walk a call node's `argument_list` child and lower every argument,
+    /// returning `(args, arg_names)` as two parallel vectors (`arg_names[i]` is
+    /// `None` for a positional argument).
+    ///
+    /// Both call nodes built from `callTail($)` in the grammar share this walk —
+    /// `function_call` (`plain(1)`) and `namespaced_call` (`pp.compute(1,
+    /// scale: 2)`, task 5495 μ). Having ONE walk is what keeps the qualified and
+    /// unqualified paths at exact parity: a change to named/positional handling
+    /// cannot land on one and miss the other. Pinned by
+    /// `qualified_call_named_and_positional_args_at_parity` in
+    /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    ///
+    /// **A REJECTED ARGUMENT KEEPS ITS SLOT.** Dropping it would silently shift
+    /// the arity of the enclosing call and re-label every argument after it:
+    /// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` before
+    /// this was fixed, with `3` sliding into position 1. That matters even
+    /// though the enclosing parse always carries an error, because
+    /// `reify_compiler`'s `forward_parse_errors` downgrades every parse error to
+    /// a WARNING — so a library consumer that compiles and reads diagnostics
+    /// sees the mis-arity'd call with no error at all. The slot is filled with
+    /// `ExprKind::Undef`, whose documented job is exactly this (it absorbs the
+    /// type cascade via `Type::Error`), and any label the argument carried is
+    /// preserved so `args`/`arg_names` stay length-matched and aligned.
+    ///
+    /// The placeholder is pushed ONLY when the failed lowering also pushed a
+    /// DIAGNOSTIC. A `None` with no diagnostic is a silent skip — a `line_comment`
+    /// or `block_comment` extra sitting inside the parens, or a node kind
+    /// `lower_expr` does not dispatch — and those must keep dropping out, or
+    /// `f(1, /* c */ 2)` would become a three-argument call on a CLEAN parse.
+    /// Measuring the diagnostic count around each argument is what separates the
+    /// two cases without a second "is this an argument slot" predicate that could
+    /// drift from the grammar (task 5495 μ, amendment; review suggestion #7).
+    fn lower_call_arguments(&self, node: tree_sitter::Node) -> (Vec<Expr>, Vec<Option<String>>) {
         let mut args = Vec::new();
         let mut arg_names = Vec::new();
         let mut cursor = node.walk();
@@ -4318,13 +4614,163 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
+                    let errors_before = self.errors.borrow().len();
                     if let Some((arg_name, expr)) = self.lower_call_argument(arg_child) {
                         arg_names.push(arg_name);
                         args.push(expr);
+                    } else if self.errors.borrow().len() > errors_before {
+                        arg_names.push(self.call_argument_label(arg_child));
+                        args.push(Expr {
+                            kind: ExprKind::Undef,
+                            span: self.span(arg_child),
+                        });
                     }
                 }
             }
         }
+        (args, arg_names)
+    }
+
+    /// The label of an `argument_list` child that FAILED to lower, so a
+    /// placeholder can keep both parallel vectors aligned (task 5495 μ).
+    ///
+    /// `Some(name)` for a `named_argument` whose `value` was rejected — the
+    /// label itself parsed fine and dropping it would turn a named argument into
+    /// a positional one — and `None` for everything else.
+    fn call_argument_label(&self, node: tree_sitter::Node) -> Option<String> {
+        if node.kind() != "named_argument" {
+            return None;
+        }
+        node.child_by_field_name("name")
+            .map(|name| self.node_text(name).to_string())
+    }
+
+    /// Lower a `namespaced_call` — a call through an import binding,
+    /// `pp.Pulley()` / `pp.compute(1, scale: 2)` (task 5495 μ; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q2, D-7).
+    ///
+    /// Emits the ORDINARY `ExprKind::FunctionCall` — the same variant the
+    /// unqualified path uses — with the qualifier carried DOT-JOINED in the
+    /// existing `name` slot and the arguments produced by the shared
+    /// `lower_call_arguments` walk. No new `ExprKind` variant: see
+    /// `namespaced_name_text` for the full encoding contract handed to the
+    /// resolution phase (task ν), of which this is the expression-position half.
+    ///
+    /// The qualifier is joined from the callee's `object`/`member` CST FIELDS
+    /// via the shared `dot_join`, so `pp . Pulley()` normalises to exactly
+    /// `"pp.Pulley"` — the same single implementation `namespaced_name_text`
+    /// uses for the type-position form.
+    ///
+    /// **Two guards, in this order.** Guard 1 checks the callee's SHAPE; guard 2
+    /// checks that its qualifier is a DECLARED import binding. The order is
+    /// load-bearing: a mis-shaped callee (`a.b.c()`, `arr[0].g()`) has no single
+    /// qualifier to name, so it must reach guard 1 first and keep that guard's
+    /// own wording.
+    ///
+    /// **Callee-shape guard (D-7 / PRD §9).** `grammar.js`'s `namespaced_call`
+    /// rule takes a full `member_access` as its callee (an inline `identifier
+    /// '.' identifier` would collide with `member_access` as a reduce-reduce
+    /// ambiguity), and the `member_access` rule's `object` field is in turn a
+    /// full `_expression`. So the callee's object is not necessarily a binding
+    /// identifier: a 3+-segment path (`a.b.c()`, object = `member_access`)
+    /// reaches here, and so does any other postfix chain (`arr[0].g()`, object =
+    /// `index_access`; `f(1).g()`, object = `function_call`). Every one of those
+    /// is rejected at lowering, worded around what is actually checked — the
+    /// callee must be a simple `binding.Name` — with the out-of-scope sentence
+    /// appended ONLY for the dotted-path case it describes. Rejection is
+    /// unchanged in kind: every one of these forms was an error before μ and
+    /// still is, now with a message instead of an anonymous ERROR node. The
+    /// rejection lowers nothing, so no fabricated multi-segment name reaches the
+    /// AST — and `lower_binding_value` propagates the `None`, so the enclosing
+    /// member is dropped rather than half-built.
+    ///
+    /// **Import-binding guard (D-7).** `namespaced_call` captures EVERY
+    /// two-segment `ident.ident(args)`, not only the import-qualified ones.
+    /// Without this guard μ turns hard parse errors into SILENCE: `obj.width()`,
+    /// `self.w()` and `totally.undefined_thing(1, 2)` were all `Parse error …
+    /// exit 1` before μ, and measured as exit 0 after it, because the compiler
+    /// has no unknown-function diagnostic behind `ExprKind::FunctionCall`.
+    /// Lowering is the first layer that knows the import set
+    /// (`namespace_bindings`, seeded by `collect_import_bindings` in
+    /// `lower_source_file`'s order-independent first pass), so the gate lives
+    /// here rather than on any of the three grammar surfaces — none of which
+    /// knows the imports, and restricting the callee inline would reintroduce the
+    /// reduce-reduce ambiguity with `member_access` described above.
+    ///
+    /// It runs strictly AFTER the callee-shape guard so that guard's diagnostics
+    /// are untouched, and shares its rejection shape: one `push_error` spanning
+    /// the callee, then `return None`.
+    ///
+    /// After both guards, exactly one silence remains in expression position: a
+    /// DECLARED binding whose module resolves but whose member does not. That is
+    /// resolution work by definition and therefore ν's (task 5505) — pinned as an
+    /// executable case by `declared_binding_with_unknown_member_is_left_to_resolution`
+    /// rather than assumed closed. A declared binding whose module is ABSENT is
+    /// already loud downstream (`error: module 'parts' not found`, exit 1).
+    ///
+    /// The call-LESS forms (`pp.Pulley`, `pp.FitClass.Clearance`) are NOT routed
+    /// here: they stay `member_access`, indistinguishable from `self.width` at
+    /// parse time, and their disambiguation is deferred to ν exactly as
+    /// resolution-unification D-9 defers `MemberAccess`→`EnumAccess`.
+    fn lower_namespaced_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let callee = node.child_by_field_name("callee")?;
+        let object = callee.child_by_field_name("object")?;
+        let member = callee.child_by_field_name("member")?;
+
+        if object.kind() != "identifier" {
+            let scope_note = if object.kind() == "member_access" {
+                "; bare full-path qualification is out of scope \
+                 (docs/prds/v0_6/stdlib-namespace.md §9)"
+            } else {
+                ""
+            };
+            self.push_error(
+                format!(
+                    "unsupported qualified call `{callee_text}(...)`: the callee of a \
+                     qualified call must be a simple `binding.Name(...)` through an \
+                     `import ... as binding` alias, but `{object_text}` is not a binding \
+                     name{scope_note}",
+                    callee_text = self.node_text(callee),
+                    object_text = self.node_text(object),
+                ),
+                self.span(callee),
+            );
+            return None;
+        }
+
+        let qualifier = self.node_text(object);
+        if !self.namespace_bindings.contains(qualifier) {
+            let callee_text = self.node_text(callee);
+            let message = match self.entity_bindings.get(qualifier) {
+                // Bound — but as an ENTITY name, so "declare an import" is not
+                // the remedy: one IS declared. Handing `import a.b.Widget` back
+                // the advice "declare one as `import <path>.Widget`" is worse
+                // than silence, because it is the line already in the file.
+                Some(kind) => format!(
+                    "qualifier `{qualifier}` in `{callee_text}(...)` is not a module \
+                     namespace: an import in this file binds `{qualifier}`, but as \
+                     {binding_note}, and the qualifier of a qualified call must be a \
+                     module namespace. Reify has no method-call syntax, so this cannot \
+                     be a call on the entity `{qualifier}`{capitalisation_hint}",
+                    binding_note = Self::entity_binding_note(kind),
+                    capitalisation_hint = Self::entity_binding_capitalisation_hint(kind),
+                ),
+                // Not bound at all — today's message, verbatim.
+                None => format!(
+                    "unknown qualifier `{qualifier}` in `{callee_text}(...)`: the qualifier \
+                     of a qualified call must be a module namespace bound by an import, but \
+                     no import in this file binds `{qualifier}` — declare one as \
+                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. Reify has \
+                     no method-call syntax, so this cannot be a call on a value named \
+                     `{qualifier}`"
+                ),
+            };
+            self.push_error(message, self.span(callee));
+            return None;
+        }
+
+        let name = self.dot_join(object, member);
+        let (args, arg_names) = self.lower_call_arguments(node);
 
         Some(Expr {
             kind: ExprKind::FunctionCall { name, args, arg_names },
@@ -4418,18 +4864,13 @@ impl<'a> Lowering<'a> {
         let base = self.lower_expr(base_node)?;
         let selector = self.node_text(selector_node).to_string();
 
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        args.push(expr);
-                    }
-                }
-            }
-        }
+        // The shared `callTail($)` argument walk — same helper `function_call`,
+        // `namespaced_call` and `trait_method_call` use, so all four call
+        // surfaces inherit its slot-preservation invariant: a rejected argument
+        // leaves an `Undef` placeholder rather than shifting this call's arity.
+        // Ad-hoc selectors don't bind named arguments, so the labels are
+        // discarded (unchanged behaviour); only `args`' arity and indexing.
+        let (args, _) = self.lower_call_arguments(node);
 
         Some(Expr {
             kind: ExprKind::AdHocSelector {
@@ -4516,24 +4957,19 @@ impl<'a> Lowering<'a> {
     fn lower_trait_method_call(&self, node: tree_sitter::Node) -> Option<Expr> {
         let callee_node = node.child_by_field_name("callee")?;
 
-        // Collect positional args from the `argument_list` child (same logic as
-        // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        // Collect positional args through the SHARED `callTail($)` walk
+        // `lower_call_arguments` — the one implementation `function_call`,
+        // `namespaced_call` and `ad_hoc_selector` also use, so no call surface
+        // can drift from the others. The invariant this inherits: a rejected
+        // argument leaves an `ExprKind::Undef` placeholder in its own slot
+        // rather than being dropped, because dropping it would shift this
+        // call's arity and slide every later argument down a position (task
+        // 5495 μ, amendment).
         // Trait method calls don't use named-arg binding, so any named-arg label is
         // silently dropped — only the value expression is retained.  Named-arg syntax
         // is grammatically permitted at call sites (e.g. `Trait::method(x: value)`),
         // so dropping the label here is correct and expected.
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "argument_list" {
-                let mut arg_cursor = child.walk();
-                for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        args.push(expr);
-                    }
-                }
-            }
-        }
+        let (args, _) = self.lower_call_arguments(node);
 
         match callee_node.kind() {
             "qualified_access" => {

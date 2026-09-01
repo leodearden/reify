@@ -862,16 +862,24 @@ structure def Parent {
 /// template's params AND its lets must be elaborated at nested instance scope,
 /// not just the entity's existence.
 ///
-/// SCOPE NOTE — why this stops at the nested entity's own cells and does not
-/// also assert a relaying `let relay = self.tol.tolerance_band` on `Mid`:
-/// such a let is typed `Geometry` by the compiler and evaluates to a
-/// `GeometryHandle`, NOT the `Scalar` the member holds. That is a separate,
-/// pre-existing, COMPILER-side member-type-inference gap for prelude-typed sub
-/// reads, and it bites identically at TEMPLATE scope (`Mid.relay`), which this
-/// eval-side change does not touch — measured by re-running this fixture with
-/// the `unfold.rs`/`engine_eval.rs` changes stashed: byte-identical failure.
-/// Asserting it here would pin an unrelated defect to this test. Tracked
-/// separately as #5867, which carries the full measurement.
+/// SCOPE NOTE (historical) — why this test stops at the nested entity's own
+/// cells and does not also assert a relaying `let relay =
+/// self.tol.tolerance_band` on `Mid`. When it was written, such a let WAS typed
+/// `Geometry` by the compiler and evaluated to a `GeometryHandle`, not the
+/// `Scalar` the member holds; that was a separate COMPILER-side gap which bit
+/// identically at TEMPLATE scope (`Mid.relay`), so this eval-side change could
+/// not have fixed it — measured at the time by re-running this fixture with the
+/// `unfold.rs`/`engine_eval.rs` changes stashed: byte-identical failure.
+/// Asserting it here would have pinned an unrelated defect to this test.
+///
+/// That gap is now CLOSED, by #5867: compile-side sub-target template
+/// resolution is module-first with a prelude fallback
+/// (`reify_compiler::types::find_template_with_prelude`), the mirror of
+/// `unfold::find_template_in_scope` on this side. The relay assertion it made
+/// impossible now lives in
+/// [`prelude_typed_sub_member_read_relays_at_both_scopes`] below. This test's
+/// own scope is deliberately unchanged — it remains #5360's regression pin for
+/// the nested entity's existence and elaboration.
 #[test]
 fn prelude_typed_nested_sub_resolves_at_instance_scope() {
     // tolerance_band = 2mm - 1mm = 1mm, on a sub two levels down.
@@ -915,6 +923,62 @@ structure def Parent {
     assert_no_error_diagnostics(
         &result.diagnostics,
         "prelude_typed_nested_sub_resolves_at_instance_scope",
+    );
+}
+
+/// Task #5867 ACCEPTANCE — a `let` that RELAYS a member of a PRELUDE-typed sub
+/// must carry the member's VALUE, at template scope AND at instance scope.
+///
+/// This is the half [`prelude_typed_nested_sub_resolves_at_instance_scope`]
+/// deliberately did not assert: that test pinned the nested prelude entity's
+/// OWN cells (`Mid.tol.tolerance_band`), because a relaying `let relay =
+/// self.tol.tolerance_band` was at the time typed `Geometry` by the compiler
+/// and evaluated to a `GeometryHandle { kernel_handle: None }` — a compiler-side
+/// defect that bit identically at template scope and so was out of scope for
+/// #5360's eval-side change.
+///
+/// The compiler-side fix is `types::find_template_with_prelude`: sub-target
+/// template resolution is module-first with a prelude fallback, mirroring
+/// `unfold::find_template_in_scope` on the eval side. No eval-side change was
+/// needed — #5360's instance-scope elaboration already handles the scoped-id
+/// rewrite once the compiler emits a value cell instead of a realization.
+///
+/// `tolerance_band = 2mm − 1mm = 1mm` is exact, so all four readings are 0.001
+/// SI. The two-level `Parent.echo` relay is included because it is the shape
+/// that composes both defects: an instance-scope read OF a relaying let.
+#[test]
+fn prelude_typed_sub_member_read_relays_at_both_scopes() {
+    const SOURCE: &str = r#"
+structure def Mid {
+    sub tol = DimensionalTolerance(nominal: 10mm, upper_deviation: 2mm, lower_deviation: 1mm)
+    let relay = self.tol.tolerance_band
+}
+
+structure def Parent {
+    sub m = Mid()
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control / achievability basis: the prelude-typed sub's own derived let,
+    // already pinned by `prelude_typed_nested_sub_resolves_at_instance_scope`.
+    assert_scalar_si(&result.values, "Mid.tol", "tolerance_band", 0.001);
+
+    // (1) TEMPLATE scope: the relay must be the Scalar, not a GeometryHandle.
+    assert_scalar_si(&result.values, "Mid", "relay", 0.001);
+
+    // (2) INSTANCE scope: the same relay, on the nested instance.
+    assert_scalar_si(&result.values, "Parent.m", "relay", 0.001);
+
+    // (3) Two-level: a parent let reading the child's relaying let.
+    assert_scalar_si(&result.values, "Parent", "echo", 0.001);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "prelude_typed_sub_member_read_relays_at_both_scopes",
     );
 }
 

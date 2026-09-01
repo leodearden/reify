@@ -727,7 +727,11 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
-/// Retrieve the compiled `default_expr` of a let binding by name from a named template.
+/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
+///
+/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
+/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
+/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
 /// not be the desired template. `get_let_expr` delegates to this function.
@@ -758,7 +762,11 @@ pub fn get_let_expr_in<'a>(
     })
 }
 
-/// Retrieve the compiled `default_expr` of a let binding by name from the first template.
+/// Retrieve the compiled `default_expr` of any value cell by name from the first template.
+///
+/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
+/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
+/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
 /// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
 /// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
@@ -1775,6 +1783,54 @@ mod tests {
         super::get_let_expr_in(&module, "S", "x");
     }
 
+    /// get_let_expr_in resolves a defaulted `param` cell exactly like a `let`
+    /// binding: lookup keys on `vc.id.member`, not cell kind, so lets and
+    /// defaulted params resolve identically. Fixture mirrors reify-compiler's
+    /// `constant_compile_tests::user_param_pi_shadows_builtin`.
+    #[test]
+    fn test_get_let_expr_in_resolves_defaulted_param_cell() {
+        use reify_compiler::ValueCellKind;
+        use reify_ir::{CompiledExprKind, Value};
+
+        let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
+        let module = super::compile_source(source);
+        // Precondition: 'pi' really is a param cell carrying a default_expr,
+        // not a let — otherwise this test would pass for the wrong reason.
+        let cell = module
+            .templates
+            .first()
+            .expect("expected at least one template")
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "pi")
+            .expect("compiled module should have a value cell named 'pi'");
+        assert_eq!(
+            cell.kind,
+            ValueCellKind::Param,
+            "expected 'pi' to be a param cell, got {:?}",
+            cell.kind
+        );
+        assert!(
+            cell.default_expr.is_some(),
+            "expected 'pi' param cell to carry a default_expr"
+        );
+
+        let expr = super::get_let_expr_in(&module, "S", "pi");
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Real(v)) => {
+                assert!(
+                    (*v - 1.5_f64).abs() < 1e-15,
+                    "expected param default 1.5, got {}",
+                    v
+                );
+            }
+            other => panic!(
+                "expected Literal(Real(1.5)) for defaulted param cell 'pi', got {:?}",
+                other
+            ),
+        }
+    }
+
     // ── get_let_expr ─────────────────────────────────────────────────────
 
     /// get_let_expr targets the FIRST template only; a cell in the second
@@ -1815,6 +1871,34 @@ mod tests {
         let module =
             crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
         super::get_let_expr(&module, "anything");
+    }
+
+    /// get_let_expr (first-template convenience wrapper) resolves a defaulted
+    /// `param` cell the same way it resolves a `let` binding. Together with
+    /// `test_get_let_expr_in_resolves_defaulted_param_cell`, this pins the
+    /// contract that these helpers are cell-KIND-agnostic: they key on
+    /// `vc.id.member` and unwrap `default_expr`, so lets and defaulted params
+    /// resolve identically.
+    #[test]
+    fn test_get_let_expr_resolves_defaulted_param_cell() {
+        use reify_ir::{CompiledExprKind, Value};
+
+        let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
+        let module = super::compile_source(source);
+        let expr = super::get_let_expr(&module, "pi");
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Real(v)) => {
+                assert!(
+                    (*v - 1.5_f64).abs() < 1e-15,
+                    "expected param default 1.5, got {}",
+                    v
+                );
+            }
+            other => panic!(
+                "expected Literal(Real(1.5)) for defaulted param cell 'pi', got {:?}",
+                other
+            ),
+        }
     }
 
     // ── assert_no_type_cascade ────────────────────────────────────────────
