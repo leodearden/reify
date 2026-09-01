@@ -10,7 +10,7 @@
 #                  satisfied by the empty set; see RATCHET VACUITY FLOOR below.
 #                  Subset-of BY RULING, not by omission: the converse
 #                  assertion (comm -13, baseline ⊆ live) was considered and
-#                  DECLINED — PRD §17.
+#                  DECLINED — PRD §18.
 #   (b) SCENARIO 13 (hermetic) — a git-tracked code file carrying a fresh
 #                  untracked marker produces fingerprints absent from an empty
 #                  baseline, proving the ratchet fires red on new violations.
@@ -123,13 +123,13 @@ done
 echo "=== PTODO detector infra gate ==="
 
 # -----------------------------------------------------------------------
-# ORACLE DIRECTION — subset-of BY RULING (task #6859, PRD §17).  Two KNOWN
+# ORACLE DIRECTION — subset-of BY RULING (task #6859, PRD §18).  Two KNOWN
 # LIMITATIONS are accepted here rather than overlooked: there is no drain
 # forcing function (a grandfathered entry may sit in the baseline forever), and
 # a grandfathered fingerprint is a re-entry permit for that text ANYWHERE in
 # the same file (fingerprints erase line numbers).  Adding the converse
 # `comm -13` assertion does not fix either and reds every DB-less context; the
-# measurements, the alternatives and the revisit condition are in §17, not
+# measurements, the alternatives and the revisit condition are in §18, not
 # here.  Pinned in BOTH directions by
 # tests/infra/test_reify_audit_ptodo_ratchet_superset.sh.
 #

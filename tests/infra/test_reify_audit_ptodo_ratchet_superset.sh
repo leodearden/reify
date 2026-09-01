@@ -7,7 +7,7 @@
 # The question "should the baseline also assert its entries are still live?"
 # (the second, `comm -13 <live> <baseline>` assertion) was considered and
 # DECLINED.  The decision, its measurement basis, the alternatives rejected and
-# the revisit condition live in ONE place — PRD §17
+# the revisit condition live in ONE place — PRD §18
 # (docs/prds/reify-audit-ptodo-detector.md) — and are deliberately NOT restated
 # here.  Cited by SECTION NUMBER only: a bolded paragraph title is not a stable
 # anchor (#6241's retitle stranded six such cites at once), a section number is.
@@ -201,7 +201,7 @@ if [ "\$_root" = "${REPO_ROOT}" ]; then
     # baseline, read from disk at run time so no baseline text is inlined into
     # the test source.  Every other baseline entry is therefore ABSENT from the
     # live set: exactly the state a set-equality oracle would red on, and the
-    # state the subset-of oracle must TOLERATE (PRD §17).
+    # state the subset-of oracle must TOLERATE (PRD §18).
     head -n1 "${BASELINE_FILE}"
     exit 0
 fi
@@ -246,7 +246,7 @@ echo "--- Assertions (direction i: baseline ⊄ live is TOLERATED) ---"
 
 # (1) The oracle is subset-of, so baseline entries absent from the live set are
 #     tolerated.  This is what makes the gate runnable in every DB-less context
-#     the merge path actually uses (PRD §6.7, §17).
+#     the merge path actually uses (PRD §6.7, §18).
 assert "a committed-baseline entry ABSENT from the live set does NOT red the ratchet (exit 0)" \
     bash -c '[ "$1" -eq 0 ]' -- "$RSM_EXIT"
 
@@ -303,7 +303,7 @@ if [ "\$_root" = "${REPO_ROOT}" ]; then
     # Scenario (a): one live fingerprint that is NOT in the committed baseline.
     # A live entry absent from the baseline is a REGRESSION and must red the
     # ratchet — the direction that keeps the subset oracle from degenerating
-    # into a constant-true (PRD §17).
+    # into a constant-true (PRD §18).
     printf '%s :: untracked :: // %s: synthetic fingerprint minted by the direction-(ii) stub\n' \
         '${SYNTHETIC_PATH}' '${M}'
     exit 0
