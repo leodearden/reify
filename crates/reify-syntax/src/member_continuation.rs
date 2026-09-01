@@ -25,20 +25,51 @@
 //! For each *member* `M` — a direct named child of a member-list container,
 //! lying between the container's `{` and `}`:
 //!
-//! 1. `c0` = `M.start_position().column`, the member's own start column.
+//! 1. **`c0`** = `M.start_position().column`, the member's own start column.
 //! 2. Walk `M`'s non-extra leaf tokens in source order. Extras (comments) are
 //!    skipped entirely: the rule is about where a member's *code* resumes, and
 //!    a comment can neither join an expression nor mask the token that does.
-//! 3. A leaf `t` is *row-leading* when it is the first such leaf of `M` on a
-//!    row strictly greater than `M`'s start row.
-//! 4. A row-leading `t` is reported when `t.start_position().column <= c0` —
-//!    the continuation begins at or to the LEFT of the member it continues,
-//!    which is exactly the shape a reader parses as a new member.
+//! 3. **`d`** = bracket-nesting depth *relative to `M`* — 0 at `M`'s first
+//!    token. Every leaf is inspected BEFORE its own bracket effect applies:
+//!    `(`, `[` and `{` increment `d` after inspection, and `)`, `]` and `}`
+//!    decrement `d` after inspection. Equivalently, `d` at leaf `t` counts the
+//!    brackets opened strictly before `t` and not yet closed. This
+//!    inspect-then-apply order is load-bearing in both directions (see below).
+//! 4. A leaf `t` is **row-leading** when it is the first non-extra leaf of `M`
+//!    on a row strictly greater than `M`'s start row.
+//! 5. A row-leading `t` is **reported** when `d == 0` at the moment `t` is
+//!    inspected AND `t.start_position().column <= c0`.
 //!
-//! Indentation past `c0` is the author's signal that the line is a deliberate
-//! continuation, and stays legal — that shape is real, tracked reify source
-//! (`designs/litter_tray/bottom_deck.ri:65`, `prj/printer_v01/printer.ri`,
-//! `docs/prds/v0_6/fixtures/discrete_balance_*.ri`, ~28 sites).
+//! Clause 5's column test says: the continuation begins at or to the LEFT of
+//! the member it continues, which is exactly the shape a reader parses as a
+//! new member. Indentation past `c0` is the author's signal that the line is a
+//! deliberate continuation, and stays legal — that shape is real, tracked
+//! reify source (`designs/litter_tray/bottom_deck.ri:65`,
+//! `prj/printer_v01/printer.ri`, `docs/prds/v0_6/fixtures/discrete_balance_*.ri`,
+//! ~28 sites).
+//!
+//! Clause 3's inspect-then-apply order decides the two cases that matter:
+//!
+//! - A row-leading `(` — REPRO 2 — is inspected at `d == 0`, because its own
+//!   increment has not applied yet, so it IS reported. It has to be: a `(`
+//!   opening a line is precisely how a call silently swallows the next line.
+//! - A row-leading `)` or `}` that closes a group `M` itself opened is
+//!   inspected while still inside that group, i.e. at `d >= 1`, so it is
+//!   skipped. This is the everyday layout of a multi-row argument list or a
+//!   `where cond { … }` block, and it accounts for all 255 locations the
+//!   depth-free rule reported across the 677 tracked `.ri` files.
+//!
+//! NOTE for anyone reconciling this against #7094's plan text: the plan's
+//! prose said closers decrement *before* inspection, but its own worked
+//! examples require `d >= 1` for a closing `)`/`}` at the member column — and
+//! "decrement before" yields `d == 0` there, reporting every such row. The
+//! uniform inspect-then-apply order implemented here is what satisfies every
+//! constituency the plan validated, including the repo-wide sweep.
+//!
+//! Because `d` is computed from real CST leaf tokens rather than raw bytes,
+//! brackets inside string literals and comments cannot fool it: their contents
+//! live inside `string_chunk` / `line_comment` / `block_comment` leaves, never
+//! as bare bracket tokens.
 //!
 //! # Why post-parse and not a grammar change
 //!
@@ -138,24 +169,40 @@ fn leaves_in_order(member: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> 
 }
 
 /// Apply the rule to one member, appending any diagnostics to `out`.
+///
+/// Implements clauses 1–5 of the module-level contract; the numbered comments
+/// below name the clause each line discharges.
 fn check_member(member: tree_sitter::Node<'_>, out: &mut Vec<(SourceSpan, String)>) {
+    // (1)
     let c0 = member.start_position().column;
     let start_row = member.start_position().row;
     let mut last_row = start_row;
+    // (3) depth relative to M, so M's own first token sits at 0.
+    let mut depth: i32 = 0;
 
+    // (2)
     for leaf in leaves_in_order(member) {
         let row = leaf.start_position().row;
-        if row <= last_row {
-            continue;
+        // (4) first non-extra leaf of M on a row past M's start row.
+        if row > last_row {
+            last_row = row;
+            let col = leaf.start_position().column;
+            // (5) `depth` here is still pre-effect for THIS leaf: a row-leading
+            // `(` reads 0 and is reported; a row-leading `)`/`}` closing a group
+            // M opened reads >= 1 and is skipped.
+            if depth == 0 && col <= c0 {
+                out.push((
+                    SourceSpan::new(leaf.start_byte() as u32, leaf.end_byte() as u32),
+                    continuation_message(col, c0),
+                ));
+            }
         }
-        last_row = row;
 
-        let col = leaf.start_position().column;
-        if col <= c0 {
-            out.push((
-                SourceSpan::new(leaf.start_byte() as u32, leaf.end_byte() as u32),
-                continuation_message(col, c0),
-            ));
+        // (3) apply this leaf's own bracket effect only after inspecting it.
+        match leaf.kind() {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth -= 1,
+            _ => {}
         }
     }
 }
