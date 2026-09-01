@@ -133,18 +133,22 @@ _mk_include_fixture() {
     printf '%s' "$d"
 }
 
-# _mk_lib_fixture <name> <version> [<sentinel>] — dir under $_TMPDIR
+# _mk_lib_fixture <name> <version> [<sentinel>] [<leaf>] — dir under $_TMPDIR
 # reproducing the Debian TWO-HOP chain that reify_build_utils' own unit fixture
 # models (crates/reify-build-utils/src/lib.rs, read_soname_version tests):
-#   <sentinel> -> <sentinel>.<v> -> <sentinel>.<v>.1
+#   <sentinel> -> <sentinel>.<v> -> <sentinel>.<v>.<leaf>
 # so the FIRST-level link target's suffix is exactly <version> (which is the
-# whole point: `readlink -f` would yield <v>.1 instead). Sentinel defaults to
-# OCCT's libTKernel.so. Prints the path.
+# whole point: `readlink -f` would yield <v>.<leaf> instead). Sentinel defaults
+# to OCCT's libTKernel.so; leaf defaults to 1.
+#
+# <leaf> exists so a fixture can reproduce OpenVDB's LIVE chain at
+# /opt/reify-deps/lib byte-for-byte — libopenvdb.so -> libopenvdb.so.13.0 ->
+# libopenvdb.so.13.0.0 — rather than a near-miss ending in .1. Prints the path.
 _mk_lib_fixture() {
-    local d="$_TMPDIR/$1" v="$2" sentinel="${3:-libTKernel.so}"
+    local d="$_TMPDIR/$1" v="$2" sentinel="${3:-libTKernel.so}" leaf="${4:-1}"
     mkdir -p "$d"
-    : > "$d/$sentinel.$v.1"
-    ln -sfn "$sentinel.$v.1" "$d/$sentinel.$v"
+    : > "$d/$sentinel.$v.$leaf"
+    ln -sfn "$sentinel.$v.$leaf" "$d/$sentinel.$v"
     ln -sfn "$sentinel.$v" "$d/$sentinel"
     printf '%s' "$d"
 }
@@ -1021,7 +1025,7 @@ _GMSH_INC_MISSING="$(_mk_empty_fixture gmsh-include-missing)"
 # FIRST-level target yields `13.0` — not the `13.0.0` `readlink -f` would give.
 # Its include sentinel is a NESTED path, `openvdb/openvdb.h`, not a bare
 # filename; _mk_include_fixture creates the parent dir for it.
-_OPENVDB_LIB_OK="$(_mk_lib_fixture openvdb-lib-ok 13.0 libopenvdb.so)"
+_OPENVDB_LIB_OK="$(_mk_lib_fixture openvdb-lib-ok 13.0 libopenvdb.so 0)"
 _OPENVDB_INC_OK="$(_mk_include_fixture openvdb-include-ok openvdb/openvdb.h)"
 _OPENVDB_LIB_MISSING="$(_mk_empty_fixture openvdb-lib-missing)"
 _OPENVDB_INC_MISSING="$(_mk_empty_fixture openvdb-include-missing)"
@@ -1122,5 +1126,48 @@ echo "--- 10: parity — gmsh/openvdb marker blocks mirror their NativeDep arms 
 
 _assert_dep_parity Gmsh gmsh-candidates GMSH
 _assert_dep_parity OpenVdb openvdb-candidates OPENVDB
+
+# ---------------------------------------------------------------------------
+# 11. GREEN-PATH RECORDING for the two new arms (task #6493).
+#
+# Sections 8 and 9 pin only FAILURE paths, so a green Gmsh/OpenVDB result says
+# nothing about WHICH gmsh or openvdb produced it. Worse, every other
+# green-path assert in this file runs through `_guard_env_exits_zero`, which
+# discards stdout — so deleting an arm's `[ok]` line, or regressing it to name
+# the wrong dir, would leave the entire suite passing. That is the same
+# "a passing suite and a deleted suite are indistinguishable from outside"
+# failure this whole task exists to close, one level up.
+#
+# The SONAME is asserted as RECORDED ONLY. It is deliberately NOT compared
+# against an accepted set: OCCT's version pin is justified by a mechanism these
+# two do not have (crates/reify-kernel-occt/build.rs SPLICES the resolved
+# version into `dylib:+verbatim=libTK*.so.<ver>` behind a hard-coded fallback,
+# so an undeterminable SONAME silently links a version nobody verified). Gmsh
+# and OpenVDB link via plain `dylib=gmsh` / `dylib=openvdb` against the
+# unversioned dev symlink and splice no version anywhere, so there is no
+# unverified-link hazard to gate on — and a version pin would hard-stop every
+# RUN_RUST=1 verify on every lane the next time the conda env moves.
+#
+# FIRST-LEVEL RESOLUTION IS THE POINT. The fixtures reproduce the two live
+# shapes at /opt/reify-deps/lib exactly, because they differ:
+#   gmsh    ONE hop:  libgmsh.so    -> libgmsh.so.4.15.2          => 4.15.2
+#   openvdb TWO hops: libopenvdb.so -> libopenvdb.so.13.0
+#                                   -> libopenvdb.so.13.0.0       => 13.0
+# The OpenVDB needle carries the trailing " at " precisely so it CANNOT match
+# a `readlink -f` implementation, which would render "OpenVDB 13.0.0 at " —
+# "13.0" alone is a substring of "13.0.0" and would pass either way.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 11: recording — the green path names the resolved gmsh/openvdb ---"
+
+assert "guard RECORDS the resolved Gmsh version and both resolved dirs on the green path" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK" \
+        -- "Gmsh 4.15.2 at " "$_GMSH_LIB_OK" "$_GMSH_INC_OK"
+
+assert "guard RECORDS the resolved OpenVDB version and both resolved dirs on the green path" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK" \
+        -- "OpenVDB 13.0 at " "$_OPENVDB_LIB_OK" "$_OPENVDB_INC_OK"
 
 test_summary
