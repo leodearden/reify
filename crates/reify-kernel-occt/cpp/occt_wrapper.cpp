@@ -153,6 +153,11 @@
 // below for what each of these is used for; the two `…And…` composite classes
 // are the shapes an SI angular unit and a degree/grad unit actually take in an
 // emitted file (a plain `StepBasic_PlaneAngleUnit` downcast finds neither).
+// `StepBasic_PlaneAngleUnit` itself is nonetheless included: Part 21 permits a
+// bare NAMED_UNIT/PLANE_ANGLE_UNIT pair that is neither composite, and
+// `classify_step_angle_unit` needs a third downcast to recognise it as ANGULAR
+// (and refuse it as unverifiable) rather than silently classifying it as
+// non-angular and then reporting the containing context as declaring nothing.
 #include <Interface_InterfaceModel.hxx>
 #include <StepRepr_GlobalUnitAssignedContext.hxx>
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
@@ -160,6 +165,7 @@
 #include <StepBasic_SiUnit.hxx>
 #include <StepBasic_SiUnitName.hxx>
 #include <StepBasic_SiPrefix.hxx>
+#include <StepBasic_PlaneAngleUnit.hxx>
 #include <StepBasic_SiUnitAndPlaneAngleUnit.hxx>
 #include <StepBasic_ConversionBasedUnitAndPlaneAngleUnit.hxx>
 #include <StepBasic_HArray1OfNamedUnit.hxx>
@@ -6758,7 +6764,8 @@ namespace {
 /// context reach a radian?", and a model-wide entity tally cannot answer it
 /// (it stays unchanged when a context stops referencing a unit that still
 /// exists in the model). Orphan angular units no context references are
-/// checked separately by V4 below and are deliberately not counted here.
+/// therefore NOT in the three association counts — they are counted separately
+/// in `orphan_angular_units` and checked by V4.
 struct StepPlaneAngleAuditCounts {
     /// Unit-assigned contexts resolved from the model.
     uint32_t contexts = 0;
@@ -6766,6 +6773,17 @@ struct StepPlaneAngleAuditCounts {
     uint32_t plane_angle_units = 0;
     /// Of those associations, how many resolve to the unprefixed SI radian.
     uint32_t radian_ok = 0;
+    /// Angular unit ENTITIES that no unit-assigned context references.
+    ///
+    /// Reported so a V4-only refusal is not self-contradicting. The three
+    /// association counts above are blind to an orphan by construction, so
+    /// without this a model whose every context is perfectly radian but which
+    /// carries one orphaned degree unit would refuse under a header reading
+    /// `contexts=3 plane_angle_units=3 radian_ok=3` — counts that describe a
+    /// completely healthy file — followed by a violation line contradicting
+    /// them. Counted for EVERY orphan, radian or not, so the number stays a
+    /// property of the model rather than of the violations.
+    uint32_t orphan_angular_units = 0;
 };
 
 /// Resolve `entity` to the `StepRepr_GlobalUnitAssignedContext` it carries,
@@ -6861,6 +6879,16 @@ enum class StepAngleUnitKind {
     /// A conversion-based plane-angle unit — the spelling a degree or grad
     /// unit takes. Never accepted: reify's payload is radians.
     ConversionBased,
+    /// A plane-angle unit in a form this classifier does not know how to
+    /// inspect: a bare `StepBasic_PlaneAngleUnit` (Part 21 permits a plain
+    /// NAMED_UNIT/PLANE_ANGLE_UNIT pair) or some future OCCT composite
+    /// spelling. Still REFUSED — an unverifiable declaration is not a verified
+    /// one — but reported as unverifiable rather than as absent, which is the
+    /// distinction that matters to whoever reads the refusal. Without this arm
+    /// such a unit classifies as `NotAngular`, its context then reaches zero
+    /// recognised angular units, and V2 refuses with "reaches NO plane-angle
+    /// unit" — factually wrong, and pointing the reader at the wrong defect.
+    UnrecognisedAngular,
 };
 
 /// Classify one model entity as an angular unit declaration.
@@ -6910,7 +6938,78 @@ StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& ent
         }
         return StepAngleUnitKind::ConversionBased;
     }
+    // Third downcast, deliberately LAST. The two composites above do not
+    // derive from `StepBasic_PlaneAngleUnit` (they compose a handle to one),
+    // so this cannot shadow them; it catches only the forms neither composite
+    // covers — a bare NAMED_UNIT/PLANE_ANGLE_UNIT pair, which Part 21 permits,
+    // or a future OCCT composite spelling. Recognising it as ANGULAR is what
+    // keeps the diagnostic honest: fall through to `NotAngular` instead and
+    // the containing context is reported as declaring NO plane-angle unit,
+    // which is false — one was declared, this classifier just could not read
+    // it — and a reader sent looking for a missing declaration will not find
+    // one.
+    Handle(StepBasic_PlaneAngleUnit) bare =
+        Handle(StepBasic_PlaneAngleUnit)::DownCast(entity);
+    if (!bare.IsNull()) {
+        if (detail != nullptr) {
+            std::ostringstream oss;
+            oss << "plane-angle unit of an unrecognised form, declared as "
+                << bare->DynamicType()->Name()
+                << " (neither StepBasic_SiUnitAndPlaneAngleUnit nor "
+                   "StepBasic_ConversionBasedUnitAndPlaneAngleUnit), so this "
+                   "guard cannot verify it is the unprefixed SI radian";
+            *detail = oss.str();
+        }
+        return StepAngleUnitKind::UnrecognisedAngular;
+    }
     return StepAngleUnitKind::NotAngular;
+}
+
+/// Machine-readable arm tag prefixed to every violation line.
+///
+/// Tests pin THESE, not the surrounding prose. A negative assertion on an
+/// English sentence ("the MISSING message must not use the WRONG wording")
+/// fails OPEN: reword the sentence and the assertion silently becomes trivially
+/// true, stopping distinguishing exactly the two cases it exists to separate.
+/// An identifier-shaped tag cannot rot that way — rename it and the POSITIVE
+/// assertions red first, which is the direction a guard's tests must fail in.
+#define REIFY_INV_AD_4_ARM(tag) "[INV-AD-4/" tag "] "
+
+/// The units a context reaches, rendered for a diagnostic — built LAZILY.
+///
+/// Only the V2 arm ever reads this, i.e. only when a context reaches no
+/// angular unit at all, which never happens on a correct file. Building it
+/// eagerly in the main walk cost a `model->Number()` lookup plus locale-aware
+/// number formatting plus heap growth for EVERY unit of EVERY context on every
+/// production export, all of it discarded. Re-walking one context's `Units()`
+/// array on the failing path is far cheaper than paying for it on the path
+/// that always runs.
+///
+/// Lists EVERY unit, not just the angular subset: when a context reaches no
+/// angular unit the diagnostic question is "then what DID it reach?", and a
+/// pre-filtered list answers that with an empty string. Same reasoning as
+/// `resolved_units_summary` on the #6184 text-level walk in src/handle.rs.
+std::string describe_reached_units(const Handle(Interface_InterfaceModel)& model,
+                                   const Handle(StepBasic_HArray1OfNamedUnit)& units) {
+    std::ostringstream oss;
+    bool first = true;
+    if (!units.IsNull()) {
+        for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+            Handle(StepBasic_NamedUnit) unit = units->Value(k);
+            if (unit.IsNull()) {
+                continue;
+            }
+            if (!first) {
+                oss << ", ";
+            }
+            first = false;
+            oss << "#" << model->Number(unit) << " " << unit->DynamicType()->Name();
+        }
+    }
+    if (first) {
+        return "(none — its reference list resolved to no unit instance)";
+    }
+    return oss.str();
 }
 
 /// Walk `model` and audit every plane-angle unit declaration BY ASSOCIATION.
@@ -6941,20 +7040,45 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
     if (model.IsNull()) {
         if (violations != nullptr) {
             violations->push_back(
-                "the STEP model is null, so no unit declaration could be "
-                "verified");
+                REIFY_INV_AD_4_ARM("V1") "the STEP model is null, so no unit "
+                                         "declaration could be verified");
         }
         return counts;
     }
 
     const Standard_Integer n = model->NbEntities();
 
-    // Pass 1: resolve every unit-assigned context and walk its own unit
-    // reference list. `referenced` records which angular unit entities some
-    // context actually reaches, so pass 2 can restrict itself to the orphans.
+    // ONE walk over the model's N entities, not two. Every entity is both a
+    // candidate unit-assigned context AND a candidate angular unit, so both
+    // questions are asked in the same pass; `candidates` then carries the
+    // handful of angular entities forward, and the V4 arm below iterates that
+    // handful rather than re-downcasting all N entities a second time.
+    //
+    // `referenced` records which angular unit entities some context actually
+    // reaches. It can only be complete once the whole model has been walked (a
+    // unit at entity 5 may be referenced by a context at entity 200), which is
+    // why the orphan decision is deferred rather than made inline.
+    struct AngularCandidate {
+        const Standard_Transient* key;
+        Standard_Integer index;
+        StepAngleUnitKind kind;
+        std::string detail;
+    };
     std::set<const Standard_Transient*> referenced;
+    std::vector<AngularCandidate> candidates;
     for (Standard_Integer i = 1; i <= n; ++i) {
         const Handle(Standard_Transient)& entity = model->Value(i);
+
+        {
+            AngularCandidate candidate;
+            candidate.kind = classify_step_angle_unit(entity, &candidate.detail);
+            if (candidate.kind != StepAngleUnitKind::NotAngular) {
+                candidate.key = entity.get();
+                candidate.index = i;
+                candidates.push_back(std::move(candidate));
+            }
+        }
+
         Handle(StepRepr_GlobalUnitAssignedContext) ctx =
             step_unit_assigned_context(entity);
         if (ctx.IsNull()) {
@@ -6964,26 +7088,15 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
 
         Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
         uint32_t angular_here = 0;
-        // EVERY unit this context reaches, not just the angular subset: when
-        // a context reaches no angular unit at all, the diagnostic question
-        // is "then what DID it reach?", and a pre-filtered list answers that
-        // with an empty string. Same reasoning as `resolved_units_summary`
-        // on the #6184 text-level walk in src/handle.rs.
-        std::ostringstream reached;
-        bool first_reached = true;
         if (!units.IsNull()) {
             for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
                 Handle(StepBasic_NamedUnit) unit = units->Value(k);
                 if (unit.IsNull()) {
                     continue;
                 }
-                if (!first_reached) {
-                    reached << ", ";
-                }
-                first_reached = false;
-                reached << "#" << model->Number(unit) << " "
-                        << unit->DynamicType()->Name();
-
+                // `detail` is only ever read on a non-accepting
+                // classification, and `classify_step_angle_unit` only writes
+                // it there, so this costs nothing on the always-on path.
                 std::string detail;
                 StepAngleUnitKind kind = classify_step_angle_unit(unit, &detail);
                 if (kind == StepAngleUnitKind::NotAngular) {
@@ -6997,9 +7110,18 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
                 } else if (violations != nullptr) {
                     // V3
                     std::ostringstream oss;
-                    oss << "context #" << i << " reaches plane-angle unit #"
-                        << model->Number(unit)
-                        << ", which is not the unprefixed SI radian: " << detail;
+                    oss << REIFY_INV_AD_4_ARM("V3") << "context #" << i
+                        << " reaches plane-angle unit #" << model->Number(unit);
+                    if (kind == StepAngleUnitKind::UnrecognisedAngular) {
+                        // Deliberately NOT the "is not the unprefixed SI
+                        // radian" wording: this guard did not establish that.
+                        // It failed to read the declaration at all, and saying
+                        // otherwise would send the reader looking for a wrong
+                        // unit that may not exist.
+                        oss << ", which it cannot verify: " << detail;
+                    } else {
+                        oss << ", which is not the unprefixed SI radian: " << detail;
+                    }
                     violations->push_back(oss.str());
                 }
             }
@@ -7011,11 +7133,9 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
             // fixes, so one shared "bad plane angle unit" string would be a
             // regression in the guard's only user-visible output.
             std::ostringstream oss;
-            oss << "context #" << i << " reaches NO plane-angle unit; the units "
-                << "it does reach are: "
-                << (first_reached ? std::string("(none — its reference list "
-                                                "resolved to no unit instance)")
-                                  : reached.str());
+            oss << REIFY_INV_AD_4_ARM("V2") << "context #" << i
+                << " reaches NO plane-angle unit; the units it does reach are: "
+                << describe_reached_units(model, units);
             violations->push_back(oss.str());
         }
     }
@@ -7023,32 +7143,37 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
     if (counts.contexts == 0 && violations != nullptr) {
         // V1
         std::ostringstream oss;
-        oss << "the model declares NO unit-assigned context at all (walked "
-            << n << " entities), so nothing states the plane-angle unit";
+        oss << REIFY_INV_AD_4_ARM("V1")
+            << "the model declares NO unit-assigned context at all (walked " << n
+            << " entities), so nothing states the plane-angle unit";
         violations->push_back(oss.str());
     }
 
-    // Pass 2 (V4): an angular unit entity no context references. It cannot
-    // mislabel the payload of a context that never reaches it, but it is
-    // still a declaration in the emitted file, and a reader that resolves
-    // units differently than this walk does would see it.
-    if (violations != nullptr) {
-        for (Standard_Integer i = 1; i <= n; ++i) {
-            const Handle(Standard_Transient)& entity = model->Value(i);
-            if (referenced.count(entity.get()) != 0) {
-                continue;
-            }
-            std::string detail;
-            StepAngleUnitKind kind = classify_step_angle_unit(entity, &detail);
-            if (kind == StepAngleUnitKind::NotAngular ||
-                kind == StepAngleUnitKind::SiRadian) {
-                continue;
-            }
-            std::ostringstream oss;
-            oss << "unreferenced plane-angle unit #" << i
-                << " is not the unprefixed SI radian: " << detail;
-            violations->push_back(oss.str());
+    // V4: an angular unit entity no context references. It cannot mislabel the
+    // payload of a context that never reaches it, but it is still a
+    // declaration in the emitted file, and a reader that resolves units
+    // differently than this walk does would see it.
+    //
+    // The count is maintained unconditionally (including on the accepting
+    // path, where `violations` is null): it is what keeps a V4-only refusal
+    // header from reading as a healthy file. See `orphan_angular_units`.
+    for (const AngularCandidate& candidate : candidates) {
+        if (referenced.count(candidate.key) != 0) {
+            continue;
         }
+        counts.orphan_angular_units += 1;
+        if (violations == nullptr || candidate.kind == StepAngleUnitKind::SiRadian) {
+            continue;
+        }
+        std::ostringstream oss;
+        oss << REIFY_INV_AD_4_ARM("V4") << "unreferenced plane-angle unit #"
+            << candidate.index;
+        if (candidate.kind == StepAngleUnitKind::UnrecognisedAngular) {
+            oss << " cannot be verified: " << candidate.detail;
+        } else {
+            oss << " is not the unprefixed SI radian: " << candidate.detail;
+        }
+        violations->push_back(oss.str());
     }
 
     return counts;
@@ -7073,11 +7198,16 @@ StepPlaneAngleAuditCounts enforce_step_plane_angle_radians(
         return counts;
     }
     std::ostringstream oss;
+    // The orphan count belongs in this header: the three association counts
+    // are blind to an unreferenced unit by construction, so a V4-only refusal
+    // would otherwise report a set of numbers describing a perfectly healthy
+    // file directly above a line saying the file is not.
     oss << "refusing to write STEP: INV-AD-4 requires every representation "
            "context to declare the unprefixed SI radian for plane angles "
            "(contexts=" << counts.contexts
         << " plane_angle_units=" << counts.plane_angle_units
-        << " radian_ok=" << counts.radian_ok << ")";
+        << " radian_ok=" << counts.radian_ok
+        << " orphan_angular_units=" << counts.orphan_angular_units << ")";
     for (const std::string& v : violations) {
         oss << "\n  - " << v;
     }
@@ -7119,18 +7249,19 @@ void enforce_step_angle_mode_not_degrees() {
         return;
     }
     std::ostringstream oss;
-    oss << "refusing to write STEP: the process-global `step.angleunit.mode` "
+    oss << REIFY_INV_AD_4_ARM("MODE")
+        << "refusing to write STEP: the process-global `step.angleunit.mode` "
            "Interface_Static reads "
         << mode
         << ", the DEGREE regime (accepted values are 0=File and 1=Rad). Its "
            "only write-side consumer is TopoDSToStep_MakeStepFace::Init -> "
            "GeomConvert_Units::RadianToDegree, which rescales pcurve PARAMETER "
-           "space; the plane-angle unit declaration ignores it and stays at "
-           "radians. The result is a silently self-inconsistent file — degree "
-           "pcurves under a radian header — NOT a degrees file, which is why "
-           "this is refused rather than declared. reify never sets this static, "
-           "so an observed degree value was set by something else in this "
-           "process.";
+           "space; the plane-angle unit declaration ignores it and is still "
+           "emitted as SI_UNIT($,.RADIAN.). The result is a silently "
+           "self-inconsistent file — degree pcurves under a radian header — NOT "
+           "a degrees file, which is why this is refused rather than declared. "
+           "reify never sets this static, so an observed degree value was set "
+           "by something else in this process.";
     throw ContractViolation(oss.str());
 }
 
@@ -7158,10 +7289,23 @@ enum class StepGuardFault {
     /// The declaration is then MISSING for that context while the file still
     /// contains a perfectly good `SI_UNIT($,.RADIAN.)` that nothing points at.
     Missing,
+    /// Orphan the first SI plane-angle unit — drop it from EVERY context's
+    /// `Units()` list — and rename it to STERADIAN. The only fault that
+    /// reaches V4, and the only one that can: `Missing` orphans a unit that is
+    /// still a correct radian, which V4 deliberately skips.
+    ///
+    /// Distinct from `Missing` in what it proves. `Missing` asks "does every
+    /// context reach an angular unit?"; this asks "is every angular unit
+    /// ENTITY in the file the radian, including the ones nothing points at?" —
+    /// a question no per-context walk can answer, because the offending
+    /// declaration is in the emitted bytes while being reachable from no
+    /// context at all.
+    OrphanNonRadian,
     /// Set `step.angleunit.mode` to the Deg regime for the duration of ONE
-    /// export. Unlike the four above this is applied BEFORE Transfer (the
-    /// static is consumed during Transfer) and is restored by RAII, so it
-    /// cannot escape into a sibling test — see `StepAngleModeOverride`.
+    /// export. Unlike the model mutations above this is applied BEFORE
+    /// Transfer (the static is consumed during Transfer) and is restored by
+    /// RAII, so it cannot escape into a sibling test — see
+    /// `StepAngleModeOverride`.
     AngleModeDeg,
 };
 
@@ -7183,13 +7327,16 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
     if (name == "missing") {
         return StepGuardFault::Missing;
     }
+    if (name == "orphan_non_radian") {
+        return StepGuardFault::OrphanNonRadian;
+    }
     if (name == "angle_mode_deg") {
         return StepGuardFault::AngleModeDeg;
     }
     throw ContractViolation(
         "unknown injected fault \"" + name +
         "\"; accepted faults: none, non_radian, prefixed, missing, "
-        "angle_mode_deg");
+        "orphan_non_radian, angle_mode_deg");
 }
 
 /// RAII override of the `step.angleunit.mode` Interface_Static, used by the
@@ -7335,6 +7482,86 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             "no unit-assigned context to strip");
     }
 
+    if (fault == StepGuardFault::OrphanNonRadian) {
+        // Pick the unit FIRST, so the removal below and the rename after it
+        // act on the same entity. Both halves are required: dropping the
+        // reference alone leaves a correct radian, which V4 skips by design,
+        // and renaming alone leaves it referenced, which V3 catches instead.
+        Handle(StepBasic_SiUnitAndPlaneAngleUnit) victim;
+        for (Standard_Integer i = 1; i <= n && victim.IsNull(); ++i) {
+            victim =
+                Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(model->Value(i));
+        }
+        if (victim.IsNull()) {
+            throw ContractViolation(
+                "cannot inject the \"orphan_non_radian\" fault: the transferred "
+                "model carries no SI plane-angle unit to orphan, so this "
+                "negative test would pass vacuously");
+        }
+        // EVERY context, not just the first: a unit one context still reaches
+        // is not an orphan, and V4 would never see it. Whether the emitted
+        // contexts share one unit entity or hold their own is an OCCT
+        // implementation detail this fault must not depend on.
+        size_t removed = 0;
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+                step_unit_assigned_context(model->Value(i));
+            if (ctx.IsNull()) {
+                continue;
+            }
+            Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+            if (units.IsNull()) {
+                continue;
+            }
+            std::vector<Handle(StepBasic_NamedUnit)> keep;
+            bool found_here = false;
+            for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+                Handle(StepBasic_NamedUnit) unit = units->Value(k);
+                if (unit.IsNull()) {
+                    continue;
+                }
+                if (unit.get() == victim.get()) {
+                    found_here = true;
+                    continue;
+                }
+                keep.push_back(unit);
+            }
+            if (!found_here) {
+                continue;
+            }
+            if (keep.empty()) {
+                // Same constructibility limit as the "missing" fault: an
+                // HArray1 with lower > upper does not exist, so "reaches
+                // nothing at all" is inexpressible. Refuse loudly rather than
+                // leave the context untouched and let the test pass vacuously.
+                throw ContractViolation(
+                    "cannot inject the \"orphan_non_radian\" fault: a context "
+                    "reaches the target unit and nothing else, so no non-empty "
+                    "Units() array survives the strip — the fixture no longer "
+                    "exercises this arm and needs revisiting");
+            }
+            Handle(StepBasic_HArray1OfNamedUnit) rebuilt =
+                new StepBasic_HArray1OfNamedUnit(
+                    1, static_cast<Standard_Integer>(keep.size()));
+            for (size_t j = 0; j < keep.size(); ++j) {
+                rebuilt->SetValue(static_cast<Standard_Integer>(j) + 1, keep[j]);
+            }
+            ctx->SetUnits(rebuilt);
+            removed += 1;
+        }
+        if (removed == 0) {
+            throw ContractViolation(
+                "cannot inject the \"orphan_non_radian\" fault: no unit-assigned "
+                "context referenced the target unit, so it was already an "
+                "orphan and this fault would not be what made it one");
+        }
+        // Now the rename, so the orphan is not the accepted unprefixed radian.
+        // STERADIAN for the same reason "non_radian" uses it: a real SI unit
+        // name that is unambiguously not a plane angle.
+        victim->SetName(StepBasic_sunSteradian);
+        return;
+    }
+
     for (Standard_Integer i = 1; i <= n; ++i) {
         Handle(StepBasic_SiUnitAndPlaneAngleUnit) si =
             Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(model->Value(i));
@@ -7353,6 +7580,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
                 break;
             case StepGuardFault::None:
             case StepGuardFault::Missing:
+            case StepGuardFault::OrphanNonRadian:
             case StepGuardFault::AngleModeDeg:
                 // Handled above or earlier; unreachable here.
                 break;
@@ -7706,6 +7934,7 @@ StepGuardProbeResult export_step_with_injected_fault_for_test(const OcctShape& s
         out.contexts = locked.audit.contexts;
         out.plane_angle_units = locked.audit.plane_angle_units;
         out.radian_ok = locked.audit.radian_ok;
+        out.orphan_angular_units = locked.audit.orphan_angular_units;
         return out;
     });
 }

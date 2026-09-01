@@ -23,6 +23,15 @@
 //! is opaque"; the same argument applies to a STEP model with a corrupted unit
 //! context).
 //!
+//! ASSERTING ON A REFUSAL. Every violation line is prefixed with an
+//! identifier-shaped `[INV-AD-4/Vn]` arm tag (`V1`..`V4` for the declaration
+//! walk, `MODE` for the separate `step.angleunit.mode` arm), and the tests pin
+//! THOSE rather than the English around them. The distinction between arms —
+//! a MISSING declaration is a different defect, with a different fix, from a
+//! WRONG one — is the guard's most valuable output, and pinning it via a
+//! negative assertion on prose fails OPEN: reword the sentence and the
+//! assertion becomes trivially true while silently ceasing to check anything.
+//!
 //! FIXTURE. Two disjoint 30 mm cones, unioned — the same fixture the #6184
 //! text-level pin uses (`src/handle.rs`), because it is already MEASURED to
 //! emit THREE `GLOBAL_UNIT_ASSIGNED_CONTEXT` entities. That multiplicity is
@@ -143,6 +152,19 @@ fn guard_accepts_a_real_multi_context_export() {
         audit.radian_ok, audit.plane_angle_units
     );
 
+    // (d2) No orphans on a correct file: every angular unit entity the model
+    // carries is reachable from some context. This is what makes the V4 arm's
+    // own negative test (`guard_refuses_an_orphaned_non_radian_plane_angle_unit`)
+    // meaningful — if a real export already shipped orphaned angular units,
+    // "this unit is unreferenced" would not be a signal at all.
+    assert_eq!(
+        audit.orphan_angular_units, 0,
+        "a legitimate export must carry NO orphaned angular unit — every one \
+         the model declares must be reachable from a context; got \
+         orphan_angular_units={}",
+        audit.orphan_angular_units
+    );
+
     // (e) The declaration is spelled the way OCCT actually spells it. `$` is
     // the NULL SI PREFIX; the `*` in the sibling `NAMED_UNIT(*)` is the
     // redeclared marker, not a prefix, so a pin written for
@@ -206,7 +228,7 @@ fn refusal_message(kernel: &OcctKernel, id: GeometryHandleId, fault: &str) -> St
 /// wrong" is only half the diagnosis, and "how many of the file's contexts are
 /// still correct" is the half that tells a reader whether they are looking at
 /// a whole-file regression or a partial flip.
-fn parse_counts(msg: &str) -> (u32, u32, u32) {
+fn parse_counts(msg: &str) -> RefusalCounts {
     fn field(msg: &str, key: &str) -> u32 {
         let at = msg
             .find(key)
@@ -217,11 +239,57 @@ fn parse_counts(msg: &str) -> (u32, u32, u32) {
             .parse()
             .unwrap_or_else(|_| panic!("{key:?} must be followed by a number; got: {msg}"))
     }
-    (
-        field(msg, "contexts="),
-        field(msg, "plane_angle_units="),
-        field(msg, "radian_ok="),
-    )
+    RefusalCounts {
+        contexts: field(msg, "contexts="),
+        plane_angle_units: field(msg, "plane_angle_units="),
+        radian_ok: field(msg, "radian_ok="),
+        orphan_angular_units: field(msg, "orphan_angular_units="),
+    }
+}
+
+/// The counts a refusal header reports.
+///
+/// `orphan_angular_units` is here because the other three cannot see an
+/// orphan: they count (context, unit) ASSOCIATIONS, and a unit no context
+/// references contributes to none of them. Without it a V4-only refusal would
+/// print `contexts=3 plane_angle_units=3 radian_ok=3` — a description of a
+/// perfectly healthy file — immediately above the line saying the file is not.
+struct RefusalCounts {
+    contexts: u32,
+    plane_angle_units: u32,
+    radian_ok: u32,
+    orphan_angular_units: u32,
+}
+
+/// Assert exactly which arms of the guard fired.
+///
+/// PIN THE TAG, NOT THE PROSE. Each violation line is prefixed with an
+/// identifier-shaped `[INV-AD-4/Vn]` marker precisely so these assertions
+/// survive any rewording of the sentence that follows it. The earlier form of
+/// this check — a NEGATIVE assertion that the MISSING message did not contain
+/// the WRONG message's English phrasing — failed OPEN: reword the WRONG
+/// message and the assertion becomes trivially true, silently ceasing to
+/// distinguish the two cases it exists to separate. A missing tag reds the
+/// positive assertion first, which is the correct failure direction.
+fn assert_arms(msg: &str, expected: &[&str], forbidden: &[&str]) {
+    for arm in expected {
+        let tag = format!("[INV-AD-4/{arm}]");
+        assert!(
+            msg.contains(&tag),
+            "the refusal must be attributed to arm {tag} — the tag is the \
+             machine-readable half of the diagnostic and the only part of it \
+             that survives a rewording; got: {msg}"
+        );
+    }
+    for arm in forbidden {
+        let tag = format!("[INV-AD-4/{arm}]");
+        assert!(
+            !msg.contains(&tag),
+            "arm {tag} must NOT fire here: the arms describe defects with \
+             different causes and different fixes, and collapsing them would \
+             send a reader looking for a defect that is not there; got: {msg}"
+        );
+    }
 }
 
 /// Assert the refusal blames a specific context by its model entity index.
@@ -272,8 +340,18 @@ fn guard_refuses_a_non_radian_plane_angle_declaration() {
     );
     assert_names_a_context_index(&msg);
 
+    // (c2) A REFERENCED wrong unit is arm V3, not the unreferenced-unit arm
+    // V4 and not the missing-declaration arm V2.
+    assert_arms(&msg, &["V3"], &["V1", "V2", "V4"]);
+
     // (d) The counts are reported, and they show a PARTIAL defect.
-    let (contexts, plane_angle_units, radian_ok) = parse_counts(&msg);
+    let counts = parse_counts(&msg);
+    let RefusalCounts {
+        contexts,
+        plane_angle_units,
+        radian_ok,
+        ..
+    } = counts;
     assert!(
         contexts >= 2,
         "the fixture must still carry several contexts for this to be a \
@@ -332,8 +410,16 @@ fn guard_refuses_a_prefixed_radian_declaration() {
          .RADIAN. and finds it cannot reconcile the refusal; got: {msg}"
     );
 
+    // (d) Same arm as the non-radian flip: the unit is still REFERENCED, it is
+    // simply wrong, so this is V3 and nothing else.
+    assert_arms(&msg, &["V3"], &["V1", "V2", "V4"]);
+
     // The counts still show a partial defect: only one unit was prefixed.
-    let (_contexts, plane_angle_units, radian_ok) = parse_counts(&msg);
+    let RefusalCounts {
+        plane_angle_units,
+        radian_ok,
+        ..
+    } = parse_counts(&msg);
     assert!(
         radian_ok < plane_angle_units,
         "a prefixed radian must NOT count as radian_ok — that is exactly the \
@@ -362,25 +448,35 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
     // question is "then what did it reach?" — and the answer is what tells a
     // reader whether the reference list was truncated or replaced.
     assert_names_a_context_index(&msg);
+    // The listed types are OCCT class names — identifier-shaped, so this
+    // survives any rewording of the sentence around them. (A bare `"Unit"`
+    // disjunct was dropped: it is a substring of both of these and of most
+    // English the message could ever carry, so it asserted nothing.)
     assert!(
-        msg.contains("SiUnit") || msg.contains("NamedUnit") || msg.contains("Unit"),
-        "the refusal must list the units the context DID reach — an empty \
-         answer to \"then what did it reach?\" is useless; got: {msg}"
+        msg.contains("SiUnit") || msg.contains("NamedUnit"),
+        "the refusal must list the units the context DID reach, by OCCT class \
+         name — an empty answer to \"then what did it reach?\" is useless; \
+         got: {msg}"
     );
 
-    // (c) MISSING and WRONG are worded differently. They have different causes
-    // and different fixes, so collapsing them into one "bad plane angle unit"
-    // string would be a regression in the guard's only user-visible output.
-    assert!(
-        !msg.contains("is not the unprefixed SI radian"),
-        "a MISSING declaration must not be reported with the WRONG-unit \
-         phrasing steps 3 and 5 pinned — nothing here is a non-radian unit, \
-         and a reader sent looking for one will not find it; got: {msg}"
-    );
+    // (c) MISSING is arm V2, and it is NOT reported as a wrong unit. These are
+    // different defects with different causes and different fixes, and the arm
+    // tag is what pins the distinction: a negative assertion on the WRONG
+    // arm's English phrasing would fail open the moment that phrasing changed.
+    //
+    // V4 must also stay silent. The stripped unit ENTITY is still a perfectly
+    // good unprefixed radian — it is merely unreferenced now — and V4 refuses
+    // only orphans that are NOT the radian. A V4 hit here would mean the guard
+    // had started treating "unreferenced" as a defect in itself.
+    assert_arms(&msg, &["V2"], &["V1", "V3", "V4"]);
 
     // (d) Again a PARTIAL defect: the surviving contexts still reach radians,
     // so the file still contains `.RADIAN.` and a grep still passes.
-    let (contexts, _plane_angle_units, radian_ok) = parse_counts(&msg);
+    let RefusalCounts {
+        contexts,
+        radian_ok,
+        ..
+    } = parse_counts(&msg);
     assert!(
         radian_ok < contexts,
         "one context lost its declaration, so the radian associations must no \
@@ -433,9 +529,9 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
          is the one string a reader can grep for; got: {msg}"
     );
     assert!(
-        msg.contains("pcurve"),
-        "the refusal must say WHAT the degree regime moves: pcurve parameter \
-         space, not the declaration; got: {msg}"
+        msg.contains("TopoDSToStep_MakeStepFace"),
+        "the refusal must name WHERE the degree regime is consumed — it is a \
+         face-writer concern, not a unit-declaration one; got: {msg}"
     );
     assert!(
         msg.contains("RadianToDegree"),
@@ -443,12 +539,23 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
          (GeomConvert_Units::RadianToDegree), so the reader can confirm the \
          mechanism rather than take it on faith; got: {msg}"
     );
+    // The DECLARATION stays at radians — that is what makes the file
+    // self-inconsistent rather than simply a degrees file. Pinned as the
+    // literal Part-21 spelling rather than the English word "declaration":
+    // this token is the thing a reader greps the emitted file for, and it
+    // cannot be reworded out of the message the way an ordinary word can.
     assert!(
-        msg.contains("declaration"),
-        "the refusal must say the DECLARATION stays at radians — that is what \
-         makes the file self-inconsistent rather than simply a degrees file; \
-         got: {msg}"
+        msg.contains("SI_UNIT($,.RADIAN.)"),
+        "the refusal must show that the emitted declaration is STILL the \
+         unprefixed SI radian, which is precisely why degree pcurves make the \
+         file self-inconsistent; got: {msg}"
     );
+
+    // (b2) This is the MODE arm. The four declaration arms provably cannot see
+    // this defect (the declaration is byte-identical under every enum value),
+    // and a diagnostic claiming one of them fired would be claiming something
+    // the guard's own evidence log contradicts.
+    assert_arms(&msg, &["MODE"], &["V1", "V2", "V3", "V4"]);
 
     // (c) NO LEAK. `step.angleunit.mode` is a process-global Interface_Static
     // and this harness runs its tests as threads in ONE process, so a fault
@@ -462,4 +569,139 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
              though the export threw — it is a process-global Interface_Static \
              shared with every other test in this harness binary",
         );
+}
+
+// ---------------------------------------------------------------------------
+// The V4 arm — an angular unit entity NO context references
+// ---------------------------------------------------------------------------
+
+/// An ORPHANED non-radian plane-angle unit is REFUSED.
+///
+/// V4 is the only arm that quantifies over unit ENTITIES rather than over
+/// (context, unit) associations, and it needs its own fault because no other
+/// one can reach it. `"missing"` orphans a unit too — but a still-correct
+/// unprefixed radian, which V4 skips by design; `"non_radian"` produces a
+/// wrong unit that is still REFERENCED, so V3 claims it first. Only dropping
+/// every reference AND making the unit wrong lands here.
+///
+/// WHY THE ARM EXISTS AT ALL. The entity is in the emitted bytes, spelled as a
+/// plane-angle unit, while being reachable from no context — so a consumer
+/// that resolves units differently than this walk does (or a human reading the
+/// file) sees a declaration this file's own contexts do not. Refusing is the
+/// conservative posture: reify emits exactly one plane-angle regime, and an
+/// unreachable second one in the same file is not something to ship.
+#[test]
+fn guard_refuses_an_orphaned_non_radian_plane_angle_unit() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, with the same Reify attribution as every other arm.
+    let msg = refusal_message(&kernel, union_id, "orphan_non_radian");
+
+    // (b) V4 fired, and it is the arm that names the finding. V3 must NOT:
+    // no context reaches this unit any more, so blaming a context would point
+    // the reader at a file location where the defect is not.
+    //
+    // V2 is deliberately NOT forbidden. Whether the emitted contexts share one
+    // plane-angle unit entity or each hold their own is an OCCT implementation
+    // detail; when they hold their own, the context that lost its reference
+    // legitimately reaches no angular unit any more and V2 is a true finding.
+    // Forbidding it would pin an OCCT detail this test has no business
+    // depending on.
+    assert_arms(&msg, &["V4"], &["V1", "V3"]);
+
+    // (c) The offending ENTITY is named by index, and by unit name. This is
+    // V4's own message-formatting branch — distinct from V3's, which names a
+    // context as well — so it needs its own pin.
+    let at = msg
+        .find("unreferenced plane-angle unit #")
+        .unwrap_or_else(|| {
+            panic!("V4 must name the orphan as \"unreferenced plane-angle unit #N\"; got: {msg}")
+        });
+    let rest = &msg[at + "unreferenced plane-angle unit #".len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    assert!(
+        !digits.is_empty(),
+        "\"unreferenced plane-angle unit #\" must be followed by the entity \
+         index — an orphan the reader cannot locate is not actionable; got: {msg}"
+    );
+    assert!(
+        msg.contains(".STERADIAN.") || msg.contains("sunSteradian"),
+        "the refusal must name what the orphan actually is; got: {msg}"
+    );
+
+    // (d) THE COUNTS ARE NOT SELF-CONTRADICTING. This is the whole reason
+    // `orphan_angular_units` is in the header: the other three counts are
+    // blind to an orphan by construction, so on a V4-only refusal they read as
+    // a completely healthy file. A reader parsing them must be able to see
+    // where the finding came from.
+    let counts = parse_counts(&msg);
+    assert!(
+        counts.orphan_angular_units > 0,
+        "the refusal header must report the orphan the violation line blames, \
+         otherwise the counts describe a healthy file directly above a line \
+         saying it is not; got orphan_angular_units={} in: {msg}",
+        counts.orphan_angular_units
+    );
+    assert_eq!(
+        counts.radian_ok, counts.plane_angle_units,
+        "the surviving ASSOCIATIONS are untouched by this fault — every \
+         context still reaches a radian. If these diverge the fault corrupted \
+         a referenced unit too, and this test is no longer about an orphan; \
+         got radian_ok={} plane_angle_units={} in: {msg}",
+        counts.radian_ok, counts.plane_angle_units
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The fixture hook's own contract
+// ---------------------------------------------------------------------------
+
+/// An unrecognised fault NAME is rejected, not silently ignored.
+///
+/// This pins the property every negative test above depends on. If the unknown
+/// branch of `parse_step_guard_fault` were ever refactored into a silent
+/// `return StepGuardFault::None`, or into "nearest known fault wins", a typo
+/// in any of those tests would stop injecting anything — and a test that
+/// asserts a refusal against an UNCORRUPTED export would either flip to a
+/// confusing failure or, in the nearest-match case, keep passing while
+/// exercising the wrong arm. The rejection is what makes a typo read as a
+/// rejected fault instead.
+///
+/// `"nonradian"` (the real name is `"non_radian"`) is deliberately a
+/// near-miss: it is the typo a nearest-match implementation would silently
+/// absorb.
+#[test]
+fn guard_rejects_an_unrecognised_fault_name() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    match kernel.export_step_with_injected_fault_for_test(union_id, "AP214", "nonradian") {
+        Err(ExportError::FormatError(msg)) => {
+            assert_reify_authored_refusal(&msg);
+            assert!(
+                msg.contains("unknown injected fault"),
+                "the rejection must say the FAULT NAME was not recognised — \
+                 not merely fail — so a typo in a test cannot be mistaken for \
+                 the guard refusing a corrupt model; got: {msg}"
+            );
+            assert!(
+                msg.contains("nonradian"),
+                "the rejection must echo the unrecognised name back; got: {msg}"
+            );
+            assert!(
+                msg.contains("non_radian"),
+                "the rejection must list the accepted fault names, so the \
+                 reader can see the correct spelling next to their typo; \
+                 got: {msg}"
+            );
+        }
+        Err(other) => panic!(
+            "an unrecognised fault name must surface as \
+             ExportError::FormatError; got Err({other:?})"
+        ),
+        Ok(_) => panic!(
+            "an unrecognised fault name must be REJECTED. Returning a STEP \
+             file here means the injection was silently skipped, which is \
+             exactly what turns a typo in a negative test into a vacuous pass"
+        ),
+    }
 }

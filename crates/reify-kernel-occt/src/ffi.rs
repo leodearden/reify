@@ -55,6 +55,14 @@ pub mod ffi {
         contexts: u32,
         plane_angle_units: u32,
         radian_ok: u32,
+        /// Angular unit ENTITIES no unit-assigned context references.
+        ///
+        /// Deliberately NOT part of the three association counts above, which
+        /// are blind to an orphan by construction: a unit nothing points at
+        /// cannot change "does THIS context reach a radian?" for any context.
+        /// Reported separately so a V4-only refusal does not print a header
+        /// describing a healthy file.
+        orphan_angular_units: u32,
     }
 
     /// Full 3×3 inertia tensor returned from `query_inertia_tensor`.

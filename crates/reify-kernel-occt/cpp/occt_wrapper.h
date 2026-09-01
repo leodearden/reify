@@ -1628,6 +1628,14 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 ///                       entity itself in the model: the declaration is MISSING
 ///                       for that context while the file still contains a
 ///                       perfectly good `SI_UNIT($,.RADIAN.)` nothing points at.
+///   - `"orphan_non_radian"` — drop the FIRST SI plane-angle unit from EVERY
+///                       context's `Units()` list AND rename it to STERADIAN.
+///                       The only fault that reaches the V4 arm, and the only
+///                       one that can: `"missing"` orphans a unit that is still
+///                       a correct radian, which V4 skips by design. Both
+///                       halves are required — dropping the reference alone
+///                       leaves a radian V4 accepts, renaming alone leaves it
+///                       referenced so V3 catches it instead.
 ///   - `"angle_mode_deg"` — set the process-global `step.angleunit.mode`
 ///                       static to the Deg regime for this export only,
 ///                       restored by RAII (including on the throwing path).
