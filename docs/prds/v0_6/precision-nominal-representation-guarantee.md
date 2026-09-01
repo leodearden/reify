@@ -498,9 +498,11 @@ the user — `report_eval_output` (`main.rs:2763`) prints every diagnostic to st
    of the refusal wiring above: Mode A (`reify build -o <path>`) prints `Wrote <path>` followed by a
    `Triangles: N` line; Mode B (occurrence-driven, no `-o`) prints `Wrote <path>` with **no**
    `Triangles:` line, and writes to the occurrence's own declared path rather than the `-o` target.
-   Confirmed during task 6170's D3 γ-verification (`wf_c00d1e3e-262`, 2026-08-10) and by reviewer
-   finding "design-coherence" on `crates/reify-cli/src/main.rs:1021` during 6170's amendment pass
-   (fixed in code there; this PRD records the docs half).
+   This is a task δ/5002 **scope** decision — the count was scoped to the imperative `-o` path only —
+   not a cost one; §6 has the full rationale. Confirmed during task 6170's D3 γ-verification
+   (`wf_c00d1e3e-262`, 2026-08-10) and by reviewer finding "design-coherence" on
+   `crates/reify-cli/src/main.rs:1021` during 6170's amendment pass (fixed in code there; this PRD
+   records the docs half).
 3. Post-**6085**, (2) narrows: the export path measures and refines like `check`, and refusal is
    reserved for genuinely unachievable bounds.
 
@@ -532,14 +534,29 @@ its drift-guard registration **in the same diff** (`.config/nextest.toml` partit
 **No test may assert a wall-clock upper bound**; BT-4's cost check is a task-recorded measurement, not
 a gate assertion (`tests/infra/test_no_new_wallclock_upper_bounds.sh`).
 
-**The Mode A/Mode B reporting asymmetry (§5 C-SURFACE (2)) is deliberate, and follows from this same
-rule.** `reify build -o <path>` (Mode A) prints `Wrote <path>` and a `Triangles: N` line; the
-occurrence-driven `reify build` (Mode B, no `-o`) prints `Wrote <path>` with **no** `Triangles:` line
-and writes to the occurrence's own declared path rather than the `-o` target. Mode B gets the count
-for free — it must realize anyway to enumerate `: Output` occurrences — while Mode A printing the
-same count would cost a full extra realization + tessellation (5–20 s, §2.2) that this rule forbids
-paying just to report a number. Confirmed during task 6170's D3 γ-verification (`wf_c00d1e3e-262`,
-2026-08-10) and reviewer finding "design-coherence" on `crates/reify-cli/src/main.rs:1021`.
+**The Mode A/Mode B `Triangles: N` reporting asymmetry (§5 C-SURFACE (2)) is a task δ/5002 SCOPE
+decision, not a gate-cost one — this rule does not govern it.** `reify build -o <path>` (Mode A)
+prints `Wrote <path>` and a `Triangles: N` line; the occurrence-driven `reify build` (Mode B, no
+`-o`) prints `Wrote <path>` with **no** `Triangles:` line and writes to the occurrence's own declared
+path rather than the `-o` target. Neither mode pays a realization to report the count: both derive it
+from the export bytes already in hand — Mode A reads it straight from `data`, the bytes it just wrote
+(`main.rs:1621-1624`) — and the count itself is cheap to extract: O(1) for STL (`stl_triangle_count`
+reads the 4-byte header field at bytes 80..84, `main.rs:3375-3382`) and O(bytes) for 3MF
+(`threemf_triangle_count` counts `<triangle ` windows, `main.rs:3408-3411`, cheap because `write_3mf`
+pins every ZIP part to `CompressionMethod::Stored`). Mode B's silence is scope, not cost: task δ/5002
+scoped the count to the imperative `-o` path only (`main.rs:1738-1745`), and each Mode-B `artifact`
+already carries `format` + `bytes`, so the same two helpers are reusable directly, keyed on
+`artifact.format`, if Mode-B observability is ever wanted. Confirmed during task 6170's D3
+γ-verification (`wf_c00d1e3e-262`, 2026-08-10) and reviewer finding "design-coherence" on
+`crates/reify-cli/src/main.rs:1021`.
+
+**A separate, genuine asymmetry *is* governed by this rule: the refusal-path report.** A refused
+Mode-A `-o` build returns before `engine.build()` (`main.rs:1500-1520`) and so prints the refusal and
+nothing else — no constraint results, no "No constraints violated (N indeterminate)." summary — while
+Mode B must realize anyway to enumerate `: Output` occurrences and so gets the constraint results
+free from `build_outputs_with_result`. Buying Mode A the same summary on refusal would cost a full
+extra realization + tessellation (5–20 s, §2.2) on a build that is about to write nothing, which is
+exactly what this gate-cost rule forbids paying.
 
 ---
 
