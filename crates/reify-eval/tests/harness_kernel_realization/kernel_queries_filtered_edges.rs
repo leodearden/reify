@@ -41,12 +41,13 @@
 //!
 //! Modelled on `kernel_queries_directional_selectors.rs` (task 3618).
 
+use super::fixture_scaffolding::assert_selector_leaf;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
-use reify_ir::value::{LeafQuery, SelectorNode};
-use reify_ir::{ExportFormat, Value};
+use reify_ir::value::LeafQuery;
+use reify_ir::ExportFormat;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
 const FIXTURE_PATH: &str = concat!(
@@ -148,27 +149,4 @@ fn filtered_edges_compile_and_return_geometry_handles() {
             other => panic!("top_edges must be a ByHeight leaf, got: {other:?}"),
         },
     );
-}
-
-/// Assert a cell holds a kernel-free `Value::Selector` whose node is a single
-/// `Leaf` of the expected `kind`, then run `check_query` against the leaf's
-/// `LeafQuery` (task 4118 γ). Mirrors the helper in
-/// `topology_selector_runtime.rs`.
-fn assert_selector_leaf(
-    cell_value: Option<&Value>,
-    label: &str,
-    kind: SelectorKind,
-    check_query: impl FnOnce(&LeafQuery),
-) {
-    let sv = match cell_value {
-        Some(Value::Selector(sv)) => sv,
-        other => panic!(
-            "{label} must be a kernel-free Value::Selector (task 4118 γ; BT7), got: {other:?}"
-        ),
-    };
-    assert_eq!(sv.kind, kind, "{label}: selector kind");
-    match &sv.node {
-        SelectorNode::Leaf { query, .. } => check_query(query),
-        other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
-    }
 }
