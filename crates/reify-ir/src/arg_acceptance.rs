@@ -462,11 +462,58 @@ pub fn rotational_stiffness_spec() -> ArgSpec {
 }
 
 
+/// Returns the [`ArgSpec`] for a DELIBERATELY-BARE reader position — one whose
+/// quantity is genuinely dimensionless (a ratio, a count, a relative
+/// tolerance), so demanding a dimension of it would reject correct `.ri` code.
+///
+/// PRD §3 Leg B's "deliberately bare" list routes here: `poisson_ratio`,
+/// `damping_ratio`, `vibration_tolerance`, `tol`, `max_iters`, the buckling
+/// eigenvalue λ, `infill_gibson_ashby_c`/`_n`, `read_location_index`, and
+/// tensegrity's nullity-invariant relative ratios.
+///
+/// **These positions are GATED, not ungated.** Routing them through this spec
+/// rather than through a bare `as_f64()` is what makes a *dimensioned* Scalar
+/// in one of them a rejection: `poisson_ratio: 200GPa` is a real authoring
+/// mistake and stays one. What this spec adds over the dimensioned siblings is
+/// only that a bare `Real`/`Int` is ALSO accepted here — see [`accept_arg`]'s
+/// third bullet and PRD §7 I3.
+///
+/// `type_name` is `"Real"` because that is the spelling an author writes at
+/// one of these positions; `migration_hint` is `None` because there is no
+/// migration to make — the bare form is correct.
+pub fn dimensionless_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Real",
+        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        migration_hint: None,
+    }
+}
+
 /// Classify `value` against `spec`.
 ///
 /// - `Value::Undef` → [`Acceptance::Undefined`] (quiet, no diagnostic needed).
 /// - `Value::Scalar { dimension, .. }` where `dimension == spec.dimension`
 ///   → [`Acceptance::Accepted`] carrying the SI f64.
+/// - A bare `Value::Real`/`Value::Int`, **and only when
+///   `spec.dimension == DimensionVector::DIMENSIONLESS`** →
+///   [`Acceptance::Accepted`] carrying the value as f64. The requirement is
+///   PRD `docs/prds/v0_6/dimension-checked-readers.md` §7 I3 —
+///   "DIMENSIONLESS and bare are interchangeable ONLY at a
+///   `dimensionless_spec` position" — and §7:465's annotation of that position
+///   as `Real | Int | Scalar{DIMENSIONLESS}`.
+///
+///   This arm is the **ONLY** departure from the seam frozen by amendment A1,
+///   and it is provably INERT at every pre-existing call site: MEASURED, the
+///   only `ArgSpec`s constructed anywhere in the workspace before task 5791
+///   were [`density_spec`] (MASS_DENSITY), [`length_spec`] (LENGTH) and the
+///   single inline literal at `reify-eval/src/geometry_ops.rs:10300`, whose
+///   lone caller (`resolve_scalar_dim_arg`, :10326) passes ANGLE. None is
+///   DIMENSIONLESS, so the guard is false for all of them and their observable
+///   behaviour is byte-identical. Pinned by
+///   `bare_real_int_stay_rejected_at_every_dimensioned_spec`, which must be
+///   read as the other half of this arm: without the guard, a bare `10` at a
+///   LENGTH position would be silently read as 10 SI **metres** instead of
+///   `10mm` — the 1000x hazard task 5214 exists to close.
 /// - Any other defined value → [`Acceptance::Rejected`].
 pub fn accept_arg(value: &crate::value::Value, spec: &ArgSpec) -> Acceptance {
     match value {
@@ -475,6 +522,19 @@ pub fn accept_arg(value: &crate::value::Value, spec: &ArgSpec) -> Acceptance {
             si_value,
             dimension,
         } if *dimension == spec.dimension => Acceptance::Accepted(*si_value),
+        // PRD §7 I3: bare Real/Int are interchangeable with DIMENSIONLESS, and
+        // ONLY there. The guard is what keeps amendment A1's freeze intact —
+        // see the third doc bullet above for the measurement.
+        crate::value::Value::Real(r)
+            if spec.dimension == reify_core::DimensionVector::DIMENSIONLESS =>
+        {
+            Acceptance::Accepted(*r)
+        }
+        crate::value::Value::Int(i)
+            if spec.dimension == reify_core::DimensionVector::DIMENSIONLESS =>
+        {
+            Acceptance::Accepted(*i as f64)
+        }
         other => Acceptance::Rejected(ArgRejection {
             got: value_short_label(other),
             expected: spec.type_name,
