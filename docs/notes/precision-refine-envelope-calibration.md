@@ -159,14 +159,26 @@ comfortable envelope. This is the trap the non-analytic classes could not escape
 | sweep | `sweep(circle(100mm), interp(…))` | 10 mm | 0.534 |
 | pipe | `pipe(helix(100mm,80mm,300mm), 20mm)` | 5 mm | 0.598 |
 | spline | `sweep(circle(100mm), bezier(…))` | 20 mm | 0.013 |
+| nurbs surface | `nurbs_surface(3x3 point3 net, …)` | 0.3 mm | 0.958 |
 
 sweep: 100 mm 0.148 (floor) · 50 mm 0.296 (floor) · 20 mm 0.379 · **10 mm 0.534**.
 pipe (shape-shrunk): 20 mm 0.135 · 10 mm 0.258 · **5 mm 0.598**; 2 mm timed out.
 pipe (full size `pipe(helix(300mm,200mm,900mm), 60mm)`): 100 mm 0.123, 20 mm 0.580.
 spline: 100 mm 0.003 · 50 mm 0.007 · **20 mm 0.013**; 10 mm timed out.
 
-All three were still **rising** at their finest rung. Their entries in §1.1 are lower
-bounds, not suprema — see §2.4.
+Sweep, pipe and spline were each still **rising** at their finest affordable rung —
+every attempt to go finer timed out at 90 s (§0 Caveat 1), so the rung set each stops at
+is a property of the **budget**, not of these three classes. Their entries in §1.1 are
+lower bounds, not suprema — see §2.4.
+
+nurbs_surface is the exception: nothing in its ladder timed out (finest rung 0.3 mm cost
+15.5–18.7 s, well inside the 90 s wall — see the full ladder below), and its ratio
+**turns over** rather than rising, peaking at 0.996 at `d` = 0.5 mm before falling back to
+0.958 at 0.3 mm. Its §1.1 entry is therefore a genuine supremum over the d-ladder, not a
+lower bound — the one non-analytic class this session could walk all the way to a peak
+rather than being cut off by the wall. Do not read the mandated 100/50/20/10 mm rung set
+as a property of this class: it happens to be affordable far past that spine, which is
+exactly what the extended ladder below demonstrates.
 
 Not measurable, recorded honestly:
 
