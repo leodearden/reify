@@ -1,4 +1,4 @@
-use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value};
+use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -234,6 +234,34 @@ impl GeometryKernel for SingleKernelHolder {
             Some(k) => k.ingest_mesh(mesh),
             // Mirror the trait default's no-kernel message; type_name::<Self>()
             // resolves to SingleKernelHolder here, exactly as the default would.
+            None => Err(GeometryError::OperationFailed(format!(
+                "{} does not accept Mesh inputs",
+                std::any::type_name::<Self>()
+            ))),
+        }
+    }
+
+    /// Delegating override for the resolution-carrying mesh ingest (task 6560).
+    ///
+    /// Required by this impl's delegate-EVERY-method invariant, and uniquely
+    /// harmful to omit: the trait default drops `resolution` and routes
+    /// through `self.ingest_mesh`, which this holder also overrides, so the
+    /// call still reaches the inner kernel — just via its `ingest_mesh` arm,
+    /// at `VoxelResolution::HonestFloor`. The caller's request is therefore
+    /// discarded SILENTLY, surfacing as a quietly coarser grid rather than an
+    /// error: precisely the sub-voxel-feature failure `VoxelResolution` was
+    /// introduced to prevent. Delegating verbatim is the whole point of the
+    /// seam.
+    ///
+    /// The `None` arm reproduces the trait default's no-kernel output, which
+    /// for an empty holder is `ingest_mesh`'s own message.
+    fn ingest_mesh_at_resolution(
+        &mut self,
+        mesh: &Mesh,
+        resolution: VoxelResolution,
+    ) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.ingest_mesh_at_resolution(mesh, resolution),
             None => Err(GeometryError::OperationFailed(format!(
                 "{} does not accept Mesh inputs",
                 std::any::type_name::<Self>()
