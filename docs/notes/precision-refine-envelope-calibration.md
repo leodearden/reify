@@ -459,10 +459,12 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 | torus | 0.978 | 0 |
 | cone | 0.970 | 0 |
 | fillet blend | 0.925 | 0 |
+| nurbs surface | 0.996 | 0 |
 | sweep / pipe / spline | ≤ 0.598 * | 0 * |
 | loft | no datum | — |
 
 **No measured class exceeds K ≈ 16.** The worst is the sphere at 2.079, needing `n = 2`.
+nurbs_surface's 0.996 (§1.1, §1.5) sits comfortably below that and changes nothing here.
 Cap 4 covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
 
 \* Lower bounds only. The fine-`d` regime where the sphere reached its supremum was
