@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 18 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 18 | 17 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 18 | 17 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 18 | 3 |
+| (a) docs-only | `docs/note.md` | — | 20 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 20 | 19 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 20 | 19 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 20 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 18 |  0 |
-| reify-doc  | 18 | 17 |
-| reify-eval | 18 | 17 |
-| gui-only   | 18 |  3 |
+| docs-only  | 20 |  0 |
+| reify-doc  | 20 | 19 |
+| reify-eval | 20 | 19 |
+| gui-only   | 20 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
@@ -199,6 +199,68 @@ closure-available sentinel to tell it apart from "the diff could not be read".
 The merge gate remains unconditional by contract, so a hook-tier skip is
 LATENCY, never a coverage hole._
 
+_Counts bumped 2026-08-01 (task 5629): added
+`./scripts/tree-sitter-freshness.sh ensure` (the compiled-tree-sitter-parser
+freshness gate) to `build_plan` inside the `RUN_RUST=1` block in
+`scripts/verify.sh`, immediately after `tree-sitter-generate.sh` — that
+ordering is load-bearing, since the fingerprint must be taken after
+`src/parser.c` is regenerated on disk and forced before any cargo leaf
+compiles it. Net change: +1 non-comment plan line wherever `RUN_RUST=1` —
+every `scope=all` plan, and `scope=branch` for the `RUN_RUST=1` shapes
+(reify-doc, reify-eval). docs-only branch stays 0 and gui-only branch stays 3
+(`RUN_RUST=0` there, so the leaf is not emitted). The machine sentinel moves
+18 → 19 for the `scope=all` cells and 17 → 18 for the shape (b)/(c)
+`scope=branch` cells._
+
+_Counts bumped 2026-08-01 (task 5629, review round 2): added a SECOND
+tree-sitter leaf, `./scripts/tree-sitter-freshness.sh check`, to `build_plan`
+after the cargo compile wave. The `ensure` leaf above only ATTEMPTS the repair —
+it bumps mtimes and trusts cargo to act on them, and never fails for a condition
+it believes it fixed — so a plan carrying `ensure` alone had no evidence the
+rebuild actually happened. `check` asserts, after the fact, that the archive
+cargo just linked was built from the sources on disk. Guarded on
+`RUN_RUST=1 && (DO_LINT || DO_TYPECHECK)`, i.e. exactly when a `cargo check` /
+`cargo clippy` leaf precedes it — an assertion emitted before anything compiled
+would hard-fail the very staleness `ensure` had queued a repair for. Net change:
++1 non-comment plan line in the same cells as the `ensure` leaf, since all four
+shapes here run `action=all`. The machine sentinel moves 19 → 20 for the
+`scope=all` cells and 18 → 19 for the shape (b)/(c) `scope=branch` cells._
+
+_Counts NOT bumped 2026-08-20 (task 5629, amendment pass): the `check` leaf's
+guard widened from `RUN_RUST=1 && (DO_LINT || DO_TYPECHECK)` to
+`RUN_RUST=1 && (DO_LINT || DO_TYPECHECK || DO_TEST)`. The `DO_TEST` carve-out was
+reasoned from "action=test has no compile leaf before this pole", but the leaf is
+emitted AFTER `add_test_passes`, and on an `action=test` plan `add_test_passes`
+emits `cargo nextest run --workspace` — which compiles the parser. So the
+test-only tier forced a rebuild via `ensure` and then asserted nothing, carrying
+the whole one-level-up false GREEN the leaf exists to close.
+**The sentinel does NOT move and no cell of the table above changes:** all four
+shapes are captured at `action=all`, which already satisfied `DO_LINT`. Confirmed
+by re-running the regeneration command at HEAD (still 20), not by assuming it.
+The widening is observable only on an `action=test` plan, where
+`verify.sh test --profile both --scope all --print-plan` now ends with
+`./scripts/tree-sitter-freshness.sh check` after the last nextest leaf._
+
+_Counts RE-DERIVED 2026-08-28 (task 5629, rebase onto main): the two notes
+above were originally written on the task branch against a 16-count baseline and
+read 16 → 17 → 18 while they sat there — which is why their COMMIT SUBJECTS
+still say "16 → 17" and "17 → 18". `main` meanwhile moved the same cells
+independently: task 5076 added two leaves (16 → 18) and then narrowed the
+gui-feature test pass out of the shape (b)/(c) `scope=branch` cells (18 → 17).
+So NEITHER side's numbers described the rebased tree, and both sides' sentinel
+blocks conflicted textually on every replayed commit. The endpoints in the two
+notes above were therefore rewritten during conflict resolution to ride on
+main's baseline (18 → 19, then 19 → 20), and the numbers are not a hand-merge:
+they were re-measured on the rebased tree with the documented `--print-plan`
+oracle below, via `tests/infra/test_verify_throughput.sh`, whose
+`note(X) == live(Y)` assertions report the live count regardless of whether they
+pass. Measured at this HEAD: `scope=all` = 20 for all four shapes;
+`scope=branch` = 0 (docs-only), 19 (reify-doc), 19 (reify-eval), 3 (gui-only) —
+54 passed / 0 failed. The deltas the two notes claim (+1 each, in the
+`RUN_RUST=1` cells) are unchanged in kind; only their absolute endpoints moved,
+because two independent +1s landed underneath them. The human-readable table and
+this sentinel are re-synced in lockstep per the standing task-5125 convention._
+
 ## Heavy-Work Narrowed Markers
 
 `scope=all` always produces: `cargo clippy --workspace` and
@@ -221,7 +283,7 @@ For shape (c), the scope=branch plan equals scope=all minus: replacing
 `--workspace` with `-p reify-eval` in clippy/nextest (narrowing). Task 4451:
 the gated pass is gone; reify-eval runs in the single nextest pool.
 
-For shape (d), 15 of the 18 scope=all steps are Rust; branch scope drops
+For shape (d), 17 of the 20 scope=all steps are Rust; branch scope drops
 all of them and retains only the 3 GUI npm steps.
 
 ## Wall-Clock Measurements
@@ -237,7 +299,7 @@ real  0.233 s
 
 The branch scope detects that only docs were changed, produces an empty plan
 (0 steps), and exits immediately.  The equivalent scope=all run would proceed
-to execute all 18 steps including `cargo clippy --workspace` (≈ 20 s warm)
+to execute all 20 steps including `cargo clippy --workspace` (≈ 20 s warm)
 and `cargo nextest run --workspace` (≈ 10+ min warm; task 4451: OCCT crates
 are now in the pool, bounded by the nextest occt group max-threads=4).
 

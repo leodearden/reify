@@ -432,3 +432,19 @@ scripts/git-rerere-guard.sh    tests/infra/test_git_rerere_guard.sh
 # the established pattern (scripts/warm-lane-audit.sh appears twice above, and
 # scripts/setup-dev.sh already has an OCCT row).
 scripts/setup-dev.sh           tests/infra/test_git_rerere_guard.sh
+
+# Task 5629 (esc-5392-1): these four artifacts JOINTLY decide whether the
+# compiled libtree_sitter_reify.a matches the tree being verified —
+# build.rs declares which inputs cargo watches and attests what it compiled,
+# scanner.c is a compiled input, and the two scripts regenerate and then
+# force/assert freshness. An edit to any one of them can silently reintroduce
+# the defect this task fixed (a scanner.c change watched by nothing, hence
+# never recompiled and never under test), so each must pull in its own guard
+# on a task-scope verify. Four rows for one test because this file's header
+# notes the GLOB is self-maintaining for new TESTS, not for new ARTIFACTS —
+# same one-artifact-per-row pattern as scripts/seed-warm-lane.sh and
+# scripts/lib_live_refs.sh above.
+tree-sitter-reify/build.rs           tests/infra/test_tree_sitter_pipeline.sh
+tree-sitter-reify/src/scanner.c      tests/infra/test_tree_sitter_pipeline.sh
+scripts/tree-sitter-generate.sh      tests/infra/test_tree_sitter_pipeline.sh
+scripts/tree-sitter-freshness.sh     tests/infra/test_tree_sitter_pipeline.sh
