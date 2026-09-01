@@ -338,6 +338,24 @@ async fn init_and_open(bridge: &LspBridge, uri: &str) {
 /// answer. (No claim is made that those two get the LARGE STACK — their compiler
 /// work runs on the blocking pool's ~2 MiB threads, see this file's header note
 /// and task #6195. What is claimed is that they RESOLVE through the lane.)
+///
+/// # (m) Task 6517: the table now spans BOTH LANES, and every pooled arm
+///
+/// This is the migration guard the ordered-lane/query-pool split rests on, so
+/// it has to cover the arms whose LANE CHANGED — which is precisely what the
+/// five original rows did not. `documentHighlight`, `prepareRename` and
+/// `rename` are added, completing the eight methods `lane_for_method` routes to
+/// the pool, and `didChange` is added as an ORDERED-lane row so the table spans
+/// both destinations rather than silently testing one.
+///
+/// `must_resolve` is set for the three added arms, two of which
+/// (`prepareRename`, `rename`) hop to `spawn_blocking`: a `null == null`
+/// comparison is exactly what an arm that stopped running looks like, and these
+/// are the ones whose routing moved.
+///
+/// `didChange` is LAST on purpose. It mutates both bridges — identically, so
+/// parity would hold either way — but running it earlier would silently change
+/// the text every later row queries, making a failure hard to attribute.
 #[tokio::test]
 async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
     use crate::lsp_bridge::lsp_request_on_worker;
@@ -397,6 +415,51 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
                 "context": { "includeDeclaration": true }
             }),
             true,
+        ),
+        // ── task 6517: the remaining POOL-routed arms ────────────────────────
+        // Inline arm, but on the `width` declaration token (line 1) it produces
+        // real highlights, so it can carry `must_resolve`.
+        (
+            "textDocument/documentHighlight",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 1, "character": 10 }
+            }),
+            true,
+        ),
+        // `spawn_blocking` arms, on the same `width` declaration token
+        // `references` uses.
+        (
+            "textDocument/prepareRename",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 1, "character": 10 }
+            }),
+            true,
+        ),
+        (
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": URI },
+                "position": { "line": 1, "character": 10 },
+                "newName": "span"
+            }),
+            true,
+        ),
+        // ── task 6517: an ORDERED-lane arm, so the table spans both lanes ────
+        // A notification: it answers `Null`, hence `must_resolve: false`. LAST,
+        // because it MUTATES both bridges — identically, so parity holds either
+        // way, but an earlier position would change the text every later row
+        // queries.
+        (
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": URI, "version": 2 },
+                "contentChanges": [
+                    { "text": reify_test_support::bracket_source_with_width("123mm") }
+                ]
+            }),
+            false,
         ),
     ];
 
@@ -1062,5 +1125,278 @@ async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
         "a hover served by a free pool consumer must return exactly what a \
          direct `lsp_request_impl` call returns — the pool hop must be invisible \
          to the frontend"
+    );
+}
+
+/// (n) An AWAITED sequence still observes its own edits, across the lane split.
+///
+/// This is the cross-lane ordering guard the split must not break, and it is
+/// driven exactly as `gui/src/editor/lspClient.ts` drives it: each `invoke`
+/// awaited before the next is issued. The sequence spans BOTH destinations —
+/// `initialize` / `initialized` / `didOpen` / `didChange` travel the ordered
+/// lane, and the `hover` that reads the result travels the POOL, on a different
+/// OS thread.
+///
+/// What it pins is a happens-before that survives only because the client awaits
+/// AND because `LSP_LANE` stays single-consumer: the `didChange` job has
+/// returned (which is what resolved the awaited promise) before the `hover` is
+/// ever submitted, so the pool consumer cannot observe pre-change text. A split
+/// that had let notifications run concurrently would make this a race even for a
+/// client that awaits.
+///
+/// The hover payload carries the parameter's DEFAULT VALUE (`param width:
+/// Scalar[m] = 0.08 m`), which is what makes "the answer differs before and
+/// after" a real observation rather than a hope: the pre-change assertion is a
+/// stated precondition, and the post-change one asserts the new value is present
+/// AND the old one is gone.
+#[tokio::test]
+async fn an_awaited_sequence_still_observes_its_own_edits() {
+    use crate::lsp_bridge::lsp_request_on_worker;
+
+    const URI: &str = "file:///awaited_sequence.ri";
+
+    let bridge = Arc::new(LspBridge::new());
+
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialize".to_string(),
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialized".to_string(),
+        "{}".to_string(),
+    )
+    .await
+    .expect("initialized");
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/didOpen".to_string(),
+        json!({
+            "textDocument": {
+                "uri": URI,
+                "languageId": "reify",
+                "version": 1,
+                "text": reify_test_support::bracket_source()
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("didOpen");
+
+    // On the `width` declaration token — the position reify-lsp's own hover
+    // tests use.
+    let hover_params = json!({
+        "textDocument": { "uri": URI },
+        "position": { "line": 1, "character": 10 }
+    })
+    .to_string();
+
+    let before = lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/hover".to_string(),
+        hover_params.clone(),
+    )
+    .await
+    .expect("hover before the edit");
+    assert!(
+        before.contains("0.08 m"),
+        "precondition: the pre-change hover must report the ORIGINAL default, or \
+         the post-change assertion below proves nothing. Got: {before}"
+    );
+
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/didChange".to_string(),
+        json!({
+            "textDocument": { "uri": URI, "version": 2 },
+            "contentChanges": [
+                { "text": reify_test_support::bracket_source_with_width("123mm") }
+            ]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("didChange");
+
+    let after = lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/hover".to_string(),
+        hover_params,
+    )
+    .await
+    .expect("hover after the edit");
+
+    assert!(
+        after.contains("0.123 m"),
+        "a hover issued AFTER an awaited didChange must read the POST-change \
+         text, even though it travels a different lane on a different thread. \
+         Got: {after}"
+    );
+    assert!(
+        !after.contains("0.08 m"),
+        "the post-change hover must not still report the old default — that \
+         would mean the pool consumer read text the ordered lane had already \
+         replaced. Got: {after}"
+    );
+}
+
+/// (o) An ABANDONED request produces no server-side effect and does not keep a
+/// lane consumer — the end-to-end counterpart of `large_stack_tests`' (ah),
+/// through the REAL composition.
+///
+/// (ah) proves the mechanism with a synthetic sender and an `AtomicBool`. This
+/// proves the claim that actually matters to the GUI: an abandoned
+/// `textDocument/didOpen` never reaches `InProcessLsp`, so it publishes no
+/// diagnostics and leaves no document behind.
+///
+/// Asserting the SERVER-SIDE EFFECT rather than merely "the lane recovered" is
+/// the point. A lane that ran the abandoned job to completion and then carried
+/// on would satisfy "recovered" perfectly while doing exactly the wasted work
+/// this is about; only the absence of the publish distinguishes them. The live
+/// row is the non-vacuity twin — without it, a sink that recorded nothing at all
+/// would pass.
+///
+/// # Why a TEST-LOCAL size-1 lane
+///
+/// Size 1 because the ABANDONMENT has to be forced: the request must sit in the
+/// queue while its awaiting side is dropped, which means every consumer must be
+/// occupied. Test-local because occupying the process-wide `LSP_LANE` would
+/// starve every concurrently-running test in this binary.
+///
+/// Ordering is deterministic rather than timed: the queue is FIFO with one
+/// consumer, so the abandoned job is dequeued strictly before the live one, and
+/// by the time the live request resolves the abandoned one has already had its
+/// chance to publish.
+#[tokio::test]
+async fn an_abandoned_request_does_not_occupy_a_lane_consumer() {
+    use crate::large_stack::{Lane, dispatch};
+    use crate::lsp_bridge::lsp_request_on_lane;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const LANE_NAME: &str = "t6517-canc";
+    static CANCEL_LANE: Lane = Lane::pool(LANE_NAME, 1);
+
+    const ABANDONED_URI: &str = "file:///abandoned.ri";
+    const LIVE_URI: &str = "file:///still_live.ri";
+    /// Broken source, so `didOpen` is GUARANTEED to publish error diagnostics
+    /// through the sink — "no publish" then means "never ran", not "ran and had
+    /// nothing to say".
+    const BROKEN: &str = "structure {";
+
+    let sink = Arc::new(RecordingSink::default());
+    let bridge = Arc::new(LspBridge::with_sink(sink.clone()));
+
+    // Session setup runs DIRECTLY, not through the lane, so the parked consumer
+    // is the only thing between the abandoned request and its execution.
+    lsp_request_impl(
+        &bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
+    lsp_request_impl(&bridge, "initialized", "{}".to_string())
+        .await
+        .expect("initialized");
+    // Discard any setup publishes so the assertions below speak only about the
+    // two requests under test.
+    let _ = sink.take_calls();
+
+    let did_open = |uri: &str| {
+        json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "reify",
+                "version": 1,
+                "text": BROKEN
+            }
+        })
+        .to_string()
+    };
+
+    // Occupy the lane's single consumer.
+    let (parked_tx, parked_rx) = mpsc::channel::<Option<String>>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let probe = std::thread::spawn(move || {
+        dispatch(CANCEL_LANE.sender(), move || {
+            let _ = parked_tx.send(std::thread::current().name().map(str::to_owned));
+            let _ = release_rx.recv();
+        });
+    });
+    let parked_on = parked_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the probe job must reach the consumer and report where it parked");
+    assert_eq!(
+        parked_on.as_deref(),
+        Some(LANE_NAME),
+        "the probe must occupy the real lane consumer; a lane that degraded to \
+         an inline call would leave the queue free and make this test vacuous"
+    );
+
+    // Enqueue a real `didOpen` and then ABANDON it: the only consumer is parked,
+    // so the timeout necessarily elapses and drops the submitted future.
+    let abandoned = tokio::time::timeout(
+        Duration::from_millis(200),
+        lsp_request_on_lane(
+            CANCEL_LANE.sender(),
+            Arc::clone(&bridge),
+            "textDocument/didOpen".to_string(),
+            did_open(ABANDONED_URI),
+        ),
+    )
+    .await;
+    assert!(
+        abandoned.is_err(),
+        "precondition: with the only consumer parked the request must not have \
+         completed — that elapse is what abandons it"
+    );
+
+    // Release the consumer; it now dequeues the abandoned job.
+    drop(release_tx);
+    probe.join().expect("the probe thread must not panic");
+
+    // A LIVE request through the same lane must resolve.
+    let live = tokio::time::timeout(
+        Duration::from_secs(10),
+        lsp_request_on_lane(
+            CANCEL_LANE.sender(),
+            Arc::clone(&bridge),
+            "textDocument/didOpen".to_string(),
+            did_open(LIVE_URI),
+        ),
+    )
+    .await
+    .expect("the lane must keep serving after an abandoned request")
+    .expect("the live didOpen must resolve to Ok");
+    assert_eq!(
+        live, "null",
+        "`didOpen` is a notification, so it answers Null through the lane"
+    );
+
+    // FIFO with one consumer, so by now the abandoned job has had its chance.
+    let calls = sink.take_calls();
+    assert!(
+        calls.iter().any(|(uri, ..)| uri.as_str() == LIVE_URI),
+        "non-vacuity: the LIVE didOpen must have published diagnostics, or the \
+         absence assertion below would hold for a sink that records nothing. \
+         Recorded: {:?}",
+        calls.iter().map(|(u, ..)| u.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        calls.iter().all(|(uri, ..)| uri.as_str() != ABANDONED_URI),
+        "the abandoned didOpen must never have reached `InProcessLsp`: it \
+         published diagnostics, so the lane drove work whose awaiting side was \
+         already gone. Recorded: {:?}",
+        calls.iter().map(|(u, ..)| u.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        bridge.get_diagnostics(ABANDONED_URI).await.is_empty(),
+        "the abandoned request must have left NO server-side state — no \
+         document, and therefore no diagnostics, for its URI"
     );
 }
