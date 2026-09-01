@@ -310,6 +310,13 @@ pub struct AuditRun {
 /// on, so a second copy drifts the moment either git's wording or production's
 /// probe changes.
 ///
+/// That gate is a THIRD script run, and deliberately so: it duplicates the
+/// sanitized spawn's work (same script, same scope, same `current_dir`, same
+/// sanitize) and discards its envelope. Deriving the skip from the sanitized
+/// run instead would mean re-deciding "was this a skip?" from stdout and
+/// stderr here — the re-implementation the section above rules out, and it
+/// would lose the LOUD half below. The redundant spawn is what that costs.
+///
 /// Every cause of that `None` empties BOTH halves below — without `python3`
 /// the script exits 3 with no stdout either way; an `EXCLUDE_CRATES` scope
 /// legitimately emits nothing, reachable by any future caller since this
@@ -369,11 +376,15 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
     // lines below — same shape, same depth. It is here only because both of
     // those are module-private, and the gate above hands back an envelope
     // rather than the paths it resolved, while the two spawns below need the
-    // script path itself. The right fix is a public seam on
-    // `reify_test_support::orphan_audit` so this copy can be deleted rather
-    // than pinned; that file is outside the lock set of the task that owns
-    // this one, so it is filed as follow-up work. Until then the two premise
-    // checks below bound the damage.
+    // script path itself.
+    //
+    // TODO(#6153): delete this walk and the argv below in favour of a public
+    // seam on `reify_test_support::orphan_audit`, and drop the two premise
+    // checks that exist only to bound them. That file is outside the lock set
+    // of the task that owns this one, which is why the copy is here at all.
+    // (This crate is on the ptodo detector's own allowlist — `reify-audit` is
+    // the tool — so this cite documents rather than enrols; the task is the
+    // record either way.)
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let script = Path::new(manifest_dir)
         .parent()
@@ -417,10 +428,8 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
     //
     // Bounded, deliberately: it does not distinguish this repo from a byte
     // identical vendored copy laid out the same way. Closing that needs the
-    // path itself rather than a reconstruction of it, which means a public
-    // seam on `reify_test_support::orphan_audit` (its `resolve_script_and_root`
-    // and `build_audit_command` are module-private) — filed as follow-up work,
-    // out of scope for the task that owns this file.
+    // path itself rather than a reconstruction of it — the same public seam
+    // task #6153 tracks above, not a second piece of work.
     let sibling_manifest = repo_root.join("crates/reify-test-support");
     assert!(
         sibling_manifest.join("Cargo.toml").exists(),
