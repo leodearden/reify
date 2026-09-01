@@ -489,9 +489,13 @@ fn forward_trig_accepts_int_arguments() {
 // RED against an implementation that gates on `MATH_TRANSCENDENTAL_NAMES`
 // wholesale instead of the three forward-trig names — the most likely
 // over-broad mistake, and the one that would break
-// `tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri` (registered in
+// `dcr_langsurface_crossdim_silent.ri` under `tests/prd-gate/fixtures/`
+// (spelled split, NOT as one path — test_verify_scope.sh's PG-DRIFT scenario
+// derives "read by a compiled test target" from a comment-inclusive grep for
+// `<that dir>/<name>.ri` over every tracked `*.rs`, so writing the joined path
+// here would assert the opposite of what this sentence says), registered in
 // `scripts/verify.sh`'s `_GUI_COUPLED_RI_FIXTURES`, which must keep exiting 0
-// until #5809's leaf κ lands).
+// until #5809's leaf κ lands.
 
 /// SCOPE FENCE — `exp`/`log` argument dimensions are OWNED BY TASK #6943
 /// (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b),
