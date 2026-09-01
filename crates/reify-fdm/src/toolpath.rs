@@ -128,9 +128,8 @@ pub struct Bead {
     /// `bead.nominal_temp > 0K` is TRUE for every such toolpath and is not an
     /// "is a temperature known" test. Making the distinction representable
     /// (`Option<f64>`) would ripple through the parser and both r0 consumers,
-    /// and is deliberately not done here; it is filed as follow-up ticket
-    /// `tkt_0RT4PVCX2Y5ZA5HAPGKJEZT85Y` (escalation id `agent-followup-6301`),
-    /// which also covers the DSL-surface half of the gap.
+    /// and is deliberately not done here; it is tracked as #7138, which also
+    /// covers the DSL-surface half of the gap.
     pub nominal_temp: f64,
     /// Active feedrate in mm·min⁻¹ when the bead began extruding.
     pub speed: f64,

@@ -74,8 +74,7 @@ structure def Bead {
     // G-code. Making "not observed" OBSERVABLE (an Option-shaped field, a
     // `temp_observed : Bool` companion, or a W_FDM_NO_TEMPERATURE Info
     // diagnostic from the ζ parser) is out of scope for #6301, which decided
-    // the unit regime only; it is filed as follow-up ticket
-    // tkt_0RT4PVCX2Y5ZA5HAPGKJEZT85Y (escalation id agent-followup-6301).
+    // the unit regime only; it is tracked as #7138.
     param nominal_temp : Temperature = 0degC
     // Active feedrate when the bead began extruding.
     param speed : Velocity = 0m/s
