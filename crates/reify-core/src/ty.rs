@@ -156,15 +156,11 @@
 //! carries a real quantity slot, and no site may re-derive an erasure claim from
 //! it.
 //!
-//! One site in THIS file rested on the same premise and HAS BEEN re-argued, a few
-//! paragraphs down: "Why the ARG side is tolerant rather than strict" used to
-//! lead with `point3(…)` as one of three erasure routes.  Only that ONE route was
-//! retired; the other two — a `Matrix<3,3,MomentOfInertia>` spelled
-//! `List<List<Real>>` at every corpus site, and a `Field`'s slots erasing to
-//! `Field<Real, Real>` — are untouched, so the arg-side tolerance RULING stands
-//! on those two and the paragraph now states them as such.  It is recorded here
-//! because a reader of this section reaches that paragraph next and should know
-//! the count went from three to two by measurement, not by oversight.
+//! One site in THIS file rested on the same premise and HAS BEEN re-argued: "Why
+//! the ARG side is tolerant rather than strict", a few paragraphs down, which
+//! now carries the whole account of what the retired route cost that ruling and
+//! why it survives on the two that remain.  That paragraph is this file's single
+//! home for it.
 //!
 //! The `Real` quantity slots on `stdlib/solver_elastic.ri`'s `ElasticResult`
 //! `gradient` / `frame` params are out of the measurement's reach for a

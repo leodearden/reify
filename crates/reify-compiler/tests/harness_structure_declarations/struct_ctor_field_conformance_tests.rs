@@ -950,23 +950,17 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 
 // ── (b) Point ← a MATCHING dimensioned `point3(…)` call ────────────────────
 //
-// This group used to be filed as an EXCLUDED family on a premise that has since
-// expired. It read: "`point3(0m, 0m, 0m)` is a `CompiledExprKind::FunctionCall`
-// whose result_type is the expression compiler's numeric fallback `Scalar[m]`,
-// NOT `Type::Point`", so the arg was unjudgeable and had to be tolerated as a
-// placeholder. Task 5344 (`3c4ee5e9ac`) claimed `point3` / `point2` into
-// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"` arm,
-// and the call now types as a real `Type::Point { n: 3, quantity: Scalar[m] }`.
+// `point3(0m, 0m, 0m)` types as a real `Type::Point { n: 3, quantity: Scalar[m] }`
+// whose quantity slot MATCHES the param's `Length`, so the quantity rule is
+// consulted here and agrees. The two fixtures below are the CLEAN LEG of that
+// rule at the ctor seam, not a carve-out from it.
 //
-// The two fixtures below stay GREEN, but for the OPPOSITE reason: the arg's
-// quantity slot MATCHES the param's `Length`, so the quantity rule is consulted
-// and agrees. They are now the CLEAN leg of that rule at the ctor seam, not a
-// carve-out from it — which is why they are worth keeping and why their names
-// no longer say "placeholder". The genuine placeholder tolerance still exists
-// (`is_numeric_placeholder_leaf`, in `conformance/mod.rs`), but its surviving
-// inputs are a BARE numeric literal and `Type::ScalarParam(_)`, not a
-// `point3(…)` call — see `bare_numeric_literal_at_point_param_stays_clean`
-// further down this file.
+// This is NOT the placeholder tolerance. That still exists
+// (`is_numeric_placeholder_leaf`, in `conformance/mod.rs`), but its inputs are a
+// BARE numeric literal and `Type::ScalarParam(_)` — see
+// `bare_numeric_literal_at_point_param_stays_clean` further down this file.
+// (Premise changed at task 5344 `3c4ee5e9ac`; narrative in the *Point / Vector
+// quantity-slot convention* section of `crates/reify-core/src/ty.rs`.)
 //
 // Shape taken from examples/anisotropic_bar.ri and the five
 // examples/tensegrity_*.ri files.
@@ -980,17 +974,12 @@ structure def Root {
 /// Clean fixture for the `Point` family: the arg's dimension AGREES with the
 /// param's, so the quantity rule is consulted and is silent.
 ///
-/// **Why this fixture is still worth keeping, under a premise that changed.**
-/// It was written as a placeholder carve-out: `point3` is a stdlib EVAL-BUILTIN
-/// (`construct_point_or_vector` in `crates/reify-stdlib/src/geometry.rs`) with
-/// no `.ri` signature, and its calls were said to compile to a `FunctionCall`
-/// typed `Scalar[m]` — the expression compiler's numeric fallback — never
-/// `Type::Point`, hence unjudgeable. Task 5344 (`3c4ee5e9ac`) retired that: the
-/// call now types as a real `Point3<Scalar[m]>`, which MATCHES the
-/// `Point3<Length>` param exactly. The cell is still clean, but it is now the
-/// CLEAN LEG of the quantity rule rather than an exemption from it, and that is
-/// a stronger thing to hold: it is the fixture that would notice the rule
-/// starting to reject args whose dimensions agree.
+/// **What it holds.** `point3(0m, 0m, 0m)` types as a real `Point3<Scalar[m]>`,
+/// which MATCHES the `Point3<Length>` param exactly, so the rule is consulted
+/// and is silent because it AGREES — not because the arg is exempt from it.
+/// This is therefore the fixture that would notice the rule starting to reject
+/// args whose dimensions agree. (It was written as a placeholder carve-out
+/// before task 5344 `3c4ee5e9ac`; see the block comment above.)
 ///
 /// Its counterparts at the same arm are
 /// [`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`]
@@ -1039,13 +1028,10 @@ structure def Root {
 /// Wrapper composition on the clean side: the quantity rule must be reached PER
 /// ELEMENT through the walker's `ListLiteral` recursion.
 ///
-/// The per-element claim is what this fixture uniquely holds, and task 5344
-/// (`3c4ee5e9ac`) made it sharper rather than weaker. It was written when each
-/// element was believed to be an unjudgeable numeric-fallback placeholder, so
-/// "reached per element" meant only that the walker recursed without emitting a
-/// wrapper-shape diagnostic on top. Now each element types as a real
-/// `Point3<Scalar[m]>` and the quantity rule genuinely fires at every one of
-/// them, agreeing three times over.
+/// The per-element claim is what this fixture uniquely holds: each element types
+/// as a real `Point3<Scalar[m]>` and the quantity rule genuinely fires at every
+/// one of them, agreeing three times over — rather than the walker merely
+/// recursing without emitting a wrapper-shape diagnostic on top.
 ///
 /// Its REJECT-side composition twin is
 /// [`list_of_point3_dimensioned_at_real_point_param_warns_arg_type_mismatch`],
@@ -1095,11 +1081,11 @@ structure def Root {
 /// numeric literal", but both said it in prose only. This fixture makes it a
 /// measured, held fact.
 ///
-/// **Why it is needed NOW.** Before 5344 the `is_numeric_placeholder_leaf`
-/// branch had a second, much more visible justification: every `point3(…)` arg
-/// in the corpus was believed to take it. That justification was false and is
-/// being deleted as such. Without THIS fixture the branch would be left looking
-/// dead — a reader could reasonably conclude 5344 killed the `Point` case
+/// **Why it is needed.** A bare numeric literal is the branch's ONLY remaining
+/// `Point`-side input — the second and far more visible one it once had, every
+/// corpus `point3(…)` arg taking it, went away at 5344. Without THIS fixture
+/// the branch is left looking dead: a reader could reasonably conclude 5344
+/// killed the `Point` case
 /// entirely, delete it, and watch every other test in both files stay green
 /// while `Anchor(origin: 5)` silently became a warning against the whole corpus.
 /// This is the regression fence that makes that deletion visible.
@@ -1107,7 +1093,7 @@ structure def Root {
 /// That "every other test stays green" is MEASURED, not assumed. Killing the
 /// `other => is_numeric_placeholder_leaf(other)` branch of the `Type::Point` arm
 /// in `conformance/mod.rs` (replacing it with `false`) fails THIS test and
-/// nothing else: 114/115 in this file still pass, all 84 in-module `conformance`
+/// nothing else: 116/117 in this file still pass, all 84 in-module `conformance`
 /// probes pass, and the `no_example_emits_ctor_field_conformance_diagnostics`
 /// corpus gate stays green — because no `.ri` example passes a bare numeric
 /// literal to a `Point` param today. That is precisely why the branch needs a
@@ -1173,16 +1159,11 @@ fn point_param_given_string_warns_arg_type_mismatch() {
 // by `point2_arg_at_point3_param_warns_arity_arg_type_mismatch` further down
 // this file.
 //
-// It did not used to be, and this note used to say it could not be. The premise
-// it rested on is half true: `resolve_parameterized_builtin_type` really does
-// recognise `Point3` only — its arms are `"Point3" if type_args.len() == 1`
-// (`crates/reify-compiler/src/type_resolution.rs`, two sites), with no
-// `"Point2"` arm — so there is no `Point2` PARAM spelling, which is why that
-// fixture's param is `Point3<Length>`. But a param spelling constrains params,
-// not args, and the inference to the ARG side expired when task 5344
-// (`3c4ee5e9ac`) claimed `point2` into `math_fn_result_type`'s collapsed
-// `"vec3" | "vec2" | "point3" | "point2"` arm: `point2(1m, 2m)` compiles and
-// types as `Type::Point { n: 2, quantity }`.
+// There is no `Point2` PARAM spelling — `resolve_parameterized_builtin_type`
+// recognises `Point3` only, its arms being `"Point3" if type_args.len() == 1`
+// (`crates/reify-compiler/src/type_resolution.rs`, two sites) — which is why that
+// fixture's param is `Point3<Length>`. That constrains PARAMS, not ARGS; the
+// fixture's own doc carries why the arg side is reachable.
 //
 // The rule is ALSO pinned at the direct-`Type` seam by
 // `point_param_rejects_wrong_arity_point_arg` in `conformance/mod.rs`'s own
@@ -2912,11 +2893,10 @@ structure def Root {
 /// **This fixture passes on arrival, and that is its point.** The capability
 /// landed with task 5344 (`3c4ee5e9ac`), which claimed `point3` / `point2` into
 /// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"`
-/// arm. Before 5344 the arm returned the expression compiler's numeric fallback
-/// and the rationale blocks around the `Point` probes said in as many words that
-/// "no `.ri` source can produce a *dimensioned* `Type::Point` arg". This fixture
-/// is the standing evidence that the premise is dead, so it cannot be
-/// re-asserted from prose alone.
+/// arm. It exists so that "a dimensioned `Type::Point` arg is unreachable from
+/// `.ri` source" — an erasure premise several rationale blocks around the
+/// `Point` probes once rested on — is held dead by a test rather than by prose,
+/// and so cannot be re-asserted from prose alone.
 #[test]
 fn point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
@@ -3013,18 +2993,16 @@ structure def Root {
 /// `point_param_rejects_wrong_arity_point_arg`, which constructs its
 /// `Type::Point { n: 2, .. }` directly.
 ///
-/// **The asymmetry that makes this possible.** The old note inferred "no `.ri`
-/// source can produce a `Type::Point { n: 2, .. }` arg" from a true premise
-/// about the PARAM side: `resolve_parameterized_builtin_type` really does
-/// recognise `Point3` only — its arms are `"Point3" if type_args.len() == 1`
-/// (`type_resolution.rs`, two sites), with no `"Point2"` arm anywhere — which is
-/// why this fixture's param is spelled `Point3<Length>` and cannot be spelled
-/// otherwise. But a param spelling constrains PARAMS, not ARGS. The arg side
-/// became reachable when task 5344 (`3c4ee5e9ac`) claimed `point2` into
+/// **The asymmetry that makes this possible.** `resolve_parameterized_builtin_type`
+/// recognises `Point3` only — its arms are `"Point3" if type_args.len() == 1`
+/// (`type_resolution.rs`, two sites), with no `"Point2"` arm anywhere — so this
+/// fixture's param is spelled `Point3<Length>` and cannot be spelled otherwise.
+/// A param spelling constrains PARAMS, not ARGS, and nothing about arg
+/// reachability follows from it: task 5344 (`3c4ee5e9ac`) claimed `point2` into
 /// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"`
-/// arm, which fixes `n` from the name suffix: `point2(1m, 2m)` compiles and
-/// types as `Type::Point { n: 2, quantity: Scalar[m] }`. The inference from the
-/// param side to the arg side is what broke, not the premise it started from.
+/// arm, which fixes `n` from the name suffix, so `point2(1m, 2m)` compiles and
+/// types as `Type::Point { n: 2, quantity: Scalar[m] }`. This fixture is what
+/// stops the param-side premise being re-extended over the arg side.
 ///
 /// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
 /// "argument 'origin' has type 'Point2<Scalar[m]>' but param 'origin' requires
