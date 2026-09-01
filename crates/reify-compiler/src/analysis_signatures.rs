@@ -405,6 +405,160 @@ mod tests {
         );
     }
 
+    // ── Field-argument result-type resolution (task #6577) ───────────────────
+    // Each expectation below mirrors the `Value::Field` eval actually returns
+    // for that name (crates/reify-expr/src/analysis.rs:132-224), so the
+    // compile-time type and the runtime value agree under
+    // `value_type_kind_matches` (crates/reify-eval/src/lib.rs:330).
+
+    /// Helper: a `CompiledExpr` typed as `Field<Point3<LENGTH>, Tensor<2,3,Scalar<PRESSURE>>>`
+    /// — the exact shape `ElasticResult.stress` resolves to, pinned in
+    /// `tests/harness_geometry_solver/solver_elastic_tests.rs:1301-1315`.
+    fn pressure_tensor_field_arg() -> CompiledExpr {
+        CompiledExpr::literal(
+            Value::Undef,
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::tensor(
+                    2,
+                    3,
+                    Type::Scalar {
+                        dimension: DimensionVector::PRESSURE,
+                    },
+                )),
+            },
+        )
+    }
+
+    /// Helper: the same Field shape with a dimensionless tensor quantity.
+    fn dimensionless_tensor_field_arg() -> CompiledExpr {
+        CompiledExpr::literal(
+            Value::Undef,
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::tensor(2, 3, Type::dimensionless_scalar())),
+            },
+        )
+    }
+
+    /// Helper: the expected `Field` domain for both fixtures above.
+    fn expected_field_domain() -> Type {
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        })
+    }
+
+    /// `von_mises(Field<D, Tensor<PRESSURE>>)` → `Field<D, Scalar<PRESSURE>>`.
+    /// Mirrors `compute_von_mises` → `wrap_tensor_field` (analysis.rs:132-157).
+    #[test]
+    fn von_mises_over_pressure_tensor_field_is_pressure_field() {
+        let arg = pressure_tensor_field_arg();
+        assert_eq!(
+            analysis_fn_result_type("von_mises", &[arg]),
+            Type::Field {
+                domain: Box::new(expected_field_domain()),
+                codomain: Box::new(Type::Scalar {
+                    dimension: DimensionVector::PRESSURE
+                }),
+            },
+            "von_mises over a Pressure tensor FIELD must yield Field<Point3<LENGTH>, Scalar<PRESSURE>> \
+             (NOT a bare scalar — eval returns a lazy Value::Field)"
+        );
+    }
+
+    /// `max_shear(Field<D, Tensor<PRESSURE>>)` → `Field<D, Scalar<PRESSURE>>`.
+    /// Mirrors `compute_max_shear` → `wrap_tensor_field` (analysis.rs:186-191).
+    #[test]
+    fn max_shear_over_pressure_tensor_field_is_pressure_field() {
+        let arg = pressure_tensor_field_arg();
+        assert_eq!(
+            analysis_fn_result_type("max_shear", &[arg]),
+            Type::Field {
+                domain: Box::new(expected_field_domain()),
+                codomain: Box::new(Type::Scalar {
+                    dimension: DimensionVector::PRESSURE
+                }),
+            },
+            "max_shear over a Pressure tensor FIELD must yield Field<Point3<LENGTH>, Scalar<PRESSURE>>"
+        );
+    }
+
+    /// `von_mises(Field<D, Tensor<dimensionless>>)` → `Field<D, Real>`.
+    /// Mirrors `scalar_type_for_dim` (analysis.rs:117-123), which is bit-identical
+    /// to the compiler's `scalar_or_real`.
+    #[test]
+    fn von_mises_over_dimensionless_tensor_field_is_real_field() {
+        let arg = dimensionless_tensor_field_arg();
+        assert_eq!(
+            analysis_fn_result_type("von_mises", &[arg]),
+            Type::Field {
+                domain: Box::new(expected_field_domain()),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            },
+            "von_mises over a dimensionless tensor FIELD must yield Field<Point3<LENGTH>, Real>"
+        );
+    }
+
+    /// `principal_stresses(Field<D, Tensor<PRESSURE>>)` → `Field<D, List(Scalar<PRESSURE>)>`.
+    ///
+    /// The codomain is a `List`, NOT a bare scalar: sampling the wrapped field
+    /// produces a `Value::List` of 3 eigenvalues, so `compute_principal_stresses`
+    /// stamps `Type::List(Box::new(scalar_ty))` (analysis.rs:167-183).
+    #[test]
+    fn principal_stresses_over_pressure_tensor_field_is_list_field() {
+        let arg = pressure_tensor_field_arg();
+        assert_eq!(
+            analysis_fn_result_type("principal_stresses", &[arg]),
+            Type::Field {
+                domain: Box::new(expected_field_domain()),
+                codomain: Box::new(Type::List(Box::new(Type::Scalar {
+                    dimension: DimensionVector::PRESSURE
+                }))),
+            },
+            "principal_stresses over a Pressure tensor FIELD must yield \
+             Field<Point3<LENGTH>, List(Scalar<PRESSURE>)> — the codomain is a List \
+             because sampling yields 3 eigenvalues"
+        );
+    }
+
+    /// `principal_stresses(Field<D, Tensor<dimensionless>>)` → `Field<D, List(Real)>`.
+    #[test]
+    fn principal_stresses_over_dimensionless_tensor_field_is_list_real_field() {
+        let arg = dimensionless_tensor_field_arg();
+        assert_eq!(
+            analysis_fn_result_type("principal_stresses", &[arg]),
+            Type::Field {
+                domain: Box::new(expected_field_domain()),
+                codomain: Box::new(Type::List(Box::new(Type::dimensionless_scalar()))),
+            },
+            "principal_stresses over a dimensionless tensor FIELD must yield \
+             Field<Point3<LENGTH>, List(Real)>"
+        );
+    }
+
+    /// `safety_factor(Field<D, Tensor<PRESSURE>>, yield)` → `Field<D, Real>`.
+    ///
+    /// Dimensionless regardless of the stress quantity (yield / von_mises cancels),
+    /// mirroring `compute_safety_factor` (analysis.rs:201-224). Takes TWO args —
+    /// eval's dispatch gate for this name is `evaluated_args.len() == 2`.
+    #[test]
+    fn safety_factor_over_pressure_tensor_field_is_real_field() {
+        let args = [pressure_tensor_field_arg(), dimensionless_tensor_arg()];
+        assert_eq!(
+            analysis_fn_result_type("safety_factor", &args),
+            Type::Field {
+                domain: Box::new(expected_field_domain()),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            },
+            "safety_factor over a Pressure tensor FIELD must yield \
+             Field<Point3<LENGTH>, Real> — dimensionless regardless of the stress quantity"
+        );
+    }
+
     /// `stress_invariants(...)` → `Type::StructureRef("StressInvariants")`.
     #[test]
     fn stress_invariants_is_structure_ref() {
