@@ -253,7 +253,7 @@ impl GeometryKernel for SingleKernelHolder {
 mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
-    use reify_ir::{AttributeHistory, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value};
+    use reify_ir::{AttributeHistory, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -568,12 +568,26 @@ mod tests {
     /// returns `Err` rather than constructing a heavyweight `SampledField`).
     struct RecordingKernel {
         log: Arc<Mutex<Vec<&'static str>>>,
+        /// Every `VoxelResolution` the inner kernel was actually handed, in
+        /// call order. Separate from `log` because the method NAME alone
+        /// cannot distinguish a real delegating override from the trait
+        /// default — only the request VALUE can.
+        resolutions: Arc<Mutex<Vec<VoxelResolution>>>,
     }
 
     impl RecordingKernel {
-        fn new() -> (Self, Arc<Mutex<Vec<&'static str>>>) {
+        fn new() -> (
+            Self,
+            Arc<Mutex<Vec<&'static str>>>,
+            Arc<Mutex<Vec<VoxelResolution>>>,
+        ) {
             let log = Arc::new(Mutex::new(Vec::new()));
-            (Self { log: log.clone() }, log)
+            let resolutions = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self { log: log.clone(), resolutions: resolutions.clone() },
+                log,
+                resolutions,
+            )
         }
 
         fn record(&self, name: &'static str) {
@@ -694,6 +708,21 @@ mod tests {
             Ok(Self::handle())
         }
 
+        fn ingest_mesh_at_resolution(
+            &mut self,
+            _mesh: &Mesh,
+            resolution: VoxelResolution,
+        ) -> Result<GeometryHandle, GeometryError> {
+            // Record BOTH the method name and the requested resolution. The
+            // name proves the holder delegated at all; the value proves it
+            // delegated the caller's request VERBATIM rather than falling
+            // through the trait default, which drops `resolution` and calls
+            // `ingest_mesh` instead.
+            self.record("ingest_mesh_at_resolution");
+            self.resolutions.lock().unwrap().push(resolution);
+            Ok(Self::handle())
+        }
+
         fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
             self.record("attribute_hook");
             None
@@ -718,7 +747,7 @@ mod tests {
     /// RED until step-4 adds the 10 delegating overrides.
     #[test]
     fn delegates_all_capability_methods_to_inner_kernel() {
-        let (kernel, log) = RecordingKernel::new();
+        let (kernel, log, _resolutions) = RecordingKernel::new();
         let mut holder = SingleKernelHolder::new();
         holder.register_kernel(Box::new(kernel));
 
@@ -751,6 +780,7 @@ mod tests {
         let _ = holder.execute_split(&op);
         let _ = holder.make_compound(&[GeometryHandleId(1)]);
         let ingest = holder.ingest_mesh(&mesh);
+        let _ = holder.ingest_mesh_at_resolution(&mesh, VoxelResolution::HonestFloor);
         let _ = holder.attribute_hook();
         let deviation = holder.measure_mesh_deviation(GeometryHandleId(1), &mesh);
 
@@ -800,6 +830,7 @@ mod tests {
             "execute_split",
             "make_compound",
             "ingest_mesh",
+            "ingest_mesh_at_resolution",
             "attribute_hook",
             "measure_mesh_deviation",
         ] {
@@ -808,6 +839,90 @@ mod tests {
                 "SingleKernelHolder did not delegate `{method}` to the inner kernel; \
                  recorded calls: {recorded:?}"
             );
+        }
+    }
+
+    /// The resolution request itself must reach the inner kernel VERBATIM.
+    ///
+    /// `delegates_all_capability_methods_to_inner_kernel` proves only that
+    /// *some* call reached the inner kernel — it cannot on its own separate a
+    /// real delegating override from the trait default, because that default
+    /// routes through `self.ingest_mesh` → the holder's own `ingest_mesh`
+    /// override → the inner kernel's `ingest_mesh`, which logs too. This test
+    /// makes the difference observable. With a real override the inner kernel
+    /// sees `ingest_mesh_at_resolution` carrying the exact `VoxelResolution`
+    /// the caller passed; with the trait default it sees `ingest_mesh` and the
+    /// request is silently downgraded to `VoxelResolution::HonestFloor` — the
+    /// sub-voxel-feature failure task 6560 exists to close, arriving as a
+    /// quietly coarser grid rather than as an error.
+    #[test]
+    fn ingest_mesh_at_resolution_delegates_the_request_verbatim() {
+        let (kernel, log, resolutions) = RecordingKernel::new();
+        let mut holder = SingleKernelHolder::new();
+        holder.register_kernel(Box::new(kernel));
+
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        let handle = holder
+            .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
+            .expect("holder must propagate the inner kernel's Ok(handle)");
+        assert_eq!(handle.id, GeometryHandleId(1));
+
+        assert_eq!(
+            *resolutions.lock().unwrap(),
+            vec![VoxelResolution::MinFeature(1.0)],
+            "the inner kernel must receive the caller's VoxelResolution verbatim"
+        );
+
+        let recorded = log.lock().unwrap();
+        assert_eq!(
+            *recorded,
+            vec!["ingest_mesh_at_resolution"],
+            "the holder must delegate ingest_mesh_at_resolution directly; a \
+             recorded `ingest_mesh` means it fell through the trait default and \
+             silently downgraded the request to VoxelResolution::HonestFloor"
+        );
+    }
+
+    /// The `None` arm must reproduce the trait default's no-kernel output.
+    ///
+    /// Per this impl's delegate-EVERY-method INVARIANT, adding a delegating
+    /// override must not change what an empty holder returns. The trait
+    /// default routes through `self.ingest_mesh`, so an empty holder's
+    /// `ingest_mesh_at_resolution` must produce exactly the error its own
+    /// `ingest_mesh` arm produces — including the `type_name::<Self>()`-derived
+    /// `SingleKernelHolder` prefix, which a hand-written `None` arm can easily
+    /// get wrong (e.g. by hard-coding a different name).
+    #[test]
+    fn ingest_mesh_at_resolution_no_kernel_matches_ingest_mesh() {
+        let mut holder = SingleKernelHolder::new();
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+
+        let at_resolution = holder
+            .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
+            .expect_err("an empty holder must reject mesh ingest");
+        let plain = holder
+            .ingest_mesh(&mesh)
+            .expect_err("an empty holder must reject mesh ingest");
+
+        match (&at_resolution, &plain) {
+            (
+                GeometryError::OperationFailed(at_msg),
+                GeometryError::OperationFailed(plain_msg),
+            ) => {
+                assert!(
+                    at_msg.contains("does not accept Mesh inputs"),
+                    "unexpected error message: {at_msg}"
+                );
+                assert!(
+                    at_msg.contains("SingleKernelHolder"),
+                    "the message must name the holder via type_name::<Self>(): {at_msg}"
+                );
+                assert_eq!(
+                    at_msg, plain_msg,
+                    "the no-kernel arm must reproduce ingest_mesh's message exactly"
+                );
+            }
+            other => panic!("expected two OperationFailed errors, got {other:?}"),
         }
     }
 }
