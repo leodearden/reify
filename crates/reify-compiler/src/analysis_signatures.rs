@@ -75,9 +75,23 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 /// - `stress_invariants` → `Type::StructureRef("StressInvariants")` (the
 ///   struct def in `std.fea`). Mirrors `is_dynamics_query` → `MassProperties`.
 ///
-/// # Field-argument forms (arg0 is a `Field` with a 3x3 tensor codomain, task #6577)
+/// # Field-argument forms (arg0 is a `Field<D, Tensor<2,3,Q>>`, task #6577)
 ///
-/// - `von_mises` / `max_shear` at arity 1 → `Field<D, scalar_or_real(Q)>`.
+/// Each row mirrors the `Value::Field` the corresponding eval function stamps,
+/// including its arity gate (`crates/reify-expr/src/lib.rs` dispatch ladder):
+///
+/// | name | arity | result | mirrors |
+/// |---|---|---|---|
+/// | `von_mises` | 1 | `Field<D, scalar_or_real(Q)>` | `compute_von_mises` → `wrap_tensor_field` (`analysis.rs:132-157`) |
+/// | `max_shear` | 1 | `Field<D, scalar_or_real(Q)>` | `compute_max_shear` → `wrap_tensor_field` (`analysis.rs:186-191`) |
+/// | `principal_stresses` | 1 | `Field<D, List(scalar_or_real(Q))>` | `compute_principal_stresses` (`analysis.rs:167-183`) — a `List` because sampling yields 3 eigenvalues |
+/// | `safety_factor` | 2 | `Field<D, Real>` | `compute_safety_factor` (`analysis.rs:201-224`) — dimensionless, yield/von_mises cancels |
+/// | `stress_invariants` | — | *(unchanged `StructureRef`)* | eval has NO Field arm for this name |
+///
+/// Anything outside that table — a non-3x3 codomain, a mismatched arity — falls
+/// through to the concrete-tensor ladder above, which is safe because eval
+/// answers those calls with `Value::Undef`, and `value_type_kind_matches`
+/// accepts `Value::Undef` for any type (`crates/reify-eval/src/lib.rs:313`).
 ///
 /// The result is a **`Type::Field`, not a `Type::Scalar`**: eval does not reduce
 /// a field eagerly, it wraps it LAZILY and hands back a `Value::Field`
@@ -96,18 +110,32 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 /// [`is_analysis_typed_fn`]); the `_` arm is therefore unreachable in practice
 /// and returns a harmless `Type::dimensionless_scalar()`.
 pub(crate) fn analysis_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
-    // Field-argument forms (task #6577). Gated on eval's exact shape+arity so the
-    // compiler's claim stays narrower-or-equal to what eval can honour; every
-    // fall-through lands on `Value::Undef`, which is kind-compatible with any type
-    // (`value_type_kind_matches`, crates/reify-eval/src/lib.rs:313).
-    if let Some((domain, dim)) = field_tensor_arg(args, 0)
-        && matches!(name, "von_mises" | "max_shear")
-        && args.len() == 1
-    {
-        return Type::Field {
-            domain: Box::new(domain.clone()),
-            codomain: Box::new(scalar_or_real(dim)),
+    // Field-argument forms (task #6577). Eval wraps the field LAZILY and returns a
+    // `Value::Field` (crates/reify-expr/src/analysis.rs:132-224), so the compile-time
+    // type must also be a `Type::Field` — `value_type_kind_matches`
+    // (crates/reify-eval/src/lib.rs:330) maps `Value::Field` only onto `Type::Field`.
+    // Each arm's arity gate mirrors eval's own dispatch condition, so the compiler's
+    // claim stays narrower-or-equal to what eval can honour.
+    if let Some((domain, dim)) = field_tensor_arg(args, 0) {
+        let codomain = match name {
+            "von_mises" | "max_shear" if args.len() == 1 => Some(scalar_or_real(dim)),
+            "principal_stresses" if args.len() == 1 => {
+                Some(Type::List(Box::new(scalar_or_real(dim))))
+            }
+            "safety_factor" if args.len() == 2 => Some(Type::dimensionless_scalar()),
+            // `stress_invariants` has NO Field arm in eval's dispatch ladder, so it
+            // keeps its `StructureRef` result type. Any other name / arity falls
+            // through to the scalar ladder below (eval yields `Value::Undef` there,
+            // which `value_type_kind_matches` accepts for any type —
+            // crates/reify-eval/src/lib.rs:313).
+            _ => None,
         };
+        if let Some(codomain) = codomain {
+            return Type::Field {
+                domain: Box::new(domain.clone()),
+                codomain: Box::new(codomain),
+            };
+        }
     }
 
     match name {
