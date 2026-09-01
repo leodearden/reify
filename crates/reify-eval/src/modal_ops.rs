@@ -5556,6 +5556,13 @@ mod tests {
     /// nodes with, so a support that can contribute no DOF cannot reinterpret
     /// one either.
     ///
+    /// Sibling exclusion, added later by review suggestion 1: that count is now a
+    /// SET over `face_bound`, not merely a filter through it, so a support
+    /// DUPLICATING a face already named is excluded on the same principle — it
+    /// contributes no NEW face to vote with. See
+    /// [`build_dirichlet_bcs_ignores_duplicate_face_targets`]. Between the two,
+    /// `PinTransverse` is unreachable for any singly-supported model.
+    ///
     /// Asserted as set EQUALITY against the lone-`Fixed("x_min")` spelling —
     /// the strongest available statement, since the extra support contributes
     /// nothing and must therefore change nothing.
