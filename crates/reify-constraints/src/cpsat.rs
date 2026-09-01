@@ -1021,12 +1021,10 @@ impl CpSatSolver {
                     None,
                 );
                 // `eval_objective_set` already normalises `Maximize` to
-                // "lower is better" (it accumulates `-weight · v`), and since
-                // task #6377 it rejects a non-finite ACCUMULATED fold with
-                // `None` — not merely a non-finite per-term value, which is
-                // all its per-term filter ever caught. So every score reaching
-                // the heap is a finite, well-ordered, minimisation-sense f64
-                // (F-result I2).
+                // "lower is better" (it accumulates `-weight · v`) and abstains
+                // on any fold it cannot order. So every score reaching the heap
+                // is a finite, well-ordered, minimisation-sense f64 (F-result
+                // I2).
                 let Some(score) =
                     crate::solver::eval_objective_set(objective, &full, &problem.functions, None)
                 else {
@@ -1053,7 +1051,8 @@ impl CpSatSolver {
                 // every subsequent model to the `_` arm and silently degrade
                 // `best` from "the minimum seen" to "the last score seen",
                 // which then trips the `debug_assert_eq!` at the end of this
-                // function (`Some(NaN) == Some(NaN)` is false).
+                // function (`Some(NaN) == Some(NaN)` is false). Pinned end-to-end
+                // by `a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`.
                 best = Some(match best {
                     Some((seen, ties)) if score == seen => (seen, ties + 1),
                     Some((seen, ties)) if seen < score => (seen, ties),
@@ -1202,12 +1201,14 @@ impl CpSatSolver {
 /// unstable run-to-run for exactly the problems where the choice is arbitrary
 /// (D4).
 ///
-/// `score` is only ever an `eval_objective_set` result (constructed in
-/// [`CpSatSolver::solve_ranked_with_budget`]), and that function fails closed on
-/// a non-finite accumulator (task #6377 — the canonical statement is at that
-/// guard). `score` is therefore finite, `partial_cmp` cannot return `None`, and
-/// `unwrap_or(Equal)` is a defensive fallback that is genuinely dead code — so
-/// `Eq`/`Ord` are honest rather than a lie told to satisfy the heap's bounds.
+/// `score` is always FINITE, so `partial_cmp` cannot return `None`,
+/// `unwrap_or(Equal)` is genuinely dead code, and `Eq`/`Ord` are honest rather
+/// than a lie told to satisfy the heap's bounds. WHY that holds is stated once,
+/// at `eval_objective_set`'s fail-closed accumulator guard (task #6377); do not
+/// restate it here. What this file DOES own is the reach of that guarantee: it
+/// rests on [`CpSatSolver::solve_ranked_with_budget`] being `score`'s sole
+/// construction site, so a second scoring path would re-open all three failures
+/// below without touching either sort.
 struct ScoredModel {
     score: f64,
     index: usize,
@@ -1218,7 +1219,7 @@ impl Ord for ScoredModel {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.score
             .partial_cmp(&other.score)
-            .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — always FINITE, not merely never-NaN: `ScoredModel.score` is only ever an `eval_objective_set` result (the sole construction site is in `solve_ranked_with_budget`), and that function fails closed on a non-finite ACCUMULATOR since task #6377 (`if !acc.is_finite() { return None }`), so ±Inf is rejected too and `partial_cmp` cannot return None here
+            .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — `score` is always FINITE (not merely never-NaN); see `eval_objective_set`'s fail-closed accumulator guard (task #6377)
             .then(self.index.cmp(&other.index))
     }
 }
@@ -3885,6 +3886,78 @@ mod solve_ranked_override_tests {
             "I4: an unscored candidate list may not carry a SCORED optimality \
              verdict. `BestFound` here would claim a ranking quality over a set \
              that could not be ranked; got {optimality:?}",
+        );
+    }
+
+    /// (g′) A NON-FINITE *FOLD* SCORES NOTHING EITHER — AND MUST NOT PANIC.
+    ///
+    /// The direct pin on the cpsat half of task #6377, added by amendment
+    /// after review observed that the five `eval_objective_set` unit cases
+    /// reached this site only by transitive argument. `ScoredModel.score` is a
+    /// choke point today *only* because `solve_ranked_with_budget` is its sole
+    /// construction site; a future path that scores a model anywhere else would
+    /// re-open every failure below with nothing here to catch it.
+    ///
+    /// Unlike (g), where the objective is `Undef` and the *per-term* filter
+    /// rejects it, every term here evaluates to a perfectly finite `Int`. The
+    /// non-finiteness is manufactured in the ACCUMULATOR by an unvalidated
+    /// `ObjectiveTerm::weight` (`reify-ir/src/constraint.rs` — "> 0; default
+    /// 1.0" is a doc comment checked at no construction site), which is exactly
+    /// the path the per-term filter never guarded.
+    ///
+    /// Without `eval_objective_set`'s fail-closed accumulator guard, a `NaN`
+    /// score reaches this function and breaks it three ways — the reason the
+    /// census miss mattered (PRD decision 9, class A, the `cpsat.rs` bullet):
+    ///
+    ///   1. `impl Ord for ScoredModel` stops being an order at all, so the
+    ///      `BinaryHeap` evicts a candidate other than the worst;
+    ///   2. `NaN` compares false BOTH ways, so every later model takes the
+    ///      running tally's `_` arm and `best` degrades from "the minimum seen"
+    ///      to "the last score seen";
+    ///   3. the `debug_assert_eq!` closing `solve_ranked_with_budget` then
+    ///      trips (`Some(NaN) == Some(NaN)` is `false`) — a reachable
+    ///      debug-build PANIC, which is what makes this site strictly worse
+    ///      than `solve_ranked_impl`'s silent mis-rank.
+    ///
+    /// Rust unit tests run with `debug_assertions` on, so (3) is live here: a
+    /// regression fails as a panic, not merely a wrong ranking. The asserted
+    /// answer is the same well-formed fallback (g) pins — `first_unscored`
+    /// lifted to a one-candidate `FeasibilityOnly` ranking with no score —
+    /// because the guard makes an unscorable FOLD indistinguishable, to this
+    /// function, from an unscorable TERM.
+    #[test]
+    fn a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap() {
+        let mut p = a_or_b_scored(ObjectiveSense::Minimize);
+        // Reach past the constructor: `ObjectiveSet::single` hardcodes
+        // `weight = 1.0`, and no other construction site validates the field
+        // either — which is the defect being pinned, not a test-only shortcut.
+        p.objective
+            .as_mut()
+            .expect("`a_or_b_scored` builds a problem WITH an objective")
+            .terms[0]
+            .weight = f64::NAN;
+
+        // The call itself is half the assertion: on the unguarded base this
+        // panics in the `debug_assert_eq!` at the end of
+        // `solve_ranked_with_budget` before returning anything to match on.
+        let (candidates, optimality) = ranked(CpSatSolver.solve_ranked(&p));
+
+        assert!(
+            !candidates.is_empty(),
+            "I2: `Ranked.candidates` is never empty. `a || b` still has three \
+             models — only the SCORE became unorderable — so the ranking must \
+             fall back to reporting one, not return an empty list",
+        );
+        assert!(
+            candidates.iter().all(|c| c.objective_score.is_none()),
+            "a NaN fold means nothing scored, so no candidate may carry a \
+             score. A `Some(NaN)` here is the unguarded accumulator escaping \
+             `eval_objective_set` — the exact defect task #6377 closed",
+        );
+        assert!(
+            matches!(optimality, OptimalityStatus::FeasibilityOnly),
+            "I4: nothing was ordered, so no scored optimality verdict may be \
+             claimed; got {optimality:?}",
         );
     }
 

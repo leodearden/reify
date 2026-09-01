@@ -1891,11 +1891,10 @@ struct ConstraintCostFunction<'a> {
 ///
 /// Returns `None` if ANY term evaluates to a non-numeric / non-finite value,
 /// preserving the single-term None → UNDEF_OBJECTIVE_PENALTY / NoProgress paths.
-/// Returns `None` ALSO when the ACCUMULATED fold is itself non-finite (task
-/// #6377): finite per-term values still fold to ±Inf or NaN when `t.weight` is
-/// non-finite (it is an unvalidated `pub f64`) or when `t.weight * v` overflows.
-/// A non-finite score is not orderable, so this function abstains rather than
-/// emit one — see the fail-closed guard at the end of the body.
+/// Returns `None` ALSO when the ACCUMULATED fold is itself non-finite, even
+/// though every term value was finite (task #6377). The guard at the end of the
+/// body states which paths reach that and what abstaining costs each caller;
+/// this header does not restate it.
 ///
 /// I2 numerical equivalence: for a single term with weight 1.0,
 ///   Minimize → 0.0 + 1.0·v == v  (IEEE-754, finite v)
@@ -1965,6 +1964,37 @@ pub(crate) fn eval_objective_set(
     // the "never actually exercised" claims at the two
     // `unwrap_or(Ordering::Equal)` ranking sites (`solve_ranked_impl` below,
     // and `impl Ord for ScoredModel` in cpsat.rs) true.
+    //
+    // WHAT ABSTAINING COSTS DOWNSTREAM — recorded here, canonically, because
+    // "no caller signature changes" is not the same as "no caller BEHAVIOUR
+    // changes". Three outcomes are deliberately reclassified:
+    //
+    //   1. `solve_core`'s fallback-point and post-solve checks (both
+    //      `eval_objective_set(..).is_none()`) now report `NoProgress` naming
+    //      the objective. MEASURED on the pre-guard code, using the fixture in
+    //      `non_finite_objective_fold_at_feasible_initial_returns_no_progress`
+    //      with the guard disabled: what they replaced is not one verdict but
+    //      whichever garbage the poisoned cost surface produced — a NaN weight
+    //      gave `NoProgress` carrying argmin's INTERNAL "Potential bug:
+    //      `NelderMead`: Reached unreachable point" text, and a `+Inf` weight
+    //      gave `Infeasible { ConstraintNonUnique }`, telling a user to go edit
+    //      constraints that were never the problem. Their `reason` also names
+    //      the non-finite fold explicitly, so a user is not told their
+    //      objective was "undefined" when every term was well defined.
+    //   2. `ConstraintCostFunction::cost` below folds `None` to
+    //      `UNDEF_OBJECTIVE_PENALTY` (`f64::MAX / 2`). For a `+Inf` fold that is
+    //      a mild softening; for a `-Inf` fold it INVERTS the cost surface at
+    //      that point, from a global attractor Nelder-Mead would dive into to
+    //      the most repellent point available. That is the intended direction:
+    //      a `-Inf` attractor is an artefact of overflow, never a real optimum,
+    //      and chasing it silently returns a garbage design as the answer.
+    //   3. cpsat's ranked path drops the model instead of pushing a NaN into
+    //      `BinaryHeap<ScoredModel>`; see that file for the three ways a NaN
+    //      score breaks it. Pinned by
+    //      `a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`.
+    //
+    // All three are fail-closed by choice: an unorderable score has no correct
+    // consumer, so the only honest options are "abstain" and "lie".
     //
     // `debug!`, not `warn!`: this function runs once per Nelder-Mead trial point
     // via `ConstraintCostFunction::cost`, so a warn would emit thousands of
@@ -2477,12 +2507,20 @@ fn solve_core_with_sd_tolerance(
             // Validate that the objective is numeric at the initial point
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
+            //
+            // `is_none()` covers TWO causes since task #6377, which is why the
+            // reason no longer says only "undefined": an undefined TERM, and a
+            // non-finite weighted FOLD of well-defined terms. The second is a
+            // deliberate reclassification of an outcome that used to be
+            // `Solved` — see `eval_objective_set`'s guard for why it fails
+            // closed.
             if let Some(obj) = effective_objective
                 && eval_objective_set(obj, &trial_values, &problem.functions, dispatch).is_none()
             {
                 return (
                     SolveResult::NoProgress {
-                        reason: "objective expression evaluated to undefined at fallback point"
+                        reason: "objective expression evaluated to undefined at \
+                                 fallback point (or its weighted fold was non-finite)"
                             .to_string(),
                     },
                     meta,
@@ -2598,13 +2636,17 @@ fn solve_core_with_sd_tolerance(
     }
 
     // Post-solve objective validation: if the objective is still non-numeric
-    // at the solution point, report NoProgress rather than Solved.
+    // at the solution point, report NoProgress rather than Solved. Same two
+    // causes, and the same #6377 reclassification, as the fallback-point site
+    // above; pinned by `non_finite_objective_fold_at_feasible_initial_returns_no_progress`.
     if let Some(obj) = effective_objective
         && eval_objective_set(obj, &final_values, &problem.functions, dispatch).is_none()
     {
         return (
             SolveResult::NoProgress {
-                reason: "objective expression evaluated to undefined at solution point".to_string(),
+                reason: "objective expression evaluated to undefined at solution \
+                         point (or its weighted fold was non-finite)"
+                    .to_string(),
             },
             meta,
         );
@@ -3914,17 +3956,13 @@ impl DimensionalSolver {
         // broken by ascending start index (start #0, the historical seed,
         // wins exact ties). candidates[0] is the optimum (I2).
         //
-        // Every score in `scored` came from `eval_objective_set`, which fails
-        // closed on a non-finite ACCUMULATOR (task #6377 — the canonical
-        // statement is at that guard). Note it is the accumulator guard, NOT
-        // the per-term `.filter(|v| v.is_finite())`, that makes this true:
-        // the per-term filter leaves a non-finite `weight · v` fold wide open.
-        // Every score here is therefore a finite f64, `partial_cmp` cannot
-        // return `None`, and `unwrap_or(Equal)` is a defensive fallback that
-        // is genuinely dead code.
+        // Every score in `scored` is a finite f64, so `partial_cmp` cannot
+        // return `None` here and `unwrap_or(Equal)` is genuinely dead code.
+        // WHY that holds is stated once, at `eval_objective_set`'s fail-closed
+        // accumulator guard (task #6377); do not restate it here.
         scored.sort_by(|a, b| {
             a.2.partial_cmp(&b.2)
-                .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — always FINITE, not merely never-NaN: every score in `scored` came from `eval_objective_set`, which since task #6377 fails closed on a non-finite ACCUMULATOR (`if !acc.is_finite() { return None }`), so ±Inf is rejected too and `partial_cmp` cannot return None here
+                .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — every score is always FINITE (not merely never-NaN); see `eval_objective_set`'s fail-closed accumulator guard (task #6377)
                 .then(a.0.cmp(&b.0))
         });
 
@@ -7642,6 +7680,120 @@ mod tests {
             other => panic!(
                 "feasible initial + undefined objective should return NoProgress, got {:?}",
                 other
+            ),
+        }
+    }
+
+    /// The OUTCOME RECLASSIFICATION that task #6377's accumulator guard causes,
+    /// pinned at the `solve_core` level rather than left incidental (added by
+    /// amendment after review).
+    ///
+    /// Sibling to `undefined_objective_at_feasible_initial_returns_no_progress`
+    /// above, and deliberately the same fixture shape — the ONLY difference is
+    /// *why* `eval_objective_set` abstains. There the objective expression is
+    /// `Undef` and the per-term `.filter(|v| v.is_finite())?` rejects it. Here
+    /// the expression is a perfectly ordinary finite `x`, and the fold goes
+    /// non-finite in the ACCUMULATOR because `ObjectiveTerm::weight` is
+    /// unvalidated (`reify-ir/src/constraint.rs` — "> 0; default 1.0" is a doc
+    /// comment checked at no construction site).
+    ///
+    /// WHAT THE GUARD REPLACED, measured by disabling it and re-running this
+    /// fixture rather than argued: not one prior verdict, but whichever garbage
+    /// the poisoned cost surface happened to produce. With `weight = NaN` the
+    /// solve returned a `NoProgress` carrying argmin's own internal text
+    /// (`Potential bug: "NelderMead: Reached unreachable point."`) — a
+    /// library-internals leak, not a diagnosis. With `weight = +Inf` (a flat
+    /// `+Inf` surface) it returned `Infeasible { ConstraintNonUnique }`, which
+    /// sends a user off to edit constraints that were never the problem. So the
+    /// reclassification pinned here is "incoherent verdict → honest objective
+    /// diagnosis"; note in particular that the `"solution point"` reason
+    /// asserted below is NOT what the unguarded code produced, so this really
+    /// does pin the guard and not the surrounding plumbing.
+    ///
+    /// The *fallback-point* site (`"fallback point"`, on the
+    /// optimizer-drifted-infeasible path) reclassifies for the identical reason
+    /// — both sites branch on the same `eval_objective_set(..).is_none()`
+    /// predicate — so it is not re-fixtured here;
+    /// `undefined_objective_drift_returns_no_progress_fallback` below pins that
+    /// site's wiring.
+    ///
+    /// A `NaN` weight is the fixture because it is the shortest path to a
+    /// non-finite fold. The overflow paths that need no invalid weight at all
+    /// (`eval_objective_set_weight_times_value_overflow_returns_none`,
+    /// `..._opposing_infinities_fold_to_nan_returns_none`) reach `None` at the
+    /// same `return` and therefore route to this same outcome.
+    #[test]
+    fn non_finite_objective_fold_at_feasible_initial_returns_no_progress() {
+        use crate::DimensionalSolver;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm — satisfied when x starts at 10mm, exactly as in the sibling.
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+
+        // Objective: minimize(x) — FINITE at every point of the box, so the
+        // per-term filter has nothing to reject...
+        let mut objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
+        // ...and the fold is wrecked purely by the weight. Set through the
+        // public field because that is precisely what production can do: the
+        // "> 0; default 1.0" contract is documentation, enforced nowhere.
+        objective.terms[0].weight = f64::NAN;
+
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![].into(),
+        };
+
+        match solver.solve(&problem) {
+            SolveResult::NoProgress { reason } => {
+                assert!(
+                    reason.contains("solution point"),
+                    "expected the post-solve validation site, got: {reason}"
+                );
+                assert!(
+                    reason.contains("non-finite"),
+                    "the reason must not tell a user their objective was \
+                     `undefined` when what actually happened is a non-finite \
+                     weighted fold of well-defined terms; got: {reason}"
+                );
+            }
+            other => panic!(
+                "a NaN-weighted (hence non-finite) objective fold must fail \
+                 closed as a NoProgress that names the objective. Anything else \
+                 is the pre-#6377 behaviour: the NaN reaches the cost surface \
+                 and the verdict becomes whatever Nelder-Mead does with it \
+                 (measured: an argmin-internals NoProgress for a NaN weight, \
+                 `Infeasible {{ ConstraintNonUnique }}` for a +Inf one); \
+                 got {other:?}"
             ),
         }
     }
