@@ -13094,6 +13094,23 @@ pub(crate) enum MixedRegionError {
     /// tet-only (task 4996 hardening; the tet-side `VolumeMesh` must carry
     /// `VolumeConnectivity::Tet`).
     UnsupportedConnectivity,
+    /// `tet`'s tet index buffer length is not a whole multiple of the
+    /// per-element node count, so it describes no whole number of elements.
+    ///
+    /// Sibling of [`MixedRegionError::UnsupportedConnectivity`]: both reject a
+    /// mis-shaped `VolumeMesh` at the same up-front gate. Without this check
+    /// the `chunks_exact(nodes_per_tet)` walk below would SILENTLY DROP the
+    /// trailing partial chunk and return `Ok` with one fewer tet element than
+    /// the caller supplied — the truncating `tet_indices.len() / nodes_per_tet`
+    /// capacity expression matching the loss, so nothing surfaces it. Mirrors
+    /// `reify_solver_elastic::volume_refine::RefineError::MalformedTetIndices`
+    /// and `reify_mesh_morph::elasticity::ElasticityFailure::MalformedTetIndices`.
+    MalformedTetIndices {
+        /// `tet_indices.len()`.
+        len: usize,
+        /// Per-element node count (4 for P1, 10 for P2).
+        stride: usize,
+    },
 }
 
 impl std::fmt::Display for MixedRegionError {
@@ -13119,6 +13136,11 @@ impl std::fmt::Display for MixedRegionError {
                 f,
                 "mixed-region assembly is tet-only: a Hex/Wedge VolumeMesh has no \
                  mixed-region path"
+            ),
+            MixedRegionError::MalformedTetIndices { len, stride } => write!(
+                f,
+                "malformed tet connectivity: {len} indices is not a whole multiple \
+                 of the {stride}-node per-element stride"
             ),
         }
     }
@@ -13154,7 +13176,10 @@ impl std::error::Error for MixedRegionError {}
 /// present (the pure merge with no interfaces tolerates non-finite nodes,
 /// since it performs no comparison on them). Returns
 /// [`MixedRegionError::UnsupportedConnectivity`] if `tet`'s connectivity is
-/// `Hex` or `Wedge` (this function is tet-only).
+/// `Hex` or `Wedge` (this function is tet-only), or
+/// [`MixedRegionError::MalformedTetIndices`] if its tet index buffer length is
+/// not a whole multiple of the per-element node count. Those last two form the
+/// up-front mesh-shape gate and run **first**, before any allocation.
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
@@ -13172,8 +13197,24 @@ pub(crate) fn build_mixed_region_mesh(
         .ok_or(MixedRegionError::UnsupportedConnectivity)?;
     // Per-tet node count (P1 = 4, P2 = 10); tet local node `m` → unified node
     // `n_shell + m`. The `tet_indices()?` guard above already established
-    // `tet.connectivity` is `Tet`, so `nodes_per_element()` returns 4/10 here.
+    // `tet.connectivity` is `Tet`, so `nodes_per_element()` returns 4/10 here —
+    // never 0, making the `%`/`/` below safe.
     let nodes_per_tet = tet.nodes_per_element();
+    // Shape gate, sibling of the connectivity gate above: a buffer that is not
+    // a whole multiple of the stride describes no whole number of elements.
+    // Without this the `chunks_exact(nodes_per_tet)` element walk below would
+    // silently drop the trailing partial chunk (and the truncating capacity
+    // division would match the loss), so the function would return `Ok` with
+    // one fewer tet than the caller supplied. Mirrors
+    // `reify_solver_elastic::volume_refine::tet_shape`.
+    if !tet_indices.len().is_multiple_of(nodes_per_tet) {
+        return Err(MixedRegionError::MalformedTetIndices {
+            len: tet_indices.len(),
+            stride: nodes_per_tet,
+        });
+    }
+    // Exact (not truncating) now that divisibility is proven.
+    let n_tet_elements = tet_indices.len() / nodes_per_tet;
 
     // ── Merge nodes: shell vertices first, then tet vertices (f32 → f64) ──────
     let n_shell = shell.vertices.len();
@@ -13188,7 +13229,7 @@ pub(crate) fn build_mixed_region_mesh(
     // Size by ELEMENT count, not index count: `tet_indices.len()` is 4× (P1) or
     // 10× (P2) the number of tet elements actually pushed.
     let mut elements: Vec<UnifiedElement> =
-        Vec::with_capacity(shell.triangles.len() + tet_indices.len() / nodes_per_tet);
+        Vec::with_capacity(shell.triangles.len() + n_tet_elements);
     for tri in &shell.triangles {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Shell,

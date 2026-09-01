@@ -868,6 +868,65 @@
         );
     }
 
+    /// A tet index buffer whose length is not a whole multiple of the
+    /// per-element node count must be rejected up front, not silently
+    /// truncated.
+    ///
+    /// Before the divisibility gate the `chunks_exact(nodes_per_tet)` element
+    /// walk dropped the trailing partial chunk and the truncating
+    /// `tet_indices.len() / nodes_per_tet` capacity expression matched the
+    /// loss, so a 5-index P1 mesh returned `Ok` carrying ONE tet instead of
+    /// the caller's malformed input being surfaced at all. Both strides are
+    /// covered (P1 = 4, P2 = 10) so a regression in
+    /// `VolumeMesh::nodes_per_element()` cannot hide behind the P1 case, and
+    /// the reported `stride` pins the divisor. Mirrors
+    /// `refine_with_size_field_errors_on_non_multiple_tet_indices` on the
+    /// `reify-solver-elastic` side.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_multiple_tet_indices() {
+        let shell = make_shell_mesh();
+
+        // P1, stride 4: 5 indices → one whole tet plus a 1-index remainder.
+        let p1 = VolumeMesh {
+            vertices: vec![0.0_f32; 15], // 5 vertices × 3 coords
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &p1, &[])
+            .expect_err("5 P1 indices describe no whole number of tets");
+        assert_eq!(
+            err,
+            MixedRegionError::MalformedTetIndices { len: 5, stride: 4 },
+            "a non-multiple P1 buffer must be reported, not silently truncated \
+             to 1 tet by chunks_exact",
+        );
+
+        // P2, stride 10: 11 indices → same shape defect at the other stride.
+        let p2 = VolumeMesh {
+            vertices: vec![0.0_f32; 33], // 11 vertices × 3 coords
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                order: ElementOrderTag::P2,
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &p2, &[])
+            .expect_err("11 P2 indices describe no whole number of tets");
+        assert_eq!(
+            err,
+            MixedRegionError::MalformedTetIndices {
+                len: 11,
+                stride: 10
+            },
+            "the P2 stride must be reported as 10, not 4",
+        );
+    }
+
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
 
     /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
