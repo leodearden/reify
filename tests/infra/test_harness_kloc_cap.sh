@@ -238,7 +238,16 @@
 #       precondition was actually MEASURED, not assumed: on 4a9f2d6d4c the
 #       live tree held 31 harness roots and 585 module-dir member files
 #       across the 5 consolidatable crates, with 0 undeclared and every
-#       module dir flat (no nested subdirs). Should such drift ever land on
+#       module dir flat (no nested subdirs). Re-measured on task #6121: 32
+#       roots and 589 member files, still 0 undeclared and still flat. Both
+#       figures are historical anchors for the commit named beside them, not
+#       running totals — the roots figure grows as consolidation leaves land.
+#       Of that drift #6121 itself contributed exactly +1 root and +0 member
+#       files: splitting `stress_*` out of harness_fea_solver_e2e into
+#       harness_stress_scenarios MOVED seven files between two module dirs,
+#       adding and removing none, so the member count is invariant under a
+#       split. The +4 members came from other work landed since 4a9f2d6d4c.
+#       Should such drift ever land on
 #       main regardless, this whole-tree scan will re-fire on every
 #       innocent rebaser until it is fixed — the remedy there is to fix the
 #       drift, not to loosen this rule.
