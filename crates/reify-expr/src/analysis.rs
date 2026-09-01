@@ -18,6 +18,39 @@
 //!   Sampled arms, which likewise test both halves of the pair.
 //!
 //! The wrapper stays lazy over a Sampled backing: nothing is projected here.
+//!
+//! # Reachability contract for a `Sampled` tensor backing
+//!
+//! This module only decides whether a wrapper may be BUILT. All of the actual
+//! work over a Sampled backing happens later, in `field_reductions.rs`:
+//! `project_sampled_tensor_windows` walks the backing buffer in stride-9
+//! windows, applies the shared `reify_stdlib` kernels
+//! (`compute_von_mises_3x3`, `compute_max_shear_3x3`,
+//! `compute_eigenvalues_3x3`) per window, and hands the resulting stride-1
+//! scalar field to `reduce_sampled_extremum`. Out-of-solid `f64::NAN` sentinel
+//! windows project to NaN and are dropped by the `is_finite()` gate in
+//! `argmax_argmin_index`; an all-non-finite buffer reduces to `Value::Undef`.
+//!
+//! What that makes reachable for a `Field { source: Sampled }` tensor input:
+//!
+//! - `max` / `min` / `argmax` / `argmin` (1-arg) — all four wrapper kinds.
+//! - The 2-arg bounded `max` / `min` / `argmax` / `argmin` — `VonMises` only.
+//!
+//! What is NOT reachable, and why:
+//!
+//! - The 2-arg bounded forms of `MaxShear`, `SafetyFactor` and
+//!   `PrincipalStresses` return `Value::Undef`. Pre-existing and unrelated to
+//!   the Sampled backing — the bounded dispatch simply has no arm for them.
+//!   Already documented at the head of `field_reductions.rs`.
+//! - Pointwise `sample()` of ANY Sampled-backed analysis wrapper returns
+//!   `Value::Undef`. `sample_field_at` in `lib.rs` forwards the INNER field's
+//!   lambda slot — a `Value::SampledField` — into
+//!   `apply_lambda_with_point_unpacking`, which handles `Value::Lambda` only.
+//!   Pinned by the live test
+//!   `sampled_backed_analysis_wrapper_is_constructed_but_pointwise_sample_still_undef`
+//!   in `tests/field_analysis_tests.rs`. This is not a regression from
+//!   admitting the Sampled backing: before it, the wrapper was itself `Undef`,
+//!   so sampling it was `Undef` too.
 
 use std::sync::Arc;
 
