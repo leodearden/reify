@@ -1653,4 +1653,65 @@ mod tests {
             "--help must list PDOCCOVER among the --pattern values; got:\n{usage}"
         );
     }
+    // -------------------------------------------------------------------
+    // PDIAG CLI-wiring tests (task #5405)
+    //
+    // PDIAG is the INV-SF-6 codes-mandatory ratchet. Like PTODO/PDSSENTINEL/
+    // PDOCCOVER it is *structural* — `ls_files` enumeration plus working-tree
+    // reads, no jcodemunch and no task DB. Like PDEAD/PUNTESTED/PLAYER/
+    // PDOCCOVER it is opt-in (its verdicts are High and feed the exit code);
+    // that half is covered end-to-end by `tests/cli.rs::
+    // pdiag_does_not_join_the_default_all_detector_sweep`. What is pinned HERE
+    // is the pair every other detector has beside it, and which PDIAG lacked:
+    // the arg token, and the offline posture.
+    // -------------------------------------------------------------------
+
+    /// `--pattern PDIAG` must be accepted and stored — including as a
+    /// NON-LEADING comma token, which is the shape `pattern_selects` exists to
+    /// handle and the one a naive `starts_with` would get wrong.
+    #[test]
+    fn parse_args_accepts_pdiag_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDIAG".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDIAG must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDIAG"),
+            "parsed pattern must be Some(\"PDIAG\")"
+        );
+
+        let unioned = parse_args(&["--pattern".to_string(), "P1,PDIAG".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern P1,PDIAG must parse successfully; got: {e}"));
+        assert!(
+            run_pdiag(&unioned),
+            "PDIAG must activate as a trailing comma token in a union pattern"
+        );
+        assert!(
+            !run_pdiag(&make_args(false, Some("P2"))),
+            "PDIAG must stay off for a named non-PDIAG pattern"
+        );
+    }
+
+    /// PDIAG is structural — it must NOT require jcodemunch.
+    ///
+    /// The claim is asserted in `run_pdiag`'s docs and in `Pattern::PDiag`'s,
+    /// but both PDIAG integration tests pass `--no-jcodemunch`, so nothing
+    /// else would go red if a future edit added `PDIAG` to `needs_jcodemunch`
+    /// or `JCODEMUNCH_BACKED`. That regression is not cosmetic: via
+    /// `jcodemunch_only_run_set` a jcodemunch-backed PDIAG would hard-refuse
+    /// with exit 125 on a stale index, turning the merge gate red for a
+    /// detector that never reads the index.
+    #[test]
+    fn needs_jcodemunch_pdiag_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PDIAG"))),
+            "PDIAG enumerates via ls_files and reads the working tree; it must \
+             not open a jcodemunch connection"
+        );
+        assert!(
+            !JCODEMUNCH_BACKED.contains(&"PDIAG"),
+            "PDIAG must not be listed in JCODEMUNCH_BACKED — that would route \
+             a PDIAG-only run through jcodemunch_only_run_set's staleness \
+             refusal (exit 125)"
+        );
+    }
 }
