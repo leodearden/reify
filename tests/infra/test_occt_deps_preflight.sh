@@ -449,6 +449,46 @@ _bash_snap_map() {
     ' "$GUARD"
 }
 
+# _rust_native_dep_variants — the variant names of `enum NativeDep`, one per
+# line, read from INSIDE the `// BEGIN native-dep-variants` marker block in
+# crates/reify-build-utils/src/lib.rs.
+#
+# Marker-anchored rather than brace-anchored so the enum body stays the single
+# source of truth and nothing is duplicated — the markers only make it
+# parseable. An unmarked enum yields NOTHING, which the mandatory
+# anchor-integrity assert below turns into a named failure rather than a
+# silently vacuous set comparison.
+_rust_native_dep_variants() {
+    awk '
+        index($0, "// BEGIN native-dep-variants") { inblk = 1; next }
+        inblk && index($0, "// END native-dep-variants") { exit }
+        !inblk { next }
+        {
+            line = $0
+            sub(/\/\/.*/, "", line)
+            gsub(/[[:space:],]/, "", line)
+            if (line != "") print line
+        }
+    ' "$RUST_SRC"
+}
+
+# _bash_gated_deps — the dep names scripts/check-manifold-deps.sh actually
+# gates, DERIVED from its `# BEGIN <dep>-candidates` marker-block names rather
+# than listed again here. Deriving it is the point: a fourth dep that ships
+# without a gate arm shows up as a set difference, with nothing to keep in
+# sync.
+_bash_gated_deps() {
+    sed -n 's/^# BEGIN \([a-z0-9]*\)-candidates.*/\1/p' "$GUARD"
+}
+
+# _norm_dep_set — lowercase + sort -u, so `NativeDep::OpenVdb` and the
+# `openvdb-candidates` block name compare equal. Order carries NO meaning here
+# (unlike the candidate lists, where it is the whole invariant): arm order in
+# the guard is not a contract, only arm PRESENCE is.
+_norm_dep_set() {
+    tr '[:upper:]' '[:lower:]' | sort -u
+}
+
 # _extract_bash_array <VAR> — elements of the named bash array, one per line,
 # in declaration order, from shell source on stdin. Handles both the one-line
 # `VAR=(a b c)` and the multi-line form.
@@ -1169,5 +1209,65 @@ assert "guard RECORDS the resolved OpenVDB version and both resolved dirs on the
     _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
         OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK" \
         -- "OpenVDB 13.0 at " "$_OPENVDB_LIB_OK" "$_OPENVDB_INC_OK"
+
+# ---------------------------------------------------------------------------
+# 12. COMPLETENESS — every NativeDep variant has a gate arm (task #6493).
+#
+# This is the assert that would have caught this task's own finding, and the
+# one that stops a FOURTH native dep from silently shipping ungated. Gmsh and
+# OpenVDB sat behind byte-for-byte the same fail-OPEN build.rs as OCCT for the
+# whole time OCCT had a gate and they did not — nothing anywhere compared the
+# two lists, so nothing could notice.
+#
+# Both sides are DERIVED, so nothing is duplicated: the bash side from the
+# `# BEGIN <dep>-candidates` marker-block NAMES already present for the parity
+# checks, the Rust side from the `// BEGIN native-dep-variants` markers around
+# the enum body. Adding a variant without an arm therefore reds HERE, at the
+# cheapest possible place, instead of degrading that dep to a stub kernel that
+# reports zero tests rather than zero failures.
+#
+# Compared as SETS. Order carries no meaning for this one — unlike the
+# candidate lists, where order IS the invariant — because arm PRESENCE is the
+# contract, not arm sequence.
+#
+# The two non-empty asserts and the >= 3 assert come FIRST and are mandatory:
+# without them a dropped marker on either side degrades the comparison to
+# "" == "" and this section passes while guarding nothing.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 12: completeness — every NativeDep variant has a check-manifold-deps arm ---"
+
+_RUST_VARIANTS="$(_rust_native_dep_variants)"
+_BASH_GATED="$(_bash_gated_deps)"
+
+assert "Rust parse of enum NativeDep's variants is non-empty (anchor '// BEGIN native-dep-variants' found)" \
+    test -n "$_RUST_VARIANTS"
+
+assert "bash parse of the gated dep set is non-empty ('# BEGIN <dep>-candidates' markers found)" \
+    test -n "$_BASH_GATED"
+
+_variant_count() {
+    local n
+    n="$(printf '%s\n' "$_RUST_VARIANTS" | grep -c .)" || true
+    [ "${n:-0}" -ge 3 ]
+}
+
+assert "Rust parse yields at least 3 NativeDep variants (Occt, Gmsh, OpenVdb — parse is not truncated)" \
+    _variant_count
+
+_RUST_DEP_SET="$(printf '%s\n' "$_RUST_VARIANTS" | _norm_dep_set)"
+_BASH_DEP_SET="$(printf '%s\n' "$_BASH_GATED" | _norm_dep_set)"
+
+_DEP_SET_DIFF="$(_parity_diff "$_RUST_DEP_SET" "$_BASH_DEP_SET")"
+if [ -n "$_DEP_SET_DIFF" ]; then
+    echo "  NativeDep gate coverage gap (< enum NativeDep, > check-manifold-deps.sh arms):"
+    printf '%s\n' "$_DEP_SET_DIFF" | sed 's/^/    /'
+    echo "  A variant present on the left but not the right ships a SILENT stub"
+    echo "  kernel: its build.rs emits a cargo:warning and returns without the cfg,"
+    echo "  so every gated item vanishes and the suite reports zero tests REPORTED"
+    echo "  rather than zero tests FAILED."
+fi
+assert "every enum NativeDep variant has a '# BEGIN <dep>-candidates' arm in check-manifold-deps.sh" \
+    test -z "$_DEP_SET_DIFF"
 
 test_summary
