@@ -8221,7 +8221,12 @@ mod tests {
     /// direct-`Type` arity probe — note its own doc claims no erasure premise,
     /// so nothing there needs the correction this block carries. The `Vector`
     /// arm has the same asymmetry (no `Vector2` param spelling; `vec2` claimed
-    /// into the same family by 5344) and so has no `.ri` arity twin yet.
+    /// into the same collapsed arm by 5344) and now has the matching `.ri` twin,
+    /// `vec2_arg_at_vector3_param_warns_arity_type_not_conforming`. The two
+    /// arms' arity legs differ in EMITTER, not in reachability: `Point` routes
+    /// arity through `emit_arg_type_mismatch`, `Vector` keeps its bespoke
+    /// `TypeNotConformingToVector`, and each `.ri` twin asserts its own code so
+    /// the split cannot drift.
     #[test]
     fn point_param_rejects_wrong_arity_point_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();

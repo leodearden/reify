@@ -1003,6 +1003,21 @@ structure def Root {
 #[test]
 fn point_param_given_matching_dimensioned_point3_call_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_POINT);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // LOAD-BEARING under the new premise, in a way it was not under the old one:
+    // this fixture no longer claims "nothing is compared", it claims "the
+    // quantity rule IS consulted and agrees". Were `point3` or `Point3<Length>`
+    // to stop resolving, the arg would degrade to `Type::Error` / no quantity
+    // slot, `emit_if_quantity_conflict` would return silently, and the fixture
+    // would stay GREEN while the rule it now holds had ceased to fire. The
+    // cross-dimension fixture over this same `Anchor` declaration
+    // (`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`)
+    // supplies the structural half of the argument; this guard supplies the rest.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
@@ -1043,6 +1058,17 @@ structure def Root {
 #[test]
 fn list_of_point_param_given_matching_dimensioned_point3_calls_stays_clean() {
     let module = compile_source_with_stdlib(SRC_LIST_OF_MATCHING_POINT3_CALLS);
+    // Non-vacuity guard — see the sibling above for why it is load-bearing here
+    // specifically. Its REJECT-side twin
+    // (`list_of_point3_dimensioned_at_real_point_param_warns_arg_type_mismatch`)
+    // shows the same `List`/`List` recursion reaching a DISAGREEING element, so
+    // together they separate "silent because it agrees" from "silent because
+    // nothing compiled".
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
@@ -2625,6 +2651,69 @@ fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clea
          rejects (the twin directly above). If this now fires, 5889 (or an equivalent \
          change) has landed — retarget BOTH this fixture and the matrix sibling together. \
          Got: {diags:#?}"
+    );
+}
+
+const SRC_VEC2_AT_VECTOR3_PARAM: &str = r#"module test.vec2_at_vector3_param
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: vec2(1m, 2m))
+}
+"#;
+
+/// THE ARITY LEG of the `Vector` arm reached from `.ri` source — the `Vector`
+/// arm's twin of [`point2_arg_at_point3_param_warns_arity_arg_type_mismatch`],
+/// and of `conformance/mod.rs`'s direct-`Type` probe
+/// `vector_param_rejects_wrong_arity_vector_arg`.
+///
+/// The same param-side asymmetry holds here as at the `Point` arm: there is no
+/// `Vector2` PARAM spelling, which is why this fixture's param is
+/// `Vector3<Length>` and cannot be spelled otherwise. The ARG side is reachable
+/// because task 5344 (`3c4ee5e9ac`) claimed `vec2` into the very same collapsed
+/// `"vec3" | "vec2" | "point3" | "point2"` arm of `math_fn_result_type` that it
+/// claimed `point2` into — `n` comes from the name suffix — so the two arms
+/// gained an `.ri` arity twin at the same moment and for the same reason.
+///
+/// **What this holds that the direct-`Type` probe cannot.** That probe builds
+/// its `Type::Vector { n: 2, .. }` by hand, so it would stay green if the
+/// name-suffix `n` inference stopped producing one from source (task 5889 owns
+/// that inference). This fixture is the only thing that would notice.
+///
+/// The code is `TypeNotConformingToVector`, not `ArgTypeMismatch`: at this arm
+/// FAMILY and ARITY keep the bespoke code and only a QUANTITY conflict routes to
+/// `ArgTypeMismatch` (task 5766). That differs from the `Point` arm, whose arity
+/// leg emits `ArgTypeMismatch` — the asserted code below is what pins the two
+/// arms' emitters apart. Both components are `m` here, so the quantity slots
+/// AGREE and this cell cannot be reached through the quantity rule.
+#[test]
+fn vec2_arg_at_vector3_param_warns_arity_type_not_conforming() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    let module = compile_source_with_stdlib(SRC_VEC2_AT_VECTOR3_PARAM);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a vec2(…) arg at a Vector3<Length> param must be REJECTED with exactly one \
+         diagnostic — since task 5344 the call types as a real Vector2<Scalar[m]> and the \
+         Vector arm's arity check separates it from the param's n=3. Got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToVector),
+        "the Vector arm's FAMILY/ARITY rejection keeps its bespoke code; only a QUANTITY \
+         conflict routes to ArgTypeMismatch (task 5766). Got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        !diags[0].message.contains("has quantity"),
+        "this cell must route through the ARITY leg, NOT the quantity-slot rule — both \
+         components are `m`, so the quantity slots AGREE. Got: {:?}",
+        diags[0].message
     );
 }
 
