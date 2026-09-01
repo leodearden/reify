@@ -3419,8 +3419,8 @@ std::unique_ptr<OcctShape> make_offset_curve_on_surface(
 // `angle_rad` is SI radians, consumed unconverted by
 // `BRepOffsetAPI_DraftAngle::Add(face, pull_dir, angle_rad, neutral_plane)`
 // below, which reads radians — see the ANGULAR UNIT CONTRACT on `rotate_shape`
-// above (#6184; that block is scoped to the rotation/revolution entry points,
-// so draft cites it rather than being covered by it).
+// above (INV-AD-4; #6184; that block is scoped to the rotation/revolution
+// entry points, so draft cites it rather than being covered by it).
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape) {
     return wrap_occt_call("draft_shape", [&]() {
@@ -3478,7 +3478,7 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 ///
 /// `angle_rad` is SI radians, consumed unconverted by
 /// `BRepOffsetAPI_DraftAngle::Add`, exactly as in `draft_shape` — see the
-/// ANGULAR UNIT CONTRACT on `rotate_shape` above (#6184).
+/// ANGULAR UNIT CONTRACT on `rotate_shape` above (INV-AD-4; #6184).
 std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape, const rust::Vec<uint32_t>& face_indices) {
     return wrap_occt_call("draft_faces_shape", [&]() {
@@ -3852,7 +3852,7 @@ std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
 // `BRepBuilderAPI_MakeEdge(circle, start_angle, end_angle)` below takes a
 // parameter RANGE, and for a `Geom_Circle` that parameter space is radians by
 // definition (a full circle is 2*M_PI). Nothing converts. See the ANGULAR UNIT
-// CONTRACT on `rotate_shape` above (#6184), whose scope is the
+// CONTRACT on `rotate_shape` above (INV-AD-4; #6184), whose scope is the
 // rotation/revolution entry points, so this curve constructor cites it.
 std::unique_ptr<OcctShape> make_arc_wire(
     double cx, double cy, double cz,
@@ -3904,8 +3904,9 @@ std::unique_ptr<OcctShape> make_helix_wire(
         // surface's u-parameter space, derived internally from three LENGTH
         // inputs — the 2*M_PI (not 360) is what makes it radians. It is a
         // derived internal quantity: NO angular value crosses the FFI boundary
-        // into `make_helix_wire`. Cf. doctrine D4 (2*pi rad/cycle as its own
-        // crossing class), docs/prds/v0_6/angle-dimension-completion.md.
+        // into `make_helix_wire` (INV-AD-4). Cf. doctrine D4 (2*pi rad/cycle
+        // as its own crossing class), in
+        // docs/prds/v0_6/angle-dimension-completion.md.
         double n_turns = height / pitch;
         double u_length = n_turns * 2.0 * M_PI;
         gp_Pnt2d origin2d(0.0, 0.0);
