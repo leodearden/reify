@@ -165,3 +165,177 @@ fn member_continuation_errors_helper_agrees_with_the_repro_assertions() {
         "REPRO_TWO must yield exactly one member-continuation diagnostic"
     );
 }
+
+// ── (d) negatives: legal multi-line shapes must stay clean ───────────────────
+
+/// Assert `source` yields no member-continuation diagnostic, reporting the
+/// full error list on failure so a regression is actionable.
+fn assert_no_member_continuation_error(label: &str, source: &str) {
+    let found = member_continuation_errors(source);
+    assert!(
+        found.is_empty(),
+        "{label}: expected no member-continuation diagnostic, got {found:#?}"
+    );
+}
+
+/// The `designs/litter_tray/bottom_deck.ri:64-65` shape, verbatim in form: a
+/// leading-operator continuation indented PAST the member's start column.
+///
+/// This is the constituency a naive "a newline ends a member" rule would
+/// break — ~28 such sites exist in tracked reify source. Indentation past the
+/// member column is the author's signal, and it stays legal.
+#[test]
+fn deeper_indented_leading_operator_is_a_legal_continuation() {
+    let source = concat!(
+        "structure S {\n",
+        "    let capacity = (ledge_z - floor_thickness) * inner_length * inner_width\n",
+        "                 - 2.0 * 3.14159265 * pedestal_r * pedestal_r * pedestal_h\n",
+        "}\n",
+    );
+    // Sanity: the fixture really does indent the continuation past the member
+    // column — otherwise this test would pass for the wrong reason.
+    let third = source.lines().nth(2).expect("source has a third line");
+    let cont_col = third.len() - third.trim_start().len();
+    assert!(
+        cont_col > 4,
+        "fixture must indent the continuation past the member column 4, got {cont_col}"
+    );
+    assert_no_member_continuation_error("deeper-indented leading operator", source);
+}
+
+/// The `examples/fea_multi_case_smoke.ri:47-52` shape: a call whose argument
+/// list spans several rows, with the closing `)` back at the member's own
+/// start column. Those rows are at bracket depth >= 1 relative to the member,
+/// so the rule does not look at them.
+#[test]
+fn multi_line_argument_list_rows_at_or_left_of_the_member_column_are_clean() {
+    let source = concat!(
+        "structure S {\n",
+        "    let self_weight = solve_elastic_static(\n",
+        "        material, length, width, height,\n",
+        "    [Gravity()],\n",
+        "    )\n",
+        "}\n",
+    );
+    // Sanity: rows 4 and 5 begin at or left of the member column 4, so the
+    // fixture genuinely exercises the depth exclusion rather than the column
+    // comparison.
+    for row in [3usize, 4] {
+        let line = source.lines().nth(row).expect("fixture row exists");
+        let col = line.len() - line.trim_start().len();
+        assert!(
+            col <= 4,
+            "fixture row {row} must start at or left of column 4 to exercise the \
+             depth exclusion, got {col}"
+        );
+    }
+    assert_no_member_continuation_error("multi-line argument list", source);
+}
+
+/// A closing `)` sitting at exactly the member's start column is depth 1, not
+/// depth 0 — it closes a group the member itself opened, so it cannot be the
+/// start of a new member.
+#[test]
+fn a_closing_delimiter_at_the_member_column_is_clean() {
+    let source = "structure S {\n    let m = f(\n        1mm,\n    )\n}\n";
+    assert_no_member_continuation_error("closing paren at the member column", source);
+}
+
+/// Same for a member-level `where cond { ... }` whose `}` sits at the member's
+/// own column — the everyday layout for a guarded block.
+#[test]
+fn a_guarded_block_closing_brace_at_the_member_column_is_clean() {
+    let source = "structure S {\n    where enabled {\n        let a = 1mm\n    }\n}\n";
+    assert_no_member_continuation_error("guarded-block closing brace", source);
+}
+
+// ── (e) repo-wide sweep: the standing guard ──────────────────────────────────
+
+/// The workspace root, resolved from this crate's manifest dir
+/// (`<root>/crates/reify-syntax` → up two).
+fn workspace_root() -> std::path::PathBuf {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("CARGO_MANIFEST_DIR must be <workspace>/crates/reify-syntax")
+        .to_path_buf()
+}
+
+/// Every tracked-looking `*.ri` under `root`, skipping build output and
+/// version-control metadata.
+fn collect_ri_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                // `target/` is build output; `node_modules/` is vendored JS;
+                // dot-dirs are VCS/tooling metadata. None hold tracked sources.
+                if name == "target" || name == "node_modules" || name.starts_with('.') {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "ri") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Byte offset → 1-based (line, column), for actionable failure reporting.
+fn line_col(source: &str, offset: u32) -> (usize, usize) {
+    let offset = offset as usize;
+    let before = &source[..offset.min(source.len())];
+    let line = before.matches('\n').count() + 1;
+    let col = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+    (line, col)
+}
+
+/// THE STANDING GUARD: no `.ri` source in this repository may trip the
+/// member-continuation check.
+///
+/// A hit here is a genuine finding, and it has exactly two dispositions: the
+/// rule is wrong (fix `member_continuation.rs`), or the source really is
+/// ambiguous (fix the source). It must never be silenced by loosening the
+/// assertion.
+#[test]
+fn no_tracked_ri_source_trips_the_member_continuation_check() {
+    let root = workspace_root();
+    let files = collect_ri_files(&root);
+    assert!(
+        files.len() > 100,
+        "sweep found only {} .ri files under {} — the walk is broken, not the repo",
+        files.len(),
+        root.display()
+    );
+
+    let mut hits: Vec<String> = Vec::new();
+    for path in &files {
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for (start, _end, message) in member_continuation_errors(&source) {
+            let (line, col) = line_col(&source, start);
+            let rel = path.strip_prefix(&root).unwrap_or(path);
+            hits.push(format!("{}:{}:{}: {}", rel.display(), line, col, message));
+        }
+    }
+
+    assert!(
+        hits.is_empty(),
+        "{} tracked .ri source location(s) trip the member-continuation check \
+         (swept {} files):\n{}",
+        hits.len(),
+        files.len(),
+        hits.join("\n")
+    );
+}
