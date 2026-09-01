@@ -6,9 +6,9 @@
 //!   3. `eval_cached` warm `SolveResult::Solved` back-prop (`let y = auto_x + N`).
 //!   4. Concurrent path re-verify + serialization invariant.
 //!
-//! The shared ζ differential corpus helpers are declared once at the
-//! `harness_cache` root (`#[path = "common/differential.rs"] mod differential;`)
-//! and reached here via `use crate::differential::…`.
+//! Shared `differential` helpers come from the `harness_cache` root — see its
+//! "Shared `differential` module" section for the wiring.
+//!
 //! `RecordingKernel` is imported from the shared harness (`differential::RecordingKernel`)
 //! where it was promoted during step-9 so that `unified_dag_boundary_cases.rs` could
 //! also use it.  The test-local definition has been removed (see amendment amend: #4361).

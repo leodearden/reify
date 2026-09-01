@@ -7,11 +7,8 @@
 //! hand-maintained second scheduler (solver wave-2 + Phase-3 flip dedup) ahead of
 //! the ι (#4362) Stage-4 cutover (now landed).
 //!
-//! The shared differential corpus helpers are declared once at the
-//! `harness_cache` root (`#[path = "common/differential.rs"] mod differential;`)
-//! and reached here via `use crate::differential::…`, giving this module the θ
-//! projection + parity helpers (`assert_edit_matches_cold`,
-//! `assert_edit_source_matches_cold`, `project_eval_values`).
+//! Shared `differential` helpers come from the `harness_cache` root — see its
+//! "Shared `differential` module" section for the wiring.
 //!
 //! Steps land RED tests here incrementally (guard flip via edit, solver autos via
 //! edit, collection grow → upstream edit, edit_source/edit_check mirror, P0 latency
