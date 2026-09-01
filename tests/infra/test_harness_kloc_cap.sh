@@ -1872,16 +1872,24 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # one cause. The non-vacuity check above is what this section actually
 # contributes.
 #
-# HEADROOM (measured, task #5620, 14 live harness units). Attributing the
-# escaping tests/common/ includes (Section 1e) put
-# harness_topology_selector at 21470 = 97 root + 19245 module + 2128 external
-# (`#[path = "common/differential.rs"]`), 7.4% OVER CAP_LINES=20000. Per rule
-# (a)'s own remedy that was resolved by SPLITTING `selective_demand` out into
-# harness_selective_demand — NOT by raising the cap, which would have
-# contradicted the ratified 10-20 kLOC band of PRD §3 W1/§7 and loosened the
-# C2 ratchet to fit its first offender. Post-split the measured max aggregate
-# is 19591 (harness_fea_solver_e2e: 106 root + 19103 module + 382 external),
-# so the tightest live unit now sits ~2% under the cap.
+# HEADROOM (measured, task #5620). Attributing the escaping tests/common/
+# includes (Section 1e) put harness_topology_selector at 21470 = 97 root +
+# 19245 module + 2128 external (`#[path = "common/differential.rs"]`), 7.4%
+# OVER CAP_LINES=20000. Per rule (a)'s own remedy that was resolved by
+# SPLITTING `selective_demand` out into harness_selective_demand — NOT by
+# raising the cap, which would have contradicted the ratified 10-20 kLOC band
+# of PRD §3 W1/§7 and loosened the C2 ratchet to fit its first offender.
+#
+# RE-MEASURED, task #6121 (15 live harness units). harness_fea_solver_e2e had
+# climbed back to 19265 = 105 root + 18769 module + 391 external, 96.3% of the
+# cap — under it, so the pass/fail cap said nothing, which is precisely the
+# blind spot the advisory WARN tier now covers. Same remedy applied, again a
+# split rather than a cap raise: the `stress_*` group left for
+# harness_stress_scenarios (task #6121), leaving 15951 = 99 root + 15461
+# module + 391 external (79.8%) and a new 3377-line unit (69 root + 3308
+# module + 0 external, 16.9%). The tightest live unit is now
+# crates/reify-syntax/tests/harness_syntax.rs at 18617 (93.0%) — the sole
+# member of _KLOC_WARN_KNOWN, ratcheted by Section 5d.
 
 # ===========================================================================
 # Section 5c: live non-vacuity of the EXTERNAL attribution — the out-of-module-
