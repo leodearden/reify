@@ -1238,16 +1238,14 @@ mod tests {
             detail.contains("x1") && detail.contains("y1"),
             "polygon signature must advertise the compiling variadic flat coordinate-pair form (x1, y1, ...), got: {detail}"
         );
-        // task 6450: polygon's vertex coordinates are Contract-C-gated
-        // (task 5661 routed them through the variadic route —
-        // crates/reify-eval/src/arg_acceptance.rs:38) but the signature
-        // carries no types at all, so it slips past
+        // task 6450 (review amendment): the positive Length pin used to live
+        // here as a polygon-only bespoke assertion, because polygon's
+        // signature carried no types at all and so slipped past
         // geometry_completion_signatures_type_gated_slots_as_length's
-        // `!detail.contains(": Real")` guard. Pin it here instead.
-        assert!(
-            detail.contains("x1: Length") && detail.contains("y1: Length"),
-            "polygon signature must type its vertex coordinates as Length, got: {detail}"
-        );
+        // negative-only `!detail.contains(": Real")` guard. That guard now
+        // also asserts a positive `detail.contains(": Length")` per row in
+        // `GATED_LENGTH_BUILTIN_ROWS` (which includes "polygon"), so this
+        // bespoke pin would only duplicate the general one — removed.
     }
 
     // --- task 6450: gated-length builtins advertise their dimension requirement ---
@@ -1304,9 +1302,29 @@ mod tests {
     }
     use GateReach::{BuildOnly, CompileCheck};
 
+    /// Look up a gated builtin's canonical dimensioned example from
+    /// [`LENGTH_GATED_EXAMPLES`] — the same table `builtin_doc_with_length_gate_note`
+    /// renders the served documentation from — instead of hand-copying it
+    /// into a second table (review amendment, task 6450). That is what makes
+    /// `length_gated_tables_stay_in_sync` below meaningful: a dimensioned
+    /// example can only ever come from one place.
+    fn dimensioned_example(name: &str) -> &'static str {
+        LENGTH_GATED_EXAMPLES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name}: no LENGTH_GATED_EXAMPLES entry"))
+            .1
+    }
+
     /// One row per empirically-gated `01-geometry` builtin (task 6450):
-    /// `(builtin_name, dimensioned_call, bare_call, gate_reach)`. `half_space`
-    /// deliberately leaves `nx`/`ny`/`nz` bare on BOTH sides — only its
+    /// `(builtin_name, bare_call, gate_reach)`. The dimensioned call is
+    /// deliberately NOT a fourth column here (review amendment) — it is
+    /// looked up from `LENGTH_GATED_EXAMPLES` via `dimensioned_example` so
+    /// the doc-string example and this test's behavioural pin can never
+    /// drift apart (see `length_gated_tables_stay_in_sync`, which also
+    /// asserts the two tables name the same builtins and that every
+    /// `LENGTH_GATED_EXAMPLES` row is a real `BUILTIN_FUNCTIONS` entry).
+    /// `half_space` deliberately leaves `nx`/`ny`/`nz` bare — only its
     /// `px`/`py`/`pz` point is LENGTH-gated (arg_acceptance.rs:109-119: the
     /// outward normal is a dimensionless unit vector, not a residual).
     ///
@@ -1315,83 +1333,59 @@ mod tests {
     /// `builtin_signatures.rs`'s `builtin_arg_slots` (they fall through its
     /// `_ => &[]`): `rounded_box` / `rounded_rect` lower to boolean composes,
     /// and `polygon`'s variadic vertex stream is excluded there by design.
-    const GATED_LENGTH_BUILTIN_ROWS: &[(&str, &str, &str, GateReach)] = &[
-        (
-            "box",
-            "box(20mm, 10mm, 30mm)",
-            "box(20, 10, 30)",
-            CompileCheck,
-        ),
-        (
-            "cylinder",
-            "cylinder(5mm, 20mm)",
-            "cylinder(5, 20)",
-            CompileCheck,
-        ),
-        ("sphere", "sphere(10mm)", "sphere(10)", CompileCheck),
-        (
-            "box_centered",
-            "box_centered(20mm, 10mm, 30mm)",
-            "box_centered(20, 10, 30)",
-            CompileCheck,
-        ),
-        (
-            "cylinder_centered",
-            "cylinder_centered(5mm, 20mm)",
-            "cylinder_centered(5, 20)",
-            CompileCheck,
-        ),
-        (
-            "cone",
-            "cone(10mm, 5mm, 20mm)",
-            "cone(10, 5, 20)",
-            CompileCheck,
-        ),
-        (
-            "rounded_box",
-            "rounded_box(20mm, 20mm, 10mm, 2mm)",
-            "rounded_box(20, 20, 10, 2)",
-            BuildOnly,
-        ),
-        ("torus", "torus(20mm, 5mm)", "torus(20, 5)", CompileCheck),
-        (
-            "half_space",
-            "half_space(0mm, 0mm, 0mm, 0, 0, 1)",
-            "half_space(0, 0, 0, 0, 0, 1)",
-            CompileCheck,
-        ),
-        (
-            "wedge",
-            "wedge(20mm, 20mm, 10mm, 5mm)",
-            "wedge(20, 20, 10, 5)",
-            CompileCheck,
-        ),
-        (
-            "rectangle",
-            "rectangle(20mm, 10mm)",
-            "rectangle(20, 10)",
-            CompileCheck,
-        ),
-        ("circle", "circle(10mm)", "circle(10)", CompileCheck),
-        (
-            "rounded_rect",
-            "rounded_rect(20mm, 20mm, 2mm)",
-            "rounded_rect(20, 20, 2)",
-            BuildOnly,
-        ),
-        (
-            "polygon",
-            "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)",
-            "polygon(0, 0, 10, 0, 5, 10)",
-            BuildOnly,
-        ),
-        (
-            "ellipse",
-            "ellipse(10mm, 5mm)",
-            "ellipse(10, 5)",
-            CompileCheck,
-        ),
+    const GATED_LENGTH_BUILTIN_ROWS: &[(&str, &str, GateReach)] = &[
+        ("box", "box(20, 10, 30)", CompileCheck),
+        ("cylinder", "cylinder(5, 20)", CompileCheck),
+        ("sphere", "sphere(10)", CompileCheck),
+        ("box_centered", "box_centered(20, 10, 30)", CompileCheck),
+        ("cylinder_centered", "cylinder_centered(5, 20)", CompileCheck),
+        ("cone", "cone(10, 5, 20)", CompileCheck),
+        ("rounded_box", "rounded_box(20, 20, 10, 2)", BuildOnly),
+        ("torus", "torus(20, 5)", CompileCheck),
+        ("half_space", "half_space(0, 0, 0, 0, 0, 1)", CompileCheck),
+        ("wedge", "wedge(20, 20, 10, 5)", CompileCheck),
+        ("rectangle", "rectangle(20, 10)", CompileCheck),
+        ("circle", "circle(10)", CompileCheck),
+        ("rounded_rect", "rounded_rect(20, 20, 2)", BuildOnly),
+        ("polygon", "polygon(0, 0, 10, 0, 5, 10)", BuildOnly),
+        ("ellipse", "ellipse(10, 5)", CompileCheck),
     ];
+
+    /// Drift guard (review amendment, task 6450): `LENGTH_GATED_EXAMPLES`
+    /// (the doc-string example table) and `GATED_LENGTH_BUILTIN_ROWS` (this
+    /// suite's behavioural-pin table) must name exactly the same builtins,
+    /// and every `LENGTH_GATED_EXAMPLES` entry must resolve to a real
+    /// `BUILTIN_FUNCTIONS` row. Without this: a row added to
+    /// `GATED_LENGTH_BUILTIN_ROWS` alone is caught the moment
+    /// `dimensioned_example` fails to find it, but a row added to
+    /// `LENGTH_GATED_EXAMPLES` alone would ship a doc claim with no
+    /// behavioural pin at all, and a typo'd or stale `LENGTH_GATED_EXAMPLES`
+    /// key is simply never looked up by `builtin_doc_with_length_gate_note`'s
+    /// `find` and never reds — both are exactly the failure mode the
+    /// TODO(#5752) residual anticipates as the gated set grows.
+    #[test]
+    fn length_gated_tables_stay_in_sync() {
+        let example_names: HashSet<&str> = LENGTH_GATED_EXAMPLES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        let row_names: HashSet<&str> = GATED_LENGTH_BUILTIN_ROWS
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect();
+        assert_eq!(
+            example_names, row_names,
+            "LENGTH_GATED_EXAMPLES and GATED_LENGTH_BUILTIN_ROWS must name \
+             exactly the same builtins"
+        );
+        for name in &example_names {
+            assert!(
+                BUILTIN_FUNCTIONS.iter().any(|info| info.name == *name),
+                "LENGTH_GATED_EXAMPLES has a dead row: {name:?} is not a \
+                 registered BUILTIN_FUNCTIONS entry"
+            );
+        }
+    }
 
     /// RED (task 6450 step-1): each gated geometry builtin's SERVED completion
     /// documentation must carry the units requirement AND its dimensioned
@@ -1413,15 +1407,21 @@ mod tests {
     /// Per row: (a) the BARE form is rejected with `LENGTH_MIGRATION_HINT` —
     /// matching the hint TEXT, not the builtin name, since a lowered alias
     /// diagnoses under its lowered `box`/`cylinder` name; (b) the DIMENSIONED
-    /// form evaluates with no such diagnostic; (c) the builtin's served
-    /// `documentation` contains both the hint and the dimensioned example.
+    /// form evaluates with NO diagnostics at all (not merely none containing
+    /// the hint — review amendment, task 6450: verified by probe that all 15
+    /// dimensioned examples produce zero diagnostics through
+    /// `AnalysisContext` today, so the stronger assertion catches e.g. a
+    /// wrong-arity or misspelled example that a hint-substring check alone
+    /// would miss); (c) the builtin's served `documentation` contains both
+    /// the hint and the dimensioned example.
     ///
-    /// (a) and (b) are asserted only for `CompileCheck` rows — the twelve
-    /// whose gate `AnalysisContext::check()` can actually observe. The three
-    /// `BuildOnly` rows assert (c) alone; their gate is real but lives behind
-    /// `build()`/`realize_for_check()`, which this harness (and reify-lsp
-    /// itself) never calls. See `GateReach` and esc-6450-2 for the measured
-    /// split. (c) is what step-2 makes green, for all 15 rows.
+    /// (a) is asserted only for `CompileCheck` rows — the twelve whose gate
+    /// `AnalysisContext::check()` can actually observe; a `BuildOnly` row's
+    /// bare form is never rejected by this harness, so pinning (a) there
+    /// would pin a false premise (see `GateReach` and esc-6450-2). (b) and
+    /// (c) apply to all 15 rows: (b) needs no COMPILE-time gate to be
+    /// observable — it only requires that the advertised example evaluates
+    /// clean — and (c) is what step-2 makes green for every row.
     #[test]
     fn gated_length_builtins_advertise_their_dimension_requirement() {
         use reify_core::units::LENGTH_MIGRATION_HINT;
@@ -1430,12 +1430,14 @@ mod tests {
         let source = reify_test_support::bracket_source();
         let items = compute_completions(source, &test_uri(), Position::new(1, 0));
 
-        for (name, dimensioned, bare, reach) in GATED_LENGTH_BUILTIN_ROWS {
-            let (name, dimensioned, bare) = (*name, *dimensioned, *bare);
-            // (a)/(b) are asserted only for rows whose gate is reachable from
-            // this harness. A `BuildOnly` row's requirement is just as real,
-            // but no diagnostic for it can ever appear here — see `GateReach`
-            // and esc-6450-2. Asserting it would pin a false premise.
+        for (name, bare, reach) in GATED_LENGTH_BUILTIN_ROWS {
+            let (name, bare) = (*name, *bare);
+            let dimensioned = dimensioned_example(name);
+            // (a) is asserted only for rows whose bare-form gate is reachable
+            // from this harness. A `BuildOnly` row's requirement is just as
+            // real, but no diagnostic for it can ever appear here — see
+            // `GateReach` and esc-6450-2. Asserting it would pin a false
+            // premise.
             if *reach == CompileCheck {
                 let bare_diags = eval_expr_diagnostics(bare);
                 assert!(
@@ -1443,16 +1445,20 @@ mod tests {
                     "{name}: bare form `{bare}` should be rejected with the \
                      LENGTH_MIGRATION_HINT, got diagnostics: {bare_diags:?}"
                 );
-
-                let dimensioned_diags = eval_expr_diagnostics(dimensioned);
-                assert!(
-                    !dimensioned_diags
-                        .iter()
-                        .any(|m| m.contains(LENGTH_MIGRATION_HINT)),
-                    "{name}: dimensioned form `{dimensioned}` should evaluate \
-                     clean, got diagnostics: {dimensioned_diags:?}"
-                );
             }
+
+            // (b) applies to all 15 rows, `BuildOnly` included: it needs no
+            // COMPILE-time gate to observe, only that the advertised example
+            // is one that actually evaluates clean. Strengthened (review
+            // amendment) from "no diagnostic mentions the hint" to "no
+            // diagnostics at all", so a wrong-arity or misspelled example
+            // reds here instead of shipping into the popup unnoticed.
+            let dimensioned_diags = eval_expr_diagnostics(dimensioned);
+            assert!(
+                dimensioned_diags.is_empty(),
+                "{name}: dimensioned form `{dimensioned}` should evaluate \
+                 clean (no diagnostics), got: {dimensioned_diags:?}"
+            );
 
             let item = items
                 .iter()
@@ -1488,6 +1494,18 @@ mod tests {
     /// while every other solid primitive in this same table already says
     /// `Length` (compare `box_centered`/`cylinder_centered` immediately
     /// below them, which have the identical shape and already say `Length`).
+    ///
+    /// Two checks per row (review amendment, task 6450 — folded from three
+    /// bespoke box/cylinder/sphere-only assertions into this loop): the
+    /// negative `!detail.contains(": Real")` above, and a positive
+    /// `detail.contains(": Length")`. The negative alone passes for a
+    /// signature with NO type annotations at all, which was exactly
+    /// `polygon`'s pre-fix failure mode and is why it previously needed a
+    /// separate bespoke pin in `polygon_completion_advertises_compiling_flat_form`;
+    /// the positive check closes that gap for every row uniformly, so that
+    /// bespoke polygon assertion was removed. `half_space`'s legitimately
+    /// dimensionless `nx/ny/nz: Float` still passes the positive check,
+    /// since its `px: Length` satisfies it.
     #[test]
     fn geometry_completion_signatures_type_gated_slots_as_length() {
         let source = reify_test_support::bracket_source();
@@ -1503,28 +1521,17 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name}: completion has no detail (signature)"))
         };
 
-        let box_detail = detail_for("box");
-        assert!(
-            box_detail.contains("width: Length"),
-            "box's signature should type `width` as Length, got: {box_detail}"
-        );
-        let cylinder_detail = detail_for("cylinder");
-        assert!(
-            cylinder_detail.contains("radius: Length"),
-            "cylinder's signature should type `radius` as Length, got: {cylinder_detail}"
-        );
-        let sphere_detail = detail_for("sphere");
-        assert!(
-            sphere_detail.contains("radius: Length"),
-            "sphere's signature should type `radius` as Length, got: {sphere_detail}"
-        );
-
-        for (name, _, _, _) in GATED_LENGTH_BUILTIN_ROWS {
+        for (name, _, _) in GATED_LENGTH_BUILTIN_ROWS {
             let name = *name;
             let detail = detail_for(name);
             assert!(
                 !detail.contains(": Real"),
                 "{name}: signature should not type any gated slot as Real, got: {detail}"
+            );
+            assert!(
+                detail.contains(": Length"),
+                "{name}: signature should type at least one gated slot as \
+                 Length, got: {detail}"
             );
         }
     }
