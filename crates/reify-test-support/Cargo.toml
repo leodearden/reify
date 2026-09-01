@@ -39,6 +39,26 @@ reify-core.workspace = true
 # into reify-expr's own test graph (task #6322, follow-up to #6216).
 # Trade-off as taken: 55 crates off reify-audit's production graph, paid for
 # with a two-feature split here.
+#
+# NOT GATE-ENFORCED. The 130-vs-185 figures above are a MEASUREMENT (re-verified
+# on this branch: 130, with zero reify-expr/faer/nalgebra/gemm lines), not an
+# invariant any verify-pipeline step asserts -- nothing reds if a later edit
+# silently re-adds those 55 crates. Three regression vectors, none of which
+# `cargo test --workspace` can see, because each one only *widens* a graph that
+# still builds:
+#   1. this `reify-expr` entry losing `optional = true`, making the edge
+#      unconditional;
+#   2. `containment-doubles` (or `eval-helpers`) reaching this crate's `default`
+#      feature set -- reify-audit's normal dep on it would then enable it;
+#   3. reify-audit gaining a NORMAL-edge consumer of either feature.
+# One-line re-check -- expect 130 lines and no reify-expr/faer/nalgebra/gemm:
+#   cargo tree -p reify-audit --edges normal --prefix none | sort -u
+# The durable fix is a tests/infra guard modelled on
+# tests/infra/test_fea_e2e_crate_occt_free.sh (same shape: walk `cargo tree`,
+# assert a crate is absent). It is deliberately NOT landed with task #6322: a new
+# tests/infra/test_*.sh needs a matching tests/infra/run-all-classification.manifest
+# row or scripts/check-infra-classification-manifest.sh reds the build, and that
+# manifest is outside #6322's lock set. Filed as follow-up instead.
 reify-expr = { workspace = true, optional = true }
 reify-ir.workspace = true
 reify-syntax.workspace = true
@@ -64,4 +84,14 @@ eval-helpers = ["dep:reify-eval", "dep:reify-constraints", "containment-doubles"
 # in just `MockContainmentQuery` without dragging reify-eval into
 # reify-expr's own test graph. `eval-helpers` includes it so today's
 # consumers (which enable `eval-helpers`) are unaffected.
+#
+# Coverage gap, recorded rather than closed: `cargo test --workspace` unifies this
+# crate's features to `eval-helpers` U `containment-doubles`, so the
+# containment-doubles-ONLY configuration is built only by a targeted invocation
+# (`cargo test -p reify-expr`, or `cargo check -p reify-test-support --features
+# containment-doubles` -- green as of task #6322). Wiring that third configuration
+# into the verify pipeline's per-crate step is outside #6322's lock set. The gap is
+# narrow: it takes an item gated on `containment-doubles` alone that reaches for a
+# reify-eval/reify-constraints symbol, which `eval-helpers` would supply and this
+# feature would not.
 containment-doubles = ["dep:reify-expr"]
