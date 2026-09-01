@@ -271,6 +271,35 @@ pointer beats a second copy to keep in sync.
 committed source, and the `@display` label validator (`annotations/schema.rs:334` + the
 dimension-phase rung check from task 5233) simply starts matching ASCII rungs.
 
+**`RayleighDamping.alpha`:** `param alpha : Frequency`, declared at
+`crates/reify-compiler/stdlib/modal_analysis.ri:161`. `crates/reify-eval/src/modal_ops.rs:1126`
+builds `ω = 2π·f` and feeds it to `rayleigh_damping_ratio(alpha, beta, omega)` at `:1127`
+— the declared `Frequency` is consumed on the rad/s scale, so a caller writing `alpha: 1.0Hz`
+— reading Hz as cycles/s, which is what Hz means — gets it consumed as `1 rad/s`: a `2π`
+error in the mass-proportional damping term. **Latent only:** `alpha` is exactly `0.0Hz` at all
+five *migrated* corpus ctor sites —
+`examples/modal/printer_gantry_modes.ri:136`, `examples/modal/transient_step_response.ri:79`,
+`examples/trajectory/printer_print_envelope.ri:97`,
+`tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri:49`,
+`crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:489`; the two remaining
+*un-migrated* ctor sites also pass a bare `alpha: 0.0` —
+`crates/reify-eval/tests/harness_mechanism/mechanism_modal_damping_e2e.rs:72` and
+`crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:633` — so no wrong answer
+is reachable today. The reasoning —
+including why `alpha` is typed `Frequency` rather than `AngularVelocity` — lives in
+`modal_analysis.ri`'s ANGULAR-RATE TRAP comment (:131-150), which already names this PRD as the
+surface's owner — not restated here. Pinned test-side by
+`modal_ops::tests::trampoline_shapes_modal_result_with_rayleigh_damping` (`modal_ops.rs:4617`),
+which recomputes `ω = 2π·f` from the emitted `Mode.frequency` and compares `damping_ratio`
+against it at `1e-12` — the arm that actually observes the producer's scale.
+`modal_ops::tests::rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega`
+(`:4246`) pins the algebraic symmetry only and explicitly does not observe the producer's
+scale. **Disposition:** already dimensioned, so it needs no migration; it is a *consumer* datum
+for `Frequency`, not a migration site — but honestly, §5's contract (C1-C4) does not today
+deliver the cycles/s-vs-s⁻¹ separation this site was handed off for; that gap is tracked as
+§11 item 6 for a ruling at decompose, not something C1-C4 already covers. Stamped **2026-09-01
+at `da22522934`** (a `main` merge commit).
+
 ### 3.10 Prior ruling this PRD reverses
 
 Task **1763** (`done`, 2026-04): *"circular_pattern angle should accept degrees (CAD convention)
@@ -647,6 +676,12 @@ Facing both sides of each seam. These are μ's and ρ's observable signals.
 5. **Wording of the `got` label for an ANGLE-expected slot receiving a dimensionless `Scalar`.**
    `value_short_label` (`arg_acceptance.rs:134`) already prints `"dimensionless Scalar"`; confirm
    that reads well in the angle message or add a spec-level override. Cosmetic.
+6. **`Frequency` cycles/s-vs-s⁻¹ separation (`RayleighDamping.alpha`).** §3.9 measures the site:
+   `RayleighDamping.alpha` is declared `Frequency` but consumed on the rad/s scale
+   (`crates/reify-eval/src/modal_ops.rs:1126`), and `modal_analysis.ri`'s ANGULAR-RATE TRAP
+   comment names this PRD as the surface's owner — yet §5's contract (C1-C4) does not deliver a
+   cycles/s-vs-s⁻¹ separation today. *Suggested resolution:* rule at decompose whether a new leaf
+   takes this on or it is explicitly deferred to a later PRD. Decide during decompose.
 
 ## §12 — Decomposition plan
 
