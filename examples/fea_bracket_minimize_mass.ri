@@ -157,15 +157,24 @@ structure FeaBracketMinimizeMass {
     // Mises over exactly the same solid stress field — so the reduction still
     // genuinely happens; only the spelling differs.
     //
-    // The explicit spelling is currently blocked by a COMPILE-TIME TYPING GAP,
-    // not by a semantic one: `analysis_fn_result_type` derives von_mises's
-    // dimension via `tensor_quantity`, which matches `Type::Tensor`/`Type::Matrix`
-    // but has no `Type::Field` arm. A Field-valued argument therefore falls to
-    // the DIMENSIONLESS default, `von_mises(.stress)` types as `Real`, and
-    // `< yield_limit` fails with "dimension mismatch in comparison: Real vs
-    // Scalar[kg·m^-1·s^-2]" — an Error, so the zero-Error examples gate rejects
-    // it. Filed as follow-up ticket tkt_0RSVXM8TTBE200NJ7HD8BH24Q2; when that
-    // lands, this constraint can move to the explicit form unchanged in meaning.
+    // The COMPILE-TIME TYPING GAP that originally forced this spelling is now
+    // FIXED (task #6577): `analysis_fn_result_type` gained a `Type::Field` arm,
+    // so `von_mises(.stress)` types as `Field<Point3<Length>, Scalar<Pressure>>`
+    // and `max(...)` reduces that codomain to `Scalar<Pressure>`. The old
+    // "dimension mismatch in comparison: Real vs Scalar[kg·m^-1·s^-2]" Error is
+    // gone, and the explicit form now COMPILES clean.
+    //
+    // It still must NOT be adopted here, because the remaining blocker is an
+    // EVAL-SIDE one that would silently break this constraint at runtime:
+    // `validate_tensor_field` (crates/reify-expr/src/analysis.rs:80-88) accepts
+    // only `FieldSourceKind::Analytical | Composed`, but the FEA solver builds
+    // `.stress` as `FieldSourceKind::Sampled`
+    // (crates/reify-eval/src/compute_targets/elastic_static.rs:1840, 1869, 1893,
+    // 1966, 6680). `von_mises(result.stress)` on a real solve therefore
+    // evaluates to `Value::Undef` — which `value_type_kind_matches` accepts for
+    // ANY type, so nothing would flag it — and this constraint would stop
+    // constraining while still compiling and running green. Tracked as #7129;
+    // do not migrate the spelling until that lands.
     //
     // The FEA call is INLINED here rather than bound to a top-level
     // `let fea = solve_elastic_static(...)`. That is not a style choice. A
