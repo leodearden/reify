@@ -21,11 +21,29 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 /// The native libraries Reify binaries may link against.
+///
+/// INVARIANT: every variant listed here MUST have a corresponding gate arm in
+/// `scripts/check-manifold-deps.sh` (a `# BEGIN <dep>-candidates` marker
+/// block plus the presence check that consumes it). A variant WITHOUT one
+/// degrades silently: [`find`] returns `None`, the crate's build.rs answers
+/// with a `cargo:warning` and a bare `return`, and every `#[cfg(has_<dep>)]`
+/// item — including the whole test surface — stops being compiled. The suite
+/// then reports zero tests REPORTED rather than zero tests FAILED, and the
+/// gate goes green over a kernel nothing exercised. A passing suite and a
+/// DELETED suite are indistinguishable from outside.
+///
+/// `tests/infra/test_occt_deps_preflight.sh` pins that invariant by comparing
+/// this variant list against that script's marker-block names as SETS. The
+/// BEGIN/END marker comments below exist only to make this body
+/// machine-readable for that check — the enum stays the single source of
+/// truth, and nothing is duplicated anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDep {
+    // BEGIN native-dep-variants
     Occt,
     Gmsh,
     OpenVdb,
+    // END native-dep-variants
 }
 
 /// Resolved location of a native library's headers and shared objects.

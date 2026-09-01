@@ -459,9 +459,14 @@ _bash_snap_map() {
 # anchor-integrity assert below turns into a named failure rather than a
 # silently vacuous set comparison.
 _rust_native_dep_variants() {
+    # WHOLE-LINE anchoring, not index(): the enum's own doc comment NAMES these
+    # markers in prose (explaining why they exist), and a substring match would
+    # open the block there and swallow the `#[derive(..)]` and `pub enum ..`
+    # lines as if they were variants. A marker line must be nothing but the
+    # marker.
     awk '
-        index($0, "// BEGIN native-dep-variants") { inblk = 1; next }
-        inblk && index($0, "// END native-dep-variants") { exit }
+        $0 ~ /^[[:space:]]*\/\/ BEGIN native-dep-variants[[:space:]]*$/ { inblk = 1; next }
+        inblk && $0 ~ /^[[:space:]]*\/\/ END native-dep-variants[[:space:]]*$/ { exit }
         !inblk { next }
         {
             line = $0
