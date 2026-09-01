@@ -262,6 +262,206 @@ pub fn length_spec() -> ArgSpec {
     }
 }
 
+// ── PRD 5 §3 Leg B: the DIMENSIONED reader specs ──────────────────────────────
+//
+// Task 5791 (PRD `docs/prds/v0_6/dimension-checked-readers.md` §3 Leg B) adds
+// the eleven ADDITIVE spec constructors the reader chokepoints of leaves β…ι
+// consume. Each mirrors the shape of [`density_spec`] / [`length_spec`] above
+// and reads its `dimension` from the `reify_core::DimensionVector` REGISTRY
+// const BY NAME — never from a hand-written `from_exps` exponent tuple — so a
+// later re-dimensioning is a one-line registry edit rather than a hunt through
+// every reader. (Precedent: task #5799 re-dimensioned `ROTATIONAL_STIFFNESS`
+// from rad⁻¹ to rad⁻²; a reader carrying its own tuple would have silently
+// disagreed with the registry from that day on.)
+//
+// # Why every one of them sets `migration_hint: None`
+//
+// `reify_core::units` today holds exactly two shared hint consts —
+// [`reify_core::units::LENGTH_MIGRATION_HINT`] and
+// [`reify_core::units::DENSITY_MIGRATION_HINT`] — and its "Why a HOIST and not
+// a copy" module doc records precisely why: those two are IRREGULAR hard-coded
+// literals that the EVAL layer (this module) and the COMPILE layer
+// (`reify-compiler::builtin_signatures`) must render byte-identically for the
+// same authoring mistake, so they genuinely can drift and that is what earns
+// them a shared const. None of the eleven below has a compile-layer twin to
+// keep byte-identical yet, so minting eleven more consts there would add an
+// edit site with nothing on the other end of it. The slot is left
+// INTENTIONALLY EMPTY until a consuming leaf (β…ι) grows that twin; the leaf
+// that does is the one that should hoist the const, following the same
+// hoist-not-a-copy argument.
+
+/// Returns the [`ArgSpec`] for a PRESSURE-semantic reader position (Pa =
+/// kg·m⁻¹·s⁻²).
+///
+/// PRD §3 Leg B routes these here: `ElasticMaterial`'s `youngs_modulus`,
+/// `yield_stress` and `shear_modulus`; the `FDMCouponOverride` orthotropic
+/// moduli `ex`/`ey`/`ez`/`gxy`; `yield_val`; `PressureLoad.magnitude`; and
+/// `TractionLoad.traction`.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn pressure_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Pressure",
+        dimension: reify_core::DimensionVector::PRESSURE,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a FORCE-semantic reader position (N =
+/// kg·m·s⁻²).
+///
+/// PRD §3 Leg B routes these here: `force_limit`, `reference_load` and
+/// `PointLoad.force`.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn force_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Force",
+        dimension: reify_core::DimensionVector::FORCE,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a MASS-semantic reader position (kg).
+///
+/// PRD §3 Leg B routes the rigid-body / lumped `mass` reader here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn mass_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Mass",
+        dimension: reify_core::DimensionVector::MASS,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a FREQUENCY-semantic reader position (Hz =
+/// s⁻¹).
+///
+/// PRD §3 Leg B routes the modal `target_frequency` reader here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn frequency_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Frequency",
+        dimension: reify_core::DimensionVector::FREQUENCY,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a TIME-semantic reader position (s).
+///
+/// PRD §3 Leg B routes the trajectory waypoint `t` reader here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn time_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Time",
+        dimension: reify_core::DimensionVector::TIME,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a VELOCITY-semantic reader position (m·s⁻¹).
+///
+/// PRD §3 Leg B routes the joint `velocity_limit` reader here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn velocity_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Velocity",
+        dimension: reify_core::DimensionVector::VELOCITY,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for an ACCELERATION-semantic reader position
+/// (m·s⁻²).
+///
+/// PRD §3 Leg B routes `acceleration_limit` and `max_accel` here. Note the
+/// already-shipped `validate_dimensioned_scalar` call at
+/// `reify-stdlib/src/fea/loads.rs:161` passes an `accel_dim` of
+/// `DimensionVector::ACCELERATION`, so this is the spec its consuming leaf
+/// adopts.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn acceleration_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Acceleration",
+        dimension: reify_core::DimensionVector::ACCELERATION,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a FORCE-DENSITY-semantic reader position
+/// (N·m⁻³ = kg·m⁻²·s⁻²).
+///
+/// PRD §3 Leg B routes `BodyForce.force_density` here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn force_density_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "ForceDensity",
+        dimension: reify_core::DimensionVector::FORCE_DENSITY,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a MOMENT-OF-INERTIA-semantic reader position
+/// (kg·m²).
+///
+/// PRD §3 Leg B routes the rigid-body inertia tensor cells here.
+///
+/// Not to be confused with the `moment_of_inertia` BUILTIN, whose `density`
+/// argument uses [`density_spec`].
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn moment_of_inertia_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "MomentOfInertia",
+        dimension: reify_core::DimensionVector::MOMENT_OF_INERTIA,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a PRISMATIC joint's `spring_rate` reader
+/// position (N·m⁻¹ = kg·s⁻²).
+///
+/// `DimensionVector::TRANSLATIONAL_STIFFNESS` is a NAME ALIAS of
+/// `DimensionVector::STIFFNESS` (`reify-core/src/dimension.rs:302`); the alias
+/// is used here so the reader names the joint kind it serves. Its revolute
+/// sibling [`rotational_stiffness_spec`] is a genuinely DISTINCT vector — PRD
+/// §3 Leg B routes `spring_rate` to one or the other BY JOINT KIND, so the two
+/// must never collapse. Pinned by
+/// `translational_stiffness_and_stiffness_are_the_same_vector`.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn translational_stiffness_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "TranslationalStiffness",
+        dimension: reify_core::DimensionVector::TRANSLATIONAL_STIFFNESS,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a REVOLUTE joint's `spring_rate` reader
+/// position (N·m·rad⁻¹ = kg·m²·s⁻²·rad⁻²).
+///
+/// A DISTINCT vector from [`translational_stiffness_spec`], re-dimensioned
+/// from rad⁻¹ by task #5799 — which is exactly why this constructor reads
+/// `DimensionVector::ROTATIONAL_STIFFNESS` by name instead of spelling the
+/// exponents out.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn rotational_stiffness_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "RotationalStiffness",
+        dimension: reify_core::DimensionVector::ROTATIONAL_STIFFNESS,
+        migration_hint: None,
+    }
+}
+
+
 /// Classify `value` against `spec`.
 ///
 /// - `Value::Undef` → [`Acceptance::Undefined`] (quiet, no diagnostic needed).
