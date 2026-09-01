@@ -7,6 +7,17 @@
 //! Follows the same FieldSourceKind pattern as gradient/divergence/curl/laplacian
 //! in calculus.rs: the original field is stored in the lambda slot, and the sample
 //! handler in lib.rs dispatches to pointwise evaluation via reify_stdlib.
+//!
+//! Two tensor-field backings are accepted, and the accepted set is expressed as
+//! a `(source, lambda)` PAIR (see `validate_tensor_field`):
+//!
+//! - `(Analytical | Composed, Value::Lambda { .. })` — a callable backing,
+//!   evaluated pointwise on sample.
+//! - `(Sampled, Value::SampledField(_))` — a grid backing, e.g. the stress
+//!   field `solve_elastic_static` returns. This mirrors the `calculus.rs`
+//!   Sampled arms, which likewise test both halves of the pair.
+//!
+//! The wrapper stays lazy over a Sampled backing: nothing is projected here.
 
 use std::sync::Arc;
 
@@ -46,15 +57,36 @@ fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
 ///
 /// Performs validation analogous to `calculus::validate_differentiable_field`:
 /// 1. `field_val` must be `Value::Field { .. }`
-/// 2. `source` must be `Analytical` or `Composed` (derived fields store the
-///    original field in the lambda slot, not a callable Lambda)
-/// 3. `lambda` slot must be `Value::Lambda { .. }` (callable)
-/// 4. `codomain_type` must be a 3×3 matrix/tensor with scalar elements
+/// 2. The `(source, lambda)` PAIR must be one of exactly two accepted shapes:
+///    - `(Analytical | Composed, Value::Lambda { .. })` — the analytical /
+///      derived path: the backing is a callable lambda, sampled pointwise.
+///    - `(Sampled, Value::SampledField(_))` — a grid-backed tensor field, e.g.
+///      the stress field `solve_elastic_static` returns
+///      (`reify_eval::compute_targets::sampled_stress_field`).
+/// 3. `codomain_type` must be a 3×3 matrix/tensor with scalar elements
 ///
 /// Returns `Some((domain_type, codomain_type, element_dimension))` if all
 /// checks pass, `None` otherwise.
 ///
-/// NOTE: Checks 1–3 duplicate the logic in `calculus::validate_differentiable_field`.
+/// The pair must be matched on BOTH halves, never on either alone.
+/// `FieldSourceKind::Imported` also carries a `Value::SampledField` in its
+/// lambda slot (`lib.rs`, the Imported sample-dispatch arm), so "any source
+/// with a SampledField lambda" would admit it — but
+/// [`field_reductions::project_sampled_tensor_windows`] requires
+/// `source: Sampled` on the inner field, so an Imported-backed wrapper would
+/// construct successfully and then silently reduce to `Value::Undef`.
+/// Symmetrically, "Sampled with any lambda" would admit malformed fields whose
+/// lambda slot holds no grid at all. The `calculus.rs` eager-lowering arms
+/// (gradient / divergence / curl / laplacian) test both halves for the same
+/// reason.
+///
+/// For a `Sampled` backing the wrapper this validation gates is LAZY: the
+/// stride-9 window projection, the shared `reify_stdlib` per-window kernels and
+/// the out-of-solid NaN skip all happen later, in
+/// `field_reductions::project_sampled_tensor_windows`
+/// (`crates/reify-expr/src/field_reductions.rs`), when the wrapper is reduced.
+///
+/// NOTE: Checks 1–2 duplicate the logic in `calculus::validate_differentiable_field`.
 /// A shared base validator would eliminate this duplication, but `calculus.rs` is
 /// outside the scope of this task's module locks. See reviewer suggestion #2.
 fn validate_tensor_field<'a>(
@@ -78,20 +110,19 @@ fn validate_tensor_field<'a>(
         }
     };
 
+    // Match the (source, lambda) PAIR — see the doc comment for why either
+    // half alone is wrong (Imported is also SampledField-backed).
     if !matches!(
-        source,
-        FieldSourceKind::Analytical | FieldSourceKind::Composed
+        (source, lambda.as_ref()),
+        (
+            FieldSourceKind::Analytical | FieldSourceKind::Composed,
+            Value::Lambda { .. }
+        ) | (FieldSourceKind::Sampled, Value::SampledField(_))
     ) {
         #[cfg(debug_assertions)]
-        eprintln!("[reify-expr] {op}: unsupported source kind {:?}", source);
-        return None;
-    }
-
-    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
-        #[cfg(debug_assertions)]
         eprintln!(
-            "[reify-expr] {op}: lambda slot is not callable: {:?}",
-            lambda
+            "[reify-expr] {op}: unsupported (source, lambda) pair: source {:?}, lambda {:?}",
+            source, lambda
         );
         return None;
     }
