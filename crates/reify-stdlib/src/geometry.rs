@@ -1861,11 +1861,21 @@ fn classify_bbox_corner(v: &Value) -> BboxCorner {
 ///
 /// The message mirrors `ArgRejection::message`'s
 /// `"{builtin}: {arg_name} argument expects {expected}, got {got}"` shape
-/// (`crates/reify-eval/src/arg_acceptance.rs`). It is hand-mirrored rather than
-/// shared: reify-stdlib cannot depend on reify-eval (reify-eval → reify-expr →
-/// reify-stdlib would be a cycle), and copying the wording across that boundary
-/// is established practice (see `reify-compiler/src/conformance/mod.rs`,
-/// annotated "COPIED from ArgRejection::message").
+/// (`crates/reify-ir/src/arg_acceptance.rs` — relocated there from reify-eval by
+/// task 5791, PRD `docs/prds/v0_6/dimension-checked-readers.md` §3 Leg A).
+///
+/// It stays hand-mirrored, but the REASON changed with that relocation. The old
+/// reason — "reify-stdlib cannot depend on reify-eval (reify-eval → reify-expr →
+/// reify-stdlib would be a cycle)" — no longer applies: reify-stdlib already
+/// deps reify-ir, and `arg_acceptance_is_reachable_from_reify_stdlib`
+/// (helpers.rs's test module) pins that `reify_ir::arg_acceptance` IS importable
+/// from here. What keeps this rendering separate is the divergence documented
+/// directly above: the label lands in a TYPE-ARGUMENT slot (`Point3<…>`), where
+/// DIMENSIONLESS spells `Real` rather than `dimension_label`'s prose
+/// "dimensionless". Copying the wording across a boundary remains established
+/// practice for the genuinely-unreachable case (see
+/// `reify-compiler/src/conformance/mod.rs`, annotated "COPIED from
+/// ArgRejection::message").
 fn diagnose_bbox_corners(min: &Value, max: &Value) -> Option<reify_core::Diagnostic> {
     for (arg_name, corner) in [("min", min), ("max", max)] {
         let got = match classify_bbox_corner(corner) {
