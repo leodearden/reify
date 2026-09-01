@@ -284,8 +284,8 @@ checkable.
 | `BucklingOptions.sigma` | **allowlist**, owner live — σ≠0 needs an indefinite factorization, not plumbing | **#7178** (pending) |
 | `ModalOptions.sigma` → `shift_frequency` | **allowlist**, owner live — retype #6097, numerics #7178 | **#6097** + **#7178** (both pending) |
 | `force_tet` / `require_hex_wedge` | **allowlist**, owner live | **#4746** (pending) |
-| `ElasticOptions.mesh_size` | **allowlist**, owner to be filed | leaf ι files it |
-| `ElasticOptions.element_order` (elastic path) | **allowlist**, owner to be filed | leaf ι files it |
+| `ElasticOptions.mesh_size` | **allowlist**, owner live | **#7074** (pending) |
+| `ElasticOptions.element_order` (elastic path) | **allowlist**, owner live | **#7075** (pending) |
 | `target_quantity_of_interest` | **allowlist**, owner live (DWR) | **#7177** (pending, dep-gated on #4909) |
 
 ## 8. Pre-conditions
