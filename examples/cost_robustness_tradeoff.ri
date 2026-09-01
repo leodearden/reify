@@ -4,36 +4,33 @@ module cost_robustness_tradeoff
 // `minimize cost_robustness_tradeoff(<money-expr>, λ)` override (task γ #4791).
 // Leaf-signal example for the γ decompose slice.
 //
-// Three structures share the SAME Money cost and the SAME two-sided inequality
-// box (`1mm < thickness < 25mm`), differing only in λ:
+// Three structures share the SAME Money cost and the SAME three constraints,
+// differing only in λ:
 //
 //   TradeoffPureCost (λ=1.0) — pure cost-minimisation, floor-free: `thickness`
 //     lands on the cost's own closed-form optimum, 5mm.
-//   TradeoffBlend    (λ=0.5) — a blend of both anchors.
-//   TradeoffRobust   (λ=0.0) — pure robustness: `thickness` lands at the
-//     Chebyshev centre of the feasible region, identical argmax to
-//     `build_centrality_objective` by construction (PRD §8.1).
+//   TradeoffBlend    (λ=0.5) — a blend of both anchors: ≈7.19mm, strictly
+//     between the two.
+//   TradeoffRobust   (λ=0.0) — pure robustness: `thickness` lands on the
+//     Chebyshev centre of the feasible region, 31/3 mm ≈ 10.33mm, the identical
+//     argmax to `build_centrality_objective` by construction (PRD §8.1).
 //
-// `cost_robustness_tradeoff` REPLACES the α robustness floor
-// for all three (see
-// `crates/reify-eval/src/engine_eval.rs::scope_qualifies_for_robustness_floor`,
-// task γ step-08): none of these scopes emit `RobustnessFloorApplied`.
+// The dial is genuinely observable here — three separated values, none of them
+// the solver's own starting guess. Getting there took two deliberate levers,
+// one per anchor; both are load-bearing, and removing either collapses the
+// sweep back onto a single point (task #5715).
 //
-// Integration test: crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs
-// asserts zero error-severity diagnostics, every λ strictly inside the box, that
-// λ=1 reaches the closed-form cost optimum, and a strictly ordered sweep with a
-// minimum pairwise separation.
-//
-// # Why the cost is U-shaped, not monotone (task #5715)
+// # Lever 1 — why the cost is U-shaped, not monotone
 //
 // The cost is material-plus-handling shaped: `thickness / 1mm` grows with the
 // part, `25mm / thickness` grows as the part gets thinner. As
 // `5USD · (a·t + b/t)` with `a = 1/(1mm)` and `b = 25mm`, its unique global
 // minimum on `t > 0` is `t* = sqrt(b/a) = sqrt(1mm · 25mm) = 5mm` — STRICTLY
-// INTERIOR to the box, so the constraint penalty is identically zero around it.
+// INTERIOR to the feasible region, so the constraint penalty is identically
+// zero around it.
 //
-// That interiority is the whole point. A MONOTONE Money cost's pure-cost optimum
-// sits an infinitesimal distance PAST a strict `>` boundary — any nonzero cost
+// That interiority is the point. A MONOTONE Money cost's pure-cost optimum sits
+// an infinitesimal distance PAST a strict `>` boundary — any nonzero cost
 // gradient does, since the constraint penalty has zero slope exactly at its own
 // root (the same characteristic that originally motivated the α robustness
 // floor, task #4789). `.ri`-compiled auto params always get `bounds: None`
@@ -41,15 +38,60 @@ module cost_robustness_tradeoff
 // wide Length default `[1µm, 10m]` and nothing else pins the anchor down;
 // `solve_core_with_sd_tolerance`'s "optimizer drifted infeasible → fall back to
 // the initially-feasible seed" safety net then reports THE SEED rather than a
-// boundary-adjacent value. With a monotone cost this example's λ=1 anchor
-// returned the constraint-derived seed and the whole sweep was observably flat.
-// A cost with a reachable interior optimum removes that failure mode outright.
+// boundary-adjacent value. A cost with a reachable interior optimum removes
+// that failure mode outright.
 //
-// The complementary zero-margin-BOUNDARY form of the invariant — PRD §8.1's
-// "λ=1 reaches the TRUE constraint boundary, floor-free" — is a monotone-cost
-// statement, and it is verified rigorously at the SOLVER level with explicit
-// tight `AutoParam` bounds in
+// # Lever 2 — why the third constraint (`thickness * 2 < 30mm`) exists
+//
+// It makes the constraint set ASYMMETRIC. The solver seeds a constrained solve
+// from the midpoint of a box derived from the constraints, so with only the
+// two-sided `1mm < thickness < 25mm` box that seed (13mm) IS the Chebyshev
+// centre by construction — and a λ=0 result landing there proves nothing, since
+// a real centrality solve and a drift fallback are indistinguishable at that
+// point.
+//
+// Three half-spaces with DIFFERENT gradients separate them. The slacks are
+// `t − 1mm` (slope +1), `25mm − t` (slope −1) and `30mm − 2t` (slope −2);
+// max-min binds the first against the third, `t − 1 = 30 − 2t → t = 31/3 mm`,
+// where the middle slack (14.667mm) is non-binding. Meanwhile
+// `derive_from_side` (`solver.rs`) recognises only `p OP far`, `p − k OP far`
+// and `k − p OP far`, so a `Mul` on the near side contributes a centrality
+// slack but does NOT tighten the derived box — it stays `[1mm, 25mm]`, midpoint
+// 13mm. Chebyshev centre 10.33mm, seed 13mm: distinct, so the λ=0 anchor is now
+// checkable.
+//
+// `CentralityReference` is the objectiveless control for exactly that check: the
+// same auto param and the same three constraints with NO `minimize` at all, so
+// the engine resolves it through its own synthesised `Maximize(min_slack)`
+// default (§10.7). It pins the λ=0 target with an ENGINE-COMPUTED value rather
+// than a hardcoded constant — the in-example analogue of the solver-level
+// sibling's independent `build_centrality_objective` solve.
+//
+// # Relationship to the PRD §8.1 "λ=1 → boundary" invariant
+//
+// PRD §8.1's "λ=1 reaches the TRUE constraint boundary, floor-free" is a
+// MONOTONE-cost statement: the boundary is where argmin-cost lands when the cost
+// has no interior optimum. It is verified rigorously and seed-independently at
+// the SOLVER level, with explicit tight `AutoParam` bounds, in
 // `crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
+//
+// This example demonstrates the more general form the invariant specialises
+// from — λ=1 ≡ argmin cost — which is what is observable WITHOUT `AutoParam`
+// bounds. Letting `.ri` autos carry bounds (and so making the zero-margin
+// boundary form reachable at this layer too) is ζ-gated, not available today:
+// `crates/reify-syntax/src/ts_parser.rs`, "δ only PRESERVES these params in the
+// AST; consuming them is ζ".
+//
+// `cost_robustness_tradeoff` REPLACES the α robustness floor for all three
+// tradeoff scopes (see
+// `crates/reify-eval/src/engine_eval.rs::scope_qualifies_for_robustness_floor`,
+// task γ step-08): none of them emit `RobustnessFloorApplied`.
+//
+// Integration test: crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs
+// asserts zero error-severity diagnostics, every value strictly inside the
+// feasible region, the λ=1 closed-form cost optimum, the λ=0 Chebyshev centre
+// (both against `CentralityReference` and against 31/3 mm), separation from the
+// 13mm seed, and a strictly ordered sweep with a minimum pairwise separation.
 //
 // # Why auto(free), not strict auto
 //
@@ -80,6 +122,7 @@ structure TradeoffPureCost {
 
     constraint thickness > 1mm
     constraint thickness < 25mm
+    constraint thickness * 2 < 30mm
 
     minimize cost_robustness_tradeoff(unit_cost * (thickness / 1mm + 25mm / thickness), 1.0)
 }
@@ -90,6 +133,7 @@ structure TradeoffBlend {
 
     constraint thickness > 1mm
     constraint thickness < 25mm
+    constraint thickness * 2 < 30mm
 
     minimize cost_robustness_tradeoff(unit_cost * (thickness / 1mm + 25mm / thickness), 0.5)
 }
@@ -100,6 +144,18 @@ structure TradeoffRobust {
 
     constraint thickness > 1mm
     constraint thickness < 25mm
+    constraint thickness * 2 < 30mm
 
     minimize cost_robustness_tradeoff(unit_cost * (thickness / 1mm + 25mm / thickness), 0.0)
+}
+
+// The objectiveless control: same auto param, same three constraints, NO
+// `minimize`. The engine resolves it through the synthesised centrality default
+// (§10.7), so it pins the λ=0 target independently of any tradeoff machinery.
+structure CentralityReference {
+    param thickness : Length = auto(free)
+
+    constraint thickness > 1mm
+    constraint thickness < 25mm
+    constraint thickness * 2 < 30mm
 }
