@@ -1,10 +1,10 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `700e931514450e42101722ff0e0f9fc851b28302`
+**Base commit:** `da22522934edbe82bcb270023ce88ad6b2e2dd88`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
 **Sites:** 18
-**Corpus:** 676 tracked `.ri`; 670 surveyed, 6 not surveyed, 72 partial
+**Corpus:** 677 tracked `.ri`; 672 surveyed, 5 not surveyed, 72 partial
 
 This is a point-in-time **snapshot**, not a freshness-gated golden file. γ will
 legitimately invalidate it — that is the point. Its job is to enumerate and size,
@@ -130,7 +130,7 @@ with a real cost. **Triage manually before touching.**
 
 ## Coverage and limitations
 
-Of 676 tracked `.ri` members, **670 were surveyed** and **6 were not**. A further **72** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
+Of 677 tracked `.ri` members, **672 were surveyed** and **5 were not**. A further **72** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
 
 ### Not surveyed (contributed no sites)
 
@@ -141,7 +141,6 @@ Of 676 tracked `.ri` members, **670 were surveyed** and **6 were not**. A furthe
 | `gui/test/fixtures/broken_syntax.ri` | `parse-error` |
 | `tests/prd-gate/fixtures/adt_mirror_of_arm.ri` | `parse-error` |
 | `tests/prd-gate/fixtures/arrow_type.ri` | `parse-error` |
-| `tests/prd-gate/fixtures/unit_middot_mul.ri` | `parse-error` |
 
 ### Partially surveyed (sites collected, but the file also failed to compile)
 
