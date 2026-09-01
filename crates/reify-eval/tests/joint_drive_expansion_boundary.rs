@@ -965,26 +965,15 @@ fn halves(path: &str) -> (EvalResult, EvalResult) {
 ///
 /// Shared by BT-5 and its companion known-limitation pin
 /// (`parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`)
-/// so the two provably evaluate the SAME two halves — deriving this fixture
-/// independently in each test would let them silently drift apart, exactly
-/// the failure mode `strip_inlined_minimize`'s own doc comment warns about
+/// so the two provably evaluate the SAME two halves, rather than drifting
+/// apart — the hazard `strip_inlined_minimize`'s own doc comment describes
 /// for "derived, never transcribed" baselines.
 ///
-/// # Memoized — the rationale for BOTH wrappers
-///
-/// The pair is cached behind a `OnceLock`, so the example is read + stripped +
-/// solved exactly ONCE per test binary. Every caller of a given pair wants
-/// the SAME evaluation, not an independent one — they all assert about one
-/// model's merged-vs-frozen gap — so re-deriving per call buys no additional
-/// signal, only more real `DimensionalSolver` runs. `OnceLock::get_or_init`
-/// also de-duplicates correctly when the `#[test]` functions run
-/// concurrently on libtest's default thread pool: a second caller blocks on
-/// the first's in-flight solve rather than racing a redundant one.
-///
-/// Both wrappers therefore return `&'static`, so the whole file has ONE
-/// call-site idiom (`scalar_si(merged, ..)`, never `scalar_si(&merged, ..)`)
-/// — asymmetric signatures for an identical concept were pure reader tax.
-/// [`mwhole_halves`] is the other wrapper and follows this verbatim.
+/// Memoized: the fixture is read + stripped + solved ONCE per test binary
+/// instead of once per caller, and `OnceLock::get_or_init` de-duplicates
+/// correctly across libtest's concurrent threads. Both wrappers return
+/// `&'static` so the file has ONE call-site idiom; [`mwhole_halves`] is the
+/// other and follows this verbatim.
 fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
     static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| halves(JOINT_DRIVE_EXAMPLE_PATH))
@@ -1078,9 +1067,8 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // `cost(self.descendants)` == `[rivets.line_cost].sum`. Both sides must be
     // read from the SAME cell or the comparison is not apples-to-apples.
     //
-    // The parent's own `let total_cost` is deliberately NOT a candidate
-    // here — see
-    // `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
+    // The parent's own `let total_cost` is deliberately NOT a candidate here —
+    // see `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
     // (immediately below) / #5835.
     //
     // NOT INDEPENDENT SIGNAL, and deliberately so: this is (i) restated at
@@ -1151,25 +1139,16 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
 /// is declared but never resolves to a usable number, in EITHER the merged or
 /// the frozen-cascade half of BT-5's comparison.
 ///
-/// This is EXPECTED AND KNOWN, not a regression: tracked as an engine gap by
-/// #5835, and already recorded in prose by the example header's "Reading the
-/// result" section ("The parent's `let total_cost` likewise stays `Undef`
-/// post-solve").
+/// EXPECTED, not a regression: see #5835 and the example header's "Reading
+/// the result" section. The assertions below carry the operator instructions
+/// for a RED.
 ///
 /// Companion to `objective_must_inline_the_aggregate_to_couple`
-/// (crates/reify-eval/src/resolve_order.rs): that test pins the REPLACEMENT
-/// case — a `let` INSTEAD of the inlined `minimize` forms NO cluster at all.
-/// This one pins the co-existing case the shipped example actually carries —
-/// the δ cluster DOES form here (BT-5 passes), but this particular
-/// parent-level consumer `let` still never resolves post-solve.
-///
-/// If this test goes RED because `total_cost` started resolving to a usable
-/// number, the correct response is a reviewed design change — re-enable the
-/// parent aggregate as BT-5(ii)'s preferred cost cell and update the example
-/// header's "Reading the result" section — NOT a silent edit to this
-/// assertion or to #5835's status. The one benign cause is a bare re-spelling
-/// of the unresolved state, which trips only the exact-shape backstop in the
-/// body; the two assertions carry the instructions for telling them apart.
+/// (crates/reify-eval/src/resolve_order.rs), which pins the REPLACEMENT case
+/// (a `let` INSTEAD of the inlined `minimize` forms NO cluster at all). This
+/// one pins the co-existing case the shipped example actually carries: the δ
+/// cluster DOES form here (BT-5 passes), yet this parent-level consumer `let`
+/// still never resolves post-solve.
 // TODO(#5835): delete this known-limitation pin and re-enable the parent
 // aggregate as BT-5(ii)'s cost cell when the engine gap closes.
 #[test]
@@ -1186,10 +1165,11 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
     // `mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value`
     // below loops over its cases the same way.
     for (what, result) in [("merged", merged), ("frozen-cascade", frozen)] {
-        // PRESENCE — the anti-vacuity guard. A misspelled `ValueCellId`, or a
-        // future edit that deletes `let total_cost` from the shipped
-        // example, must fail HERE rather than sail through the permissive
-        // UNRESOLVED check below.
+        // PRESENCE — the anti-vacuity guard. Subsumed by the `Some(..)` in
+        // the UNRESOLVED check below; it stays for its distinct message, so
+        // a misspelled `ValueCellId` or an edit that deletes `let total_cost`
+        // from the shipped example reads as a fixture defect rather than as a
+        // regressed engine limitation.
         let cell = result.values.get(&total_cost);
         assert!(
             cell.is_some(),
@@ -1198,55 +1178,26 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
              total_cost` binding, or this cell's id spelling, has changed) \
              — got no entry",
         );
-        // UNRESOLVED — the actual claim, in TWO layers because the two ways
-        // it can stop holding want opposite treatment.
-        //
-        // Layer 1 (here) is the SEMANTIC claim: not a resolved number. It
-        // denies the numeric shapes a `Money` cell could plausibly resolve
-        // to — `Scalar`, `Real`, `Int` — so it survives a harmless
-        // re-spelling of the unresolved state, and it owns the loud
-        // "#5835 has closed" instruction. But a deny-list is only ever
-        // complete for the variants that exist TODAY: a `total_cost` that
-        // resolved through some new carrier (a dimensioned Money variant, an
-        // `Enum` payload, a `List`-wrapped fold) would sail straight through
-        // it. That hole is what layer 2 below backstops — so if a numeric
-        // variant is ever added to `Value`, add it here too.
-        assert!(
-            !matches!(
-                cell,
-                Some(Value::Scalar { .. } | Value::Real(_) | Value::Int(_))
-            ),
-            "KNOWN-LIMITATION REGRESSED (#5835): `RivetedPanel.total_cost` \
-             resolved to a usable number in the {what} eval — got {cell:?}. \
-             The engine gap #5835 tracks has apparently closed. #5835 records \
-             this cell as permanently unresolved in BOTH halves for the SAME \
-             two mechanisms, so a change to either one lands here — do not go \
-             looking for a per-half distinction. That needs a reviewed design \
-             change (re-enable the parent aggregate as BT-5(ii)'s preferred \
-             cost cell, update the example header's \"Reading the result\" \
-             section), not a silent edit to this assertion or to #5835's \
-             status.",
-        );
-
-        // Layer 2 — the maximum-sensitivity backstop: today the engine leaves
-        // this cell at exactly `Value::Undef`, and ANY other shape fires here,
-        // including ones layer 1's deny-list cannot know about. Asymmetric on
-        // purpose: a false RED costs one line to re-baseline and is LOUD,
-        // whereas the failure this pin exists to prevent — staying silently
-        // GREEN while #5835 closes through an unanticipated representation,
-        // leaving BT-5(ii) on the fallback cell forever — is silent, and
-        // silence is the one thing a known-limitation pin must not do.
+        // UNRESOLVED — the actual claim. Exact shape, NOT a deny-list of the
+        // numeric variants a `Money` cell could resolve to: a deny-list can
+        // only ever name the variants that exist TODAY, so a `total_cost`
+        // resolving through some new carrier would sail silently through it
+        // — and staying GREEN while #5835 closes, leaving BT-5(ii) on the
+        // fallback cell forever, is the one failure a known-limitation pin
+        // must not have. The price is a false RED if the engine merely
+        // re-spells its unresolved state: one line to re-baseline, and LOUD.
         assert!(
             matches!(cell, Some(Value::Undef)),
-            "`RivetedPanel.total_cost` is in the {what} eval neither a usable \
-             number (layer 1 above would have fired) nor `Value::Undef` — got \
-             {cell:?}. EITHER the engine merely re-spelled its unresolved \
-             state, in which case re-baseline this one `matches!` arm; OR \
-             #5835 closed by resolving this cell through a representation \
-             layer 1 does not deny (a new dimensioned/Money carrier, an \
-             `Enum` payload, a `List`-wrapped fold), in which case this is a \
-             KNOWN-LIMITATION REGRESSED (#5835) hit — read layer 1's message \
-             and follow it. Inspect the value before deciding which.",
+            "`RivetedPanel.total_cost` is not `Value::Undef` in the {what} \
+             eval — got {cell:?}. EITHER the engine merely re-spelled its \
+             unresolved state, in which case re-baseline this one `matches!` \
+             arm; OR this cell now resolves to a usable number, i.e. \
+             KNOWN-LIMITATION REGRESSED (#5835) — the engine gap #5835 tracks \
+             has closed, which needs a reviewed design change (re-enable the \
+             parent aggregate as BT-5(ii)'s preferred cost cell, update the \
+             example header's \"Reading the result\" section), NOT a silent \
+             edit to this assertion or to #5835's status. Inspect the value \
+             to decide which.",
         );
 
         // LIVENESS — the eval produced values at all, so PRESENCE/UNRESOLVED
@@ -1636,14 +1587,8 @@ const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
 );
 
 /// Shared preamble for the `mwhole_*` tests below: the M-WHOLE ε example's
-/// merged/frozen-cascade pair, via [`halves`]. Every `mwhole_*` test needs
-/// exactly this pair, so centralising it keeps the mechanics a single source
-/// of truth instead of a literal copy per test — and, since
-/// [`joint_drive_halves`] wraps the same [`halves`], across both example
-/// fixtures in this file.
-///
-/// MEMOIZED behind a `OnceLock` — rationale on [`joint_drive_halves`], which
-/// this wrapper follows verbatim.
+/// merged/frozen-cascade pair, via [`halves`]. Memoized behind a `OnceLock`
+/// exactly like [`joint_drive_halves`]; the rationale for both lives there.
 fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
     static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| halves(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH))
