@@ -331,8 +331,8 @@ CAP_LINES=20000
 # increments `violations=`. That is not timidity, it is the only shape that
 # could land. At introduction (task #6121) TWO live units were already above a
 # 90% line — harness_fea_solver_e2e at 19265 (96.3%, split by this same task)
-# and crates/reify-syntax/tests/harness_syntax.rs at 18617 (93.0%, a crate this
-# task is not scoped to fix and which is tracked separately). A GATING warn
+# and crates/reify-syntax/tests/harness_syntax.rs at 18617 (93.0%, outside this
+# task's scope — see _KLOC_WARN_KNOWN below). A GATING warn
 # would therefore have turned the merge gate RED on main the moment it landed,
 # and would have kept re-firing on every innocent downstream rebaser — exactly
 # the failure mode rule (d)'s LANDING PRECONDITION note above warns about.
@@ -345,8 +345,12 @@ WARN_PCT=90
 # list freely (that is progress and must never turn the gate red), but a unit
 # ARRIVING must be added deliberately in the same diff -- which is exactly the
 # "surface the squeeze before it breaks" signal task #6121 added the WARN tier
-# for. harness_syntax.rs is 18617/20000 = 93.0% as of task #6121 and is tracked
-# by its own follow-up; it is NOT in this task's scope.
+# for. harness_syntax.rs measured 18617/20000 = 93.0% as of task #6121; it is
+# listed here because it is outside that task's scope, NOT because it is
+# acceptable — the remedy is still rule (a)'s split. Deliberately no "tracked
+# elsewhere" claim and no #NNNN cite: none existed when this was written, and
+# the PTODO gate is right to red an unbacked one (it caught exactly that in an
+# earlier draft of the WARN_PCT comment above).
 #
 # Kept in-script rather than in a new manifest file because this guard already
 # carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
