@@ -2087,6 +2087,168 @@ const SYNTH_COMPILE_ERROR: &str = "module test.compile_error\n\
      \x20   let x = no_such_binding + 1\n\
      }\n";
 
+// ─── prose-contract members: the extractors, against the LIVE emitters ───────
+//
+// `SYNTH_WARNS` above pins `ArgTypeMismatch`'s `argument '<f>'` /
+// `expected '<X>', got '<Y>'` shapes end-to-end. Every OTHER admitted wording
+// was pinned only against `synth(...)` fixtures whose message strings are
+// hand-written in this file — a presumed copy of what the emitters produce, not
+// a measurement of it. An emitter rewording would leave all of those green
+// while `def_of_diagnostic` / `field_of_message` silently stopped recovering on
+// real input, and the committed artifact carries zero ε rows today, so nothing
+// else would surface it either.
+//
+// This is the same failure the module already fixed once for the type table:
+// `selector_type_renderings_match_what_reify_core_actually_displays` pins
+// `is_selector_type` by CONSTRUCTING `reify_core::Type` values after an earlier
+// draft matched a `Selector(Face)` string the compiler never emits.
+//
+// These three members close the gap for the remaining shapes at the same
+// near-zero cost — three small files through the real parse→compile pipeline.
+// They are deliberately a SEPARATE corpus rather than extra `synth_corpus()`
+// members: `survey_corpus_finds_the_known_warning_site_with_every_column_resolved`
+// asserts "exactly one ctor-conformance site across the mini-corpus", and the
+// coverage-arithmetic tests assert `run.total == 4`. Diluting those to carry
+// prose coverage would weaken guards that exist for a different reason.
+
+/// ε `CtorUnknownField`, live: the `in call to '<Def>'` def prose and the
+/// `unknown named argument '<f>'` field prose in one message.
+#[cfg(test)]
+const PROSE_CTOR_UNKNOWN_FIELD: &str = "module test.prose_unknown_field\n\
+     structure def Widget { param label : String }\n\
+     structure def Root {\n\
+     \x20   let x = Widget(nosuchfield: \"v\")\n\
+     }\n";
+
+/// ε `CtorArity`, live: the `E_CTOR_ARITY: <Def>() expects …` def prose. Its
+/// wording names no param, so the FIELD column must stay `None` — the one
+/// admitted code for which that is the correct answer rather than a miss.
+#[cfg(test)]
+const PROSE_CTOR_ARITY: &str = "module test.prose_arity\n\
+     structure def Widget { param label : String }\n\
+     structure def Root {\n\
+     \x20   let x = Widget(\"a\", \"b\")\n\
+     }\n";
+
+/// `TypeNotConformingToTrait`'s `required by param '<f>'` shape, live.
+///
+/// The `sub =` binding and the empty `trait Fastener {}` are both load-bearing:
+/// this is the shape `m9_error_cases.rs`'s `type_does_not_conform_to_trait`
+/// proves the compiler emits, and a `let` binding of a trait-param ctor does
+/// NOT reach the check (measured — an earlier draft of this fixture produced no
+/// diagnostic at all and would have been a silently vacuous test).
+#[cfg(test)]
+const PROSE_REQUIRED_BY_PARAM: &str = "module test.prose_required_by_param\n\
+     trait Fastener {}\n\
+     structure def Bolt { param dia : Real = 3.0 }\n\
+     structure def Holder { param part : Fastener }\n\
+     structure def Root { sub h = Holder(part: Bolt()) }\n";
+
+/// Write the three prose-contract members into a temp dir and sweep them.
+#[cfg(test)]
+fn prose_contract_run() -> SurveyRun {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let members = [
+        ("arity.ri", PROSE_CTOR_ARITY),
+        ("required_by_param.ri", PROSE_REQUIRED_BY_PARAM),
+        ("unknown_field.ri", PROSE_CTOR_UNKNOWN_FIELD),
+    ];
+    for (name, source) in members {
+        std::fs::write(dir.path().join(name), source).expect("write prose-contract member");
+    }
+    let paths: Vec<String> = members.iter().map(|(n, _)| (*n).to_owned()).collect();
+    survey_corpus(dir.path(), &paths)
+}
+
+#[test]
+fn epsilon_and_required_by_param_prose_extractors_hold_against_the_live_emitters() {
+    let run = prose_contract_run();
+
+    // Every member must actually COMPILE and yield its site. A fixture that
+    // stopped reaching its emitter would otherwise make each assertion below
+    // vacuous rather than red.
+    assert_eq!(
+        run.not_surveyed,
+        Vec::new(),
+        "every prose-contract member must parse; a fixture that stopped compiling \
+         would make this whole test vacuous"
+    );
+    assert_eq!(
+        run.sites.len(),
+        3,
+        "one site per prose-contract member — a missing one means that emitter no \
+         longer produces the shape this test claims to pin: {:#?}",
+        run.sites
+    );
+
+    let site = |file: &str| {
+        run.sites
+            .iter()
+            .find(|s| s.file == file)
+            .unwrap_or_else(|| panic!("no site for {file}; got {:#?}", run.sites))
+    };
+
+    // ε `CtorUnknownField`: BOTH prose extractors, measured.
+    let unknown = site("unknown_field.ri");
+    assert_eq!(unknown.code, "CtorUnknownField");
+    assert_eq!(
+        unknown.def.as_deref(),
+        Some("Widget"),
+        "the `in call to '<Def>'` prose must still yield the def"
+    );
+    assert_eq!(
+        unknown.def_origin,
+        DefOrigin::DiagnosticProse,
+        "the def must come from the PROSE path, not the call-site anchor — if the \
+         wording drifts, this is where it shows up"
+    );
+    assert_eq!(
+        unknown.field.as_deref(),
+        Some("nosuchfield"),
+        "the `unknown named argument '<f>'` prose must still yield the field"
+    );
+
+    // ε `CtorArity`: def from prose, and field CORRECTLY absent.
+    let arity = site("arity.ri");
+    assert_eq!(arity.code, "CtorArity");
+    assert_eq!(
+        arity.def.as_deref(),
+        Some("Widget"),
+        "the `E_CTOR_ARITY: <Def>()` prose must still yield the def"
+    );
+    assert_eq!(arity.def_origin, DefOrigin::DiagnosticProse);
+    assert_eq!(
+        arity.field, None,
+        "this wording names no param; a field here would be a fabrication, not a \
+         recovery"
+    );
+
+    // `required by param '<f>'` — reached ONLY through `field_of_message`'s
+    // `or_else` fallback, because the message carries no `argument '`. This is
+    // the live-emitter half of the fallback-liveness contract that
+    // `an_empty_quoted_token_is_a_miss_so_the_fallback_prefix_is_still_consulted`
+    // pins structurally.
+    let required = site("required_by_param.ri");
+    assert_eq!(required.code, "TypeNotConformingToTrait");
+    assert!(
+        !required.message.contains(ARG_PREFIX),
+        "premise: this shape must NOT carry `argument '`, or it would be recovered \
+         by the first prefix and the fallback would go untested; got {:?}",
+        required.message
+    );
+    assert_eq!(
+        required.field.as_deref(),
+        Some("part"),
+        "the `required by param '<f>'` FALLBACK must still yield the field"
+    );
+    // Measured, and stated rather than editorialised: the label anchors at the
+    // ARGUMENT's ctor (`Bolt()`), so the call-site anchor recovers the argument
+    // type, not the receiving def (`Holder`). That is the survey's documented
+    // "def is whatever identifier sits at the anchor" caveat, observed live.
+    assert_eq!(required.def.as_deref(), Some("Bolt"));
+    assert_eq!(required.def_origin, DefOrigin::CallSiteAnchor);
+}
+
 /// Write the three synthetic members into a temp dir and return `(dir, paths)`.
 #[cfg(test)]
 fn synth_corpus() -> (tempfile::TempDir, Vec<String>) {
