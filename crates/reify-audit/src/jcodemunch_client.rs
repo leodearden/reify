@@ -544,6 +544,19 @@ fn parse_signals_list(s: &str) -> Vec<String> {
 ///
 /// Reads the `dead_symbols` table; maps `id/name/kind/file/line/confidence`
 /// by column name; parses `signals` via [`parse_signals_list`].
+///
+/// `line` is OPTIONAL and defaults to the `0` "not reported" sentinel, for
+/// the same reason as [`changed_symbols_from_wire`] and
+/// [`references_from_rows`]: a jcodemunch release that stops emitting a
+/// column must make this adapter UNDER-REPORT a field, never silently empty
+/// the whole result set. That is not hypothetical — `find_references`
+/// already dropped its `line` column in 1.108.54, which is what this task
+/// was filed for. Under a mandatory read, the same drift on
+/// `get_dead_code_v2` would drop every PDEAD row inside the `filter_map` and
+/// the audit would report a clean corpus. `id`/`name`/`kind`/`file` stay
+/// mandatory (they are what make a symbol identifiable at all) and
+/// `confidence` stays mandatory (it is the value `min_confidence` filters
+/// on, so a default would silently change which rows survive).
 fn dead_symbols_from_wire(decoded: &Value) -> Vec<DeadSymbol> {
     let rows = match decoded
         .get("dead_symbols")
@@ -558,7 +571,7 @@ fn dead_symbols_from_wire(decoded: &Value) -> Vec<DeadSymbol> {
             let name = row.get("name")?.as_str()?.to_string();
             let kind = row.get("kind")?.as_str()?.to_string();
             let file = row.get("file")?.as_str()?.to_string();
-            let line = row_u64(row, "line")? as usize;
+            let line = row_u64(row, "line").unwrap_or(0) as usize;
             let confidence = row_f64(row, "confidence")?;
             let signals_raw = row
                 .get("signals")
@@ -1830,6 +1843,39 @@ mod tests {
         assert!(
             decl_line_out_of_range(symbols[0].line, 500),
             "the 0 sentinel must still be treated as unlocatable downstream"
+        );
+    }
+
+    /// The `dead_symbols` sibling of
+    /// [`changed_symbols_from_wire_keeps_a_symbol_whose_line_column_is_absent`]:
+    /// a wire that stops emitting the `line` column must cost PDEAD the
+    /// symbol's LOCATION, never the symbol. A mandatory read here would drop
+    /// every row inside `filter_map` on that drift and report a clean corpus
+    /// — the silently-empty result this module exists to prevent, and the
+    /// exact drift `find_references` already shipped in 1.108.54.
+    #[test]
+    fn dead_symbols_from_wire_keeps_a_symbol_whose_line_column_is_absent() {
+        let munch = concat!(
+            "#MUNCH/1 tool=get_dead_code_v2 enc=gen1\n",
+            "\n",
+            "x=1 __stypes= __tables=t:dead_symbols:id|name|kind|file|confidence|signals:\
+             str|str|str|str|float|str\n",
+            "t,a.rs::widget#function,widget,function,a.rs,0.93,['no_callers']\n",
+        );
+        let v = munch_decode(munch).expect("decode line-less dead_symbols munch");
+        let symbols = dead_symbols_from_wire(&v);
+        assert_eq!(
+            symbols.len(),
+            1,
+            "an absent `line` column must not delete the dead symbol; got {symbols:?}"
+        );
+        assert_eq!(symbols[0].name, "widget");
+        assert_eq!(symbols[0].file, "a.rs");
+        assert_eq!(symbols[0].confidence, 0.93);
+        assert_eq!(
+            symbols[0].line, 0,
+            "an unreported line decodes to the same 0 sentinel `ChangedSymbol` \
+             and `SymbolReference` use"
         );
     }
 

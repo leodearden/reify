@@ -1423,7 +1423,11 @@ pub struct DeadSymbol {
     pub kind: String,
     /// Workspace-relative path of the file declaring the symbol.
     pub file: String,
-    /// 1-based line of the declaration.
+    /// 1-based line of the declaration WHEN the wire reports one. `0` is the
+    /// sentinel for "not reported", mirroring [`ChangedSymbol::line`] and
+    /// [`SymbolReference::line`]: a `get_dead_code_v2` payload that omits the
+    /// `line` column still yields the symbol, located at `0`, rather than
+    /// dropping it from the PDEAD sweep.
     pub line: usize,
     /// Jcodemunch's confidence score that the symbol is truly unreachable
     /// (0.0 = uncertain; 1.0 = certain). Filtered by `min_confidence` in
