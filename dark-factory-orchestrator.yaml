@@ -670,16 +670,39 @@ max_turns:
 #     implementer/debugger's pre-amendment 1200s default), architect
 #     doesn't run the compile-heavy verify commands that are this task's
 #     documented root cause, and it's separately bounded by reify's own
-#     max_turns.architect=120 above. Revisit if architect sessions start
+#     max_turns.architect=120 above (stale cite: 180 since 2026-08-19, see
+#     the max_turns block). Revisit if architect sessions start
 #     showing the same 0-turn misreported-kill signature.
 #
-# Load-once config (dark-factory-orchestrator.yaml has no hot-reload): takes effect at
-# the next orchestrator restart. Do NOT restart mid-flight — land for the
-# next quiet window, the same restart that activates the
-# verify_clock_stop_heartbeat_idle_max bump (task 5156).
+# 2026-09-01 amendment (task 7182, esc-5469-10, Leo approved): the (2)
+# revisit trigger fired, and its rationale is falsified for reify —
+# architects here DO run compile-heavy commands during planning premise
+# verification (esc-5469-6: cargo build + two full test suites inside an
+# architect run). Fleet data since 2026-07-01: 2450 architect successes, 44
+# legitimately past 2400s (max 5331s), 4 timeout kills — each discarding the
+# entire plan product (--print emits stdout only at process end, so a
+# SIGTERM yields nothing; DF task 2360). Semantics, source-verified: a
+# timeouts.<role> value is NOT a total-wall-clock cap. It feeds the
+# working-regime watchdog as the transcript-SILENCE bound
+# (idle_bound = max(working_idle_secs, timeouts.<role>),
+# cli_invoke.py:3851-3852) — a single long synchronous tool call (cold
+# cargo test) with no new assistant turns reads as "idle" and is killed at
+# that bound. Total runtime is capped independently by
+# invocation_timeout=7200 (config.py:4397, RED-tier/restart-only), so any
+# per-role value >= 7200 (including the 7800s above) effectively means
+# "absolute cap governs". architect: 7200 makes the silence bound
+# coincide with the cap — the honest maximum.
+#
+# Hot-reload note (corrects the stale "Load-once config" claim that stood
+# here): timeouts.* is on the code-owned green-tier allowlist
+# (dark-factory config.py RELOADABLE_FIELDS via
+# _submodel_leaf_paths('timeouts', TimeoutsConfig)), so this block takes
+# effect via the escalation MCP's reload_config — no orchestrator restart
+# required. Always read the returned applied/restart_required dispositions.
 timeouts:
   implementer: 7800
   debugger: 7800
+  architect: 7200
 
 unblock_auto:
   timeout_seconds: 1800
