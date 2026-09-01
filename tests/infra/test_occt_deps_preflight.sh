@@ -200,10 +200,39 @@ _guard_exits_nonzero() {
 # _out_contains <haystack> <needle> — literal (grep -F semantics) substring
 # containment, used by every output assert in this file.
 #
-# Extracted verbatim from _guard_output_names' inline pipeline so the primitive
-# is nameable and directly testable by the self-check section below.
+# FORK-FREE BY CONSTRUCTION, and it must stay that way. The obvious
+# `printf '%s' "$haystack" | grep -qF -- "$needle"` is WRONG under this file's
+# `set -euo pipefail` (line 96): `grep -q` exits the instant it matches and
+# closes the pipe, the bash-builtin `printf` writer is then killed by SIGPIPE
+# (141), and pipefail makes the PIPELINE report printf's 141 even though grep
+# exited 0 — so a MATCH is reported as a MISS. Measured over 20000 iterations
+# on the real ~1.1KB guard payload: 28 misses, PIPESTATUS "141 0" (writer
+# killed, grep succeeded) EVERY time — 0.14% per call, ~2.8% per run across
+# this file's ~20 output asserts. That is the entire observed flake, and
+# because the miss is silent it named a DIFFERENT assertion on each run.
+#
+# The `case` form has no pipeline, so no pipefail exposure at all, and no fork.
+# The needle is QUOTED inside the pattern, which is what keeps matching LITERAL
+# (grep -F semantics) rather than glob. Section 0's
+# `_containment_has_no_grep_pipeline` pins this deterministically — do not
+# "simplify" it back into a pipeline.
 _out_contains() {
-    printf '%s' "$1" | grep -qF -- "$2"
+    case "$1" in
+        *"$2"*) return 0 ;;
+        *)      return 1 ;;
+    esac
+}
+
+# _lines_contain_exact <newline-separated-lines> <needle> — whole-LINE exact
+# containment, i.e. `grep -qxF` semantics, with the same fork-free
+# no-pipeline construction and for the same reason as _out_contains above.
+# Both sides are wrapped in a newline so the pattern can only match a COMPLETE
+# line, never a substring of one (which is exactly what `-x` buys).
+_lines_contain_exact() {
+    case $'\n'"$1"$'\n' in
+        *$'\n'"$2"$'\n'*) return 0 ;;
+        *)                return 1 ;;
+    esac
 }
 
 # _guard_output_names <lib_dir> <include_dir> <needle>...
@@ -215,7 +244,7 @@ _guard_output_names() {
     local out needle
     out="$(OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" bash "$GUARD" 2>&1 || true)"
     for needle in "$@"; do
-        printf '%s' "$out" | grep -qF -- "$needle" || return 1
+        _out_contains "$out" "$needle" || return 1
     done
     return 0
 }
@@ -769,11 +798,17 @@ assert "setup-dev.sh's OCCT block yields a version (anchor '# ---------- OCCT' +
 _ACCEPTED_MAJMIN="$(printf '%s\n' "$_ACCEPTED_SONAMES" | _majmin_lines)"
 _SETUP_DEV_MAJMIN="$(printf '%s\n' "$_SETUP_DEV_VER" | _majmin_lines)"
 
-if ! printf '%s\n' "$_ACCEPTED_MAJMIN" | grep -qxF -- "$_SETUP_DEV_MAJMIN"; then
+if ! _lines_contain_exact "$_ACCEPTED_MAJMIN" "$_SETUP_DEV_MAJMIN"; then
     echo "  OCCT version drift: setup-dev.sh provisions '$_SETUP_DEV_VER' (major.minor"
     echo "  $_SETUP_DEV_MAJMIN), accepted set projects to:"
     printf '%s\n' "$_ACCEPTED_MAJMIN" | sed 's/^/    /'
 fi
+# Deliberately left as a pipeline: unlike the diagnostic above, this one runs
+# in a FRESH `bash -c` child, which starts with default shell options — VERIFIED
+# `pipefail off` there, and shell options are not inherited across a `bash -c`.
+# With pipefail off the pipeline reports grep's status, so a SIGPIPE'd printf
+# cannot turn a match into a miss. Routing it through _lines_contain_exact is
+# not possible anyway: that is a shell function, not reachable from the child.
 assert "setup-dev.sh's OCCT version ('$_SETUP_DEV_VER') projects (major.minor) into OCCT_ACCEPTED_SONAMES" \
     bash -c 'printf "%s\n" "$1" | grep -qxF -- "$2"' _ "$_ACCEPTED_MAJMIN" "$_SETUP_DEV_MAJMIN"
 
