@@ -74,31 +74,32 @@ fn leading_operator_continuation_is_rejected_at_the_operator() {
     );
 }
 
+/// Scoped to member-continuation diagnostics rather than to the whole error
+/// list, because the joined reading of REPRO 2 is a `namespaced_call` whose
+/// qualifier `a` is not bound by any import — so lowering ALSO emits a
+/// pre-existing "unknown qualifier `a`" diagnostic (measured on this branch).
+/// That co-diagnostic is incidental to this repro's exact identifier choice:
+/// it disappears the moment `a` names an imported namespace, while the join
+/// itself does not. Asserting on it would pin an unrelated seam.
 #[test]
 fn paren_led_continuation_is_rejected_at_the_open_paren() {
     let src = REPRO_TWO;
-    let parsed = reify_syntax::parse(src, ModulePath::single("m"));
+    let found = member_continuation_errors(src);
     assert_eq!(
-        parsed.errors.len(),
+        found.len(),
         1,
-        "expected exactly one ParseError for the `(`-led join, got {:?}",
-        parsed.errors
+        "expected exactly one member-continuation ParseError for the `(`-led join, \
+         got {found:?} (all errors: {:?})",
+        reify_syntax::parse(src, ModulePath::single("m")).errors
     );
-    let err = &parsed.errors[0];
+    let (start, end, _message) = &found[0];
 
     let lparen = src.find("(c)").expect("REPRO_TWO must contain `(c)`") as u32;
     assert_eq!(
-        (err.span.start, err.span.end),
+        (*start, *end),
         (lparen, lparen + 1),
-        "span must cover exactly the `(` token at byte {lparen}, got {:?} ({:?})",
-        err.span,
-        &src[err.span.start as usize..err.span.end as usize]
-    );
-
-    assert!(
-        is_member_continuation_error(&err.message),
-        "message must name the member-continuation ambiguity, got: {:?}",
-        err.message
+        "span must cover exactly the `(` token at byte {lparen}, got {:?}",
+        &src[*start as usize..*end as usize]
     );
 }
 

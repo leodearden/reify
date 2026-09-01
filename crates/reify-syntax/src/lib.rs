@@ -7,6 +7,7 @@
 //! keep resolving `Declaration`, `ExprKind`, etc. until PRD task η's follow-up
 //! sweeps the reify-syntax test suite to import from `reify_ast` directly.
 
+mod member_continuation;
 mod ts_parser;
 
 // TRANSIENT: re-export all AST types so `use reify_syntax::*` in integration tests
